@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import gc
 import logging
 import os
+import re
 
 from dotenv import load_dotenv
-import re
-import gc
 
 # Local MLX-LM
 from mlx_lm import generate as lm_generate, load as load_lm
@@ -45,7 +45,7 @@ FORMAT_ENABLED = os.environ.get("FORMAT_ENABLED", "0").strip().lower() not in {
 
 # Remote server (preferred when set)
 LLM_SERVER_URL = os.environ.get("LLM_SERVER_URL", "").strip()
-FORMAT_STRATEGY = os.environ.get("FORMAT_STRATEGY", "auto").lower()  # auto|light|llm|openai
+FORMAT_STRATEGY = os.environ.get("FORMAT_STRATEGY", "light_plus").lower()
 UNLOAD_ON_DISABLE = os.environ.get("UNLOAD_LLM_ON_DISABLE", "0").lower() not in {
     "0",
     "false",
@@ -194,7 +194,7 @@ async def format_text(raw_text: str) -> str | None:
 
     # Lightweight heuristic formatter (no model), when requested or when
     # a local model is not available.
-    if FORMAT_STRATEGY in {"light", "auto"}:
+    if FORMAT_STRATEGY in {"light", "auto", "light_plus", "light+"}:
         def _light_format(t: str) -> str:
             # Normalize whitespace
             t = re.sub(r"\s+", " ", t).strip()
@@ -214,7 +214,24 @@ async def format_text(raw_text: str) -> str | None:
             return "".join(out)
 
         try:
-            return _light_format(raw_text)
+            txt = _light_format(raw_text)
+            # Optional "plus" pass: more cleanup, still deterministic and fast
+            if FORMAT_STRATEGY in {"light_plus", "light+"}:
+                # Collapse repeated words (3+ times)
+                txt = re.sub(r"\b(\w+)(?:\s+\1){2,}\b", r"\1", txt, flags=re.IGNORECASE)
+                # Collapse repeated punctuation (e.g., !!!, ...)
+                txt = re.sub(r"([.!?,;:])\1{1,}", r"\1", txt)
+                # Fix spacing around punctuation
+                txt = re.sub(r"\s+([,.;:!?])", r"\1", txt)
+                txt = re.sub(r"([,.;:!?])(\S)", r"\1 \2", txt)
+                # Normalize quotes
+                txt = txt.replace('" "', '" "').replace("''", '"')
+                # Guard against accidental ALLCAPS stretches
+                def _caps_guard(m):
+                    seg = m.group(0)
+                    return seg.capitalize()
+                txt = re.sub(r"\b([A-ZĄĆĘŁŃÓŚŹŻ]{3,})(\b)", _caps_guard, txt)
+            return txt
         except Exception:
             # Non-fatal: fall through to other strategies
             pass

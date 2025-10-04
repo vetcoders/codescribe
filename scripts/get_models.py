@@ -27,6 +27,7 @@ from huggingface_hub import snapshot_download
 # Known MLX Whisper repos
 WHISPER_REPOS = {
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+    "large-v3": "mlx-community/whisper-large-v3",
     "medium": "mlx-community/whisper-medium",
 }
 
@@ -81,7 +82,7 @@ def download_whisper(which: str, dest_dir: Path) -> list[Path]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--whisper", default="large-v3-turbo", choices=["large-v3-turbo", "medium", "all", "none"],
+    parser.add_argument("--whisper", default="large-v3-turbo", choices=["large-v3-turbo", "large-v3", "medium", "all", "none"],
                         help="Which Whisper variant(s) to download.")
     parser.add_argument("--llm", action="append", default=[],
                         help="Optional: one or more HF repo IDs for LLMs (e.g., mlx-community/Llama-3.2-3B-Instruct-4bit). Can be repeated.")

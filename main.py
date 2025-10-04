@@ -39,12 +39,14 @@ import rumps
 
 import llm  # runtime toggle for formatting
 from audio import Recorder
-from config import Config, load_config, save_config
+from config import Config, load_config, save_config, update_env_vars
 
 # import our modules
 from hotkeys import (
     events as hk_events,
     hold_mods_label as hotkeys_hold_mods_label,
+    is_hold_exclusive as hotkeys_is_hold_exclusive,
+    set_hold_exclusive as hotkeys_set_hold_exclusive,
     set_hold_mods as hotkeys_set_hold_mods,
     start as hotkeys_start,
     stop as hotkeys_stop,
@@ -113,6 +115,22 @@ def acquire_lock():
 # --- core logic functions ---
 
 
+def _set_status(app: rumps.App, text: str) -> None:
+    """Update the top status item in the tray menu."""
+    try:
+        for key in list(app.menu.keys()):
+            try:
+                item = app.menu[key]
+                if isinstance(item, rumps.MenuItem) and str(key).startswith("Status:"):
+                    item.title = f"Status: {text}"
+                    return
+            except Exception:
+                pass
+        # Fallback: prepend a new status item
+        app.menu.insert(0, rumps.MenuItem(f"Status: {text}"))
+    except Exception:
+        logger.debug("Failed to update status label")
+
 async def finish_recording(app: rumps.App):
     """handles the process after recording stops.
 
@@ -131,6 +149,7 @@ async def finish_recording(app: rumps.App):
     previous_state = STATE
     STATE = "BUSY"
     MenuIcon.think(app)
+    _set_status(app, "Processing…")
 
     try:
         # 1. stop recording and get audio path
@@ -139,6 +158,7 @@ async def finish_recording(app: rumps.App):
             logger.error("Audio recording failed or produced no file.")
             # reset state without success indication
             MenuIcon.set(app, MenuIcon.idle)
+            _set_status(app, "Ready")
             STATE = "IDLE"
             return
 
@@ -149,6 +169,7 @@ async def finish_recording(app: rumps.App):
             logger.error("Transcription failed.")
             # optionally notify user via menu?
             MenuIcon.set(app, MenuIcon.idle)  # reset state
+            _set_status(app, "Ready")
             STATE = "IDLE"
             # clean up the temp file if transcription fails
             if os.path.exists(path):
@@ -181,6 +202,7 @@ async def finish_recording(app: rumps.App):
         # 5. indicate success and reset state
         MenuIcon.success(app)  # success() handles timer to reset icon later
         STATE = "IDLE"
+        _set_status(app, "Ready")
         logger.info("Processing finished successfully.")
 
     except Exception as e:
@@ -188,6 +210,7 @@ async def finish_recording(app: rumps.App):
             f"An unexpected error occurred during finish_recording: {e}", exc_info=True
         )
         MenuIcon.set(app, MenuIcon.idle)  # reset state on error
+        _set_status(app, "Ready")
         STATE = "IDLE"
     finally:
         # ensure temp file is cleaned up if it still exists (e.g., if formatting failed)
@@ -214,6 +237,7 @@ async def _start_recording_after_delay(app: rumps.App):
         logger.info(">>> Attempting to start recording (Hold Delay elapsed)...")
         await recorder.start()
         MenuIcon.listen(app)
+        _set_status(app, "Listening…")
         if BEEP_ON_START:
             start_sound()
         STATE = "REC_HOLD"
@@ -287,6 +311,7 @@ async def handle_hotkey_event(app: rumps.App, key_type: str, action: str):
                 # recorder started successfully, now update ui and state
                 logger.info(">>> Recorder started, attempting to set icon to listen...")
                 MenuIcon.listen(app)
+                _set_status(app, "Listening…")
                 if BEEP_ON_START:
                     start_sound()
                 STATE = "REC_TOGGLE"
@@ -363,6 +388,9 @@ class VistaScribe(rumps.App):
             "What do these toggles do?",
             None,  # Separator
             "Hotkey Settings",
+            "Feedback",
+            None,  # Separator
+            "Models",
             None,  # Separator
             "Backends",  # placeholder; populated below
             None,  # Separator
@@ -392,6 +420,9 @@ class VistaScribe(rumps.App):
         self.item_hold_ctrl_cmd = rumps.MenuItem(
             "Hold: Ctrl+Command", callback=self._set_hold_ctrl_cmd
         )
+        self.item_hold_excl = rumps.MenuItem(
+            "Exclusive (ignore extra modifiers)", callback=self._toggle_hold_exclusive
+        )
         self.menu["Hotkey Settings"] = [
             rumps.MenuItem(
                 "Current: " + hotkeys_hold_mods_label(), callback=lambda _s: None
@@ -401,8 +432,59 @@ class VistaScribe(rumps.App):
             self.item_hold_ctrl_opt,
             self.item_hold_ctrl_shift,
             self.item_hold_ctrl_cmd,
+            rumps.MenuItem("Save Hotkeys to .env", callback=self._save_hotkeys_env),
+            None,
+            self.item_hold_excl,
         ]
         self._refresh_hold_menu()
+
+        # Feedback (start sound) submenu
+        self.item_beep = rumps.MenuItem("Enable Start Sound", callback=self._toggle_beep)
+        self.item_sound_tink = rumps.MenuItem(
+            "Sound: Tink", callback=lambda _s: self._set_sound_name("Tink")
+        )
+        self.item_sound_pop = rumps.MenuItem(
+            "Sound: Pop", callback=lambda _s: self._set_sound_name("Pop")
+        )
+        self.item_volume = rumps.MenuItem(
+            "Set Volume…", callback=self._set_sound_volume
+        )
+        self.item_sound_save = rumps.MenuItem(
+            "Save Feedback to .env", callback=self._save_feedback_env
+        )
+        self.menu["Feedback"] = [
+            self.item_beep,
+            None,
+            self.item_sound_tink,
+            self.item_sound_pop,
+            self.item_volume,
+            None,
+            self.item_sound_save,
+        ]
+        # Reflect current env
+        self._refresh_feedback_menu()
+
+        # Models submenu
+        self.item_dl_medium = rumps.MenuItem(
+            "Download Whisper: Medium", callback=lambda _s: self._download_models("medium")
+        )
+        self.item_dl_lvt = rumps.MenuItem(
+            "Download Whisper: Large v3 Turbo",
+            callback=lambda _s: self._download_models("large-v3-turbo"),
+        )
+        self.item_dl_lv3 = rumps.MenuItem(
+            "Download Whisper: Large v3", callback=lambda _s: self._download_models("large-v3")
+        )
+        self.item_open_models = rumps.MenuItem(
+            "Open Models Folder", callback=self._open_models_folder
+        )
+        self.menu["Models"] = [
+            self.item_dl_medium,
+            self.item_dl_lvt,
+            self.item_dl_lv3,
+            None,
+            self.item_open_models,
+        ]
 
         # --- Mini config tool (Backends) ---
         self.cfg: Config = load_config()
@@ -440,6 +522,12 @@ class VistaScribe(rumps.App):
         self.queue_timer = rumps.Timer(self.poll_queue, 0.05)  # poll queue every 50ms
         logger.info("Vista Scribe App initialized.")
 
+    def _refresh_feedback_menu(self):
+        self.item_beep.state = BEEP_ON_START
+        current = os.environ.get("SOUND_NAME", "Tink")
+        self.item_sound_tink.state = current == "Tink"
+        self.item_sound_pop.state = current == "Pop"
+
     def _refresh_hold_menu(self):
         label = hotkeys_hold_mods_label()
         if "Hotkey Settings" in self.menu:
@@ -449,26 +537,167 @@ class VistaScribe(rumps.App):
         self.item_hold_ctrl_opt.state = label == "Ctrl+Option"
         self.item_hold_ctrl_shift.state = label == "Ctrl+Shift"
         self.item_hold_ctrl_cmd.state = label == "Ctrl+Command"
+        self.item_hold_excl.state = hotkeys_is_hold_exclusive()
 
     def _set_hold_ctrl(self, _sender):
         os.environ["HOLD_MODS"] = "ctrl"
         hotkeys_set_hold_mods("ctrl")
+        try:
+            update_env_vars({"HOLD_MODS": "ctrl"})
+        except Exception:
+            pass
         self._refresh_hold_menu()
 
     def _set_hold_ctrl_opt(self, _sender):
         os.environ["HOLD_MODS"] = "ctrl+alt"
         hotkeys_set_hold_mods("ctrl+alt")
+        try:
+            update_env_vars({"HOLD_MODS": "ctrl+alt"})
+        except Exception:
+            pass
         self._refresh_hold_menu()
 
     def _set_hold_ctrl_shift(self, _sender):
         os.environ["HOLD_MODS"] = "ctrl+shift"
         hotkeys_set_hold_mods("ctrl+shift")
+        try:
+            update_env_vars({"HOLD_MODS": "ctrl+shift"})
+        except Exception:
+            pass
         self._refresh_hold_menu()
 
     def _set_hold_ctrl_cmd(self, _sender):
         os.environ["HOLD_MODS"] = "ctrl+cmd"
         hotkeys_set_hold_mods("ctrl+cmd")
+        try:
+            update_env_vars({"HOLD_MODS": "ctrl+cmd"})
+        except Exception:
+            pass
         self._refresh_hold_menu()
+
+    def _toggle_hold_exclusive(self, _sender):
+        new_flag = not hotkeys_is_hold_exclusive()
+        os.environ["HOLD_EXCLUSIVE"] = "1" if new_flag else "0"
+        hotkeys_set_hold_exclusive(new_flag)
+        try:
+            update_env_vars({"HOLD_EXCLUSIVE": "1" if new_flag else "0"})
+        except Exception:
+            pass
+        self._refresh_hold_menu()
+
+    def _save_hotkeys_env(self, _sender):
+        mods = os.environ.get("HOLD_MODS", "ctrl")
+        excl = os.environ.get("HOLD_EXCLUSIVE", "1" if mods in ("ctrl", "control") else "0")
+        try:
+            update_env_vars({"HOLD_MODS": mods, "HOLD_EXCLUSIVE": excl})
+            rumps.notification(
+                title="VistaScribe",
+                subtitle="Hotkeys saved",
+                message=f"HOLD_MODS={mods}, EXCLUSIVE={excl}",
+            )
+        except Exception as e:
+            logger.error(f"Failed to save hotkeys to .env: {e}")
+
+    # --- Feedback (start sound) ---
+    def _toggle_beep(self, _sender):
+        global BEEP_ON_START
+        BEEP_ON_START = not BEEP_ON_START
+        try:
+            update_env_vars({"BEEP_ON_START": "1" if BEEP_ON_START else "0"})
+        except Exception:
+            pass
+        self._refresh_feedback_menu()
+
+    def _set_sound_name(self, name: str):
+        os.environ["SOUND_NAME"] = name
+        try:
+            update_env_vars({"SOUND_NAME": name})
+        except Exception:
+            pass
+        self._refresh_feedback_menu()
+
+    def _set_sound_volume(self, _sender):
+        vol_str = os.environ.get("SOUND_VOLUME", "0.2")
+        w = rumps.Window(
+            message="Enter start sound volume (0.0 – 1.0)",
+            default_text=vol_str,
+            title="Start Sound Volume",
+            ok="Save",
+            cancel="Cancel",
+        )
+        resp = w.run()
+        if resp.clicked:
+            try:
+                v = max(0.0, min(1.0, float(resp.text.strip())))
+                os.environ["SOUND_VOLUME"] = str(v)
+                try:
+                    update_env_vars({"SOUND_VOLUME": str(v)})
+                except Exception:
+                    pass
+            except Exception:
+                rumps.alert(
+                    title="Invalid value",
+                    message="Please enter a number between 0.0 and 1.0",
+                )
+
+    def _save_feedback_env(self, _sender):
+        try:
+            update_env_vars({
+                "BEEP_ON_START": "1" if BEEP_ON_START else "0",
+                "SOUND_NAME": os.environ.get("SOUND_NAME", "Tink"),
+                "SOUND_VOLUME": os.environ.get("SOUND_VOLUME", "0.2"),
+            })
+            rumps.notification(
+                title="VistaScribe",
+                subtitle="Feedback saved",
+                message="Sound settings persisted to .env",
+            )
+        except Exception as e:
+            logger.error(f"Failed to save feedback to .env: {e}")
+
+    # --- Models management ---
+    def _download_models(self, variant: str):
+        import subprocess
+
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        script = os.path.join(repo_root, "scripts", "get_models.py")
+        # Extend script to support 'large-v3' gracefully
+        if variant == "large-v3":
+            variant_arg = "large-v3"
+        else:
+            variant_arg = variant
+
+        if not os.path.isfile(script):
+            rumps.alert(
+                title="Download Error",
+                message="Model downloader script not found in app bundle.",
+            )
+            return
+
+        _set_status(self, f"Downloading {variant_arg}…")
+
+        def _run():
+            try:
+                subprocess.run(
+                    [sys.executable, script, "--whisper", variant_arg],
+                    cwd=repo_root,
+                    check=False,
+                )
+            finally:
+                _set_status(self, "Ready")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _open_models_folder(self, _sender):
+        import subprocess
+
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        models_dir = os.path.join(repo_root, "models")
+        os.makedirs(models_dir, exist_ok=True)
+        try:
+            subprocess.run(["open", models_dir])
+        except Exception:
+            rumps.alert(title="Open Folder", message=models_dir)
 
     def poll_queue(self, _timer):
         """periodically called by rumps.timer to check the event queue.

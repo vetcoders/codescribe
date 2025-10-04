@@ -26,6 +26,7 @@ except Exception:  # Allow importing ui helpers in non-macOS test envs
     AppKit = None  # type: ignore
     Quartz = None  # type: ignore
 import logging
+import os
 import time
 
 # configure logging

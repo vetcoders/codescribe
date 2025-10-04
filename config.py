@@ -39,20 +39,83 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     )
 
 
-def serialize_env(cfg: Config) -> str:
-    lines: list[str] = []
+def _read_env_file(path: str) -> dict[str, str]:
+    env: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line or line.strip().startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v
+    except FileNotFoundError:
+        pass
+    return env
+
+
+def _write_env_file(path: str, data: Mapping[str, str]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        for k, v in data.items():
+            f.write(f"{k}={v}\n")
+
+
+def serialize_env(cfg: Config, base: Mapping[str, str] | None = None) -> str:
+    env: dict[str, str] = dict(base or {})
     wurl = cfg.whisper_url if isinstance(cfg.whisper_url, str) else ""
     lurl = cfg.llm_url if isinstance(cfg.llm_url, str) else ""
     lang = cfg.language if isinstance(cfg.language, str) else ""
-    lines.append(f"WHISPER_SERVER_URL={wurl}")
-    lines.append(f"LLM_SERVER_URL={lurl}")
-    lines.append(f"FORMAT_ENABLED={'1' if cfg.format_enabled else '0'}")
-    lines.append(f"WHISPER_LANGUAGE={lang}")
+    env.update(
+        {
+            "WHISPER_SERVER_URL": wurl,
+            "LLM_SERVER_URL": lurl,
+            "FORMAT_ENABLED": "1" if cfg.format_enabled else "0",
+            "WHISPER_LANGUAGE": lang,
+        }
+    )
+    # Deterministic order: core keys first, then others sorted
+    core_keys = [
+        "WHISPER_SERVER_URL",
+        "LLM_SERVER_URL",
+        "FORMAT_ENABLED",
+        "WHISPER_LANGUAGE",
+    ]
+    lines: list[str] = []
+    for k in core_keys:
+        lines.append(f"{k}={env.pop(k, '')}")
+    for k in sorted(env.keys()):
+        lines.append(f"{k}={env[k]}")
     return "\n".join(lines) + "\n"
 
 
 def save_config(cfg: Config, path: str | None = None) -> None:
     p = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    content = serialize_env(cfg)
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(content)
+    base = _read_env_file(p)
+    content = serialize_env(cfg, base)
+    _write_env_file(
+        p,
+        _read_env_file(p)
+        | dict([tuple(line.split("=", 1)) for line in content.strip().split("\n")]),
+    )
+
+
+def update_env_vars(updates: Mapping[str, str], path: str | None = None) -> None:
+    """Merge selected env vars into the .env file (preserves others)."""
+    p = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    env = _read_env_file(p)
+    env.update({k: str(v) for k, v in updates.items()})
+    # Keep order stable: core keys first if present, then others sorted
+    core = [
+        "WHISPER_SERVER_URL",
+        "LLM_SERVER_URL",
+        "FORMAT_ENABLED",
+        "WHISPER_LANGUAGE",
+    ]
+    ordered: dict[str, str] = {}
+    for k in core:
+        if k in env:
+            ordered[k] = env.pop(k)
+    for k in sorted(env.keys()):
+        ordered[k] = env[k]
+    _write_env_file(p, ordered)

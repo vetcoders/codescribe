@@ -57,7 +57,7 @@ CMD_MASK = Quartz.kCGEventFlagMaskCommand
 _DOUBLE_OPTION_INTERVAL = float(os.environ.get("DOUBLE_OPTION_INTERVAL_MS", "350")) / 1000.0
 
 # Required modifiers to consider the "hold" gesture active
-_DEFAULT_HOLD_MODS = os.environ.get("HOLD_MODS", "ctrl+alt").lower()
+_DEFAULT_HOLD_MODS = os.environ.get("HOLD_MODS", "ctrl").lower()
 
 
 def _parse_hold_mods(spec: str) -> int:
@@ -72,7 +72,7 @@ def _parse_hold_mods(spec: str) -> int:
             bits |= SHIFT_MASK
         elif part in {"cmd", "command", "meta"}:
             bits |= CMD_MASK
-    return bits or (CTRL_MASK | ALT_MASK)
+    return bits or CTRL_MASK
 
 # --- state ---
 
@@ -82,11 +82,18 @@ logger = logging.getLogger(__name__)
 # async queue to send detected hotkey events to the main application loop
 # maxsize=0 means unlimited size
 _queue = queue.Queue()
-_last_hold_state = None  # track the last state of the ctrl key (true=down, false=up)
+_last_hold_state = None  # track the last state of the ctrl key (legacy)
 _last_alt_state = None   # track the last state of the option/alt key
 _last_alt_down_ts = 0.0  # timestamp of last alt down event
 _required_hold_mask = _parse_hold_mods(_DEFAULT_HOLD_MODS)
 _last_combo_down = False
+
+# Exclusive mode: require exactly the specified mask (no extra modifiers)
+_DEFAULT_EXCLUSIVE = os.environ.get(
+    "HOLD_EXCLUSIVE",
+    "1" if _DEFAULT_HOLD_MODS in {"ctrl", "control"} else "0",
+).lower() in ("1", "true", "yes", "on")
+_exclusive_mode = _DEFAULT_EXCLUSIVE
 
 # Store references to active event taps for proper cleanup
 _active_tap = None
@@ -133,6 +140,16 @@ def hold_mods_label() -> str:
     if _required_hold_mask & CMD_MASK:
         parts.append("Command")
     return "+".join(parts) or "Ctrl+Option"
+
+
+def is_hold_exclusive() -> bool:
+    return _exclusive_mode
+
+
+def set_hold_exclusive(flag: bool) -> None:
+    global _exclusive_mode, _last_combo_down
+    _exclusive_mode = bool(flag)
+    _last_combo_down = False
 
 
 def start():
@@ -307,7 +324,10 @@ def _tap(_proxy, type_, event, _refcon):
                 present_mask |= SHIFT_MASK
             if cmd_is_down:
                 present_mask |= CMD_MASK
-            combo_now = (present_mask & _required_hold_mask) == _required_hold_mask
+            if _exclusive_mode:
+                combo_now = present_mask == _required_hold_mask
+            else:
+                combo_now = (present_mask & _required_hold_mask) == _required_hold_mask
             global _last_combo_down
             if combo_now != _last_combo_down:
                 _queue.put(("hold", "down" if combo_now else "up"))
