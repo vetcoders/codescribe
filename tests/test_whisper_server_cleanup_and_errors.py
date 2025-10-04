@@ -12,6 +12,7 @@ def setup_fake_whisper(module, return_value):
             # Ensure the temp file exists when transcribe is called
             assert os.path.exists(path)
             return return_value
+
     module.whisper = FakeWhisper()
     module._whisper_model = object()  # mark as loaded
 

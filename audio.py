@@ -76,9 +76,7 @@ class Recorder:
             name = default_device_info.get("name")
             index = default_device_info.get("index")
             max_ch = default_device_info.get("max_input_channels")
-            logging.info(
-                "Default input: name='%s', index=%s, max_ch=%s", name, index, max_ch
-            )
+            logging.info("Default input: name='%s', index=%s, max_ch=%s", name, index, max_ch)
         except Exception as e:
             logging.error(f"Could not query default input device: {e}")
 

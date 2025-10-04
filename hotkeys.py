@@ -74,6 +74,7 @@ def _parse_hold_mods(spec: str) -> int:
             bits |= CMD_MASK
     return bits or CTRL_MASK
 
+
 # --- state ---
 
 # Get a logger for this module
@@ -83,7 +84,7 @@ logger = logging.getLogger(__name__)
 # maxsize=0 means unlimited size
 _queue = queue.Queue()
 _last_hold_state = None  # track the last state of the ctrl key (legacy)
-_last_alt_state = None   # track the last state of the option/alt key
+_last_alt_state = None  # track the last state of the option/alt key
 _last_alt_down_ts = 0.0  # timestamp of last alt down event
 _required_hold_mask = _parse_hold_mods(_DEFAULT_HOLD_MODS)
 _last_combo_down = False
@@ -197,8 +198,7 @@ def start():
 
         if not _active_tap:
             logger.error(
-                "Failed to create event tap. Ensure accessibility permissions are "
-                "granted."
+                "Failed to create event tap. Ensure accessibility permissions are granted."
             )
             # When running in nohup/background, make sure to clean up before returning
             stop()
@@ -246,9 +246,7 @@ def stop():
         if _run_loop_source:
             try:
                 Quartz.CFRunLoopRemoveSource(
-                    Quartz.CFRunLoopGetCurrent(),
-                    _run_loop_source,
-                    Quartz.kCFRunLoopCommonModes
+                    Quartz.CFRunLoopGetCurrent(), _run_loop_source, Quartz.kCFRunLoopCommonModes
                 )
             except Exception:
                 # Ignore errors during cleanup

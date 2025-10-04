@@ -17,6 +17,7 @@ Notes:
 - On macOS, MLX tooling can be picky about uppercase in absolute paths (e.g., '/Users').
   For runtime, prefer lowercase '/users' in env vars if that path is available on your system.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,7 +40,7 @@ def ensure_dir(p: Path) -> None:
 def lower_users_path(p: Path) -> Path:
     s = str(p)
     if s.startswith("/Users/"):
-        candidate = Path("/users/" + s[len("/Users/"):])
+        candidate = Path("/users/" + s[len("/Users/") :])
         try:
             if candidate.exists():
                 return candidate
@@ -71,7 +72,9 @@ def download_whisper(which: str, dest_dir: Path) -> list[Path]:
         targets = ["large-v3-turbo", "medium"]
     else:
         if which not in WHISPER_REPOS:
-            raise SystemExit(f"Unknown whisper variant: {which}. Choose from {list(WHISPER_REPOS)} or 'all'/'none'.")
+            raise SystemExit(
+                f"Unknown whisper variant: {which}. Choose from {list(WHISPER_REPOS)} or 'all'/'none'."
+            )
         targets = [which]
     for t in targets:
         repo = WHISPER_REPOS[t]
@@ -82,11 +85,21 @@ def download_whisper(which: str, dest_dir: Path) -> list[Path]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--whisper", default="large-v3-turbo", choices=["large-v3-turbo", "large-v3", "medium", "all", "none"],
-                        help="Which Whisper variant(s) to download.")
-    parser.add_argument("--llm", action="append", default=[],
-                        help="Optional: one or more HF repo IDs for LLMs (e.g., mlx-community/Llama-3.2-3B-Instruct-4bit). Can be repeated.")
-    parser.add_argument("--models-dir", default="models", help="Destination models directory (default: ./models)")
+    parser.add_argument(
+        "--whisper",
+        default="large-v3-turbo",
+        choices=["large-v3-turbo", "large-v3", "medium", "all", "none"],
+        help="Which Whisper variant(s) to download.",
+    )
+    parser.add_argument(
+        "--llm",
+        action="append",
+        default=[],
+        help="Optional: one or more HF repo IDs for LLMs (e.g., mlx-community/Llama-3.2-3B-Instruct-4bit). Can be repeated.",
+    )
+    parser.add_argument(
+        "--models-dir", default="models", help="Destination models directory (default: ./models)"
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -123,9 +136,7 @@ def main() -> int:
 
     if llm_paths:
         llm = lower_users_path(llm_paths[0])
-        print(
-            f"  export LLM_ID='{llm}'     # optional; set FORMAT_ENABLED=0 to disable formatting"
-        )
+        print(f"  export LLM_ID='{llm}'     # optional; set FORMAT_ENABLED=0 to disable formatting")
     else:
         print("  # (No LLM downloaded; formatting can be disabled with FORMAT_ENABLED=0)")
 

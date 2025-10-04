@@ -31,12 +31,12 @@ def normalize_model_path(p: str | None) -> str | None:
     # Treat as filesystem path when:
     #  - it is absolute OR
     #  - it starts with './' or '../' or '.' (relative path indicators)
-    if os.path.isabs(expanded) or expanded.startswith(('./', '../', '.')):
+    if os.path.isabs(expanded) or expanded.startswith(("./", "../", ".")):
         abs_path = os.path.abspath(expanded)
 
         # Workaround: some MLX versions reject uppercase in absolute paths
-        if abs_path.startswith('/Users/'):
-            fixed = '/users/' + abs_path[len('/Users/') :]
+        if abs_path.startswith("/Users/"):
+            fixed = "/users/" + abs_path[len("/Users/") :]
             try:
                 if os.path.exists(fixed):
                     if fixed != abs_path:

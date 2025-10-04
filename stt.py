@@ -77,9 +77,7 @@ if not WHISPER_SERVER_URL:
 
 # Language preference (None = auto). Read from env on startup if provided.
 LANGUAGE_CODE = (
-    os.environ.get("WHISPER_LANGUAGE")
-    or os.environ.get("LANGUAGE")
-    or ""
+    os.environ.get("WHISPER_LANGUAGE") or os.environ.get("LANGUAGE") or ""
 ).strip().lower() or None
 
 
@@ -102,6 +100,7 @@ def get_language() -> str | None:
 
 def _http_post(url: str, files: dict):
     import requests  # local import to keep optional
+
     resp = requests.post(url, files=files, timeout=60)
     resp.raise_for_status()
     return resp.json()
@@ -155,9 +154,7 @@ async def transcribe(path: str) -> str | None:
 
     # Local path
     if whisper_model is None or whisper is None:
-        logging.error(
-            "Whisper not initialized. Set WHISPER_DIR or configure WHISPER_SERVER_URL."
-        )
+        logging.error("Whisper not initialized. Set WHISPER_DIR or configure WHISPER_SERVER_URL.")
         return None
     if not os.path.exists(path):
         logging.error(f"Audio file not found at path: {path}")

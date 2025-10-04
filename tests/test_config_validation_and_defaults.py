@@ -2,8 +2,8 @@ import importlib
 
 
 def test_load_config_handles_non_string_urls_and_defaults():
-
     import config as cfg
+
     importlib.reload(cfg)
 
     # Provide a custom env mapping with non-string values

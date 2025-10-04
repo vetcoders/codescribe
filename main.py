@@ -89,10 +89,9 @@ recorder = Recorder()
 # configure logging (set level for the entire application)
 # consider moving this to a dedicated config area if app grows
 log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
 
 # --- singleton lock ---
 def acquire_lock():
@@ -130,6 +129,7 @@ def _set_status(app: rumps.App, text: str) -> None:
         app.menu.insert(0, rumps.MenuItem(f"Status: {text}"))
     except Exception:
         logger.debug("Failed to update status label")
+
 
 async def finish_recording(app: rumps.App):
     """handles the process after recording stops.
@@ -177,9 +177,7 @@ async def finish_recording(app: rumps.App):
                     os.remove(path)  # <-- re-enable deletion
                     logger.info(f"Cleaned up temp file (finally block): {path}")
                 except OSError as e:
-                    logger.error(
-                        f"Failed to remove temp file {path} in finally block: {e}"
-                    )
+                    logger.error(f"Failed to remove temp file {path} in finally block: {e}")
             return
         logger.info(f"Raw transcript: '{raw_text[:50]}...'")
 
@@ -206,9 +204,7 @@ async def finish_recording(app: rumps.App):
         logger.info("Processing finished successfully.")
 
     except Exception as e:
-        logger.error(
-            f"An unexpected error occurred during finish_recording: {e}", exc_info=True
-        )
+        logger.error(f"An unexpected error occurred during finish_recording: {e}", exc_info=True)
         MenuIcon.set(app, MenuIcon.IDLE)  # reset state on error
         _set_status(app, "Ready")
         STATE = "IDLE"
@@ -262,12 +258,8 @@ async def handle_hotkey_event(app: rumps.App, key_type: str, action: str):
         action (str): 'down', 'up', or 'press'.
     """
     global STATE
-    logger.info(
-        f"--- Handling event: type={key_type}, action={action}, current_state={STATE} ---"
-    )
-    logger.debug(
-        f"Hotkey event received: type={key_type}, action={action}, current_state={STATE}"
-    )
+    logger.info(f"--- Handling event: type={key_type}, action={action}, current_state={STATE} ---")
+    logger.debug(f"Hotkey event received: type={key_type}, action={action}, current_state={STATE}")
 
     if STATE == "BUSY":
         logger.warning("Hotkey event ignored: application is busy.")
@@ -318,9 +310,7 @@ async def handle_hotkey_event(app: rumps.App, key_type: str, action: str):
                 logger.info("State transition: IDLE -> REC_TOGGLE")
             except Exception as e:
                 # This catches errors from recorder.start() only
-                logger.error(
-                    f"Failed to start recording on toggle-press: {e}", exc_info=True
-                )
+                logger.error(f"Failed to start recording on toggle-press: {e}", exc_info=True)
                 # Reset state and attempt cleanup if start failed
                 MenuIcon.set(app, MenuIcon.IDLE)
                 STATE = "IDLE"
@@ -332,9 +322,7 @@ async def handle_hotkey_event(app: rumps.App, key_type: str, action: str):
                     except Exception as stop_e:
                         logger.error(f"Error during cleanup recorder.stop: {stop_e}")
         elif STATE == "REC_TOGGLE":
-            logger.info(
-                ">>> Attempting to finish recording (Toggle Press REC_TOGGLE)..."
-            )
+            logger.info(">>> Attempting to finish recording (Toggle Press REC_TOGGLE)...")
             logger.info("Toggle key pressed again, initiating finish sequence.")
             await finish_recording(app)
             # state becomes busy then idle within finish_recording
@@ -396,7 +384,7 @@ class VistaScribe(rumps.App):
             None,  # Separator
             "Open System Accessibility Settings...",
             None,  # Separator
-            "Quit"
+            "Quit",
         ]
 
         # Set callbacks
@@ -447,9 +435,7 @@ class VistaScribe(rumps.App):
         self.item_sound_pop = rumps.MenuItem(
             "Sound: Pop", callback=lambda _s: self._set_sound_name("Pop")
         )
-        self.item_volume = rumps.MenuItem(
-            "Set Volume…", callback=self._set_sound_volume
-        )
+        self.item_volume = rumps.MenuItem("Set Volume…", callback=self._set_sound_volume)
         self.item_sound_save = rumps.MenuItem(
             "Save Feedback to .env", callback=self._save_feedback_env
         )
@@ -644,11 +630,13 @@ class VistaScribe(rumps.App):
 
     def _save_feedback_env(self, _sender):
         try:
-            update_env_vars({
-                "BEEP_ON_START": "1" if BEEP_ON_START else "0",
-                "SOUND_NAME": os.environ.get("SOUND_NAME", "Tink"),
-                "SOUND_VOLUME": os.environ.get("SOUND_VOLUME", "0.2"),
-            })
+            update_env_vars(
+                {
+                    "BEEP_ON_START": "1" if BEEP_ON_START else "0",
+                    "SOUND_NAME": os.environ.get("SOUND_NAME", "Tink"),
+                    "SOUND_VOLUME": os.environ.get("SOUND_VOLUME", "0.2"),
+                }
+            )
             rumps.notification(
                 title="VistaScribe",
                 subtitle="Feedback saved",
@@ -723,9 +711,7 @@ class VistaScribe(rumps.App):
         except queue.Empty:
             pass  # no events in queue, normal
         except Exception as e:
-            logger.error(
-                f"Error polling queue or scheduling handler: {e}", exc_info=True
-            )
+            logger.error(f"Error polling queue or scheduling handler: {e}", exc_info=True)
 
     def _run_async_loop(self):
         """target function for the asyncio thread.
@@ -792,6 +778,7 @@ class VistaScribe(rumps.App):
         try:
             import llm as llm_mod
             import stt as stt_mod
+
             importlib.reload(stt_mod)
             importlib.reload(llm_mod)
             # Update the imported symbols used elsewhere in this module
@@ -870,6 +857,7 @@ class VistaScribe(rumps.App):
             except Exception:
                 return False
             return False
+
         self._stt_ok = _check(self.cfg.whisper_url)
         self._llm_ok = _check(self.cfg.llm_url)
         self._update_backend_menu_labels()
@@ -960,9 +948,7 @@ class VistaScribe(rumps.App):
         """Show a short explanation of the toggles."""
         try:
             rumps.alert(
-                title="What do these toggles do?",
-                message=toggles_help_message("en"),
-                ok="OK"
+                title="What do these toggles do?", message=toggles_help_message("en"), ok="OK"
             )
         except Exception as e:
             logger.error(f"Failed to show toggles help: {e}")
@@ -975,11 +961,12 @@ class VistaScribe(rumps.App):
         try:
             # Use AppleScript to open the Privacy & Security settings
             import subprocess
+
             script = (
-                "tell application \"System Settings\"\n"
+                'tell application "System Settings"\n'
                 "  activate\n"
-                "  reveal anchor \"Privacy_Accessibility\" of pane id "
-                "\"com.apple.settings.PrivacySecurity.extension\"\n"
+                '  reveal anchor "Privacy_Accessibility" of pane id '
+                '"com.apple.settings.PrivacySecurity.extension"\n'
                 "end tell"
             )
             subprocess.run(["osascript", "-e", script])
@@ -1044,9 +1031,10 @@ class VistaScribe(rumps.App):
         # Method 3: Check parent process name (often 'nohup')
         try:
             import psutil
+
             try:
                 parent = psutil.Process(os.getppid())
-                if parent.name() in ('nohup', 'daemondo', 'launchd'):
+                if parent.name() in ("nohup", "daemondo", "launchd"):
                     is_background_mode = True
                     logger.info(f"Background mode detected: parent process is {parent.name()}")
             except Exception as e:

@@ -9,6 +9,7 @@ def test_load_config_from_env(monkeypatch):
     monkeypatch.setenv("WHISPER_LANGUAGE", "pl")
 
     import config as cfg
+
     importlib.reload(cfg)
 
     c = cfg.load_config()
@@ -20,6 +21,7 @@ def test_load_config_from_env(monkeypatch):
 
 def test_serialize_env_and_save(tmp_path, monkeypatch):
     import config as cfg
+
     c = cfg.Config(whisper_url="", llm_url="http://x", format_enabled=False, language=None)
 
     content = cfg.serialize_env(c)

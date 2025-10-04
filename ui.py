@@ -30,9 +30,7 @@ import os
 import time
 
 # configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # --- constants ---
 ICON_IDLE = "🜏"  # u+1f70f (alchemical symbol for distillation)
@@ -146,10 +144,10 @@ def config_labels(cfg) -> list[str]:
     Accepts a config.Config-like object with attributes: language, format_enabled,
     whisper_url, llm_url. Kept untyped to avoid import errors in test envs.
     """
-    lang = (getattr(cfg, 'language', None) or 'auto')
-    fmt = 'ON' if getattr(cfg, 'format_enabled', False) else 'OFF'
-    wurl = getattr(cfg, 'whisper_url', '') or 'local'
-    lurl = getattr(cfg, 'llm_url', '') or 'local'
+    lang = getattr(cfg, "language", None) or "auto"
+    fmt = "ON" if getattr(cfg, "format_enabled", False) else "OFF"
+    wurl = getattr(cfg, "whisper_url", "") or "local"
+    lurl = getattr(cfg, "llm_url", "") or "local"
     return [
         f"Language: {lang}",
         f"Formatting: {fmt}",
@@ -158,7 +156,7 @@ def config_labels(cfg) -> list[str]:
     ]
 
 
-def toggles_help_message(lang: str = 'en') -> str:
+def toggles_help_message(lang: str = "en") -> str:
     """Return the help message for the tray toggles.
 
     Currently provides English text by default to be accessible to non-Polish speakers.
@@ -225,9 +223,7 @@ def paste_text(text: str):
         # 2. simulate cmd+v keypress
         # create an event source
         # kcgeventsourcestatecombinedsessionstate reflects the current user session state
-        source = Quartz.CGEventSourceCreate(
-            Quartz.kCGEventSourceStateCombinedSessionState
-        )
+        source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateCombinedSessionState)
         if not source:
             logging.error("Failed to create CGEventSource.")
             return
@@ -236,9 +232,7 @@ def paste_text(text: str):
         v_keycode = 9
 
         # create key down event for cmd+v
-        event_down = Quartz.CGEventCreateKeyboardEvent(
-            source, v_keycode, True
-        )  # true for key down
+        event_down = Quartz.CGEventCreateKeyboardEvent(source, v_keycode, True)  # true for key down
         if not event_down:
             logging.error("Failed to create key down event.")
             return
@@ -246,9 +240,7 @@ def paste_text(text: str):
         Quartz.CGEventSetFlags(event_down, Quartz.kCGEventFlagMaskCommand)
 
         # create key up event for cmd+v
-        event_up = Quartz.CGEventCreateKeyboardEvent(
-            source, v_keycode, False
-        )  # false for key up
+        event_up = Quartz.CGEventCreateKeyboardEvent(source, v_keycode, False)  # false for key up
         if not event_up:
             logging.error("Failed to create key up event.")
             return
@@ -266,9 +258,7 @@ def paste_text(text: str):
 
     except Exception as e:
         logging.error(f"Error during paste operation: {e}", exc_info=True)
-        logging.error(
-            "Ensure Accessibility permissions are granted for the application."
-        )
+        logging.error("Ensure Accessibility permissions are granted for the application.")
 
 
 def start_sound():

@@ -9,6 +9,7 @@ Endpoints:
 This module intentionally keeps the logic minimal for integration. If mlx_whisper
 is unavailable, /healthz ok=False and /transcribe returns 500.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,8 +27,10 @@ except Exception:  # pragma: no cover
 
 from path_utils import normalize_model_path
 
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-                    format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger("whisper-server")
 
 app = FastAPI(title="VistaScribe-whisper")
@@ -90,6 +93,7 @@ async def transcribe(audio: UploadFile = File(...)):  # noqa: B008
 
 if __name__ == "__main__":
     import uvicorn
+
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8238"))
     uvicorn.run("whisper_server:app", host=host, port=port, reload=False)
