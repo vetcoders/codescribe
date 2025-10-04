@@ -1,0 +1,53 @@
+# .gitignore
+
+# python virtual environment
+.venv/
+
+# environment variables file
+.env
+
+# pycache
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+# Share only JetBrains Run/Debug configurations
+.idea/*
+!.idea/runConfigurations/
+!.idea/runConfigurations/*.xml
+.vscode/
+.junie/
+assets/*
+!assets/icon.png
+logs/
+
+# runtime logs and state
+VistaScribe.log
+.vista_scribe.lock
+user-messages/
+
+# build artifacts
+packaging/dist/
+packaging/build/
+dist/
+build/
+*.egg-info/
+
+# local data and outputs
+models/
+outputs/
+*.log
+
+# local email extraction leftovers (if present)
+Raw/
+extracted/
+
+# archives and large binaries
+*.zip
+
+# misc
+*.commands.txt
+packaging/.DS_Store
+/.fleet
+/packaging
