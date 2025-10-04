@@ -38,6 +38,7 @@ build/
 models/
 outputs/
 *.log
+.pids/
 
 # local email extraction leftovers (if present)
 Raw/
