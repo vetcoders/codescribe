@@ -22,9 +22,12 @@
 try:
     import AppKit
     import Quartz
+    from Foundation import NSOperationQueue, NSThread
 except Exception:  # Allow importing ui helpers in non-macOS test envs
     AppKit = None  # type: ignore
     Quartz = None  # type: ignore
+    NSOperationQueue = None  # type: ignore
+    NSThread = None  # type: ignore
 import logging
 import os
 import time
@@ -56,7 +59,7 @@ class MenuIcon:
     SUCCESS = ICON_SUCCESS
 
     @staticmethod
-    def set(app, glyph: str):
+    def _set_impl(app, glyph: str):
         """sets the menu bar icon to the specified glyph.
 
         if an image icon is present (app.icon), keep the title empty to avoid
@@ -72,9 +75,19 @@ class MenuIcon:
                 app.title = ""
             else:
                 app.title = glyph
-            # logging.debug(f"Menu icon set to: {glyph}")
         else:
             logging.warning("Attempted to set menu icon, but app object was None.")
+
+    @staticmethod
+    def set(app, glyph: str):
+        """Thread-safe wrapper to update tray title on the main thread."""
+        if NSThread is not None and not NSThread.isMainThread():
+            if NSOperationQueue is not None:
+                NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: MenuIcon._set_impl(app, glyph)
+                )
+                return
+        MenuIcon._set_impl(app, glyph)
 
     @staticmethod
     def listen(app):
@@ -103,21 +116,27 @@ class MenuIcon:
         args:
             app (rumps.app): the main application instance.
         """
-        MenuIcon.set(app, ICON_SUCCESS)
-        logging.info(f"UI State: Success ({ICON_SUCCESS})")
-        # schedule the reset_ method to be called on the app instance after 1 second
-        # uses nstimer for integration with the macos run loop used by rumps
-        if AppKit is not None:
-            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                1.0,  # interval (seconds)
-                app,  # target object (the rumps app instance)
-                "reset:",  # selector (method name to call - note the colon for objc)
-                None,  # userinfo (optional data)
-                False,  # repeats (no)
-            )
-            logging.info(f"Scheduled UI reset to Idle ({ICON_IDLE}) in 1 second.")
+
+        def _do_success():
+            MenuIcon._set_impl(app, ICON_SUCCESS)
+            logging.info(f"UI State: Success ({ICON_SUCCESS})")
+            if AppKit is not None:
+                AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    1.0,  # interval (seconds)
+                    app,  # target object (the rumps app instance)
+                    "reset:",  # selector (method name to call - note the colon for objc)
+                    None,  # userinfo (optional data)
+                    False,  # repeats (no)
+                )
+                logging.info(f"Scheduled UI reset to Idle ({ICON_IDLE}) in 1 second.")
+            else:
+                logging.debug("AppKit not available; skipping NSTimer scheduling in tests.")
+
+        # Ensure we schedule on the main thread
+        if NSThread is not None and not NSThread.isMainThread() and NSOperationQueue is not None:
+            NSOperationQueue.mainQueue().addOperationWithBlock_(_do_success)
         else:
-            logging.debug("AppKit not available; skipping NSTimer scheduling in tests.")
+            _do_success()
 
 
 def backend_status_labels(stt_ok: bool, llm_ok: bool) -> list[str]:
@@ -207,58 +226,53 @@ def paste_text(text: str):
         return
 
     logging.info(f"Pasting text: '{text[:50]}...' ({len(text)} chars)")
-    try:
-        # 1. copy text to pasteboard
-        pasteboard = AppKit.NSPasteboard.generalPasteboard()
-        pasteboard.clearContents()  # clear existing contents
-        # declare types and set string
-        # nsstringpboardtype is the standard type for plain text
-        pasteboard.declareTypes_owner_([AppKit.NSStringPboardType], None)
-        success = pasteboard.setString_forType_(text, AppKit.NSStringPboardType)
-        if not success:
-            logging.error("Failed to set string on pasteboard.")
-            return
-        logging.info("Text successfully copied to clipboard.")
 
-        # 2. simulate cmd+v keypress
-        # create an event source
-        # kcgeventsourcestatecombinedsessionstate reflects the current user session state
-        source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateCombinedSessionState)
-        if not source:
-            logging.error("Failed to create CGEventSource.")
-            return
+    def _do_paste():
+        try:
+            # 1. copy text to pasteboard
+            pasteboard = AppKit.NSPasteboard.generalPasteboard()
+            pasteboard.clearContents()  # clear existing contents
+            pasteboard.declareTypes_owner_([AppKit.NSStringPboardType], None)
+            success = pasteboard.setString_forType_(text, AppKit.NSStringPboardType)
+            if not success:
+                logging.error("Failed to set string on pasteboard.")
+                return
+            logging.info("Text successfully copied to clipboard.")
 
-        # key code for 'v' is 9
-        v_keycode = 9
+            # 2. simulate cmd+v keypress
+            source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateCombinedSessionState)
+            if not source:
+                logging.error("Failed to create CGEventSource.")
+                return
 
-        # create key down event for cmd+v
-        event_down = Quartz.CGEventCreateKeyboardEvent(source, v_keycode, True)  # true for key down
-        if not event_down:
-            logging.error("Failed to create key down event.")
-            return
-        # set the command flag
-        Quartz.CGEventSetFlags(event_down, Quartz.kCGEventFlagMaskCommand)
+            v_keycode = 9  # key code for 'v'
+            event_down = Quartz.CGEventCreateKeyboardEvent(source, v_keycode, True)
+            if not event_down:
+                logging.error("Failed to create key down event.")
+                return
+            Quartz.CGEventSetFlags(event_down, Quartz.kCGEventFlagMaskCommand)
 
-        # create key up event for cmd+v
-        event_up = Quartz.CGEventCreateKeyboardEvent(source, v_keycode, False)  # false for key up
-        if not event_up:
-            logging.error("Failed to create key up event.")
-            return
-        # set the command flag
-        Quartz.CGEventSetFlags(event_up, Quartz.kCGEventFlagMaskCommand)
+            event_up = Quartz.CGEventCreateKeyboardEvent(source, v_keycode, False)
+            if not event_up:
+                logging.error("Failed to create key up event.")
+                return
+            Quartz.CGEventSetFlags(event_up, Quartz.kCGEventFlagMaskCommand)
 
-        # post events to the system event stream
-        # kcghideventtap is the location for hardware input events
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_down)
-        # add a small delay between down and up, mimicking human typing
-        time.sleep(0.01)
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_up)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_down)
+            time.sleep(0.01)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_up)
 
-        logging.info("Command+V keypress simulated successfully.")
+            logging.info("Command+V keypress simulated successfully.")
 
-    except Exception as e:
-        logging.error(f"Error during paste operation: {e}", exc_info=True)
-        logging.error("Ensure Accessibility permissions are granted for the application.")
+        except Exception as e:
+            logging.error(f"Error during paste operation: {e}", exc_info=True)
+            logging.error("Ensure Accessibility permissions are granted for the application.")
+
+    # Ensure UI interaction happens on main thread (AppKit/Quartz are main-thread-only)
+    if NSThread is not None and not NSThread.isMainThread() and NSOperationQueue is not None:
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_do_paste)
+    else:
+        _do_paste()
 
 
 def start_sound():
@@ -269,21 +283,28 @@ def start_sound():
     SOUND_VOLUME (0.0–1.0). Falls back to a quiet ASCII bell if AppKit is not
     available.
     """
-    try:
-        name = os.environ.get("SOUND_NAME", "Tink")
-        volume = float(os.environ.get("SOUND_VOLUME", "0.2"))
-        if AppKit is not None and hasattr(AppKit, "NSSound"):
-            snd = AppKit.NSSound.soundNamed_(name)
-            if snd is None:
-                snd = AppKit.NSSound.soundNamed_("Pop")
-            if snd is not None:
-                try:
-                    snd.setVolume_(max(0.0, min(1.0, volume)))
-                except Exception:
-                    pass
-                snd.play()
-                return
-        # TTY/headless fallback
-        print("\a", end="", flush=True)
-    except Exception:
-        logging.debug("start_sound failed; continuing without sound")
+
+    def _play():
+        try:
+            name = os.environ.get("SOUND_NAME", "Tink")
+            volume = float(os.environ.get("SOUND_VOLUME", "0.2"))
+            if AppKit is not None and hasattr(AppKit, "NSSound"):
+                snd = AppKit.NSSound.soundNamed_(name)
+                if snd is None:
+                    snd = AppKit.NSSound.soundNamed_("Pop")
+                if snd is not None:
+                    try:
+                        snd.setVolume_(max(0.0, min(1.0, volume)))
+                    except Exception:
+                        pass
+                    snd.play()
+                    return
+            # TTY/headless fallback
+            print("\a", end="", flush=True)
+        except Exception:
+            logging.debug("start_sound failed; continuing without sound")
+
+    if NSThread is not None and not NSThread.isMainThread() and NSOperationQueue is not None:
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_play)
+    else:
+        _play()
