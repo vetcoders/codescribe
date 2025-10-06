@@ -27,6 +27,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>com.vistascribe.app</string>
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>vistascribe</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Needed to transcribe speech.</string>
   <key>NSAccessibilityUsageDescription</key><string>Needed to monitor hotkeys and paste results.</string>

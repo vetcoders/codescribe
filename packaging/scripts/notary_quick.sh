@@ -88,11 +88,13 @@ fi
 echo "✍️  Using identity: ${IDENTITY:-AD-HOC}"
 
 # 2) Codesign (inner launcher first, then bundle)
-if [[ -x "$APP/Contents/MacOS/vistascribe" && -n "$IDENTITY" ]]; then
-  codesign --force --options runtime --entitlements "$ENT" --sign "$IDENTITY" "$APP/Contents/MacOS/vistascribe"
+if [[ -f "$APP/Contents/MacOS/vistascribe" && -n "$IDENTITY" ]]; then
+  # Sign the launcher script first (no entitlements; scripts aren't Mach-O)
+  codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/vistascribe"
 fi
 
 if [[ -n "$IDENTITY" ]]; then
+  # Then sign the .app bundle with entitlements and hardened runtime
   codesign --deep --force --options runtime --entitlements "$ENT" --sign "$IDENTITY" "$APP"
 else
   codesign --deep --force --options runtime --sign - "$APP"
@@ -143,4 +145,3 @@ spctl --assess --type execute -vvvv "$APP" || true
 [[ -n "$DMG" && -f "$DMG" ]] && xcrun stapler validate "$DMG" || true
 
 echo "✅ Done. You can now distribute: $TARGET"
-
