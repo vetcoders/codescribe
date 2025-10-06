@@ -21,9 +21,11 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
-import os
+import shutil
+import subprocess
 from typing import Optional
 
 from huggingface_hub import HfHubHTTPError, snapshot_download
@@ -33,6 +35,10 @@ WHISPER_REPOS = {
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
     "large-v3": "mlx-community/whisper-large-v3",
     "medium": "mlx-community/whisper-medium",
+    # optional aliases if you prefer -mlx naming
+    "small-mlx": "mlx-community/whisper-small-mlx",
+    "medium-mlx": "mlx-community/whisper-medium-mlx",
+    "large-v3-mlx": "mlx-community/whisper-large-v3-mlx",
 }
 
 
@@ -52,7 +58,7 @@ def lower_users_path(p: Path) -> Path:
     return p
 
 
-def _read_env_token() -> Optional[str]:
+def _read_env_token() -> str | None:
     # Prefer HF_TOKEN env; fallback to token in local .env if present
     tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if tok:
@@ -69,7 +75,29 @@ def _read_env_token() -> Optional[str]:
     return None
 
 
-def download_repo(repo_id: str, dest_dir: Path, target_name: str | None = None, token: Optional[str] = None) -> Path:
+def _git_available() -> bool:
+    return shutil.which("git") is not None and shutil.which("git-lfs") is not None
+
+
+def _clone_with_git(repo_id: str, out: Path) -> None:
+    url = f"https://huggingface.co/{repo_id}"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    print(f"⎇ git clone {url} → {out}")
+    subprocess.run(["git", "clone", "--depth", "1", url, str(out)], check=True)
+    try:
+        subprocess.run(["git", "lfs", "install", "--local"], cwd=str(out), check=False)
+        subprocess.run(["git", "lfs", "pull"], cwd=str(out), check=True)
+    except FileNotFoundError as e:
+        raise RuntimeError("git-lfs not found; install it (e.g., 'brew install git-lfs') and retry") from e
+
+
+def download_repo(
+    repo_id: str,
+    dest_dir: Path,
+    target_name: str | None = None,
+    token: Optional[str] = None,
+    method: str = "auto",
+) -> Path:
     ensure_dir(dest_dir)
     # Create a stable local folder name from the repo id unless explicit name is given
     base = target_name or repo_id.rstrip("/").split("/")[-1]
@@ -78,23 +106,40 @@ def download_repo(repo_id: str, dest_dir: Path, target_name: str | None = None, 
         print(f"✔ Model already present: {out}")
         return out
     print(f"⬇ Downloading {repo_id} → {out} …")
-    try:
-        snapshot_download(
-            repo_id=repo_id,
-            local_dir=str(out),
-            local_dir_use_symlinks=False,
-            token=token or _read_env_token(),
-            resume_download=True,
+    prefer_git = method == "git"
+    prefer_hf = method == "hf"
+    last_err: Exception | None = None
+    if not prefer_git:
+        try:
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=str(out),
+                local_dir_use_symlinks=False,
+                token=token or _read_env_token(),
+                resume_download=True,
+            )
+        except Exception as e:
+            last_err = e
+            if prefer_hf:
+                print("[!] huggingface_hub failed and --method=hf was used; aborting.")
+                raise
+            print("[i] Falling back to git clone (tokenless, requires git-lfs)…")
+        else:
+            print(f"✔ Downloaded to: {out}")
+            return out
+    if not _git_available():
+        msg = (
+            "git-lfs not found. Install it (e.g., 'brew install git-lfs'), then retry, or set HF_TOKEN and use hub downloader."
         )
-    except HfHubHTTPError as e:
-        print("[!] Hugging Face download error:", e)
-        print("    If this repo is gated or rate-limited, set HF_TOKEN (or pass --hf-token).")
-        raise
+        if last_err:
+            raise RuntimeError(f"{msg}\nOriginal error: {last_err}")
+        raise RuntimeError(msg)
+    _clone_with_git(repo_id, out)
     print(f"✔ Downloaded to: {out}")
     return out
 
 
-def download_whisper(which: str, dest_dir: Path) -> list[Path]:
+def download_whisper(which: str, dest_dir: Path, *, method: str = "auto", token: Optional[str] = None) -> list[Path]:
     which = which.lower()
     paths: list[Path] = []
     if which == "none":
@@ -109,7 +154,7 @@ def download_whisper(which: str, dest_dir: Path) -> list[Path]:
         targets = [which]
     for t in targets:
         repo = WHISPER_REPOS[t]
-        local = download_repo(repo, dest_dir, target_name=f"whisper-{t}")
+        local = download_repo(repo, dest_dir, target_name=f"whisper-{t}", token=token, method=method)
         paths.append(local)
     return paths
 
@@ -119,7 +164,16 @@ def main() -> int:
     parser.add_argument(
         "--whisper",
         default="large-v3-turbo",
-        choices=["large-v3-turbo", "large-v3", "medium", "all", "none"],
+        choices=[
+            "large-v3-turbo",
+            "large-v3",
+            "medium",
+            "small-mlx",
+            "medium-mlx",
+            "large-v3-mlx",
+            "all",
+            "none",
+        ],
         help="Which Whisper variant(s) to download.",
     )
     parser.add_argument(
@@ -134,6 +188,12 @@ def main() -> int:
     parser.add_argument(
         "--hf-token", default=None, help="Optional Hugging Face token to use for downloads"
     )
+    parser.add_argument(
+        "--method",
+        choices=["auto", "hf", "git"],
+        default="auto",
+        help="Download method: huggingface_hub (hf), git clone with LFS (git), or auto (default).",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -143,12 +203,12 @@ def main() -> int:
     print(f"Models directory: {models_dir}")
 
     # Whisper
-    whisper_paths = download_whisper(args.whisper, models_dir)
+    whisper_paths = download_whisper(args.whisper, models_dir, method=args.method, token=args.hf_token)
 
     # LLMs (optional)
     llm_paths: list[Path] = []
     for repo_id in args.llm:
-        p = download_repo(repo_id, models_dir, token=args.hf_token)
+        p = download_repo(repo_id, models_dir, token=args.hf_token, method=args.method)
         llm_paths.append(p)
 
     # Print helpful env configuration
