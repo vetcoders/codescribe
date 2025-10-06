@@ -55,6 +55,10 @@ CMD_MASK = Quartz.kCGEventFlagMaskCommand
 
 # Double-tap Option timing (seconds); can be overridden via env var DOUBLE_OPTION_INTERVAL_MS
 _DOUBLE_OPTION_INTERVAL = float(os.environ.get("DOUBLE_OPTION_INTERVAL_MS", "350")) / 1000.0
+_DOUBLE_SPACE_INTERVAL = float(os.environ.get("DOUBLE_SPACE_INTERVAL_MS", "300")) / 1000.0
+
+# Toggle trigger: double_option (default) | double_ralt | double_space | none
+_TOGGLE_TRIGGER = os.environ.get("TOGGLE_TRIGGER", "double_option").strip().lower() or "double_option"
 
 # Enable/disable toggle shortcuts (defaults: double Option ON, Slash OFF)
 _ENABLE_DOUBLE_OPTION = os.environ.get("ENABLE_DOUBLE_OPTION", "1").lower() not in (
@@ -100,6 +104,7 @@ _queue = queue.Queue()
 _last_hold_state = None  # track the last state of the ctrl key (legacy)
 _last_alt_state = None  # track the last state of the option/alt key
 _last_alt_down_ts = 0.0  # timestamp of last alt down event
+_last_space_down_ts = 0.0  # timestamp of last space down event
 _required_hold_mask = _parse_hold_mods(_DEFAULT_HOLD_MODS)
 _last_combo_down = False
 
@@ -114,6 +119,11 @@ _exclusive_mode = _DEFAULT_EXCLUSIVE
 _active_tap = None
 _run_loop_source = None
 _is_tap_active = False
+
+# keycodes
+KEYCODE_SPACE = 49
+KEYCODE_LEFT_OPTION = 58
+KEYCODE_RIGHT_OPTION = 61
 
 # --- public api ---
 
@@ -142,6 +152,17 @@ def set_hold_mods(spec: str) -> None:
     global _required_hold_mask, _last_combo_down
     _required_hold_mask = _parse_hold_mods(spec)
     _last_combo_down = False
+
+
+def get_toggle_trigger() -> str:
+    return _TOGGLE_TRIGGER
+
+
+def set_toggle_trigger(trigger: str) -> None:
+    global _TOGGLE_TRIGGER, _last_alt_down_ts, _last_space_down_ts
+    _TOGGLE_TRIGGER = (trigger or "").strip().lower() or "double_option"
+    _last_alt_down_ts = 0.0
+    _last_space_down_ts = 0.0
 
 
 def hold_mods_label() -> str:
@@ -350,30 +371,41 @@ def _tap(_proxy, type_, event, _refcon):
                     hold_mods_label(),
                 )
 
-            # Option double-tap detection: look for two down edges within interval
-            if _ENABLE_DOUBLE_OPTION:
-                global _last_alt_state, _last_alt_down_ts
-                if alt_is_down != _last_alt_state and not (_required_hold_mask & ALT_MASK):
-                    # Edge detected
-                    now = time.perf_counter()
-                    if alt_is_down:
-                        # This is a down edge; check time since previous down
-                        if _last_alt_down_ts and (now - _last_alt_down_ts) <= _DOUBLE_OPTION_INTERVAL:
-                            # Double tap detected -> emit toggle press
-                            _queue.put(("toggle", "press"))
-                            logger.info("Hotkey: Toggle press (Double Option)")
-                            _last_alt_down_ts = 0.0  # Reset window
-                        else:
-                            _last_alt_down_ts = now
-                    _last_alt_state = alt_is_down
+            # Toggle via double Option (any or right-only) using flags-changed edges
+            global _last_alt_state, _last_alt_down_ts
+            if _TOGGLE_TRIGGER in {"double_option", "double_ralt"} and not (_required_hold_mask & ALT_MASK):
+                if alt_is_down != _last_alt_state:
+                    # For right-only, ensure the keycode corresponds to Right Option
+                    if _TOGGLE_TRIGGER == "double_ralt" and keycode != KEYCODE_RIGHT_OPTION:
+                        _last_alt_state = alt_is_down
+                    else:
+                        now = time.perf_counter()
+                        if alt_is_down:
+                            if _last_alt_down_ts and (now - _last_alt_down_ts) <= _DOUBLE_OPTION_INTERVAL:
+                                _queue.put(("toggle", "press"))
+                                logger.info("Hotkey: Toggle press (%s)", _TOGGLE_TRIGGER)
+                                _last_alt_down_ts = 0.0
+                            else:
+                                _last_alt_down_ts = now
+                        _last_alt_state = alt_is_down
 
-        # Check for classic 'toggle' key (shift+cmd+/) - only on key down
-        elif _ENABLE_TOGGLE_SLASH and type_ == Quartz.kCGEventKeyDown and keycode == TOGGLE_VK:
-            # Using `(flags & TOGGLE_FL) == TOGGLE_FL` checks if at least
-            # Shift and Command are pressed
-            if (flags & TOGGLE_FL) == TOGGLE_FL:
-                _queue.put(("toggle", "press"))
-                logger.info("Hotkey: Toggle press (Shift+Cmd+/)")
+        # KeyDown based toggles
+        elif type_ == Quartz.kCGEventKeyDown:
+            # Double Space
+            if _TOGGLE_TRIGGER == "double_space" and keycode == KEYCODE_SPACE:
+                now = time.perf_counter()
+                global _last_space_down_ts
+                if _last_space_down_ts and (now - _last_space_down_ts) <= _DOUBLE_SPACE_INTERVAL:
+                    _queue.put(("toggle", "press"))
+                    logger.info("Hotkey: Toggle press (Double Space)")
+                    _last_space_down_ts = 0.0
+                else:
+                    _last_space_down_ts = now
+            # Optional legacy Slash (off by default)
+            if os.environ.get("ENABLE_TOGGLE_SLASH", "0").lower() not in ("0","false","no","off") and keycode == TOGGLE_VK:
+                if (flags & TOGGLE_FL) == TOGGLE_FL:
+                    _queue.put(("toggle", "press"))
+                    logger.info("Hotkey: Toggle press (Shift+Cmd+/)")
 
     except Exception as e:
         # Log error but don't block the event to avoid freezing keyboard

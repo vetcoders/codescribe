@@ -427,13 +427,23 @@ class VistaScribe(rumps.App):
             "Exclusive (ignore extra modifiers)", callback=self._toggle_hold_exclusive
         )
         self.item_hold_current = rumps.MenuItem(
-            "Current: " + hotkeys_hold_mods_label(), callback=lambda _s: None
+            "Hold: " + hotkeys_hold_mods_label(), callback=lambda _s: None
+        )
+        try:
+            import hotkeys as hk_mod
+
+            cur_trig = hk_mod.get_toggle_trigger()
+        except Exception:
+            cur_trig = "double_option"
+        self.item_toggle_current = rumps.MenuItem(
+            "Toggle: " + cur_trig.replace("_", " "), callback=lambda _s: None
         )
         self.item_customize_hotkeys = rumps.MenuItem(
-            "Customize Hotkeys…", callback=self._customize_hotkeys
+            "Configure Hotkeys…", callback=self._customize_hotkeys
         )
         self.menu["Hotkey Settings"] = [
             self.item_hold_current,
+            self.item_toggle_current,
             None,
             self.item_hold_ctrl,
             self.item_hold_ctrl_opt,
@@ -626,35 +636,61 @@ class VistaScribe(rumps.App):
     def _customize_hotkeys(self, _sender):
         try:
             import AppKit
-
-            alert = AppKit.NSAlert.new()
-            alert.setMessageText_("Customize Hotkeys")
-            alert.setInformativeText_(
-                "Choose the hold combination. Advanced 'press your combo' UI comes later."
-            )
-            choices = [
+            # Step 1: Hold selection
+            alert1 = AppKit.NSAlert.new()
+            alert1.setMessageText_("Hold Hotkey")
+            alert1.setInformativeText_("Choose the hold combination.")
+            hold_choices = [
+                ("Ctrl", "ctrl"),
                 ("Ctrl+Option", "ctrl+alt"),
-                ("Ctrl only", "ctrl"),
                 ("Ctrl+Shift", "ctrl+shift"),
                 ("Ctrl+Command", "ctrl+cmd"),
                 ("Cancel", None),
             ]
-            for title, _ in choices:
-                alert.addButtonWithTitle_(title)
-            resp = alert.runModal()
-            idx = resp - 1000
-            if 0 <= idx < len(choices):
-                spec = choices[idx][1]
-                if spec:
-                    os.environ["HOLD_MODS"] = spec
-                    hotkeys_set_hold_mods(spec)
-                    try:
-                        update_env_vars({"HOLD_MODS": spec})
-                    except Exception:
-                        pass
-                    self._refresh_hold_menu()
-        except Exception:
-            pass
+            for title, _ in hold_choices:
+                alert1.addButtonWithTitle_(title)
+            r1 = alert1.runModal() - 1000
+            if not (0 <= r1 < len(hold_choices)):
+                return
+            hold_spec = hold_choices[r1][1]
+            if hold_spec:
+                os.environ["HOLD_MODS"] = hold_spec
+                hotkeys_set_hold_mods(hold_spec)
+                try:
+                    update_env_vars({"HOLD_MODS": hold_spec})
+                except Exception:
+                    pass
+                self._refresh_hold_menu()
+
+            # Step 2: Toggle trigger
+            alert2 = AppKit.NSAlert.new()
+            alert2.setMessageText_("Toggle Trigger")
+            alert2.setInformativeText_("Choose the hands‑off trigger.")
+            trig_map = [
+                ("Double Option", "double_option"),
+                ("Double Right‑Option", "double_ralt"),
+                ("Double Space (global)", "double_space"),
+                ("Disable", "none"),
+            ]
+            for title, _ in trig_map:
+                alert2.addButtonWithTitle_(title)
+            r2 = alert2.runModal() - 1000
+            if 0 <= r2 < len(trig_map):
+                trig = trig_map[r2][1]
+                try:
+                    import hotkeys as hk_mod
+
+                    hk_mod.set_toggle_trigger(trig)
+                except Exception:
+                    pass
+                os.environ["TOGGLE_TRIGGER"] = trig
+                try:
+                    update_env_vars({"TOGGLE_TRIGGER": trig})
+                except Exception:
+                    pass
+                self.item_toggle_current.title = "Toggle: " + trig.replace("_", " ")
+        except Exception as e:
+            logger.error(f"Configure hotkeys failed: {e}")
 
     def _refresh_feedback_menu(self):
         self.item_beep.state = BEEP_ON_START
