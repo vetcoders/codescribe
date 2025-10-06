@@ -76,9 +76,7 @@ class Recorder:
             name = default_device_info.get("name")
             index = default_device_info.get("index")
             max_ch = default_device_info.get("max_input_channels")
-            logging.info(
-                "Default input: name='%s', index=%s, max_ch=%s", name, index, max_ch
-            )
+            logging.info("Default input: name='%s', index=%s, max_ch=%s", name, index, max_ch)
         except Exception as e:
             logging.error(f"Could not query default input device: {e}")
 
@@ -176,6 +174,12 @@ class Recorder:
                 # check if silence duration exceeds hang time
                 if silent_frames / SR > HANG:
                     logging.info(f"Silence detected for > {HANG}s. Stopping collection.")
+                    # Politely stop the stream here to release the microphone promptly
+                    try:
+                        if self._stream and self._stream.active:
+                            self._stream.stop()
+                    except Exception:
+                        pass
                     break  # exit collection loop
 
         except sd.PortAudioError as pae:
@@ -187,10 +191,14 @@ class Recorder:
             logging.info(
                 f"Audio collection loop finished. Total frames processed: {total_frames_processed}"
             )
-            # ensure stream stop is called even if loop breaks unexpectedly
-            # this might be handled better in the main stop() method
-            # if self._stream and self._stream.active:
-            #     await self.stop() # careful with recursive calls or state issues
+            # Ensure the device is closed even if stop() isn't called immediately
+            try:
+                if self._stream and self._stream.active:
+                    self._stream.stop()
+                if self._stream:
+                    self._stream.close()
+            except Exception:
+                pass
 
     async def stop(self) -> str | None:
         """stops the audio recording and saves the buffer to a temp wav file.

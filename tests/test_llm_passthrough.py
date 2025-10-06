@@ -9,6 +9,7 @@ def test_format_passthrough_when_disabled(monkeypatch):
     monkeypatch.setenv("FORMAT_BACKEND", "local")
 
     import llm as llm_mod
+
     importlib.reload(llm_mod)
 
     sample = "to jest test"

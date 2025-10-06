@@ -9,6 +9,7 @@ Endpoints:
 This is a minimal adapter around mlx_lm; for CI/tests we keep behavior simple
 and echo text when model isn't loaded.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,8 +28,10 @@ except Exception:  # pragma: no cover
 
 from path_utils import normalize_model_path
 
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-                    format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger("lm-server")
 
 app = FastAPI(title="VistaScribe-llm")
@@ -77,6 +80,7 @@ async def format_endpoint(req: FormatRequest):
 
 if __name__ == "__main__":
     import uvicorn
+
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8239"))
     uvicorn.run("lm_server:app", host=host, port=port, reload=False)

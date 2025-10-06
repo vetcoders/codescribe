@@ -29,6 +29,7 @@ import fcntl
 import importlib
 import logging
 import os
+import plistlib
 import queue  # for checking standard queue
 import sys
 import threading  # for asyncio thread
@@ -37,6 +38,7 @@ import objc  # for selector
 import requests
 import rumps
 
+import first_run
 import llm  # runtime toggle for formatting
 from audio import Recorder
 from config import Config, load_config, save_config, update_env_vars
@@ -57,7 +59,9 @@ from ui import (
     MenuIcon,
     backend_status_labels,
     config_labels,
+    hide_hold_badge,
     paste_text,
+    show_hold_badge,
     start_sound,
     toggles_help_message,
 )
@@ -89,10 +93,9 @@ recorder = Recorder()
 # configure logging (set level for the entire application)
 # consider moving this to a dedicated config area if app grows
 log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
 
 # --- singleton lock ---
 def acquire_lock():
@@ -130,6 +133,7 @@ def _set_status(app: rumps.App, text: str) -> None:
         app.menu.insert(0, rumps.MenuItem(f"Status: {text}"))
     except Exception:
         logger.debug("Failed to update status label")
+
 
 async def finish_recording(app: rumps.App):
     """handles the process after recording stops.
@@ -177,9 +181,7 @@ async def finish_recording(app: rumps.App):
                     os.remove(path)  # <-- re-enable deletion
                     logger.info(f"Cleaned up temp file (finally block): {path}")
                 except OSError as e:
-                    logger.error(
-                        f"Failed to remove temp file {path} in finally block: {e}"
-                    )
+                    logger.error(f"Failed to remove temp file {path} in finally block: {e}")
             return
         logger.info(f"Raw transcript: '{raw_text[:50]}...'")
 
@@ -206,9 +208,7 @@ async def finish_recording(app: rumps.App):
         logger.info("Processing finished successfully.")
 
     except Exception as e:
-        logger.error(
-            f"An unexpected error occurred during finish_recording: {e}", exc_info=True
-        )
+        logger.error(f"An unexpected error occurred during finish_recording: {e}", exc_info=True)
         MenuIcon.set(app, MenuIcon.IDLE)  # reset state on error
         _set_status(app, "Ready")
         STATE = "IDLE"
@@ -220,6 +220,11 @@ async def finish_recording(app: rumps.App):
                 logger.info(f"Cleaned up temp file (finally block): {path}")
             except OSError as e:
                 logger.error(f"Failed to remove temp file {path} in finally block: {e}")
+        # Hide the hold badge in any case
+        try:
+            hide_hold_badge()
+        except Exception:
+            pass
 
 
 async def _start_recording_after_delay(app: rumps.App):
@@ -240,6 +245,10 @@ async def _start_recording_after_delay(app: rumps.App):
         _set_status(app, "Listening…")
         if BEEP_ON_START:
             start_sound()
+        try:
+            show_hold_badge()
+        except Exception:
+            pass
         STATE = "REC_HOLD"
         logger.info("State transition: IDLE -> REC_HOLD")
     except asyncio.CancelledError:
@@ -262,12 +271,8 @@ async def handle_hotkey_event(app: rumps.App, key_type: str, action: str):
         action (str): 'down', 'up', or 'press'.
     """
     global STATE
-    logger.info(
-        f"--- Handling event: type={key_type}, action={action}, current_state={STATE} ---"
-    )
-    logger.debug(
-        f"Hotkey event received: type={key_type}, action={action}, current_state={STATE}"
-    )
+    logger.info(f"--- Handling event: type={key_type}, action={action}, current_state={STATE} ---")
+    logger.debug(f"Hotkey event received: type={key_type}, action={action}, current_state={STATE}")
 
     if STATE == "BUSY":
         logger.warning("Hotkey event ignored: application is busy.")
@@ -314,13 +319,16 @@ async def handle_hotkey_event(app: rumps.App, key_type: str, action: str):
                 _set_status(app, "Listening…")
                 if BEEP_ON_START:
                     start_sound()
+                try:
+                    # Reuse the small badge indicator during Hands-Off as well
+                    show_hold_badge()
+                except Exception:
+                    pass
                 STATE = "REC_TOGGLE"
                 logger.info("State transition: IDLE -> REC_TOGGLE")
             except Exception as e:
                 # This catches errors from recorder.start() only
-                logger.error(
-                    f"Failed to start recording on toggle-press: {e}", exc_info=True
-                )
+                logger.error(f"Failed to start recording on toggle-press: {e}", exc_info=True)
                 # Reset state and attempt cleanup if start failed
                 MenuIcon.set(app, MenuIcon.IDLE)
                 STATE = "IDLE"
@@ -332,9 +340,7 @@ async def handle_hotkey_event(app: rumps.App, key_type: str, action: str):
                     except Exception as stop_e:
                         logger.error(f"Error during cleanup recorder.stop: {stop_e}")
         elif STATE == "REC_TOGGLE":
-            logger.info(
-                ">>> Attempting to finish recording (Toggle Press REC_TOGGLE)..."
-            )
+            logger.info(">>> Attempting to finish recording (Toggle Press REC_TOGGLE)...")
             logger.info("Toggle key pressed again, initiating finish sequence.")
             await finish_recording(app)
             # state becomes busy then idle within finish_recording
@@ -387,7 +393,10 @@ class VistaScribe(rumps.App):
             "Language: English (EN)",
             "What do these toggles do?",
             None,  # Separator
+            "Mode",
+            None,  # Separator
             "Hotkey Settings",
+            "Start at Login",
             "Feedback",
             None,  # Separator
             "Models",
@@ -396,7 +405,7 @@ class VistaScribe(rumps.App):
             None,  # Separator
             "Open System Accessibility Settings...",
             None,  # Separator
-            "Quit"
+            "Quit",
         ]
 
         # Set callbacks
@@ -408,6 +417,28 @@ class VistaScribe(rumps.App):
         self.menu["What do these toggles do?"].set_callback(self._show_toggles_help)
         self.menu["Open System Accessibility Settings..."].set_callback(self._open_accessibility)
         self.menu["Quit"].set_callback(self._quit_app)
+        self.menu["Start at Login"].set_callback(self._toggle_login_item)
+
+        # Mode submenu (Hold / Hands-Off / Advanced)
+        cur_mode = (os.environ.get("MODE", "hold") or "hold").strip().lower()
+        self.item_mode_hold = rumps.MenuItem("Hold", callback=lambda _s: self._set_mode("hold"))
+        self.item_mode_handoff = rumps.MenuItem(
+            "Hands-Off", callback=lambda _s: self._set_mode("hands_off")
+        )
+        self.item_mode_adv = rumps.MenuItem(
+            "Advanced (stub)", callback=lambda _s: self._set_mode("advanced")
+        )
+        self.item_mode_save = rumps.MenuItem("Save Mode to .env", callback=self._save_mode_env)
+        self.menu["Mode"] = [
+            rumps.MenuItem("Current: " + cur_mode.replace("_", " ")),  # read-only label
+            None,
+            self.item_mode_hold,
+            self.item_mode_handoff,
+            self.item_mode_adv,
+            None,
+            self.item_mode_save,
+        ]
+        self._refresh_mode_menu()
 
         # Hotkey settings submenu (predefined hold combos)
         self.item_hold_ctrl = rumps.MenuItem("Hold: Ctrl only", callback=self._set_hold_ctrl)
@@ -424,10 +455,23 @@ class VistaScribe(rumps.App):
             "Exclusive (ignore extra modifiers)", callback=self._toggle_hold_exclusive
         )
         self.item_hold_current = rumps.MenuItem(
-            "Current: " + hotkeys_hold_mods_label(), callback=lambda _s: None
+            "Hold: " + hotkeys_hold_mods_label(), callback=lambda _s: None
+        )
+        try:
+            import hotkeys as hk_mod
+
+            cur_trig = hk_mod.get_toggle_trigger()
+        except Exception:
+            cur_trig = "double_option"
+        self.item_toggle_current = rumps.MenuItem(
+            "Toggle: " + cur_trig.replace("_", " "), callback=lambda _s: None
+        )
+        self.item_customize_hotkeys = rumps.MenuItem(
+            "Configure Hotkeys…", callback=self._customize_hotkeys
         )
         self.menu["Hotkey Settings"] = [
             self.item_hold_current,
+            self.item_toggle_current,
             None,
             self.item_hold_ctrl,
             self.item_hold_ctrl_opt,
@@ -436,6 +480,8 @@ class VistaScribe(rumps.App):
             rumps.MenuItem("Save Hotkeys to .env", callback=self._save_hotkeys_env),
             None,
             self.item_hold_excl,
+            None,
+            self.item_customize_hotkeys,
         ]
         self._refresh_hold_menu()
 
@@ -447,9 +493,7 @@ class VistaScribe(rumps.App):
         self.item_sound_pop = rumps.MenuItem(
             "Sound: Pop", callback=lambda _s: self._set_sound_name("Pop")
         )
-        self.item_volume = rumps.MenuItem(
-            "Set Volume…", callback=self._set_sound_volume
-        )
+        self.item_volume = rumps.MenuItem("Set Volume…", callback=self._set_sound_volume)
         self.item_sound_save = rumps.MenuItem(
             "Save Feedback to .env", callback=self._save_feedback_env
         )
@@ -465,27 +509,53 @@ class VistaScribe(rumps.App):
         # Reflect current env
         self._refresh_feedback_menu()
 
-        # Models submenu
+        # Models submenu: download & select
+        self.item_model_current = rumps.MenuItem("Current: —")
+        self.item_use_small = rumps.MenuItem(
+            "Use Whisper: Small (Bundled)", callback=lambda _s: self._set_model_variant("small")
+        )
+        self.item_use_medium = rumps.MenuItem(
+            "Use Whisper: Medium", callback=lambda _s: self._set_model_variant("medium")
+        )
+        self.item_use_lv3 = rumps.MenuItem(
+            "Use Whisper: Large v3", callback=lambda _s: self._set_model_variant("large-v3")
+        )
+        self.item_use_lvt = rumps.MenuItem(
+            "Use Whisper: Large v3 Turbo",
+            callback=lambda _s: self._set_model_variant("large-v3-turbo"),
+        )
+        self.item_dl_small = rumps.MenuItem(
+            "Download Whisper: Small", callback=lambda _s: self._download_models("small-mlx")
+        )
         self.item_dl_medium = rumps.MenuItem(
             "Download Whisper: Medium", callback=lambda _s: self._download_models("medium")
+        )
+        self.item_dl_lv3 = rumps.MenuItem(
+            "Download Whisper: Large v3", callback=lambda _s: self._download_models("large-v3")
         )
         self.item_dl_lvt = rumps.MenuItem(
             "Download Whisper: Large v3 Turbo",
             callback=lambda _s: self._download_models("large-v3-turbo"),
         )
-        self.item_dl_lv3 = rumps.MenuItem(
-            "Download Whisper: Large v3", callback=lambda _s: self._download_models("large-v3")
-        )
         self.item_open_models = rumps.MenuItem(
             "Open Models Folder", callback=self._open_models_folder
         )
         self.menu["Models"] = [
+            self.item_model_current,
+            None,
+            self.item_use_small,
+            self.item_use_medium,
+            self.item_use_lv3,
+            self.item_use_lvt,
+            None,
+            self.item_dl_small,
             self.item_dl_medium,
-            self.item_dl_lvt,
             self.item_dl_lv3,
+            self.item_dl_lvt,
             None,
             self.item_open_models,
         ]
+        self._refresh_models_menu()
 
         # --- Mini config tool (Backends) ---
         self.cfg: Config = load_config()
@@ -522,6 +592,134 @@ class VistaScribe(rumps.App):
         self.async_thread = None
         self.queue_timer = rumps.Timer(self.poll_queue, 0.05)  # poll queue every 50ms
         logger.info("Vista Scribe App initialized.")
+        # Minimal first-run setup: config + sensible defaults (non-blocking)
+        try:
+            first_run.ensure_config_and_permissions()
+        except Exception as e:
+            logger.warning(f"First-run setup skipped: {e}")
+
+        # Reflect Start at Login state
+        try:
+            self.menu["Start at Login"].state = self._is_login_installed()
+        except Exception:
+            pass
+
+    # --- Start at Login via LaunchAgent ---
+    def _login_plist_path(self) -> str:
+        home = os.path.expanduser("~")
+        return os.path.join(home, "Library", "LaunchAgents", "com.vistascribe.tray.plist")
+
+    def _is_login_installed(self) -> bool:
+        return os.path.exists(self._login_plist_path())
+
+    def _toggle_login_item(self, _sender):
+        try:
+            if self._is_login_installed():
+                self._remove_login_agent()
+            else:
+                self._install_login_agent()
+        except Exception as e:
+            logger.error(f"Login item toggle failed: {e}")
+        try:
+            self.menu["Start at Login"].state = self._is_login_installed()
+        except Exception:
+            pass
+
+    def _install_login_agent(self):
+        path = self._login_plist_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        app_repo = "/Applications/VistaScribe.app/Contents/Resources/Repo"
+        cmd = (
+            f"cd '{app_repo}' && ./scripts/quickstart_mac.sh --mode both --daemon --log "
+            f"'$HOME/Library/Logs/VistaScribe.app.log'"
+        )
+        data = {
+            "Label": "com.vistascribe.tray",
+            "ProgramArguments": ["/bin/zsh", "-lc", cmd],
+            "RunAtLoad": True,
+            "KeepAlive": False,
+            "StandardOutPath": os.path.expanduser("~/Library/Logs/VistaScribe.launchd.out.log"),
+            "StandardErrorPath": os.path.expanduser("~/Library/Logs/VistaScribe.launchd.err.log"),
+        }
+        with open(path, "wb") as f:
+            plistlib.dump(data, f)
+        import subprocess
+
+        subprocess.run(["launchctl", "unload", "-w", path], check=False)
+        subprocess.run(["launchctl", "load", "-w", path], check=False)
+        logger.info("Installed Start at Login LaunchAgent")
+
+    def _remove_login_agent(self):
+        path = self._login_plist_path()
+        import subprocess
+
+        subprocess.run(["launchctl", "unload", "-w", path], check=False)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        logger.info("Removed Start at Login LaunchAgent")
+
+    # --- Hotkey Customizer (MVP) ---
+    def _customize_hotkeys(self, _sender):
+        try:
+            import AppKit
+
+            # Step 1: Hold selection
+            alert1 = AppKit.NSAlert.new()
+            alert1.setMessageText_("Hold Hotkey")
+            alert1.setInformativeText_("Choose the hold combination.")
+            hold_choices = [
+                ("Ctrl", "ctrl"),
+                ("Ctrl+Option", "ctrl+alt"),
+                ("Ctrl+Shift", "ctrl+shift"),
+                ("Ctrl+Command", "ctrl+cmd"),
+                ("Cancel", None),
+            ]
+            for title, _ in hold_choices:
+                alert1.addButtonWithTitle_(title)
+            r1 = alert1.runModal() - 1000
+            if not (0 <= r1 < len(hold_choices)):
+                return
+            hold_spec = hold_choices[r1][1]
+            if hold_spec:
+                os.environ["HOLD_MODS"] = hold_spec
+                hotkeys_set_hold_mods(hold_spec)
+                try:
+                    update_env_vars({"HOLD_MODS": hold_spec})
+                except Exception:
+                    pass
+                self._refresh_hold_menu()
+
+            # Step 2: Toggle trigger
+            alert2 = AppKit.NSAlert.new()
+            alert2.setMessageText_("Toggle Trigger")
+            alert2.setInformativeText_("Choose the hands‑off trigger.")
+            trig_map = [
+                ("Double Option", "double_option"),
+                ("Double Right‑Option", "double_ralt"),
+                ("Double Space (global)", "double_space"),
+                ("Disable", "none"),
+            ]
+            for title, _ in trig_map:
+                alert2.addButtonWithTitle_(title)
+            r2 = alert2.runModal() - 1000
+            if 0 <= r2 < len(trig_map):
+                trig = trig_map[r2][1]
+                try:
+                    import hotkeys as hk_mod
+
+                    hk_mod.set_toggle_trigger(trig)
+                except Exception:
+                    pass
+                os.environ["TOGGLE_TRIGGER"] = trig
+                try:
+                    update_env_vars({"TOGGLE_TRIGGER": trig})
+                except Exception:
+                    pass
+                self.item_toggle_current.title = "Toggle: " + trig.replace("_", " ")
+        except Exception as e:
+            logger.error(f"Configure hotkeys failed: {e}")
 
     def _refresh_feedback_menu(self):
         self.item_beep.state = BEEP_ON_START
@@ -644,11 +842,13 @@ class VistaScribe(rumps.App):
 
     def _save_feedback_env(self, _sender):
         try:
-            update_env_vars({
-                "BEEP_ON_START": "1" if BEEP_ON_START else "0",
-                "SOUND_NAME": os.environ.get("SOUND_NAME", "Tink"),
-                "SOUND_VOLUME": os.environ.get("SOUND_VOLUME", "0.2"),
-            })
+            update_env_vars(
+                {
+                    "BEEP_ON_START": "1" if BEEP_ON_START else "0",
+                    "SOUND_NAME": os.environ.get("SOUND_NAME", "Tink"),
+                    "SOUND_VOLUME": os.environ.get("SOUND_VOLUME", "0.2"),
+                }
+            )
             rumps.notification(
                 title="VistaScribe",
                 subtitle="Feedback saved",
@@ -701,6 +901,58 @@ class VistaScribe(rumps.App):
         except Exception:
             rumps.alert(title="Open Folder", message=models_dir)
 
+    def _refresh_models_menu(self):
+        try:
+            import stt as stt_mod
+
+            cur = stt_mod.get_current_variant()
+        except Exception:
+            cur = "unknown"
+        label = {
+            "medium": "Medium",
+            "large-v3": "Large v3",
+            "large-v3-turbo": "Large v3 Turbo",
+            "remote": "Remote",
+        }.get(cur, cur)
+        self.item_model_current.title = f"Current: {label}"
+        self.item_use_small.state = cur == "small"
+        self.item_use_medium.state = cur == "medium"
+        self.item_use_lv3.state = cur == "large-v3"
+        self.item_use_lvt.state = cur == "large-v3-turbo"
+
+    def _set_model_variant(self, variant: str):
+        try:
+            import stt as stt_mod
+
+            ok = stt_mod.set_variant(variant)
+            if ok:
+                # Persist env for next runs
+                try:
+                    update_env_vars(
+                        {
+                            "WHISPER_VARIANT": variant,
+                            "WHISPER_DIR": os.environ.get("WHISPER_DIR", ""),
+                        }
+                    )
+                except Exception:
+                    pass
+                rumps.notification(
+                    title="VistaScribe",
+                    subtitle="Model switched",
+                    message=variant,
+                )
+                self._refresh_models_menu()
+            else:
+                rumps.alert(
+                    title="Switch failed",
+                    message=(
+                        "Could not switch model. Make sure the variant is "
+                        "downloaded (Models → Download)."
+                    ),
+                )
+        except Exception as e:
+            logger.error(f"Failed to switch model: {e}")
+
     def poll_queue(self, _timer):
         """periodically called by rumps.timer to check the event queue.
 
@@ -723,9 +975,7 @@ class VistaScribe(rumps.App):
         except queue.Empty:
             pass  # no events in queue, normal
         except Exception as e:
-            logger.error(
-                f"Error polling queue or scheduling handler: {e}", exc_info=True
-            )
+            logger.error(f"Error polling queue or scheduling handler: {e}", exc_info=True)
 
     def _run_async_loop(self):
         """target function for the asyncio thread.
@@ -792,6 +1042,7 @@ class VistaScribe(rumps.App):
         try:
             import llm as llm_mod
             import stt as stt_mod
+
             importlib.reload(stt_mod)
             importlib.reload(llm_mod)
             # Update the imported symbols used elsewhere in this module
@@ -870,6 +1121,7 @@ class VistaScribe(rumps.App):
             except Exception:
                 return False
             return False
+
         self._stt_ok = _check(self.cfg.whisper_url)
         self._llm_ok = _check(self.cfg.llm_url)
         self._update_backend_menu_labels()
@@ -960,9 +1212,7 @@ class VistaScribe(rumps.App):
         """Show a short explanation of the toggles."""
         try:
             rumps.alert(
-                title="What do these toggles do?",
-                message=toggles_help_message("en"),
-                ok="OK"
+                title="What do these toggles do?", message=toggles_help_message("en"), ok="OK"
             )
         except Exception as e:
             logger.error(f"Failed to show toggles help: {e}")
@@ -975,11 +1225,12 @@ class VistaScribe(rumps.App):
         try:
             # Use AppleScript to open the Privacy & Security settings
             import subprocess
+
             script = (
-                "tell application \"System Settings\"\n"
+                'tell application "System Settings"\n'
                 "  activate\n"
-                "  reveal anchor \"Privacy_Accessibility\" of pane id "
-                "\"com.apple.settings.PrivacySecurity.extension\"\n"
+                '  reveal anchor "Privacy_Accessibility" of pane id '
+                '"com.apple.settings.PrivacySecurity.extension"\n'
                 "end tell"
             )
             subprocess.run(["osascript", "-e", script])
@@ -1044,9 +1295,10 @@ class VistaScribe(rumps.App):
         # Method 3: Check parent process name (often 'nohup')
         try:
             import psutil
+
             try:
                 parent = psutil.Process(os.getppid())
-                if parent.name() in ('nohup', 'daemondo', 'launchd'):
+                if parent.name() in ("nohup", "daemondo", "launchd"):
                     is_background_mode = True
                     logger.info(f"Background mode detected: parent process is {parent.name()}")
             except Exception as e:
@@ -1118,6 +1370,43 @@ class VistaScribe(rumps.App):
         logger.info("Starting rumps application run loop...")
         super().run()  # blocks until quit
         logger.info("Rumps run loop finished.")
+
+    # --- Mode handling ---
+    def _refresh_mode_menu(self):
+        mode = (os.environ.get("MODE", "hold") or "hold").strip().lower()
+        try:
+            self.menu["Mode"][0].title = "Current: " + mode.replace("_", " ")
+        except Exception:
+            pass
+        self.item_mode_hold.state = mode == "hold"
+        self.item_mode_handoff.state = mode == "hands_off"
+        self.item_mode_adv.state = mode == "advanced"
+
+    def _set_mode(self, mode: str):
+        os.environ["MODE"] = mode
+        try:
+            update_env_vars({"MODE": mode})
+        except Exception:
+            pass
+        self._refresh_mode_menu()
+        # Friendly nudge that only anchors/UX change for now
+        try:
+            rumps.notification(
+                title="VistaScribe",
+                subtitle="Mode switched",
+                message=mode.replace("_", " "),
+            )
+        except Exception:
+            pass
+
+    def _save_mode_env(self, _sender):
+        try:
+            update_env_vars({"MODE": os.environ.get("MODE", "hold")})
+            rumps.notification(
+                title="VistaScribe", subtitle="Mode saved", message=os.environ.get("MODE", "hold")
+            )
+        except Exception as e:
+            logger.error(f"Failed to save MODE to .env: {e}")
 
 
 # --- entry point ---

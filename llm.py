@@ -32,8 +32,10 @@ except Exception:  # pragma: no cover
 
 # --- setup ---
 load_dotenv()
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-                    format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
 FORMAT_BACKEND = os.environ.get("FORMAT_BACKEND", "local").lower()
 FORMAT_ENABLED = os.environ.get("FORMAT_ENABLED", "0").strip().lower() not in {
@@ -131,6 +133,7 @@ OPENAI_MODEL = os.environ.get("OPENAI_FORMAT_MODEL", "gpt-4o-mini")
 
 def _http_post(url: str, json: dict):
     import requests
+
     resp = requests.post(url, json=json, timeout=60)
     resp.raise_for_status()
     return resp.json()
@@ -195,6 +198,7 @@ async def format_text(raw_text: str) -> str | None:
     # Lightweight heuristic formatter (no model), when requested or when
     # a local model is not available.
     if FORMAT_STRATEGY in {"light", "auto", "light_plus", "light+"}:
+
         def _light_format(t: str) -> str:
             # Normalize whitespace
             t = re.sub(r"\s+", " ", t).strip()
@@ -226,10 +230,12 @@ async def format_text(raw_text: str) -> str | None:
                 txt = re.sub(r"([,.;:!?])(\S)", r"\1 \2", txt)
                 # Normalize quotes
                 txt = txt.replace('" "', '" "').replace("''", '"')
+
                 # Guard against accidental ALLCAPS stretches
                 def _caps_guard(m):
                     seg = m.group(0)
                     return seg.capitalize()
+
                 txt = re.sub(r"\b([A-ZĄĆĘŁŃÓŚŹŻ]{3,})(\b)", _caps_guard, txt)
             return txt
         except Exception:
@@ -257,6 +263,7 @@ async def format_text(raw_text: str) -> str | None:
         # Fallback to CLI if model produced empty output
         import subprocess
         import sys
+
         cmd = [
             sys.executable,
             "-m",
@@ -275,11 +282,9 @@ async def format_text(raw_text: str) -> str | None:
         logging.info("Falling back to CLI: python -m mlx_lm.generate …")
         proc = await loop.run_in_executor(
             None,
-            lambda: subprocess.run(
-                cmd, input=raw_text.encode("utf-8"), capture_output=True
-            ),
+            lambda: subprocess.run(cmd, input=raw_text.encode("utf-8"), capture_output=True),
         )
-        txt = proc.stdout.decode('utf-8').strip()
+        txt = proc.stdout.decode("utf-8").strip()
         return txt or None
     except Exception as e:
         logging.error(f"Local formatting error: {e}", exc_info=True)

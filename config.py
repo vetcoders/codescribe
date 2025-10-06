@@ -8,7 +8,7 @@ from dataclasses import dataclass
 @dataclass
 class Config:
     whisper_url: str  # empty = local
-    llm_url: str      # empty = local
+    llm_url: str  # empty = local
     format_enabled: bool
     language: str | None  # 'pl', 'en', or None for auto
 
@@ -21,12 +21,14 @@ def _truthy(val: str | None) -> bool:
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:
     e = env or os.environ
+
     # Sanitize inputs: ensure strings
     def _get_str(key: str, default: str = "") -> str:
         val = e.get(key, default)
         if not isinstance(val, str):
             return default
         return val
+
     whisper_raw = _get_str("WHISPER_SERVER_URL", "").strip()
     llm_raw = _get_str("LLM_SERVER_URL", "").strip()
     fmt_raw = _get_str("FORMAT_ENABLED", "0")  # default disabled to match llm.py

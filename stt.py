@@ -38,6 +38,9 @@ WHISPER_SERVER_URL = os.environ.get("WHISPER_SERVER_URL", "").strip()
 
 # --- model load (once) ---
 _repo_root = os.path.dirname(os.path.abspath(__file__))
+# If running from an app bundle, bundled models may live in:
+#   <App>.app/Contents/Resources/Models
+_bundled_models_dir = os.path.normpath(os.path.join(_repo_root, "..", "..", "Resources", "Models"))
 # Allow choosing between large-v3-turbo and medium via env; fallback to what's present
 _variant = os.environ.get("WHISPER_VARIANT", "").strip().lower()
 
@@ -48,15 +51,21 @@ if not WHISPER_SERVER_URL:
     # If WHISPER_DIR provided, use it directly (normalized) below; otherwise compute default
     if not os.environ.get("WHISPER_DIR"):
         candidates = []
-        if _variant in {"large-v3-turbo", "medium"}:
-            candidates.append(os.path.join(_repo_root, "models", f"whisper-{_variant}"))
-            candidates.append(os.path.join(_repo_root, f"whisper-{_variant}"))
+        # If bundled small exists, prefer it for offline-first experience
+        for name in ("whisper-small", "whisper-small-mlx"):
+            candidates.append(os.path.join(_bundled_models_dir, name))
+        # If explicit variant set, search repo models for it
+        if _variant in {"small", "small-mlx", "large-v3-turbo", "large-v3", "medium"}:
+            vmap = {"small": "small-mlx"}  # resolve alias
+            vv = vmap.get(_variant, _variant)
+            candidates.append(os.path.join(_repo_root, "models", f"whisper-{vv}"))
+            candidates.append(os.path.join(_repo_root, f"whisper-{vv}"))
         else:
-            # No explicit variant: prefer large-v3-turbo if present, else medium
-            for v in ("large-v3-turbo", "medium"):
+            # Default order: large-v3, large-v3-turbo, medium, then small
+            for v in ("large-v3", "large-v3-turbo", "medium", "small-mlx", "small"):
                 candidates.append(os.path.join(_repo_root, "models", f"whisper-{v}"))
                 candidates.append(os.path.join(_repo_root, f"whisper-{v}"))
-        # pick first existing, else default to models/whisper-large-v3-turbo path
+        # pick first existing, else fallback to bundled small, else turbo path in repo
         _default_whisper_path = next(
             (c for c in candidates if os.path.isdir(c)),
             os.path.join(_repo_root, "models", "whisper-large-v3-turbo"),
@@ -77,9 +86,7 @@ if not WHISPER_SERVER_URL:
 
 # Language preference (None = auto). Read from env on startup if provided.
 LANGUAGE_CODE = (
-    os.environ.get("WHISPER_LANGUAGE")
-    or os.environ.get("LANGUAGE")
-    or ""
+    os.environ.get("WHISPER_LANGUAGE") or os.environ.get("LANGUAGE") or ""
 ).strip().lower() or None
 
 
@@ -100,8 +107,79 @@ def get_language() -> str | None:
     return LANGUAGE_CODE
 
 
+def get_current_variant() -> str:
+    """Best-effort name of the currently loaded local model variant.
+
+    Returns one of: "large-v3-turbo", "large-v3", "medium", or "remote"/"unknown".
+    """
+    if WHISPER_SERVER_URL:
+        return "remote"
+    path = (WHISPER_DIR or "").lower()
+    if "whisper-large-v3-turbo" in path:
+        return "large-v3-turbo"
+    if "whisper-large-v3" in path and "-turbo" not in path:
+        return "large-v3"
+    if "whisper-medium" in path:
+        return "medium"
+    if "whisper-small" in path:
+        return "small"
+    return "unknown"
+
+
+def set_variant(variant: str) -> bool:
+    """Switch the local MLX Whisper model at runtime.
+
+    Loads the given `variant` ("medium", "large-v3", or "large-v3-turbo") from
+    the repository's models directory. Returns True on success.
+    """
+    global whisper_model, WHISPER_DIR, _variant
+    if WHISPER_SERVER_URL:
+        logging.error("Cannot switch local model while WHISPER_SERVER_URL is set.")
+        return False
+    variant = (variant or "").strip().lower()
+    if variant not in {"small", "small-mlx", "medium", "large-v3", "large-v3-turbo"}:
+        logging.error(f"Unsupported variant: {variant}")
+        return False
+    # Resolve alias and search both repo models and bundled models
+    vnorm = {"small": "small-mlx"}.get(variant, variant)
+    base_candidates = [
+        os.path.join(_repo_root, "models", f"whisper-{vnorm}"),
+        os.path.join(_repo_root, f"whisper-{vnorm}"),
+        os.path.join(_bundled_models_dir, f"whisper-{vnorm}"),
+        os.path.join(_bundled_models_dir, vnorm),
+        os.path.join(_bundled_models_dir, "whisper-small"),
+    ]
+    base = next((p for p in base_candidates if os.path.isdir(p)), None)
+    if base is None:
+        logging.error(
+            f"Model directory not found for variant '{variant}'. Download via menu first."
+        )
+        return False
+    if not os.path.isdir(base):
+        logging.error(
+            f"Model directory not found for variant '{variant}': {base}. Download via menu first."
+        )
+        return False
+    new_dir = normalize_model_path(base)
+    try:
+        if load_model is None:
+            raise RuntimeError("mlx_whisper not available")
+        model = load_model(new_dir)
+        whisper_model = model
+        WHISPER_DIR = new_dir
+        _variant = variant
+        os.environ["WHISPER_DIR"] = new_dir
+        os.environ["WHISPER_VARIANT"] = variant
+        logging.info(f"Switched Whisper model to '{variant}' at: {new_dir}")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to switch model to '{variant}': {e}")
+        return False
+
+
 def _http_post(url: str, files: dict):
     import requests  # local import to keep optional
+
     resp = requests.post(url, files=files, timeout=60)
     resp.raise_for_status()
     return resp.json()
@@ -155,9 +233,7 @@ async def transcribe(path: str) -> str | None:
 
     # Local path
     if whisper_model is None or whisper is None:
-        logging.error(
-            "Whisper not initialized. Set WHISPER_DIR or configure WHISPER_SERVER_URL."
-        )
+        logging.error("Whisper not initialized. Set WHISPER_DIR or configure WHISPER_SERVER_URL.")
         return None
     if not os.path.exists(path):
         logging.error(f"Audio file not found at path: {path}")

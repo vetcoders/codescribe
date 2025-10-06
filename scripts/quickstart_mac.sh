@@ -49,14 +49,21 @@ mkdir -p "$LOG_DIR"
 PID_DIR="$REPO_DIR/.pids"
 mkdir -p "$PID_DIR"
 
+# Ensure we do NOT inherit a foreign virtualenv (e.g., from old ../vista-scribe)
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  echo "warning: ignoring inherited VIRTUAL_ENV=$VIRTUAL_ENV; using local .venv instead"
+  unset VIRTUAL_ENV
+fi
+
 # Default values for parameters (use :- for proper default substitution)
 WHISPER_VARIANT="${WHISPER_VARIANT:-large-v3-turbo}"
 FORMAT_ENABLED="${FORMAT_ENABLED:-1}"
 MODE="${MODE:-tray}"
 LLM_ID="${LLM_ID:-}"
 UV_ACTIVE=0
-DAEMON=0
-LOG_FILE="$REPO_DIR/VistaScribe.log"
+# Default: run in background with logging (nohup + disown)
+DAEMON=1
+LOG_FILE="$LOG_DIR/VistaScribe.log"
 SKIP_MODELS=0
 PERSIST_ENVS=()
 WITH_BACKEND=0
@@ -107,6 +114,7 @@ while [[ $# -gt 0 ]]; do
     --llm-id) LLM_ID="$2"; shift 2;;
     --active) UV_ACTIVE=1; shift;;
     --daemon) DAEMON=1; shift;;
+    --fg|--foreground|--no-daemon) DAEMON=0; shift;;
     --log) LOG_FILE="$2"; shift 2;;
     --no-models) SKIP_MODELS=1; shift;;
     --with-backend) WITH_BACKEND=1; shift;;
@@ -135,12 +143,17 @@ lower_users() {
 }
 
 echo "==> Synchronizuję środowisko (uv sync)…"
-uv sync
-
-# Activate the venv for this script's process
-if [[ -f .venv/bin/activate ]]; then
-  source .venv/bin/activate
+# Ensure local .venv exists and is used
+if [[ ! -d .venv ]]; then
+  uv venv .venv
 fi
+# Activate the venv for this script's process and force uv to use it
+source .venv/bin/activate
+UV_ACTIVE=1
+uv sync --active
+
+echo "==> Python: $(python -c 'import sys; print(sys.executable)')"
+echo "==> VIRTUAL_ENV=${VIRTUAL_ENV:-}"
 
 if [[ "$STOP_ALL" -eq 1 ]]; then
   STOP_TRAY=1; STOP_BACK=1
@@ -159,10 +172,17 @@ fi
 
 if [[ "$SKIP_MODELS" -eq 0 ]]; then
   echo "==> Pobieram modele (Whisper=${WHISPER_VARIANT})…"
+  set +e
   if [[ -n "${LLM_ID}" ]]; then
     uv run ${UV_ACTIVE:+--active} python scripts/get_models.py --whisper "${WHISPER_VARIANT}" --llm "${LLM_ID}"
   else
     uv run ${UV_ACTIVE:+--active} python scripts/get_models.py --whisper "${WHISPER_VARIANT}"
+  fi
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    echo "[!] Download failed (rc=$rc). Continuing without local models."
+    echo "    Hint: set HF_TOKEN and use tray menu → Models → Download later."
   fi
 else
   echo "==> Pomijam pobieranie modeli (--no-models)"
@@ -242,6 +262,8 @@ if [[ "$MODE" == "both" || "$WITH_BACKEND" -eq 1 ]]; then
   back_pid=$!
   disown "$back_pid" || true
   write_pid backend "$back_pid"
+  echo "backend pid: $back_pid (log: $LOG_DIR/backend.out.log)"
+  echo "backend pid: $back_pid" >> "$LOG_FILE" || true
   # krótkie oczekiwanie (bez twardego fail)
   sleep 1
 fi
@@ -252,6 +274,8 @@ if [[ "$DAEMON" -eq 1 ]]; then
   tray_pid=$!
   disown "$tray_pid" || true
   write_pid tray "$tray_pid"
+  echo "tray pid: $tray_pid (log: $LOG_FILE)"
+  echo "tray pid: $tray_pid" >> "$LOG_FILE" || true
 else
   env "${ENVVARS[@]}" "${CMD[@]}" "$TARGET"
 fi

@@ -7,6 +7,7 @@ def test_stt_uses_remote_when_configured(monkeypatch, tmp_path):
     monkeypatch.setenv("WHISPER_SERVER_URL", "http://localhost:9999")
 
     import stt as stt_mod
+
     importlib.reload(stt_mod)
 
     called = {}
@@ -17,7 +18,11 @@ def test_stt_uses_remote_when_configured(monkeypatch, tmp_path):
         return {"text": "remote-transcript"}
 
     # patch helper used by stt when remote
-    monkeypatch.setattr(stt_mod, "_http_post", lambda url, files: asyncio.get_event_loop().run_until_complete(fake_http_post(url, files)))
+    monkeypatch.setattr(
+        stt_mod,
+        "_http_post",
+        lambda url, files: asyncio.get_event_loop().run_until_complete(fake_http_post(url, files)),
+    )
 
     # create a dummy wav file path for code that reads it (not strictly required by remote)
     p = tmp_path / "a.wav"
@@ -33,6 +38,7 @@ def test_llm_uses_remote_when_configured(monkeypatch):
     monkeypatch.setenv("LLM_SERVER_URL", "http://localhost:9998")
 
     import llm as llm_mod
+
     importlib.reload(llm_mod)
 
     def fake_http_post(url, json=None):
@@ -51,6 +57,7 @@ def test_servers_apps_exist_and_healthz():
     import importlib
 
     from fastapi.testclient import TestClient
+
     whisper_server = importlib.import_module("whisper_server")
     lm_server = importlib.import_module("lm_server")
 
