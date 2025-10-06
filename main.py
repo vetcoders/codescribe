@@ -460,27 +460,45 @@ class VistaScribe(rumps.App):
         # Reflect current env
         self._refresh_feedback_menu()
 
-        # Models submenu
+        # Models submenu: download & select
+        self.item_model_current = rumps.MenuItem("Current: —")
+        self.item_use_medium = rumps.MenuItem(
+            "Use Whisper: Medium", callback=lambda _s: self._set_model_variant("medium")
+        )
+        self.item_use_lv3 = rumps.MenuItem(
+            "Use Whisper: Large v3", callback=lambda _s: self._set_model_variant("large-v3")
+        )
+        self.item_use_lvt = rumps.MenuItem(
+            "Use Whisper: Large v3 Turbo",
+            callback=lambda _s: self._set_model_variant("large-v3-turbo"),
+        )
         self.item_dl_medium = rumps.MenuItem(
             "Download Whisper: Medium", callback=lambda _s: self._download_models("medium")
+        )
+        self.item_dl_lv3 = rumps.MenuItem(
+            "Download Whisper: Large v3", callback=lambda _s: self._download_models("large-v3")
         )
         self.item_dl_lvt = rumps.MenuItem(
             "Download Whisper: Large v3 Turbo",
             callback=lambda _s: self._download_models("large-v3-turbo"),
         )
-        self.item_dl_lv3 = rumps.MenuItem(
-            "Download Whisper: Large v3", callback=lambda _s: self._download_models("large-v3")
-        )
         self.item_open_models = rumps.MenuItem(
             "Open Models Folder", callback=self._open_models_folder
         )
         self.menu["Models"] = [
+            self.item_model_current,
+            None,
+            self.item_use_medium,
+            self.item_use_lv3,
+            self.item_use_lvt,
+            None,
             self.item_dl_medium,
-            self.item_dl_lvt,
             self.item_dl_lv3,
+            self.item_dl_lvt,
             None,
             self.item_open_models,
         ]
+        self._refresh_models_menu()
 
         # --- Mini config tool (Backends) ---
         self.cfg: Config = load_config()
@@ -798,6 +816,57 @@ class VistaScribe(rumps.App):
             subprocess.run(["open", models_dir])
         except Exception:
             rumps.alert(title="Open Folder", message=models_dir)
+
+    def _refresh_models_menu(self):
+        try:
+            import stt as stt_mod
+
+            cur = stt_mod.get_current_variant()
+        except Exception:
+            cur = "unknown"
+        label = {
+            "medium": "Medium",
+            "large-v3": "Large v3",
+            "large-v3-turbo": "Large v3 Turbo",
+            "remote": "Remote",
+        }.get(cur, cur)
+        self.item_model_current.title = f"Current: {label}"
+        self.item_use_medium.state = cur == "medium"
+        self.item_use_lv3.state = cur == "large-v3"
+        self.item_use_lvt.state = cur == "large-v3-turbo"
+
+    def _set_model_variant(self, variant: str):
+        try:
+            import stt as stt_mod
+
+            ok = stt_mod.set_variant(variant)
+            if ok:
+                # Persist env for next runs
+                try:
+                    update_env_vars(
+                        {
+                            "WHISPER_VARIANT": variant,
+                            "WHISPER_DIR": os.environ.get("WHISPER_DIR", ""),
+                        }
+                    )
+                except Exception:
+                    pass
+                rumps.notification(
+                    title="VistaScribe",
+                    subtitle="Model switched",
+                    message=variant,
+                )
+                self._refresh_models_menu()
+            else:
+                rumps.alert(
+                    title="Switch failed",
+                    message=(
+                        "Could not switch model. Make sure the variant is "
+                        "downloaded (Models → Download)."
+                    ),
+                )
+        except Exception as e:
+            logger.error(f"Failed to switch model: {e}")
 
     def poll_queue(self, _timer):
         """periodically called by rumps.timer to check the event queue.

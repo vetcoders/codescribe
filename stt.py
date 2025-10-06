@@ -98,6 +98,60 @@ def get_language() -> str | None:
     return LANGUAGE_CODE
 
 
+def get_current_variant() -> str:
+    """Best-effort name of the currently loaded local model variant.
+
+    Returns one of: "large-v3-turbo", "large-v3", "medium", or "remote"/"unknown".
+    """
+    if WHISPER_SERVER_URL:
+        return "remote"
+    path = (WHISPER_DIR or "").lower()
+    if "whisper-large-v3-turbo" in path:
+        return "large-v3-turbo"
+    if "whisper-large-v3" in path and "-turbo" not in path:
+        return "large-v3"
+    if "whisper-medium" in path:
+        return "medium"
+    return "unknown"
+
+
+def set_variant(variant: str) -> bool:
+    """Switch the local MLX Whisper model at runtime.
+
+    Loads the given `variant` ("medium", "large-v3", or "large-v3-turbo") from
+    the repository's models directory. Returns True on success.
+    """
+    global whisper_model, WHISPER_DIR, _variant
+    if WHISPER_SERVER_URL:
+        logging.error("Cannot switch local model while WHISPER_SERVER_URL is set.")
+        return False
+    variant = (variant or "").strip().lower()
+    if variant not in {"medium", "large-v3", "large-v3-turbo"}:
+        logging.error(f"Unsupported variant: {variant}")
+        return False
+    base = os.path.join(_repo_root, "models", f"whisper-{variant}")
+    if not os.path.isdir(base):
+        logging.error(
+            f"Model directory not found for variant '{variant}': {base}. Download via menu first."
+        )
+        return False
+    new_dir = normalize_model_path(base)
+    try:
+        if load_model is None:
+            raise RuntimeError("mlx_whisper not available")
+        model = load_model(new_dir)
+        whisper_model = model
+        WHISPER_DIR = new_dir
+        _variant = variant
+        os.environ["WHISPER_DIR"] = new_dir
+        os.environ["WHISPER_VARIANT"] = variant
+        logging.info(f"Switched Whisper model to '{variant}' at: {new_dir}")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to switch model to '{variant}': {e}")
+        return False
+
+
 def _http_post(url: str, files: dict):
     import requests  # local import to keep optional
 
