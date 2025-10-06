@@ -54,7 +54,7 @@ export NOHUP_MODE=1
 cd "$REPO_DIR"
 # Run tray+backend in foreground so the app process stays alive
 # All output goes to the app log for debugging if needed
-exec ./scripts/quickstart_mac.sh --mode both --fg >> "$LOG_FILE" 2>&1
+exec ./scripts/quickstart_mac.sh --mode both --no-models --fg >> "$LOG_FILE" 2>&1
 LAUNCH
 chmod +x "$APP_DIR/Contents/MacOS/vistascribe"
 

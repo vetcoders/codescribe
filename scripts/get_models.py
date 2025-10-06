@@ -23,7 +23,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
+import os
+from typing import Optional
+
+from huggingface_hub import HfHubHTTPError, snapshot_download
 
 # Known MLX Whisper repos
 WHISPER_REPOS = {
@@ -49,7 +52,24 @@ def lower_users_path(p: Path) -> Path:
     return p
 
 
-def download_repo(repo_id: str, dest_dir: Path, target_name: str | None = None) -> Path:
+def _read_env_token() -> Optional[str]:
+    # Prefer HF_TOKEN env; fallback to token in local .env if present
+    tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if tok:
+        return tok.strip()
+    # Try reading from repo .env
+    try:
+        env_path = Path(__file__).resolve().parents[1] / ".env"
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                if line.strip().startswith("HF_TOKEN="):
+                    return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return None
+
+
+def download_repo(repo_id: str, dest_dir: Path, target_name: str | None = None, token: Optional[str] = None) -> Path:
     ensure_dir(dest_dir)
     # Create a stable local folder name from the repo id unless explicit name is given
     base = target_name or repo_id.rstrip("/").split("/")[-1]
@@ -58,7 +78,18 @@ def download_repo(repo_id: str, dest_dir: Path, target_name: str | None = None) 
         print(f"✔ Model already present: {out}")
         return out
     print(f"⬇ Downloading {repo_id} → {out} …")
-    snapshot_download(repo_id=repo_id, local_dir=str(out), local_dir_use_symlinks=False)
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=str(out),
+            local_dir_use_symlinks=False,
+            token=token or _read_env_token(),
+            resume_download=True,
+        )
+    except HfHubHTTPError as e:
+        print("[!] Hugging Face download error:", e)
+        print("    If this repo is gated or rate-limited, set HF_TOKEN (or pass --hf-token).")
+        raise
     print(f"✔ Downloaded to: {out}")
     return out
 
@@ -100,6 +131,9 @@ def main() -> int:
     parser.add_argument(
         "--models-dir", default="models", help="Destination models directory (default: ./models)"
     )
+    parser.add_argument(
+        "--hf-token", default=None, help="Optional Hugging Face token to use for downloads"
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -114,7 +148,7 @@ def main() -> int:
     # LLMs (optional)
     llm_paths: list[Path] = []
     for repo_id in args.llm:
-        p = download_repo(repo_id, models_dir)
+        p = download_repo(repo_id, models_dir, token=args.hf_token)
         llm_paths.append(p)
 
     # Print helpful env configuration

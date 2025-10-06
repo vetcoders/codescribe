@@ -172,10 +172,17 @@ fi
 
 if [[ "$SKIP_MODELS" -eq 0 ]]; then
   echo "==> Pobieram modele (Whisper=${WHISPER_VARIANT})…"
+  set +e
   if [[ -n "${LLM_ID}" ]]; then
     uv run ${UV_ACTIVE:+--active} python scripts/get_models.py --whisper "${WHISPER_VARIANT}" --llm "${LLM_ID}"
   else
     uv run ${UV_ACTIVE:+--active} python scripts/get_models.py --whisper "${WHISPER_VARIANT}"
+  fi
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    echo "[!] Download failed (rc=$rc). Continuing without local models."
+    echo "    Hint: set HF_TOKEN and use tray menu → Models → Download later."
   fi
 else
   echo "==> Pomijam pobieranie modeli (--no-models)"
