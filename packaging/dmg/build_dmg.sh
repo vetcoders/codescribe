@@ -13,7 +13,15 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname "$0")/../.." && pwd)"
 OUT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 STAGE_DIR="${OUT_DIR}/stage"
-DMG_NAME="VistaScribe.dmg"
+
+# Resolve version for DMG naming
+VERSION="0.1.0"
+if [[ -f "$ROOT_DIR/pyproject.toml" ]]; then
+  VLINE=$(rg -n "^version\s*=\s*\"" "$ROOT_DIR/pyproject.toml" | head -n1 | sed 's/.*=\s*\"//; s/\".*//') || true
+  [[ -n "${VLINE:-}" ]] && VERSION="$VLINE"
+fi
+STAMP=$(date +%Y%m%d_%H%M%S)
+DMG_NAME="VistaScribe-${VERSION}-${STAMP}.dmg"
 
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR"
@@ -24,8 +32,9 @@ if [[ -d "$APP_SRC" ]]; then
   echo "[i] Adding app bundle: $APP_SRC"
   cp -R "$APP_SRC" "$STAGE_DIR/Vista Scribe.app"
 else
-  echo "[!] App bundle not found at $APP_SRC — continuing without it."
-  echo "    Build it first with: (cd packaging && python setup.py py2app)"
+  echo "[!] App bundle not found at $APP_SRC — aborting."
+  echo "    Build it first with: packaging/appwrap/build_wrapper_app.sh"
+  exit 2
 fi
 
 # Applications symlink for drag-and-drop install UX
@@ -49,5 +58,10 @@ TXT
 DMG_PATH="${OUT_DIR}/${DMG_NAME}"
 rm -f "$DMG_PATH"
 hdiutil create -volname "VistaScribe" -srcfolder "$STAGE_DIR" -ov -format UDZO "$DMG_PATH"
+
+# Optional: clear quarantine for local/internal testing (DMG_UNQUARANTINE=1)
+if [[ "${DMG_UNQUARANTINE:-0}" == "1" ]]; then
+  xattr -cr "$DMG_PATH" || true
+fi
 
 echo "[✓] Built DMG: $DMG_PATH"
