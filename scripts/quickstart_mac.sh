@@ -150,6 +150,9 @@ source .venv/bin/activate
 UV_ACTIVE=1
 uv sync --active
 
+echo "==> Python: $(python -c 'import sys; print(sys.executable)')"
+echo "==> VIRTUAL_ENV=${VIRTUAL_ENV:-}"
+
 if [[ "$STOP_ALL" -eq 1 ]]; then
   STOP_TRAY=1; STOP_BACK=1
 fi
