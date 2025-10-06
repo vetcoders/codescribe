@@ -141,12 +141,14 @@ lower_users() {
 }
 
 echo "==> Synchronizuję środowisko (uv sync)…"
-uv sync
-
-# Activate the venv for this script's process
-if [[ -f .venv/bin/activate ]]; then
-  source .venv/bin/activate
+# Ensure local .venv exists and is used
+if [[ ! -d .venv ]]; then
+  uv venv .venv
 fi
+# Activate the venv for this script's process and force uv to use it
+source .venv/bin/activate
+UV_ACTIVE=1
+uv sync --active
 
 if [[ "$STOP_ALL" -eq 1 ]]; then
   STOP_TRAY=1; STOP_BACK=1
