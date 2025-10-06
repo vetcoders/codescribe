@@ -636,6 +636,7 @@ class VistaScribe(rumps.App):
     def _customize_hotkeys(self, _sender):
         try:
             import AppKit
+
             # Step 1: Hold selection
             alert1 = AppKit.NSAlert.new()
             alert1.setMessageText_("Hold Hotkey")

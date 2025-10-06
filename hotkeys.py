@@ -58,7 +58,9 @@ _DOUBLE_OPTION_INTERVAL = float(os.environ.get("DOUBLE_OPTION_INTERVAL_MS", "350
 _DOUBLE_SPACE_INTERVAL = float(os.environ.get("DOUBLE_SPACE_INTERVAL_MS", "300")) / 1000.0
 
 # Toggle trigger: double_option (default) | double_ralt | double_space | none
-_TOGGLE_TRIGGER = os.environ.get("TOGGLE_TRIGGER", "double_option").strip().lower() or "double_option"
+_TOGGLE_TRIGGER = (
+    os.environ.get("TOGGLE_TRIGGER", "double_option").strip().lower() or "double_option"
+)
 
 # Enable/disable toggle shortcuts (defaults: double Option ON, Slash OFF)
 _ENABLE_DOUBLE_OPTION = os.environ.get("ENABLE_DOUBLE_OPTION", "1").lower() not in (
@@ -373,7 +375,9 @@ def _tap(_proxy, type_, event, _refcon):
 
             # Toggle via double Option (any or right-only) using flags-changed edges
             global _last_alt_state, _last_alt_down_ts
-            if _TOGGLE_TRIGGER in {"double_option", "double_ralt"} and not (_required_hold_mask & ALT_MASK):
+            if _TOGGLE_TRIGGER in {"double_option", "double_ralt"} and not (
+                _required_hold_mask & ALT_MASK
+            ):
                 if alt_is_down != _last_alt_state:
                     # For right-only, ensure the keycode corresponds to Right Option
                     if _TOGGLE_TRIGGER == "double_ralt" and keycode != KEYCODE_RIGHT_OPTION:
@@ -381,7 +385,10 @@ def _tap(_proxy, type_, event, _refcon):
                     else:
                         now = time.perf_counter()
                         if alt_is_down:
-                            if _last_alt_down_ts and (now - _last_alt_down_ts) <= _DOUBLE_OPTION_INTERVAL:
+                            if (
+                                _last_alt_down_ts
+                                and (now - _last_alt_down_ts) <= _DOUBLE_OPTION_INTERVAL
+                            ):
                                 _queue.put(("toggle", "press"))
                                 logger.info("Hotkey: Toggle press (%s)", _TOGGLE_TRIGGER)
                                 _last_alt_down_ts = 0.0
@@ -402,7 +409,11 @@ def _tap(_proxy, type_, event, _refcon):
                 else:
                     _last_space_down_ts = now
             # Optional legacy Slash (off by default)
-            if os.environ.get("ENABLE_TOGGLE_SLASH", "0").lower() not in ("0","false","no","off") and keycode == TOGGLE_VK:
+            if (
+                os.environ.get("ENABLE_TOGGLE_SLASH", "0").lower()
+                not in ("0", "false", "no", "off")
+                and keycode == TOGGLE_VK
+            ):
                 if (flags & TOGGLE_FL) == TOGGLE_FL:
                     _queue.put(("toggle", "press"))
                     logger.info("Hotkey: Toggle press (Shift+Cmd+/)")
