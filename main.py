@@ -553,7 +553,7 @@ class VistaScribe(rumps.App):
     def _install_login_agent(self):
         path = self._login_plist_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        app_repo = "/Applications/Vista Scribe.app/Contents/Resources/Repo"
+        app_repo = "/Applications/VistaScribe.app/Contents/Resources/Repo"
         cmd = (
             f"cd '{app_repo}' && ./scripts/quickstart_mac.sh --mode both --daemon --log "
             f"'$HOME/Library/Logs/VistaScribe.app.log'"

@@ -29,6 +29,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>vistascribe</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Needed to transcribe speech.</string>
   <key>NSAccessibilityUsageDescription</key><string>Needed to monitor hotkeys and paste results.</string>
@@ -46,13 +47,29 @@ LOG_DIR="$HOME/Library/Logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/VistaScribe.app.log"
 
+# Ensure uv and brew binaries are on PATH when launched from Finder
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 export NOHUP_MODE=1
 cd "$REPO_DIR"
-# Start tray + backend in background, with logging; let quickstart manage PIDs
-nohup ./scripts/quickstart_mac.sh --mode both --daemon --log "$LOG_FILE" >> "$LOG_FILE" 2>&1 &
-exit 0
+# Run tray+backend in foreground so the app process stays alive
+# All output goes to the app log for debugging if needed
+exec ./scripts/quickstart_mac.sh --mode both >> "$LOG_FILE" 2>&1
 LAUNCH
 chmod +x "$APP_DIR/Contents/MacOS/vistascribe"
+
+# Build a basic .icns from assets/icon.png (best-effort)
+ICON_SRC="$ROOT_DIR/assets/icon.png"
+if [[ -f "$ICON_SRC" ]]; then
+  echo "[i] Generating AppIcon.icns from assets/icon.png"
+  ICONSET_DIR="$(mktemp -d)/AppIcon.iconset"
+  mkdir -p "$ICONSET_DIR"
+  for sz in 16 32 64 128 256 512; do
+    /usr/bin/sips -z $sz $sz "$ICON_SRC" --out "$ICONSET_DIR/icon_${sz}x${sz}.png" >/dev/null 2>&1 || true
+    /usr/bin/sips -z $((sz*2)) $((sz*2)) "$ICON_SRC" --out "$ICONSET_DIR/icon_${sz}x${sz}@2x.png" >/dev/null 2>&1 || true
+  done
+  /usr/bin/iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns" || true
+fi
 
 # Copy repo (exclude heavy/irrelevant dirs)
 echo "[i] Copying repo into app Resources (trimmed)"

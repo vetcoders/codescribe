@@ -30,7 +30,7 @@ mkdir -p "$STAGE_DIR"
 APP_SRC="${ROOT_DIR}/packaging/dist/VistaScribe.app"
 if [[ -d "$APP_SRC" ]]; then
   echo "[i] Adding app bundle: $APP_SRC"
-  cp -R "$APP_SRC" "$STAGE_DIR/Vista Scribe.app"
+  cp -R "$APP_SRC" "$STAGE_DIR/VistaScribe.app"
 else
   echo "[!] App bundle not found at $APP_SRC — aborting."
   echo "    Build it first with: packaging/appwrap/build_wrapper_app.sh"
@@ -45,7 +45,7 @@ cat >"$STAGE_DIR/README-INSTALL.txt" <<'TXT'
 VistaScribe — Installation
 ==========================
 
-1) Przeciągnij "Vista Scribe.app" do aliasu "Applications".
+1) Przeciągnij "VistaScribe.app" do aliasu "Applications".
 2) Otwórz aplikację z /Applications. Pierwsze uruchomienie:
    - pobierze/wykryje modele Whisper,
    - poprosi o uprawnienia (Microphone, Accessibility, Input Monitoring),
