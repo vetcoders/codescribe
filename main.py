@@ -59,11 +59,11 @@ from ui import (
     MenuIcon,
     backend_status_labels,
     config_labels,
+    hide_hold_badge,
     paste_text,
+    show_hold_badge,
     start_sound,
     toggles_help_message,
-    show_hold_badge,
-    hide_hold_badge,
 )
 
 # --- global state ---
