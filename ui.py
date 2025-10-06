@@ -402,6 +402,27 @@ def start_sound():
 
 _badge_window = None
 _badge_timer = None
+_badge_timer_target = None  # Objective-C target to drive timer ticks
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)).strip())
+    except Exception:
+        return default
+
+
+def _badge_size_px() -> int:
+    # Allows tiny dot (e.g., 4) up to a small badge size
+    v = max(2, min(32, _env_int("HOLD_BADGE_SIZE", 12)))
+    return v
+
+
+def _badge_offsets() -> tuple[float, float]:
+    # Positive X moves right; positive Y moves up relative to cursor/caret origin
+    ox = float(os.environ.get("HOLD_BADGE_OFFSET_X", "10").strip() or 10)
+    oy = float(os.environ.get("HOLD_BADGE_OFFSET_Y", "-10").strip() or -10)
+    return ox, oy
 
 
 def hold_indicator_enabled() -> bool:
@@ -416,7 +437,8 @@ def _ensure_badge_window():
     global _badge_window
     if _badge_window is not None or AppKit is None:
         return
-    frame = ((0.0, 0.0), (18.0, 18.0))
+    size = float(_badge_size_px())
+    frame = ((0.0, 0.0), (size, size))
     style = AppKit.NSBorderlessWindowMask
     w = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
         frame, style, AppKit.NSBackingStoreBuffered, False
@@ -424,13 +446,25 @@ def _ensure_badge_window():
     w.setOpaque_(False)
     w.setBackgroundColor_(AppKit.NSColor.clearColor())
     w.setLevel_(AppKit.NSStatusWindowLevel)
-    # Draw a small red circle
-    view = AppKit.NSImageView.alloc().initWithFrame_(((0, 0), (18, 18)))
-    img = AppKit.NSImage.alloc().initWithSize_((18, 18))
+    try:
+        w.setIgnoresMouseEvents_(True)
+        # Keep visible across spaces and in full screen
+        if hasattr(AppKit, "NSWindowCollectionBehaviorCanJoinAllSpaces"):
+            w.setCollectionBehavior_(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces)
+    except Exception:
+        pass
+
+    # Draw a small red circle (size according to env)
+    view = AppKit.NSImageView.alloc().initWithFrame_(((0, 0), (size, size)))
+    img = AppKit.NSImage.alloc().initWithSize_((size, size))
     img.lockFocus()
     try:
         AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.2, 0.2, 0.9).set()
-        path = AppKit.NSBezierPath.bezierPathWithOvalInRect_(((1, 1), (16, 16)))
+        # Leave a 1px margin when size >= 6 for crisper edges
+        inset = 1.0 if size >= 6.0 else 0.0
+        path = AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+            ((inset, inset), (size - 2 * inset, size - 2 * inset))
+        )
         path.fill()
     finally:
         img.unlockFocus()
@@ -439,14 +473,180 @@ def _ensure_badge_window():
     _badge_window = w
 
 
+def _screen_for_point(x: float, y: float):
+    """Return the NSScreen that contains the given global point."""
+    try:
+        for sc in AppKit.NSScreen.screens():
+            f = sc.frame()
+            if (
+                x >= f.origin.x
+                and x <= (f.origin.x + f.size.width)
+                and y >= f.origin.y
+                and y <= (f.origin.y + f.size.height)
+            ):
+                return sc
+    except Exception:
+        pass
+    return AppKit.NSScreen.mainScreen() if AppKit is not None else None
+
+
+def _clamp_to_screen(x: float, y: float, w: float, h: float) -> tuple[float, float]:
+    sc = _screen_for_point(x, y)
+    if not sc:
+        return x, y
+    f = sc.frame()
+    # Clamp so the window stays fully within the screen bounds
+    x = max(f.origin.x, min(x, f.origin.x + f.size.width - w))
+    y = max(f.origin.y, min(y, f.origin.y + f.size.height - h))
+    return x, y
+
+
 def _move_badge_to_cursor():
     if AppKit is None or _badge_window is None:
         return
+    size = float(_badge_size_px())
+    ox, oy = _badge_offsets()
     loc = AppKit.NSEvent.mouseLocation()
-    # Offset up-right from the cursor
-    x = float(loc.x) + 12.0
-    y = float(loc.y) - 12.0
-    _badge_window.setFrameTopLeftPoint_((x, y))
+    x = float(loc.x) + ox
+    y = float(loc.y) + oy
+    x, y = _clamp_to_screen(x, y, size, size)
+    # Use origin (bottom-left) to avoid top-left conversion shenanigans
+    _badge_window.setFrameOrigin_((x, y))
+
+
+def _try_move_badge_to_caret() -> bool:
+    """Best-effort caret anchoring via macOS Accessibility.
+
+    Returns True if moved using caret bounds; otherwise False (caller should fallback).
+    """
+    if AppKit is None or Quartz is None or _badge_window is None:
+        return False
+    try:
+        AX = Quartz
+        sys = AX.AXUIElementCreateSystemWide()
+        # Focused UI element
+        focused = AX.AXUIElementCopyAttributeValue(sys, AX.kAXFocusedUIElementAttribute, None)
+        # PyObjC may return (err, value) or just value depending on version
+        if isinstance(focused, tuple):
+            err, focused = focused
+            if err != 0:
+                focused = None
+        if not focused:
+            return False
+
+        # Selected text range (location/length)
+        sel_range = AX.AXUIElementCopyAttributeValue(
+            focused, AX.kAXSelectedTextRangeAttribute, None
+        )
+        if isinstance(sel_range, tuple):
+            err, sel_range = sel_range
+            if err != 0:
+                sel_range = None
+
+        # Prefer parameterized attribute: bounds for range start (length 0)
+        if sel_range is not None:
+            try:
+                # Some apps accept an AXValue range dict; others accept NSValue-like tuple
+                try_range = sel_range
+                # Coerce to zero-length at start
+                try:
+                    start = int(try_range.location)  # NSRange-like
+                except Exception:
+                    start = (
+                        int(getattr(try_range, "location", 0))
+                        if hasattr(try_range, "location")
+                        else int(
+                            try_range[0]
+                            if isinstance(try_range, (list, tuple)) and try_range
+                            else 0
+                        )
+                    )
+                zero_range = (start, 0)
+                bounds = AX.AXUIElementCopyParameterizedAttributeValue(
+                    focused, AX.kAXBoundsForRangeParameterizedAttribute, zero_range, None
+                )
+                if isinstance(bounds, tuple):
+                    err, bounds = bounds
+                    if err != 0:
+                        bounds = None
+                if bounds is not None:
+                    # Expect a CGRect encoded as AXValue/NSValue; try to unpack
+                    try:
+                        # PyObjC usually bridges AXValue(CGRect) to NSValue-like with rectValue
+                        if hasattr(bounds, "rectValue"):
+                            r = bounds.rectValue()
+                            bx, by = (
+                                float(r.origin.x),
+                                float(r.origin.y),
+                            )
+                        else:
+                            # Fallback if we got a mapping/tuple
+                            r = getattr(bounds, "__dict__", {}) or bounds
+                            bx = float(r.get("x", r.get("origin", {}).get("x", 0.0)))
+                            by = float(r.get("y", r.get("origin", {}).get("y", 0.0)))
+                    except Exception:
+                        bx = by = 0.0
+                    size = float(_badge_size_px())
+                    ox, oy = _badge_offsets()
+                    # Place near the leading edge of the caret rect
+                    x = bx + ox
+                    y = by + oy
+                    x, y = _clamp_to_screen(x, y, size, size)
+                    _badge_window.setFrameOrigin_((x, y))
+                    return True
+            except Exception:
+                pass
+
+        # Fallback: use frame of focused element (rough approximation)
+        frame_val = AX.AXUIElementCopyAttributeValue(focused, AX.kAXFrameAttribute, None)
+        if isinstance(frame_val, tuple):
+            err, frame_val = frame_val
+            if err != 0:
+                frame_val = None
+        if frame_val is not None:
+            try:
+                if hasattr(frame_val, "rectValue"):
+                    r = frame_val.rectValue()
+                    bx, by = (
+                        float(r.origin.x),
+                        float(r.origin.y),
+                    )
+                else:
+                    r = getattr(frame_val, "__dict__", {}) or frame_val
+                    bx = float(r.get("x", r.get("origin", {}).get("x", 0.0)))
+                    by = float(r.get("y", r.get("origin", {}).get("y", 0.0)))
+            except Exception:
+                bx = by = 0.0
+            size = float(_badge_size_px())
+            ox, oy = _badge_offsets()
+            x = bx + ox
+            y = by + oy
+            x, y = _clamp_to_screen(x, y, size, size)
+            _badge_window.setFrameOrigin_((x, y))
+            return True
+    except Exception:
+        # Any failure: caller will fallback to cursor
+        pass
+    return False
+
+
+def _current_anchor() -> str:
+    """Decide where to anchor the badge: 'cursor' or 'caret'.
+
+    If MODE is 'hands_off' → cursor; otherwise default to caret (override via BADGE_ANCHOR).
+    """
+    mode = (os.environ.get("MODE", "hold") or "hold").strip().lower()
+    if mode == "hands_off":
+        return "cursor"
+    # Allow override
+    return (os.environ.get("BADGE_ANCHOR", "caret") or "caret").strip().lower()
+
+
+def _move_badge():
+    if _current_anchor() == "caret":
+        if _try_move_badge_to_caret():
+            return
+    _move_badge_to_cursor()
 
 
 def show_hold_badge():
@@ -454,19 +654,36 @@ def show_hold_badge():
         return
 
     def _show():
-        global _badge_timer
+        global _badge_timer, _badge_timer_target
         _ensure_badge_window()
         if _badge_window is None:
             return
-        _move_badge_to_cursor()
+        _move_badge()
         _badge_window.orderFrontRegardless()
         # Update position periodically while visible
         if _badge_timer is None:
-            _badge_timer = (
-                AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    0.2, _badge_window, "display:", None, True
+            try:
+                # Create a tiny NSObject target with a tick_ method
+                class _BadgeTarget(AppKit.NSObject):
+                    def tick_(self, _timer):  # noqa: N802 (Objective-C selector style)
+                        try:
+                            _move_badge()
+                        except Exception:
+                            pass
+
+                _badge_timer_target = _BadgeTarget.new()
+                _badge_timer = (
+                    AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                        0.15, _badge_timer_target, "tick:", None, True
+                    )
                 )
-            )
+            except Exception:
+                # Fallback: at least ask the window to redraw
+                _badge_timer = (
+                    AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                        0.3, _badge_window, "display:", None, True
+                    )
+                )
 
     if NSThread is not None and not NSThread.isMainThread() and NSOperationQueue is not None:
         NSOperationQueue.mainQueue().addOperationWithBlock_(_show)
@@ -476,10 +693,11 @@ def show_hold_badge():
 
 def hide_hold_badge():
     def _hide():
-        global _badge_timer
+        global _badge_timer, _badge_timer_target
         if _badge_timer is not None and AppKit is not None:
             _badge_timer.invalidate()
             _badge_timer = None
+            _badge_timer_target = None
         if _badge_window is not None:
             _badge_window.orderOut_(None)
 

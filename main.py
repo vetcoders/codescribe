@@ -319,6 +319,11 @@ async def handle_hotkey_event(app: rumps.App, key_type: str, action: str):
                 _set_status(app, "Listening…")
                 if BEEP_ON_START:
                     start_sound()
+                try:
+                    # Reuse the small badge indicator during Hands-Off as well
+                    show_hold_badge()
+                except Exception:
+                    pass
                 STATE = "REC_TOGGLE"
                 logger.info("State transition: IDLE -> REC_TOGGLE")
             except Exception as e:
@@ -388,6 +393,8 @@ class VistaScribe(rumps.App):
             "Language: English (EN)",
             "What do these toggles do?",
             None,  # Separator
+            "Mode",
+            None,  # Separator
             "Hotkey Settings",
             "Start at Login",
             "Feedback",
@@ -411,6 +418,27 @@ class VistaScribe(rumps.App):
         self.menu["Open System Accessibility Settings..."].set_callback(self._open_accessibility)
         self.menu["Quit"].set_callback(self._quit_app)
         self.menu["Start at Login"].set_callback(self._toggle_login_item)
+
+        # Mode submenu (Hold / Hands-Off / Advanced)
+        cur_mode = (os.environ.get("MODE", "hold") or "hold").strip().lower()
+        self.item_mode_hold = rumps.MenuItem("Hold", callback=lambda _s: self._set_mode("hold"))
+        self.item_mode_handoff = rumps.MenuItem(
+            "Hands-Off", callback=lambda _s: self._set_mode("hands_off")
+        )
+        self.item_mode_adv = rumps.MenuItem(
+            "Advanced (stub)", callback=lambda _s: self._set_mode("advanced")
+        )
+        self.item_mode_save = rumps.MenuItem("Save Mode to .env", callback=self._save_mode_env)
+        self.menu["Mode"] = [
+            rumps.MenuItem("Current: " + cur_mode.replace("_", " ")),  # read-only label
+            None,
+            self.item_mode_hold,
+            self.item_mode_handoff,
+            self.item_mode_adv,
+            None,
+            self.item_mode_save,
+        ]
+        self._refresh_mode_menu()
 
         # Hotkey settings submenu (predefined hold combos)
         self.item_hold_ctrl = rumps.MenuItem("Hold: Ctrl only", callback=self._set_hold_ctrl)
@@ -1342,6 +1370,43 @@ class VistaScribe(rumps.App):
         logger.info("Starting rumps application run loop...")
         super().run()  # blocks until quit
         logger.info("Rumps run loop finished.")
+
+    # --- Mode handling ---
+    def _refresh_mode_menu(self):
+        mode = (os.environ.get("MODE", "hold") or "hold").strip().lower()
+        try:
+            self.menu["Mode"][0].title = "Current: " + mode.replace("_", " ")
+        except Exception:
+            pass
+        self.item_mode_hold.state = mode == "hold"
+        self.item_mode_handoff.state = mode == "hands_off"
+        self.item_mode_adv.state = mode == "advanced"
+
+    def _set_mode(self, mode: str):
+        os.environ["MODE"] = mode
+        try:
+            update_env_vars({"MODE": mode})
+        except Exception:
+            pass
+        self._refresh_mode_menu()
+        # Friendly nudge that only anchors/UX change for now
+        try:
+            rumps.notification(
+                title="VistaScribe",
+                subtitle="Mode switched",
+                message=mode.replace("_", " "),
+            )
+        except Exception:
+            pass
+
+    def _save_mode_env(self, _sender):
+        try:
+            update_env_vars({"MODE": os.environ.get("MODE", "hold")})
+            rumps.notification(
+                title="VistaScribe", subtitle="Mode saved", message=os.environ.get("MODE", "hold")
+            )
+        except Exception as e:
+            logger.error(f"Failed to save MODE to .env: {e}")
 
 
 # --- entry point ---

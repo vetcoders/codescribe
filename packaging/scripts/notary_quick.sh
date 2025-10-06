@@ -25,6 +25,7 @@ TEAM_ID=""
 P12="${HOME}/.keys/Certificates.p12"
 P12_PASS_FILE="${HOME}/.keys/cert_password.txt"
 KEYCHAIN="vistabuild.keychain-db"
+SKIP_NOTARY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -38,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --p12) P12="$2"; shift 2;;
     --p12-pass-file) P12_PASS_FILE="$2"; shift 2;;
     --keychain) KEYCHAIN="$2"; shift 2;;
+    --no-notary) SKIP_NOTARY=1; shift 1;;
     *) echo "Unknown arg: $1" >&2; exit 1;;
   esac
 done
@@ -107,14 +109,15 @@ if [[ -n "$DMG" && -f "$DMG" && -n "$IDENTITY" ]]; then
   codesign --force --sign "$IDENTITY" "$DMG" || true
 fi
 
-# 3) Notarization
-# If we have a DMG, submit the DMG; additionally, submit the .app as a ZIP so it can be stapled too.
-ZIP_APP=""
-if [[ -d "$APP" ]]; then
-  ZIP_APP="${APP%/}.zip"
-  echo "[i] Creating ZIP for app notarization: $ZIP_APP"
-  /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP_APP"
-fi
+if [[ "$SKIP_NOTARY" -eq 0 ]]; then
+  # 3) Notarization
+  # If we have a DMG, submit the DMG; additionally, submit the .app as a ZIP so it can be stapled too.
+  ZIP_APP=""
+  if [[ -d "$APP" ]]; then
+    ZIP_APP="${APP%/}.zip"
+    echo "[i] Creating ZIP for app notarization: $ZIP_APP"
+    /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP_APP"
+  fi
 
 submit_with_profile() {
   local file="$1"
@@ -132,28 +135,35 @@ submit_with_creds() {
   xcrun notarytool submit "$file" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PW" --wait
 }
 
-if [[ -n "$PROFILE" ]]; then
+  if [[ -n "$PROFILE" ]]; then
   # Use the provided keychain profile
   [[ -n "$DMG" && -f "$DMG" ]] && submit_with_profile "$DMG"
   [[ -n "$ZIP_APP" && -f "$ZIP_APP" ]] && submit_with_profile "$ZIP_APP"
-else
+  else
   # Interactive credentials path
   if [[ -z "$APPLE_ID" ]]; then vared -p "Apple ID (e.g., you@example.com): " -c APPLE_ID; fi
   if [[ -z "$TEAM_ID" ]]; then vared -p "Team ID (10 chars): " -c TEAM_ID; fi
   read -s "APP_PW?App-specific password: "; echo
   [[ -n "$DMG" && -f "$DMG" ]] && submit_with_creds "$DMG"
   [[ -n "$ZIP_APP" && -f "$ZIP_APP" ]] && submit_with_creds "$ZIP_APP"
+  fi
+
+  echo "📎 Stapling ticket(s)"
+  [[ -n "$DMG" && -f "$DMG" ]] && xcrun stapler staple "$DMG" || true
+  [[ -d "$APP" ]] && xcrun stapler staple "$APP" || true
+  [[ -n "$DMG" && -f "$DMG" ]] && xcrun stapler validate "$DMG" || true
+
+  # Cleanup temporary ZIP if we created one
+  [[ -n "$ZIP_APP" && -f "$ZIP_APP" ]] && rm -f "$ZIP_APP"
+
+  echo "🔎 Verifying Gatekeeper assessment"
+  spctl --assess --type execute -vvvv "$APP" || true
+
+  echo "✅ Done. You can now distribute: ${DMG:-$APP}"
+else
+  echo "⏭️  Notarization skipped (--no-notary). Signed artifacts ready."
+  codesign --display --verbose=1 "$APP" | sed -n '1,4p' || true
+  [[ -n "$DMG" && -f "$DMG" ]] && codesign --display --verbose=1 "$DMG" | sed -n '1,4p' || true
+  echo "➡️  APP: $APP"
+  [[ -n "$DMG" && -f "$DMG" ]] && echo "➡️  DMG: $DMG"
 fi
-
-echo "📎 Stapling ticket(s)"
-[[ -n "$DMG" && -f "$DMG" ]] && xcrun stapler staple "$DMG" || true
-[[ -d "$APP" ]] && xcrun stapler staple "$APP" || true
-[[ -n "$DMG" && -f "$DMG" ]] && xcrun stapler validate "$DMG" || true
-
-# Cleanup temporary ZIP if we created one
-[[ -n "$ZIP_APP" && -f "$ZIP_APP" ]] && rm -f "$ZIP_APP"
-
-echo "🔎 Verifying Gatekeeper assessment"
-spctl --assess --type execute -vvvv "$APP" || true
-
-echo "✅ Done. You can now distribute: ${DMG:-$APP}"

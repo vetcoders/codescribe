@@ -9,6 +9,13 @@
 
 set -euo pipefail
 
+NO_NOTARY=0
+for arg in "$@"; do
+  if [[ "$arg" == "--no-notary" ]]; then
+    NO_NOTARY=1
+  fi
+done
+
 ROOT_DIR="$(cd -- "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/packaging/dist"
 
@@ -28,6 +35,7 @@ if [[ -n "${SIGN_IDENTITY:-}" ]] || [[ -n "${NOTARY_PROFILE:-}" ]]; then
   ARGS=(--app "$APP_PATH" --dmg "$DMG_PATH")
   [[ -n "${SIGN_IDENTITY:-}" ]] && ARGS+=(--identity "$SIGN_IDENTITY")
   [[ -n "${NOTARY_PROFILE:-}" ]] && ARGS+=(--profile "$NOTARY_PROFILE")
+  [[ "$NO_NOTARY" -eq 1 ]] && ARGS+=(--no-notary)
   "$ROOT_DIR/packaging/scripts/notary_quick.sh" "${ARGS[@]}"
 else
   echo "(skip) Signing/Notary — no SIGN_IDENTITY/NOTARY_PROFILE provided"
