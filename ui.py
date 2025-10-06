@@ -22,12 +22,13 @@
 try:
     import AppKit
     import Quartz
-    from Foundation import NSOperationQueue, NSThread
+    from Foundation import NSData, NSOperationQueue, NSThread
 except Exception:  # Allow importing ui helpers in non-macOS test envs
     AppKit = None  # type: ignore
     Quartz = None  # type: ignore
     NSOperationQueue = None  # type: ignore
     NSThread = None  # type: ignore
+    NSData = None  # type: ignore
 import logging
 import os
 import time
@@ -227,10 +228,79 @@ def paste_text(text: str):
 
     logging.info(f"Pasting text: '{text[:50]}...' ({len(text)} chars)")
 
+    def _snapshot_pasteboard(pb):
+        """Capture full pasteboard contents (all items/types) and changeCount.
+
+        Returns a tuple (snapshot, change_count) where snapshot is a list of
+        items, each item being a list of (uti: str, data: bytes).
+        """
+        snapshot: list[list[tuple[str, bytes]]] = []
+        try:
+            items = pb.pasteboardItems() or []
+            for it in items:
+                types = list(it.types() or [])
+                entry: list[tuple[str, bytes]] = []
+                for uti in types:
+                    try:
+                        nsdata = it.dataForType_(uti)
+                        if nsdata is not None:
+                            entry.append((str(uti), bytes(nsdata)))
+                    except Exception:
+                        # ignore types we can't read
+                        pass
+                snapshot.append(entry)
+        except Exception:
+            # Fallback: capture plain string
+            try:
+                s = pb.stringForType_(AppKit.NSStringPboardType)
+                if s is not None:
+                    bs = s.encode("utf-8", "surrogatepass")
+                    snapshot = [[("public.utf8-plain-text", bs)]]
+            except Exception:
+                pass
+        return snapshot, int(pb.changeCount())
+
+    def _restore_pasteboard_if_unchanged(pb, snapshot, our_count):
+        try:
+            # Only restore if no one changed the clipboard since our write
+            if int(pb.changeCount()) != int(our_count):
+                return
+            pb.clearContents()
+            wrote_any = False
+            for entry in snapshot:
+                item = AppKit.NSPasteboardItem.alloc().init()
+                ok_all = True
+                for uti, data in entry:
+                    try:
+                        nsdata = NSData.dataWithBytes_length_(data, len(data))
+                        ok = item.setData_forType_(nsdata, uti)
+                        ok_all = ok_all and bool(ok)
+                    except Exception:
+                        ok_all = False
+                if ok_all:
+                    pb.writeObjects_([item])
+                    wrote_any = True
+            if wrote_any:
+                logging.info("Clipboard restored to previous contents.")
+        except Exception:
+            logging.debug("Clipboard restore skipped due to error.")
+
     def _do_paste():
         try:
             # 1. copy text to pasteboard
             pasteboard = AppKit.NSPasteboard.generalPasteboard()
+            # Snapshot current clipboard (for optional restore)
+            restore_enabled = os.environ.get("RESTORE_CLIPBOARD", "1").lower() not in (
+                "0",
+                "false",
+                "no",
+                "off",
+            )
+            snapshot = None
+            before_count = None
+            if restore_enabled:
+                snapshot, before_count = _snapshot_pasteboard(pasteboard)
+
             pasteboard.clearContents()  # clear existing contents
             pasteboard.declareTypes_owner_([AppKit.NSStringPboardType], None)
             success = pasteboard.setString_forType_(text, AppKit.NSStringPboardType)
@@ -238,6 +308,7 @@ def paste_text(text: str):
                 logging.error("Failed to set string on pasteboard.")
                 return
             logging.info("Text successfully copied to clipboard.")
+            our_count = int(pasteboard.changeCount())
 
             # 2. simulate cmd+v keypress
             source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateCombinedSessionState)
@@ -263,6 +334,23 @@ def paste_text(text: str):
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_up)
 
             logging.info("Command+V keypress simulated successfully.")
+
+            # Optional: restore previous clipboard shortly after paste
+            if restore_enabled and snapshot is not None:
+                import threading
+
+                delay_ms = int(os.environ.get("RESTORE_CLIPBOARD_DELAY_MS", "200"))
+
+                def _delayed_restore():
+                    time.sleep(max(0, delay_ms) / 1000.0)
+                    if NSOperationQueue is not None:
+                        NSOperationQueue.mainQueue().addOperationWithBlock_(
+                            lambda: _restore_pasteboard_if_unchanged(
+                                pasteboard, snapshot, our_count
+                            )
+                        )
+
+                threading.Thread(target=_delayed_restore, daemon=True).start()
 
         except Exception as e:
             logging.error(f"Error during paste operation: {e}", exc_info=True)
