@@ -139,9 +139,13 @@ fi
 
 echo "📎 Stapling ticket"
 xcrun stapler staple "$TARGET" || true
+# Also staple the app bundle if present; improves offline/airgapped first run
+if [[ -d "$APP" ]]; then
+  xcrun stapler staple "$APP" || echo "[!] App staple failed; submit app separately if needed"
+fi
 
 echo "🔎 Verifying Gatekeeper assessment"
 spctl --assess --type execute -vvvv "$APP" || true
 [[ -n "$DMG" && -f "$DMG" ]] && xcrun stapler validate "$DMG" || true
 
-echo "✅ Done. You can now distribute: $TARGET"
+echo "✅ Done. You can now distribute: ${DMG:-$APP}"
