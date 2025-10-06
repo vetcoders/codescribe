@@ -132,11 +132,8 @@ submit_with_creds() {
   xcrun notarytool submit "$file" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PW" --wait
 }
 
-if [[ -n "$PROFILE" || $(xcrun notarytool list-profiles >/dev/null 2>&1; echo $?) -eq 0 ]]; then
-  # Prefer explicit profile, else the first stored profile
-  if [[ -z "$PROFILE" ]]; then
-    PROFILE_DEF="$(xcrun notarytool list-profiles | awk 'NR==2{print $1}')"
-  fi
+if [[ -n "$PROFILE" ]]; then
+  # Use the provided keychain profile
   [[ -n "$DMG" && -f "$DMG" ]] && submit_with_profile "$DMG"
   [[ -n "$ZIP_APP" && -f "$ZIP_APP" ]] && submit_with_profile "$ZIP_APP"
 else
