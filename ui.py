@@ -408,6 +408,21 @@ _badge_window = None
 _badge_timer = None
 _badge_timer_target = None  # Objective-C target to drive timer ticks
 
+_EDITABLE_ROLES = {
+    getattr(AppKit, "NSAccessibilityTextAreaRole", "AXTextArea"),
+    getattr(AppKit, "NSAccessibilityTextFieldRole", "AXTextField"),
+    getattr(AppKit, "NSAccessibilitySearchFieldRole", "AXSearchField"),
+    getattr(AppKit, "NSAccessibilityComboBoxRole", "AXComboBox"),
+    getattr(AppKit, "NSAccessibilitySecureTextFieldRole", "AXSecureTextField"),
+    "AXText",  # generic
+    "AXParagraph",
+}
+
+_EDITABLE_SUBROLES = {
+    getattr(AppKit, "NSAccessibilityStandardWindowSubrole", "AXStandardWindow"),
+    getattr(AppKit, "NSAccessibilityTableRowSubrole", "AXTableRow"),
+}
+
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -709,3 +724,88 @@ def hide_hold_badge():
         NSOperationQueue.mainQueue().addOperationWithBlock_(_hide)
     else:
         _hide()
+
+
+def _coerce_ax_value(result):
+    if isinstance(result, tuple):
+        err, value = result
+        if err != 0:
+            return None
+        return value
+    return result
+
+
+def _ax_string_attr(element, attr):
+    try:
+        val = _coerce_ax_value(Quartz.AXUIElementCopyAttributeValue(element, attr, None))
+        if val is None:
+            return None
+        return str(val)
+    except Exception:
+        return None
+
+
+def _ax_bool_attr(element, attr):
+    try:
+        val = _coerce_ax_value(Quartz.AXUIElementCopyAttributeValue(element, attr, None))
+        return bool(val)
+    except Exception:
+        return False
+
+
+def _ax_attribute_settable(element, attr) -> bool:
+    try:
+        return bool(Quartz.AXUIElementIsAttributeSettable(element, attr))
+    except Exception:
+        return False
+
+
+def focused_element_accepts_text() -> bool:
+    """Best-effort check whether the currently focused element is text-editable.
+
+    Returns True if we are reasonably confident input is accepted. If unsure,
+    defaults to True (fail-open) to avoid breaking workflows.
+    """
+
+    if Quartz is None:
+        return True
+
+    try:
+        system_elem = Quartz.AXUIElementCreateSystemWide()
+        focused = _coerce_ax_value(
+            Quartz.AXUIElementCopyAttributeValue(
+                system_elem, Quartz.kAXFocusedUIElementAttribute, None
+            )
+        )
+        if not focused:
+            return False
+
+        role = _ax_string_attr(focused, Quartz.kAXRoleAttribute)
+        if role in _EDITABLE_ROLES:
+            return True
+
+        subrole = _ax_string_attr(focused, Quartz.kAXSubroleAttribute)
+        if subrole in _EDITABLE_SUBROLES:
+            return True
+
+        editable_ancestor = _coerce_ax_value(
+            Quartz.AXUIElementCopyAttributeValue(
+                focused, getattr(Quartz, "kAXEditableAncestorAttribute", "AXEditableAncestor"), None
+            )
+        )
+        if editable_ancestor:
+            return True
+
+        if _ax_attribute_settable(focused, Quartz.kAXValueAttribute):
+            return True
+
+        supports_attr = getattr(
+            Quartz, "kAXSupportsTextSelectionAttribute", "AXSupportsTextSelection"
+        )
+        if _ax_bool_attr(focused, supports_attr):
+            return True
+
+        return False
+    except Exception as exc:  # pragma: no cover - depends on OS
+        logging.debug(f"Accessibility text check skipped: {exc}")
+        return True
