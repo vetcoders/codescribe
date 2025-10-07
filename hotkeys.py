@@ -58,9 +58,7 @@ _DOUBLE_OPTION_INTERVAL = float(os.environ.get("DOUBLE_OPTION_INTERVAL_MS", "350
 _DOUBLE_SPACE_INTERVAL = float(os.environ.get("DOUBLE_SPACE_INTERVAL_MS", "300")) / 1000.0
 
 # Toggle trigger: double_option (default) | double_ralt | double_space | none
-_TOGGLE_TRIGGER = (
-    os.environ.get("TOGGLE_TRIGGER", "double_option").strip().lower() or "double_option"
-)
+_TOGGLE_TRIGGER = os.environ.get("TOGGLE_TRIGGER", "double_ralt").strip().lower() or "double_ralt"
 
 # Enable/disable toggle shortcuts (defaults: double Option ON, Slash OFF)
 _ENABLE_DOUBLE_OPTION = os.environ.get("ENABLE_DOUBLE_OPTION", "1").lower() not in (
@@ -385,7 +383,10 @@ def _tap(_proxy, type_, event, _refcon):
                     else:
                         now = time.perf_counter()
                         if alt_is_down:
-                            if (
+                            if ctrl_is_down or shift_is_down or cmd_is_down:
+                                # Ignore option used with another modifier (e.g., ⌥+←)
+                                _last_alt_down_ts = 0.0
+                            elif (
                                 _last_alt_down_ts
                                 and (now - _last_alt_down_ts) <= _DOUBLE_OPTION_INTERVAL
                             ):
@@ -394,6 +395,9 @@ def _tap(_proxy, type_, event, _refcon):
                                 _last_alt_down_ts = 0.0
                             else:
                                 _last_alt_down_ts = now
+                        else:
+                            # Reset timer when Option fully released
+                            _last_alt_down_ts = 0.0
                         _last_alt_state = alt_is_down
 
         # KeyDown based toggles

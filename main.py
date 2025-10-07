@@ -38,6 +38,7 @@ import objc  # for selector
 import requests
 import rumps
 
+import diag  # developer diagnostics
 import first_run
 import llm  # runtime toggle for formatting
 from audio import Recorder
@@ -376,6 +377,9 @@ class VistaScribe(rumps.App):
                     # Hide title text when an icon is present
                     self.title = ""
                     logger.info(f"Tray icon set: {norm}")
+                    # In DEV_MODE force a visible glyph right away so we see the status item
+                    if os.environ.get("DEV_MODE", "0").lower() in ("1", "true", "yes", "on"):
+                        MenuIcon.set(self, MenuIcon.IDLE)
         except Exception as e:
             logger.warning(f"Tray icon setup skipped: {e}")
 
@@ -438,6 +442,11 @@ class VistaScribe(rumps.App):
             None,
             self.item_mode_save,
         ]
+        # Ensure submenu is enabled (avoid greyed-out appearance)
+        try:
+            self.menu["Mode"].set_callback(lambda _s: None)
+        except Exception:
+            pass
         self._refresh_mode_menu()
 
         # Hotkey settings submenu (predefined hold combos)
@@ -483,6 +492,10 @@ class VistaScribe(rumps.App):
             None,
             self.item_customize_hotkeys,
         ]
+        try:
+            self.menu["Hotkey Settings"].set_callback(lambda _s: None)
+        except Exception:
+            pass
         self._refresh_hold_menu()
 
         # Feedback (start sound) submenu
@@ -506,6 +519,10 @@ class VistaScribe(rumps.App):
             None,
             self.item_sound_save,
         ]
+        try:
+            self.menu["Feedback"].set_callback(lambda _s: None)
+        except Exception:
+            pass
         # Reflect current env
         self._refresh_feedback_menu()
 
@@ -555,6 +572,10 @@ class VistaScribe(rumps.App):
             None,
             self.item_open_models,
         ]
+        try:
+            self.menu["Models"].set_callback(lambda _s: None)
+        except Exception:
+            pass
         self._refresh_models_menu()
 
         # --- Mini config tool (Backends) ---
@@ -573,6 +594,10 @@ class VistaScribe(rumps.App):
             self.item_l_url,
             self.item_check,
         ]
+        try:
+            self.menu["Backends"].set_callback(lambda _s: None)
+        except Exception:
+            pass
         # Apply env and update labels
         self._apply_cfg_env()
         self._update_backend_menu_labels()
@@ -592,6 +617,13 @@ class VistaScribe(rumps.App):
         self.async_thread = None
         self.queue_timer = rumps.Timer(self.poll_queue, 0.05)  # poll queue every 50ms
         logger.info("Vista Scribe App initialized.")
+        # Developer diagnostics: preflight snapshot if DEV_MODE enabled
+        try:
+            if os.environ.get("DEV_MODE", "0").lower() in ("1", "true", "yes", "on"):
+                info = diag.run_preflight(logger)
+                diag.write_snapshot(info, os.path.dirname(os.path.abspath(__file__)))
+        except Exception as e:
+            logger.debug(f"Diagnostics failed: {e}")
         # Minimal first-run setup: config + sensible defaults (non-blocking)
         try:
             first_run.ensure_config_and_permissions()
