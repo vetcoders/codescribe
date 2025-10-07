@@ -459,10 +459,6 @@ class VistaScribe(rumps.App):
             self.item_mode_save,
         ]
         # Ensure submenu is enabled (avoid greyed-out appearance)
-        try:
-            self.menu["Mode"].set_callback(lambda _s: None)
-        except Exception:
-            pass
         self._refresh_mode_menu()
 
         # Hotkey settings submenu (predefined hold combos)
@@ -508,10 +504,6 @@ class VistaScribe(rumps.App):
             None,
             self.item_customize_hotkeys,
         ]
-        try:
-            self.menu["Hotkey Settings"].set_callback(lambda _s: None)
-        except Exception:
-            pass
         self._refresh_hold_menu()
 
         # Feedback (start sound) submenu
@@ -535,10 +527,6 @@ class VistaScribe(rumps.App):
             None,
             self.item_sound_save,
         ]
-        try:
-            self.menu["Feedback"].set_callback(lambda _s: None)
-        except Exception:
-            pass
         # Reflect current env
         self._refresh_feedback_menu()
 
@@ -557,10 +545,6 @@ class VistaScribe(rumps.App):
             None,
             self.item_history_open,
         ]
-        try:
-            self.menu["History"].set_callback(lambda _s: None)
-        except Exception:
-            pass
         self._refresh_history_menu()
 
         # Models submenu: download & select
@@ -609,10 +593,6 @@ class VistaScribe(rumps.App):
             None,
             self.item_open_models,
         ]
-        try:
-            self.menu["Models"].set_callback(lambda _s: None)
-        except Exception:
-            pass
         self._refresh_models_menu()
 
         # --- Mini config tool (Backends) ---
@@ -631,10 +611,6 @@ class VistaScribe(rumps.App):
             self.item_l_url,
             self.item_check,
         ]
-        try:
-            self.menu["Backends"].set_callback(lambda _s: None)
-        except Exception:
-            pass
         # Apply env and update labels
         self._apply_cfg_env()
         self._update_backend_menu_labels()
