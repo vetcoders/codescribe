@@ -31,12 +31,12 @@ from huggingface_hub import snapshot_download
 # Known MLX Whisper repos
 WHISPER_REPOS = {
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-    "large-v3": "mlx-community/whisper-large-v3",
-    "medium": "mlx-community/whisper-medium",
-    # optional aliases if you prefer -mlx naming
-    "small-mlx": "mlx-community/whisper-small-mlx",
-    "medium-mlx": "mlx-community/whisper-medium-mlx",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
     "large-v3-mlx": "mlx-community/whisper-large-v3-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "medium-mlx": "mlx-community/whisper-medium-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "small-mlx": "mlx-community/whisper-small-mlx",
 }
 
 
