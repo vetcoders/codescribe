@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+QUICKSTART="./scripts/quickstart_mac.sh"
+LOG_DIR="$ROOT_DIR/logs"
+LOG_FILE="$LOG_DIR/VistaScribe.log"
+PID_DIR="$ROOT_DIR/.pids"
+
+usage() {
+  cat <<'EOF'
+VistaScribe — friendly launcher
+
+Usage:
+  VistaScribe start [tray|backend|both]   Start (default: both) in background
+  VistaScribe stop                        Stop tray/backend processes
+  VistaScribe restart [mode]              Stop, then start again
+  VistaScribe status                      Show running PIDs
+  VistaScribe logs [--follow]             Show recent logs (tail -n 50 / -f)
+  VistaScribe fresh [--yes]               Reset caches + macOS permissions
+  VistaScribe help                        Show this help
+
+Examples:
+  VistaScribe start                       # tray + backend, nohup
+  VistaScribe start tray                  # tray only (no backend)
+  VistaScribe logs --follow               # live logs
+  VistaScribe fresh --yes                 # wipe caches (keeps models/.env)
+EOF
+}
+
+ensure_quickstart() {
+  if [[ ! -x "$QUICKSTART" ]]; then
+    echo "[!] Missing ./scripts/quickstart_mac.sh (or not executable)." >&2
+    exit 1
+  fi
+}
+
+ensure_dirs() {
+  mkdir -p "$LOG_DIR" "$PID_DIR"
+}
+
+cmd=${1:-start}
+shift || true
+
+ensure_quickstart
+ensure_dirs
+
+start_cmd() {
+  local mode=${1:-both}
+  case "$mode" in
+    tray|backend|both) :;;
+    *) echo "[!] Unknown mode '$mode' (use tray|backend|both)." >&2; exit 2;;
+  esac
+  echo "==> Starting VistaScribe ($mode)"
+  "$QUICKSTART" --mode "$mode" --daemon --log "$LOG_FILE"
+}
+
+stop_cmd() {
+  echo "==> Stopping VistaScribe"
+  "$QUICKSTART" --stop-all || true
+}
+
+status_cmd() {
+  for name in tray backend; do
+    local f="$PID_DIR/${name}.pid"
+    if [[ -f "$f" ]]; then
+      local pid
+      pid=$(cat "$f" 2>/dev/null || echo "")
+      if [[ -n "$pid" ]]; then
+        if ps -p "$pid" >/dev/null 2>&1; then
+          echo "$name: running (pid $pid)"
+        else
+          echo "$name: not running (stale pid $pid)"
+        fi
+      else
+        echo "$name: not running"
+      fi
+    else
+      echo "$name: not running"
+    fi
+  done
+}
+
+logs_cmd() {
+  local follow=0
+  if [[ "${1:-}" == "--follow" || "${1:-}" == "-f" ]]; then
+    follow=1
+  fi
+  if [[ ! -f "$LOG_FILE" ]]; then
+    echo "[!] Log file not found ($LOG_FILE)." >&2
+    exit 1
+  fi
+  if [[ $follow -eq 1 ]]; then
+    tail -f "$LOG_FILE"
+  else
+    tail -n 50 "$LOG_FILE"
+  fi
+}
+
+fresh_cmd() {
+  local confirm="${1:-}"
+  local args=(--fresh)
+  if [[ "$confirm" == "--yes" || "$confirm" == "-y" || "$confirm" == "yes" ]]; then
+    args+=(--yes)
+  fi
+  echo "==> Running fresh cleanup"
+  "$QUICKSTART" "${args[@]}"
+}
+
+case "$cmd" in
+  start)
+    start_cmd "${1:-both}"
+    ;;
+  stop)
+    stop_cmd
+    ;;
+  restart)
+    stop_cmd
+    start_cmd "${1:-both}"
+    ;;
+  status)
+    status_cmd
+    ;;
+  logs)
+    logs_cmd "${1:-}"
+    ;;
+  fresh)
+    fresh_cmd "${1:-}"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "[!] Unknown command '$cmd'" >&2
+    usage
+    exit 2
+    ;;
+esac

@@ -1,0 +1,22 @@
+name: Lint (Ruff)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  ruff:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Ruff format (check)
+        run: uvx --from ruff ruff format --check .
+
+      - name: Ruff check
+        run: uvx --from ruff ruff check .

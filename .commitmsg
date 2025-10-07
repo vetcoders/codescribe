@@ -1,0 +1,7 @@
+feat: hotkey/feedback .env persistence, Light Plus default, models menu
+
+- Hotkeys: Exclusive Ctrl default; menu to change combos; auto‑persist HOLD_MODS/HOLD_EXCLUSIVE
+- Feedback: soft start sound (Tink/Pop), volume; auto‑persist BEEP_ON_START/SOUND_*
+- Formatting: Light Plus as default (no LLM), adjustable via FORMAT_STRATEGY
+- Packaging: DMG build helpers, wrapper .app, install script, launchagent, signing/notary script
+- Docs: refresh README (PL/EN) to match current state

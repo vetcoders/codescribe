@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Local fallback hook (no pre-commit framework required)
+# Runs Ruff format + check. To enable:
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+run() {
+  echo "[pre-commit] $*" >&2
+  "$@"
+}
+
+# Prefer uvx if present; otherwise fall back to PATH
+if command -v uvx >/dev/null 2>&1; then
+  RUFFF="uvx ruff"
+else
+  RUFFF="ruff"
+fi
+
+run $RUFFF format --quiet .
+# Fail if Ruff would modify anything again after --fix
+run $RUFFF check --fix --exit-non-zero-on-fix .
+
+echo "[pre-commit] Ruff passed."
+
