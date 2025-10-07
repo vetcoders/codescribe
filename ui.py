@@ -71,11 +71,15 @@ class MenuIcon:
             glyph (str): the unicode character to use as the icon.
         """
         if app:
-            if getattr(app, "icon", None):
-                # When an image icon is used, keep title empty
-                app.title = ""
-            else:
+            # In DEV_MODE, force a visible glyph title to aid diagnostics
+            if os.environ.get("DEV_MODE", "0").lower() in ("1", "true", "yes", "on"):
                 app.title = glyph
+            else:
+                if getattr(app, "icon", None):
+                    # When an image icon is used, keep title empty
+                    app.title = ""
+                else:
+                    app.title = glyph
         else:
             logging.warning("Attempted to set menu icon, but app object was None.")
 

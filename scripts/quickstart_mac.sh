@@ -13,6 +13,8 @@
 #   --daemon [--log FILE]               # run tray/backend in background (default log: VistaScribe.log)
 #   --with-backend                      # start backend alongside tray (same as --mode both)
 #   --no-models                         # skip model downloader
+#   --dev | --verbose                   # enable DEV diagnostics, debug logs; run in foreground
+#   --fresh [--yes]                     # stop processes and wipe app caches/settings (keeps .env & models)
 #   --hold-mods <ctrl|ctrl+alt|...>     # persist to .env
 #   --hold-exclusive 0|1                # persist to .env
 #   --beep 0|1 --sound-name Tink|Pop --sound-volume 0.0-1.0  # persist to .env
@@ -55,6 +57,28 @@ if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   unset VIRTUAL_ENV
 fi
 
+# Preload selected keys from .env (if present) to reuse persisted defaults
+if [[ -f .env ]]; then
+  while IFS='=' read -r key value; do
+    key="${key%%[[:space:]]*}"
+    [[ -z "$key" || "${key:0:1}" == "#" ]] && continue
+    value="${value%$'\r'}"
+    value="${value%%#*}"
+    # trim leading/trailing whitespace
+    value="${value#${value%%[![:space:]]*}}"
+    value="${value%${value##*[![:space:]]}}"
+    # strip surrounding double quotes if present
+    if [[ "$value" == "\""* && "$value" == *"\"" ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    case "$key" in
+      WHISPER_VARIANT|WHISPER_DIR|FORMAT_ENABLED|MODE|HOLD_MODS|HOLD_EXCLUSIVE|BEEP_ON_START|SOUND_NAME|SOUND_VOLUME)
+        export "$key=$value"
+        ;;
+    esac
+  done < .env
+fi
+
 # Default values for parameters (use :- for proper default substitution)
 WHISPER_VARIANT="${WHISPER_VARIANT:-large-v3-turbo}"
 FORMAT_ENABLED="${FORMAT_ENABLED:-1}"
@@ -70,6 +94,10 @@ WITH_BACKEND=0
 STOP_TRAY=0
 STOP_BACK=0
 STOP_ALL=0
+DEV_MODE=0
+FRESH=0
+FRESH_YES=0
+RESET_TCC_SELF=0
 
 graceful_kill() {
   local pid="$1"; local name="$2"; local timeout=5
@@ -121,11 +149,17 @@ while [[ $# -gt 0 ]]; do
     --stop) STOP_TRAY=1; shift;;
     --stop-backend) STOP_BACK=1; shift;;
     --stop-all) STOP_ALL=1; shift;;
+    --dev|--verbose) DEV_MODE=1; DAEMON=0; export LOG_LEVEL=DEBUG; shift;;
+    --fresh) FRESH=1; shift;;
+    --reset-tcc-self|--reset-access) RESET_TCC_SELF=1; shift;;
+    --yes|--force) FRESH_YES=1; shift;;
     --hold-mods) PERSIST_ENVS+=("HOLD_MODS=$2"); shift 2;;
     --hold-exclusive) PERSIST_ENVS+=("HOLD_EXCLUSIVE=$2"); shift 2;;
     --beep) PERSIST_ENVS+=("BEEP_ON_START=$2"); shift 2;;
     --sound-name) PERSIST_ENVS+=("SOUND_NAME=$2"); shift 2;;
     --sound-volume) PERSIST_ENVS+=("SOUND_VOLUME=$2"); shift 2;;
+    yes) FRESH_YES=1; shift;;
+    no) FRESH_YES=0; shift;;
     *) echo "[!] Unknown flag: $1"; print_help; exit 2;;
   esac
 done
@@ -154,6 +188,10 @@ uv sync --active
 
 echo "==> Python: $(python -c 'import sys; print(sys.executable)')"
 echo "==> VIRTUAL_ENV=${VIRTUAL_ENV:-}"
+if [[ "$DEV_MODE" -eq 1 ]]; then
+  export DEV_MODE=1
+  echo "==> DEV diagnostics enabled (LOG_LEVEL=${LOG_LEVEL:-INFO})"
+fi
 
 if [[ "$STOP_ALL" -eq 1 ]]; then
   STOP_TRAY=1; STOP_BACK=1
@@ -168,6 +206,50 @@ fi
 if [[ "$STOP_TRAY" -eq 1 || "$STOP_BACK" -eq 1 ]]; then
   echo "==> Stopped as requested."
   exit 0
+fi
+
+# Optional fresh cleanup (after ensuring processes are stopped)
+if [[ "$FRESH" -eq 1 ]]; then
+  APP_SUPP_DIR="$HOME/Library/Application Support/VistaScribe"
+  LA_PLIST="$HOME/Library/LaunchAgents/com.vistascribe.tray.plist"
+  APP_LOG="$HOME/Library/Logs/VistaScribe.app.log"
+  echo "==> Fresh cleanup plan (keeps .env & models):"
+  echo "    - remove .pids/*.pid"
+  echo "    - remove logs/*.log"
+  echo "    - remove '$APP_SUPP_DIR'"
+  echo "    - unload & remove '$LA_PLIST' (if present)"
+  echo "    - remove '$APP_LOG' (if present)"
+  if [[ "$RESET_TCC_SELF" -eq 1 ]]; then
+    bundle="${TCC_BUNDLE_ID:-com.vistascribe.app}"
+    echo "    - reset TCC (Accessibility/Input/Mic) for bundle: $bundle"
+  fi
+  if [[ "$FRESH_YES" -ne 1 ]]; then
+    read -r -p "Proceed? [y/N] " ans
+    case "${ans,,}" in
+      y|yes) :;;
+      *) echo "Cancelled fresh cleanup."; exit 1;;
+    esac
+  fi
+  # Stop any lingering processes one more time
+  stop_by_name tray "python main.py"
+  stop_by_name backend "python backend.py"
+  rm -f .pids/*.pid 2>/dev/null || true
+  rm -f logs/*.log 2>/dev/null || true
+  if [[ -f "$LA_PLIST" ]]; then
+    launchctl unload -w "$LA_PLIST" >/dev/null 2>&1 || true
+    rm -f "$LA_PLIST" || true
+  fi
+  rm -rf "$APP_SUPP_DIR" || true
+  rm -f "$APP_LOG" || true
+  if [[ "$RESET_TCC_SELF" -eq 1 ]]; then
+    bundle="${TCC_BUNDLE_ID:-com.vistascribe.app}"
+    echo "==> Resetting macOS permissions for $bundle…"
+    /usr/bin/tccutil reset Accessibility "$bundle" || true
+    /usr/bin/tccutil reset ListenEvent "$bundle" || true
+    /usr/bin/tccutil reset Microphone "$bundle" || true
+    /usr/bin/tccutil reset AppleEvents "$bundle" || true
+  fi
+  echo "==> Fresh cleanup done."
 fi
 
 if [[ "$SKIP_MODELS" -eq 0 ]]; then
