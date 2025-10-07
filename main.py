@@ -60,6 +60,7 @@ from ui import (
     MenuIcon,
     backend_status_labels,
     config_labels,
+    focused_element_accepts_text,
     hide_hold_badge,
     paste_text,
     show_hold_badge,
@@ -240,6 +241,9 @@ async def _start_recording_after_delay(app: rumps.App):
         # Start only if we are still idle (wasn't cancelled and nothing else started)
         if STATE != "IDLE":
             return
+        if not focused_element_accepts_text():
+            logger.info("Hold ignored: focused element not editable")
+            return
         logger.info(">>> Attempting to start recording (Hold Delay elapsed)...")
         await recorder.start()
         MenuIcon.listen(app)
@@ -311,6 +315,9 @@ async def handle_hotkey_event(app: rumps.App, key_type: str, action: str):
 
     elif key_type == "toggle" and action == "press":
         if STATE == "IDLE":
+            if not focused_element_accepts_text():
+                logger.info("Hold ignored: focused element not editable")
+                return
             try:
                 logger.info(">>> Attempting to start recording (Toggle Press IDLE)...")
                 await recorder.start()
