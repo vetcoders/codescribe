@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="VistaScribe: start both" type="ShConfigurationType" factoryName="Shell Script">
+    <option name="SCRIPT_PATH" value="$PROJECT_DIR$/VistaScribe" />
+    <option name="SCRIPT_OPTIONS" value="start both" />
+    <option name="INDEPENDENT_SCRIPT_PATH" value="true" />
+    <option name="USE_PROJECT_INTERPRETER" value="false" />
+    <option name="INTERPRETER_PATH" value="/bin/zsh" />
+    <option name="INTERPRETER_OPTIONS" value="-lc" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <envs />
+    <method v="2" />
+  </configuration>
+</component>

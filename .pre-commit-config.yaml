@@ -1,16 +1,103 @@
+# Pre-commit hooks for VistaScribe
+# Strong guardrails without touching runtime. Install once:
+#   pipx install pre-commit    # or: uv tool install pre-commit
+#   pre-commit install
+# Run on demand:
+#   pre-commit run --all-files
+
+minimum_pre_commit_version: "3.5.0"
+
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+  # Essential hygiene hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
     hooks:
-      - id: ruff
-        args: ["--fix", "--exit-non-zero-on-fix"]
-      - id: ruff-format
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: mixed-line-ending
+      - id: detect-private-key
 
-ci:
-  autofix_commit_msg: "chore(pre-commit): auto-fix from ruff"
-  autofix_prs: true
-  skip: []
+  # Ruff lint/format with friendly auto-fix messaging
+  - repo: local
+    hooks:
+      - id: ruff-check-notice
+        name: ruff
+        entry: python tools/hooks/ruff_check_notice.py
+        language: python
+        additional_dependencies:
+          - ruff==0.8.2
+        types: [python]
+      - id: ruff-format-notice
+        name: ruff-format
+        entry: python tools/hooks/ruff_format_notice.py
+        language: python
+        additional_dependencies:
+          - ruff==0.8.2
+        types: [python]
 
-default_language_version:
-  python: python3.12
+  # Modernize syntax for the target Python (3.12+)
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.19.0
+    hooks:
+      - id: pyupgrade
+        args: ["--py3-plus"]
 
+  # Typo detector (kept lenient; adjust ignore list if needed)
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        args: [
+          "-L", "rumps,te,crate,nd,fo,aks",  # common false positives; extend as needed
+        ]
+        exclude: |
+          (?x)^(
+            docs/MLX_CHEATSHEET.md|
+            docs/menu_tree\.mmd|
+            assets/|
+            .*\.lock$
+          )
+
+  # Security static analysis (Python) — lightweight, recursive
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.9
+    hooks:
+      - id: bandit
+        name: bandit (security checks)
+        args: ["-q", "-c", "tools/bandit.yaml", "-r", "src/vistascribe"]
+
+  # Semgrep — powerful multi-language static analysis (security & correctness)
+  - repo: https://github.com/returntocorp/semgrep
+    rev: v1.86.0
+    hooks:
+      - id: semgrep
+        name: semgrep (p/ci ruleset)
+        args: ["--config", "p/ci", "--error", "--skip-unknown-extensions"]
+        exclude: |
+          (?x)^(
+            assets/|
+            dist/|
+            models/|
+            logs/|
+            packaging/|
+            .*\.lock$
+          )
+
+  # Optional typing (kept forgiving; won’t block on macOS-only stubs)
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        name: mypy (lenient)
+        additional_dependencies:
+          - types-requests
+          - types-PyYAML
+        args: [
+          "--ignore-missing-imports",
+          "--follow-imports=silent",
+          "--install-types",
+          "--non-interactive",
+          "--exclude", "(^tests/|^packaging/|^dist/|^assets/|^\\.venv/)"
+        ]

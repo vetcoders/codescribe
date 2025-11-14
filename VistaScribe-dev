@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT_DIR"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
 
 QUICKSTART="./scripts/quickstart_mac.sh"
 RELEASE_SH="./packaging/release.sh"
 BUILD_APP="./packaging/appwrap/build_wrapper_app.sh"
 BUILD_DMG="./packaging/dmg/build_dmg.sh"
-LOG_DIR="$ROOT_DIR/logs"
-PID_DIR="$ROOT_DIR/.pids"
+LOG_DIR="$REPO_ROOT/logs"
+PID_DIR="$REPO_ROOT/.pids"
 
 usage() {
   cat <<'EOF'
@@ -17,6 +17,7 @@ VistaScribe-dev — developer toolbox
 
 Usage:
   VistaScribe-dev start [tray|backend|both]   Start in dev mode (foreground)
+  VistaScribe-dev tester                      Start backend (if needed) and open /tester
   VistaScribe-dev stop                        Stop tray/backend
   VistaScribe-dev status                      Show running processes
   VistaScribe-dev fresh [--yes]               Full cleanup + TCC reset
@@ -27,6 +28,8 @@ Usage:
   VistaScribe-dev lint                        Ruff format/check
   VistaScribe-dev test                        uv run pytest -q
   VistaScribe-dev diag                        Show most recent diagnostics JSON
+  VistaScribe-dev version --info|--patch|--minor
+                                             Show/bump project version with CI-like gates
   VistaScribe-dev help                        This help
 
 Tips:
@@ -36,16 +39,195 @@ EOF
 }
 
 ensure_file() {
-  if [[ ! -x "$1" ]]; then
-    echo "[!] Required script '$1' not found or not executable." >&2
+  local path="$1"
+  # Auto-fix perms if file exists but is not executable
+  if [[ -f "$path" && ! -x "$path" ]]; then
+    chmod +x "$path" 2>/dev/null || true
+  fi
+  # Attempt to clear quarantine on the repo (harmless if absent)
+  if command -v xattr >/dev/null 2>&1; then
+    xattr -dr com.apple.quarantine "$REPO_ROOT" 2>/dev/null || true
+  fi
+  if [[ ! -x "$path" ]]; then
+    # Detect Windows line endings (CRLF)
+    if grep -q $'\r' "$path" 2>/dev/null; then
+      echo "[!] Detected Windows line endings (CRLF) in $path. Convert with:"
+      echo "    perl -pi -e 's/\r$//' \"$path\"  # or: brew install dos2unix && dos2unix \"$path\""
+    fi
+    # Detect noexec mount
+    local mp
+    mp=$(df -P "$REPO_ROOT" | awk 'NR==2{print $6}')
+    local mf
+    mf=$(mount | awk -v mp="$mp" '$0 ~ " on " mp " " {print $0}')
+    if echo "$mf" | grep -q "noexec"; then
+      echo "[!] The volume is mounted with 'noexec'. Move the repo to your home folder or remount without noexec." >&2
+    fi
+    echo "[!] Required script '$path' not found or not executable." >&2
     exit 1
   fi
 }
 
 ensure_file "$QUICKSTART"
+mkdir -p "$LOG_DIR" "$PID_DIR"
+
+PYTHON_BIN=${PYTHON_BIN:-python3}
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  else
+    echo "[!] python3 (or python) is required to run this command." >&2
+    exit 1
+  fi
+fi
 
 cmd=${1:-help}
 shift || true
+
+current_version() {
+  "$PYTHON_BIN" - <<'PY'
+from pathlib import Path
+import re
+text = Path("pyproject.toml").read_text()
+m = re.search(r'^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"', text, re.M)
+if not m:
+    raise SystemExit("Could not locate version in pyproject.toml")
+print(m.group(1))
+PY
+}
+
+run_gate_step() {
+  local label="$1"
+  shift
+  echo "==> ${label}"
+  if ! "$@"; then
+    echo "[!] Version command aborted during '${label}'. Fix the issue and retry." >&2
+    exit 1
+  fi
+}
+
+ensure_synced_with_remote() {
+  if ! git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name "@{u}" >/dev/null 2>&1; then
+    # No upstream configured; skip sync validation.
+    return
+  fi
+  git -C "$REPO_ROOT" fetch --quiet
+  local ahead
+  local behind
+  ahead=$(git -C "$REPO_ROOT" rev-list --left-only --count "@{u}...HEAD")
+  behind=$(git -C "$REPO_ROOT" rev-list --right-only --count "@{u}...HEAD")
+  if [[ "$behind" -ne 0 ]]; then
+    echo "[!] Local branch is behind upstream. Pull/rebase before bumping the version." >&2
+    exit 1
+  fi
+  if [[ "$ahead" -ne 0 ]]; then
+    echo "[!] Local branch has unpublished commits. Push them before bumping the version." >&2
+    exit 1
+  fi
+}
+
+ensure_manifest_tool() {
+  if [[ ! -x "$REPO_ROOT/tools/manifest.py" ]]; then
+    chmod +x "$REPO_ROOT/tools/manifest.py" 2>/dev/null || true
+  fi
+}
+
+tests_ci_diff_note() {
+  ensure_manifest_tool
+  git -C "$REPO_ROOT" fetch origin main >/dev/null 2>&1 || true
+  local diff_json
+  diff_json=$(cd "$REPO_ROOT" && "$PYTHON_BIN" tools/manifest.py diff --ref main --paths tests .github/workflows --json)
+  local files
+  files=$(VSD_MANIFEST_DIFF="$diff_json" "$PYTHON_BIN" - <<'PY'
+import json
+import os
+payload = json.loads(os.environ.get('VSD_MANIFEST_DIFF', '{}'))
+changed = bool(payload.get('added') or payload.get('removed') or payload.get('changed'))
+if not changed:
+    print("", end="")
+    raise SystemExit
+files = sorted({item['path'] for section in payload.values() for item in section})
+print(";".join(files), end="")
+PY
+)
+  if [[ -n "$files" ]]; then
+    echo "[!] Tests/CI diverge from main for: $files" >&2
+  fi
+  printf '%s' "$files"
+}
+
+update_version_files() {
+  local new_version="$1"
+  local tests_ci_list="$2"
+  "$PYTHON_BIN" - "$new_version" "$tests_ci_list" <<'PY'
+import sys
+from datetime import date
+from pathlib import Path
+import re
+
+new_version = sys.argv[1]
+tests_ci = [p for p in sys.argv[2].split(';') if p]
+pyproject = Path("pyproject.toml")
+text = pyproject.read_text()
+new_text, n = re.subn(r'^version\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"', f'version = "{new_version}"', text, count=1, flags=re.M)
+if n != 1:
+    raise SystemExit("Unable to update version in pyproject.toml")
+pyproject.write_text(new_text)
+
+changelog = Path("CHANGELOG.md")
+body = changelog.read_text()
+lines = body.splitlines()
+insert_at = 0
+for idx, line in enumerate(lines):
+    if line.startswith("## "):
+        insert_at = idx
+        break
+if insert_at == 0:
+    insert_at = len(lines)
+header = f"## v{new_version} – {date.today().isoformat()}"
+entries = []
+if tests_ci:
+    entries.append("- Tests/CI: Updated " + ", ".join(tests_ci) + ".")
+entries.append("- TODO: Add release notes.")
+section = "\n".join([header, "", *entries, ""])
+lines.insert(insert_at, section)
+changelog.write_text("\n".join(lines) + "\n")
+PY
+}
+
+bump_version_cmd() {
+  local mode="$1"
+  run_gate_step "Formatting (ruff format)" uvx --from ruff ruff format .
+  run_gate_step "Linting (ruff check)" uvx --from ruff ruff check .
+  mkdir -p "$LOG_DIR"
+  run_gate_step "Pytest" bash -c "cd '$REPO_ROOT' && uv run pytest -q | tee '$LOG_DIR/version-bump.pytest.log'"
+  ensure_synced_with_remote
+  local diff_list
+  diff_list=$(tests_ci_diff_note)
+
+  local current
+  current=$(current_version)
+  IFS='.' read -r major minor patch <<<"$current"
+  local new_version
+  case "$mode" in
+    --patch)
+      patch=$((patch + 1))
+      new_version="$major.$minor.$patch"
+      ;;
+    --minor)
+      minor=$((minor + 1))
+      patch=0
+      new_version="$major.$minor.$patch"
+      ;;
+    *)
+      echo "[!] Unknown version flag '$mode'" >&2
+      exit 1
+      ;;
+  esac
+  update_version_files "$new_version" "$diff_list"
+  echo "==> Version updated to v$new_version"
+  echo "    - pyproject.toml"
+  echo "    - CHANGELOG.md"
+}
 
 start_cmd() {
   local mode="both"
@@ -125,8 +307,16 @@ release_cmd() {
 }
 
 lint_cmd() {
-  uvx ruff format .
-  uvx ruff check .
+  if command -v pre-commit >/dev/null 2>&1; then
+    pre-commit run --all-files || {
+      echo "[!] pre-commit checks failed. To install: pipx install pre-commit && pre-commit install" >&2
+      exit 1
+    }
+  else
+    echo "[i] pre-commit not found; falling back to ruff." >&2
+    uvx ruff format .
+    uvx ruff check .
+  fi
 }
 
 test_cmd() {
@@ -147,9 +337,17 @@ diag_cmd() {
   fi
 }
 
+open_tester() {
+  # Ensure backend is running (daemon) then open the browser tester page via main launcher
+  ./VistaScribe tester || true
+}
+
 case "$cmd" in
   start)
     start_cmd "$@"
+    ;;
+  tester)
+    open_tester
     ;;
   stop)
     stop_cmd
@@ -177,6 +375,25 @@ case "$cmd" in
     ;;
   test)
     test_cmd
+    ;;
+  version)
+    subcmd=${1:---info}
+    shift || true
+    case "$subcmd" in
+      --info|info)
+        echo "Current version: v$(current_version)"
+        ;;
+      --patch|patch)
+        bump_version_cmd --patch
+        ;;
+      --minor|minor)
+        bump_version_cmd --minor
+        ;;
+      *)
+        echo "[!] Usage: VistaScribe-dev version --info|--patch|--minor" >&2
+        exit 2
+        ;;
+    esac
     ;;
   diag)
     diag_cmd

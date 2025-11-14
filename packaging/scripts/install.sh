@@ -41,6 +41,8 @@ fetch_dmg() {
   if [[ -n "$URL" ]]; then
     echo "⬇ Downloading DMG…"
     curl -fL --retry 3 --output "$out" "$URL"
+    echo "🔐 SHA256: $(shasum -a 256 "$out" | awk '{print $1}')"
+    echo "ℹ️  Verify this hash against the publisher's release notes before continuing."
     echo "$out"; return 0
   fi
   if [[ -n "$REPO" ]]; then
@@ -58,6 +60,8 @@ fetch_dmg() {
     [[ -n "$dmg_url" ]] || { echo "❌ No DMG asset found in releases" >&2; exit 3; }
     echo "⬇ Downloading DMG from GitHub Releases…"
     curl -fL --retry 3 ${GH_TOKEN:+-H "Authorization: token $GH_TOKEN"} -o "$out" "$dmg_url"
+    echo "🔐 SHA256: $(shasum -a 256 "$out" | awk '{print $1}')"
+    echo "ℹ️  Verify this hash against the release announcement or signature."
     echo "$out"; return 0
   fi
   echo "❌ Provide --url or --repo/--latest" >&2; exit 2
@@ -113,4 +117,3 @@ main() {
 }
 
 main "$@"
-

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Minimal entitlements for hardened runtime distribution outside the App Store. -->
+    <!-- Do not enable App Sandbox here (not required for outside Mac App Store). -->
+    <!-- Add specific entitlements only if you truly need them. -->
+</dict>
+</plist>
+

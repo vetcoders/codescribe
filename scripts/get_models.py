@@ -28,15 +28,22 @@ from pathlib import Path
 
 from huggingface_hub import snapshot_download
 
-# Known MLX Whisper repos
+# Known MLX Whisper repos (canonical names only — aliases defined below)
 WHISPER_REPOS = {
-    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-    "large-v3": "mlx-community/whisper-large-v3-mlx",
-    "large-v3-mlx": "mlx-community/whisper-large-v3-mlx",
-    "medium": "mlx-community/whisper-medium-mlx",
-    "medium-mlx": "mlx-community/whisper-medium-mlx",
+    "tiny": "mlx-community/whisper-tiny-mlx",
+    "base": "mlx-community/whisper-base-mlx",
     "small": "mlx-community/whisper-small-mlx",
-    "small-mlx": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+}
+
+WHISPER_ALIASES = {
+    "tiny-mlx": "tiny",
+    "base-mlx": "base",
+    "small-mlx": "small",
+    "medium-mlx": "medium",
+    "large-v3-mlx": "large-v3",
 }
 
 
@@ -147,11 +154,12 @@ def download_whisper(
     if which == "all":
         targets = ["large-v3-turbo", "medium"]
     else:
-        if which not in WHISPER_REPOS:
+        canonical = WHISPER_ALIASES.get(which, which)
+        if canonical not in WHISPER_REPOS:
             raise SystemExit(
                 f"Unknown whisper variant: {which}. Choose from {list(WHISPER_REPOS)} or 'all'/'none'."
             )
-        targets = [which]
+        targets = [canonical]
     for t in targets:
         repo = WHISPER_REPOS[t]
         local = download_repo(
@@ -161,22 +169,30 @@ def download_whisper(
     return paths
 
 
+def _parse_whisper_choice(value: str) -> str:
+    val = (value or "").strip().lower()
+    if val in {"all", "none"}:
+        return val
+    val = WHISPER_ALIASES.get(val, val)
+    if val not in WHISPER_REPOS:
+        raise argparse.ArgumentTypeError(
+            f"Unknown Whisper variant '{value}'. Choose one of {', '.join(sorted(WHISPER_REPOS))} or 'all'/'none'."
+        )
+    return val
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--whisper",
         default="large-v3-turbo",
-        choices=[
-            "large-v3-turbo",
-            "large-v3",
-            "medium",
-            "small-mlx",
-            "medium-mlx",
-            "large-v3-mlx",
-            "all",
-            "none",
-        ],
-        help="Which Whisper variant(s) to download.",
+        type=_parse_whisper_choice,
+        metavar="VARIANT",
+        help=(
+            "Which Whisper variant(s) to download. Options: "
+            + ", ".join(sorted(WHISPER_REPOS))
+            + ", or 'all'/'none'. Legacy aliases like 'medium-mlx' are also accepted."
+        ),
     )
     parser.add_argument(
         "--llm",
@@ -197,6 +213,8 @@ def main() -> int:
         help="Download method: huggingface_hub (hf), git clone with LFS (git), or auto (default).",
     )
     args = parser.parse_args()
+    # Ensure default value also passes through the same normalization logic
+    args.whisper = _parse_whisper_choice(args.whisper)
 
     repo_root = Path(__file__).resolve().parents[1]
     models_dir = (repo_root / args.models_dir).resolve()

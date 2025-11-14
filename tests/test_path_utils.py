@@ -1,6 +1,6 @@
 import os
 
-import path_utils
+import vistascribe.path_utils as path_utils
 
 
 def test_preserve_hf_repo_id_unchanged():

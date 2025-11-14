@@ -1,0 +1,27 @@
+# VistaScribe Menu Tree
+
+- Status: Initializing...
+- <rumps.rumps.SeparatorMenuItem object at 0x119832cc0>
+- Enable Hotkeys
+- <rumps.rumps.SeparatorMenuItem object at 0x119832e10>
+- Language
+- Formatting
+- <rumps.rumps.SeparatorMenuItem object at 0x119832ff0>
+- Hold Hotkeys
+- <rumps.rumps.SeparatorMenuItem object at 0x119833110>
+- Models
+- Backends
+- <rumps.rumps.SeparatorMenuItem object at 0x1198332f0>
+- History
+- <rumps.rumps.SeparatorMenuItem object at 0x119833410>
+- Appearance
+- Feedback
+- <rumps.rumps.SeparatorMenuItem object at 0x1198335f0>
+- Permissions
+- Tools
+- <rumps.rumps.SeparatorMenuItem object at 0x1198337d0>
+- What do these toggles do?
+- <rumps.rumps.SeparatorMenuItem object at 0x1198339b0>
+- Start at Login
+- <rumps.rumps.SeparatorMenuItem object at 0x119833b90>
+- Quit...

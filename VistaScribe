@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT_DIR"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
 
 QUICKSTART="./scripts/quickstart_mac.sh"
-LOG_DIR="$ROOT_DIR/logs"
+LOG_DIR="$REPO_ROOT/logs"
 LOG_FILE="$LOG_DIR/VistaScribe.log"
-PID_DIR="$ROOT_DIR/.pids"
+PID_DIR="$REPO_ROOT/.pids"
 
 usage() {
   cat <<'EOF'
@@ -19,20 +19,46 @@ Usage:
   VistaScribe restart [mode]              Stop, then start again
   VistaScribe status                      Show running PIDs
   VistaScribe logs [--follow]             Show recent logs (tail -n 50 / -f)
-  VistaScribe fresh [--yes]               Reset caches + macOS permissions
+  VistaScribe fresh [tray|backend|both] [--yes]
+                                          Reset + restart (default: both)
   VistaScribe help                        Show this help
 
 Examples:
   VistaScribe start                       # tray + backend, nohup
   VistaScribe start tray                  # tray only (no backend)
   VistaScribe logs --follow               # live logs
-  VistaScribe fresh --yes                 # wipe caches (keeps models/.env)
+  VistaScribe fresh both --yes            # wipe caches & restart tray+backend
 EOF
 }
 
 ensure_quickstart() {
+  # Make quickstart executable if present
+  if [[ -f "$QUICKSTART" && ! -x "$QUICKSTART" ]]; then
+    chmod +x "$QUICKSTART" 2>/dev/null || true
+  fi
+  # Attempt to clear quarantine recursively on the repo (harmless if absent)
+  if command -v xattr >/dev/null 2>&1; then
+    xattr -dr com.apple.quarantine "$REPO_ROOT" 2>/dev/null || true
+  fi
+  # Final validation + helpful diagnostics
+  if [[ ! -f "$QUICKSTART" ]]; then
+    echo "[!] Missing $QUICKSTART" >&2
+    exit 1
+  fi
   if [[ ! -x "$QUICKSTART" ]]; then
-    echo "[!] Missing ./scripts/quickstart_mac.sh (or not executable)." >&2
+    # Detect Windows line endings in quickstart
+    if grep -q $'\r' "$QUICKSTART" 2>/dev/null; then
+      echo "[!] Detected Windows line endings (CRLF) in $QUICKSTART. Convert with:"
+      echo "    perl -pi -e 's/\r$//' \"$QUICKSTART\"  # or: brew install dos2unix && dos2unix \"$QUICKSTART\""
+    fi
+    # Detect noexec volume
+    mount_point=$(df -P "$REPO_ROOT" | awk 'NR==2{print $6}')
+    mount_flags=$(mount | awk -v mp="$mount_point" '$0 ~ " on " mp " " {print $0}')
+    if echo "$mount_flags" | grep -q "noexec"; then
+      echo "[!] The volume is mounted with 'noexec'. Move the repo to your home folder or remount without noexec." >&2
+    fi
+    echo "[!] $QUICKSTART is not executable. Try: chmod +x \"$QUICKSTART\"" >&2
+    echo "[!] If macOS blocks scripts, run: xattr -dr com.apple.quarantine \"$REPO_ROOT\"" >&2
     exit 1
   fi
 }
@@ -100,18 +126,74 @@ logs_cmd() {
 }
 
 fresh_cmd() {
-  local confirm="${1:-}"
-  local args=(--fresh)
-  if [[ "$confirm" == "--yes" || "$confirm" == "-y" || "$confirm" == "yes" ]]; then
-    args+=(--yes)
-  fi
+  local confirm=""
+  local mode="both"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes|-y|yes)
+        confirm="--yes"
+        shift
+        ;;
+      tray|backend|both)
+        mode="$1"
+        shift
+        ;;
+      --mode)
+        mode="$2"
+        shift 2
+        ;;
+      *)
+        echo "[!] Unknown option '$1' for fresh command" >&2
+        exit 2
+        ;;
+    esac
+  done
   echo "==> Running fresh cleanup"
-  "$QUICKSTART" "${args[@]}"
+  "$QUICKSTART" --fresh ${confirm:+--yes} --mode "$mode"
+}
+
+open_tester() {
+  # Ensure backend is running (daemon) then open the browser tester page
+  "$QUICKSTART" --mode backend --daemon --log "$LOG_FILE" || true
+  # Read port (wait up to ~5s)
+  PORT_FILE="$LOG_DIR/vistascribe-server.port"
+  for _ in 1 2 3 4 5; do
+    if [[ -f "$PORT_FILE" ]]; then break; fi
+    sleep 1
+  done
+  candidates=()
+  if [[ -f "$PORT_FILE" ]]; then
+    p=$(cat "$PORT_FILE" 2>/dev/null || echo "")
+    [[ -n "$p" ]] && candidates+=("$p")
+  fi
+  # Fallback scan across our default set (avoid mlx_audio.server conflicts)
+  for p in 8237 7237 6237 5237; do
+    skip=0
+    for c in "${candidates[@]}"; do [[ "$c" == "$p" ]] && skip=1; done
+    [[ $skip -eq 0 ]] && candidates+=("$p")
+  done
+  chosen=""
+  for p in "${candidates[@]}"; do
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fsS "http://127.0.0.1:${p}/version" >/dev/null 2>&1; then
+        chosen="$p"; break
+      fi
+    fi
+  done
+  if [[ -z "$chosen" ]]; then
+    echo "[!] Could not find VistaScribe backend. Ensure it's running and port 8237 isn't used by mlx_audio.server." >&2
+    exit 1
+  fi
+  echo "==> Opening tester at http://127.0.0.1:${chosen}/tester"
+  open "http://127.0.0.1:${chosen}/tester" 2>/dev/null || true
 }
 
 case "$cmd" in
   start)
     start_cmd "${1:-both}"
+    ;;
+  tester)
+    open_tester
     ;;
   stop)
     stop_cmd
@@ -127,7 +209,7 @@ case "$cmd" in
     logs_cmd "${1:-}"
     ;;
   fresh)
-    fresh_cmd "${1:-}"
+    fresh_cmd "$@"
     ;;
   help|-h|--help)
     usage

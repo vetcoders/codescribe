@@ -1,0 +1,15 @@
+# Bandit configuration for VistaScribe
+exclude_dirs:
+  - .venv
+  - dist
+  - build
+  - packaging
+  - logs
+  - models
+  - tests
+  - scripts
+  - src/vistascribe/app
+  - src/vistascribe/formatting
+skips: []
+targets:
+  - src/vistascribe

@@ -18,18 +18,20 @@ __pycache__/
 !.idea/runConfigurations/*.xml
 .vscode/
 .junie/
-assets/*
-!assets/icon.png
+src/vistascribe/assets/*
+!src/vistascribe/assets/icon.png
+!src/vistascribe/assets/voice_chat_lab.html
 logs/
 
 # runtime logs and state
-VistaScribe.log
+logs/VistaScribe.log
 .vista_scribe.lock
 user-messages/
 
 # build artifacts
 packaging/dist/
 packaging/build/
+packaging/dmg/
 dist/
 build/
 *.egg-info/
@@ -51,4 +53,14 @@ extracted/
 *.commands.txt
 packaging/.DS_Store
 /.fleet
-/packaging
+/extracted_frames
+/.codex
+/.codescribe
+/streaming-stt-inspirations
+*.wav
+*.txt
+!docs/reports/*.txt
+/.archive
+/.gemini/
+/.codex
+/.gemini

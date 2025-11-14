@@ -1,52 +1,51 @@
-# VistaScribe — Kroki dla Moniki i Bartka (wewnętrzne)
+# VistaScribe — Internal Onboarding Cheatsheet
 
-## Opcja A — instalacja z DMG (najprostsza)
-1) Skopiuj plik `packaging/dmg/VistaScribe.dmg` na swój Mac i otwórz.
-2) W oknie DMG:
-   - Helpers → `Get Models.command` (pobierze Whisper — wybierz Large v3 Turbo lub Medium).
-   - Helpers → `Install App.command` (skopiuje do `/Applications` i uruchomi).
-3) Przy pierwszym uruchomieniu nadaj uprawnienia macOS (System Settings → Privacy & Security):
+## Option A – DMG Install (fastest)
+1. Copy `packaging/dmg/VistaScribe.dmg` to your Mac and open it.
+2. Inside the DMG run the helpers in order:
+   - `Helpers/Get Models.command` – download Whisper (Large v3 Turbo or Medium).
+   - `Helpers/Install App.command` – copy the app into `/Applications` and launch it.
+3. At first launch, grant macOS permissions (System Settings → Privacy & Security):
    - Microphone (Terminal/Python)
    - Accessibility (Terminal/Python)
    - Input Monitoring (Terminal/Python)
-4) Użycie:
-   - Przytrzymaj `Ctrl` ≥ 500 ms → nagrywanie → puszczasz → wkleja tekst.
-   - Dwuklik `Option (⌥)` → tryb toggle.
+4. Usage basics:
+   - Hold `Ctrl` ≥ 500 ms to record; release to paste the transcript.
+   - Double‑tap `Option (⌥)` for toggle mode.
 
-## Opcja B — uruchomienie z repo (dev)
-1) Skopiuj repo (`VistaScribe`) i przejdź do katalogu głównego.
-2) Zainstaluj zależności:
+## Option B – Run from the repo (dev workflow)
+1. Clone the repo and `cd VistaScribe`.
+2. Install dependencies:
    ```bash
    uv sync
    ```
-3) Pobierz modele (lub skopiuj je do `./models`):
+3. Download models (or copy them into `./models`):
    ```bash
    uv run python scripts/get_models.py --whisper large-v3-turbo
    ```
-4) Start w tle (tray + backend):
+4. Start tray + backend as daemons:
    ```bash
    ./scripts/quickstart_mac.sh --mode both --daemon --log VistaScribe.log
    ```
-   - Log podgląd: `tail -f VistaScribe.log`
-   - Zatrzymanie: `./scripts/quickstart_mac.sh --stop-all`
+   - Watch logs with `tail -f VistaScribe.log`.
+   - Stop everything via `./scripts/quickstart_mac.sh --stop-all`.
 
-## Skróty i ustawienia
-- Domyślnie aktywny jest **Light Plus** (FORMAT_STRATEGY=light_plus) — szybkie i bez modelu LLM.
-- W tray → Hotkey Settings: zmiana kombinacji (Ctrl / Ctrl+Option / Ctrl+Shift / Ctrl+Command) i tryb Exclusive (Ctrl nie działa z innymi modyfikatorami). Zapis do `.env` robi się automatycznie.
-- Tray → Feedback: dźwięk startu (Tink/Pop) + głośność. Też zapisuje do `.env`.
+## Shortcuts & Toggles
+- **Light Plus** is always enabled; AI formatting (Harmony/Ollama) can be toggled in the tray.
+- Tray → **Hotkey Settings**: pick the hold combo (Ctrl / Ctrl+Option / Ctrl+Shift / Ctrl+Command) and exclusive mode. Changes persist to `.env` automatically.
+- Tray → **Feedback**: enable/disable the start chime, switch sounds (Tink/Pop), and set the volume—also persisted to `.env`.
 
-## Gdzie są logi i PIDy
-- Tray (wrapper): `~/Library/Logs/VistaScribe.app.log`
-- Z quickstarta: `VistaScribe.log`, backend: `logs/backend.*.log`
-- Pliki PID (do awaryjnego kill): `.pids/tray.pid`, `.pids/backend.pid`
+## Logs & PID Files
+- Tray (launch agent) log: `~/Library/Logs/VistaScribe.app.log`
+- Quickstart log: `VistaScribe.log`, backend logs under `logs/backend.*.log`
+- PID files for emergency shutdowns: `.pids/tray.pid`, `.pids/backend.pid`
 
-## Wyłącz formatowanie albo użyj modelu LLM
-- Wyłączyć: tray → Disable “Enable Formatting” lub `FORMAT_ENABLED=0` w `.env`.
-- Mały LLM (opcjonalnie): ustaw `LLM_ID=/ścieżka/do/qwen-4b` i `FORMAT_STRATEGY=llm`.
+## Formatting / AI Models
+- Tray → **Formatting** → uncheck “AI Formatting Enabled” to stay on Light Plus only.
+- To force a local LLM, set `LLM_ID=/path/to/qwen-4b` and select the LLM provider in the Formatting submenu.
 
-## Rozwiązywanie problemów
-- Brak wklejania/skrótów: sprawdź uprawnienia Accessibility/Input Monitoring.
-- Brak dźwięku: Feedback → Enable Start Sound, SOUND_VOLUME 0.1–0.3.
-- Modele nie widoczne: skopiuj do `./models` albo uruchom `Get Models.command`.
-- Reset: `./scripts/quickstart_mac.sh --stop-all` i start ponownie.
-
+## Troubleshooting
+- Nothing pastes/records: re-check Accessibility, Input Monitoring, and Microphone permissions.
+- No sound: tray → Feedback → Enable Start Sound; set `SOUND_VOLUME` to 0.1–0.3.
+- Models missing: ensure they live in `./models` or rerun `Get Models.command`.
+- Reset: `./scripts/quickstart_mac.sh --stop-all` and then start again.

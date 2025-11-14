@@ -18,7 +18,7 @@ def setup_fake_whisper(module, return_value):
 
 
 def test_transcribe_deletes_tempfile(monkeypatch):
-    whisper_server = importlib.import_module("whisper_server")
+    whisper_server = importlib.import_module("vistascribe.whisper_server")
     importlib.reload(whisper_server)
 
     # Configure fake whisper that returns a dict with text
@@ -41,7 +41,7 @@ def test_transcribe_deletes_tempfile(monkeypatch):
 
 
 def test_transcribe_none_result_returns_500_and_cleanup(monkeypatch):
-    whisper_server = importlib.import_module("whisper_server")
+    whisper_server = importlib.import_module("vistascribe.whisper_server")
     importlib.reload(whisper_server)
 
     # Track removed paths

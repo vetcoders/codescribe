@@ -2,7 +2,7 @@ import importlib
 
 
 def test_ui_help_message_is_english():
-    import ui as ui_mod
+    import vistascribe.ui as ui_mod
 
     importlib.reload(ui_mod)
     msg = ui_mod.toggles_help_message("en")
