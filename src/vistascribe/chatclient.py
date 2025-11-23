@@ -112,7 +112,7 @@ def internet_search(query: str, timeout: float = 6.0) -> str:
     try:
         url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_html=1&skip_disambig=1"
         req = Request(url, headers={"User-Agent": "MultimodalChatClient/1.0"})
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout) as resp:  # nosec B310 - HTTPS-only, fixed host
             if resp.getcode() != 200:
                 return f"Search failed: HTTP {resp.getcode()}"
             data = json.loads(resp.read().decode("utf-8", "strict"))
@@ -149,7 +149,7 @@ def sse_post(
     req_headers.update(headers or {})
     req = Request(url, data=body, headers=req_headers, method="POST")
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=timeout) as resp:  # nosec B310 - URL comes from trusted backend config
             status = resp.getcode()
             if status < 200 or status >= 300:
                 raise HTTPError(url, status, f"HTTP status {status}", resp.headers, None)
@@ -199,7 +199,7 @@ def post_once(
     }
     req_headers.update(headers or {})
     req = Request(url, data=body, headers=req_headers, method="POST")
-    with urlopen(req, timeout=timeout) as resp:
+    with urlopen(req, timeout=timeout) as resp:  # nosec B310 - URL provided by trusted config
         status = resp.getcode()
         if status < 200 or status >= 300:
             raise HTTPError(url, status, f"HTTP status {status}", resp.headers, None)

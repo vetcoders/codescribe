@@ -19,7 +19,14 @@ from __future__ import annotations
 # CRITICAL: Load .env FIRST before any other imports that read os.environ
 from dotenv import load_dotenv
 
-load_dotenv()
+from .path_utils import repo_root
+
+# Load .env from repo root if possible, else fall back to CWD
+_env_path = repo_root() / ".env"
+if _env_path.exists():
+    load_dotenv(dotenv_path=_env_path)
+else:
+    load_dotenv()
 
 import asyncio
 import base64
@@ -30,6 +37,8 @@ import logging
 import os
 import sys
 import tempfile
+import time
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +63,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Optional audio decoding helper (API may vary by version)
@@ -62,7 +72,14 @@ try:  # mlx-audio >= 0.2.x sometimes does not expose `load`
 except Exception:  # pragma: no cover
     load_audio = None  # we'll fallback to WAV-only parsing
 
-from .llm import apply_ai_formatting, run_chat_session
+from .formatting.vocabulary import (
+    append_lexicon_entries,
+    lexicon_path_for_topic,
+    load_lexicon_entries,
+    reload_lexicon,
+    sanitize_topic,
+)
+from .llm import _harmony_base_url, apply_ai_formatting, run_chat_session
 from .path_utils import normalize_model_path, repo_root
 from .settings_store import get_settings
 
@@ -100,6 +117,7 @@ MEDICAL_PROMPT = (
 class StreamSession:
     """Mutable state for streaming (JSON or WebSocket) sessions."""
 
+    session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     language: str | None = DEFAULT_STREAM_LANGUAGE
     sample_rate: int = 16000
     encoding: str = "pcm16"
@@ -138,6 +156,17 @@ def _asset_path(name: str) -> Path:
         if candidate.exists():
             return candidate
     return candidates[0]
+
+
+LAB_ASSETS_DIR = _asset_path("lab")
+if LAB_ASSETS_DIR.exists():
+    app.mount(
+        "/lab-assets",
+        StaticFiles(directory=str(LAB_ASSETS_DIR), html=False),
+        name="lab-assets",
+    )
+else:
+    logger.warning("Voice & Chat Lab assets missing at %s", LAB_ASSETS_DIR)
 
 
 # Whisper path selection (prefer small for "survival" mode; configurable via env)
@@ -196,6 +225,29 @@ def _pcm16le_to_wav_bytes(pcm: bytes, sample_rate: int = 16000, channels: int = 
         wf.setframerate(sample_rate)
         wf.writeframes(pcm)
     return buf.getvalue()
+
+
+def _probe_wav_stats(path: str, *, fallback_rate: int = 16000) -> dict[str, float | int]:
+    """Return basic audio stats for logging."""
+
+    info: dict[str, float | int] = {"bytes": 0, "duration_sec": 0.0, "frames": 0, "sample_rate": 0}
+    try:
+        info["bytes"] = os.path.getsize(path)
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)
+    try:
+        import wave
+
+        with wave.open(path, "rb") as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate() or fallback_rate
+            info["frames"] = frames
+            info["sample_rate"] = rate
+            info["duration_sec"] = frames / float(rate or 1)
+    except Exception:
+        # best-effort only; leave defaults
+        info.setdefault("sample_rate", fallback_rate)
+    return info
 
 
 async def _run_whisper_transcription(audio_path: str, *, language: str | None) -> dict[str, Any]:
@@ -266,12 +318,24 @@ def _legacy_whisper_transcribe(audio_path: str, *, language: str | None) -> dict
     )
 
 
+def _session_id_from_request(request: Request | None) -> str:
+    if request:
+        try:
+            header_sid = request.headers.get("X-Session-ID")
+            if header_sid:
+                return header_sid
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
+    return uuid.uuid4().hex
+
+
 async def _transcribe_stream_buffer(session: StreamSession) -> dict[str, Any]:
     """Transcribe the accumulated streaming buffer and clear it."""
 
     if not session.buffer:
         return {"text": ""}
 
+    buf_len = len(session.buffer)
     if session.encoding in {"pcm16", "pcm_s16le"}:
         wav_bytes = _pcm16le_to_wav_bytes(bytes(session.buffer), sample_rate=session.sample_rate)
     elif session.encoding in {"wav", "audio/wav"}:
@@ -285,11 +349,16 @@ async def _transcribe_stream_buffer(session: StreamSession) -> dict[str, Any]:
 
     try:
         result = await _transcribe_audio_file(tmp_path, language=session.language)
+        frames = int(len(wav_bytes) / 2)
+        duration_sec = frames / float(session.sample_rate or 1)
+        result["_buffer_bytes"] = buf_len
+        result["_buffer_frames"] = frames
+        result["_buffer_duration_sec"] = duration_sec
     finally:
         try:
             os.remove(tmp_path)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
     session.buffer.clear()
     return result
@@ -301,6 +370,15 @@ async def _stream_send_transcript(
 ) -> None:
     result = await _transcribe_stream_buffer(session)
     text = (result.get("text") or result.get("transcription") or "").strip()
+    logger.info(
+        "stream transcript session=%s lang=%s bytes=%s frames=%s dur=%.3fs out_chars=%s",
+        session.session_id,
+        session.language or "auto",
+        result.get("_buffer_bytes"),
+        result.get("_buffer_frames"),
+        result.get("_buffer_duration_sec"),
+        len(text),
+    )
     await send(
         {
             "type": "transcript.final",
@@ -412,8 +490,8 @@ async def _broadcast_state():
     for q in list(_subs):
         try:
             await q.put(msg)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
 
 @app.get("/healthz")
@@ -427,6 +505,35 @@ async def healthz():
             "enabled": settings.ai_formatting_enabled,
             "provider": settings.ai_provider,
         },
+    }
+
+
+@app.get("/lab/config")
+async def lab_config(request: Request):
+    """Expose default Lab endpoints from .env for the Lab UI with override slots."""
+
+    settings = get_settings()
+    base_http = str(request.base_url).rstrip("/")
+    protocol = "wss" if request.url.scheme == "https" else "ws"
+    host = request.url.hostname or "localhost"
+    port = f":{request.url.port}" if request.url.port else ""
+    default_ws = f"{protocol}://{host}{port}/ws/transcribe"
+
+    harmony_responses = None
+    try:
+        harmony_base = _harmony_base_url()
+        harmony_responses = f"{harmony_base}/responses"
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)
+
+    return {
+        "stt_upload_url": f"{base_http}/transcribe",
+        "stt_and_format_url": f"{base_http}/stt_and_format",
+        "stt_ndjson_url": f"{base_http}/stream/transcribe",
+        "stt_ws_url": default_ws,
+        "responses_url": harmony_responses,
+        "ai_provider": settings.ai_provider,
+        "harmony_model": os.environ.get("HARMONY_MODEL") or None,
     }
 
 
@@ -453,6 +560,13 @@ async def transcribe_stream_endpoint(request: Request):
         return JSONResponse(status_code=500, content={"error": "Whisper not initialized"})
 
     session = StreamSession()
+    logger.info(
+        "stream-jsonl session=%s lang=%s sample_rate=%s encoding=%s",
+        session.session_id,
+        session.language,
+        session.sample_rate,
+        session.encoding,
+    )
     events: list[str] = []
 
     async def send(payload: dict[str, Any]) -> None:
@@ -480,13 +594,18 @@ async def transcribe_stream_endpoint(request: Request):
 
 
 @app.post("/transcribe")
-async def transcribe_endpoint(audio: UploadFile = File(...)):  # noqa: B008  # FastAPI pattern
+async def transcribe_endpoint(  # noqa: B008  # FastAPI pattern
+    request: Request,
+    audio: UploadFile = File(...),  # noqa: B008  # FastAPI requires call here
+):
     if whisper_model is None:
         return JSONResponse(status_code=500, content={"error": "Whisper not initialized"})
 
     import subprocess
     import tempfile
 
+    session_id = _session_id_from_request(request)
+    start_time = time.perf_counter()
     temp_path = None
     converted_path = None
     try:
@@ -542,6 +661,18 @@ async def transcribe_endpoint(audio: UploadFile = File(...)):  # noqa: B008  # F
 
         transcription = await _transcribe_audio_file(final_path, language=lang)
         text = (transcription.get("text") or "").strip()
+        stats = _probe_wav_stats(final_path, fallback_rate=16000)
+        elapsed = time.perf_counter() - start_time
+        logger.info(
+            "transcribe session=%s lang=%s bytes=%s frames=%s dur=%.3fs out_chars=%s elapsed=%.3fs",
+            session_id,
+            lang or "auto",
+            stats.get("bytes"),
+            stats.get("frames"),
+            stats.get("duration_sec"),
+            len(text),
+            elapsed,
+        )
 
         # Log detected language for debugging
         if isinstance(transcription, dict):
@@ -550,7 +681,7 @@ async def transcribe_endpoint(audio: UploadFile = File(...)):  # noqa: B008  # F
 
         return {"text": text}
     except Exception as e:
-        logger.exception("Transcription failed")
+        logger.exception("Transcription failed (session=%s)", session_id)
         return JSONResponse(status_code=500, content={"error": str(e)})
     finally:
         # Clean up temp files
@@ -558,12 +689,12 @@ async def transcribe_endpoint(audio: UploadFile = File(...)):  # noqa: B008  # F
             if p and os.path.exists(p):
                 try:
                     os.remove(p)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
 
 
 @app.post("/format")
-async def format_endpoint(req: FormatRequest):
+async def format_endpoint(req: FormatRequest, request: Request):
     """Apply AI enhancement. Incoming text is already Light+ formatted."""
 
     text = req.text or ""
@@ -574,23 +705,36 @@ async def format_endpoint(req: FormatRequest):
     if not req.assistive and not settings.ai_formatting_enabled:
         return {"text": text}
 
+    session_id = _session_id_from_request(request)
+    start_time = time.perf_counter()
     formatted = await apply_ai_formatting(text, assistive=req.assistive)
+    elapsed = time.perf_counter() - start_time
+    logger.info(
+        "format session=%s provider=%s assistive=%s in_chars=%s out_chars=%s elapsed=%.3fs",
+        session_id,
+        settings.ai_provider,
+        req.assistive,
+        len(text),
+        len(formatted or ""),
+        elapsed,
+    )
     return {"text": formatted}
 
 
 @app.post("/stt_and_format")
 async def stt_and_format(
+    request: Request,
     audio: UploadFile = File(...),  # noqa: B008  # FastAPI pattern
     instruction: str | None = Form(None),
 ):
-    t = await transcribe_endpoint(audio)
+    t = await transcribe_endpoint(request=request, audio=audio)
     if isinstance(t, JSONResponse):
         return t
     txt = t.get("text", "")
     settings = get_settings()
     if not settings.ai_formatting_enabled:
         return {"text": txt}
-    f = await format_endpoint(FormatRequest(text=txt, instruction=instruction))
+    f = await format_endpoint(FormatRequest(text=txt, instruction=instruction), request=request)
     return f
 
 
@@ -625,6 +769,13 @@ async def websocket_transcribe(ws: WebSocket):
 
     await ws.accept()
     session = StreamSession()
+    logger.info(
+        "stream-ws session=%s lang=%s sample_rate=%s encoding=%s",
+        session.session_id,
+        session.language,
+        session.sample_rate,
+        session.encoding,
+    )
 
     async def send(payload: dict[str, Any]) -> None:
         await ws.send_text(json.dumps(payload, ensure_ascii=False))
@@ -688,13 +839,13 @@ async def events():
                     yield ":ping\n\n"
                     continue
                 yield f"data: {data}\n\n"
-        except asyncio.CancelledError:
-            pass
+        except asyncio.CancelledError as exc:
+            logger.debug("SSE stream cancelled", exc_info=exc)
         finally:
             try:
                 _subs.remove(q)
-            except ValueError:
-                pass
+            except ValueError as exc:
+                logger.debug("Subscriber missing during cleanup", exc_info=exc)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -750,6 +901,268 @@ async def tester():
         return HTMLResponse(content=html, status_code=200)
     except Exception as e:
         return HTMLResponse(content=f"<h1>Error</h1><pre>{e}</pre>", status_code=500)
+
+
+def _strip_code_fences(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+    return cleaned
+
+
+def _parse_learning_entries(raw: str) -> list[dict[str, Any]]:
+    """Strict parser for LLM responses -> list[{'term','mispronunciations'}]."""
+    cleaned = _strip_code_fences(raw)
+    data = json.loads(cleaned)
+    if isinstance(data, dict):
+        # Some models wrap list in {"entries": [...]}
+        data = data.get("entries") or data.get("data") or data.get("items") or []
+    if not isinstance(data, list):
+        raise ValueError("LLM returned invalid format (expected list)")
+
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+
+    for item in data:
+        term = str(item.get("term") or "").strip()
+        variants_raw = item.get("mispronunciations") or []
+        if not term or not variants_raw:
+            continue
+        variants: list[str] = []
+        for v in variants_raw:
+            s = str(v or "").strip()
+            if s:
+                variants.append(s[:128])
+        if not variants:
+            continue
+        term = term[:128]
+        key = (term.lower(), tuple(m.lower() for m in variants))
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append({"term": term, "mispronunciations": variants})
+    return entries
+
+
+def _diff_learning_entries(reference: str, transcript: str) -> list[dict[str, Any]]:
+    """Lightweight difflib fallback when AI is unavailable."""
+    import difflib
+
+    ref_tokens = reference.split()
+    hyp_tokens = transcript.split()
+    sm = difflib.SequenceMatcher(None, ref_tokens, hyp_tokens)
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        ref_chunk = " ".join(ref_tokens[i1:i2]).strip()
+        hyp_chunk = " ".join(hyp_tokens[j1:j2]).strip()
+        if not ref_chunk or not hyp_chunk:
+            continue
+        key = (ref_chunk.lower(), hyp_chunk.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append({"term": ref_chunk, "mispronunciations": [hyp_chunk]})
+    return entries
+
+
+def _merge_entries(*entry_lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for entries in entry_lists:
+        for entry in entries or []:
+            term = str(entry.get("term") or "").strip()
+            variants = [
+                str(v or "").strip()
+                for v in entry.get("mispronunciations") or []
+                if str(v or "").strip()
+            ]
+            if not term or not variants:
+                continue
+            key = (term.lower(), tuple(v.lower() for v in variants))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append({"term": term, "mispronunciations": variants})
+    return merged
+
+
+def _parse_sentence_list(raw: str, *, limit: int | None = None) -> list[str]:
+    cleaned = _strip_code_fences(raw)
+    data = json.loads(cleaned)
+    if isinstance(data, dict):
+        data = data.get("sentences") or data.get("items") or data.get("data") or []
+    if not isinstance(data, list):
+        raise ValueError("Invalid sentence list")
+    sentences: list[str] = []
+    for item in data:
+        s = str(item or "").strip()
+        if not s:
+            continue
+        sentences.append(s)
+        if limit and len(sentences) >= limit:
+            break
+    return sentences
+
+
+def _fallback_sentences(topic: str, count: int = 5) -> list[str]:
+    topic_slug = sanitize_topic(topic)
+    return [
+        f"Krótkie zdanie kalibracyjne #{i + 1} dotyczące tematu {topic_slug} — przeczytaj je głośno."
+        for i in range(count)
+    ]
+
+
+class LearnRequest(BaseModel):
+    topic: str
+    reference: str | None = None
+    transcript: str
+
+
+@app.post("/lab/learn")
+async def lab_learn(req: LearnRequest):
+    """Active Learning endpoint: Diff reference vs transcript and update dictionary."""
+    if not req.reference or not req.transcript:
+        return {"ok": False, "error": "Missing text"}
+
+    topic_slug = sanitize_topic(req.topic)
+    settings = get_settings()
+    ai_available = settings.ai_formatting_enabled and bool(
+        os.environ.get("HARMONY_API_KEY")
+        or os.environ.get("LIBRAXIS_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
+
+    ai_entries: list[dict[str, Any]] = []
+    ai_error: str | None = None
+
+    if ai_available:
+        prompt = (
+            "Role: Build a lexicon of mis-heard phrases for a speech recognizer.\n"
+            f"Topic: {topic_slug}\n"
+            f"Reference (correct text): {req.reference}\n"
+            f"Transcript (what was heard): {req.transcript}\n\n"
+            "Ignore punctuation/casing differences. Focus on phonetic mistakes. "
+            "Return ONLY JSON list: "
+            "[{'term': 'CorrectTerm', 'mispronunciations': ['WrongTerm1','WrongTerm2']}]."
+        )
+        try:
+            response_text = await run_chat_session(
+                [{"role": "user", "content": prompt}], settings=settings
+            )
+            ai_entries = _parse_learning_entries(response_text)
+        except Exception as e:  # pragma: no cover - depends on remote LLM
+            ai_error = str(e)
+            logger.warning("LLM learning failed (%s), will fallback to difflib", e)
+
+    diff_entries = _diff_learning_entries(req.reference, req.transcript)
+    merged_entries = _merge_entries(ai_entries, diff_entries)
+
+    if not merged_entries:
+        return {
+            "ok": False,
+            "error": ai_error or "No actionable differences found",
+            "source": "diff",
+        }
+
+    count, target_file = append_lexicon_entries(topic_slug, merged_entries)
+    reload_lexicon()
+    total_entries = len(load_lexicon_entries(topic_slug))
+
+    return {
+        "ok": True,
+        "learned": count,
+        "file": str(target_file),
+        "source": "ai" if ai_entries else "diff",
+        "ai_error": ai_error,
+        "total_entries": total_entries,
+    }
+
+
+@app.get("/lab/calibrate/generate")
+async def lab_calibrate_generate(topic: str):
+    """Generate calibration sentences for a topic."""
+    settings = get_settings()
+    topic_slug = sanitize_topic(topic)
+    prompt = (
+        f"Topic: {topic_slug}. Language: Polish.\n"
+        f"Task: Generate 5 difficult sentences containing technical/domain vocabulary, "
+        f"slang, or phonetic traps for this topic.\n"
+        f"Return ONLY a JSON list of strings: ['sentence1', ...]"
+    )
+
+    try:
+        response_text = await run_chat_session(
+            [{"role": "user", "content": prompt}], settings=settings
+        )
+        sentences = _parse_sentence_list(response_text, limit=5)
+        return {"sentences": sentences}
+    except Exception as e:
+        logger.error(f"Calibration generation failed: {e}")
+        return {"sentences": _fallback_sentences(topic_slug, count=5), "error": str(e)}
+
+
+@app.get("/lab/calibrate/wizard")
+async def lab_calibrate_wizard(topic: str):
+    """Return a batch of 10 calibration sentences for wizard flow."""
+    settings = get_settings()
+    topic_slug = sanitize_topic(topic)
+    prompt = (
+        f"Topic: {topic_slug}. Language: Polish.\n"
+        f"Task: Generate 10 concise sentences that stress tricky phonetics for ASR. "
+        f"Include domain-specific terms and hard-to-pronounce phrases.\n"
+        f"Return ONLY JSON list of strings."
+    )
+    try:
+        response_text = await run_chat_session(
+            [{"role": "user", "content": prompt}], settings=settings
+        )
+        sentences = _parse_sentence_list(response_text, limit=10)
+        if not sentences:
+            raise ValueError("Empty sentence list")
+        return {"sentences": sentences}
+    except Exception as e:
+        logger.error(f"Calibration wizard generation failed: {e}")
+        return {"sentences": _fallback_sentences(topic_slug, count=10), "error": str(e)}
+
+
+@app.get("/lab/lexicon")
+async def lab_lexicon(topic: str | None = None, limit: int = 50):
+    """Preview lexicon entries for a topic (or all)."""
+    topic_slug = sanitize_topic(topic) if topic else None
+    entries = load_lexicon_entries(topic_slug)
+    count = len(entries)
+    limited = entries[: limit if limit and limit > 0 else None]
+    return {"topic": topic_slug or "all", "count": count, "entries": limited}
+
+
+@app.get("/lab/lexicon/export")
+async def lab_lexicon_export(topic: str | None = None):
+    topic_slug = sanitize_topic(topic) if topic else None
+    entries = load_lexicon_entries(topic_slug)
+    return {"topic": topic_slug or "all", "count": len(entries), "entries": entries}
+
+
+@app.post("/lab/lexicon/clear")
+async def lab_lexicon_clear(topic: str):
+    topic_slug = sanitize_topic(topic)
+    path = lexicon_path_for_topic(topic_slug)
+    cleared = False
+    if path.exists():
+        path.unlink()
+        cleared = True
+    reload_lexicon()
+    return {"ok": True, "cleared": cleared, "topic": topic_slug}
+
+
+@app.post("/lab/lexicon/refresh")
+async def lab_lexicon_refresh():
+    reload_lexicon()
+    total = len(load_lexicon_entries())
+    return {"ok": True, "count": total}
 
 
 if __name__ == "__main__":

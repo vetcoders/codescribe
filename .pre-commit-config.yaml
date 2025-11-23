@@ -74,6 +74,9 @@ repos:
     hooks:
       - id: semgrep
         name: semgrep (p/ci ruleset)
+        # Run even if pre-commit does not pass filenames (ensures hook fires on every commit)
+        pass_filenames: false
+        stages: [commit, push]
         args: ["--config", "p/ci", "--error", "--skip-unknown-extensions"]
         exclude: |
           (?x)^(

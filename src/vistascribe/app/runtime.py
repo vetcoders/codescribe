@@ -107,8 +107,8 @@ def acquire_lock():
 def _persist_env_vars(values: dict[str, str]):
     try:
         update_env_vars(values)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)
 
 
 # --- rumps application class ---
@@ -199,8 +199,8 @@ class VistaScribe(
         self.menu_formatting = create_parent_item("Formatting")
         try:
             self._refresh_formatting_menu()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
         # Appearance submenu (tray icon / glyph options)
         self.item_tray_glyph = rumps.MenuItem(
@@ -323,14 +323,18 @@ class VistaScribe(
                 self._export_menu_tree(None)
                 # Exit after exporting to avoid running the UI loop
                 os._exit(0)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
-        # Minimal first-run setup: config + sensible defaults (non-blocking)
-        try:
-            first_run.ensure_config_and_permissions()
-        except Exception as e:
-            logger.warning(f"First-run setup skipped: {e}")
+        # Minimal first-run setup: config + sensible defaults (non-blocking via callAfter)
+        if getattr(rumps, "AppHelper", None):
+            rumps.AppHelper.callAfter(first_run.ensure_config_and_permissions)
+        else:
+            # Fallback for CLI mode or non-macOS
+            try:
+                first_run.ensure_config_and_permissions()
+            except Exception as e:
+                logger.warning(f"First-run setup skipped: {e}")
 
         # Disable menu items initially until we know hotkeys status
         self.menu["Enable Hotkeys"].state = False
@@ -339,7 +343,9 @@ class VistaScribe(
         self.event_queue = hk_events()  # get the standard queue
         self.async_loop = None
         self.async_thread = None
-        self.queue_timer = rumps.Timer(self.poll_queue, 0.05)  # poll queue every 50ms
+        # Polling interval for hotkey/event queue; configurable to trade CPU vs. latency.
+        queue_poll_interval = float(os.environ.get("QUEUE_POLL_INTERVAL", "0.02"))
+        self.queue_timer = rumps.Timer(self.poll_queue, queue_poll_interval)
         self._latest_history_path: Path | None = None
         logger.info("Vista Scribe App initialized.")
         # Developer diagnostics: preflight snapshot if DEV_MODE enabled
@@ -356,14 +362,14 @@ class VistaScribe(
             instrument_menu_item(self.item_open_lab)
             self.item_export_menu.set_callback(self._export_menu_tree)
             instrument_menu_item(self.item_export_menu)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
         # Reflect Start at Login state
         try:
             self.menu["Start at Login"].state = self._is_login_installed()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
         # Background permission probe (non-blocking)
         self._schedule_permission_probe()
@@ -388,8 +394,8 @@ class VistaScribe(
             logger.error(f"Login item toggle failed: {e}")
         try:
             self.menu["Start at Login"].state = self._is_login_installed()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
     def _show_toggles_help(self, _sender):
         from ..ui import toggles_help_message
@@ -516,7 +522,7 @@ class VistaScribe(
         try:
             os.remove(path)
         except FileNotFoundError:
-            pass
+            logger.debug("LaunchAgent plist already removed: %s", path)
         logger.info("Removed Start at Login LaunchAgent")
 
     # --- Hotkey Customizer (MVP) ---
@@ -546,8 +552,8 @@ class VistaScribe(
                 hotkeys_set_hold_mods(hold_spec)
                 try:
                     update_env_vars({"HOLD_MODS": hold_spec})
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
                 self._refresh_hold_menu()
 
             # Step 2: Toggle trigger
@@ -568,13 +574,13 @@ class VistaScribe(
                     import hotkeys as hk_mod
 
                     hk_mod.set_toggle_trigger(trig)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
                 os.environ["TOGGLE_TRIGGER"] = trig
                 try:
                     update_env_vars({"TOGGLE_TRIGGER": trig})
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
                 try:
                     self.item_toggle_current.title = "Toggle: " + self._toggle_label(trig)
                 except Exception:
@@ -617,8 +623,8 @@ def _set_process_title() -> None:
         import setproctitle
 
         setproctitle.setproctitle("VistaScribeTray")
-    except Exception:
-        pass  # Optional dependency
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)  # Optional dependency
 
 
 def run() -> None:

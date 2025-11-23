@@ -28,9 +28,12 @@ import logging
 import os
 import tempfile
 import wave
+from dataclasses import dataclass
 
 import numpy as np
 import sounddevice as sd
+
+logger = logging.getLogger(__name__)
 
 # --- constants ---
 
@@ -40,17 +43,45 @@ SR = 16000
 # number of channels
 # 1 for mono
 CH = 1
-# silence threshold in db
+# silence threshold in db (runtime override: SILENCE_DB)
 # rms values below this are considered silence.
 # adjust this based on microphone sensitivity and background noise.
-SILENCE_DB = -45
-# silence duration threshold (seconds)
+SILENCE_DB = float(os.environ.get("SILENCE_DB", "-45"))
+# silence duration threshold (seconds) (runtime override: SILENCE_HANG_SEC)
 # recording stops automatically after this duration of continuous silence.
-HANG = 0.8
+HANG = float(os.environ.get("SILENCE_HANG_SEC", "0.8"))
+# allow disabling hang-based auto-stop (e.g., for manual hold/toggle control)
+AUTO_SILENCE = (os.environ.get("AUTO_SILENCE", "1") or "1").lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 # size of audio chunks to read from stream (samples)
 BLOCK_SIZE = 1024
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+@dataclass
+class RecorderDiagnostics:
+    frames: int = 0
+    bytes: int = 0
+    chunks: int = 0
+    duration_sec: float = 0.0
+    snapshot_frames: int = 0
+    snapshot_bytes: int = 0
+
+    def as_dict(self) -> dict[str, float | int]:
+        return {
+            "frames": self.frames,
+            "bytes": self.bytes,
+            "chunks": self.chunks,
+            "duration_sec": round(self.duration_sec, 3),
+            "snapshot_frames": self.snapshot_frames,
+            "snapshot_bytes": self.snapshot_bytes,
+        }
+
 
 # --- recorder class ---
 
@@ -71,6 +102,7 @@ class Recorder:
         self._collect_task = None
         self._last_duration = 0.0
         self._last_snapshot_frames = 0
+        self._diagnostics = RecorderDiagnostics()
         logging.info("Recorder initialized.")
         # Log default device info at initialization
         try:
@@ -90,8 +122,8 @@ class Recorder:
                     self._stream.stop()
                 self._stream.close()
                 logging.debug("Recorder.__del__: cleaned up leaked audio stream")
-        except Exception:
-            pass  # Silent cleanup - we're in destructor
+        except Exception as exc:
+            logger.debug("Recorder cleanup suppressed", exc_info=exc)
 
     async def start(self):
         """starts the audio recording process.
@@ -103,6 +135,7 @@ class Recorder:
         assert self._stream is None, "Recording is already in progress."
         logging.info("Starting recording...")
         self._buf = []
+        self._diagnostics = RecorderDiagnostics()
         try:
             # Query the active input device each time to avoid stale handles but
             # stick to the public PortAudio API (no private _terminate/_initialize).
@@ -175,6 +208,9 @@ class Recorder:
                     continue  # or break, depending on desired behavior
 
                 self._buf.append(block.copy())  # append copy to buffer
+                self._diagnostics.chunks += 1
+                self._diagnostics.frames += len(block)
+                self._diagnostics.bytes += block.nbytes
                 total_frames_processed += len(block)
 
                 # calculate rms volume in dbfs (decibels relative to full scale)
@@ -183,24 +219,25 @@ class Recorder:
                 rms_amplitude = np.sqrt(np.mean(block.astype(np.float32) ** 2))
                 rms_db = 20 * np.log10(rms_amplitude + 1e-9)  # add epsilon for stability
 
-                # check for silence
-                if rms_db < SILENCE_DB:
-                    # accumulate silent samples
-                    silent_frames += len(block)
-                else:
-                    silent_frames = 0  # reset counter if sound detected
-                    # print(f"Debug: Sound (RMS: {rms_db:.2f} dBFS)")
+                if AUTO_SILENCE:
+                    # check for silence
+                    if rms_db < SILENCE_DB:
+                        # accumulate silent samples
+                        silent_frames += len(block)
+                    else:
+                        silent_frames = 0  # reset counter if sound detected
+                        # print(f"Debug: Sound (RMS: {rms_db:.2f} dBFS)")
 
-                # check if silence duration exceeds hang time
-                if silent_frames / SR > HANG:
-                    logging.info(f"Silence detected for > {HANG}s. Stopping collection.")
-                    # Politely stop the stream here to release the microphone promptly
-                    try:
-                        if self._stream and self._stream.active:
-                            self._stream.stop()
-                    except Exception:
-                        pass
-                    break  # exit collection loop
+                    # check if silence duration exceeds hang time
+                    if silent_frames / SR > HANG:
+                        logging.info(f"Silence detected for > {HANG}s. Stopping collection.")
+                        # Politely stop the stream here to release the microphone promptly
+                        try:
+                            if self._stream and self._stream.active:
+                                self._stream.stop()
+                        except Exception as exc:
+                            logger.debug("Suppressed exception", exc_info=exc)
+                        break  # exit collection loop
 
         except sd.PortAudioError as pae:
             logging.error(f"PortAudio error during collection: {pae}")
@@ -217,8 +254,8 @@ class Recorder:
                     self._stream.stop()
                 if self._stream:
                     self._stream.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
 
     async def stop(self) -> str | None:
         """stops the audio recording and saves the buffer to a temp wav file.
@@ -269,6 +306,9 @@ class Recorder:
             logging.info(
                 f"Concatenated audio buffer: {len(wav_data)} frames ({self._last_duration:.2f}s)"
             )
+            self._diagnostics.frames = len(wav_data)
+            self._diagnostics.bytes = wav_data.nbytes
+            self._diagnostics.duration_sec = self._last_duration
 
             # create a temporary file (ensures unique name)
             # delete=false means the file persists after closing, we manage deletion later
@@ -333,6 +373,8 @@ class Recorder:
                 wf.setframerate(SR)
                 wf.writeframes(wav_data.tobytes())
             self._last_snapshot_frames = total_frames
+            self._diagnostics.snapshot_frames = total_frames
+            self._diagnostics.snapshot_bytes = wav_data.nbytes
             return path
         except Exception as e:
             logging.debug(f"snapshot_wav failed: {e}", exc_info=True)
@@ -343,3 +385,9 @@ class Recorder:
         """Return the duration in seconds of the most recent recording."""
 
         return self._last_duration
+
+    @property
+    def diagnostics(self) -> RecorderDiagnostics:
+        """Return populated diagnostics for the most recent run."""
+
+        return self._diagnostics

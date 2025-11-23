@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from ...ui import MenuIcon
+
+logger = logging.getLogger(__name__)
 
 
 class AppearanceMixin:
@@ -32,7 +35,7 @@ class AppearanceMixin:
             from ...config import update_env_vars
 
             update_env_vars({"SHOW_TRAY_GLYPH": "1" if new_val else "0"})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         self._refresh_appearance_menu()
         self._refresh_tray_icon()

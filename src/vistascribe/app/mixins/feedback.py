@@ -10,6 +10,8 @@ import rumps
 from ...config import update_env_vars
 from ..menu_utils import create_parent_item, set_submenu
 
+logger = logging.getLogger(__name__)
+
 
 class FeedbackMenuMixin:
     def _init_feedback_menu(self):
@@ -52,16 +54,16 @@ class FeedbackMenuMixin:
         self.beep_on_start = not getattr(self, "beep_on_start", True)
         try:
             update_env_vars({"BEEP_ON_START": "1" if self.beep_on_start else "0"})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         self._refresh_feedback_menu()
 
     def _set_sound_name(self, name: str):
         os.environ["SOUND_NAME"] = name
         try:
             update_env_vars({"SOUND_NAME": name})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         self._refresh_feedback_menu()
 
     def _set_sound_volume(self, _sender):
@@ -80,8 +82,8 @@ class FeedbackMenuMixin:
                 os.environ["SOUND_VOLUME"] = str(value)
                 try:
                     update_env_vars({"SOUND_VOLUME": str(value)})
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
             except Exception:
                 rumps.alert(
                     title="Invalid value",

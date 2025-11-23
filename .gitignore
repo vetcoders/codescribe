@@ -1,66 +1,48 @@
-# .gitignore
-
-# python virtual environment
-.venv/
-
-# environment variables file
-.env
-
-# pycache
+# Build / Dist
+build/
+dist/
+*.spec
+*.dmg
+*.app/
 __pycache__/
 *.pyc
-
-# OS / editor
-.DS_Store
-# Share only JetBrains Run/Debug configurations
-.idea/*
-!.idea/runConfigurations/
-!.idea/runConfigurations/*.xml
-.vscode/
-.junie/
-src/vistascribe/assets/*
-!src/vistascribe/assets/icon.png
-!src/vistascribe/assets/voice_chat_lab.html
-logs/
-
-# runtime logs and state
-logs/VistaScribe.log
-.vista_scribe.lock
-user-messages/
-
-# build artifacts
-packaging/dist/
-packaging/build/
-packaging/dmg/
-dist/
-build/
-*.egg-info/
-
-# local data and outputs
-models/
-outputs/
-*.log
+.venv/
+.env
 .pids/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+logs/
+models/
+output.log
 
-# local email extraction leftovers (if present)
-Raw/
-extracted/
+# IDEs
+.idea/
+.vscode/
+.DS_Store
 
-# archives and large binaries
-*.zip
+# Temp
+tmp/
+temp/
 
-# misc
-*.commands.txt
-packaging/.DS_Store
-/.fleet
-/extracted_frames
-/.codex
-/.codescribe
-/streaming-stt-inspirations
-*.wav
-*.txt
-!docs/reports/*.txt
+# Local assets not tracked
+src/vistascribe/assets/lab/
+!src/vistascribe/assets/lab/app.js
+!src/vistascribe/assets/lab/styles.css
+!src/vistascribe/assets/lab/components/
+!src/vistascribe/assets/lab/controllers/
+!src/vistascribe/assets/lab/hooks/
+!src/vistascribe/assets/lab/lib/
 /.archive
-/.gemini/
+/.codescribe
 /.codex
 /.gemini
+/extracted_frames
+/src/VistaScribe.egg-info
+/.gemini-clipboard
+/VistaScribe.egg-info
+.vista_scribe.lock
+/$HOME
+/.fastembed_cache

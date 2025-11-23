@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import rumps
@@ -10,6 +11,8 @@ from ... import history
 from ...ui import copy_text
 from ..menu_utils import create_parent_item, set_submenu
 from ..status import set_status
+
+logger = logging.getLogger(__name__)
 
 
 class HistoryController:
@@ -110,8 +113,8 @@ class HistoryController:
                 subtitle="Copied from history",
                 message=path.name,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
     def copy_latest(self) -> None:
         if not self.app.history_enabled:
@@ -132,8 +135,8 @@ class HistoryController:
                     subtitle="History disabled",
                     message="Transcript sent to clipboard",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
             return
 
         entry = history.save_entry(text)
@@ -145,6 +148,6 @@ class HistoryController:
                 subtitle="Saved to history",
                 message="No editable field detected",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         self.schedule_refresh()

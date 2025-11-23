@@ -92,8 +92,8 @@ class ModelsController:
                     "WHISPER_DIR": wd,
                 }
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         logger.info("✓ Model switched to: %s", variant)
         self.refresh_async()
         try:
@@ -102,8 +102,8 @@ class ModelsController:
                 subtitle="Switched",
                 message=variant.replace("-", " "),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
     def _prompt_download(self, variant: str):
         try:
@@ -135,8 +135,8 @@ class ModelsController:
                     title="Missing script",
                     message="scripts/get_models.py not found. Download manually.",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
             return
         cmd = ["uv", "run", "python", str(script), "--whisper", variant]
         try:
@@ -154,8 +154,8 @@ class ModelsController:
                         title="Download failed",
                         message=result.stderr.strip() or "Model fetch failed.",
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
                 return
             logger.info("Model '%s' downloaded", variant)
             from ... import stt as stt_mod
@@ -168,14 +168,14 @@ class ModelsController:
                     subtitle="Completed",
                     message=f"Variant: {variant}",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
         except Exception as exc:
             logger.error("Download thread crashed: %s", exc)
             try:
                 rumps.alert(title="Download error", message=str(exc))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
 
     def _open_models_folder(self, _sender=None):
         models_dir = os.path.join(self.app.repo_root, "models")
@@ -187,10 +187,28 @@ class ModelsController:
 
     def _get_ollama_models(self) -> list[str]:
         ollama_host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").strip()
+
+        # Optimization: Don't poll dead localhost if user isn't using Ollama
+        try:
+            from ...settings_store import get_settings
+
+            settings = get_settings()
+            is_local = "127.0.0.1" in ollama_host or "localhost" in ollama_host
+            if settings.ai_provider != "ollama" and is_local:
+                return []
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
+
         try:
             import requests
 
-            r = requests.get(ollama_host.rstrip("/") + "/api/tags", timeout=2)
+            # Configurable timeout (default 0.5s is safer than 0.2s for local HDD)
+            try:
+                timeout = float(os.environ.get("OLLAMA_TIMEOUT", "0.5"))
+            except Exception:
+                timeout = 0.5
+
+            r = requests.get(ollama_host.rstrip("/") + "/api/tags", timeout=timeout)
             if r.status_code == 200:
                 data = r.json()
                 models = [item.get("name") for item in data.get("models", [])]

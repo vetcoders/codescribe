@@ -35,6 +35,8 @@ import time
 
 from .settings_store import get_settings
 
+logger = logging.getLogger(__name__)
+
 # configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -278,8 +280,8 @@ def paste_text(text: str):
                 if s is not None:
                     bs = s.encode("utf-8", "surrogatepass")
                     snapshot = [[("public.utf8-plain-text", bs)]]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
         return snapshot, int(pb.changeCount())
 
     def _restore_pasteboard_if_unchanged(pb, snapshot, our_count):
@@ -439,8 +441,8 @@ def start_sound():
                 if snd is not None:
                     try:
                         snd.setVolume_(max(0.0, min(1.0, volume)))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Suppressed exception", exc_info=exc)
                     snd.play()
                     return
             # TTY/headless fallback
@@ -522,8 +524,8 @@ def _ensure_badge_window():
         # Keep visible across spaces and in full screen
         if hasattr(AppKit, "NSWindowCollectionBehaviorCanJoinAllSpaces"):
             w.setCollectionBehavior_(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)
 
     # Draw a small red circle (size according to env)
     view = AppKit.NSImageView.alloc().initWithFrame_(((0, 0), (size, size)))
@@ -556,8 +558,8 @@ def _screen_for_point(x: float, y: float):
                 and y <= (f.origin.y + f.size.height)
             ):
                 return sc
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)
     return AppKit.NSScreen.mainScreen() if AppKit is not None else None
 
 
@@ -665,8 +667,8 @@ def _try_move_badge_to_caret() -> bool:
                     x, y = _clamp_to_screen(x, y, size, size)
                     _badge_window.setFrameOrigin_((x, y))
                     return True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
 
         # Fallback: use frame of focused element (rough approximation)
         frame_val = AX.AXUIElementCopyAttributeValue(focused, AX.kAXFrameAttribute, None)
@@ -739,8 +741,8 @@ def show_hold_badge():
                     def tick_(self, _timer):  # noqa: N802 (Objective-C selector style)
                         try:
                             _move_badge()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("Suppressed exception", exc_info=exc)
 
                 _badge_timer_target = _BadgeTarget.new()
                 _badge_timer = (

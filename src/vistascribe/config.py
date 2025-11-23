@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .path_utils import repo_root
 from .settings_store import get_settings, update_settings
+
+logger = logging.getLogger(__name__)
 
 _REPO_ROOT = str(repo_root())
 
@@ -61,7 +64,7 @@ def _read_env_file(path: str) -> dict[str, str]:
                     k, v = line.split("=", 1)
                     env[k.strip()] = v
     except FileNotFoundError:
-        pass
+        logger.debug("Env file missing, skipping load: %s", path)
     return env
 
 

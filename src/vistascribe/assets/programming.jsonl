@@ -1,0 +1,60 @@
+{"term": "pnpm tauri:dev", "mispronunciations": ["pnpm tauri dev", "pnpm tauri deweloper", "pnpm tauri def", "p en p em tauri dev"], "category": "cmd"}
+{"term": "pnpm install", "mispronunciations": ["pnpm instal"], "category": "cmd"}
+{"term": "pnpm build", "mispronunciations": ["pnpm bild"], "category": "cmd"}
+{"term": "cargo build", "mispronunciations": ["kargo bild"], "category": "cmd"}
+{"term": "cargo run", "mispronunciations": ["kargo ran"], "category": "cmd"}
+{"term": "uv sync", "mispronunciations": ["uw sync", "uv synk", "jwi sync"], "category": "cmd"}
+{"term": "uv run", "mispronunciations": ["uw ran", "jwi ran"], "category": "cmd"}
+{"term": "backend.py", "mispronunciations": ["backend kropka py", "backend py", "backend.pe igrek"], "category": "file"}
+{"term": "frontend", "mispronunciations": ["front end", "front-end"], "category": "tech"}
+{"term": "backend", "mispronunciations": ["back end", "back-end", "bekend"], "category": "tech"}
+{"term": "fullstack", "mispronunciations": ["fulstak", "full stack"], "category": "tech"}
+{"term": "Tauri", "mispronunciations": ["taurii", "tałri"], "category": "tech"}
+{"term": "Rust", "mispronunciations": ["rast"], "category": "tech"}
+{"term": "Python", "mispronunciations": ["pajton", "pytona", "pintona"], "category": "tech"}
+{"term": "JavaScript", "mispronunciations": ["dżawaskrypt", "java script"], "category": "tech"}
+{"term": "TypeScript", "mispronunciations": ["tajpskrypt", "type script"], "category": "tech"}
+{"term": "React", "mispronunciations": ["riakt"], "category": "tech"}
+{"term": "Next.js", "mispronunciations": ["nekst dżej es", "next js"], "category": "tech"}
+{"term": "Node.js", "mispronunciations": ["nod dżej es", "node js", "nołd"], "category": "tech"}
+{"term": "GitHub", "mispronunciations": ["githab", "git hub"], "category": "tech"}
+{"term": "GitLab", "mispronunciations": ["gitlab"], "category": "tech"}
+{"term": "Bitbucket", "mispronunciations": ["bitbaket"], "category": "tech"}
+{"term": "Docker", "mispronunciations": ["doker"], "category": "tech"}
+{"term": "Kubernetes", "mispronunciations": ["k8s", "kubernets", "kubernetesa"], "category": "tech"}
+{"term": "Redis", "mispronunciations": ["redis"], "category": "tech"}
+{"term": "PostgreSQL", "mispronunciations": ["postgres", "postgre sql"], "category": "tech"}
+{"term": "SQL", "mispronunciations": ["es kju el", "sikłel"], "category": "tech"}
+{"term": "JSON", "mispronunciations": ["dżejson", "jason"], "category": "tech"}
+{"term": "API", "mispronunciations": ["api", "ej pi aj"], "category": "tech"}
+{"term": "HTTP", "mispronunciations": ["http", "h t t p"], "category": "tech"}
+{"term": "HTTPS", "mispronunciations": ["https"], "category": "tech"}
+{"term": "WebSocket", "mispronunciations": ["websoket", "web socket"], "category": "tech"}
+{"term": "endpoint", "mispronunciations": ["end point"], "category": "tech"}
+{"term": "commit", "mispronunciations": ["komit"], "category": "git"}
+{"term": "merge", "mispronunciations": ["merdż", "merdżu"], "category": "git"}
+{"term": "branch", "mispronunciations": ["brancz", "branż"], "category": "git"}
+{"term": "pull request", "mispronunciations": ["pul rikłest", "pr"], "category": "git"}
+{"term": "rebase", "mispronunciations": ["ribejs"], "category": "git"}
+{"term": "stash", "mispronunciations": ["stasz"], "category": "git"}
+{"term": "sudo", "mispronunciations": ["sudo", "sudou"], "category": "cmd"}
+{"term": "grep", "mispronunciations": ["grep"], "category": "cmd"}
+{"term": "awk", "mispronunciations": ["awk"], "category": "cmd"}
+{"term": "sed", "mispronunciations": ["sed", "ted - em", "tedem", "z tedem"], "category": "cmd"}
+{"term": "ssh", "mispronunciations": ["es es ha", "sz"], "category": "cmd"}
+{"term": "VistaScribe", "mispronunciations": ["wistaszkrajb", "vista scribe"], "category": "project"}
+{"term": "calculate_metrics", "mispronunciations": ["calculate matrix", "kalkulejt matriks", "kalkuluj metryki"], "category": "code"}
+{"term": "O(n)", "mispronunciations": ["zero w nawiasie n", "0 w nawiasie n", "o w nawiasie n", "o od n", "złożoność o n"], "category": "math"}
+{"term": "O(1)", "mispronunciations": ["zero w nawiasie jeden", "0 w nawiasie jeden", "o w nawiasie jeden", "o od jeden"], "category": "math"}
+{"term": "O(log n)", "mispronunciations": ["o log n", "o logarytm n"], "category": "math"}
+{"term": "O(n^2)", "mispronunciations": ["o n kwadrat", "o do kwadratu"], "category": "math"}
+{"term": "LOC", "mispronunciations": ["lock", "lok", "lines of code"], "category": "tech"}
+{"term": "trees", "mispronunciations": ["trizes", "tris"], "category": "tech"}
+{"term": "cargo-tarpaulin", "mispronunciations": ["tart papuli", "tarpaulin", "kargo tarpaulin"], "category": "rust"}
+{"term": "vibrancy", "mispronunciations": ["wibrancy", "wibrancji", "wajbrancy"], "category": "rust"}
+{"term": "Axum", "mispronunciations": ["auksum", "aksum", "axom"], "category": "rust"}
+{"term": "Tokio", "mispronunciations": ["tokijo", "tokjo"], "category": "rust"}
+{"term": "Serde", "mispronunciations": ["serd", "ser-de", "serde"], "category": "rust"}
+{"term": "Actix", "mispronunciations": ["aktiks", "actix"], "category": "rust"}
+{"term": "Diesel", "mispronunciations": ["dizel", "diesel"], "category": "rust"}
+{"term": "Clippy", "mispronunciations": ["klipi", "clippy"], "category": "rust"}

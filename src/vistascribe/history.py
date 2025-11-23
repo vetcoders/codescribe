@@ -73,5 +73,6 @@ def clear_history() -> None:
     for path in dir_path.rglob("*.txt"):
         try:
             path.unlink()
-        except Exception:
+        except Exception as exc:
+            logging.warning(f"Failed to delete history entry '{path}': {exc}")
             continue

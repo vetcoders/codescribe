@@ -19,7 +19,9 @@ def get_context_dir() -> Path:
 MAX_CONTEXT_FILES = 20
 
 
-def save_to_codescribe(raw_text: str, formatted_text: str = None, assistive: bool = False) -> Path:
+def save_to_codescribe(
+    raw_text: str, formatted_text: str | None = None, assistive: bool = False
+) -> Path | None:
     """Save transcript to local .codescribe folder."""
     try:
         context_dir = get_context_dir()

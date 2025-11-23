@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
@@ -30,6 +31,8 @@ from datetime import datetime
 from pathlib import Path
 
 from .path_utils import repo_root
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = repo_root()
 LOGS_DIR = REPO_ROOT / "logs"
@@ -144,8 +147,8 @@ def _propose_deletions(root: Path) -> dict[str, str]:
     for p in _iter_py_files(root):
         try:
             text_index[str(p.relative_to(root))] = p.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
     proposals: dict[str, str] = {}
     for name in candidates:
         target = root / name

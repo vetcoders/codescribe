@@ -20,19 +20,19 @@ _current_session: Optional["TranscriptionSession"] = None
 class TranscriptionSession:
     """Manages a single transcription session with memory."""
 
-    def __init__(self, session_id: str = None):
+    def __init__(self, session_id: str | None = None):
         """Initialize a new session."""
         self.session_id = session_id or str(uuid.uuid4())
         self.start_time = datetime.now()
         self.transcripts: list[dict] = []  # List of {time, raw, formatted, assistive}
-        self.context_window = []  # Recent context for AI
+        self.context_window: list[dict] = []  # Recent context for AI
         self.session_file = SESSION_DIR / f"{self.session_id}.json"
         self.max_context_chars = 100_000  # ~25k tokens for Qwen
 
         logger.info(f"Session initialized: {self.session_id}")
 
     def add_transcript(
-        self, raw_text: str, formatted_text: str = None, assistive: bool = False
+        self, raw_text: str, formatted_text: str | None = None, assistive: bool = False
     ) -> None:
         """Add a transcript to the session memory."""
         entry = {

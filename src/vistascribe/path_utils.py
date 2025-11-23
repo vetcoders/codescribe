@@ -62,8 +62,8 @@ def normalize_model_path(p: str | None) -> str | None:
                     if fixed != abs_path:
                         logger.info(f"Normalized path for MLX: '{abs_path}' -> '{fixed}'")
                     abs_path = fixed
-            except Exception:
-                pass  # keep original abs_path on any error
+            except Exception as exc:
+                logger.debug("Failed to normalize MLX path '%s': %s", abs_path, exc)
         return abs_path
 
     # Otherwise, this is likely a model repo ID (e.g., 'org/name'); return as-is
@@ -82,6 +82,6 @@ def user_data_root() -> Path:
     for env in ("VISTASCRIBE_DATA_DIR", "VISTASCRIBE_APP_DIR"):
         custom = os.environ.get(env)
         if custom:
-            return Path(custom).expanduser()
+            return Path(os.path.expandvars(custom)).expanduser()
 
     return Path.home() / ".VistaScribe"

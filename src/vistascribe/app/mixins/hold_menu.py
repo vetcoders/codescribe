@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 import rumps
@@ -16,6 +17,8 @@ from ...hotkeys import (
     set_toggle_trigger as hotkeys_set_toggle_trigger,
 )
 from ..menu_utils import create_parent_item, set_submenu
+
+logger = logging.getLogger(__name__)
 
 
 class HoldMenuMixin:
@@ -110,8 +113,8 @@ class HoldMenuMixin:
             purpose = f" ({agent_name} AI)"
         try:
             self.item_hold_current.title = f"Current: {label}{purpose}"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         self.item_hold_ctrl.state = label == "Ctrl"
         self.item_hold_ctrl_opt.state = label == "Ctrl+Option"
         self.item_hold_ctrl_shift.state = label == "Ctrl+Shift"
@@ -136,8 +139,8 @@ class HoldMenuMixin:
         hotkeys_set_hold_mods(spec)
         try:
             update_env_vars({"HOLD_MODS": spec})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         self._refresh_hold_menu()
 
     def _toggle_hold_exclusive(self, _sender):
@@ -146,8 +149,8 @@ class HoldMenuMixin:
         hotkeys_set_hold_exclusive(new_flag)
         try:
             update_env_vars({"HOLD_EXCLUSIVE": "1" if new_flag else "0"})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         self._refresh_hold_menu()
 
     def _set_toggle_trigger(self, trigger: str):
@@ -155,8 +158,8 @@ class HoldMenuMixin:
         os.environ["TOGGLE_TRIGGER"] = trigger
         try:
             update_env_vars({"TOGGLE_TRIGGER": trigger})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         self._refresh_toggle_menu()
 
     def _refresh_toggle_menu(self):

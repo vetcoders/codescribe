@@ -24,8 +24,8 @@ class LoginManager:
             logger.error(f"Login item toggle failed: {e}")
         try:
             self.app.menu["Start at Login"].state = self._is_login_installed()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
     def _install_login_agent(self):
         path = self.app._login_plist_path()
@@ -59,7 +59,7 @@ class LoginManager:
         try:
             os.remove(path)
         except FileNotFoundError:
-            pass
+            logger.debug("LaunchAgent plist already removed: %s", path)
         logger.info("Removed Start at Login LaunchAgent")
 
     def __init__(self, app):

@@ -44,7 +44,7 @@ class RuntimeLoopMixin:
                 )
                 self.event_queue.task_done()
         except queue.Empty:
-            pass
+            return
         except Exception as exc:
             import logging
 
@@ -79,16 +79,16 @@ class RuntimeLoopMixin:
             app = AppKit.NSApplication.sharedApplication()
             if app is not None:
                 app.activateIgnoringOtherApps_(True)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         try:
             runner = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
                 os.getpid()
             )
             if runner is not None:
                 runner.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
     def _position_alert_window(self, AppKit, window):  # pragma: no cover
         try:
@@ -104,22 +104,22 @@ class RuntimeLoopMixin:
         except Exception:
             try:
                 window.center()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
 
     def _shutdown_runtime_components(self):
         try:
             self.recording.cancel_tasks()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         try:
             hotkeys_stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         try:
             self.queue_timer.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         if self.async_loop and self.async_loop.is_running():
             self.async_loop.call_soon_threadsafe(self.async_loop.stop)
             if self.async_thread:
@@ -187,8 +187,8 @@ class RuntimeLoopMixin:
                     logger.warning("Failed to signal VistaScribeServer pid %s: %s", pid, exc)
             try:
                 pid_file.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
         if stopped:
             return True
 
@@ -211,8 +211,8 @@ class RuntimeLoopMixin:
             try:
                 if not is_background and not os.isatty(sys.stdout.fileno()):
                     is_background = True
-            except (AttributeError, ValueError, OSError):
-                pass
+            except (AttributeError, ValueError, OSError) as exc:
+                logger.debug("isatty check failed", exc_info=exc)
 
             if getattr(self, "hotkeys_enabled", False):
                 try:
@@ -237,8 +237,8 @@ class RuntimeLoopMixin:
                     try:
                         if hasattr(self, "queue_timer"):
                             self.queue_timer.start()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Suppressed exception", exc_info=exc)
                 else:
                     self.hotkeys_enabled = False
                     self.menu["Enable Hotkeys"].state = False
@@ -254,8 +254,8 @@ class RuntimeLoopMixin:
                                 ),
                                 ok="OK",
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("Suppressed exception", exc_info=exc)
         except Exception as exc:
             logger.error("Toggle hotkeys failed: %s", exc)
 
@@ -266,16 +266,16 @@ class RuntimeLoopMixin:
         try:
             if not os.isatty(sys.stdout.fileno()):
                 is_background_mode = True
-        except (AttributeError, ValueError, OSError):
-            pass
+        except (AttributeError, ValueError, OSError) as exc:
+            logger.debug("isatty check failed", exc_info=exc)
         try:
             import psutil
 
             parent = psutil.Process(os.getppid())
             if parent.name() in ("nohup", "daemondo", "launchd"):
                 is_background_mode = True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
         hotkeys_success = hotkeys_start()
         if hotkeys_success:
@@ -298,8 +298,8 @@ class RuntimeLoopMixin:
                         ),
                         ok="OK",
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
 
         self.async_thread = threading.Thread(target=self._run_async_loop, daemon=True)
         self.async_thread.start()

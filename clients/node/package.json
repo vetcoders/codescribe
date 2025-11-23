@@ -1,0 +1,15 @@
+{
+  "name": "vistascribe-stream-client",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Minimal NDJSON streaming client for VistaScribe backend",
+  "scripts": {
+    "start": "node vs-stream-client.mjs"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {}
+}
+

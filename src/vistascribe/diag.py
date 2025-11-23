@@ -9,11 +9,14 @@ logger, without raising exceptions or blocking the app.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import sys
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_imports():
@@ -152,5 +155,5 @@ def write_snapshot(info: dict, repo_root: str | None = None) -> None:
         logs.mkdir(parents=True, exist_ok=True)
         path = logs / f"diagnostics-{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         path.write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)

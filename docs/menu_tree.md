@@ -1,27 +1,80 @@
 # VistaScribe Menu Tree
 
-- Status: Initializing...
-- <rumps.rumps.SeparatorMenuItem object at 0x119832cc0>
-- Enable Hotkeys
-- <rumps.rumps.SeparatorMenuItem object at 0x119832e10>
-- Language
-- Formatting
-- <rumps.rumps.SeparatorMenuItem object at 0x119832ff0>
-- Hold Hotkeys
-- <rumps.rumps.SeparatorMenuItem object at 0x119833110>
-- Models
-- Backends
-- <rumps.rumps.SeparatorMenuItem object at 0x1198332f0>
-- History
-- <rumps.rumps.SeparatorMenuItem object at 0x119833410>
-- Appearance
-- Feedback
-- <rumps.rumps.SeparatorMenuItem object at 0x1198335f0>
-- Permissions
-- Tools
-- <rumps.rumps.SeparatorMenuItem object at 0x1198337d0>
-- What do these toggles do?
-- <rumps.rumps.SeparatorMenuItem object at 0x1198339b0>
-- Start at Login
-- <rumps.rumps.SeparatorMenuItem object at 0x119833b90>
-- Quit...
+*Generated based on v0.4.3 codebase analysis*
+
+*   **Status: [Dynamic]** (Ready / Listening... / Processing...)
+*   ---
+*   **✓ Enable Hotkeys**
+*   ---
+*   **Language**
+    *   ✓ Auto
+    *   Polish (PL)
+    *   English (EN)
+*   **Formatting**
+    *   Provider (Label)
+    *   ✓ Harmony
+    *   Ollama
+    *   ---
+    *   Light+ always on (Info Label)
+*   ---
+*   **Hold Hotkeys**
+    *   Hold Mode: **Ctrl**
+    *   Toggle Mode: **Double Option**
+    *   ---
+    *   ✓ Exclusive Mode
+*   ---
+*   **Models**
+    *   Whisper: **Medium** (Current Info)
+    *   ---
+    *   Use Whisper: Small
+    *   Use Whisper: Medium
+    *   Use Whisper: Large v3
+    *   Use Whisper: Large v3 Turbo
+    *   ---
+    *   *[Ollama Models if available...]*
+    *   ---
+    *   Open Models Folder
+*   **Backends**
+    *   STT: OK
+    *   AI: Harmony
+    *   ---
+    *   Whisper URL: local
+    *   Harmony URL: local
+    *   Check Backends
+*   ---
+*   **History**
+    *   Open History Folder
+    *   Clear History
+    *   ---
+    *   *[Recent Transcripts...]*
+*   ---
+*   **Appearance**
+    *   Show status glyph next to icon
+    *   ---
+    *   Refresh Tray Icon
+*   **Feedback**
+    *   Sound: Tink
+    *   Volume: 0.2
+*   ---
+*   **Permissions**
+    *   Status: Active
+    *   ---
+    *   Check Permissions Now
+    *   Request Accessibility Prompt
+    *   Request Microphone Access
+    *   ---
+    *   Open Accessibility Settings
+    *   Open Input Monitoring Settings
+    *   Open Microphone Settings
+*   **Tools**
+    *   Voice & Chat Lab (Browser)
+    *   AI Chat Demo (Harmony)
+    *   ---
+    *   Export Menu Tree…
+    *   Open Logs Folder
+*   ---
+*   **What do these toggles do?**
+*   ---
+*   **✓ Start at Login**
+*   ---
+*   **Quit...**

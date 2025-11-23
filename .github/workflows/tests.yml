@@ -22,16 +22,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --dev
 
-      - name: Ruff format (check)
-        run: uvx --from ruff ruff format --check .
-
-      - name: Ruff lint
-        run: uvx --from ruff ruff check .
-
-      - name: Mypy (critical backends)
-        run: uv run mypy src/vistascribe/backend.py src/vistascribe/whisper_server.py
-
-      - name: Run pytest
+      - name: Run full check suite
         env:
           VISTASCRIBE_SETTINGS_PATH: ${{ runner.temp }}/settings.json
-        run: uv run pytest -q
+        run: make check

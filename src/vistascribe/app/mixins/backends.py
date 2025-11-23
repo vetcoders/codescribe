@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from typing import Any
 
@@ -11,10 +12,12 @@ import rumps
 
 from ... import client
 from ...config import Config, load_config, save_config
-from ...llm import get_ai_settings, set_ai_formatting_enabled
+from ...llm import get_ai_settings
 from ...stt import get_language, set_language
 from ...ui import backend_status_labels, config_labels
 from ..menu_utils import create_parent_item, set_submenu
+
+logger = logging.getLogger(__name__)
 
 
 class BackendMenuMixin:
@@ -114,7 +117,10 @@ class BackendMenuMixin:
             if not url:
                 return False
             try:
-                r = requests.get(url.rstrip("/") + "/healthz", timeout=(1.5, 2.0))
+                timeout = float(os.environ.get("BACKEND_HEALTH_TIMEOUT", "0.5"))
+                if timeout <= 0:
+                    timeout = 0.5
+                r = requests.get(url.rstrip("/") + "/healthz", timeout=timeout)
                 if r.status_code == 200:
                     data: dict[str, Any] = r.json()
                     return bool(data.get("ok"))
@@ -155,23 +161,8 @@ class BackendMenuMixin:
                 subtitle="Backend check",
                 message=f"STT: {stt} • AI: {llm}",
             )
-        except Exception:
-            pass
-
-    def _toggle_ai_formatting(self, _sender):
-        try:
-            current = get_ai_settings().ai_formatting_enabled
-            set_ai_formatting_enabled(not current)
-            self._reload_settings()
-            self._refresh_formatting_menu()
-            self._update_backend_menu_labels()
         except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).error("Failed to toggle AI formatting: %s", exc)
-
-    def _toggle_formatting(self, _sender):
-        self._toggle_ai_formatting(_sender)
+            logger.debug("Suppressed exception", exc_info=exc)
 
     def _set_language_auto(self, _sender):
         self._set_language(None)

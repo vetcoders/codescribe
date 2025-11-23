@@ -1,6 +1,6 @@
 [project]
 name = "VistaScribe"
-version = "0.4.1"
+version = "0.4.3"
 description = "Local macOS tray app for speech-to-text with MLX Whisper + optional MLX‑LM formatting"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -202,6 +202,7 @@ dependencies = [
     "uvicorn==0.30.6",
     "pytest==8.3.3",
     "requests>=2.32.5",
+    "websockets>=13.0",
 ]
 
 [dependency-groups]
@@ -209,6 +210,8 @@ dev = [
     "ruff>=0.6.9",
     "pre-commit>=3.7",
     "mypy>=1.13",
+    "bandit>=1.7.10",
+    "types-requests>=2.32.4.20250913",
 ]
 
 
@@ -281,9 +284,30 @@ testpaths = [
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
-exclude = "(^\\.venv/|/\\.venv/)"
+exclude = "(^\\.venv($|/)|/\\.venv/|site-packages/)"
 mypy_path = ["src"]
 
+[[tool.mypy.overrides]]
+module = ["mlx.*", "mlx_whisper.*", "objc.*", "rumps.*", "sounddevice.*"]
+ignore_missing_imports = true
+ignore_errors = true
+follow_imports = "skip"
+
 [tool.bandit]
-exclude_dirs = [".venv", "build", "dist", "packaging", "logs"]
+exclude_dirs = [
+    ".venv",
+    "dist",
+    "build",
+    "packaging",
+    "logs",
+    "models",
+    "tests",
+    "scripts",
+    # Client-side UI code often flags false positives in Bandit (subprocess, etc.)
+    "src/vistascribe/app",
+    "src/vistascribe/formatting",
+]
 targets = ["src/vistascribe"]
+
+[tool.bandit.assert_used]
+skips = ["*_test.py", "test_*.py"]

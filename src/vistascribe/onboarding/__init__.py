@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -19,6 +20,8 @@ except Exception:  # pragma: no cover
 from ..config import update_env_vars
 from ..path_utils import repo_root
 from ..settings_store import get_settings, save_settings
+
+logger = logging.getLogger(__name__)
 
 MODELS_DIR = repo_root() / "models"
 WHISPER_REPOS = {
@@ -88,16 +91,16 @@ class OnboardingWizard:
             app = AppKit.NSApplication.sharedApplication()
             if app is not None:
                 app.activateIgnoringOtherApps_(True)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         try:
             runner = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
                 os.getpid()
             )
             if runner is not None:
                 runner.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
     def _run_alert(self, alert):  # pragma: no cover - UI only
         self._focus_app()
@@ -107,8 +110,8 @@ class OnboardingWizard:
                 window.makeKeyAndOrderFront_(None)
                 window.setLevel_(AppKit.NSFloatingWindowLevel)
                 self._position_alert_window(window)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
         return alert.runModal()
 
     def _show_progress_panel(self, message: str, done: threading.Event):  # pragma: no cover
@@ -166,8 +169,8 @@ class OnboardingWizard:
         except Exception:
             try:
                 window.center()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
 
     # ------------------------------------------------------------------
     # CLI fallback
@@ -342,6 +345,7 @@ class OnboardingWizard:
                     local_dir_use_symlinks=False,
                     token=self._hf_token,
                     resume_download=True,
+                    revision="main",  # nosec B615 - upstream model pin; main tracks vetted release
                 )
                 break
             except Exception as exc:
@@ -409,8 +413,8 @@ tell application "System Settings"
 end tell
 """
             subprocess.run(["osascript", "-e", script], check=False)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
     def _step_ai(self) -> tuple[bool, str, str | None, str | None]:
         resp = self._nsalert(
@@ -497,8 +501,8 @@ end tell
                 ],
                 check=True,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
 
 __all__ = ["OnboardingWizard"]

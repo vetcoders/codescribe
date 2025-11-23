@@ -3,6 +3,10 @@
 This changelog summarizes the two recent stabilization phases based on the
 branch diffs you requested. Dates follow the Git history recorded in this repo.
 
+## v0.4.3 – 2025-11-21
+
+- TODO: Add release notes.
+
 ## v0.4.1 – 2025-11-11
 
 - TODO: Add release notes.

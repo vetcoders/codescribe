@@ -1,3 +1,6 @@
+import logging
+
+logger = logging.getLogger(__name__)
 """
 model_defaults.py - Base model configuration for VistaScribe
 
@@ -73,8 +76,8 @@ def detect_best_models():
                 for model in LLM_MODELS:
                     if model in line:
                         return best_whisper, model
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)
 
     # Fallback to MLX base model
     if (Path(BASE_LLM_MLX_PATH)).exists():

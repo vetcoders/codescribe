@@ -26,6 +26,8 @@ from .formatting import apply_light_plus
 from .path_utils import repo_root
 from .settings_store import get_settings
 
+logger = logging.getLogger(__name__)
+
 try:
     __version__ = metadata.version("vistascribe")
 except Exception:  # pragma: no cover - local editable installs may miss metadata
@@ -138,10 +140,7 @@ def _get_async_client() -> httpx.AsyncClient:
     # Prune clients whose loops are closed
     for stale_id, stale_loop in list(_async_loops.items()):
         if stale_loop.is_closed():
-            client = _async_clients.pop(stale_id, None)
-            with suppress(Exception):
-                if client is not None:
-                    client.close()
+            _async_clients.pop(stale_id, None)
             _async_loops.pop(stale_id, None)
 
     client = httpx.AsyncClient(headers={"User-Agent": USER_AGENT})
@@ -226,12 +225,15 @@ def _timeout_from_env(prefix: str, *, total: float, connect: float, read: float)
     return httpx.Timeout(timeout=total_v, connect=connect_v, read=read_v, write=write_v)
 
 
-def _request_headers(pipeline: str) -> dict[str, str]:
-    return {
+def _request_headers(pipeline: str, session_id: str | None = None) -> dict[str, str]:
+    headers = {
         "X-Request-ID": str(uuid.uuid4()),
         "X-Text-Pipeline": pipeline,
         "User-Agent": USER_AGENT,
     }
+    if session_id:
+        headers["X-Session-ID"] = session_id
+    return headers
 
 
 async def _request_with_retries(
@@ -287,7 +289,9 @@ async def _request_with_retries(
             attempt += 1
 
 
-async def transcribe_http(audio_path: str, language: str | None = None) -> str | None:
+async def transcribe_http(
+    audio_path: str, language: str | None = None, *, session_id: str | None = None
+) -> str | None:
     """Transcribe audio via HTTP without buffering the entire file in memory."""
 
     server_url = await resolve_server_url()
@@ -296,7 +300,7 @@ async def transcribe_http(audio_path: str, language: str | None = None) -> str |
         return None
 
     timeout = _timeout_from_env("TRANSCRIBE", total=180.0, connect=0.5, read=180.0)
-    headers = _request_headers("stt")
+    headers = _request_headers("stt", session_id=session_id)
     files: dict[str, tuple[str, Any, str]]
     data: dict[str, str] = {}
     if language:
@@ -340,7 +344,9 @@ async def transcribe_http(audio_path: str, language: str | None = None) -> str |
     return None
 
 
-async def format_text_http(text: str, assistive: bool = False) -> str | None:
+async def format_text_http(
+    text: str, assistive: bool = False, *, session_id: str | None = None
+) -> str | None:
     """Format text via HTTP server.
 
     Pipeline:
@@ -373,7 +379,7 @@ async def format_text_http(text: str, assistive: bool = False) -> str | None:
 
     defaults = 60.0 if assistive else 30.0
     timeout = _timeout_from_env("FORMAT", total=defaults, connect=0.5, read=defaults)
-    headers = _request_headers("light_plus")
+    headers = _request_headers("light_plus", session_id=session_id)
     payload = {
         "text": baseline_text,
         "assistive": assistive,
@@ -455,6 +461,7 @@ def _spawn_backend_process() -> bool:
     env = os.environ.copy()
     env.setdefault("NOHUP_MODE", "1")
 
+    log_file: Any
     try:
         log_file = open(log_path, "ab", buffering=0)
     except OSError:
@@ -476,8 +483,8 @@ def _spawn_backend_process() -> bool:
         if log_file is not subprocess.DEVNULL:
             try:
                 log_file.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
 
     return True
 

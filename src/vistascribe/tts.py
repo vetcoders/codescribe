@@ -24,6 +24,7 @@ Notes:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import shlex
@@ -56,8 +57,8 @@ async def _http_tts(text: str, opts: Mapping[str, Any]) -> bool:
     for ep in endpoints:
         url = base + ep
         try:
-            # Bind loop variable `url` to avoid late-binding in lambda (ruff B023)
-            data = await loop.run_in_executor(None, lambda u=url, p=payload: _http_post(u, p))
+            # Use partial to bind arguments correctly
+            data = await loop.run_in_executor(None, functools.partial(_http_post, url, payload))
             if isinstance(data, dict):
                 # Heuristic: consider success if no explicit error reported
                 if not data.get("error"):

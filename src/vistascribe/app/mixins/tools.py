@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
@@ -15,6 +16,8 @@ from ...llm import _harmony_base_url
 from ...path_utils import repo_root
 from ...settings_store import get_settings
 from ..menu_utils import create_parent_item, set_submenu
+
+logger = logging.getLogger(__name__)
 
 
 def _backend_host() -> str:
@@ -131,55 +134,61 @@ class ToolsMixin:
         except Exception as exc:
             try:
                 rumps.alert(title="AI Chat Demo", message=f"Failed to launch chat demo: {exc}")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
 
     def _open_voice_chat_lab(self, _sender):
-        try:
-            host = _backend_host()
-            port_file = os.path.join(repo_root(), "logs", "vistascribe-server.port")
-            candidates: list[int] = []
-            if os.path.exists(port_file):
-                with open(port_file, encoding="utf-8") as handle:
-                    val = int((handle.read() or "8237").strip())
-                    if val not in candidates:
-                        candidates.append(val)
-            for p in (8237, 7237, 6237, 5237):
-                if p not in candidates:
-                    candidates.append(p)
-
-            def _make_url(port: int) -> str:
-                safe_host = host
-                if ":" in safe_host and not safe_host.startswith("["):
-                    safe_host = f"[{safe_host}]"
-                return f"http://{safe_host}:{port}"
-
-            def _is_backend(port: int) -> bool:
-                try:
-                    resp = requests.get(f"{_make_url(port)}/version", timeout=0.75)
-                    if resp.ok:
-                        data = resp.json()
-                        return isinstance(data, dict) and "state" in data and "mlx" in data
-                except Exception:
-                    return False
-                return False
-
-            chosen = next((port for port in candidates if _is_backend(port)), None)
-            if chosen is None:
-                rumps.alert(
-                    title="Voice & Chat Lab",
-                    message=(
-                        "Could not find the VistaScribe backend. Ensure it is running "
-                        "(./VistaScribe start both) and that port 8237 is not taken."
-                    ),
-                )
-                return
-            subprocess.run(["open", f"{_make_url(chosen)}/tester"])
-        except Exception as exc:
+        def _worker():
             try:
-                rumps.alert(title="Voice & Chat Lab", message=str(exc))
-            except Exception:
-                pass
+                host = _backend_host()
+                port_file = os.path.join(repo_root(), "logs", "vistascribe-server.port")
+                candidates: list[int] = []
+                if os.path.exists(port_file):
+                    with open(port_file, encoding="utf-8") as handle:
+                        val = int((handle.read() or "8237").strip())
+                        if val not in candidates:
+                            candidates.append(val)
+                for p in (8237, 7237, 6237, 5237):
+                    if p not in candidates:
+                        candidates.append(p)
+
+                def _make_url(port: int) -> str:
+                    safe_host = host
+                    if ":" in safe_host and not safe_host.startswith("["):
+                        safe_host = f"[{safe_host}]"
+                    return f"http://{safe_host}:{port}"
+
+                def _is_backend(port: int) -> bool:
+                    try:
+                        resp = requests.get(f"{_make_url(port)}/version", timeout=0.75)
+                        if resp.ok:
+                            data = resp.json()
+                            return isinstance(data, dict) and "state" in data and "mlx" in data
+                    except Exception:
+                        return False
+                    return False
+
+                chosen = next((port for port in candidates if _is_backend(port)), None)
+                if chosen is None:
+                    rumps.AppHelper.callAfter(
+                        rumps.alert,
+                        title="Voice & Chat Lab",
+                        message=(
+                            "Could not find the VistaScribe backend. Ensure it is running "
+                            "(./VistaScribe start both) and that port 8237 is not taken."
+                        ),
+                    )
+                    return
+                subprocess.run(["open", f"{_make_url(chosen)}/tester"])
+            except Exception as exc:
+                try:
+                    rumps.AppHelper.callAfter(
+                        rumps.alert, title="Voice & Chat Lab", message=str(exc)
+                    )
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _open_logs_folder(self, _sender):
         try:
@@ -189,8 +198,8 @@ class ToolsMixin:
         except Exception:
             try:
                 rumps.alert(title="Open Logs Folder", message=logs_dir)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
 
     def _export_menu_tree(self, _sender):
         try:
@@ -212,8 +221,8 @@ class ToolsMixin:
                 try:
                     if isinstance(node, rumps.MenuItem):
                         return node.title
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
                 return str(node)
 
             md_lines = ["# VistaScribe Menu Tree", ""]
@@ -246,7 +255,10 @@ class ToolsMixin:
 
             rumps.notification(title="VistaScribe", subtitle="Menu exported", message=md_path)
         except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).error("Failed to export menu: %s", exc, exc_info=True)
             try:
                 rumps.alert(title="VistaScribe", message=f"Failed to export menu: {exc}")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)

@@ -12,11 +12,13 @@ import asyncio
 import logging
 import os
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 from dotenv import load_dotenv
 
 from .formatting import apply_light_plus
+from .formatting.vocabulary import get_soft_lexicon_context
+from .path_utils import repo_root
 from .settings_store import VistaSettings, get_settings, update_settings
 
 # Optional CodeScribe context injection (assistive mode memory)
@@ -27,7 +29,13 @@ try:  # pragma: no cover - available only in dev trays
 except ImportError:  # pragma: no cover
     HAS_CODESCRIBE = False
 
-load_dotenv()
+# Load .env from repo root if possible, else fall back to CWD
+_env_path = repo_root() / ".env"
+if _env_path.exists():
+    load_dotenv(dotenv_path=_env_path)
+else:
+    load_dotenv()
+
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -70,7 +78,13 @@ try:
     from openai import APIConnectionError, APIError, AsyncOpenAI
 except Exception:  # pragma: no cover
     AsyncOpenAI = None  # type: ignore
-    APIConnectionError = APIError = Exception
+
+    class APIConnectionError(Exception):  # type: ignore
+        pass
+
+    class APIError(Exception):  # type: ignore
+        pass
+
 
 _harmony_client: AsyncOpenAI | None = None
 _harmony_cfg: tuple[str, str] | None = None  # (base_url, api_key)
@@ -159,15 +173,24 @@ async def _format_with_harmony(text: str, assistive: bool, settings: VistaSettin
         os.environ.get("HARMONY_MODEL") or os.environ.get("OPENAI_FORMAT_MODEL") or "gpt-4o-mini"
     )
     prompt = AGENT_PROMPT if assistive or _detect_agent_call(text) else FORMAT_PROMPT
+    lexicon_ctx = get_soft_lexicon_context(max_entries=50) if assistive else ""
     payload = _inject_codescribe(text, assistive)
     max_tokens = settings.ai_assistive_max_tokens if assistive else settings.ai_max_tokens
+    system_messages = [{"role": "system", "content": prompt}]
+    if lexicon_ctx:
+        system_messages.append(
+            {
+                "role": "system",
+                "content": f"Domain lexicon (use these canonical forms): {lexicon_ctx}",
+            }
+        )
+    input_messages: list[dict[str, str]] = system_messages + [
+        {"role": "user", "content": payload},
+    ]
     try:
         response = await client.responses.create(  # type: ignore[attr-defined]
             model=model,
-            input=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": payload},
-            ],
+            input=cast(list[Any], input_messages),
             max_output_tokens=max_tokens,
         )
         out = _extract_response_text(response)
@@ -190,6 +213,9 @@ def _ollama_payload(text: str, assistive: bool, settings: VistaSettings) -> dict
     temperature = float(os.environ.get("TEMPERATURE", "0.2"))
     top_p = float(os.environ.get("TOP_P", "0.0"))
     prompt = AGENT_PROMPT if assistive else FORMAT_PROMPT
+    lexicon_ctx = get_soft_lexicon_context(max_entries=50) if assistive else ""
+    if lexicon_ctx:
+        prompt = prompt + "\nKontekst słownika: " + lexicon_ctx
     payload = _inject_codescribe(text, assistive)
     max_tokens = settings.ai_assistive_max_tokens if assistive else settings.ai_max_tokens
     return {
@@ -258,7 +284,7 @@ async def _chat_with_harmony(messages: list[dict[str, str]], settings: VistaSett
     max_tokens = settings.ai_assistive_max_tokens
     response = await client.responses.create(  # type: ignore[attr-defined]
         model=model,
-        input=payload,
+        input=cast(Any, payload),
         max_output_tokens=max_tokens,
     )
     out = _extract_response_text(response)
@@ -409,7 +435,7 @@ def _ollama_generate(system_prompt: str, text: str, assistive: bool = False) -> 
                 snippet = exc.response.text[:200]
                 if snippet:
                     extra = f" body={snippet!r}"
-            except Exception:
-                pass
+            except Exception as inner_exc:
+                logger.debug("Suppressed exception", exc_info=inner_exc)
         logger.error("_ollama_generate failed: %s%s", exc, extra)
         return None

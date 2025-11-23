@@ -7,7 +7,21 @@ AI enhancement so that Vista and VistaScribe behave identically.
 
 from __future__ import annotations
 
+# Import the dynamic vocabulary engine
+import logging
 import re
+
+logger = logging.getLogger(__name__)
+
+try:
+    from .vocabulary import apply_vocabulary_fixes
+
+except ImportError:
+
+    def apply_vocabulary_fixes(text: str) -> str:
+        logger.debug("Vocabulary fixes unavailable; returning text unchanged")
+        return text
+
 
 _FILLERS = re.compile(
     r"\b((?:y+|e+){2,}|hmm+|mhm+|emm+|uh+|umm+|eee+|yyy+)\b[ ,;:!?·…]*", flags=re.IGNORECASE
@@ -42,6 +56,7 @@ def apply_light_plus(text: str) -> str:
     if not text:
         return ""
 
+    # 1. Standard cleanup
     t = re.sub(r"\s+", " ", text).strip()
     if not t:
         return ""
@@ -53,6 +68,7 @@ def apply_light_plus(text: str) -> str:
     if t[-1] not in ".!?":
         t += "."
 
+    # 2. Sentence capitalization
     parts = re.split(r"([.!?]\s+)", t)
     out: list[str] = []
     for idx, part in enumerate(parts):
@@ -62,6 +78,7 @@ def apply_light_plus(text: str) -> str:
         out.append(part)
     t = "".join(out)
 
+    # 3. Regex fixes
     t = _REPEATED_WORD.sub(r"\1", t)
     t = _REPEATED_PHRASE.sub(r"\1", t)
     t = _REPEATED_PUNCT.sub(r"\1", t)
@@ -71,6 +88,10 @@ def apply_light_plus(text: str) -> str:
     t = _MEDICAL_FILLERS.sub("", t)
     for pattern, replacement in _POLISH_CORRECTIONS.items():
         t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
+
+    # 4. Apply Vocabulary Fixes (The "Genius" Part)
+    # This uses the massive compiled regex from dictionary.jsonl
+    t = apply_vocabulary_fixes(t)
 
     def _caps_guard(match: re.Match[str]) -> str:
         return match.group(0).capitalize()

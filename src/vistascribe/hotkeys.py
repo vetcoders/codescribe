@@ -57,7 +57,7 @@ SHIFT_MASK = Quartz.kCGEventFlagMaskShift
 CMD_MASK = Quartz.kCGEventFlagMaskCommand
 
 # Double-tap Option timing (seconds); can be overridden via env var DOUBLE_OPTION_INTERVAL_MS
-_DOUBLE_OPTION_INTERVAL = float(os.environ.get("DOUBLE_OPTION_INTERVAL_MS", "350")) / 1000.0
+_DOUBLE_OPTION_INTERVAL = float(os.environ.get("DOUBLE_OPTION_INTERVAL_MS", "450")) / 1000.0
 
 # Toggle trigger: double_option (default) | double_ralt | none
 _TOGGLE_TRIGGER = (
@@ -104,7 +104,7 @@ logger = logging.getLogger(__name__)
 
 # async queue to send detected hotkey events to the main application loop
 # maxsize=0 means unlimited size
-_queue = queue.Queue()
+_queue: queue.Queue[Any] = queue.Queue()
 _last_hold_state = None  # track the last state of the ctrl key (legacy)
 _last_alt_state = None  # track the last state of the option/alt key
 _last_alt_down_ts = 0.0  # timestamp of last alt down event
@@ -149,13 +149,12 @@ def _is_modifier_keycode(code: int) -> bool:
 
 def _reset_hold_runtime_state() -> None:
     global _last_combo_down, _last_assistive_mode, _last_alt_state
-    global _last_alt_down_ts, _last_space_down_ts, _non_modifier_keys_down, _block_hold_until_clear
+    global _last_alt_down_ts, _non_modifier_keys_down, _block_hold_until_clear
 
     _last_combo_down = False
     _last_assistive_mode = False
     _last_alt_state = None
     _last_alt_down_ts = 0.0
-    _last_space_down_ts = 0.0
     _non_modifier_keys_down.clear()
     _block_hold_until_clear = False
 
@@ -186,8 +185,8 @@ def is_active():
 def _log_hotkey(kind: str, action: str, **fields: Any) -> None:
     try:
         log_hotkey_event(kind, action, **fields)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)
 
 
 def set_hold_mods(spec: str) -> None:

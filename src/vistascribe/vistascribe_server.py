@@ -27,10 +27,12 @@ from collections.abc import Iterable
 
 from .path_utils import repo_root
 
+logger = logging.getLogger(__name__)
+
 try:
-    from setproctitle import setproctitle
+    from setproctitle import setproctitle as _set_proc_title_fn
 except ImportError:  # pragma: no cover
-    setproctitle = None  # type: ignore
+    _set_proc_title_fn = None  # type: ignore
 
 
 DEFAULT_PORTS: tuple[int, ...] = (8237, 7237, 6237, 5237)
@@ -111,20 +113,20 @@ def _choose_port(host: str, requested: int | None, fallbacks: list[int]) -> int:
 def _cleanup_files(*_: object) -> None:
     try:
         PID_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)
     try:
         PORT_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Suppressed exception", exc_info=exc)
 
 
 def _write_pid() -> None:
     PID_FILE.write_text(str(os.getpid()))
     try:
         PID_FILE.chmod(0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("PID file chmod failed", exc_info=exc)
     atexit.register(_cleanup_files)
 
 
@@ -228,14 +230,14 @@ def main(argv: list[str] | None = None) -> int:
     PORT_FILE.write_text(str(chosen_port))
     try:
         PORT_FILE.chmod(0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("Port file chmod failed", exc_info=exc)
 
-    if setproctitle:
+    if _set_proc_title_fn is not None:
         try:
-            setproctitle("VistaScribeServer")
-        except Exception:
-            pass
+            _set_proc_title_fn("VistaScribeServer")
+        except Exception as exc:
+            logger.debug("Suppressed exception", exc_info=exc)
 
     logging.getLogger(__name__).info("Starting VistaScribeServer on %s:%s", bind_host, chosen_port)
 
@@ -255,8 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     server = uvicorn.Server(config)
 
     try:
-        result = server.run()
-        return 0 if result is None else int(result)
+        server.run()
+        return 0
     finally:
         _cleanup_files()
 

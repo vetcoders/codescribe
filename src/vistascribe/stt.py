@@ -20,6 +20,8 @@ from dotenv import load_dotenv
 # MLX Whisper (local fallback)
 from .path_utils import normalize_model_path, repo_root
 
+logger = logging.getLogger(__name__)
+
 # To keep the tray process lightweight, avoid importing heavy MLX modules
 # at import time. We'll import them lazily on first local transcription or
 # explicit model switch.
@@ -27,7 +29,13 @@ whisper = None  # type: ignore
 load_model = None  # type: ignore
 
 # --- setup ---
-load_dotenv()
+# Load .env from repo root if possible, else fall back to CWD
+_env_path = repo_root() / ".env"
+if _env_path.exists():
+    load_dotenv(dotenv_path=_env_path)
+else:
+    load_dotenv()
+
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -82,7 +90,7 @@ if not WHISPER_SERVER_URL:
                 candidates.append(os.path.join(_repo_root, "models", f"whisper-{v}"))
                 candidates.append(os.path.join(_repo_root, f"whisper-{v}"))
         # pick first existing, else fallback to turbo path in repo
-        _default_whisper_path = next(
+        _default_whisper_path: str | None = next(
             (c for c in candidates if os.path.isdir(c)),
             os.path.join(_repo_root, "models", "whisper-large-v3-turbo"),
         )
@@ -282,8 +290,8 @@ async def transcribe(
                     if loop is not None:
                         try:
                             loop.close()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("Suppressed exception", exc_info=exc)
 
             data = await asyncio.get_event_loop().run_in_executor(None, _call_in_thread)
             text = (data.get("text") or "").strip()
@@ -295,8 +303,8 @@ async def transcribe(
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Suppressed exception", exc_info=exc)
 
     # Local mode
     if not os.path.exists(path):
@@ -356,5 +364,5 @@ async def transcribe(
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Suppressed exception", exc_info=exc)
