@@ -4,9 +4,9 @@
 
 use anyhow::Result;
 use muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tray_icon::{
-    menu::MenuEvent, Icon, TrayIconBuilder,
-};
+use std::sync::OnceLock;
+use tokio::sync::mpsc;
+use tray_icon::{menu::MenuEvent, Icon, TrayIconBuilder};
 use tracing::{debug, info};
 
 /// Status of the CodeScribe system, reflected in tray icon glyph
@@ -30,6 +30,16 @@ impl TrayStatus {
             TrayStatus::Listening => "◉",
             TrayStatus::Thinking => "…",
             TrayStatus::Success => "✓",
+        }
+    }
+
+    /// Get the human-readable tooltip for this status
+    pub fn tooltip(&self) -> String {
+        match self {
+            TrayStatus::Idle => "CodeScribe - Ready".to_string(),
+            TrayStatus::Listening => "CodeScribe - Recording...".to_string(),
+            TrayStatus::Thinking => "CodeScribe - Processing...".to_string(),
+            TrayStatus::Success => "CodeScribe - Done!".to_string(),
         }
     }
 
@@ -78,15 +88,34 @@ fn build_menu() -> Result<Menu> {
     Ok(menu)
 }
 
+/// Global channel for status updates
+///
+/// This is initialized once when run() is called, and provides a way for
+/// other threads (like the controller) to send status updates to the tray.
+static STATUS_CHANNEL: OnceLock<mpsc::UnboundedSender<TrayStatus>> = OnceLock::new();
+
 /// Update the tray icon to reflect current status
 ///
-/// Note: This is a placeholder for now. In the future, we'll need to implement
-/// a channel-based communication system to update the tray from other threads.
-pub fn set_status(_status: TrayStatus) -> Result<()> {
-    // TODO: Implement channel-based status updates
-    // For now, this is a no-op since TrayIcon is not Send/Sync
-    debug!("set_status called (not yet implemented for thread safety)");
-    Ok(())
+/// This function can be called from any thread to update the tray status.
+/// It sends the status update through a channel that the tray event loop monitors.
+///
+/// # Arguments
+/// * `status` - The new status to display
+///
+/// # Returns
+/// * `Ok(())` if the status was sent successfully
+/// * `Err` if the tray system is not initialized or the channel is closed
+pub fn update_tray_status(status: TrayStatus) -> Result<()> {
+    if let Some(sender) = STATUS_CHANNEL.get() {
+        sender
+            .send(status)
+            .map_err(|e| anyhow::anyhow!("Failed to send tray status: {}", e))?;
+        debug!("Tray status update sent: {:?}", status);
+        Ok(())
+    } else {
+        debug!("Tray status channel not initialized yet");
+        Ok(())
+    }
 }
 
 /// Run the tray application (blocking)
@@ -96,16 +125,23 @@ pub fn set_status(_status: TrayStatus) -> Result<()> {
 pub fn run() -> Result<()> {
     info!("Initializing system tray...");
 
+    // Create channel for status updates
+    let (status_tx, mut status_rx) = mpsc::unbounded_channel();
+    STATUS_CHANNEL
+        .set(status_tx)
+        .map_err(|_| anyhow::anyhow!("Status channel already initialized"))?;
+
     // Build the menu
     let menu = build_menu()?;
 
     // Create initial icon
-    let icon = TrayStatus::Idle.to_icon()?;
+    let initial_status = TrayStatus::Idle;
+    let icon = initial_status.to_icon()?;
 
     // Build the tray icon
-    let _tray_icon = TrayIconBuilder::new()
+    let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("CodeScribe - •")
+        .with_tooltip(initial_status.tooltip())
         .with_icon(icon)
         .build()?;
 
@@ -119,6 +155,34 @@ pub fn run() -> Result<()> {
     info!("Press Quit in the tray menu to exit");
 
     loop {
+        // Check for status updates
+        match status_rx.try_recv() {
+            Ok(new_status) => {
+                debug!("Received status update: {:?}", new_status);
+
+                // Update tooltip
+                if let Err(e) = tray_icon.set_tooltip(Some(new_status.tooltip())) {
+                    debug!("Failed to update tray tooltip: {}", e);
+                }
+
+                // Update icon
+                if let Ok(new_icon) = new_status.to_icon() {
+                    if let Err(e) = tray_icon.set_icon(Some(new_icon)) {
+                        debug!("Failed to update tray icon: {}", e);
+                    }
+                }
+
+                info!("Tray status updated to: {:?}", new_status);
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {
+                // No status update, continue
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                info!("Status channel closed, exiting tray loop");
+                break;
+            }
+        }
+
         // Check for menu events
         if let Ok(event) = menu_channel.try_recv() {
             debug!("Menu event received: {:?}", event);
@@ -136,6 +200,8 @@ pub fn run() -> Result<()> {
         // Sleep to avoid busy-waiting
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -154,5 +220,13 @@ mod tests {
     fn test_icon_creation() {
         let icon = TrayStatus::Idle.to_icon();
         assert!(icon.is_ok());
+    }
+
+    #[test]
+    fn test_status_tooltips() {
+        assert_eq!(TrayStatus::Idle.tooltip(), "CodeScribe - Ready");
+        assert_eq!(TrayStatus::Listening.tooltip(), "CodeScribe - Recording...");
+        assert_eq!(TrayStatus::Thinking.tooltip(), "CodeScribe - Processing...");
+        assert_eq!(TrayStatus::Success.tooltip(), "CodeScribe - Done!");
     }
 }

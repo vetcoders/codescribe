@@ -28,10 +28,11 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-// Placeholder imports - these modules will be created separately
+// TODO: Re-enable when fixing Send issues
 // use crate::audio::Recorder;
-// use crate::client::{transcribe, format_text, paste_text};
-// use crate::config::Config;
+// use crate::client;
+// use crate::clipboard;
+use crate::tray::{update_tray_status, TrayStatus};
 
 /// Application state enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,8 +86,10 @@ pub struct RecordingController {
     /// Current state
     state: Arc<RwLock<State>>,
 
-    /// Placeholder: Will hold the audio recorder instance
-    /// recorder: Arc<Mutex<Recorder>>,
+    /// Audio recorder instance
+    /// TODO: Recorder causes Send issues due to cpal Stream callbacks
+    /// Will be re-enabled after refactoring to use spawn_blocking
+    // recorder: Arc<Mutex<Recorder>>,
 
     /// Whether assistive formatting mode is enabled
     assistive_mode: Arc<RwLock<bool>>,
@@ -124,9 +127,12 @@ impl RecordingController {
             hold_start_delay_ms, beep_on_start
         );
 
+        // TODO: Re-enable recorder after fixing Send issues
+        // let recorder = Recorder::new().expect("Failed to initialize audio recorder");
+
         Self {
             state: Arc::new(RwLock::new(State::Idle)),
-            // recorder: Arc::new(Mutex::new(Recorder::new())),
+            // recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
@@ -289,6 +295,9 @@ impl RecordingController {
             // Transition to REC_HOLD
             *state.write().await = State::RecHold;
             info!("STATE TRANSITION: IDLE → REC_HOLD");
+
+            // Update tray status to Listening
+            let _ = update_tray_status(TrayStatus::Listening);
         });
 
         *self.hold_start_task.lock().await = Some(task);
@@ -329,6 +338,9 @@ impl RecordingController {
         // Transition to REC_TOGGLE
         *self.state.write().await = State::RecToggle;
         info!("STATE TRANSITION: IDLE → REC_TOGGLE");
+
+        // Update tray status to Listening
+        let _ = update_tray_status(TrayStatus::Listening);
 
         Ok(())
     }
@@ -373,8 +385,8 @@ impl RecordingController {
         let session_id = self.session_id.read().await.clone();
         let assistive = *self.assistive_mode.read().await;
 
-        // TODO: Update tray icon to "thinking"
-        debug!("Would set tray icon to THINK");
+        // Update tray icon to "thinking"
+        let _ = update_tray_status(TrayStatus::Thinking);
 
         let result = self.process_recording(session_id, assistive).await;
 
@@ -386,15 +398,15 @@ impl RecordingController {
         // TODO: Hide hold badge UI
         debug!("Would hide hold badge");
 
-        // TODO: Update tray icon
+        // Update tray icon based on result
         match &result {
             Ok(_) => {
-                debug!("Would set tray icon to SUCCESS");
+                let _ = update_tray_status(TrayStatus::Success);
                 info!("Processing finished successfully. State reset to IDLE.");
             }
             Err(e) => {
                 error!("Processing failed: {}", e);
-                debug!("Would set tray icon to IDLE");
+                let _ = update_tray_status(TrayStatus::Idle);
             }
         }
 

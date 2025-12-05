@@ -21,6 +21,40 @@
 //                   to a db threshold. tokio is used for async collection to avoid
 //                   blocking. saving to a temp file simplifies passing audio data
 //                   to the transcription api.
+//
+// usage example:
+//   ```rust
+//   use codescribe::Recorder;
+//   use std::time::Duration;
+//
+//   #[tokio::main]
+//   async fn main() -> anyhow::Result<()> {
+//       // Create recorder with default config (16kHz mono, -45dB silence threshold)
+//       let mut recorder = Recorder::new()?;
+//
+//       // Start recording
+//       recorder.start().await?;
+//       println!("Recording... speak now!");
+//
+//       // Record for 3 seconds (or until silence detected)
+//       tokio::time::sleep(Duration::from_secs(3)).await;
+//
+//       // Stop and save to WAV file
+//       if let Some(path) = recorder.stop().await? {
+//           println!("Recorded to: {:?}", path);
+//           println!("Duration: {:.2}s", recorder.last_duration());
+//       } else {
+//           println!("No audio captured");
+//       }
+//
+//       Ok(())
+//   }
+//   ```
+//
+// configuration via environment variables:
+//   - SILENCE_DB: silence threshold in dB (default: -45.0)
+//   - SILENCE_HANG_SEC: silence duration before auto-stop (default: 0.8)
+//   - AUTO_SILENCE: enable/disable silence detection (default: true)
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -134,6 +168,12 @@ pub struct Recorder {
     diagnostics: RecorderDiagnostics,
 }
 
+// Safety: Recorder can be sent between threads because:
+// - AudioBuffer (Arc<Mutex<Vec<i16>>>) is Send
+// - Stream operations are thread-safe (internally uses Arc)
+// - All other fields are Send
+unsafe impl Send for Recorder {}
+
 impl Recorder {
     /// Initializes the recorder with default configuration and no active stream.
     pub fn new() -> Result<Self> {
@@ -220,7 +260,8 @@ impl Recorder {
         let auto_silence = self.config.auto_silence;
         let sample_rate = self.config.sample_rate;
 
-        let mut silent_frames = 0usize;
+        let silent_frames = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let silent_frames_clone = Arc::clone(&silent_frames);
 
         let stream = device
             .build_input_stream(
@@ -238,13 +279,14 @@ impl Recorder {
                     if auto_silence {
                         // Check for silence
                         if rms_db < silence_db {
-                            silent_frames += data.len();
+                            silent_frames_clone.fetch_add(data.len(), Ordering::SeqCst);
                         } else {
-                            silent_frames = 0;
+                            silent_frames_clone.store(0, Ordering::SeqCst);
                         }
 
                         // Check if silence duration exceeds hang time
-                        let silent_duration = silent_frames as f32 / sample_rate as f32;
+                        let current_silent = silent_frames_clone.load(Ordering::SeqCst);
+                        let silent_duration = current_silent as f32 / sample_rate as f32;
                         if silent_duration > hang_sec {
                             info!(
                                 "Silence detected for > {:.2}s. Stopping collection.",
