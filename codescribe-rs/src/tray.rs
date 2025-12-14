@@ -65,50 +65,68 @@ fn load_custom_icon(status: TrayStatus) -> Result<Icon> {
     let (width, height) = resized.dimensions();
     let mut rgba = resized.to_rgba8().into_raw();
 
-    // Apply color tint based on status (multiply blend)
-    let (tint_r, tint_g, tint_b): (f32, f32, f32) = match status {
-        TrayStatus::Idle => (1.0, 1.0, 1.0), // No tint (white/original)
-        TrayStatus::Listening => (1.0, 0.3, 0.3), // Red tint
-        TrayStatus::Thinking => (0.3, 0.6, 1.0), // Blue tint
-        TrayStatus::Success => (0.3, 1.0, 0.5), // Green tint
-    };
+    // Icon stays white/neutral - no tinting
+    // Status is shown only via the glyph color
 
-    // Apply tint to each pixel
-    for pixel in rgba.chunks_exact_mut(4) {
-        pixel[0] = (pixel[0] as f32 * tint_r).min(255.0) as u8;
-        pixel[1] = (pixel[1] as f32 * tint_g).min(255.0) as u8;
-        pixel[2] = (pixel[2] as f32 * tint_b).min(255.0) as u8;
-        // Alpha channel (pixel[3]) unchanged
-    }
-
-    // Draw status glyph if enabled (small colored dot in bottom-right corner)
+    // Draw status glyph if enabled (larger colored dot in bottom-right corner)
     if is_status_glyph_enabled() {
-        // Glyph parameters (6x6 circle in bottom-right corner)
-        const GLYPH_RADIUS: i32 = 3;
+        // Glyph parameters - larger circle (12x12) for better visibility
+        const GLYPH_RADIUS: i32 = 6;
         let glyph_center_x = (width as i32) - GLYPH_RADIUS - 2; // 2px padding from edge
         let glyph_center_y = (height as i32) - GLYPH_RADIUS - 2;
 
-        // Use status-based color for the glyph (solid, not tinted)
+        // Status-based glyph colors:
+        // - Green: Idle/Ready, Success
+        // - Red: Recording/Listening, Error (X shape)
+        // - Orange: Processing/Thinking
         let (glyph_r, glyph_g, glyph_b) = match status {
-            TrayStatus::Idle => (120u8, 120, 120),   // Gray
-            TrayStatus::Listening => (255, 80, 80),   // Red
-            TrayStatus::Thinking => (80, 150, 255),   // Blue
-            TrayStatus::Success => (80, 255, 120),    // Green
+            TrayStatus::Idle => (80u8, 200, 100),      // Green - ready
+            TrayStatus::Listening => (255, 70, 70),    // Red - recording
+            TrayStatus::Thinking => (255, 165, 0),     // Orange - processing
+            TrayStatus::Success => (80, 220, 100),     // Bright green - done
+            TrayStatus::Error => (255, 50, 50),        // Bright red - error
         };
 
-        // Draw circle using distance formula
-        for y in (glyph_center_y - GLYPH_RADIUS).max(0)..(glyph_center_y + GLYPH_RADIUS).min(height as i32) {
-            for x in (glyph_center_x - GLYPH_RADIUS).max(0)..(glyph_center_x + GLYPH_RADIUS).min(width as i32) {
-                let dx = x - glyph_center_x;
-                let dy = y - glyph_center_y;
-                let distance_squared = dx * dx + dy * dy;
+        // For Error status, draw an "X" instead of a circle
+        if status == TrayStatus::Error {
+            // Draw X shape
+            const LINE_WIDTH: i32 = 2;
+            for y in (glyph_center_y - GLYPH_RADIUS).max(0)..(glyph_center_y + GLYPH_RADIUS).min(height as i32) {
+                for x in (glyph_center_x - GLYPH_RADIUS).max(0)..(glyph_center_x + GLYPH_RADIUS).min(width as i32) {
+                    let dx = x - glyph_center_x;
+                    let dy = y - glyph_center_y;
 
-                if distance_squared <= GLYPH_RADIUS * GLYPH_RADIUS {
-                    let idx = ((y as u32 * width + x as u32) * 4) as usize;
-                    rgba[idx] = glyph_r;
-                    rgba[idx + 1] = glyph_g;
-                    rgba[idx + 2] = glyph_b;
-                    rgba[idx + 3] = 255; // Fully opaque
+                    // Check if point is on diagonal lines (forming X)
+                    let on_diag1 = (dx - dy).abs() <= LINE_WIDTH;
+                    let on_diag2 = (dx + dy).abs() <= LINE_WIDTH;
+
+                    // Only draw within the circle bounds
+                    let in_bounds = dx * dx + dy * dy <= GLYPH_RADIUS * GLYPH_RADIUS;
+
+                    if in_bounds && (on_diag1 || on_diag2) {
+                        let idx = ((y as u32 * width + x as u32) * 4) as usize;
+                        rgba[idx] = glyph_r;
+                        rgba[idx + 1] = glyph_g;
+                        rgba[idx + 2] = glyph_b;
+                        rgba[idx + 3] = 255;
+                    }
+                }
+            }
+        } else {
+            // Draw circle using distance formula
+            for y in (glyph_center_y - GLYPH_RADIUS).max(0)..(glyph_center_y + GLYPH_RADIUS).min(height as i32) {
+                for x in (glyph_center_x - GLYPH_RADIUS).max(0)..(glyph_center_x + GLYPH_RADIUS).min(width as i32) {
+                    let dx = x - glyph_center_x;
+                    let dy = y - glyph_center_y;
+                    let distance_squared = dx * dx + dy * dy;
+
+                    if distance_squared <= GLYPH_RADIUS * GLYPH_RADIUS {
+                        let idx = ((y as u32 * width + x as u32) * 4) as usize;
+                        rgba[idx] = glyph_r;
+                        rgba[idx + 1] = glyph_g;
+                        rgba[idx + 2] = glyph_b;
+                        rgba[idx + 3] = 255; // Fully opaque
+                    }
                 }
             }
         }
@@ -129,6 +147,7 @@ fn create_fallback_icon(status: TrayStatus) -> Result<Icon> {
         TrayStatus::Listening => (220, 60, 60), // Red
         TrayStatus::Thinking => (60, 130, 220), // Blue
         TrayStatus::Success => (60, 200, 100),  // Green
+        TrayStatus::Error => (255, 50, 50),     // Bright red
     };
 
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
@@ -162,6 +181,8 @@ pub enum TrayStatus {
     Thinking,
     /// Successfully completed
     Success,
+    /// Error state - backend not available
+    Error,
 }
 
 impl TrayStatus {
@@ -172,6 +193,7 @@ impl TrayStatus {
             TrayStatus::Listening => "CodeScribe - Recording...".to_string(),
             TrayStatus::Thinking => "CodeScribe - Processing...".to_string(),
             TrayStatus::Success => "CodeScribe - Done!".to_string(),
+            TrayStatus::Error => "CodeScribe - Backend unavailable!".to_string(),
         }
     }
 
@@ -246,7 +268,7 @@ pub enum TrayMenuEvent {
     // Feedback submenu
     ToggleStartSound,
     SetSoundType(SoundType),
-    SetVolume,
+    SetVolume(VolumeLevel),
 
     // Permissions submenu
     CheckPermissions,
@@ -265,6 +287,54 @@ pub enum FormattingProvider {
 pub enum SoundType {
     Tink,
     Pop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeLevel {
+    Mute,     // 0%
+    Low,      // 25%
+    Medium,   // 50%
+    High,     // 75%
+    Full,     // 100%
+}
+
+impl VolumeLevel {
+    /// Convert to f32 value (0.0 - 1.0)
+    pub fn as_f32(self) -> f32 {
+        match self {
+            VolumeLevel::Mute => 0.0,
+            VolumeLevel::Low => 0.25,
+            VolumeLevel::Medium => 0.5,
+            VolumeLevel::High => 0.75,
+            VolumeLevel::Full => 1.0,
+        }
+    }
+
+    /// Get display label
+    pub fn label(self) -> &'static str {
+        match self {
+            VolumeLevel::Mute => "🔇 Mute (0%)",
+            VolumeLevel::Low => "🔈 Low (25%)",
+            VolumeLevel::Medium => "🔉 Medium (50%)",
+            VolumeLevel::High => "🔊 High (75%)",
+            VolumeLevel::Full => "🔊 Full (100%)",
+        }
+    }
+
+    /// Get VolumeLevel from f32 value (rounds to nearest)
+    pub fn from_f32(value: f32) -> Self {
+        if value <= 0.125 {
+            VolumeLevel::Mute
+        } else if value <= 0.375 {
+            VolumeLevel::Low
+        } else if value <= 0.625 {
+            VolumeLevel::Medium
+        } else if value <= 0.875 {
+            VolumeLevel::High
+        } else {
+            VolumeLevel::Full
+        }
+    }
 }
 
 /// Whisper model variants available for local STT
@@ -345,7 +415,11 @@ struct MenuIds {
     feedback_start_sound: MenuId,
     feedback_sound_tink: MenuId,
     feedback_sound_pop: MenuId,
-    feedback_set_volume: MenuId,
+    volume_mute: MenuId,
+    volume_low: MenuId,
+    volume_medium: MenuId,
+    volume_high: MenuId,
+    volume_full: MenuId,
 
     // Permissions submenu
     perm_check: MenuId,
@@ -371,7 +445,7 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
 
     // 4. Language submenu
     let lang_menu = Submenu::new("Language", true);
-    let lang_auto = CheckMenuItem::new("✓ Auto", true, true, None);
+    let lang_auto = CheckMenuItem::new("Auto", true, true, None);
     let lang_auto_id = lang_auto.id().clone();
     let lang_polish = CheckMenuItem::new("Polish (PL)", true, false, None);
     let lang_polish_id = lang_polish.id().clone();
@@ -399,28 +473,30 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     models_menu.append(&whisper_label)?;
     models_menu.append(&PredefinedMenuItem::separator())?;
 
-    // Whisper model options
-    let model_small =
-        CheckMenuItem::new("Use Whisper: Small", true, current_whisper == "small", None);
-    let model_small_id = model_small.id().clone();
-    let model_medium = CheckMenuItem::new(
-        "Use Whisper: Medium",
+    // Whisper model options (using MenuItem with tick prefix for radio-like behavior)
+    let tick = |selected: bool| if selected { "✓ " } else { "   " };
+
+    let model_small = MenuItem::new(
+        format!("{}Use Whisper: Small", tick(current_whisper == "small")),
         true,
-        current_whisper == "medium",
+        None,
+    );
+    let model_small_id = model_small.id().clone();
+    let model_medium = MenuItem::new(
+        format!("{}Use Whisper: Medium", tick(current_whisper == "medium")),
+        true,
         None,
     );
     let model_medium_id = model_medium.id().clone();
-    let model_large_v3 = CheckMenuItem::new(
-        "Use Whisper: Large v3",
+    let model_large_v3 = MenuItem::new(
+        format!("{}Use Whisper: Large v3", tick(current_whisper == "large-v3")),
         true,
-        current_whisper == "large-v3",
         None,
     );
     let model_large_v3_id = model_large_v3.id().clone();
-    let model_large_v3_turbo = CheckMenuItem::new(
-        "Use Whisper: Large v3 Turbo",
+    let model_large_v3_turbo = MenuItem::new(
+        format!("{}Use Whisper: Large v3 Turbo", tick(current_whisper == "large-v3-turbo")),
         true,
-        current_whisper == "large-v3-turbo",
         None,
     );
     let model_large_v3_turbo_id = model_large_v3_turbo.id().clone();
@@ -483,14 +559,14 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     hold_menu.append(&hold_current_label)?;
     hold_menu.append(&PredefinedMenuItem::separator())?;
 
-    // Hold modifier options
-    let hold_ctrl = CheckMenuItem::new("Hold: Ctrl only (Formatting)", true, true, None);
+    // Hold modifier options (uses label() from config types)
+    let hold_ctrl = CheckMenuItem::new(format!("Hold: {}", HoldMods::Ctrl.label()), true, true, None);
     let hold_ctrl_id = hold_ctrl.id().clone();
-    let hold_ctrl_opt = CheckMenuItem::new("Hold: Ctrl+Option", true, false, None);
+    let hold_ctrl_opt = CheckMenuItem::new(format!("Hold: {}", HoldMods::CtrlAlt.label()), true, false, None);
     let hold_ctrl_opt_id = hold_ctrl_opt.id().clone();
-    let hold_ctrl_shift = CheckMenuItem::new("Hold: Ctrl+Shift (AI)", true, false, None);
+    let hold_ctrl_shift = CheckMenuItem::new(format!("Hold: {}", HoldMods::CtrlShift.label()), true, false, None);
     let hold_ctrl_shift_id = hold_ctrl_shift.id().clone();
-    let hold_ctrl_cmd = CheckMenuItem::new("Hold: Ctrl+Command", true, false, None);
+    let hold_ctrl_cmd = CheckMenuItem::new(format!("Hold: {}", HoldMods::CtrlCmd.label()), true, false, None);
     let hold_ctrl_cmd_id = hold_ctrl_cmd.id().clone();
 
     hold_menu.append(&hold_ctrl)?;
@@ -524,7 +600,14 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     // 7. History submenu
     let history_menu = Submenu::new("History", true);
 
-    let history_latest_label = MenuItem::new("Latest: (none)", false, None);
+    // Load actual history entries at startup
+    let recent_entries = crate::history::recent_entries(5);
+    let latest_label = if let Some(entry) = recent_entries.first() {
+        format!("Latest: {}", entry.label())
+    } else {
+        "Latest: (none)".to_string()
+    };
+    let history_latest_label = MenuItem::new(latest_label, false, None);
     history_menu.append(&history_latest_label)?;
     history_menu.append(&PredefinedMenuItem::separator())?;
 
@@ -533,9 +616,26 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     history_menu.append(&history_save)?;
     history_menu.append(&PredefinedMenuItem::separator())?;
 
-    // Placeholder for recent entries (would be dynamically populated)
-    let placeholder_entry = MenuItem::new("(no recent entries)", false, None);
-    history_menu.append(&placeholder_entry)?;
+    // Show recent entries or placeholder
+    if recent_entries.is_empty() {
+        let placeholder_entry = MenuItem::new("(no recent entries)", false, None);
+        history_menu.append(&placeholder_entry)?;
+    } else {
+        for (i, entry) in recent_entries.iter().take(5).enumerate() {
+            // Truncate label for menu display
+            let label = entry.label();
+            let display = if label.len() > 40 {
+                format!("{}...", &label[..37])
+            } else {
+                label.to_string()
+            };
+            let entry_item = MenuItem::new(display, true, None);
+            // Note: These won't have handlers until we add dynamic menu IDs
+            // For now they're display-only
+            history_menu.append(&entry_item)?;
+            let _ = i; // suppress unused warning
+        }
+    }
     history_menu.append(&PredefinedMenuItem::separator())?;
 
     let history_copy_latest = MenuItem::new("Copy Latest to Clipboard", true, None);
@@ -577,9 +677,24 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     feedback_menu.append(&feedback_sound_tink)?;
     feedback_menu.append(&feedback_sound_pop)?;
 
-    let feedback_set_volume = MenuItem::new("Set Volume...", true, None);
-    let feedback_set_volume_id = feedback_set_volume.id().clone();
-    feedback_menu.append(&feedback_set_volume)?;
+    // Volume submenu with preset levels
+    let volume_menu = Submenu::new("Volume", true);
+    let volume_mute = CheckMenuItem::new(VolumeLevel::Mute.label(), true, false, None);
+    let volume_mute_id = volume_mute.id().clone();
+    let volume_low = CheckMenuItem::new(VolumeLevel::Low.label(), true, false, None);
+    let volume_low_id = volume_low.id().clone();
+    let volume_medium = CheckMenuItem::new(VolumeLevel::Medium.label(), true, true, None); // Default
+    let volume_medium_id = volume_medium.id().clone();
+    let volume_high = CheckMenuItem::new(VolumeLevel::High.label(), true, false, None);
+    let volume_high_id = volume_high.id().clone();
+    let volume_full = CheckMenuItem::new(VolumeLevel::Full.label(), true, false, None);
+    let volume_full_id = volume_full.id().clone();
+    volume_menu.append(&volume_mute)?;
+    volume_menu.append(&volume_low)?;
+    volume_menu.append(&volume_medium)?;
+    volume_menu.append(&volume_high)?;
+    volume_menu.append(&volume_full)?;
+    feedback_menu.append(&volume_menu)?;
 
     menu.append(&feedback_menu)?;
 
@@ -669,7 +784,11 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
             feedback_start_sound: feedback_start_sound_id,
             feedback_sound_tink: feedback_sound_tink_id,
             feedback_sound_pop: feedback_sound_pop_id,
-            feedback_set_volume: feedback_set_volume_id,
+            volume_mute: volume_mute_id,
+            volume_low: volume_low_id,
+            volume_medium: volume_medium_id,
+            volume_high: volume_high_id,
+            volume_full: volume_full_id,
             perm_check: perm_check_id,
             perm_accessibility: perm_accessibility_id,
             perm_microphone: perm_microphone_id,
@@ -812,8 +931,18 @@ fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         send_menu_event(TrayMenuEvent::SetSoundType(SoundType::Tink));
     } else if event_id == &menu_ids.feedback_sound_pop {
         send_menu_event(TrayMenuEvent::SetSoundType(SoundType::Pop));
-    } else if event_id == &menu_ids.feedback_set_volume {
-        send_menu_event(TrayMenuEvent::SetVolume);
+    }
+    // Volume submenu
+    else if event_id == &menu_ids.volume_mute {
+        send_menu_event(TrayMenuEvent::SetVolume(VolumeLevel::Mute));
+    } else if event_id == &menu_ids.volume_low {
+        send_menu_event(TrayMenuEvent::SetVolume(VolumeLevel::Low));
+    } else if event_id == &menu_ids.volume_medium {
+        send_menu_event(TrayMenuEvent::SetVolume(VolumeLevel::Medium));
+    } else if event_id == &menu_ids.volume_high {
+        send_menu_event(TrayMenuEvent::SetVolume(VolumeLevel::High));
+    } else if event_id == &menu_ids.volume_full {
+        send_menu_event(TrayMenuEvent::SetVolume(VolumeLevel::Full));
     }
     // Permissions submenu
     else if event_id == &menu_ids.perm_check {

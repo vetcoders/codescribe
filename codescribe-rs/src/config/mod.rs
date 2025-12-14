@@ -12,28 +12,20 @@
 //! - `types` - Type definitions (enums, Config struct)
 //! - `defaults` - Default value functions for serde
 //! - `loader` - Load/save functionality (.env, JSON)
-//! - `global` - Thread-safe global configuration state
 //!
-//! Note: Global config API not yet wired up to main.rs (pending integration)
-#![allow(dead_code)]
+//! Note: Config is loaded via `Config::load()` and accessed via shared state in main.rs.
 
 mod defaults;
-mod global;
 mod loader;
 mod types;
 
 // Re-export types
-pub use types::{AiProvider, Config, HoldMods, Language, ToggleTrigger};
-
-// Re-export global API
-pub use global::{get, init, save, update};
-
-// Re-export defaults for external use
-pub use defaults::default_backend_ports;
+pub use types::{Config, HoldMods, Language, ToggleTrigger};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use types::AiProvider;
 
     #[test]
     fn test_default_config() {

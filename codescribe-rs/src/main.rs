@@ -2,6 +2,7 @@
 //!
 //! Rust frontend that communicates with Python backend (FastAPI + MLX Whisper)
 
+mod ai_formatting;
 mod audio;
 mod backend;
 mod client;
@@ -20,7 +21,7 @@ use clap::Parser;
 use crossbeam_channel::unbounded;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn, Level};
+use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 /// CodeScribe - Speech-to-text tray app for macOS
@@ -104,6 +105,12 @@ async fn main() -> Result<()> {
 
     info!("CodeScribe starting...");
 
+    // Load environment variables from .env file
+    match dotenvy::dotenv() {
+        Ok(path) => debug!("Loaded environment from: {}", path.display()),
+        Err(_) => debug!("No .env file found, using system environment"),
+    }
+
     // Check and request macOS permissions (Accessibility, Microphone)
     permissions::request_all_permissions();
 
@@ -156,6 +163,19 @@ async fn main() -> Result<()> {
     // Create shared config state for menu event handling
     let shared_config = Arc::new(RwLock::new(config::Config::load()));
 
+    // Initialize hotkey settings from config
+    {
+        let cfg = shared_config.blocking_read();
+        info!("Initializing hotkey configuration from saved settings...");
+        hotkeys::set_exclusive_mode(cfg.hold_exclusive);
+        hotkeys::set_hold_mods(cfg.hold_mods);
+        hotkeys::set_toggle_trigger(cfg.toggle_trigger);
+        debug!(
+            "Hotkey config: hold_mods={:?}, exclusive={}, toggle={:?}",
+            cfg.hold_mods, cfg.hold_exclusive, cfg.toggle_trigger
+        );
+    }
+
     // Create controller with shared config
     let controller = Arc::new(controller::RecordingController::with_config(Arc::clone(
         &shared_config,
@@ -163,6 +183,7 @@ async fn main() -> Result<()> {
 
     // Spawn async task to handle menu events
     let config_clone = Arc::clone(&shared_config);
+    let controller_for_menu = Arc::clone(&controller);
     tokio::spawn(async move {
         info!("Menu event loop started");
         loop {
@@ -171,7 +192,16 @@ async fn main() -> Result<()> {
                     info!("Received menu event: {:?}", event);
                     match event {
                         tray::TrayMenuEvent::Quit => {
-                            info!("Quit event received - exiting application");
+                            info!("Quit event received - cleaning up...");
+                            // Check if recording is in progress
+                            if controller_for_menu.is_recording().await {
+                                warn!("Recording in progress - forcing reset");
+                                controller_for_menu.reset().await;
+                            } else if controller_for_menu.is_busy().await {
+                                warn!("Processing in progress - forcing reset");
+                                controller_for_menu.reset().await;
+                            }
+                            info!("Exiting application");
                             std::process::exit(0);
                         }
                         tray::TrayMenuEvent::ToggleHotkeys => {
@@ -319,9 +349,16 @@ async fn main() -> Result<()> {
                             // Play preview
                             sound::play_sound(sound_name);
                         }
-                        tray::TrayMenuEvent::SetVolume => {
-                            info!("Volume control requested (not yet implemented - needs UI dialog)");
-                            // TODO: Implement volume slider dialog
+                        tray::TrayMenuEvent::SetVolume(level) => {
+                            let volume = level.as_f32();
+                            info!("Setting volume to: {} ({})", level.label(), volume);
+                            let mut cfg = config_clone.write().await;
+                            cfg.sound_volume = volume;
+                            if let Err(e) = cfg.save_to_env("SOUND_VOLUME", &volume.to_string()) {
+                                error!("Failed to save volume setting: {}", e);
+                            }
+                            // Play preview sound at new volume
+                            sound::play_sound_with_volume("Tink", volume);
                         }
                         // Hold hotkey settings
                         tray::TrayMenuEvent::SetHoldMods(mods) => {
@@ -331,8 +368,8 @@ async fn main() -> Result<()> {
                             if let Err(e) = cfg.save_to_env("HOLD_MODS", mods.as_str()) {
                                 error!("Failed to save hold mods setting: {}", e);
                             }
-                            // Note: Hotkey listener reconfiguration requires restart for now
-                            info!("Hold modifiers changed - restart to apply");
+                            // Apply runtime reconfiguration
+                            hotkeys::set_hold_mods(mods);
                         }
                         tray::TrayMenuEvent::ToggleHoldExclusive => {
                             let mut cfg = config_clone.write().await;
@@ -341,17 +378,19 @@ async fn main() -> Result<()> {
                             if let Err(e) = cfg.save_to_env("HOLD_EXCLUSIVE", if exclusive { "1" } else { "0" }) {
                                 error!("Failed to save exclusive setting: {}", e);
                             }
-                            info!("Exclusive mode {}", if exclusive { "enabled" } else { "disabled" });
+                            // Apply runtime reconfiguration
+                            hotkeys::set_exclusive_mode(exclusive);
+                            info!("Exclusive mode {} (applied immediately)", if exclusive { "enabled" } else { "disabled" });
                         }
                         tray::TrayMenuEvent::SetToggleTrigger(trigger) => {
-                            info!("Setting toggle trigger to: {:?}", trigger);
+                            info!("Setting toggle trigger to: {} ({})", trigger.label(), trigger.as_str());
                             let mut cfg = config_clone.write().await;
                             cfg.toggle_trigger = trigger;
                             if let Err(e) = cfg.save_to_env("TOGGLE_TRIGGER", trigger.as_str()) {
                                 error!("Failed to save toggle trigger setting: {}", e);
                             }
-                            // Note: Hotkey listener reconfiguration requires restart for now
-                            info!("Toggle trigger changed - restart to apply");
+                            // Apply runtime reconfiguration
+                            hotkeys::set_toggle_trigger(trigger);
                         }
                         // Permissions
                         tray::TrayMenuEvent::CheckPermissions => {

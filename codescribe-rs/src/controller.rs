@@ -255,6 +255,21 @@ impl RecordingController {
 
     /// Schedule delayed recording start for hold mode
     async fn schedule_hold_start(&self) -> Result<()> {
+        // Check backend health before starting
+        match crate::client::check_health().await {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!("Backend not ready (model loading)");
+                let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Backend unavailable: {}", e);
+                let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
+                return Ok(());
+            }
+        }
+
         let config = self.config.read().await;
         let delay_ms = config.hold_start_delay_ms;
         let beep = config.beep_on_start;
@@ -316,6 +331,21 @@ impl RecordingController {
 
     /// Start recording in toggle mode (immediate, no delay)
     async fn start_toggle_recording(&self) -> Result<()> {
+        // Check backend health before starting
+        match crate::client::check_health().await {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!("Backend not ready (model loading)");
+                let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
+                return Ok(());
+            }
+            Err(e) => {
+                error!("Backend unavailable: {}", e);
+                let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
+                return Ok(());
+            }
+        }
+
         // Acquire serial lock to prevent race conditions
         let _guard = self.serial_lock.lock().await;
 
@@ -458,23 +488,25 @@ impl RecordingController {
 
         info!("Raw transcript captured ({} chars)", raw_text.len());
 
-        // Format the text if enabled in config
+        // Check for repetition loops (Whisper hallucination like "Wielki, Wielki, Wielki...")
+        let has_repetition = crate::ai_formatting::has_repetition_loop(&raw_text);
+        if has_repetition {
+            warn!("Detected repetition loop in transcription - will clean up");
+        }
+
+        // Format the text - use AI if enabled and configured, otherwise simple cleanup
         let ai_formatting_enabled = self.config.read().await.ai_formatting_enabled;
-        let formatted_text = if ai_formatting_enabled {
+        let formatted_text = if ai_formatting_enabled && crate::ai_formatting::has_api_key() {
             info!(
-                "Formatting transcript (enabled={}, assistive={})",
+                "Formatting transcript via AI (enabled={}, assistive={})",
                 ai_formatting_enabled, assistive
             );
-            match crate::client::format_text(&raw_text, assistive).await {
-                Ok(formatted) => {
-                    info!("Text formatting successful");
-                    formatted
-                }
-                Err(e) => {
-                    warn!("Formatting failed: {}, using raw text", e);
-                    raw_text.clone()
-                }
-            }
+            let lang_str = language_opt.map(String::from);
+            crate::ai_formatting::format_text(&raw_text, lang_str.as_deref()).await
+        } else if has_repetition {
+            // Simple local cleanup if AI not available but we have repetitions
+            info!("AI formatting not available, using local repetition cleanup");
+            crate::ai_formatting::remove_simple_repetitions(&raw_text)
         } else {
             info!("AI formatting disabled in config, using raw text");
             raw_text.clone()
@@ -501,37 +533,6 @@ impl RecordingController {
 }
 
 impl RecordingController {
-    /// Cancel recording and reset to IDLE state.
-    ///
-    /// Use this when:
-    /// - User requests cancellation
-    /// - Application is shutting down
-    /// - Backend crashes
-    ///
-    /// This will:
-    /// 1. Cancel any pending delayed hold-start
-    /// 2. Stop the recorder if running
-    /// 3. Reset all state to IDLE
-    /// 4. Hide any UI indicators
-    pub async fn cancel(&self) -> Result<()> {
-        info!("Cancelling recording (forced reset)");
-
-        // Cancel any pending hold-start
-        self.cancel_pending_hold_start().await;
-
-        // Stop recorder if it's running
-        let mut recorder = self.recorder.lock().await;
-        if let Err(e) = recorder.stop().await {
-            warn!("Error stopping recorder during cancel: {}", e);
-        }
-        drop(recorder);
-
-        // Reset all state
-        self.reset_state().await;
-
-        Ok(())
-    }
-
     /// Force reset to IDLE state without stopping recorder.
     ///
     /// This is the nuclear option - use only when state is corrupted

@@ -213,11 +213,11 @@ async def transcribe(
         # Build transcription kwargs
         transcribe_kwargs = {
             "path_or_hf_repo": WHISPER_DIR,
-            # Anti-hallucination filters (improves transcription quality)
-            "compression_ratio_threshold": 2.0,  # Lower = stricter (default 2.4)
-            "no_speech_threshold": 0.5,  # Higher = stricter (default 0.6)
-            "logprob_threshold": -0.5,  # Higher = stricter (default -1.0)
+            # Anti-repetition: prevent context bleeding between segments
             "condition_on_previous_text": False,
+            # Note: logprob_threshold and no_speech_threshold were removed
+            # because they were too aggressive and cut off valid transcriptions.
+            # The defaults work well for most cases.
         }
 
         # Add language if specified (None or "auto" means auto-detect)

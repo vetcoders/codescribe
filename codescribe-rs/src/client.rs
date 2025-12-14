@@ -9,8 +9,8 @@
 
 use anyhow::{Context, Result};
 use reqwest::multipart::{Form, Part};
-use reqwest::{Client, StatusCode};
-use serde::{Deserialize, Serialize};
+use reqwest::Client;
+use serde::Deserialize;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -25,11 +25,7 @@ static SERVER_URL: OnceLock<String> = OnceLock::new();
 /// 8238 is the default Python whisper_server port
 const PROBE_PORTS: &[u16] = &[8238, 8237, 7237, 6237, 5237];
 
-/// Maximum retry attempts for transient errors
-const MAX_RETRIES: u32 = 3;
-
-/// Initial backoff duration in milliseconds
-const INITIAL_BACKOFF_MS: u64 = 100;
+// Note: Retry constants and format_text moved to ai_formatting.rs module
 
 /// Health check response structure
 #[derive(Debug, Deserialize)]
@@ -41,19 +37,6 @@ struct HealthResponse {
 #[derive(Debug, Deserialize)]
 struct TranscribeResponse {
     text: String,
-}
-
-/// Format request structure
-#[derive(Debug, Serialize)]
-struct FormatRequest {
-    text: String,
-    assistive: bool,
-}
-
-/// Format response structure
-#[derive(Debug, Deserialize)]
-struct FormatResponse {
-    formatted: String,
 }
 
 /// Get or create HTTP client with sensible defaults
@@ -186,54 +169,6 @@ pub async fn check_health() -> Result<bool> {
     Ok(health.ok)
 }
 
-/// Execute request with retry logic for transient errors
-///
-/// Retries on HTTP 502, 503, 504 with exponential backoff
-async fn retry_request<F, Fut, T>(mut request_fn: F) -> Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T>>,
-{
-    let mut attempts = 0;
-    let mut backoff_ms = INITIAL_BACKOFF_MS;
-
-    loop {
-        attempts += 1;
-
-        match request_fn().await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                // Check if error is retryable
-                let is_retryable = e
-                    .downcast_ref::<reqwest::Error>()
-                    .and_then(|req_err| req_err.status())
-                    .map(|status| {
-                        matches!(
-                            status,
-                            StatusCode::BAD_GATEWAY
-                                | StatusCode::SERVICE_UNAVAILABLE
-                                | StatusCode::GATEWAY_TIMEOUT
-                        )
-                    })
-                    .unwrap_or(false);
-
-                if !is_retryable || attempts >= MAX_RETRIES {
-                    return Err(e);
-                }
-
-                warn!(
-                    "Request failed with retryable error, attempt {}/{}: {}",
-                    attempts, MAX_RETRIES, e
-                );
-
-                // Exponential backoff
-                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                backoff_ms *= 2;
-            }
-        }
-    }
-}
-
 /// Transcribe audio file using backend STT service
 ///
 /// # Arguments
@@ -314,70 +249,7 @@ pub async fn transcribe(path: &Path, language: Option<&str>) -> Result<String> {
     Ok(transcribe_response.text)
 }
 
-/// Format text using backend formatting service
-///
-/// # Arguments
-/// * `text` - Raw text to format
-/// * `assistive` - Enable assistive mode (more aggressive formatting, punctuation)
-///
-/// # Returns
-/// Formatted text or error
-///
-/// # Example
-/// ```no_run
-/// let formatted = client::format_text("hello world how are you", true).await?;
-/// println!("Formatted: {}", formatted);
-/// ```
-pub async fn format_text(text: &str, assistive: bool) -> Result<String> {
-    let base_url = get_server_url().await?;
-    let url = format!("{}/format", base_url);
-
-    let request_body = FormatRequest {
-        text: text.to_string(),
-        assistive,
-    };
-
-    debug!("Sending format request, assistive={}", assistive);
-
-    // Execute with retry logic
-    let response = retry_request(|| async {
-        let resp = get_client()
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await
-            .context("Failed to send format request")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "(no body)".to_string());
-            anyhow::bail!("Format request failed with status {}: {}", status, body);
-        }
-
-        Ok(resp)
-    })
-    .await?;
-
-    let format_response: FormatResponse = response
-        .json()
-        .await
-        .context("Failed to parse format response")?;
-
-    info!("Text formatting successful");
-
-    Ok(format_response.formatted)
-}
-
-/// Model info response structure
-#[derive(Debug, Deserialize)]
-pub struct ModelInfo {
-    pub variant: String,
-    pub path: Option<String>,
-    pub loaded: bool,
-}
+// Note: format_text moved to ai_formatting.rs module for OpenAI/Libraxis support
 
 /// Model set response structure
 #[derive(Debug, Deserialize)]
@@ -389,33 +261,6 @@ struct ModelSetResponse {
     path: Option<String>,
     #[serde(default)]
     error: Option<String>,
-}
-
-/// Get current Whisper model info
-///
-/// # Returns
-/// Model info with variant name, path, and loaded status
-pub async fn get_model_info() -> Result<ModelInfo> {
-    let base_url = get_server_url().await?;
-    let url = format!("{}/model", base_url);
-
-    let response = get_client()
-        .get(&url)
-        .send()
-        .await
-        .context("Failed to send model info request")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        anyhow::bail!("Model info request failed with status {}", status);
-    }
-
-    let model_info: ModelInfo = response
-        .json()
-        .await
-        .context("Failed to parse model info response")?;
-
-    Ok(model_info)
 }
 
 /// Set Whisper model variant

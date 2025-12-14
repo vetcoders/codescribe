@@ -137,15 +137,6 @@ pub enum AiProvider {
     Ollama,
 }
 
-impl AiProvider {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Harmony => "harmony",
-            Self::Ollama => "ollama",
-        }
-    }
-}
-
 impl FromStr for AiProvider {
     type Err = String;
 
