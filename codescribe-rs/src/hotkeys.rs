@@ -199,6 +199,7 @@ mod macos {
     // Global state pointer for callback (must be static for C callback)
     static mut GLOBAL_STATE: Option<*mut HotkeyState> = None;
     static RUNNING: AtomicBool = AtomicBool::new(false);
+    static ENABLED: AtomicBool = AtomicBool::new(true);
 
     /// CGEventTap callback - processes modifier key events
     extern "C" fn event_callback(
@@ -207,6 +208,11 @@ mod macos {
         event: CGEventRef,
         _user_info: *mut c_void,
     ) -> CGEventRef {
+        // Skip processing if hotkeys are disabled
+        if !ENABLED.load(Ordering::Relaxed) {
+            return event;
+        }
+
         // Only process flags changed events
         if event_type != K_CG_EVENT_FLAGS_CHANGED {
             return event;
@@ -324,6 +330,23 @@ mod macos {
         Ok(())
     }
 
+    /// Enable hotkey processing (thread-safe)
+    pub fn enable() {
+        ENABLED.store(true, Ordering::SeqCst);
+        tracing::info!("Hotkeys enabled");
+    }
+
+    /// Disable hotkey processing (thread-safe)
+    pub fn disable() {
+        ENABLED.store(false, Ordering::SeqCst);
+        tracing::info!("Hotkeys disabled");
+    }
+
+    /// Check if hotkeys are currently enabled (thread-safe)
+    pub fn is_enabled() -> bool {
+        ENABLED.load(Ordering::SeqCst)
+    }
+
     /// Run the CGEventTap on the current thread (blocking)
     fn run_event_tap(tx: Sender<HotkeyEvent>) -> Result<(), String> {
         // Create state on heap and store global pointer
@@ -407,9 +430,41 @@ mod macos {
         tracing::warn!("Hotkey listener not supported on this platform");
         Ok(())
     }
+
+    pub fn enable() {
+        tracing::warn!("Hotkey enable not supported on this platform");
+    }
+
+    pub fn disable() {
+        tracing::warn!("Hotkey disable not supported on this platform");
+    }
+
+    pub fn is_enabled() -> bool {
+        false
+    }
 }
 
 // --- Public API ---
+
+/// Enable hotkey processing (thread-safe, global)
+///
+/// When enabled, modifier key events will be captured and sent to the event channel.
+pub fn enable_hotkeys() {
+    macos::enable();
+}
+
+/// Disable hotkey processing (thread-safe, global)
+///
+/// When disabled, modifier key events will be ignored and no events will be sent.
+/// The CGEventTap remains running but skips processing.
+pub fn disable_hotkeys() {
+    macos::disable();
+}
+
+/// Check if hotkeys are currently enabled (thread-safe, global)
+pub fn are_hotkeys_enabled() -> bool {
+    macos::is_enabled()
+}
 
 /// Manages global hotkey registration and event handling
 pub struct HotkeyManager {
@@ -436,6 +491,26 @@ impl HotkeyManager {
     pub fn process_events(&self) {
         // Events are processed in the background thread
         // This is a no-op for API compatibility
+    }
+
+    /// Enable hotkey processing (thread-safe)
+    ///
+    /// When enabled, modifier key events will be captured and sent to the event channel.
+    pub fn enable(&self) {
+        macos::enable();
+    }
+
+    /// Disable hotkey processing (thread-safe)
+    ///
+    /// When disabled, modifier key events will be ignored and no events will be sent.
+    /// The CGEventTap remains running but skips processing.
+    pub fn disable(&self) {
+        macos::disable();
+    }
+
+    /// Check if hotkeys are currently enabled (thread-safe)
+    pub fn is_enabled(&self) -> bool {
+        macos::is_enabled()
     }
 }
 

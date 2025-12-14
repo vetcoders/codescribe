@@ -500,6 +500,76 @@ impl RecordingController {
     }
 }
 
+impl RecordingController {
+    /// Cancel recording and reset to IDLE state.
+    ///
+    /// Use this when:
+    /// - User requests cancellation
+    /// - Application is shutting down
+    /// - Backend crashes
+    ///
+    /// This will:
+    /// 1. Cancel any pending delayed hold-start
+    /// 2. Stop the recorder if running
+    /// 3. Reset all state to IDLE
+    /// 4. Hide any UI indicators
+    pub async fn cancel(&self) -> Result<()> {
+        info!("Cancelling recording (forced reset)");
+
+        // Cancel any pending hold-start
+        self.cancel_pending_hold_start().await;
+
+        // Stop recorder if it's running
+        let mut recorder = self.recorder.lock().await;
+        if let Err(e) = recorder.stop().await {
+            warn!("Error stopping recorder during cancel: {}", e);
+        }
+        drop(recorder);
+
+        // Reset all state
+        self.reset_state().await;
+
+        Ok(())
+    }
+
+    /// Force reset to IDLE state without stopping recorder.
+    ///
+    /// This is the nuclear option - use only when state is corrupted
+    /// or during crash recovery.
+    pub async fn reset(&self) {
+        warn!("Forcing state reset to IDLE (recovery mode)");
+        self.reset_state().await;
+    }
+
+    /// Internal helper to reset all state variables
+    async fn reset_state(&self) {
+        *self.state.write().await = State::Idle;
+        *self.assistive_mode.write().await = false;
+        *self.session_id.write().await = None;
+
+        // Hide UI indicators
+        hide_hold_badge();
+
+        // Update tray status
+        let _ = update_tray_status(TrayStatus::Idle);
+
+        info!("State reset to IDLE complete");
+    }
+
+    /// Check if controller is in a recording state
+    pub async fn is_recording(&self) -> bool {
+        matches!(
+            self.current_state().await,
+            State::RecHold | State::RecToggle
+        )
+    }
+
+    /// Check if controller is busy processing
+    pub async fn is_busy(&self) -> bool {
+        self.current_state().await == State::Busy
+    }
+}
+
 impl Default for RecordingController {
     fn default() -> Self {
         Self::new()
@@ -614,5 +684,39 @@ mod tests {
         assert_eq!(State::RecHold.to_string(), "REC_HOLD");
         assert_eq!(State::RecToggle.to_string(), "REC_TOGGLE");
         assert_eq!(State::Busy.to_string(), "BUSY");
+    }
+
+    #[tokio::test]
+    async fn test_reset_from_busy() {
+        let controller = RecordingController::new();
+
+        // Manually set to BUSY (simulating stuck state)
+        *controller.state.write().await = State::Busy;
+        assert!(controller.is_busy().await);
+
+        // Reset should force back to IDLE
+        controller.reset().await;
+        assert_eq!(controller.current_state().await, State::Idle);
+        assert!(!controller.is_busy().await);
+    }
+
+    #[tokio::test]
+    async fn test_is_recording_states() {
+        let controller = RecordingController::new();
+
+        // IDLE - not recording
+        assert!(!controller.is_recording().await);
+
+        // REC_HOLD - recording
+        *controller.state.write().await = State::RecHold;
+        assert!(controller.is_recording().await);
+
+        // REC_TOGGLE - recording
+        *controller.state.write().await = State::RecToggle;
+        assert!(controller.is_recording().await);
+
+        // BUSY - not recording (processing)
+        *controller.state.write().await = State::Busy;
+        assert!(!controller.is_recording().await);
     }
 }

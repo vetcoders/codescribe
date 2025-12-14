@@ -3,13 +3,28 @@
 //! Provides visual status feedback and menu controls via macOS menu bar icon.
 //! Uses tao event loop for proper macOS integration.
 //!
-//! Note: Some menu event handlers are not yet wired up (pending integration)
+//! ## Unwired Menu Handlers (TODO)
+//!
+//! The following menu events are sent but NOT yet handled in main.rs:
+//! - `SetHoldMods` - Change hold modifier keys (needs hotkey reconfiguration)
+//! - `ToggleHoldExclusive` - Toggle exclusive mode (needs hotkey reconfiguration)
+//! - `SetToggleTrigger` - Change toggle trigger (needs hotkey reconfiguration)
+//! - `ToggleStatusGlyph` - Show/hide status glyph (needs tray icon update)
+//! - `RefreshTrayIcon` - Force refresh icon (needs tray icon update)
+//! - `ToggleStartSound` - Enable/disable beep (needs config update)
+//! - `SetSoundType` - Change sound type (needs config update)
+//! - `SetVolume` - Set volume level (needs dialog/slider implementation)
+//! - `CheckPermissions` - Refresh permission status (handled locally in tray.rs)
+//!
+//! Note: OpenAccessibilitySettings and OpenMicrophoneSettings ARE handled
+//! directly in tray.rs handle_menu_event (they open System Settings).
 #![allow(dead_code)]
 
 use anyhow::Result;
 use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
 use image::{imageops::FilterType, GenericImageView};
 use muda::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -25,6 +40,20 @@ const ICON_BYTES: &[u8] = include_bytes!("../assets/icon.png");
 
 /// Menu bar icon size (44x44 for Retina, 22x22 logical)
 const ICON_SIZE: u32 = 44;
+
+/// Global flag for status glyph visibility
+static SHOW_STATUS_GLYPH: AtomicBool = AtomicBool::new(true);
+
+/// Set whether the status glyph (colored dot) is visible on the icon
+pub fn set_status_glyph_enabled(enabled: bool) {
+    SHOW_STATUS_GLYPH.store(enabled, Ordering::SeqCst);
+    debug!("Status glyph {}", if enabled { "enabled" } else { "disabled" });
+}
+
+/// Get whether the status glyph is currently enabled
+pub fn is_status_glyph_enabled() -> bool {
+    SHOW_STATUS_GLYPH.load(Ordering::SeqCst)
+}
 
 /// Load the custom CodeScribe icon, optionally tinted by status
 fn load_custom_icon(status: TrayStatus) -> Result<Icon> {
@@ -50,6 +79,39 @@ fn load_custom_icon(status: TrayStatus) -> Result<Icon> {
         pixel[1] = (pixel[1] as f32 * tint_g).min(255.0) as u8;
         pixel[2] = (pixel[2] as f32 * tint_b).min(255.0) as u8;
         // Alpha channel (pixel[3]) unchanged
+    }
+
+    // Draw status glyph if enabled (small colored dot in bottom-right corner)
+    if is_status_glyph_enabled() {
+        // Glyph parameters (6x6 circle in bottom-right corner)
+        const GLYPH_RADIUS: i32 = 3;
+        let glyph_center_x = (width as i32) - GLYPH_RADIUS - 2; // 2px padding from edge
+        let glyph_center_y = (height as i32) - GLYPH_RADIUS - 2;
+
+        // Use status-based color for the glyph (solid, not tinted)
+        let (glyph_r, glyph_g, glyph_b) = match status {
+            TrayStatus::Idle => (120u8, 120, 120),   // Gray
+            TrayStatus::Listening => (255, 80, 80),   // Red
+            TrayStatus::Thinking => (80, 150, 255),   // Blue
+            TrayStatus::Success => (80, 255, 120),    // Green
+        };
+
+        // Draw circle using distance formula
+        for y in (glyph_center_y - GLYPH_RADIUS).max(0)..(glyph_center_y + GLYPH_RADIUS).min(height as i32) {
+            for x in (glyph_center_x - GLYPH_RADIUS).max(0)..(glyph_center_x + GLYPH_RADIUS).min(width as i32) {
+                let dx = x - glyph_center_x;
+                let dy = y - glyph_center_y;
+                let distance_squared = dx * dx + dy * dy;
+
+                if distance_squared <= GLYPH_RADIUS * GLYPH_RADIUS {
+                    let idx = ((y as u32 * width + x as u32) * 4) as usize;
+                    rgba[idx] = glyph_r;
+                    rgba[idx + 1] = glyph_g;
+                    rgba[idx + 2] = glyph_b;
+                    rgba[idx + 3] = 255; // Fully opaque
+                }
+            }
+        }
     }
 
     Icon::from_rgba(rgba, width, height)
@@ -123,7 +185,31 @@ impl TrayStatus {
     }
 }
 
-/// Menu events that can be sent to the main controller
+/// Menu events that can be sent to the main controller.
+///
+/// ## Event Handling Status
+///
+/// These events are sent via `send_menu_event()` and should be received by
+/// calling `menu_event_receiver()` in the main controller. See `main.rs` for
+/// the event handling loop.
+///
+/// **TODO(unwired)**: Several events need full implementation:
+/// - `ToggleHotkeys` - needs to enable/disable global hotkey listener
+/// - `SetLanguage` - needs to persist to config and update backend
+/// - `SetWhisperModel` - needs model download/switch logic
+/// - `SetFormattingProvider` - needs to persist to config
+/// - `ToggleAiFormatting` - needs to persist to config
+/// - `SetHoldMods` - needs to persist and update hotkey listener
+/// - `ToggleHoldExclusive` - needs to persist to config
+/// - `SetToggleTrigger` - needs to persist and update hotkey listener
+/// - `ToggleHistory` - needs to persist to config
+/// - `CopyLatestToClipboard` - needs history integration
+/// - `SelectHistoryEntry` - needs history submenu population
+/// - `ToggleStatusGlyph` - needs icon rendering update
+/// - `RefreshTrayIcon` - implemented inline
+/// - `ToggleStartSound` - needs to persist to config
+/// - `SetSoundType` - needs to persist to config
+/// - `SetVolume` - needs volume UI dialog
 #[derive(Debug, Clone)]
 pub enum TrayMenuEvent {
     // Top-level actions
@@ -134,8 +220,13 @@ pub enum TrayMenuEvent {
     // Language submenu
     SetLanguage(Language),
 
+    // Models submenu (Whisper model selection)
+    SetWhisperModel(WhisperModel),
+    OpenModelsFolder,
+
     // Formatting submenu
     SetFormattingProvider(FormattingProvider),
+    ToggleAiFormatting,
 
     // Hold Hotkeys submenu
     SetHoldMods(HoldMods),
@@ -176,6 +267,37 @@ pub enum SoundType {
     Pop,
 }
 
+/// Whisper model variants available for local STT
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhisperModel {
+    Small,
+    Medium,
+    LargeV3,
+    LargeV3Turbo,
+}
+
+impl WhisperModel {
+    /// Human-readable label for the menu
+    pub fn label(&self) -> &'static str {
+        match self {
+            WhisperModel::Small => "Small",
+            WhisperModel::Medium => "Medium",
+            WhisperModel::LargeV3 => "Large v3",
+            WhisperModel::LargeV3Turbo => "Large v3 Turbo",
+        }
+    }
+
+    /// Directory name / model identifier
+    pub fn model_id(&self) -> &'static str {
+        match self {
+            WhisperModel::Small => "whisper-small",
+            WhisperModel::Medium => "whisper-medium",
+            WhisperModel::LargeV3 => "whisper-large-v3",
+            WhisperModel::LargeV3Turbo => "whisper-large-v3-turbo",
+        }
+    }
+}
+
 /// Menu item IDs for tracking all clickable items
 struct MenuIds {
     // Top-level
@@ -188,7 +310,15 @@ struct MenuIds {
     lang_polish: MenuId,
     lang_english: MenuId,
 
+    // Models submenu (Whisper model selection)
+    model_small: MenuId,
+    model_medium: MenuId,
+    model_large_v3: MenuId,
+    model_large_v3_turbo: MenuId,
+    model_open_folder: MenuId,
+
     // Formatting submenu
+    fmt_toggle: MenuId,
     fmt_harmony: MenuId,
     fmt_ollama: MenuId,
 
@@ -253,20 +383,99 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     lang_menu.append(&lang_english)?;
     menu.append(&lang_menu)?;
 
-    // 5. Formatting submenu
+    // 5. Models submenu (Whisper model selection)
+    let models_menu = Submenu::new("Models", true);
+
+    // Current Whisper model label (read from env or default)
+    let current_whisper = std::env::var("WHISPER_VARIANT").unwrap_or_else(|_| "small".to_string());
+    let current_label = match current_whisper.as_str() {
+        "small" => "Small",
+        "medium" => "Medium",
+        "large-v3" => "Large v3",
+        "large-v3-turbo" => "Large v3 Turbo",
+        _ => &current_whisper,
+    };
+    let whisper_label = MenuItem::new(format!("Whisper: {}", current_label), false, None);
+    models_menu.append(&whisper_label)?;
+    models_menu.append(&PredefinedMenuItem::separator())?;
+
+    // Whisper model options
+    let model_small =
+        CheckMenuItem::new("Use Whisper: Small", true, current_whisper == "small", None);
+    let model_small_id = model_small.id().clone();
+    let model_medium = CheckMenuItem::new(
+        "Use Whisper: Medium",
+        true,
+        current_whisper == "medium",
+        None,
+    );
+    let model_medium_id = model_medium.id().clone();
+    let model_large_v3 = CheckMenuItem::new(
+        "Use Whisper: Large v3",
+        true,
+        current_whisper == "large-v3",
+        None,
+    );
+    let model_large_v3_id = model_large_v3.id().clone();
+    let model_large_v3_turbo = CheckMenuItem::new(
+        "Use Whisper: Large v3 Turbo",
+        true,
+        current_whisper == "large-v3-turbo",
+        None,
+    );
+    let model_large_v3_turbo_id = model_large_v3_turbo.id().clone();
+
+    models_menu.append(&model_small)?;
+    models_menu.append(&model_medium)?;
+    models_menu.append(&model_large_v3)?;
+    models_menu.append(&model_large_v3_turbo)?;
+    models_menu.append(&PredefinedMenuItem::separator())?;
+
+    // Open Models Folder
+    let model_open_folder = MenuItem::new("Open Models Folder", true, None);
+    let model_open_folder_id = model_open_folder.id().clone();
+    models_menu.append(&model_open_folder)?;
+
+    menu.append(&models_menu)?;
+
+    // 6. Formatting submenu (AI enhancement)
     let fmt_menu = Submenu::new("Formatting", true);
+
+    // AI formatting toggle
+    let ai_enabled = std::env::var("FORMAT_ENABLED")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+    let fmt_toggle = CheckMenuItem::new("Enable AI Formatting", true, ai_enabled, None);
+    let fmt_toggle_id = fmt_toggle.id().clone();
+    fmt_menu.append(&fmt_toggle)?;
+    fmt_menu.append(&PredefinedMenuItem::separator())?;
+
+    // Provider selection
     let fmt_provider_label = MenuItem::new("Provider", false, None);
     fmt_menu.append(&fmt_provider_label)?;
-    let fmt_harmony = CheckMenuItem::new("✓ Harmony", true, true, None);
+
+    let current_provider = std::env::var("AI_PROVIDER").unwrap_or_else(|_| "harmony".to_string());
+    let fmt_harmony = CheckMenuItem::new(
+        "Harmony (LibraxisAI)",
+        true,
+        current_provider == "harmony",
+        None,
+    );
     let fmt_harmony_id = fmt_harmony.id().clone();
-    let fmt_ollama = CheckMenuItem::new("Ollama", true, false, None);
+    let fmt_ollama = CheckMenuItem::new("Ollama (Local)", true, current_provider == "ollama", None);
     let fmt_ollama_id = fmt_ollama.id().clone();
 
     fmt_menu.append(&fmt_harmony)?;
     fmt_menu.append(&fmt_ollama)?;
+    fmt_menu.append(&PredefinedMenuItem::separator())?;
+
+    // Assistive mode info
+    let assistive_label = MenuItem::new("Assistive: Ctrl+Shift → AI chat mode", false, None);
+    fmt_menu.append(&assistive_label)?;
+
     menu.append(&fmt_menu)?;
 
-    // 6. Hold Hotkeys submenu
+    // 7. Hold Hotkeys submenu
     let hold_menu = Submenu::new("Hold Hotkeys", true);
 
     // Current: [label]
@@ -416,8 +625,9 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     // 11. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 12. Start at Login (checkbox)
-    let start_at_login = CheckMenuItem::new("Start at Login", true, false, None);
+    // 12. Start at Login (checkbox) - check current state from launchd
+    let is_enabled = crate::launchd::is_login_item_enabled();
+    let start_at_login = CheckMenuItem::new("Start at Login", true, is_enabled, None);
     let start_at_login_id = start_at_login.id().clone();
     menu.append(&start_at_login)?;
 
@@ -435,6 +645,12 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
             lang_auto: lang_auto_id,
             lang_polish: lang_polish_id,
             lang_english: lang_english_id,
+            model_small: model_small_id,
+            model_medium: model_medium_id,
+            model_large_v3: model_large_v3_id,
+            model_large_v3_turbo: model_large_v3_turbo_id,
+            model_open_folder: model_open_folder_id,
+            fmt_toggle: fmt_toggle_id,
             fmt_harmony: fmt_harmony_id,
             fmt_ollama: fmt_ollama_id,
             hold_ctrl: hold_ctrl_id,
@@ -505,8 +721,9 @@ fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     if event_id == &menu_ids.enable_hotkeys {
         send_menu_event(TrayMenuEvent::ToggleHotkeys);
     } else if event_id == &menu_ids.start_at_login {
-        // Determine new state (would need to query checkbox state in real implementation)
-        send_menu_event(TrayMenuEvent::StartAtLogin(true));
+        // Toggle based on current state
+        let current = crate::launchd::is_login_item_enabled();
+        send_menu_event(TrayMenuEvent::StartAtLogin(!current));
     } else if event_id == &menu_ids.quit {
         send_menu_event(TrayMenuEvent::Quit);
     }
@@ -518,8 +735,34 @@ fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     } else if event_id == &menu_ids.lang_english {
         send_menu_event(TrayMenuEvent::SetLanguage(Language::English));
     }
+    // Models submenu (Whisper model selection)
+    else if event_id == &menu_ids.model_small {
+        send_menu_event(TrayMenuEvent::SetWhisperModel(WhisperModel::Small));
+    } else if event_id == &menu_ids.model_medium {
+        send_menu_event(TrayMenuEvent::SetWhisperModel(WhisperModel::Medium));
+    } else if event_id == &menu_ids.model_large_v3 {
+        send_menu_event(TrayMenuEvent::SetWhisperModel(WhisperModel::LargeV3));
+    } else if event_id == &menu_ids.model_large_v3_turbo {
+        send_menu_event(TrayMenuEvent::SetWhisperModel(WhisperModel::LargeV3Turbo));
+    } else if event_id == &menu_ids.model_open_folder {
+        send_menu_event(TrayMenuEvent::OpenModelsFolder);
+        // Open models folder in Finder
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            // Try to open the models directory
+            if let Ok(home) = std::env::var("HOME") {
+                let models_path = format!("{}/.CodeScribe/models", home);
+                // Create if not exists
+                let _ = std::fs::create_dir_all(&models_path);
+                let _ = Command::new("open").arg(&models_path).spawn();
+            }
+        }
+    }
     // Formatting submenu
-    else if event_id == &menu_ids.fmt_harmony {
+    else if event_id == &menu_ids.fmt_toggle {
+        send_menu_event(TrayMenuEvent::ToggleAiFormatting);
+    } else if event_id == &menu_ids.fmt_harmony {
         send_menu_event(TrayMenuEvent::SetFormattingProvider(
             FormattingProvider::Harmony,
         ));
@@ -602,6 +845,28 @@ fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     }
 }
 
+/// Global shutdown flag for graceful exit
+static SHUTDOWN_REQUESTED: OnceLock<std::sync::atomic::AtomicBool> = OnceLock::new();
+
+/// Request graceful shutdown of the tray application.
+///
+/// This can be called from any thread to signal that the app should exit.
+/// The event loop will check this flag and perform cleanup before exiting.
+pub fn request_shutdown() {
+    if let Some(flag) = SHUTDOWN_REQUESTED.get() {
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        info!("Shutdown requested");
+    }
+}
+
+/// Check if shutdown has been requested
+pub fn is_shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED
+        .get()
+        .map(|f| f.load(std::sync::atomic::Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
 /// Run the tray application (blocking)
 ///
 /// Uses tao event loop for proper macOS integration.
@@ -613,8 +878,23 @@ pub fn run() -> Result<()> {
 /// Run the tray application with optional hotkey manager
 ///
 /// The hotkey manager must be created on main thread before calling this.
+///
+/// ## Shutdown Behavior
+///
+/// The event loop will exit when:
+/// - User clicks Quit in the tray menu
+/// - `request_shutdown()` is called from any thread
+/// - Status channel is disconnected
+///
+/// On exit, cleanup is performed:
+/// - Hotkey manager is dropped (unregisters hotkeys)
+/// - Tray icon is removed
+/// - All channels are closed
 pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -> Result<()> {
     info!("Initializing system tray...");
+
+    // Initialize shutdown flag
+    SHUTDOWN_REQUESTED.get_or_init(|| std::sync::atomic::AtomicBool::new(false));
 
     // Create channel for status updates (crossbeam for sync safety)
     let (status_tx, status_rx): (Sender<TrayStatus>, Receiver<TrayStatus>) = unbounded();
@@ -659,6 +939,14 @@ pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -
         // Use WaitUntil to avoid busy-waiting while still checking channels
         *control_flow = ControlFlow::WaitUntil(Instant::now() + poll_interval);
 
+        // Check for programmatic shutdown request
+        if is_shutdown_requested() {
+            info!("Shutdown flag detected, performing cleanup...");
+            // Cleanup will happen when tray_icon and hotkey_manager are dropped
+            *control_flow = ControlFlow::Exit;
+            return;
+        }
+
         // Process hotkey events (integrated with main event loop for macOS compatibility)
         if let Some(ref hk_manager) = hotkey_manager {
             hk_manager.process_events();
@@ -699,11 +987,14 @@ pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -
 
             // Handle Quit specially to exit event loop
             if event.id == menu_ids.quit {
-                info!("Quit requested, exiting...");
+                info!("Quit requested via menu, exiting...");
                 *control_flow = ControlFlow::Exit;
             }
         }
     });
+
+    // Note: This code is unreachable because event_loop.run() never returns
+    // on macOS. Cleanup happens when the closures are dropped.
 }
 
 #[cfg(test)]

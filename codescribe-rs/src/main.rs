@@ -10,6 +10,7 @@ mod config;
 mod controller;
 mod history;
 mod hotkeys;
+mod launchd;
 mod permissions;
 mod sound;
 mod tray;
@@ -174,8 +175,13 @@ async fn main() -> Result<()> {
                             std::process::exit(0);
                         }
                         tray::TrayMenuEvent::ToggleHotkeys => {
-                            info!("Toggle hotkeys requested (not yet implemented)");
-                            // TODO: Wire up hotkey enable/disable
+                            if hotkeys::are_hotkeys_enabled() {
+                                info!("Disabling hotkeys");
+                                hotkeys::disable_hotkeys();
+                            } else {
+                                info!("Enabling hotkeys");
+                                hotkeys::enable_hotkeys();
+                            }
                         }
                         tray::TrayMenuEvent::SetLanguage(lang) => {
                             let new_lang = match lang {
@@ -244,9 +250,152 @@ async fn main() -> Result<()> {
                             info!("Toggle history save requested (always enabled for now)");
                             // History saving is always enabled in current implementation
                         }
-                        _ => {
-                            info!("Unhandled menu event: {:?}", event);
+                        tray::TrayMenuEvent::SetWhisperModel(model) => {
+                            let variant = match model {
+                                tray::WhisperModel::Small => "small",
+                                tray::WhisperModel::Medium => "medium",
+                                tray::WhisperModel::LargeV3 => "large-v3",
+                                tray::WhisperModel::LargeV3Turbo => "large-v3-turbo",
+                            };
+                            info!("Setting Whisper model to: {}", variant);
+                            // Call backend to switch model
+                            match client::set_whisper_model(variant).await {
+                                Ok(()) => {
+                                    info!("Whisper model switched to: {}", variant);
+                                    // Update environment for next restart
+                                    std::env::set_var("WHISPER_VARIANT", variant);
+                                }
+                                Err(e) => {
+                                    error!("Failed to switch Whisper model: {}", e);
+                                }
+                            }
                         }
+                        tray::TrayMenuEvent::OpenModelsFolder => {
+                            info!("Open models folder requested (handled in tray.rs)");
+                            // Action is handled directly in tray.rs handle_menu_event
+                        }
+                        tray::TrayMenuEvent::ToggleAiFormatting => {
+                            info!("Toggle AI formatting requested");
+                            // Toggle the AI formatting setting
+                            let current = std::env::var("FORMAT_ENABLED")
+                                .map(|v| v == "1" || v.to_lowercase() == "true")
+                                .unwrap_or(false);
+                            let new_value = if current { "0" } else { "1" };
+                            std::env::set_var("FORMAT_ENABLED", new_value);
+                            info!(
+                                "AI formatting {}",
+                                if new_value == "1" {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                }
+                            );
+                        }
+                        tray::TrayMenuEvent::SetFormattingProvider(provider) => {
+                            let provider_str = match provider {
+                                tray::FormattingProvider::Harmony => "harmony",
+                                tray::FormattingProvider::Ollama => "ollama",
+                            };
+                            info!("Setting formatting provider to: {}", provider_str);
+                            std::env::set_var("AI_PROVIDER", provider_str);
+                        }
+                        // Sound settings
+                        tray::TrayMenuEvent::ToggleStartSound => {
+                            let mut cfg = config_clone.write().await;
+                            cfg.beep_on_start = !cfg.beep_on_start;
+                            let enabled = cfg.beep_on_start;
+                            if let Err(e) = cfg.save_to_env("BEEP_ON_START", if enabled { "1" } else { "0" }) {
+                                error!("Failed to save beep setting: {}", e);
+                            }
+                            info!("Start sound {}", if enabled { "enabled" } else { "disabled" });
+                        }
+                        tray::TrayMenuEvent::SetSoundType(sound) => {
+                            let sound_name = match sound {
+                                tray::SoundType::Tink => "Tink",
+                                tray::SoundType::Pop => "Pop",
+                            };
+                            info!("Setting sound type to: {}", sound_name);
+                            std::env::set_var("SOUND_TYPE", sound_name);
+                            // Play preview
+                            sound::play_sound(sound_name);
+                        }
+                        tray::TrayMenuEvent::SetVolume => {
+                            info!("Volume control requested (not yet implemented - needs UI dialog)");
+                            // TODO: Implement volume slider dialog
+                        }
+                        // Hold hotkey settings
+                        tray::TrayMenuEvent::SetHoldMods(mods) => {
+                            info!("Setting hold modifiers to: {:?}", mods);
+                            let mut cfg = config_clone.write().await;
+                            cfg.hold_mods = mods;
+                            if let Err(e) = cfg.save_to_env("HOLD_MODS", mods.as_str()) {
+                                error!("Failed to save hold mods setting: {}", e);
+                            }
+                            // Note: Hotkey listener reconfiguration requires restart for now
+                            info!("Hold modifiers changed - restart to apply");
+                        }
+                        tray::TrayMenuEvent::ToggleHoldExclusive => {
+                            let mut cfg = config_clone.write().await;
+                            cfg.hold_exclusive = !cfg.hold_exclusive;
+                            let exclusive = cfg.hold_exclusive;
+                            if let Err(e) = cfg.save_to_env("HOLD_EXCLUSIVE", if exclusive { "1" } else { "0" }) {
+                                error!("Failed to save exclusive setting: {}", e);
+                            }
+                            info!("Exclusive mode {}", if exclusive { "enabled" } else { "disabled" });
+                        }
+                        tray::TrayMenuEvent::SetToggleTrigger(trigger) => {
+                            info!("Setting toggle trigger to: {:?}", trigger);
+                            let mut cfg = config_clone.write().await;
+                            cfg.toggle_trigger = trigger;
+                            if let Err(e) = cfg.save_to_env("TOGGLE_TRIGGER", trigger.as_str()) {
+                                error!("Failed to save toggle trigger setting: {}", e);
+                            }
+                            // Note: Hotkey listener reconfiguration requires restart for now
+                            info!("Toggle trigger changed - restart to apply");
+                        }
+                        // Permissions
+                        tray::TrayMenuEvent::CheckPermissions => {
+                            info!("Checking permissions...");
+                            permissions::check_all_permissions();
+                            // Note: Menu needs refresh to show updated status
+                        }
+                        tray::TrayMenuEvent::OpenAccessibilitySettings => {
+                            info!("Open Accessibility Settings (handled in tray.rs)");
+                        }
+                        tray::TrayMenuEvent::OpenMicrophoneSettings => {
+                            info!("Open Microphone Settings (handled in tray.rs)");
+                        }
+                        // Appearance
+                        tray::TrayMenuEvent::ToggleStatusGlyph => {
+                            let new_state = !tray::is_status_glyph_enabled();
+                            info!("Toggling status glyph to: {}", if new_state { "enabled" } else { "disabled" });
+                            tray::set_status_glyph_enabled(new_state);
+                            // Refresh icon to apply change
+                            let _ = tray::update_tray_status(tray::TrayStatus::Idle);
+                        }
+                        tray::TrayMenuEvent::RefreshTrayIcon => {
+                            info!("Refreshing tray icon...");
+                            let _ = tray::update_tray_status(tray::TrayStatus::Idle);
+                        }
+                        // System
+                        tray::TrayMenuEvent::StartAtLogin(enabled) => {
+                            info!("Start at login: {}", enabled);
+                            let result = if enabled {
+                                launchd::enable_login_item()
+                            } else {
+                                launchd::disable_login_item()
+                            };
+
+                            match result {
+                                Ok(()) => {
+                                    info!("Successfully {} Start at Login", if enabled { "enabled" } else { "disabled" });
+                                }
+                                Err(e) => {
+                                    error!("Failed to {} Start at Login: {}", if enabled { "enable" } else { "disable" }, e);
+                                }
+                            }
+                        }
+                        // Note: ToggleHotkeys is handled above (line ~176)
                     }
                 }
                 Err(e) => {

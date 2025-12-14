@@ -908,6 +908,54 @@ async def ready():
     return await healthz()
 
 
+@app.get("/model")
+async def get_model():
+    """Get current Whisper model info."""
+    return {
+        "variant": _variant or "small",
+        "path": str(WHISPER_DIR) if WHISPER_DIR else None,
+        "loaded": whisper_model is not None,
+    }
+
+
+@app.post("/model/set")
+async def set_model(variant: str = Body(..., embed=True)):  # noqa: B008  # FastAPI pattern
+    """Switch Whisper model variant at runtime.
+
+    Supported variants: small, medium, large-v3, large-v3-turbo
+    """
+    global whisper_model, WHISPER_DIR, _variant
+
+    variant = (variant or "").strip().lower()
+    valid_variants = {"small", "medium", "large-v3", "large-v3-turbo"}
+    if variant not in valid_variants:
+        return {"ok": False, "error": f"Invalid variant. Must be one of: {valid_variants}"}
+
+    try:
+        from . import stt as stt_mod
+
+        # Try to find the model path
+        path = stt_mod.find_variant_path(variant)
+        if path is None:
+            return {
+                "ok": False,
+                "error": f"Model '{variant}' not found. Download it first via get_models.py",
+            }
+
+        # Update global state
+        whisper_model = None  # Force reload on next transcription
+        WHISPER_DIR = path
+        _variant = variant
+        os.environ["WHISPER_DIR"] = path
+        os.environ["WHISPER_VARIANT"] = variant
+
+        logger.info(f"Whisper model switched to: {variant} at {path}")
+        return {"ok": True, "variant": variant, "path": path}
+    except Exception as e:
+        logger.error(f"Failed to switch model: {e}")
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/tester")
 async def tester():
     """Serve the Voice & Chat Lab (spectrogram + chat)."""

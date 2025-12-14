@@ -2,7 +2,7 @@ name: Rust CI
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [main, master, develop, 'codescribe-*', 'feature/*']
     paths:
       - 'codescribe-rs/**'
       - '.github/workflows/rust.yml'
