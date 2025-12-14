@@ -223,12 +223,26 @@ fn ensure_models_exist() -> Result<()> {
 
 /// Find the whisper_server.py script
 fn find_whisper_server() -> Result<PathBuf> {
+    // Check environment variable override first
+    if let Ok(custom_path) = std::env::var("CODESCRIBE_PYTHON_DIR") {
+        let script_path = PathBuf::from(&custom_path).join("whisper_server.py");
+        if script_path.exists() {
+            debug!(
+                "Found whisper_server.py via CODESCRIBE_PYTHON_DIR: {}",
+                script_path.display()
+            );
+            return Ok(script_path);
+        }
+    }
+
     // Try relative to executable first
     let exe_path = std::env::current_exe()?;
     let exe_dir = exe_path.parent().unwrap_or(&exe_path);
 
     // Possible locations (in order of preference)
     let candidates = [
+        // .app bundle: Contents/MacOS/../Resources/python/whisper_server.py
+        exe_dir.join("../Resources/python/whisper_server.py"),
         // Development: relative to cargo project
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../whisper_server.py"),
         // Installed alongside binary

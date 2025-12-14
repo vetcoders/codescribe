@@ -12,11 +12,15 @@ if [[ -f "$ROOT_DIR/pyproject.toml" ]]; then
   if [[ -n "${VER_LINE:-}" ]]; then VERSION="$VER_LINE"; fi
 fi
 
-echo "[i] Building wrapper app at: $APP_DIR"
+echo "[i] Building CodeScribe.app with Rust frontend at: $APP_DIR"
 rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources/Repo"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+
+# Create bundle subdirectories
+ASSETS_DST="$APP_DIR/Contents/Resources/assets"
+PYTHON_DST="$APP_DIR/Contents/Resources/python"
 MODELS_DST="$APP_DIR/Contents/Resources/Models"
-mkdir -p "$MODELS_DST"
+mkdir -p "$ASSETS_DST" "$PYTHON_DST" "$MODELS_DST"
 
 bundle_whisper_model() {
   local variant="$1"
@@ -40,7 +44,7 @@ bundle_whisper_model() {
 
 BUNDLE_VARIANTS=(${BUNDLE_VARIANTS:-medium large-v3-turbo small-mlx small})
 
-# Info.plist (minimal)
+# Info.plist
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -52,7 +56,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleExecutable</key><string>codescribe</string>
+  <key>CFBundleExecutable</key><string>CodeScribe</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Needed to transcribe speech.</string>
@@ -62,22 +66,38 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Launcher executable
-cat > "$APP_DIR/Contents/MacOS/codescribe" <<'LAUNCH'
+# Build Rust binary first
+echo "[i] Building Rust binary..."
+cd "$ROOT_DIR/codescribe-rs"
+cargo build --release
+RUST_BIN="$ROOT_DIR/codescribe-rs/target/release/codescribe"
+
+if [[ ! -f "$RUST_BIN" ]]; then
+  echo "[!] ERROR: Rust binary not found at $RUST_BIN"
+  exit 1
+fi
+
+# Copy Rust binary to app bundle
+echo "[i] Copying Rust binary to app bundle..."
+cp "$RUST_BIN" "$APP_DIR/Contents/MacOS/CodeScribe"
+chmod +x "$APP_DIR/Contents/MacOS/CodeScribe"
+
+# Create launcher wrapper that sets up environment before running Rust binary
+cat > "$APP_DIR/Contents/MacOS/.launcher_env.sh" <<'LAUNCH'
 #!/bin/zsh
 set -euo pipefail
 APP_DIR="$(cd -- "$(dirname "$0")/.." && pwd)"
-REPO_DIR="$APP_DIR/Contents/Resources/Repo"
 LOG_DIR="$HOME/Library/Logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/CodeScribe.app.log"
 MODELS_DIR="$APP_DIR/Contents/Resources/Models"
-
-# Ensure the shared settings live outside the app bundle
-export CODESCRIBE_SETTINGS_PATH="$HOME/.CodeScribe/settings.json"
+ASSETS_DIR="$APP_DIR/Contents/Resources/assets"
 
 # Ensure uv and brew binaries are on PATH when launched from Finder
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Set assets path for bundled vocabulary files
+export CODESCRIBE_ASSETS_PATH="$ASSETS_DIR"
 
 # Prefer bundled Whisper models when present
 if [[ -z "${WHISPER_DIR:-}" ]]; then
@@ -99,13 +119,11 @@ if [[ -z "${WHISPER_DIR:-}" ]]; then
   fi
 fi
 
-export NOHUP_MODE=1
-cd "$REPO_DIR"
-# Run tray+backend in foreground so the app process stays alive
-# All output goes to the app log for debugging if needed
-exec ./scripts/quickstart_mac.sh --mode both --fg >> "$LOG_FILE" 2>&1
+# Run the Rust binary (it will start Python backend automatically)
+cd "$APP_DIR/Contents/MacOS"
+exec ./CodeScribe >> "$LOG_FILE" 2>&1
 LAUNCH
-chmod +x "$APP_DIR/Contents/MacOS/codescribe"
+chmod +x "$APP_DIR/Contents/MacOS/.launcher_env.sh"
 
 # Build a basic .icns from assets/icon.png (best-effort)
 ICON_SRC="$ROOT_DIR/assets/icon.png"
@@ -133,6 +151,14 @@ rsync -a --delete \
   --exclude 'logs/' --exclude 'packaging/dist/' --exclude 'packaging/build/' \
   --exclude 'packaging/dmg/' \
   "$ROOT_DIR/" "$APP_DIR/Contents/Resources/Repo/"
+
+# Bundle Python dependencies for the backend
+echo "[i] Bundling Python dependencies"
+if [[ -f "$ROOT_DIR/packaging/scripts/bundle_python.sh" ]]; then
+  "$ROOT_DIR/packaging/scripts/bundle_python.sh" "$ROOT_DIR" "$APP_DIR"
+else
+  echo "[!] Warning: bundle_python.sh not found. Skipping Python bundling."
+fi
 
 echo "[i] Bundling Whisper model(s) for offline start"
 BUNDLED_MODEL_OK=0
