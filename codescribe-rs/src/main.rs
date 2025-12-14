@@ -73,6 +73,9 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Longer delay to let backend fully initialize (MLX models take time to load)
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
     // Verify backend is healthy
     match client::check_health().await {
         Ok(true) => info!("Python backend health check passed"),
@@ -159,10 +162,11 @@ async fn main() -> Result<()> {
     });
 
     // Spawn blocking task to handle hotkey events (rx.recv() is blocking)
+    // Get runtime handle BEFORE spawning thread (must be in tokio context)
+    let rt = tokio::runtime::Handle::current();
     let controller_clone = Arc::clone(&controller);
     std::thread::spawn(move || {
         info!("Hotkey event loop started");
-        let rt = tokio::runtime::Handle::current();
         loop {
             // Receive hotkey event from channel (blocking)
             match rx.recv() {

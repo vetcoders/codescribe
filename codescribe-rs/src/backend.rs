@@ -29,6 +29,15 @@ impl BackendServer {
     pub fn start() -> Result<Self> {
         let port = DEFAULT_PORT;
 
+        // First check if a backend is already running
+        if Self::check_existing_backend(port) {
+            info!("Found existing backend on port {} - reusing it", port);
+            return Ok(Self {
+                process: None, // We don't own this process
+                port,
+            });
+        }
+
         // Find the whisper_server.py script
         let script_path = find_whisper_server()?;
         info!("Starting Python backend from: {}", script_path.display());
@@ -92,6 +101,28 @@ impl BackendServer {
     /// Get the server port
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Check if a backend is already running on the given port
+    fn check_existing_backend(port: u16) -> bool {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        let health_url = format!("http://127.0.0.1:{}/healthz", port);
+        debug!("Checking for existing backend at {}", health_url);
+
+        match client.get(&health_url).send() {
+            Ok(response) if response.status().is_success() => {
+                debug!("Existing backend found and healthy on port {}", port);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Stop the backend server

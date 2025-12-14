@@ -75,22 +75,44 @@ run:
 run-release:
 	cargo run --release
 
+# Daemon management (via wrapper script)
+start: install
+	./CodeScribe start
+
+stop:
+	./CodeScribe stop
+
+restart: install
+	./CodeScribe restart
+
+status:
+	./CodeScribe status
+
+logs:
+	./CodeScribe logs
+
+logs-follow:
+	./CodeScribe logs --follow
+
 # Help
 help:
 	@echo "CodeScribe Build System"
 	@echo ""
-	@echo "Usage:"
+	@echo "Build:"
 	@echo "  make build       - Build release binary"
-	@echo "  make build-debug - Build debug binary"
 	@echo "  make install     - Build & install to ~/.cargo/bin"
-	@echo "  make test        - Run tests"
-	@echo "  make check       - Check compilation"
-	@echo "  make fmt         - Format code"
-	@echo "  make clippy      - Run clippy (warnings = errors)"
 	@echo "  make lint        - Full lint (fmt check + clippy)"
+	@echo "  make test        - Run tests"
 	@echo "  make clean       - Clean build artifacts"
-	@echo "  make run         - Run debug build"
-	@echo "  make run-release - Run release build"
+	@echo ""
+	@echo "Run:"
+	@echo "  make start       - Start daemon (background)"
+	@echo "  make stop        - Stop daemon"
+	@echo "  make restart     - Restart daemon"
+	@echo "  make status      - Show status"
+	@echo "  make logs        - Show recent logs"
+	@echo "  make logs-follow - Follow live logs"
+	@echo "  make run         - Run in foreground (debug)"
 	@echo ""
 	@echo "Quick start:"
-	@echo "  make install     - Just works™"
+	@echo "  make start       - Just works™"

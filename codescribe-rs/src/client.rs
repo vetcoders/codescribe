@@ -71,35 +71,61 @@ fn get_client() -> &'static Client {
 
 /// Discover backend server by probing known ports
 ///
-/// Tries ports in order: 8237, 7237, 6237, 5237
+/// Tries ports in order: 8238, 8237, 7237, 6237, 5237
 /// Returns the first responding server URL or None
+///
+/// Retries each port up to 3 times with 200ms delay to handle race conditions
+/// where backend just started but isn't fully accepting connections yet.
 async fn discover_server() -> Option<String> {
     let client = get_client();
+    const RETRIES_PER_PORT: u32 = 3;
+    const RETRY_DELAY_MS: u64 = 200;
 
     for port in PROBE_PORTS {
-        let url = format!("http://127.0.0.1:{}/healthz", port);
-        debug!("Probing server at {}", url);
+        for attempt in 1..=RETRIES_PER_PORT {
+            let url = format!("http://127.0.0.1:{}/healthz", port);
+            debug!(
+                "Probing server at {} (attempt {}/{})",
+                url, attempt, RETRIES_PER_PORT
+            );
 
-        match client.get(&url).send().await {
-            Ok(response) if response.status().is_success() => {
-                if let Ok(health) = response.json::<HealthResponse>().await {
-                    if health.ok {
-                        let base_url = format!("http://127.0.0.1:{}", port);
-                        info!("Discovered backend server at {}", base_url);
-                        return Some(base_url);
+            match client.get(&url).send().await {
+                Ok(response) if response.status().is_success() => {
+                    if let Ok(health) = response.json::<HealthResponse>().await {
+                        if health.ok {
+                            let base_url = format!("http://127.0.0.1:{}", port);
+                            info!(
+                                "Discovered backend server at {} (attempt {})",
+                                base_url, attempt
+                            );
+                            return Some(base_url);
+                        }
                     }
                 }
+                Ok(response) => {
+                    debug!(
+                        "Port {} responded with status {} (attempt {})",
+                        port,
+                        response.status(),
+                        attempt
+                    );
+                }
+                Err(e) => {
+                    debug!("Port {} not responding: {} (attempt {})", port, e, attempt);
+                }
             }
-            Ok(response) => {
-                debug!("Port {} responded with status {}", port, response.status());
-            }
-            Err(e) => {
-                debug!("Port {} not responding: {}", port, e);
+
+            // Retry with delay (except on last attempt)
+            if attempt < RETRIES_PER_PORT {
+                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
             }
         }
     }
 
-    warn!("No backend server found on any probe port");
+    warn!(
+        "No backend server found on any probe port after {} retries per port",
+        RETRIES_PER_PORT
+    );
     None
 }
 

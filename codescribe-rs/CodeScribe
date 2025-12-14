@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# CodeScribe — friendly launcher
+# Manages the Rust tray app + Python backend as daemon
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
+
+LOG_DIR="$REPO_ROOT/logs"
+LOG_FILE="$LOG_DIR/codescribe.log"
+PID_FILE="$LOG_DIR/codescribe.pid"
+BINARY="codescribe"
+
+# Check if binary is in PATH or use cargo-installed location
+if ! command -v "$BINARY" &>/dev/null; then
+    BINARY="$HOME/.cargo/bin/codescribe"
+fi
+
+usage() {
+    cat <<'EOF'
+CodeScribe — Speech-to-text tray app for macOS
+
+Usage:
+  CodeScribe [start]              Start in background (daemon mode)
+  CodeScribe stop                 Stop running instance
+  CodeScribe restart              Stop, then start again
+  CodeScribe status               Show running status
+  CodeScribe logs [--follow|-f]   Show recent logs (tail -n 100 / -f)
+  CodeScribe foreground           Run in foreground (terminal output)
+  CodeScribe help                 Show this help
+
+Examples:
+  CodeScribe                      # Start daemon, logs to file
+  CodeScribe logs -f              # Follow live logs
+  CodeScribe stop                 # Stop daemon
+  CodeScribe foreground           # Debug mode with terminal output
+EOF
+}
+
+ensure_dirs() {
+    mkdir -p "$LOG_DIR"
+}
+
+get_pid() {
+    if [[ -f "$PID_FILE" ]]; then
+        cat "$PID_FILE" 2>/dev/null || echo ""
+    else
+        echo ""
+    fi
+}
+
+is_running() {
+    local pid
+    pid=$(get_pid)
+    if [[ -n "$pid" ]] && ps -p "$pid" &>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+start_cmd() {
+    if is_running; then
+        local pid
+        pid=$(get_pid)
+        echo "CodeScribe already running (PID $pid)"
+        echo "Use 'CodeScribe logs -f' to follow logs"
+        exit 0
+    fi
+
+    echo "Starting CodeScribe..."
+
+    # Rotate log if > 10MB
+    if [[ -f "$LOG_FILE" ]] && [[ $(stat -f%z "$LOG_FILE" 2>/dev/null || echo 0) -gt 10485760 ]]; then
+        mv "$LOG_FILE" "$LOG_FILE.old"
+    fi
+
+    # Start daemon with nohup
+    nohup "$BINARY" >> "$LOG_FILE" 2>&1 &
+    local pid=$!
+    echo "$pid" > "$PID_FILE"
+
+    # Wait a moment and check if it started
+    sleep 1
+    if ps -p "$pid" &>/dev/null; then
+        echo "CodeScribe started (PID $pid)"
+        echo "Logs: $LOG_FILE"
+        echo "Use 'CodeScribe logs -f' to follow"
+    else
+        echo "Failed to start CodeScribe. Check logs:"
+        tail -20 "$LOG_FILE"
+        rm -f "$PID_FILE"
+        exit 1
+    fi
+}
+
+stop_cmd() {
+    local pid
+    pid=$(get_pid)
+
+    if [[ -z "$pid" ]]; then
+        echo "CodeScribe not running (no PID file)"
+        # Also kill any orphaned processes
+        pkill -f "codescribe" 2>/dev/null || true
+        pkill -f "whisper_server" 2>/dev/null || true
+        return 0
+    fi
+
+    if ! ps -p "$pid" &>/dev/null; then
+        echo "CodeScribe not running (stale PID $pid)"
+        rm -f "$PID_FILE"
+        # Clean up orphaned processes
+        pkill -f "codescribe" 2>/dev/null || true
+        pkill -f "whisper_server" 2>/dev/null || true
+        return 0
+    fi
+
+    echo "Stopping CodeScribe (PID $pid)..."
+    kill "$pid" 2>/dev/null || true
+
+    # Wait for graceful shutdown
+    for i in {1..10}; do
+        if ! ps -p "$pid" &>/dev/null; then
+            break
+        fi
+        sleep 0.5
+    done
+
+    # Force kill if still running
+    if ps -p "$pid" &>/dev/null; then
+        echo "Force killing..."
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+
+    rm -f "$PID_FILE"
+
+    # Also kill Python backend
+    pkill -f "whisper_server" 2>/dev/null || true
+
+    echo "CodeScribe stopped"
+}
+
+restart_cmd() {
+    stop_cmd
+    sleep 1
+    start_cmd
+}
+
+status_cmd() {
+    local pid
+    pid=$(get_pid)
+
+    if is_running; then
+        echo "CodeScribe: running (PID $pid)"
+
+        # Check backend
+        if pgrep -f "whisper_server" &>/dev/null; then
+            local backend_pid
+            backend_pid=$(pgrep -f "whisper_server" | head -1)
+            echo "Backend: running (PID $backend_pid)"
+        else
+            echo "Backend: not running"
+        fi
+
+        echo ""
+        echo "Log file: $LOG_FILE"
+        echo "Last log entry:"
+        tail -1 "$LOG_FILE" 2>/dev/null || echo "(no logs)"
+    else
+        echo "CodeScribe: not running"
+        if [[ -n "$pid" ]]; then
+            echo "(stale PID file: $pid)"
+        fi
+    fi
+}
+
+logs_cmd() {
+    local follow=false
+    for arg in "$@"; do
+        case "$arg" in
+            --follow|-f) follow=true ;;
+        esac
+    done
+
+    if [[ ! -f "$LOG_FILE" ]]; then
+        echo "No log file yet: $LOG_FILE"
+        exit 0
+    fi
+
+    if $follow; then
+        echo "Following $LOG_FILE (Ctrl+C to stop)"
+        tail -f "$LOG_FILE"
+    else
+        tail -100 "$LOG_FILE"
+    fi
+}
+
+foreground_cmd() {
+    if is_running; then
+        local pid
+        pid=$(get_pid)
+        echo "CodeScribe already running in background (PID $pid)"
+        echo "Stop it first with: CodeScribe stop"
+        exit 1
+    fi
+
+    echo "Running CodeScribe in foreground (Ctrl+C to stop)..."
+    exec "$BINARY"
+}
+
+# Main
+ensure_dirs
+
+cmd=${1:-start}
+shift || true
+
+case "$cmd" in
+    start)
+        start_cmd
+        ;;
+    stop)
+        stop_cmd
+        ;;
+    restart)
+        restart_cmd
+        ;;
+    status)
+        status_cmd
+        ;;
+    logs)
+        logs_cmd "$@"
+        ;;
+    foreground|fg)
+        foreground_cmd
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Unknown command: $cmd"
+        usage
+        exit 1
+        ;;
+esac
