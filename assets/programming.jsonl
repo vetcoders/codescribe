@@ -130,3 +130,17 @@
 {"term": "JWT", "mispronunciations": ["JVT", "dżejwiti", "jwti"], "category": "auth"}
 {"term": "guardrails", "mispronunciations": ["guardialis", "guardrejs", "gwardrejls"], "category": "ai"}
 {"term": "mock", "mispronunciations": ["MOC", "moc", "mok"], "category": "testing"}
+{"term": "truncation", "mispronunciations": ["tronkation", "trunkation", "trankation", "trankejszyn"], "category": "tech"}
+{"term": "badge", "mispronunciations": ["badz", "badzik", "bedż", "bedże"], "category": "ui"}
+{"term": "stderr", "mispronunciations": ["std err", "standard error", "es te de er", "es ti di er", "Stdr", "stdr", "st de er"], "category": "cmd"}
+{"term": "stdout", "mispronunciations": ["std out", "standard out", "es te de ałt", "es ti di ałt"], "category": "cmd"}
+{"term": "race condition", "mispronunciations": ["rejs kondyszyn", "race kondition", "rejs condition"], "category": "concurrency"}
+{"term": "GitHub Actions", "mispronunciations": ["github actions", "git hub actions", "github akszns"], "category": "ci"}
+{"term": "pyproject.toml", "mispronunciations": ["py project toml", "pyprojekt toml", "pi projekt tomel", "PyProject. com", "pyproject com", "pyproject tomel"], "category": "python"}
+{"term": "uv add", "mispronunciations": ["uw ad", "juwi ad", "uv ed", "uvaad", "uvad"], "category": "python"}
+{"term": "JSON", "mispronunciations": ["jasą", "jasa", "dżejson", "jason", "jejson"], "category": "tech"}
+{"term": "requests", "mispronunciations": ["rekresów", "rekresy", "rekłesty", "rikłests"], "category": "python"}
+{"term": "HTTP", "mispronunciations": ["Htt. pl", "htt pl", "h t t p", "ejcz ti ti pi"], "category": "tech"}
+{"term": "bug", "mispronunciations": ["bułk", "bak", "bag"], "category": "tech"}
+{"term": "push", "mispronunciations": ["puż", "pusz", "pash"], "category": "git"}
+{"term": "feature", "mispronunciations": ["fetchu", "ficzer", "feczu", "fitur"], "category": "git"}

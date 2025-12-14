@@ -76,6 +76,8 @@ core-foundation = "0.10"
 cocoa = "0.25"
 core-graphics = "0.23"
 objc = "0.2"
+# Grand Central Dispatch for main thread operations
+dispatch = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

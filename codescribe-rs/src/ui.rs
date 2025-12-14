@@ -13,6 +13,7 @@ use cocoa::base::{id, nil, NO, YES};
 use cocoa::foundation::{NSPoint, NSRect, NSSize};
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
+use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use std::sync::{Arc, Mutex};
@@ -413,8 +414,8 @@ pub fn show_hold_badge() {
     show_hold_badge_with_config(HoldBadgeConfig::default());
 }
 
-/// Show the hold badge with custom configuration
-pub fn show_hold_badge_with_config(config: HoldBadgeConfig) {
+/// Internal implementation that must run on the main thread
+fn show_hold_badge_impl(config: HoldBadgeConfig) {
     unsafe {
         let mut state = BADGE_STATE.lock().unwrap();
 
@@ -425,7 +426,7 @@ pub fn show_hold_badge_with_config(config: HoldBadgeConfig) {
             state.window = None;
         }
 
-        // Create new badge window
+        // Create new badge window (MUST be on main thread)
         let window = create_badge_window(&config);
         let _: () = msg_send![window, orderFrontRegardless];
 
@@ -446,26 +447,45 @@ pub fn show_hold_badge_with_config(config: HoldBadgeConfig) {
                 }
 
                 if let Some(window_ptr) = state.window {
-                    let window = window_ptr as id;
-                    update_badge_position(window, &state.config);
+                    // Position updates also need main thread
+                    Queue::main().exec_async(move || {
+                        let window = window_ptr as id;
+                        let state = BADGE_STATE.lock().unwrap();
+                        update_badge_position(window, &state.config);
+                    });
                 }
             }
         });
     }
 }
 
+/// Show the hold badge with custom configuration
+/// This dispatches to the main thread for thread safety with NSWindow
+pub fn show_hold_badge_with_config(config: HoldBadgeConfig) {
+    // Dispatch to main thread - NSWindow MUST be created on main thread
+    Queue::main().exec_async(move || {
+        show_hold_badge_impl(config);
+    });
+}
+
 /// Hide the hold badge and stop position tracking
+/// This dispatches to the main thread for thread safety with NSWindow
 pub fn hide_hold_badge() {
-    unsafe {
+    // Stop the timer first (can be done on any thread)
+    {
         let mut state = BADGE_STATE.lock().unwrap();
         state.timer_running = false;
+    }
 
+    // Dispatch window close to main thread
+    Queue::main().exec_async(|| unsafe {
+        let mut state = BADGE_STATE.lock().unwrap();
         if let Some(window_ptr) = state.window {
             let window = window_ptr as id;
             let _: () = msg_send![window, close];
             state.window = None;
         }
-    }
+    });
 }
 
 #[cfg(test)]

@@ -460,6 +460,7 @@ dependencies = [
  "cpal",
  "crossbeam-channel",
  "directories",
+ "dispatch",
  "dotenvy",
  "hound",
  "image",

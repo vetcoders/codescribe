@@ -51,3 +51,4 @@ CLAUDE.md
 /.loctree
 /.ai-agents
 /codescribe-rs/.loctree
+.output.txt

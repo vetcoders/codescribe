@@ -225,20 +225,20 @@ async fn main() -> Result<()> {
             match rx.recv() {
                 Ok(raw_event) => {
                     info!("Received hotkey event: {:?}", raw_event);
-                    // Convert hotkeys::HotkeyEvent to controller::HotkeyEvent
+                    // Convert hotkeys::HotkeyEvent to controller::HotkeyInput
                     let controller_event = match raw_event {
                         hotkeys::HotkeyEvent::Hold { action, assistive } => {
                             let controller_action = match action {
                                 hotkeys::HoldAction::Down => controller::HotkeyAction::Down,
                                 hotkeys::HoldAction::Up => controller::HotkeyAction::Up,
                             };
-                            controller::HotkeyEvent {
+                            controller::HotkeyInput {
                                 key_type: controller::HotkeyType::Hold,
                                 action: controller_action,
                                 assistive,
                             }
                         }
-                        hotkeys::HotkeyEvent::Toggle => controller::HotkeyEvent {
+                        hotkeys::HotkeyEvent::Toggle => controller::HotkeyInput {
                             key_type: controller::HotkeyType::Toggle,
                             action: controller::HotkeyAction::Press,
                             assistive: false,

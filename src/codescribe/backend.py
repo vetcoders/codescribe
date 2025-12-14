@@ -77,6 +77,7 @@ try:  # mlx-audio >= 0.2.x sometimes does not expose `load`
 except Exception:  # pragma: no cover
     load_audio = None  # we'll fallback to WAV-only parsing
 
+from .formatting import apply_light_plus
 from .formatting.vocabulary import (
     append_lexicon_entries,
     lexicon_path_for_topic,
@@ -691,6 +692,9 @@ async def transcribe_endpoint(  # noqa: B008  # FastAPI pattern
         if isinstance(transcription, dict):
             detected = transcription.get("language", "unknown")
             logger.info(f"Whisper detected language: {detected}")
+
+        # Apply Light+ formatting (vocabulary fixes, punctuation, capitalization)
+        text = apply_light_plus(text)
 
         return {"text": text}
     except Exception as e:

@@ -31,6 +31,7 @@ except Exception:  # pragma: no cover
     whisper = None  # type: ignore
     load_whisper = None  # type: ignore
 
+from .formatting import apply_light_plus
 from .path_utils import normalize_model_path, repo_root
 
 logger = logging.getLogger("whisper-server")
@@ -234,6 +235,8 @@ async def transcribe(
         if not res or not isinstance(res, dict) or ("text" not in res):
             raise ValueError("Whisper transcription returned empty result")
         text = (res.get("text") or "").strip()
+        # Apply Light+ formatting (vocabulary fixes, punctuation, capitalization)
+        text = apply_light_plus(text)
         logger.info(f"Transcription result: {len(text)} chars")
         return {"text": text}
     except Exception as e:

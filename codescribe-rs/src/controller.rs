@@ -76,7 +76,7 @@ pub enum HotkeyAction {
 
 /// Complete hotkey event with metadata
 #[derive(Debug, Clone)]
-pub struct HotkeyEvent {
+pub struct HotkeyInput {
     pub key_type: HotkeyType,
     pub action: HotkeyAction,
     pub assistive: bool,
@@ -177,7 +177,7 @@ impl RecordingController {
     ///
     /// This method implements the state machine logic and delegates to
     /// appropriate handlers based on current state and event type.
-    pub async fn handle_hotkey_event(&self, event: HotkeyEvent) -> Result<()> {
+    pub async fn handle_hotkey_event(&self, event: HotkeyInput) -> Result<()> {
         let current_state = self.current_state().await;
 
         debug!(
@@ -204,7 +204,7 @@ impl RecordingController {
     }
 
     /// Handle hold-type hotkey events
-    async fn handle_hold_event(&self, event: HotkeyEvent) -> Result<()> {
+    async fn handle_hold_event(&self, event: HotkeyInput) -> Result<()> {
         match event.action {
             HotkeyAction::Down => {
                 let current_state = self.current_state().await;
@@ -230,7 +230,7 @@ impl RecordingController {
     }
 
     /// Handle toggle-type hotkey events
-    async fn handle_toggle_event(&self, event: HotkeyEvent) -> Result<()> {
+    async fn handle_toggle_event(&self, event: HotkeyInput) -> Result<()> {
         if event.action != HotkeyAction::Press {
             return Ok(());
         }
@@ -523,7 +523,7 @@ mod tests {
         // Override hold delay for faster test
         controller.config.write().await.hold_start_delay_ms = 100;
 
-        let event = HotkeyEvent {
+        let event = HotkeyInput {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down,
             assistive: false,
@@ -549,7 +549,7 @@ mod tests {
         controller.config.write().await.hold_start_delay_ms = 200;
 
         // Press down
-        let down_event = HotkeyEvent {
+        let down_event = HotkeyInput {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down,
             assistive: false,
@@ -558,7 +558,7 @@ mod tests {
 
         // Release before delay elapses
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let up_event = HotkeyEvent {
+        let up_event = HotkeyInput {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Up,
             assistive: false,
@@ -577,7 +577,7 @@ mod tests {
     async fn test_toggle_starts_immediately() {
         let controller = RecordingController::new();
 
-        let event = HotkeyEvent {
+        let event = HotkeyInput {
             key_type: HotkeyType::Toggle,
             action: HotkeyAction::Press,
             assistive: true,
@@ -596,7 +596,7 @@ mod tests {
         // Manually set to BUSY
         *controller.state.write().await = State::Busy;
 
-        let event = HotkeyEvent {
+        let event = HotkeyInput {
             key_type: HotkeyType::Toggle,
             action: HotkeyAction::Press,
             assistive: false,
