@@ -45,12 +45,27 @@ impl BackendServer {
         let script_path = find_whisper_server()?;
         info!("Starting Python backend from: {}", script_path.display());
 
+        // Determine the working directory for uv (needs pyproject.toml)
+        // If CODESCRIBE_PYTHON_DIR is set, use it as the working directory
+        // Otherwise, use the directory containing whisper_server.py
+        let working_dir = if let Ok(python_dir) = std::env::var("CODESCRIBE_PYTHON_DIR") {
+            PathBuf::from(python_dir)
+        } else {
+            script_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::env::current_dir().unwrap())
+        };
+
+        debug!("Using working directory: {}", working_dir.display());
+
         // Spawn the Python process
         // Use whisper-small by default for faster startup and better quality with anti-hallucination filters
         let whisper_variant =
             std::env::var("WHISPER_VARIANT").unwrap_or_else(|_| "small".to_string());
         let process = Command::new("uv")
             .args(["run", "python", script_path.to_str().unwrap()])
+            .current_dir(&working_dir)
             .env("PORT", port.to_string())
             .env("HOST", "127.0.0.1")
             .env("WHISPER_VARIANT", &whisper_variant)
@@ -174,7 +189,22 @@ impl Drop for BackendServer {
 
 /// Ensure whisper models are downloaded
 fn ensure_models_exist() -> Result<()> {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    // Determine repo root (development mode) or data directory (bundled mode)
+    let exe_path = std::env::current_exe()?;
+    let exe_dir = exe_path.parent().unwrap_or(&exe_path);
+
+    // Check if running from .app bundle
+    let is_bundled = exe_dir
+        .join("../Resources/python/whisper_server.py")
+        .exists();
+
+    let repo_root = if is_bundled {
+        // In bundled mode, use user data directory
+        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".CodeScribe")
+    } else {
+        // Development mode
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+    };
 
     // Use WHISPER_VARIANT env var, default to "small" for faster startup
     let variant = std::env::var("WHISPER_VARIANT").unwrap_or_else(|_| "small".to_string());
@@ -188,11 +218,17 @@ fn ensure_models_exist() -> Result<()> {
     info!("Whisper model '{}' not found, downloading...", variant);
     info!("This may take a few minutes on first run.");
 
-    // Run the download script
-    let script_path = repo_root.join("scripts/get_models.py");
+    // Find the download script
+    let script_path = if is_bundled {
+        exe_dir.join("../Resources/python/scripts/get_models.py")
+    } else {
+        repo_root.join("scripts/get_models.py")
+    };
+
     if !script_path.exists() {
         return Err(anyhow::anyhow!(
-            "Model download script not found. Please run from the CodeScribe directory."
+            "Model download script not found at {}. Please run from the CodeScribe directory or reinstall the app.",
+            script_path.display()
         ));
     }
 

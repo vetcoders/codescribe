@@ -1,4 +1,24 @@
 #!/bin/zsh
+# Build CodeScribe.app bundle with Rust frontend + Python backend
+#
+# Architecture:
+#   - Rust binary (codescribe) as the main executable
+#   - Rust binary starts Python backend (whisper_server.py) via uv
+#   - Python backend uses FastAPI + MLX Whisper for transcription
+#
+# Bundle structure:
+#   CodeScribe.app/
+#   ├── Contents/
+#   │   ├── Info.plist
+#   │   ├── MacOS/
+#   │   │   ├── CodeScribe (shell wrapper)
+#   │   │   └── CodeScribe.bin (Rust binary)
+#   │   └── Resources/
+#   │       ├── AppIcon.icns
+#   │       ├── assets/ (vocabulary JSONL files)
+#   │       ├── python/ (whisper_server.py + codescribe package + pyproject.toml)
+#   │       └── Models/ (optional bundled Whisper models)
+
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname "$0")/../.." && pwd)"
@@ -82,8 +102,16 @@ echo "[i] Copying Rust binary to app bundle..."
 cp "$RUST_BIN" "$APP_DIR/Contents/MacOS/CodeScribe"
 chmod +x "$APP_DIR/Contents/MacOS/CodeScribe"
 
+# Note: The actual launcher is now the Rust binary itself (CodeScribe)
+# But we need a wrapper script for Finder to properly set environment variables
+# macOS .app bundles execute the CFBundleExecutable directly, but we can't set env vars in Info.plist
+# So we create a shell wrapper as the executable and have it call the real Rust binary
+
+# Rename the Rust binary to the actual executable
+mv "$APP_DIR/Contents/MacOS/CodeScribe" "$APP_DIR/Contents/MacOS/CodeScribe.bin"
+
 # Create launcher wrapper that sets up environment before running Rust binary
-cat > "$APP_DIR/Contents/MacOS/.launcher_env.sh" <<'LAUNCH'
+cat > "$APP_DIR/Contents/MacOS/CodeScribe" <<'LAUNCH'
 #!/bin/zsh
 set -euo pipefail
 APP_DIR="$(cd -- "$(dirname "$0")/.." && pwd)"
@@ -92,12 +120,14 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/CodeScribe.app.log"
 MODELS_DIR="$APP_DIR/Contents/Resources/Models"
 ASSETS_DIR="$APP_DIR/Contents/Resources/assets"
+PYTHON_DIR="$APP_DIR/Contents/Resources/python"
 
 # Ensure uv and brew binaries are on PATH when launched from Finder
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-# Set assets path for bundled vocabulary files
+# Set paths for bundled resources
 export CODESCRIBE_ASSETS_PATH="$ASSETS_DIR"
+export CODESCRIBE_PYTHON_DIR="$PYTHON_DIR"
 
 # Prefer bundled Whisper models when present
 if [[ -z "${WHISPER_DIR:-}" ]]; then
@@ -119,22 +149,16 @@ if [[ -z "${WHISPER_DIR:-}" ]]; then
   fi
 fi
 
-# Run the Rust binary (it will start Python backend automatically)
+# Run the Rust binary (it will start Python backend automatically via uv)
 cd "$APP_DIR/Contents/MacOS"
-exec ./CodeScribe >> "$LOG_FILE" 2>&1
+exec ./CodeScribe.bin >> "$LOG_FILE" 2>&1
 LAUNCH
-chmod +x "$APP_DIR/Contents/MacOS/.launcher_env.sh"
+chmod +x "$APP_DIR/Contents/MacOS/CodeScribe"
 
-# Build a basic .icns from assets/icon.png (best-effort)
-ICON_SRC="$ROOT_DIR/assets/icon.png"
-if [[ ! -f "$ICON_SRC" ]]; then
-  ICON_SRC="$ROOT_DIR/src/codescribe/assets/icon.png"
-fi
-if [[ ! -f "$ICON_SRC" ]]; then
-  ICON_SRC="$ROOT_DIR/Resources/assets/icon.png"
-fi
+# Build app icon from logo.png
+ICON_SRC="$ROOT_DIR/assets/logo.png"
 if [[ -f "$ICON_SRC" ]]; then
-  echo "[i] Generating AppIcon.icns from assets/icon.png"
+  echo "[i] Generating AppIcon.icns from assets/logo.png"
   ICONSET_DIR="$(mktemp -d)/AppIcon.iconset"
   mkdir -p "$ICONSET_DIR"
   for sz in 16 32 64 128 256 512; do
@@ -142,23 +166,36 @@ if [[ -f "$ICON_SRC" ]]; then
     /usr/bin/sips -z $((sz*2)) $((sz*2)) "$ICON_SRC" --out "$ICONSET_DIR/icon_${sz}x${sz}@2x.png" >/dev/null 2>&1 || true
   done
   /usr/bin/iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns" || true
-fi
-
-# Copy repo (exclude heavy/irrelevant dirs)
-echo "[i] Copying repo into app Resources (trimmed)"
-rsync -a --delete \
-  --exclude '.git/' --exclude '.venv/' --exclude 'models/' --exclude 'outputs/' \
-  --exclude 'logs/' --exclude 'packaging/dist/' --exclude 'packaging/build/' \
-  --exclude 'packaging/dmg/' \
-  "$ROOT_DIR/" "$APP_DIR/Contents/Resources/Repo/"
-
-# Bundle Python dependencies for the backend
-echo "[i] Bundling Python dependencies"
-if [[ -f "$ROOT_DIR/packaging/scripts/bundle_python.sh" ]]; then
-  "$ROOT_DIR/packaging/scripts/bundle_python.sh" "$ROOT_DIR" "$APP_DIR"
 else
-  echo "[!] Warning: bundle_python.sh not found. Skipping Python bundling."
+  echo "[!] Warning: logo.png not found at $ICON_SRC"
 fi
+
+# Copy vocabulary assets
+echo "[i] Copying vocabulary assets..."
+if [[ -d "$ROOT_DIR/assets" ]]; then
+  cp "$ROOT_DIR/assets/"*.jsonl "$ASSETS_DST/" 2>/dev/null || echo "[!] Warning: No JSONL files found in assets/"
+else
+  echo "[!] Warning: Assets directory not found"
+fi
+
+# Copy Python backend files (whisper_server + codescribe package)
+echo "[i] Copying Python backend files..."
+cp "$ROOT_DIR/whisper_server.py" "$PYTHON_DST/" || echo "[!] Warning: whisper_server.py not found"
+
+# Copy the entire codescribe package
+if [[ -d "$ROOT_DIR/src/codescribe" ]]; then
+  echo "[i] Copying codescribe package..."
+  mkdir -p "$PYTHON_DST/src"
+  rsync -a "$ROOT_DIR/src/codescribe" "$PYTHON_DST/src/" --exclude '__pycache__' --exclude '*.pyc'
+else
+  echo "[!] Warning: codescribe package not found at $ROOT_DIR/src/codescribe"
+fi
+
+# Copy Python project files for dependency management
+echo "[i] Copying Python project configuration..."
+cp "$ROOT_DIR/pyproject.toml" "$PYTHON_DST/" 2>/dev/null || echo "[!] Warning: pyproject.toml not found"
+cp "$ROOT_DIR/uv.lock" "$PYTHON_DST/" 2>/dev/null || true
+cp "$ROOT_DIR/README.md" "$PYTHON_DST/" 2>/dev/null || true
 
 echo "[i] Bundling Whisper model(s) for offline start"
 BUNDLED_MODEL_OK=0

@@ -48,14 +48,58 @@ async fn main() -> Result<()> {
     } else {
         Level::INFO
     };
-    // Disable ANSI colors when not a TTY (daemon mode)
-    let use_ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
-    FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .with_target(false)
-        .with_ansi(use_ansi)
-        .compact()
-        .init();
+
+    // Check if we should log to file (when launched from Finder in .app bundle)
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let exe_path = std::env::current_exe().unwrap_or_default();
+    let is_bundled = exe_path
+        .to_str()
+        .map(|s| s.contains("/CodeScribe.app/"))
+        .unwrap_or(false);
+
+    // When launched from .app bundle without TTY, set up file logging
+    // Otherwise use normal console logging
+    if !is_tty && is_bundled {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::path::PathBuf;
+
+        let log_dir = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+            .join("Library/Logs");
+        std::fs::create_dir_all(&log_dir).ok();
+        let log_path = log_dir.join("CodeScribe.log");
+
+        // Note: We use eprintln for logging setup because logger isn't ready yet
+        // The actual logs will go to the file after init()
+        eprintln!("[CodeScribe] Logging to: {}", log_path.display());
+
+        // Create/append to log file and write startup marker
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = writeln!(
+                file,
+                "\n[{}] CodeScribe starting (from bundle)",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
+        }
+
+        // Note: File logging with tracing requires the tracing-appender crate
+        // For now, we just use stderr which will be captured by macOS logging
+        // Users can view logs with: log stream --predicate 'process == "codescribe"'
+        FmtSubscriber::builder()
+            .with_max_level(log_level)
+            .with_target(false)
+            .with_ansi(false)
+            .compact()
+            .init();
+    } else {
+        // Normal console logging (development mode)
+        FmtSubscriber::builder()
+            .with_max_level(log_level)
+            .with_target(false)
+            .with_ansi(is_tty)
+            .compact()
+            .init();
+    }
 
     info!("CodeScribe starting...");
 

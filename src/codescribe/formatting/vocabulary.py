@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -27,10 +28,31 @@ _MAX_VARIANTS_PER_TERM = 10
 
 
 def _asset_roots() -> list[Path]:
-    return [
-        repo_root() / "src" / "codescribe" / "assets",
-        repo_root() / "assets",
-    ]
+    """Return asset directory candidates (custom env var, bundled, development)."""
+    roots = []
+
+    # 1. Check environment variable override
+    if custom := os.environ.get("CODESCRIBE_ASSETS_DIR"):
+        roots.append(Path(custom).expanduser())
+
+    # 2. Check if running from bundled app (../Resources/python/assets)
+    try:
+        exe_dir = Path(__file__).resolve().parent
+        bundled_assets = exe_dir.parent / "assets"
+        if bundled_assets.exists():
+            roots.append(bundled_assets)
+    except Exception:
+        pass
+
+    # 3. Development mode paths
+    roots.extend(
+        [
+            repo_root() / "src" / "codescribe" / "assets",
+            repo_root() / "assets",
+        ]
+    )
+
+    return roots
 
 
 def sanitize_topic(topic: str | None) -> str:
