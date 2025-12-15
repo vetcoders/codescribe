@@ -7,6 +7,8 @@
 
 // Allow Apple-style constant naming (kAX* prefixes) for Accessibility API
 #![allow(non_upper_case_globals)]
+// Allow deprecated cocoa crate until migration to objc2 (tracked separately)
+#![allow(deprecated)]
 
 use cocoa::appkit::{NSBackingStoreType, NSColor, NSWindowCollectionBehavior, NSWindowStyleMask};
 use cocoa::base::{id, nil, NO, YES};

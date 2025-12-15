@@ -22,8 +22,8 @@ use tracing::{debug, info, warn};
 static SERVER_URL: OnceLock<String> = OnceLock::new();
 
 /// Ports to probe for backend server (in order of preference)
-/// 8238 is the default Python whisper_server port
-const PROBE_PORTS: &[u16] = &[8238, 8237, 7237, 6237, 5237];
+/// 8237 is the default Python backend port
+const PROBE_PORTS: &[u16] = &[8237, 8238, 7237, 6237, 5237];
 
 // Note: Retry constants and format_text moved to ai_formatting.rs module
 

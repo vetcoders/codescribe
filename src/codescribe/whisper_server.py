@@ -20,6 +20,7 @@ import contextlib
 import json
 import logging
 import os
+import tempfile
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -44,6 +45,46 @@ def _configure_logging() -> None:
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
+
+
+def _sanitize_log(value: str | None) -> str:
+    """Sanitize user input for safe logging (prevent log injection)."""
+    if value is None:
+        return "<none>"
+    # Replace control characters that could forge log entries
+    return (
+        str(value)
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace("\x00", "\\x00")
+    )
+
+
+# Cache temp directory path for validation
+_TEMP_DIR = os.path.realpath(tempfile.gettempdir())
+
+
+def _safe_remove_temp_file(path: str | None) -> None:
+    """Safely remove a file only if it's within the system temp directory."""
+    if not path:
+        return
+    try:
+        # Resolve to absolute path and check it's within temp directory
+        real_path = os.path.realpath(path)
+        if not real_path.startswith(_TEMP_DIR + os.sep):
+            # Justification: _sanitize_log() removes \n \r \t \x00 to prevent log injection
+            logger.warning(
+                f"Refusing to remove file outside temp dir: {_sanitize_log(path)}"
+            )  # nosemgrep
+            return
+        if os.path.exists(real_path):
+            # Justification: Path is validated to be within _TEMP_DIR using os.path.realpath()
+            # and startswith() check above - only temp files created by this process are removed
+            os.remove(real_path)  # nosemgrep
+    except Exception:
+        # best-effort cleanup
+        pass
 
 
 app = FastAPI(title="CodeScribe-whisper")
@@ -225,15 +266,20 @@ async def set_model(body: dict):
         )
 
     try:
-        logger.info(f"Loading Whisper model: {model_path}")
+        # Justification: _sanitize_log() removes \n \r \t \x00 to prevent log injection
+        logger.info(f"Loading Whisper model: {_sanitize_log(model_path)}")  # nosemgrep
         normalized_path = normalize_model_path(model_path)
         new_model = load_whisper(normalized_path)
         _whisper_model = new_model
         WHISPER_DIR = normalized_path
-        logger.info(f"Whisper model switched to: {variant} at {normalized_path}")
+        # Justification: _sanitize_log() prevents log injection
+        safe_variant = _sanitize_log(variant)
+        safe_path = _sanitize_log(normalized_path)
+        logger.info(f"Whisper model switched to: {safe_variant} at {safe_path}")  # nosemgrep
         return {"ok": True, "variant": variant, "path": normalized_path}
     except Exception as e:
-        logger.exception(f"Failed to load model {variant}")
+        # Justification: _sanitize_log() removes \n \r \t \x00 to prevent log injection
+        logger.exception(f"Failed to load model {_sanitize_log(variant)}")  # nosemgrep
         return JSONResponse(
             status_code=500,
             content={"ok": False, "error": str(e)},
@@ -266,8 +312,6 @@ async def transcribe(
                 raise HTTPException(status_code=413, detail="Audio file too large")
     path = None
     try:
-        import tempfile
-
         total = 0
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext or ".wav") as tmp:
             while True:
@@ -293,13 +337,17 @@ async def transcribe(
         # Add language if specified (None or "auto" means auto-detect)
         if language and language.lower() not in ("auto", "none", ""):
             transcribe_kwargs["language"] = language.lower()
-            logger.info(f"Using language: {language}")
+            # Justification: _sanitize_log() removes \n \r \t \x00 to prevent log injection
+            logger.info(f"Using language: {_sanitize_log(language)}")  # nosemgrep
 
         # Add initial_prompt for better accuracy with domain-specific terms
         if _initial_prompt:
             transcribe_kwargs["initial_prompt"] = _initial_prompt
 
-        logger.info(f"Transcribing {filename} with kwargs: {list(transcribe_kwargs.keys())}")
+        # Justification: _sanitize_log() removes \n \r \t \x00 to prevent log injection
+        logger.info(
+            f"Transcribing {_sanitize_log(filename)} with kwargs: {list(transcribe_kwargs.keys())}"
+        )  # nosemgrep
         res = whisper.transcribe(path, **transcribe_kwargs)
 
         if not res or not isinstance(res, dict) or ("text" not in res):
@@ -313,12 +361,7 @@ async def transcribe(
         logger.exception("Transcription failed")
         return JSONResponse(status_code=500, content={"error": str(e)})
     finally:
-        if path and os.path.exists(path):
-            try:
-                os.remove(path)
-            except Exception:
-                # best-effort cleanup
-                pass
+        _safe_remove_temp_file(path)
 
 
 if __name__ == "__main__":

@@ -125,7 +125,7 @@ async fn main() -> Result<()> {
         Ok(Err(e)) => {
             error!("Failed to start Python backend: {}", e);
             error!("Transcription will not work without the backend.");
-            error!("Ensure 'uv' is installed and whisper_server.py is accessible.");
+            error!("Ensure 'uv' is installed and the codescribe package is accessible.");
             None
         }
         Err(e) => {

@@ -1,6 +1,6 @@
 //! Python backend server management
 //!
-//! Spawns and manages the Python whisper_server subprocess.
+//! Spawns and manages the Python backend subprocess.
 //! Automatically starts on launch and stops on exit.
 
 use anyhow::{Context, Result};
@@ -9,8 +9,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-/// Default port for the whisper server
-const DEFAULT_PORT: u16 = 8238;
+/// Default port for the backend server
+const DEFAULT_PORT: u16 = 8237;
 
 /// Maximum time to wait for server startup
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -25,7 +25,7 @@ pub struct BackendServer {
 }
 
 impl BackendServer {
-    /// Start the Python whisper_server
+    /// Start the Python backend server
     pub fn start() -> Result<Self> {
         let port = DEFAULT_PORT;
 
@@ -41,13 +41,13 @@ impl BackendServer {
         // Check if models exist, download if not
         ensure_models_exist()?;
 
-        // Find the whisper_server.py script
-        let script_path = find_whisper_server()?;
+        // Find the backend.py script
+        let script_path = find_backend_script()?;
         info!("Starting Python backend from: {}", script_path.display());
 
         // Determine the working directory for uv (needs pyproject.toml)
         // If CODESCRIBE_PYTHON_DIR is set, use it as the working directory
-        // Otherwise, use the directory containing whisper_server.py
+        // Otherwise, use the directory containing backend.py
         let working_dir = if let Ok(python_dir) = std::env::var("CODESCRIBE_PYTHON_DIR") {
             PathBuf::from(python_dir)
         } else {
@@ -59,15 +59,21 @@ impl BackendServer {
 
         debug!("Using working directory: {}", working_dir.display());
 
-        // Spawn the Python process
+        // Spawn the Python process with uvicorn running the full backend
         // Use whisper-small by default for faster startup and better quality with anti-hallucination filters
         let whisper_variant =
             std::env::var("WHISPER_VARIANT").unwrap_or_else(|_| "small".to_string());
         let process = Command::new("uv")
-            .args(["run", "python", script_path.to_str().unwrap()])
+            .args([
+                "run",
+                "uvicorn",
+                "codescribe.backend:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port.to_string(),
+            ])
             .current_dir(&working_dir)
-            .env("PORT", port.to_string())
-            .env("HOST", "127.0.0.1")
             .env("WHISPER_VARIANT", &whisper_variant)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -117,7 +123,7 @@ impl BackendServer {
         }
 
         Err(anyhow::anyhow!(
-            "Backend failed to start within {} seconds. Check if 'uv' is installed and whisper_server.py is accessible.",
+            "Backend failed to start within {} seconds. Check if 'uv' is installed and the codescribe package is accessible.",
             STARTUP_TIMEOUT.as_secs()
         ))
     }
@@ -194,9 +200,7 @@ fn ensure_models_exist() -> Result<()> {
     let exe_dir = exe_path.parent().unwrap_or(&exe_path);
 
     // Check if running from .app bundle
-    let is_bundled = exe_dir
-        .join("../Resources/python/whisper_server.py")
-        .exists();
+    let is_bundled = exe_dir.join("../Resources/python/codescribe").exists();
 
     let repo_root = if is_bundled {
         // In bundled mode, use user data directory
@@ -257,14 +261,14 @@ fn ensure_models_exist() -> Result<()> {
     Ok(())
 }
 
-/// Find the whisper_server.py script
-fn find_whisper_server() -> Result<PathBuf> {
+/// Find the backend.py script (or the directory containing the codescribe package)
+fn find_backend_script() -> Result<PathBuf> {
     // Check environment variable override first
     if let Ok(custom_path) = std::env::var("CODESCRIBE_PYTHON_DIR") {
-        let script_path = PathBuf::from(&custom_path).join("whisper_server.py");
+        let script_path = PathBuf::from(&custom_path).join("backend.py");
         if script_path.exists() {
             debug!(
-                "Found whisper_server.py via CODESCRIBE_PYTHON_DIR: {}",
+                "Found backend.py via CODESCRIBE_PYTHON_DIR: {}",
                 script_path.display()
             );
             return Ok(script_path);
@@ -277,36 +281,36 @@ fn find_whisper_server() -> Result<PathBuf> {
 
     // Possible locations (in order of preference)
     let candidates = [
-        // .app bundle: Contents/MacOS/../Resources/python/whisper_server.py
-        exe_dir.join("../Resources/python/whisper_server.py"),
+        // .app bundle: Contents/MacOS/../Resources/python/backend.py
+        exe_dir.join("../Resources/python/backend.py"),
         // Development: relative to cargo project
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../whisper_server.py"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../backend.py"),
         // Installed alongside binary
-        exe_dir.join("whisper_server.py"),
+        exe_dir.join("backend.py"),
         // Current working directory
-        std::env::current_dir()?.join("whisper_server.py"),
+        std::env::current_dir()?.join("backend.py"),
         // Parent of current directory (monorepo structure)
-        std::env::current_dir()?.join("../whisper_server.py"),
+        std::env::current_dir()?.join("../backend.py"),
         // Absolute fallback for development
-        PathBuf::from("/Users/maciejgad/hosted/Loctree-Repos/Codescribe/whisper_server.py"),
+        PathBuf::from("/Users/maciejgad/hosted/Loctree-Repos/Codescribe/backend.py"),
     ];
 
     for path in &candidates {
         let normalized = path.canonicalize().unwrap_or_else(|_| path.clone());
         if normalized.exists() {
-            debug!("Found whisper_server.py at: {}", normalized.display());
+            debug!("Found backend.py at: {}", normalized.display());
             return Ok(normalized);
         }
     }
 
     // List what we tried
-    error!("Could not find whisper_server.py. Tried:");
+    error!("Could not find backend.py. Tried:");
     for path in &candidates {
         error!("  - {}", path.display());
     }
 
     Err(anyhow::anyhow!(
-        "whisper_server.py not found. Ensure you're running from the CodeScribe directory."
+        "backend.py not found. Ensure you're running from the CodeScribe directory."
     ))
 }
 
@@ -315,9 +319,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_find_whisper_server() {
+    fn test_find_backend_script() {
         // This will fail in CI but should work locally
-        let result = find_whisper_server();
+        let result = find_backend_script();
         // Just check it doesn't panic
         let _ = result;
     }

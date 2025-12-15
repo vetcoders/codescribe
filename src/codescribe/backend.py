@@ -91,6 +91,45 @@ from .settings_store import get_settings
 
 logger = logging.getLogger("vista-backend")
 
+
+def _sanitize_log(value: str | None) -> str:
+    """Sanitize user input for safe logging (prevent log injection)."""
+    if value is None:
+        return "<none>"
+    return (
+        str(value)
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace("\x00", "\\x00")
+    )
+
+
+# Cache temp directory path for validation
+_TEMP_DIR = os.path.realpath(tempfile.gettempdir())
+
+
+def _safe_remove_temp_file(path: str | None) -> None:
+    """Safely remove a file only if it's within the system temp directory."""
+    if not path:
+        return
+    try:
+        real_path = os.path.realpath(path)
+        if not real_path.startswith(_TEMP_DIR + os.sep):
+            # Justification: _sanitize_log() removes \n \r \t \x00 to prevent log injection
+            logger.warning(
+                f"Refusing to remove file outside temp dir: {_sanitize_log(path)}"
+            )  # nosemgrep
+            return
+        if os.path.exists(real_path):
+            # Justification: Path is validated to be within _TEMP_DIR using os.path.realpath()
+            # and startswith() check above - only temp files created by this process are removed
+            os.remove(real_path)  # nosemgrep
+    except Exception:
+        # best-effort cleanup
+        pass
+
+
 DEFAULT_STREAM_LANGUAGE = (
     os.environ.get("WHISPER_LANGUAGE") or os.environ.get("LANGUAGE") or ""
 ).strip().lower() or None
@@ -175,22 +214,37 @@ else:
     logger.warning("Voice & Chat Lab assets missing at %s", LAB_ASSETS_DIR)
 
 
+# User data directory for models (production location)
+USER_MODELS_DIR = os.path.join(os.path.expanduser("~"), ".CodeScribe", "models")
+
+
+def _find_model_path(variant: str) -> str | None:
+    """Find model path, checking user dir first, then repo dir."""
+    candidates = [
+        os.path.join(USER_MODELS_DIR, f"whisper-{variant}"),  # User data dir first
+        os.path.join(REPO_ROOT, "models", f"whisper-{variant}"),  # Dev fallback
+        os.path.join(REPO_ROOT, f"whisper-{variant}"),  # Legacy dev location
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return None
+
+
 # Whisper path selection (prefer small for "survival" mode; configurable via env)
 _variant = os.environ.get("WHISPER_VARIANT", "small").strip().lower()  # Default: small!
 if not os.environ.get("WHISPER_DIR"):
-    candidates: list[str] = []
-    if _variant in {"medium", "large-v3-turbo", "large-v3", "small", "small-mlx"}:
-        candidates.append(os.path.join(REPO_ROOT, "models", f"whisper-{_variant}"))
-        candidates.append(os.path.join(REPO_ROOT, f"whisper-{_variant}"))
-    else:
-        # Default search: prefer smaller models first (faster downloads on first run)
-        for v in ("small", "medium", "large-v3", "large-v3-turbo", "small-mlx"):
-            candidates.append(os.path.join(REPO_ROOT, "models", f"whisper-{v}"))
-            candidates.append(os.path.join(REPO_ROOT, f"whisper-{v}"))
-    _default_whisper_path = next(
-        (c for c in candidates if os.path.isdir(c)),
-        os.path.join(REPO_ROOT, "models", "whisper-small"),  # Fallback to small!
-    )
+    # Search for model in order of preference
+    _found = _find_model_path(_variant)
+    if not _found:
+        # Fallback candidates if preferred variant not found
+        for v in ("small", "medium", "large-v3-turbo", "large-v3"):
+            if v != _variant:
+                _found = _find_model_path(v)
+                if _found:
+                    break
+    # Final fallback to default path
+    _default_whisper_path = _found if _found else os.path.join(USER_MODELS_DIR, "whisper-small")
 else:
     _default_whisper_path = os.environ["WHISPER_DIR"]
 
@@ -369,10 +423,7 @@ async def _transcribe_stream_buffer(session: StreamSession) -> dict[str, Any]:
         result["_buffer_frames"] = frames
         result["_buffer_duration_sec"] = duration_sec
     finally:
-        try:
-            os.remove(tmp_path)
-        except Exception as exc:
-            logger.debug("Suppressed exception", exc_info=exc)
+        _safe_remove_temp_file(tmp_path)
 
     session.buffer.clear()
     return result
@@ -691,7 +742,8 @@ async def transcribe_endpoint(  # noqa: B008  # FastAPI pattern
         # Log detected language for debugging
         if isinstance(transcription, dict):
             detected = transcription.get("language", "unknown")
-            logger.info(f"Whisper detected language: {detected}")
+            # Justification: _sanitize_log() removes \n \r \t \x00 to prevent log injection
+            logger.info(f"Whisper detected language: {_sanitize_log(detected)}")  # nosemgrep
 
         # Apply Light+ formatting (vocabulary fixes, punctuation, capitalization)
         text = apply_light_plus(text)
@@ -701,13 +753,9 @@ async def transcribe_endpoint(  # noqa: B008  # FastAPI pattern
         logger.exception("Transcription failed (session=%s)", session_id)
         return JSONResponse(status_code=500, content={"error": str(e)})
     finally:
-        # Clean up temp files
+        # Clean up temp files (safe removal within temp directory only)
         for p in [temp_path, converted_path]:
-            if p and os.path.exists(p):
-                try:
-                    os.remove(p)
-                except Exception as exc:
-                    logger.debug("Suppressed exception", exc_info=exc)
+            _safe_remove_temp_file(p)
 
 
 @app.post("/format")
@@ -932,10 +980,8 @@ async def set_model(variant: str = Body(..., embed=True)):  # noqa: B008  # Fast
         return {"ok": False, "error": f"Invalid variant. Must be one of: {valid_variants}"}
 
     try:
-        from . import stt as stt_mod
-
-        # Try to find the model path
-        path = stt_mod.find_variant_path(variant)
+        # Try to find the model path (checks ~/.CodeScribe/models first, then repo)
+        path = _find_model_path(variant)
         if path is None:
             return {
                 "ok": False,
@@ -949,10 +995,14 @@ async def set_model(variant: str = Body(..., embed=True)):  # noqa: B008  # Fast
         os.environ["WHISPER_DIR"] = path
         os.environ["WHISPER_VARIANT"] = variant
 
-        logger.info(f"Whisper model switched to: {variant} at {path}")
+        # Justification: _sanitize_log() removes \n \r \t \x00 to prevent log injection
+        logger.info(
+            f"Whisper model switched to: {_sanitize_log(variant)} at {_sanitize_log(path)}"
+        )  # nosemgrep
         return {"ok": True, "variant": variant, "path": path}
     except Exception as e:
-        logger.error(f"Failed to switch model: {e}")
+        # Justification: _sanitize_log() removes \n \r \t \x00 to prevent log injection
+        logger.error(f"Failed to switch model: {_sanitize_log(str(e))}")  # nosemgrep
         return {"ok": False, "error": str(e)}
 
 

@@ -13,6 +13,20 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log(value: str | None) -> str:
+    """Sanitize user input for safe logging (prevent log injection)."""
+    if value is None:
+        return "<none>"
+    return (
+        str(value)
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace("\x00", "\\x00")
+    )
+
+
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 _SRC_ROOT = _PACKAGE_ROOT.parent
 if _SRC_ROOT.name == "src" and (_SRC_ROOT.parent / "pyproject.toml").exists():
@@ -60,10 +74,13 @@ def normalize_model_path(p: str | None) -> str | None:
             try:
                 if os.path.exists(fixed):
                     if fixed != abs_path:
-                        logger.info(f"Normalized path for MLX: '{abs_path}' -> '{fixed}'")
+                        # _sanitize_log() prevents log injection
+                        safe_from = _sanitize_log(abs_path)
+                        safe_to = _sanitize_log(fixed)
+                        logger.info(f"Normalized path: '{safe_from}' -> '{safe_to}'")  # nosemgrep
                     abs_path = fixed
             except Exception as exc:
-                logger.debug("Failed to normalize MLX path '%s': %s", abs_path, exc)
+                logger.debug("Failed to normalize MLX path '%s': %s", _sanitize_log(abs_path), exc)
         return abs_path
 
     # Otherwise, this is likely a model repo ID (e.g., 'org/name'); return as-is

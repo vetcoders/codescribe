@@ -11,9 +11,9 @@ license = "BSD-4-Clause"
 tokio = { version = "1", features = ["full"] }
 
 # System tray
-tray-icon = "0.19"
-muda = "0.15"  # Menu for tray
-tao = "0.30"   # Event loop for tray (required on macOS)
+tray-icon = "0.21"
+muda = "0.17"  # Menu for tray
+tao = "0.34"   # Event loop for tray (required on macOS)
 
 # Global hotkeys - using core-graphics CGEventTap directly
 # rdev = "0.5"  # DISABLED - crashes on macOS 26.2 (TSMGetInputSourceProperty from wrong thread)
@@ -21,7 +21,7 @@ tao = "0.30"   # Event loop for tray (required on macOS)
 # Now using CGEventTap via core-graphics for proper modifier-only detection
 
 # Audio recording
-cpal = "0.15"
+cpal = "0.16"
 hound = "3.5"
 
 # HTTP client
@@ -38,7 +38,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Config/paths
-directories = "5"
+directories = "6"
 shellexpand = "3"
 dotenvy = "0.15"
 
@@ -73,8 +73,8 @@ walkdir = "2.5.0"
 # macOS specific - for better hotkey support if rdev fails
 core-foundation = "0.10"
 # UI utilities (hold badge, caret tracking)
-cocoa = "0.25"
-core-graphics = "0.23"
+cocoa = "0.26"
+core-graphics = "0.25"
 objc = "0.2"
 # Grand Central Dispatch for main thread operations
 dispatch = "0.2"
