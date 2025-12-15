@@ -115,16 +115,21 @@ async fn main() -> Result<()> {
     permissions::request_all_permissions();
 
     // Start Python backend server
+    // Must use spawn_blocking because BackendServer::start() uses reqwest::blocking
     info!("Starting Python backend server...");
-    let _backend = match backend::BackendServer::start() {
-        Ok(server) => {
+    let _backend = match tokio::task::spawn_blocking(backend::BackendServer::start).await {
+        Ok(Ok(server)) => {
             info!("Python backend started on port {}", server.port());
             Some(server)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             error!("Failed to start Python backend: {}", e);
             error!("Transcription will not work without the backend.");
             error!("Ensure 'uv' is installed and whisper_server.py is accessible.");
+            None
+        }
+        Err(e) => {
+            error!("Backend startup task panicked: {}", e);
             None
         }
     };
@@ -165,7 +170,7 @@ async fn main() -> Result<()> {
 
     // Initialize hotkey settings from config
     {
-        let cfg = shared_config.blocking_read();
+        let cfg = shared_config.read().await;
         info!("Initializing hotkey configuration from saved settings...");
         hotkeys::set_exclusive_mode(cfg.hold_exclusive);
         hotkeys::set_hold_mods(cfg.hold_mods);
@@ -334,10 +339,15 @@ async fn main() -> Result<()> {
                             let mut cfg = config_clone.write().await;
                             cfg.beep_on_start = !cfg.beep_on_start;
                             let enabled = cfg.beep_on_start;
-                            if let Err(e) = cfg.save_to_env("BEEP_ON_START", if enabled { "1" } else { "0" }) {
+                            if let Err(e) =
+                                cfg.save_to_env("BEEP_ON_START", if enabled { "1" } else { "0" })
+                            {
                                 error!("Failed to save beep setting: {}", e);
                             }
-                            info!("Start sound {}", if enabled { "enabled" } else { "disabled" });
+                            info!(
+                                "Start sound {}",
+                                if enabled { "enabled" } else { "disabled" }
+                            );
                         }
                         tray::TrayMenuEvent::SetSoundType(sound) => {
                             let sound_name = match sound {
@@ -375,15 +385,24 @@ async fn main() -> Result<()> {
                             let mut cfg = config_clone.write().await;
                             cfg.hold_exclusive = !cfg.hold_exclusive;
                             let exclusive = cfg.hold_exclusive;
-                            if let Err(e) = cfg.save_to_env("HOLD_EXCLUSIVE", if exclusive { "1" } else { "0" }) {
+                            if let Err(e) =
+                                cfg.save_to_env("HOLD_EXCLUSIVE", if exclusive { "1" } else { "0" })
+                            {
                                 error!("Failed to save exclusive setting: {}", e);
                             }
                             // Apply runtime reconfiguration
                             hotkeys::set_exclusive_mode(exclusive);
-                            info!("Exclusive mode {} (applied immediately)", if exclusive { "enabled" } else { "disabled" });
+                            info!(
+                                "Exclusive mode {} (applied immediately)",
+                                if exclusive { "enabled" } else { "disabled" }
+                            );
                         }
                         tray::TrayMenuEvent::SetToggleTrigger(trigger) => {
-                            info!("Setting toggle trigger to: {} ({})", trigger.label(), trigger.as_str());
+                            info!(
+                                "Setting toggle trigger to: {} ({})",
+                                trigger.label(),
+                                trigger.as_str()
+                            );
                             let mut cfg = config_clone.write().await;
                             cfg.toggle_trigger = trigger;
                             if let Err(e) = cfg.save_to_env("TOGGLE_TRIGGER", trigger.as_str()) {
@@ -407,7 +426,10 @@ async fn main() -> Result<()> {
                         // Appearance
                         tray::TrayMenuEvent::ToggleStatusGlyph => {
                             let new_state = !tray::is_status_glyph_enabled();
-                            info!("Toggling status glyph to: {}", if new_state { "enabled" } else { "disabled" });
+                            info!(
+                                "Toggling status glyph to: {}",
+                                if new_state { "enabled" } else { "disabled" }
+                            );
                             tray::set_status_glyph_enabled(new_state);
                             // Refresh icon to apply change
                             let _ = tray::update_tray_status(tray::TrayStatus::Idle);
@@ -427,14 +449,20 @@ async fn main() -> Result<()> {
 
                             match result {
                                 Ok(()) => {
-                                    info!("Successfully {} Start at Login", if enabled { "enabled" } else { "disabled" });
+                                    info!(
+                                        "Successfully {} Start at Login",
+                                        if enabled { "enabled" } else { "disabled" }
+                                    );
                                 }
                                 Err(e) => {
-                                    error!("Failed to {} Start at Login: {}", if enabled { "enable" } else { "disable" }, e);
+                                    error!(
+                                        "Failed to {} Start at Login: {}",
+                                        if enabled { "enable" } else { "disable" },
+                                        e
+                                    );
                                 }
                             }
-                        }
-                        // Note: ToggleHotkeys is handled above (line ~176)
+                        } // Note: ToggleHotkeys is handled above (line ~176)
                     }
                 }
                 Err(e) => {

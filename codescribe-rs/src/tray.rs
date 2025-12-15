@@ -47,7 +47,10 @@ static SHOW_STATUS_GLYPH: AtomicBool = AtomicBool::new(true);
 /// Set whether the status glyph (colored dot) is visible on the icon
 pub fn set_status_glyph_enabled(enabled: bool) {
     SHOW_STATUS_GLYPH.store(enabled, Ordering::SeqCst);
-    debug!("Status glyph {}", if enabled { "enabled" } else { "disabled" });
+    debug!(
+        "Status glyph {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
 }
 
 /// Get whether the status glyph is currently enabled
@@ -80,19 +83,23 @@ fn load_custom_icon(status: TrayStatus) -> Result<Icon> {
         // - Red: Recording/Listening, Error (X shape)
         // - Orange: Processing/Thinking
         let (glyph_r, glyph_g, glyph_b) = match status {
-            TrayStatus::Idle => (80u8, 200, 100),      // Green - ready
-            TrayStatus::Listening => (255, 70, 70),    // Red - recording
-            TrayStatus::Thinking => (255, 165, 0),     // Orange - processing
-            TrayStatus::Success => (80, 220, 100),     // Bright green - done
-            TrayStatus::Error => (255, 50, 50),        // Bright red - error
+            TrayStatus::Idle => (80u8, 200, 100),   // Green - ready
+            TrayStatus::Listening => (255, 70, 70), // Red - recording
+            TrayStatus::Thinking => (255, 165, 0),  // Orange - processing
+            TrayStatus::Success => (80, 220, 100),  // Bright green - done
+            TrayStatus::Error => (255, 50, 50),     // Bright red - error
         };
 
         // For Error status, draw an "X" instead of a circle
         if status == TrayStatus::Error {
             // Draw X shape
             const LINE_WIDTH: i32 = 2;
-            for y in (glyph_center_y - GLYPH_RADIUS).max(0)..(glyph_center_y + GLYPH_RADIUS).min(height as i32) {
-                for x in (glyph_center_x - GLYPH_RADIUS).max(0)..(glyph_center_x + GLYPH_RADIUS).min(width as i32) {
+            for y in (glyph_center_y - GLYPH_RADIUS).max(0)
+                ..(glyph_center_y + GLYPH_RADIUS).min(height as i32)
+            {
+                for x in (glyph_center_x - GLYPH_RADIUS).max(0)
+                    ..(glyph_center_x + GLYPH_RADIUS).min(width as i32)
+                {
                     let dx = x - glyph_center_x;
                     let dy = y - glyph_center_y;
 
@@ -114,8 +121,12 @@ fn load_custom_icon(status: TrayStatus) -> Result<Icon> {
             }
         } else {
             // Draw circle using distance formula
-            for y in (glyph_center_y - GLYPH_RADIUS).max(0)..(glyph_center_y + GLYPH_RADIUS).min(height as i32) {
-                for x in (glyph_center_x - GLYPH_RADIUS).max(0)..(glyph_center_x + GLYPH_RADIUS).min(width as i32) {
+            for y in (glyph_center_y - GLYPH_RADIUS).max(0)
+                ..(glyph_center_y + GLYPH_RADIUS).min(height as i32)
+            {
+                for x in (glyph_center_x - GLYPH_RADIUS).max(0)
+                    ..(glyph_center_x + GLYPH_RADIUS).min(width as i32)
+                {
                     let dx = x - glyph_center_x;
                     let dy = y - glyph_center_y;
                     let distance_squared = dx * dx + dy * dy;
@@ -291,11 +302,11 @@ pub enum SoundType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeLevel {
-    Mute,     // 0%
-    Low,      // 25%
-    Medium,   // 50%
-    High,     // 75%
-    Full,     // 100%
+    Mute,   // 0%
+    Low,    // 25%
+    Medium, // 50%
+    High,   // 75%
+    Full,   // 100%
 }
 
 impl VolumeLevel {
@@ -489,13 +500,19 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     );
     let model_medium_id = model_medium.id().clone();
     let model_large_v3 = MenuItem::new(
-        format!("{}Use Whisper: Large v3", tick(current_whisper == "large-v3")),
+        format!(
+            "{}Use Whisper: Large v3",
+            tick(current_whisper == "large-v3")
+        ),
         true,
         None,
     );
     let model_large_v3_id = model_large_v3.id().clone();
     let model_large_v3_turbo = MenuItem::new(
-        format!("{}Use Whisper: Large v3 Turbo", tick(current_whisper == "large-v3-turbo")),
+        format!(
+            "{}Use Whisper: Large v3 Turbo",
+            tick(current_whisper == "large-v3-turbo")
+        ),
         true,
         None,
     );
@@ -560,13 +577,33 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     hold_menu.append(&PredefinedMenuItem::separator())?;
 
     // Hold modifier options (uses label() from config types)
-    let hold_ctrl = CheckMenuItem::new(format!("Hold: {}", HoldMods::Ctrl.label()), true, true, None);
+    let hold_ctrl = CheckMenuItem::new(
+        format!("Hold: {}", HoldMods::Ctrl.label()),
+        true,
+        true,
+        None,
+    );
     let hold_ctrl_id = hold_ctrl.id().clone();
-    let hold_ctrl_opt = CheckMenuItem::new(format!("Hold: {}", HoldMods::CtrlAlt.label()), true, false, None);
+    let hold_ctrl_opt = CheckMenuItem::new(
+        format!("Hold: {}", HoldMods::CtrlAlt.label()),
+        true,
+        false,
+        None,
+    );
     let hold_ctrl_opt_id = hold_ctrl_opt.id().clone();
-    let hold_ctrl_shift = CheckMenuItem::new(format!("Hold: {}", HoldMods::CtrlShift.label()), true, false, None);
+    let hold_ctrl_shift = CheckMenuItem::new(
+        format!("Hold: {}", HoldMods::CtrlShift.label()),
+        true,
+        false,
+        None,
+    );
     let hold_ctrl_shift_id = hold_ctrl_shift.id().clone();
-    let hold_ctrl_cmd = CheckMenuItem::new(format!("Hold: {}", HoldMods::CtrlCmd.label()), true, false, None);
+    let hold_ctrl_cmd = CheckMenuItem::new(
+        format!("Hold: {}", HoldMods::CtrlCmd.label()),
+        true,
+        false,
+        None,
+    );
     let hold_ctrl_cmd_id = hold_ctrl_cmd.id().clone();
 
     hold_menu.append(&hold_ctrl)?;

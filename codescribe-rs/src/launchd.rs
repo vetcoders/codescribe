@@ -38,8 +38,7 @@ pub fn enable_login_item() -> Result<()> {
     let plist_path = get_plist_path()?;
 
     // Get the path to the current executable
-    let exe_path = std::env::current_exe()
-        .context("Failed to get current executable path")?;
+    let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
 
     let exe_str = exe_path
         .to_str()
@@ -133,7 +132,9 @@ mod tests {
     fn test_get_plist_path() {
         let path = get_plist_path().expect("Should get plist path");
         assert!(path.to_string_lossy().contains("Library/LaunchAgents"));
-        assert!(path.to_string_lossy().ends_with("io.loctree.codescribe.plist"));
+        assert!(path
+            .to_string_lossy()
+            .ends_with("io.loctree.codescribe.plist"));
     }
 
     #[test]

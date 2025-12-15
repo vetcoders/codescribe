@@ -246,8 +246,8 @@ pub async fn format_text(text: &str, language: Option<&str>) -> String {
 
 /// Call a single AI provider
 async fn call_provider(provider: &ProviderConfig, user_message: &str) -> Result<String> {
-    let api_key = env::var(provider.api_key_env)
-        .context(format!("{} not set", provider.api_key_env))?;
+    let api_key =
+        env::var(provider.api_key_env).context(format!("{} not set", provider.api_key_env))?;
 
     if api_key.is_empty() {
         anyhow::bail!("{} is empty", provider.api_key_env);
@@ -286,10 +286,7 @@ async fn call_provider(provider: &ProviderConfig, user_message: &str) -> Result<
         anyhow::bail!("HTTP {} - {}", status, body);
     }
 
-    let chat_response: ChatResponse = response
-        .json()
-        .await
-        .context("Failed to parse response")?;
+    let chat_response: ChatResponse = response.json().await.context("Failed to parse response")?;
 
     let formatted = chat_response
         .choices
@@ -345,10 +342,7 @@ mod tests {
             remove_simple_repetitions("Kali Kali Kali Kali bogini"),
             "Kali bogini"
         );
-        assert_eq!(
-            remove_simple_repetitions("test test test"),
-            "test"
-        );
+        assert_eq!(remove_simple_repetitions("test test test"), "test");
         // Should preserve normal text
         assert_eq!(
             remove_simple_repetitions("normalny tekst bez powtórzeń"),

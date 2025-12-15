@@ -170,6 +170,60 @@ async def healthz():
     return {"ok": _whisper_model is not None}
 
 
+@app.post("/model/set")
+async def set_model(body: dict):
+    """Switch Whisper model variant at runtime.
+
+    Args:
+        body: {"variant": "small" | "medium" | "large-v3" | "large-v3-turbo"}
+
+    Returns:
+        {"ok": true, "variant": "...", "path": "..."} on success
+        {"ok": false, "error": "..."} on failure
+    """
+    global _whisper_model, WHISPER_DIR
+
+    if load_whisper is None:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "mlx_whisper not available"},
+        )
+
+    variant = body.get("variant", "").strip().lower()
+    if not variant:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "Missing 'variant' field"},
+        )
+
+    # Build model path
+    model_path = os.path.join(REPO_ROOT, "models", f"whisper-{variant}")
+
+    if not os.path.isdir(model_path):
+        return JSONResponse(
+            status_code=404,
+            content={
+                "ok": False,
+                "error": f"Model not found: whisper-{variant}",
+            },
+        )
+
+    try:
+        logger.info(f"Loading Whisper model: {model_path}")
+        normalized_path = normalize_model_path(model_path)
+        new_model = load_whisper(normalized_path)
+        _whisper_model = new_model
+        WHISPER_DIR = normalized_path
+        logger.info(f"Whisper model switched to: {variant} at {normalized_path}")
+        return {"ok": True, "variant": variant, "path": normalized_path}
+    except Exception as e:
+        logger.exception(f"Failed to load model {variant}")
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": str(e)},
+        )
+
+
 @app.post("/transcribe")
 async def transcribe(
     audio: UploadFile = File(...),  # noqa: B008
