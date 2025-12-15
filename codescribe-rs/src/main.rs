@@ -230,6 +230,8 @@ async fn main() -> Result<()> {
                             if let Err(e) = cfg.save_to_env("WHISPER_LANGUAGE", new_lang.as_str()) {
                                 error!("Failed to save language setting: {}", e);
                             }
+                            // TODO: Refresh tray menu to show updated language selection
+                            // tray::update_language_selection(new_lang.as_str());
                         }
                         tray::TrayMenuEvent::CopyLatestToClipboard => {
                             info!("Copy latest to clipboard requested");
@@ -299,6 +301,8 @@ async fn main() -> Result<()> {
                                     info!("Whisper model switched to: {}", variant);
                                     // Update environment for next restart
                                     std::env::set_var("WHISPER_VARIANT", variant);
+                                    // Refresh tray menu to show updated model selection
+                                    tray::update_model_selection(variant);
                                 }
                                 Err(e) => {
                                     error!("Failed to switch Whisper model: {}", e);
@@ -325,6 +329,8 @@ async fn main() -> Result<()> {
                                     "disabled"
                                 }
                             );
+                            // TODO: Refresh tray menu to show updated AI formatting state
+                            // tray::update_formatting_toggle(new_value == "1");
                         }
                         tray::TrayMenuEvent::SetFormattingProvider(provider) => {
                             let provider_str = match provider {
@@ -333,6 +339,8 @@ async fn main() -> Result<()> {
                             };
                             info!("Setting formatting provider to: {}", provider_str);
                             std::env::set_var("AI_PROVIDER", provider_str);
+                            // TODO: Refresh tray menu to show updated provider selection
+                            // tray::update_formatting_provider(provider_str);
                         }
                         // Sound settings
                         tray::TrayMenuEvent::ToggleStartSound => {
@@ -348,6 +356,8 @@ async fn main() -> Result<()> {
                                 "Start sound {}",
                                 if enabled { "enabled" } else { "disabled" }
                             );
+                            // TODO: Refresh tray menu to show updated sound state
+                            // tray::update_sound_settings();
                         }
                         tray::TrayMenuEvent::SetSoundType(sound) => {
                             let sound_name = match sound {
@@ -358,6 +368,8 @@ async fn main() -> Result<()> {
                             std::env::set_var("SOUND_TYPE", sound_name);
                             // Play preview
                             sound::play_sound(sound_name);
+                            // TODO: Refresh tray menu to show updated sound type
+                            // tray::update_sound_settings();
                         }
                         tray::TrayMenuEvent::SetVolume(level) => {
                             let volume = level.as_f32();
@@ -369,6 +381,8 @@ async fn main() -> Result<()> {
                             }
                             // Play preview sound at new volume
                             sound::play_sound_with_volume("Tink", volume);
+                            // TODO: Refresh tray menu to show updated volume level
+                            // tray::update_sound_settings();
                         }
                         // Hold hotkey settings
                         tray::TrayMenuEvent::SetHoldMods(mods) => {
@@ -380,6 +394,8 @@ async fn main() -> Result<()> {
                             }
                             // Apply runtime reconfiguration
                             hotkeys::set_hold_mods(mods);
+                            // TODO: Refresh tray menu to show updated hotkey config
+                            // tray::update_hotkey_settings();
                         }
                         tray::TrayMenuEvent::ToggleHoldExclusive => {
                             let mut cfg = config_clone.write().await;
@@ -396,6 +412,8 @@ async fn main() -> Result<()> {
                                 "Exclusive mode {} (applied immediately)",
                                 if exclusive { "enabled" } else { "disabled" }
                             );
+                            // TODO: Refresh tray menu to show updated hotkey config
+                            // tray::update_hotkey_settings();
                         }
                         tray::TrayMenuEvent::SetToggleTrigger(trigger) => {
                             info!(
@@ -410,6 +428,8 @@ async fn main() -> Result<()> {
                             }
                             // Apply runtime reconfiguration
                             hotkeys::set_toggle_trigger(trigger);
+                            // TODO: Refresh tray menu to show updated hotkey config
+                            // tray::update_hotkey_settings();
                         }
                         // Permissions
                         tray::TrayMenuEvent::CheckPermissions => {

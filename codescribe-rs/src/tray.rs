@@ -24,6 +24,7 @@ use anyhow::Result;
 use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
 use image::{imageops::FilterType, GenericImageView};
 use muda::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -56,6 +57,57 @@ pub fn set_status_glyph_enabled(enabled: bool) {
 /// Get whether the status glyph is currently enabled
 pub fn is_status_glyph_enabled() -> bool {
     SHOW_STATUS_GLYPH.load(Ordering::SeqCst)
+}
+
+/// Model menu items for dynamic updates
+struct ModelMenuItems {
+    small: CheckMenuItem,
+    medium: CheckMenuItem,
+    large_v3: CheckMenuItem,
+    large_v3_turbo: CheckMenuItem,
+    label: MenuItem,
+}
+
+// Thread-local storage for model menu items
+// CheckMenuItem contains Rc (not Send/Sync), but tray runs on main thread only
+thread_local! {
+    static MODEL_MENU_ITEMS: RefCell<Option<ModelMenuItems>> = const { RefCell::new(None) };
+}
+
+/// Update the model selection in the menu
+///
+/// Variant should be one of: "small", "medium", "large-v3", "large-v3-turbo"
+pub fn update_model_selection(variant: &str) {
+    MODEL_MENU_ITEMS.with(|items_cell| {
+        if let Some(ref items) = *items_cell.borrow() {
+            // Uncheck all models
+            items.small.set_checked(false);
+            items.medium.set_checked(false);
+            items.large_v3.set_checked(false);
+            items.large_v3_turbo.set_checked(false);
+
+            // Check the selected model
+            match variant {
+                "small" => items.small.set_checked(true),
+                "medium" => items.medium.set_checked(true),
+                "large-v3" => items.large_v3.set_checked(true),
+                "large-v3-turbo" => items.large_v3_turbo.set_checked(true),
+                _ => debug!("Unknown model variant: {}", variant),
+            }
+
+            // Update the label text
+            let label_text = match variant {
+                "small" => "Whisper: Small",
+                "medium" => "Whisper: Medium",
+                "large-v3" => "Whisper: Large v3",
+                "large-v3-turbo" => "Whisper: Large v3 Turbo",
+                _ => variant,
+            };
+            items.label.set_text(label_text);
+
+            debug!("Model selection updated to: {}", variant);
+        }
+    });
 }
 
 /// Load the custom CodeScribe icon, optionally tinted by status
@@ -484,36 +536,28 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     models_menu.append(&whisper_label)?;
     models_menu.append(&PredefinedMenuItem::separator())?;
 
-    // Whisper model options (using MenuItem with tick prefix for radio-like behavior)
-    let tick = |selected: bool| if selected { "✓ " } else { "   " };
-
-    let model_small = MenuItem::new(
-        format!("{}Use Whisper: Small", tick(current_whisper == "small")),
-        true,
-        None,
-    );
+    // Whisper model options (using CheckMenuItem for dynamic updates)
+    let model_small =
+        CheckMenuItem::new("Use Whisper: Small", true, current_whisper == "small", None);
     let model_small_id = model_small.id().clone();
-    let model_medium = MenuItem::new(
-        format!("{}Use Whisper: Medium", tick(current_whisper == "medium")),
+    let model_medium = CheckMenuItem::new(
+        "Use Whisper: Medium",
         true,
+        current_whisper == "medium",
         None,
     );
     let model_medium_id = model_medium.id().clone();
-    let model_large_v3 = MenuItem::new(
-        format!(
-            "{}Use Whisper: Large v3",
-            tick(current_whisper == "large-v3")
-        ),
+    let model_large_v3 = CheckMenuItem::new(
+        "Use Whisper: Large v3",
         true,
+        current_whisper == "large-v3",
         None,
     );
     let model_large_v3_id = model_large_v3.id().clone();
-    let model_large_v3_turbo = MenuItem::new(
-        format!(
-            "{}Use Whisper: Large v3 Turbo",
-            tick(current_whisper == "large-v3-turbo")
-        ),
+    let model_large_v3_turbo = CheckMenuItem::new(
+        "Use Whisper: Large v3 Turbo",
         true,
+        current_whisper == "large-v3-turbo",
         None,
     );
     let model_large_v3_turbo_id = model_large_v3_turbo.id().clone();
@@ -530,6 +574,17 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
     models_menu.append(&model_open_folder)?;
 
     menu.append(&models_menu)?;
+
+    // Store model menu items in thread-local for dynamic updates
+    MODEL_MENU_ITEMS.with(|items_cell| {
+        *items_cell.borrow_mut() = Some(ModelMenuItems {
+            small: model_small,
+            medium: model_medium,
+            large_v3: model_large_v3,
+            large_v3_turbo: model_large_v3_turbo,
+            label: whisper_label,
+        });
+    });
 
     // 6. Formatting submenu (AI enhancement)
     let fmt_menu = Submenu::new("Formatting", true);
