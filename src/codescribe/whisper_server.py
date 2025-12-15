@@ -50,24 +50,40 @@ app = FastAPI(title="CodeScribe-whisper")
 
 REPO_ROOT = str(repo_root())
 
+# User data directory for models (production location)
+USER_MODELS_DIR = os.path.join(os.path.expanduser("~"), ".CodeScribe", "models")
+
+
+def find_model_path(variant: str) -> str | None:
+    """Find model path, checking user dir first, then repo dir."""
+    candidates = [
+        os.path.join(USER_MODELS_DIR, f"whisper-{variant}"),  # User data dir first
+        os.path.join(REPO_ROOT, "models", f"whisper-{variant}"),  # Dev fallback
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return None
+
+
 # Whisper model selection: prefer WHISPER_DIR if set, otherwise use WHISPER_VARIANT
 # Default to "small" for faster startup and lower memory usage
 _variant = os.environ.get("WHISPER_VARIANT", "small").strip().lower()
+_whisper_dir: str
 if os.environ.get("WHISPER_DIR"):
     _whisper_dir = os.environ["WHISPER_DIR"]
 else:
     # Search for model in order of preference
-    _candidates = [
-        os.path.join(REPO_ROOT, "models", f"whisper-{_variant}"),
-    ]
-    # Fallback candidates if preferred variant not found
-    for v in ("small", "medium", "large-v3-turbo", "large-v3"):
-        if v != _variant:
-            _candidates.append(os.path.join(REPO_ROOT, "models", f"whisper-{v}"))
-    _whisper_dir = next(
-        (c for c in _candidates if os.path.isdir(c)),
-        os.path.join(REPO_ROOT, "models", "whisper-small"),  # Final fallback
-    )
+    _found = find_model_path(_variant)
+    if not _found:
+        # Fallback candidates if preferred variant not found
+        for v in ("small", "medium", "large-v3-turbo", "large-v3"):
+            if v != _variant:
+                _found = find_model_path(v)
+                if _found:
+                    break
+    # Final fallback to default path
+    _whisper_dir = _found if _found else os.path.join(USER_MODELS_DIR, "whisper-small")
 WHISPER_DIR = normalize_model_path(_whisper_dir)
 
 MAX_UPLOAD_MB = int(os.environ.get("WHISPER_MAX_UPLOAD_MB", "20"))
@@ -196,10 +212,10 @@ async def set_model(body: dict):
             content={"ok": False, "error": "Missing 'variant' field"},
         )
 
-    # Build model path
-    model_path = os.path.join(REPO_ROOT, "models", f"whisper-{variant}")
+    # Find model path (checks ~/.CodeScribe/models first, then repo)
+    model_path = find_model_path(variant)
 
-    if not os.path.isdir(model_path):
+    if not model_path:
         return JSONResponse(
             status_code=404,
             content={

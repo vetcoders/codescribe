@@ -428,9 +428,6 @@ impl RecordingController {
         let session_id = self.session_id.read().await.clone();
         let assistive = *self.assistive_mode.read().await;
 
-        // Update tray icon to "thinking"
-        let _ = update_tray_status(TrayStatus::Thinking);
-
         let result = self.process_recording(session_id, assistive).await;
 
         // Always reset to IDLE, even on error

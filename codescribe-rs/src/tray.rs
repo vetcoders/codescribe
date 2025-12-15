@@ -1146,8 +1146,6 @@ pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -
 
         // Check for menu events (non-blocking)
         if let Ok(event) = menu_channel.try_recv() {
-            debug!("Menu event: {:?}", event);
-
             // Handle menu item clicks
             handle_menu_event(&event.id, &menu_ids);
 

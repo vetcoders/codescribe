@@ -1,7 +1,23 @@
-.PHONY: all check lint format test security clean
+.PHONY: all check lint format test security clean build install release
 
 # Default target: run all checks
 all: check
+
+# Build Rust binary (debug)
+build:
+	@echo "Building Rust binary (debug)..."
+	@cd codescribe-rs && cargo build
+
+# Build Rust binary (release)
+release:
+	@echo "Building Rust binary (release)..."
+	@cd codescribe-rs && cargo build --release
+
+# Install Rust binary to ~/.cargo/bin (standard Rust location)
+install:
+	@echo "Installing CodeScribe to ~/.cargo/bin..."
+	@cd codescribe-rs && cargo install --path .
+	@echo "✅ Installed: ~/.cargo/bin/codescribe"
 
 # Format code using Ruff (replaces Black/Isort) - MODIFIES FILES
 format:

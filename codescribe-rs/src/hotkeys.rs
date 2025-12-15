@@ -99,11 +99,6 @@ pub fn set_exclusive_mode(enabled: bool) {
     tracing::info!("Hotkey exclusive mode set to: {}", enabled);
 }
 
-/// Get current exclusive mode setting (thread-safe)
-pub fn get_exclusive_mode() -> bool {
-    EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst)
-}
-
 // --- Constants ---
 
 /// Double-tap interval for toggle detection (milliseconds)
@@ -244,6 +239,7 @@ mod macos {
         ) -> CFMachPortRef;
 
         fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+        fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
         fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
         fn CGEventGetIntegerValueField(event: CGEventRef, field: CGEventField) -> i64;
     }
@@ -347,13 +343,24 @@ mod macos {
             return event;
         }
 
-        // Only process flags changed events
+        // Only process flags changed events (type 12 = kCGEventFlagsChanged)
         if event_type != K_CG_EVENT_FLAGS_CHANGED {
             return event;
         }
 
         let flags = unsafe { CGEventGetFlags(event) };
         let keycode = unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
+
+        // Debug: log every modifier event
+        tracing::debug!(
+            "CGEventTap: flags=0x{:X} keycode={} (ctrl={}, shift={}, opt={}, cmd={})",
+            flags,
+            keycode,
+            (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0,
+            (flags & K_CG_EVENT_FLAG_MASK_SHIFT) != 0,
+            (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0,
+            (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0
+        );
 
         let state = unsafe {
             match GLOBAL_STATE {
@@ -615,6 +622,18 @@ mod macos {
             CGEventTapEnable(tap, true);
         }
 
+        // Verify tap is actually enabled
+        let is_enabled = unsafe { CGEventTapIsEnabled(tap) };
+        if !is_enabled {
+            tracing::error!("CGEventTap failed to enable! macOS may have denied it.");
+            unsafe {
+                let _ = Box::from_raw(state_ptr);
+                GLOBAL_STATE = None;
+            }
+            return Err("CGEventTap not enabled - macOS denied access".to_string());
+        }
+        tracing::debug!("CGEventTap verified as enabled");
+
         // Create run loop source
         let source = unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0) };
 
@@ -640,10 +659,14 @@ mod macos {
             toggle_trigger
         );
 
-        // Run the loop (blocking)
+        // Run the loop (blocking - should never return)
+        tracing::debug!("Entering CFRunLoopRun (should block forever)...");
         unsafe {
             CFRunLoopRun();
         }
+
+        // If we get here, something went wrong
+        tracing::error!("CFRunLoopRun returned unexpectedly! Event tap may have died.");
 
         // Clean up (won't reach here normally)
         unsafe {
@@ -726,26 +749,6 @@ impl HotkeyManager {
     pub fn process_events(&self) {
         // Events are processed in the background thread
         // This is a no-op for API compatibility
-    }
-
-    /// Enable hotkey processing (thread-safe)
-    ///
-    /// When enabled, modifier key events will be captured and sent to the event channel.
-    pub fn enable(&self) {
-        macos::enable();
-    }
-
-    /// Disable hotkey processing (thread-safe)
-    ///
-    /// When disabled, modifier key events will be ignored and no events will be sent.
-    /// The CGEventTap remains running but skips processing.
-    pub fn disable(&self) {
-        macos::disable();
-    }
-
-    /// Check if hotkeys are currently enabled (thread-safe)
-    pub fn is_enabled(&self) -> bool {
-        macos::is_enabled()
     }
 }
 
