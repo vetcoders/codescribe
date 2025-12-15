@@ -1079,6 +1079,9 @@ fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
                 .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
                 .spawn();
         }
+    } else {
+        // Unknown menu event - log for debugging
+        debug!("Unknown menu event id: {:?}", event_id);
     }
 }
 
@@ -1228,6 +1231,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -
 
         // Check for menu events (non-blocking)
         if let Ok(event) = menu_channel.try_recv() {
+            debug!("Menu event received: id={:?}", event.id);
             // Handle menu item clicks
             handle_menu_event(&event.id, &menu_ids);
 

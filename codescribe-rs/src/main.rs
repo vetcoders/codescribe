@@ -144,6 +144,12 @@ async fn main() -> Result<()> {
         Err(e) => warn!("Could not verify backend health: {}", e),
     }
 
+    // Sync WHISPER_VARIANT with backend's actual model
+    if let Ok(model_info) = client::get_current_model().await {
+        std::env::set_var("WHISPER_VARIANT", &model_info);
+        debug!("Synced WHISPER_VARIANT with backend: {}", model_info);
+    }
+
     // Create channel for hotkey events
     let (tx, rx) = unbounded::<hotkeys::HotkeyEvent>();
 
@@ -294,6 +300,15 @@ async fn main() -> Result<()> {
                                 tray::WhisperModel::LargeV3 => "large-v3",
                                 tray::WhisperModel::LargeV3Turbo => "large-v3-turbo",
                             };
+                            // Skip if model is already set (CheckMenuItem sends event on menu show)
+                            let current = std::env::var("WHISPER_VARIANT").unwrap_or_default();
+                            if current == variant {
+                                debug!(
+                                    "Model already set to {}, ignoring duplicate event",
+                                    variant
+                                );
+                                continue;
+                            }
                             info!("Setting Whisper model to: {}", variant);
                             // Call backend to switch model
                             match client::set_whisper_model(variant).await {
@@ -525,12 +540,13 @@ async fn main() -> Result<()> {
                         },
                     };
 
-                    // Handle the event (block_on since we're in std::thread, not tokio)
-                    let result =
-                        rt.block_on(controller_clone.handle_hotkey_event(controller_event));
-                    if let Err(e) = result {
-                        error!("Error handling hotkey event: {}", e);
-                    }
+                    // Handle the event asynchronously (don't block the receiver thread)
+                    let controller = Arc::clone(&controller_clone);
+                    rt.spawn(async move {
+                        if let Err(e) = controller.handle_hotkey_event(controller_event).await {
+                            error!("Error handling hotkey event: {}", e);
+                        }
+                    });
                 }
                 Err(e) => {
                     error!("Hotkey channel closed: {}", e);

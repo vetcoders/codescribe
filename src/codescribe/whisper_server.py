@@ -368,6 +368,6 @@ if __name__ == "__main__":
     import uvicorn
 
     host = os.environ.get("HOST", "127.0.0.1")
-    port = int(os.environ.get("PORT", "8238"))
+    port = int(os.environ.get("PORT", "8237"))
     _configure_logging()
     uvicorn.run("codescribe.whisper_server:app", host=host, port=port, reload=False)

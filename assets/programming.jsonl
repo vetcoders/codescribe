@@ -144,3 +144,8 @@
 {"term": "bug", "mispronunciations": ["bułk", "bak", "bag"], "category": "tech"}
 {"term": "push", "mispronunciations": ["puż", "pusz", "pash"], "category": "git"}
 {"term": "feature", "mispronunciations": ["fetchu", "ficzer", "feczu", "fitur"], "category": "git"}
+{"term": "WebSocket", "mispronunciations": ["websok", "web socket", "websocket", "łebsoket"], "category": "networking"}
+{"term": "connection timeout", "mispronunciations": ["father expandszn timed out", "konekszon tajmałt"], "category": "networking"}
+{"term": "firewall", "mispronunciations": ["father", "fajerłol", "fire wall"], "category": "networking"}
+{"term": "load balancer", "mispronunciations": ["lot balancer", "load balanser"], "category": "networking"}
+{"term": "sticky sessions", "mispronunciations": ["stiki sessions", "sticky seszns"], "category": "networking"}

@@ -54,7 +54,7 @@ fn get_client() -> &'static Client {
 
 /// Discover backend server by probing known ports
 ///
-/// Tries ports in order: 8238, 8237, 7237, 6237, 5237
+/// Tries ports in order: 8237, 8238, 7237, 6237, 5237
 /// Returns the first responding server URL or None
 ///
 /// Retries each port up to 5 times with 500ms delay to handle race conditions
@@ -147,8 +147,10 @@ pub async fn check_health() -> Result<bool> {
     let base_url = get_server_url().await?;
     let url = format!("{}/healthz", base_url);
 
+    // Use short timeout for health check to avoid stale connections
     let response = get_client()
         .get(&url)
+        .timeout(Duration::from_secs(2))
         .send()
         .await
         .context("Failed to send health check request")?;
@@ -261,6 +263,30 @@ struct ModelSetResponse {
     path: Option<String>,
     #[serde(default)]
     error: Option<String>,
+}
+
+/// Get current Whisper model variant from backend
+pub async fn get_current_model() -> Result<String> {
+    let base_url = get_server_url().await?;
+    let url = format!("{}/model", base_url);
+
+    let response = get_client()
+        .get(&url)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .context("Failed to get current model")?;
+
+    #[derive(Deserialize)]
+    struct ModelInfo {
+        variant: String,
+    }
+
+    let info: ModelInfo = response
+        .json()
+        .await
+        .context("Failed to parse model info")?;
+    Ok(info.variant)
 }
 
 /// Set Whisper model variant
