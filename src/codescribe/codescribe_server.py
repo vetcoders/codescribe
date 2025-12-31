@@ -364,10 +364,18 @@ async def transcribe(
         _safe_remove_temp_file(path)
 
 
-if __name__ == "__main__":
+def main() -> int:
+    """Entry point for CodeScribe server."""
     import uvicorn
 
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8237"))
     _configure_logging()
-    uvicorn.run("codescribe.whisper_server:app", host=host, port=port, reload=False)
+    uvicorn.run("codescribe.codescribe_server:app", host=host, port=port, reload=False)
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())
