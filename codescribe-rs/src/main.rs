@@ -19,10 +19,65 @@ mod tray;
 use anyhow::Result;
 use clap::Parser;
 use crossbeam_channel::unbounded;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
+
+/// PID lock file path
+fn pid_file_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".codescribe")
+        .join("codescribe.pid")
+}
+
+/// Check if another instance is running and acquire lock
+fn acquire_pid_lock() -> Result<(), String> {
+    let pid_path = pid_file_path();
+
+    // Ensure directory exists
+    if let Some(parent) = pid_path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+
+    // Check existing PID file
+    if pid_path.exists() {
+        let mut file = fs::File::open(&pid_path).map_err(|e| e.to_string())?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).ok();
+
+        if let Ok(existing_pid) = contents.trim().parse::<u32>() {
+            // Check if process is still running (macOS/Unix)
+            let status = std::process::Command::new("kill")
+                .args(["-0", &existing_pid.to_string()])
+                .status();
+
+            if status.map(|s| s.success()).unwrap_or(false) {
+                return Err(format!(
+                    "CodeScribe is already running (PID {}). Use 'make stop' to stop it.",
+                    existing_pid
+                ));
+            }
+        }
+    }
+
+    // Write our PID
+    let our_pid = std::process::id();
+    let mut file = fs::File::create(&pid_path).map_err(|e| e.to_string())?;
+    write!(file, "{}", our_pid).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Release PID lock on exit
+fn release_pid_lock() {
+    let pid_path = pid_file_path();
+    fs::remove_file(pid_path).ok();
+}
 
 /// CodeScribe - Speech-to-text tray app for macOS
 ///
@@ -43,6 +98,12 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Acquire PID lock (prevent multiple instances)
+    if let Err(msg) = acquire_pid_lock() {
+        eprintln!("❌ {}", msg);
+        std::process::exit(1);
+    }
 
     // Initialize logging
     let log_level = if cli.verbose {
@@ -212,6 +273,8 @@ async fn main() -> Result<()> {
                                 warn!("Processing in progress - forcing reset");
                                 controller_for_menu.reset().await;
                             }
+                            // Release PID lock before exit
+                            release_pid_lock();
                             info!("Exiting application");
                             std::process::exit(0);
                         }
@@ -563,5 +626,6 @@ async fn main() -> Result<()> {
     tray::run_with_hotkeys(hotkey_manager)?;
 
     info!("CodeScribe shutting down...");
+    release_pid_lock();
     Ok(())
 }

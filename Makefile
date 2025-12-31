@@ -57,6 +57,7 @@ start: backend-start
 stop:
 	@pkill -f "^codescribe$$" 2>/dev/null || true
 	@pkill -f "python.*codescribe.backend" 2>/dev/null || true
+	@rm -f ~/.codescribe/codescribe.pid 2>/dev/null || true
 	@echo "✅ Stopped"
 
 restart: stop
