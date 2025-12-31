@@ -1,14 +1,16 @@
 //! Simple transcript history manager for CodeScribe
 //!
 //! Saves transcripts to ~/.CodeScribe/Transcripts/YYYY-MM-DD/HHMMSS.txt
+//! Optionally saves raw audio to ~/.CodeScribe/logs/audio/ (when DUMP_AUDIO_LOGS=1)
 
 use chrono::{DateTime, Local};
 use directories::BaseDirs;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 /// A single history entry
 #[derive(Debug, Clone)]
@@ -157,6 +159,64 @@ pub fn open_history_folder() {
     let dir = history_dir();
     if let Err(e) = Command::new("open").arg(&dir).spawn() {
         error!("Failed to open history folder: {}", e);
+    }
+}
+
+/// Get the audio logs directory, creating it if needed
+pub fn audio_logs_dir() -> PathBuf {
+    let home = BaseDirs::new()
+        .map(|b| b.home_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let dir = home.join(".CodeScribe").join("logs").join("audio");
+
+    if !dir.exists() {
+        if let Err(e) = fs::create_dir_all(&dir) {
+            error!("Failed to create audio logs directory: {}", e);
+        }
+    }
+
+    dir
+}
+
+/// Copy raw audio file to logs/audio when DUMP_AUDIO_LOGS is enabled
+///
+/// # Arguments
+/// * `src_path` - Path to the source WAV file (typically a temp file)
+/// * `reason` - Reason/context for this recording (e.g., "session", "streaming")
+///
+/// # Returns
+/// * `Some(PathBuf)` - Path to the saved audio file on success
+/// * `None` - If src_path is empty or copy failed
+pub fn dump_audio(src_path: &Path, reason: &str) -> Option<PathBuf> {
+    if !src_path.exists() {
+        warn!("dump_audio: source file does not exist: {:?}", src_path);
+        return None;
+    }
+
+    let dest_dir = audio_logs_dir();
+    let ts = chrono::Utc::now().timestamp_millis();
+    let session_id = Uuid::new_v4().to_string().replace('-', "")[..32].to_string();
+    let filename = format!("{}_{}__{}.wav", ts, session_id, reason);
+    let dest_path = dest_dir.join(&filename);
+
+    match fs::copy(src_path, &dest_path) {
+        Ok(_) => {
+            info!("Raw audio dumped for debugging: {:?}", dest_path);
+            Some(dest_path)
+        }
+        Err(e) => {
+            error!("Failed to dump raw audio to {:?}: {}", dest_path, e);
+            None
+        }
+    }
+}
+
+/// Open the audio logs folder in Finder
+#[allow(dead_code)] // Prepared for future "Open Audio Logs" menu option
+pub fn open_audio_logs_folder() {
+    let dir = audio_logs_dir();
+    if let Err(e) = Command::new("open").arg(&dir).spawn() {
+        error!("Failed to open audio logs folder: {}", e);
     }
 }
 

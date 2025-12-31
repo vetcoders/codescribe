@@ -1,6 +1,6 @@
 [package]
 name = "codescribe"
-version = "0.5.1"
+version = "0.5.3"
 edition = "2021"
 description = "Speech-to-text tray app for macOS - Rust frontend"
 authors = ["Loctree <contact@loctree.io>"]
@@ -26,6 +26,11 @@ hound = "3.5"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "multipart", "blocking"] }
+
+# WebSocket client for voice chat
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
+base64 = "0.22"
 
 # Clipboard
 arboard = "3"
@@ -82,6 +87,10 @@ dispatch = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints.rust]
+# Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
+unexpected_cfgs = "allow"
 
 [profile.release]
 opt-level = "z"

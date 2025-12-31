@@ -276,6 +276,11 @@ pub struct Config {
     /// Silence hang time in seconds (legacy)
     #[serde(default = "default_silence_hang_sec")]
     pub silence_hang_sec: f32,
+
+    // ===== Debugging =====
+    /// Whether to dump raw audio files to logs/audio directory
+    #[serde(default = "default_dump_audio_logs")]
+    pub dump_audio_logs: bool,
 }
 
 impl Default for Config {
@@ -309,6 +314,7 @@ impl Default for Config {
             backend_ports: default_backend_ports(),
             silence_db: default_silence_db(),
             silence_hang_sec: default_silence_hang_sec(),
+            dump_audio_logs: default_dump_audio_logs(),
         }
     }
 }

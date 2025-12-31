@@ -15,6 +15,8 @@ mod launchd;
 mod permissions;
 mod sound;
 mod tray;
+mod voice_chat;
+mod voice_chat_ui;
 
 use anyhow::Result;
 use clap::Parser;
@@ -520,6 +522,13 @@ async fn main() -> Result<()> {
                         }
                         tray::TrayMenuEvent::OpenMicrophoneSettings => {
                             info!("Open Microphone Settings (handled in tray.rs)");
+                        }
+                        // Tools submenu
+                        tray::TrayMenuEvent::OpenVoiceLab => {
+                            info!("Open Voice Lab (handled in tray.rs)");
+                        }
+                        tray::TrayMenuEvent::OpenTeacher => {
+                            info!("Open Calibration Teacher (handled in tray.rs)");
                         }
                         // Appearance
                         tray::TrayMenuEvent::ToggleStatusGlyph => {

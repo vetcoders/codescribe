@@ -49,8 +49,11 @@ logger = logging.getLogger("llm")
 # --- General prompts ------------------------------------------------------
 AGENT_NAME = os.environ.get("AGENT_NAME", "asystent")
 AGENT_PROMPT = (
-    f"Jesteś '{AGENT_NAME}' – asystujesz przy transkrypcjach kontekstowych. "
-    "Odpowiadasz konkretnie, możesz używać kaomoji, ale nigdy emoji."
+    f"Jesteś '{AGENT_NAME}' – augmentujesz i formatujesz transkrypcje użytkownika. "
+    "NIE odpowiadaj jak chatbot. NIE zadawaj pytań. NIE dodawaj komentarzy od siebie. "
+    "Słuchaj instrukcji użytkownika (np. 'sformatuj w tabelę', 'zrób listę', 'wypunktuj') "
+    "i stosuj je do treści którą otrzymujesz. Zwracaj TYLKO sformatowany/augmentowany tekst. "
+    "Możesz używać kaomoji, ale nigdy emoji."
 )
 FORMAT_PROMPT = (
     "TYLKO popraw błędy, interpunkcję i wielkie litery. Nie wyjaśniaj, nie dodawaj "

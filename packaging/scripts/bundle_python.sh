@@ -18,14 +18,16 @@
 #   3. Copy whisper_server.py and whisper_server module
 #   4. Copy pyproject.toml for uv to resolve dependencies
 #   5. Copy assets (*.jsonl vocabulary files, etc.)
-#   6. Validate the bundle structure
+#   6. Copy scripts (get_models.py for model download)
+#   7. Validate the bundle structure
 #
 # Output directory structure:
 #   $APP_DIR/Contents/Resources/python/
 #   ├── codescribe/          (Python package)
 #   ├── whisper_server.py    (entry point for uvicorn)
 #   ├── pyproject.toml       (dependency manifest for uv)
-#   └── assets/              (vocabulary files, etc.)
+#   ├── assets/              (vocabulary files, etc.)
+#   └── scripts/             (get_models.py, etc.)
 
 set -euo pipefail
 
@@ -144,7 +146,20 @@ else
   print_warning "Assets directory not found: $ASSETS_SRC (optional)"
 fi
 
-# Step 6: Copy package data from codescribe.assets if different from assets/
+# Step 6: Copy scripts (get_models.py, etc.)
+print_info "Copying scripts (get_models.py, etc.)..."
+SCRIPTS_SRC="$ROOT_DIR/scripts"
+if [[ -d "$SCRIPTS_SRC" ]]; then
+  SCRIPTS_DST="$PYTHON_DST/scripts"
+  mkdir -p "$SCRIPTS_DST"
+  cp "$SCRIPTS_SRC"/*.py "$SCRIPTS_DST/" 2>/dev/null || true
+  SCRIPT_COUNT=$(find "$SCRIPTS_DST" -name "*.py" -type f | wc -l)
+  print_success "Copied $SCRIPT_COUNT script files"
+else
+  print_warning "Scripts directory not found: $SCRIPTS_SRC (model download may not work)"
+fi
+
+# Step 7: Copy package data from codescribe/assets if different from assets/
 if [[ -d "$SRC_PACKAGE/assets" && "$SRC_PACKAGE/assets" != "$ASSETS_SRC" ]]; then
   print_info "Copying codescribe package assets..."
   PACKAGE_ASSETS="$PYTHON_DST/codescribe/assets"
@@ -157,7 +172,7 @@ if [[ -d "$SRC_PACKAGE/assets" && "$SRC_PACKAGE/assets" != "$ASSETS_SRC" ]]; the
   fi
 fi
 
-# Step 7: Validate bundle structure
+# Step 8: Validate bundle structure
 print_info "Validating bundle structure..."
 VALIDATION_OK=true
 

@@ -21,6 +21,7 @@
 //! recordings while preserving quick toggle-mode for power users.
 
 use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -28,8 +29,85 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+/// A validated audio file path that is guaranteed to be within allowed directories.
+///
+/// This newtype wrapper ensures at the type level that the path has been validated
+/// against path traversal attacks before any file operations are performed.
+#[derive(Debug, Clone)]
+struct ValidatedAudioPath(PathBuf);
+
+impl ValidatedAudioPath {
+    /// Create a new ValidatedAudioPath after security validation.
+    ///
+    /// This prevents path traversal attacks by ensuring the path:
+    /// 1. Exists and is a file
+    /// 2. Is within an allowed directory (temp dir or ~/.CodeScribe)
+    /// 3. After canonicalization, still resolves to an allowed directory
+    ///
+    /// Returns Ok(ValidatedAudioPath) if valid, or an error if validation fails.
+    fn new(path: &Path) -> Result<Self> {
+        // Path must exist
+        if !path.exists() {
+            anyhow::bail!("Audio file does not exist: {:?}", path);
+        }
+
+        // Must be a file, not a directory
+        if !path.is_file() {
+            anyhow::bail!("Audio path is not a file: {:?}", path);
+        }
+
+        // Canonicalize to resolve symlinks and get absolute path
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("Failed to canonicalize audio path: {:?}", path))?;
+
+        // Define allowed directories
+        let temp_dir = std::env::temp_dir();
+        let home_codescribe = directories::BaseDirs::new()
+            .map(|b| b.home_dir().join(".CodeScribe"))
+            .unwrap_or_else(|| PathBuf::from(".CodeScribe"));
+
+        // Canonicalize allowed dirs (they might not exist yet)
+        let allowed_dirs: Vec<PathBuf> = vec![
+            temp_dir.canonicalize().unwrap_or(temp_dir),
+            home_codescribe.canonicalize().unwrap_or(home_codescribe),
+        ];
+
+        // Check if canonical path starts with any allowed directory
+        let is_allowed = allowed_dirs
+            .iter()
+            .any(|allowed| canonical.starts_with(allowed));
+
+        if !is_allowed {
+            anyhow::bail!(
+                "Audio path {:?} is outside allowed directories. Canonical: {:?}",
+                path,
+                canonical
+            );
+        }
+
+        Ok(Self(canonical))
+    }
+
+    /// Get a reference to the validated path.
+    fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Read the validated file contents.
+    ///
+    /// This is safe because the path has already been validated.
+    async fn read(&self) -> Result<Vec<u8>> {
+        tokio::fs::read(&self.0)
+            .await
+            .with_context(|| format!("Failed to read audio file: {:?}", self.0))
+    }
+}
+
 use crate::config::Config;
 use crate::tray::{update_tray_status, TrayStatus};
+use crate::voice_chat::{VoiceChatClient, VoiceChatEvent};
+use crate::voice_chat_ui;
 use codescribe::{hide_hold_badge, show_hold_badge};
 
 // TODO: Re-enable when implementing recorder
@@ -457,14 +535,32 @@ impl RecordingController {
     async fn process_recording(&self, _session_id: Option<String>, assistive: bool) -> Result<()> {
         // Stop the recorder and get audio file path
         let mut recorder = self.recorder.lock().await;
-        let audio_path = recorder
+        let raw_audio_path = recorder
             .stop()
             .await
             .context("Failed to stop recorder")?
             .ok_or_else(|| anyhow::anyhow!("No audio file produced"))?;
         drop(recorder); // Release lock
 
-        info!("Transcribing audio file: {}", audio_path.display());
+        // Validate audio path to prevent path traversal attacks
+        let audio_path = ValidatedAudioPath::new(&raw_audio_path)?;
+
+        // Dump audio to logs if enabled
+        if self.config.read().await.dump_audio_logs {
+            crate::history::dump_audio(audio_path.as_path(), "session");
+        }
+
+        // When assistive mode is enabled (Ctrl+Shift), use Voice Chat pipeline
+        if assistive {
+            info!("Assistive mode enabled - using Voice Chat pipeline");
+            return self.process_voice_chat(&audio_path).await;
+        }
+
+        // Normal transcription flow
+        info!(
+            "Transcribing audio file: {}",
+            audio_path.as_path().display()
+        );
 
         // Get language from config
         let language = self.config.read().await.whisper_language;
@@ -474,7 +570,7 @@ impl RecordingController {
         };
 
         // Call backend transcription with language parameter
-        let raw_text = crate::client::transcribe(&audio_path, language_opt)
+        let raw_text = crate::client::transcribe(audio_path.as_path(), language_opt)
             .await
             .context("Transcription failed")?;
 
@@ -492,18 +588,16 @@ impl RecordingController {
         }
 
         // Format the text - use AI if enabled and configured, otherwise simple cleanup
-        // In assistive mode (Ctrl+Shift), ALWAYS use AI for intelligent responses
         let ai_formatting_enabled = self.config.read().await.ai_formatting_enabled;
-        let should_use_ai =
-            (ai_formatting_enabled || assistive) && crate::ai_formatting::has_api_key();
+        let should_use_ai = ai_formatting_enabled && crate::ai_formatting::has_api_key();
 
         let formatted_text = if should_use_ai {
             info!(
-                "Formatting transcript via AI (enabled={}, assistive={})",
-                ai_formatting_enabled, assistive
+                "Formatting transcript via AI (enabled={})",
+                ai_formatting_enabled
             );
             let lang_str = language_opt.map(String::from);
-            crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), assistive).await
+            crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), false).await
         } else if has_repetition {
             // Simple local cleanup if AI not available but we have repetitions
             info!("AI formatting not available, using local repetition cleanup");
@@ -514,16 +608,214 @@ impl RecordingController {
         };
 
         info!(
-            "Final transcript ready ({} chars, formatted={}, assistive={})",
+            "Final transcript ready ({} chars, formatted={})",
             formatted_text.len(),
-            ai_formatting_enabled,
-            assistive
+            ai_formatting_enabled
         );
 
         // Paste the text into the active application
         crate::clipboard::paste_text(&formatted_text).context("Failed to paste text")?;
 
         info!("Text pasted successfully");
+
+        // Save to history
+        let entry = crate::history::save_entry(&formatted_text);
+        info!("Transcript saved to history: {}", entry.path.display());
+
+        Ok(())
+    }
+
+    /// Process recording through Voice Chat WebSocket pipeline.
+    ///
+    /// This sends the audio to the backend via WebSocket, which:
+    /// 1. Transcribes the audio
+    /// 2. Detects sentence boundaries
+    /// 3. Streams LLM response tokens back
+    ///
+    /// The response is displayed in an overlay and copied to clipboard.
+    async fn process_voice_chat(&self, audio_path: &ValidatedAudioPath) -> Result<()> {
+        use crossbeam_channel::unbounded;
+        use std::time::Duration;
+
+        // Show the overlay
+        voice_chat_ui::show_voice_chat_overlay();
+        voice_chat_ui::update_voice_chat_status("Connecting...");
+
+        // Create event channel for voice chat
+        let (event_tx, event_rx) = unbounded::<VoiceChatEvent>();
+
+        // Connect to voice chat WebSocket
+        let client = match VoiceChatClient::connect(event_tx).await {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Failed to connect to voice chat: {}", e);
+                voice_chat_ui::update_voice_chat_status("Connection failed");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                voice_chat_ui::hide_voice_chat_overlay();
+
+                // Fall back to normal assistive formatting
+                warn!("Falling back to standard assistive formatting");
+                return self.fallback_assistive_processing(audio_path).await;
+            }
+        };
+
+        voice_chat_ui::update_voice_chat_status("Sending audio...");
+
+        // Read and send audio file in chunks (path already validated)
+        let audio_data = audio_path.read().await?;
+
+        const CHUNK_SIZE: usize = 16 * 1024; // 16KB chunks
+        let chunks: Vec<&[u8]> = audio_data.chunks(CHUNK_SIZE).collect();
+        let total_chunks = chunks.len();
+
+        info!(
+            "Sending {} audio chunks ({} bytes total)",
+            total_chunks,
+            audio_data.len()
+        );
+
+        for (i, chunk) in chunks.iter().enumerate() {
+            let is_last = i == total_chunks - 1;
+            if let Err(e) = client.send_audio_chunk(chunk, 16000, is_last).await {
+                error!("Failed to send audio chunk: {}", e);
+                voice_chat_ui::update_voice_chat_status("Send failed");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                voice_chat_ui::hide_voice_chat_overlay();
+                return Err(e);
+            }
+
+            // Small delay between chunks
+            if !is_last {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        // Signal end of audio
+        if let Err(e) = client.send_end().await {
+            error!("Failed to send end signal: {}", e);
+        }
+
+        voice_chat_ui::update_voice_chat_status("Processing...");
+
+        // Process events from the voice chat
+        let mut full_response = String::new();
+        let mut got_response = false;
+        let timeout = Duration::from_secs(60); // 60 second timeout for LLM response
+        let start = std::time::Instant::now();
+
+        loop {
+            if start.elapsed() > timeout {
+                warn!("Voice chat timeout");
+                voice_chat_ui::update_voice_chat_status("Timeout");
+                break;
+            }
+
+            match event_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(event) => match event {
+                    VoiceChatEvent::Connected => {
+                        debug!("Voice chat connected");
+                    }
+                    VoiceChatEvent::Transcript(text) => {
+                        info!("Transcript received: {}", text);
+                        voice_chat_ui::update_voice_chat_status("Thinking...");
+                    }
+                    VoiceChatEvent::SentenceComplete(text) => {
+                        info!("Sentence complete: {}", text);
+                    }
+                    VoiceChatEvent::LlmDelta(delta) => {
+                        voice_chat_ui::append_voice_chat_delta(&delta);
+                        full_response.push_str(&delta);
+                    }
+                    VoiceChatEvent::LlmDone {
+                        text,
+                        response_id: _,
+                    } => {
+                        info!("LLM response complete: {} chars", text.len());
+                        full_response = text;
+                        got_response = true;
+
+                        // Copy to clipboard
+                        if let Err(e) = crate::clipboard::copy(&full_response) {
+                            error!("Failed to copy to clipboard: {}", e);
+                        } else {
+                            info!("Response copied to clipboard");
+                        }
+
+                        voice_chat_ui::update_voice_chat_status("Copied to clipboard!");
+                        break;
+                    }
+                    VoiceChatEvent::Error(msg) => {
+                        error!("Voice chat error: {}", msg);
+                        voice_chat_ui::update_voice_chat_status(&format!("Error: {}", msg));
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        break;
+                    }
+                    VoiceChatEvent::Disconnected => {
+                        info!("Voice chat disconnected");
+                        break;
+                    }
+                },
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // Continue waiting
+                    continue;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    info!("Voice chat event channel closed");
+                    break;
+                }
+            }
+        }
+
+        // Close the WebSocket
+        let _ = client.close().await;
+
+        // Keep overlay visible for a moment, then hide
+        if got_response {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        } else {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        voice_chat_ui::hide_voice_chat_overlay();
+
+        // Save to history if we got a response
+        if !full_response.is_empty() {
+            let entry = crate::history::save_entry(&full_response);
+            info!(
+                "Voice chat response saved to history: {}",
+                entry.path.display()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Fallback to standard assistive processing when voice chat fails.
+    async fn fallback_assistive_processing(&self, audio_path: &ValidatedAudioPath) -> Result<()> {
+        info!("Using fallback assistive processing");
+
+        let language = self.config.read().await.whisper_language;
+        let language_opt = match language {
+            crate::config::Language::Auto => None,
+            lang => Some(lang.as_str()),
+        };
+
+        // Transcribe (path already validated)
+        let raw_text = crate::client::transcribe(audio_path.as_path(), language_opt)
+            .await
+            .context("Transcription failed")?;
+
+        if raw_text.trim().is_empty() {
+            error!("Transcription failed: no text returned");
+            anyhow::bail!("Empty transcript");
+        }
+
+        // Format with assistive mode
+        let lang_str = language_opt.map(String::from);
+        let formatted_text =
+            crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), true).await;
+
+        // Paste
+        crate::clipboard::paste_text(&formatted_text).context("Failed to paste text")?;
 
         // Save to history
         let entry = crate::history::save_entry(&formatted_text);

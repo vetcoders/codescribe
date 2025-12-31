@@ -7,9 +7,10 @@ Helper script to download local models after cloning the repo.
 - Optionally downloads one or more LLMs for formatting (optional feature)
 
 Usage examples:
-  uv run python scripts/get_models.py --whisper large-v3-turbo
-  uv run python scripts/get_models.py --whisper medium
-  uv run python scripts/get_models.py --whisper all --llm mlx-community/Llama-3.2-3B-Instruct-4bit
+  uv run python scripts/get_models.py                          # Downloads large-v3-turbo-q8 (default)
+  uv run python scripts/get_models.py --whisper medium-q8      # Q8 quantized medium
+  uv run python scripts/get_models.py --whisper all            # Both large-v3-turbo-q8 and medium-q8
+  uv run python scripts/get_models.py --whisper large-v3-turbo # Full precision (mlx-community)
   uv run python scripts/get_models.py --llm speakleash/Bielik-4.5B-v3.0-Instruct-mlx
 
 Notes:
@@ -29,7 +30,16 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 # Known MLX Whisper repos (canonical names only — aliases defined below)
+# Q8 quantized variants from LibraxisAI (recommended: best quality/size ratio)
+# Full-precision variants from mlx-community
 WHISPER_REPOS = {
+    # Q8 quantized (LibraxisAI) - recommended for production
+    "small-q8": "LibraxisAI/whisper-small-mlx-q8",
+    "medium-q8": "LibraxisAI/whisper-medium-mlx-q8",
+    "large-v3-q8": "LibraxisAI/whisper-large-v3-mlx-q8",
+    "large-v3-turbo-q8": "LibraxisAI/whisper-large-v3-turbo-mlx-q8",
+    "large-v3-q4": "LibraxisAI/whisper-large-v3-q4",
+    # Full precision (mlx-community)
     "tiny": "mlx-community/whisper-tiny-mlx",
     "base": "mlx-community/whisper-base-mlx",
     "small": "mlx-community/whisper-small-mlx",
@@ -44,6 +54,10 @@ WHISPER_ALIASES = {
     "small-mlx": "small",
     "medium-mlx": "medium",
     "large-v3-mlx": "large-v3",
+    # Q8 aliases
+    "q8": "large-v3-turbo-q8",
+    "turbo-q8": "large-v3-turbo-q8",
+    "turbo": "large-v3-turbo-q8",  # Default turbo now points to Q8
 }
 
 
@@ -152,7 +166,7 @@ def download_whisper(
     if which == "none":
         return paths
     if which == "all":
-        targets = ["large-v3-turbo", "medium"]
+        targets = ["large-v3-turbo-q8", "medium-q8"]
     else:
         canonical = WHISPER_ALIASES.get(which, which)
         if canonical not in WHISPER_REPOS:
@@ -185,13 +199,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--whisper",
-        default="large-v3-turbo",
+        default="large-v3-turbo-q8",
         type=_parse_whisper_choice,
         metavar="VARIANT",
         help=(
             "Which Whisper variant(s) to download. Options: "
             + ", ".join(sorted(WHISPER_REPOS))
-            + ", or 'all'/'none'. Legacy aliases like 'medium-mlx' are also accepted."
+            + ", or 'all'/'none'. Q8 variants from LibraxisAI recommended (best quality/size ratio)."
         ),
     )
     parser.add_argument(
@@ -235,9 +249,14 @@ def main() -> int:
 
     # Print helpful env configuration
     print("\nNext steps (example environment):")
-    # Prefer large if present else medium
+    # Prefer Q8 variants, then full precision
     whisper_env: Path | None = None
-    for candidate in [models_dir / "whisper-large-v3-turbo", models_dir / "whisper-medium"]:
+    for candidate in [
+        models_dir / "whisper-large-v3-turbo-q8",
+        models_dir / "whisper-medium-q8",
+        models_dir / "whisper-large-v3-turbo",
+        models_dir / "whisper-medium",
+    ]:
         if candidate.exists():
             whisper_env = candidate
             break

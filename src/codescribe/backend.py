@@ -143,10 +143,13 @@ _ALLOWED_AUDIO_MIME = {
     "audio/mpeg",
     "audio/mp3",
     "audio/webm",
-    "audio/ogg",
-    "audio/flac",
+    "audio/m4a",
     "audio/x-m4a",
     "audio/mp4",
+    "audio/aac",
+    "audio/flac",
+    "audio/ogg",
+    "application/octet-stream",  # curl default
 }
 
 
@@ -292,20 +295,22 @@ def _find_model_path(variant: str) -> str | None:
     return None
 
 
-# Whisper path selection (prefer small for "survival" mode; configurable via env)
-_variant = os.environ.get("WHISPER_VARIANT", "small").strip().lower()  # Default: small!
+# Whisper path selection (medium default; small is too poor for Polish)
+_variant = (
+    os.environ.get("WHISPER_VARIANT", "medium").strip().lower()
+)  # Default: medium (small is too poor for Polish)
 if not os.environ.get("WHISPER_DIR"):
     # Search for model in order of preference
     _found = _find_model_path(_variant)
     if not _found:
-        # Fallback candidates if preferred variant not found
-        for v in ("small", "medium", "large-v3-turbo", "large-v3"):
+        # Fallback candidates if preferred variant not found (medium/large preferred over small)
+        for v in ("medium", "large-v3-turbo", "large-v3", "small"):
             if v != _variant:
                 _found = _find_model_path(v)
                 if _found:
                     break
     # Final fallback to default path
-    _default_whisper_path = _found if _found else os.path.join(USER_MODELS_DIR, "whisper-small")
+    _default_whisper_path = _found if _found else os.path.join(USER_MODELS_DIR, "whisper-medium")
 else:
     _default_whisper_path = os.environ["WHISPER_DIR"]
 

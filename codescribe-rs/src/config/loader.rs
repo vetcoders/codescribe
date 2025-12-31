@@ -164,6 +164,11 @@ impl Config {
         if let Ok(val) = std::env::var("START_AT_LOGIN") {
             self.start_at_login = val.parse().unwrap_or(false);
         }
+
+        // Debugging
+        if let Ok(val) = std::env::var("DUMP_AUDIO_LOGS") {
+            self.dump_audio_logs = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
     }
 
     /// Save a single configuration value to .env file.

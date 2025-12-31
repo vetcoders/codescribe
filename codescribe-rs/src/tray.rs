@@ -352,6 +352,10 @@ pub enum TrayMenuEvent {
     CheckPermissions,
     OpenAccessibilitySettings,
     OpenMicrophoneSettings,
+
+    // Tools submenu
+    OpenVoiceLab,
+    OpenTeacher,
 }
 
 // FormattingProvider is tray-specific (maps to config::AiProvider)
@@ -503,6 +507,10 @@ struct MenuIds {
     perm_check: MenuId,
     perm_accessibility: MenuId,
     perm_microphone: MenuId,
+
+    // Tools submenu
+    tools_voice_lab: MenuId,
+    tools_teacher: MenuId,
 }
 
 /// Build the complete tray menu with all submenus
@@ -806,7 +814,20 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
 
     menu.append(&feedback_menu)?;
 
-    // 10. Permissions submenu
+    // 10. Tools submenu (Voice Lab, Teacher)
+    let tools_menu = Submenu::new("Tools", true);
+
+    let tools_voice_lab = MenuItem::new("🔬 Open Voice Lab", true, None);
+    let tools_voice_lab_id = tools_voice_lab.id().clone();
+    tools_menu.append(&tools_voice_lab)?;
+
+    let tools_teacher = MenuItem::new("👨‍🏫 Calibration Teacher", true, None);
+    let tools_teacher_id = tools_teacher.id().clone();
+    tools_menu.append(&tools_teacher)?;
+
+    menu.append(&tools_menu)?;
+
+    // 12. Permissions submenu
     let permissions_menu = Submenu::new("Permissions", true);
 
     // Status display using permission check functions
@@ -845,16 +866,16 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
 
     menu.append(&permissions_menu)?;
 
-    // 11. Separator
+    // 13. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 12. Start at Login (checkbox) - check current state from launchd
+    // 14. Start at Login (checkbox) - check current state from launchd
     let is_enabled = crate::launchd::is_login_item_enabled();
     let start_at_login = CheckMenuItem::new("Start at Login", true, is_enabled, None);
     let start_at_login_id = start_at_login.id().clone();
     menu.append(&start_at_login)?;
 
-    // 13. Quit
+    // 15. Quit
     let quit_item = MenuItem::new("Quit", true, None);
     let quit_id = quit_item.id().clone();
     menu.append(&quit_item)?;
@@ -900,6 +921,8 @@ fn build_menu() -> Result<(Menu, MenuIds)> {
             perm_check: perm_check_id,
             perm_accessibility: perm_accessibility_id,
             perm_microphone: perm_microphone_id,
+            tools_voice_lab: tools_voice_lab_id,
+            tools_teacher: tools_teacher_id,
         },
     ))
 }
@@ -1078,6 +1101,33 @@ fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
             let _ = Command::new("open")
                 .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
                 .spawn();
+        }
+    }
+    // Tools submenu
+    else if event_id == &menu_ids.tools_voice_lab {
+        send_menu_event(TrayMenuEvent::OpenVoiceLab);
+        // Open Voice Lab in browser (backend /tester endpoint)
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            let backend_url = std::env::var("CODESCRIBE_BACKEND_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8237".to_string());
+            let lab_url = format!("{}/tester", backend_url);
+            info!("Opening Voice Lab: {}", lab_url);
+            let _ = Command::new("open").arg(&lab_url).spawn();
+        }
+    } else if event_id == &menu_ids.tools_teacher {
+        send_menu_event(TrayMenuEvent::OpenTeacher);
+        // Open Teacher/Calibration in browser
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            let backend_url = std::env::var("CODESCRIBE_BACKEND_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8237".to_string());
+            // Teacher mode uses the same Lab UI but with calibration wizard
+            let teacher_url = format!("{}/tester#calibrate", backend_url);
+            info!("Opening Calibration Teacher: {}", teacher_url);
+            let _ = Command::new("open").arg(&teacher_url).spawn();
         }
     } else {
         // Unknown menu event - log for debugging
