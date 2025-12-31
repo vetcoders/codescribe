@@ -348,6 +348,7 @@ async def _format_with_ollama(text: str, assistive: bool, settings: VistaSetting
         set_previous_response_id(session_type, new_response_id)
 
         if out:
+            # nosemgrep: python-logger-credential-disclosure - session_type is not a secret
             logger.debug(
                 "Ollama formatting ok (session=%s, tokens_in=%s, tokens_out≈%s)",
                 session_type,
