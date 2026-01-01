@@ -3,6 +3,7 @@
 //! Spawns and manages the Python backend subprocess.
 //! Automatically starts on launch and stops on exit.
 
+use crate::config::Config;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -11,6 +12,9 @@ use tracing::{debug, error, info, warn};
 
 /// Default port for the backend server
 const DEFAULT_PORT: u16 = 8237;
+
+/// Extra ports we probe/clean beyond the default (legacy + discovery)
+const EXTRA_KNOWN_PORTS: &[u16] = &[8238, 7237, 6237, 5237];
 
 /// Maximum time to wait for server startup
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -24,6 +28,17 @@ fn backend_pid_file_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home)
         .join(".CodeScribe")
         .join("backend.pid")
+}
+
+/// All ports we consider "ours" for cleanup (default + legacy/probe)
+fn known_backend_ports() -> Vec<u16> {
+    // Start with config defaults so we respect the same set across the app
+    let mut ports = Config::default().backend_ports;
+    ports.push(DEFAULT_PORT);
+    ports.extend_from_slice(EXTRA_KNOWN_PORTS);
+    ports.sort_unstable();
+    ports.dedup();
+    ports
 }
 
 /// Check if a PID belongs to a CodeScribe backend process
@@ -56,8 +71,8 @@ impl BackendServer {
     pub fn start() -> Result<Self> {
         let port = DEFAULT_PORT;
 
-        // Kill any zombie backend processes from previous runs
-        Self::kill_existing_on_port(port);
+        // Kill any zombie backend processes from previous runs across all known ports
+        Self::kill_existing_on_known_ports();
 
         // Small delay to ensure port is released
         std::thread::sleep(Duration::from_millis(100));
@@ -284,6 +299,14 @@ impl BackendServer {
 
         // Small delay to ensure processes are cleaned up
         std::thread::sleep(Duration::from_millis(100));
+    }
+
+    /// Kill zombie backends across all known ports (default + legacy/probe list)
+    pub fn kill_existing_on_known_ports() {
+        let ports = known_backend_ports();
+        for port in ports {
+            Self::kill_existing_on_port(port);
+        }
     }
 }
 

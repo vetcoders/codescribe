@@ -321,8 +321,8 @@ async fn main() -> Result<()> {
                                         warn!("Processing in progress - forcing reset");
                                         controller_for_menu.reset().await;
                                     }
-                                    // Stop the backend server
-                                    backend::BackendServer::kill_existing_on_port(8237);
+                                    // Stop any running backend servers (all known ports)
+                                    backend::BackendServer::kill_existing_on_known_ports();
                                     // Release PID lock before exit
                                     release_pid_lock();
                                     info!("Exiting application (backend stopped)");
@@ -356,7 +356,7 @@ async fn main() -> Result<()> {
                             {
                                 controller_for_menu.reset().await;
                             }
-                            backend::BackendServer::kill_existing_on_port(8237);
+                            backend::BackendServer::kill_existing_on_known_ports();
                             release_pid_lock();
                             std::process::exit(0);
                         }
