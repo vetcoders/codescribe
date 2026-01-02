@@ -556,7 +556,9 @@ impl RecordingController {
         // When assistive mode is enabled (Ctrl+Shift), use Voice Chat pipeline
         if assistive {
             info!("Assistive mode enabled - using Voice Chat pipeline");
-            return self.process_voice_chat(&audio_path, recording_timestamp).await;
+            return self
+                .process_voice_chat(&audio_path, recording_timestamp)
+                .await;
         }
 
         // Normal transcription flow
@@ -622,7 +624,8 @@ impl RecordingController {
         info!("Text pasted successfully");
 
         // Save to history with same timestamp as audio file
-        let entry = crate::history::save_entry_with_timestamp(&formatted_text, Some(recording_timestamp));
+        let entry =
+            crate::history::save_entry_with_timestamp(&formatted_text, Some(recording_timestamp));
         info!("Transcript saved: {}", entry.path.display());
 
         // Update tray menu history label
@@ -639,7 +642,11 @@ impl RecordingController {
     /// 3. Streams LLM response tokens back
     ///
     /// The response is displayed in an overlay and copied to clipboard.
-    async fn process_voice_chat(&self, audio_path: &ValidatedAudioPath, recording_timestamp: chrono::DateTime<chrono::Local>) -> Result<()> {
+    async fn process_voice_chat(
+        &self,
+        audio_path: &ValidatedAudioPath,
+        recording_timestamp: chrono::DateTime<chrono::Local>,
+    ) -> Result<()> {
         use crossbeam_channel::unbounded;
         use std::time::Duration;
 
@@ -661,7 +668,9 @@ impl RecordingController {
 
                 // Fall back to normal assistive formatting
                 warn!("Falling back to standard assistive formatting");
-                return self.fallback_assistive_processing(audio_path, recording_timestamp).await;
+                return self
+                    .fallback_assistive_processing(audio_path, recording_timestamp)
+                    .await;
             }
         };
 
@@ -785,11 +794,11 @@ impl RecordingController {
 
         // Save to history if we got a response (with same timestamp as audio)
         if !full_response.is_empty() {
-            let entry = crate::history::save_entry_with_timestamp(&full_response, Some(recording_timestamp));
-            info!(
-                "Voice chat response saved: {}",
-                entry.path.display()
+            let entry = crate::history::save_entry_with_timestamp(
+                &full_response,
+                Some(recording_timestamp),
             );
+            info!("Voice chat response saved: {}", entry.path.display());
             // Update tray menu history label
             crate::tray::update_history_label(&full_response);
         }
@@ -798,7 +807,11 @@ impl RecordingController {
     }
 
     /// Fallback to standard assistive processing when voice chat fails.
-    async fn fallback_assistive_processing(&self, audio_path: &ValidatedAudioPath, recording_timestamp: chrono::DateTime<chrono::Local>) -> Result<()> {
+    async fn fallback_assistive_processing(
+        &self,
+        audio_path: &ValidatedAudioPath,
+        recording_timestamp: chrono::DateTime<chrono::Local>,
+    ) -> Result<()> {
         info!("Using fallback assistive processing");
 
         let language = self.config.read().await.whisper_language;
@@ -826,7 +839,8 @@ impl RecordingController {
         crate::clipboard::paste_text(&formatted_text).context("Failed to paste text")?;
 
         // Save to history with same timestamp as audio
-        let entry = crate::history::save_entry_with_timestamp(&formatted_text, Some(recording_timestamp));
+        let entry =
+            crate::history::save_entry_with_timestamp(&formatted_text, Some(recording_timestamp));
         info!("Transcript saved: {}", entry.path.display());
 
         // Update tray menu history label

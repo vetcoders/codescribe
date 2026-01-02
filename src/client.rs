@@ -61,11 +61,22 @@ pub enum AudioValidationError {
 impl std::fmt::Display for AudioValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AudioValidationError::TooShort { size_bytes, min_bytes } => {
-                write!(f, "Audio too short ({} bytes, minimum {} bytes)", size_bytes, min_bytes)
+            AudioValidationError::TooShort {
+                size_bytes,
+                min_bytes,
+            } => {
+                write!(
+                    f,
+                    "Audio too short ({} bytes, minimum {} bytes)",
+                    size_bytes, min_bytes
+                )
             }
             AudioValidationError::TooLarge { size_mb, max_mb } => {
-                write!(f, "Audio too large ({:.1} MB, maximum {} MB)", size_mb, max_mb)
+                write!(
+                    f,
+                    "Audio too large ({:.1} MB, maximum {} MB)",
+                    size_mb, max_mb
+                )
             }
             AudioValidationError::Empty => {
                 write!(f, "Audio file is empty")
@@ -113,10 +124,7 @@ pub fn validate_audio(audio_data: &[u8]) -> std::result::Result<(), AudioValidat
     let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
 
     if size_bytes > max_mb * 1024 * 1024 {
-        return Err(AudioValidationError::TooLarge {
-            size_mb,
-            max_mb,
-        });
+        return Err(AudioValidationError::TooLarge { size_mb, max_mb });
     }
 
     Ok(())
@@ -563,9 +571,8 @@ async fn transcribe_external(
     }
 
     let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
-    Err(last_error.unwrap_or_else(|| {
-        anyhow::anyhow!("External STT transcription failed after all retries")
-    }))
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("External STT transcription failed after all retries")))
 }
 
 /// Send a single external STT transcription request (used by retry loop)
@@ -727,7 +734,10 @@ mod tests {
         let result = validate_audio(&[0u8; 500]); // 500 bytes < 1024 minimum
         assert!(matches!(
             result,
-            Err(AudioValidationError::TooShort { size_bytes: 500, min_bytes: 1024 })
+            Err(AudioValidationError::TooShort {
+                size_bytes: 500,
+                min_bytes: 1024
+            })
         ));
     }
 

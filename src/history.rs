@@ -83,17 +83,17 @@ pub fn save_entry_with_timestamp(text: &str, timestamp: Option<DateTime<Local>>)
     match fs::File::create(&path) {
         Ok(mut file) => {
             if let Err(e) = file.write_all(text.as_bytes()) {
-                error!(
-                    "Failed to write transcript '{}': {}",
-                    path.display(),
-                    e
-                );
+                error!("Failed to write transcript '{}': {}", path.display(), e);
             } else {
                 debug!("Saved transcript: {}", path.display());
             }
         }
         Err(e) => {
-            error!("Failed to create transcript file '{}': {}", path.display(), e);
+            error!(
+                "Failed to create transcript file '{}': {}",
+                path.display(),
+                e
+            );
         }
     }
 
@@ -286,8 +286,10 @@ mod tests {
         let entry = save_entry_with_timestamp(text, Some(now));
 
         assert!(entry.path.exists());
-        assert_eq!(entry.timestamp.format("%H%M%S").to_string(),
-                   now.format("%H%M%S").to_string());
+        assert_eq!(
+            entry.timestamp.format("%H%M%S").to_string(),
+            now.format("%H%M%S").to_string()
+        );
 
         // Clean up
         let _ = fs::remove_file(&entry.path);

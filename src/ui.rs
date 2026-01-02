@@ -342,7 +342,6 @@ unsafe fn create_badge_window(config: &HoldBadgeConfig) -> Id {
     window
 }
 
-
 /// Create the circular badge view using CALayer for reliable rendering
 unsafe fn create_badge_view(config: &HoldBadgeConfig) -> Id {
     // Use a plain NSView with a CALayer for drawing
@@ -369,7 +368,12 @@ unsafe fn create_badge_view(config: &HoldBadgeConfig) -> Id {
 
     // Configure the layer to draw a circle
     // Set background color from config (default: red with 80% opacity)
-    let cg_color = create_cg_color(config.color.0, config.color.1, config.color.2, config.color.3);
+    let cg_color = create_cg_color(
+        config.color.0,
+        config.color.1,
+        config.color.2,
+        config.color.3,
+    );
     let _: () = msg_send![layer, setBackgroundColor: cg_color];
     CGColorRelease(cg_color);
 
@@ -386,7 +390,10 @@ unsafe fn create_badge_view(config: &HoldBadgeConfig) -> Id {
 // CGColor functions
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
-    fn CGColorCreate(space: *const std::ffi::c_void, components: *const f64) -> *const std::ffi::c_void;
+    fn CGColorCreate(
+        space: *const std::ffi::c_void,
+        components: *const f64,
+    ) -> *const std::ffi::c_void;
     fn CGColorSpaceCreateDeviceRGB() -> *const std::ffi::c_void;
     fn CGColorSpaceRelease(space: *const std::ffi::c_void);
     fn CGColorRelease(color: *const std::ffi::c_void);
