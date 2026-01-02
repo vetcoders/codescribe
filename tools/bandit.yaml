@@ -8,8 +8,8 @@ exclude_dirs:
   - models
   - tests
   - scripts
-  - src/codescribe/app
-  - src/codescribe/formatting
+  - server/codescribe/app
+  - server/codescribe/formatting
 # Skip Low severity issues that are acceptable in this codebase:
 # B101: assert for internal invariants is fine
 # B110, B112: try-except-pass/continue for best-effort cleanup and streaming
@@ -25,4 +25,4 @@ skips:
   - B603
   - B607
 targets:
-  - src/codescribe
+  - server/codescribe

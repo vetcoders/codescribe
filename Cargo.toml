@@ -1,0 +1,103 @@
+[package]
+name = "codescribe"
+version = "0.5.5"
+edition = "2021"
+description = "Speech-to-text tray app for macOS - Rust frontend"
+authors = ["Loctree <contact@loctree.io>"]
+license = "BSD-4-Clause"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# System tray
+tray-icon = "0.21"
+muda = "0.17"  # Menu for tray
+tao = "0.34"   # Event loop for tray (required on macOS)
+
+# Global hotkeys - using core-graphics CGEventTap directly
+# rdev = "0.5"  # DISABLED - crashes on macOS 26.2 (TSMGetInputSourceProperty from wrong thread)
+# global-hotkey = "0.6"  # DISABLED - requires F-keys, can't detect modifier-only presses
+# Now using CGEventTap via core-graphics for proper modifier-only detection
+
+# Audio recording
+cpal = "0.16"
+hound = "3.5"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "multipart", "blocking"] }
+
+# WebSocket client for voice chat
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
+base64 = "0.22"
+
+# Clipboard
+arboard = "3"
+
+# Key simulation for paste: Using core-graphics CGEvent directly (enigo removed)
+# enigo crashes on macOS 26.2 due to TSMGetInputSourceProperty called from wrong thread
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Config/paths
+directories = "6"
+shellexpand = "3"
+dotenvy = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# OpenAI Harmony format for /v1/responses API
+openai-harmony = "0.0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async channels
+crossbeam-channel = "0.5"
+
+# Time utilities
+chrono = "0.4"
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }
+
+# Lazy static for global state
+lazy_static = "1.4"
+
+# Image processing (for tray icon)
+image = { version = "0.25", default-features = false, features = ["png"] }
+walkdir = "2.5.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS specific - for better hotkey support if rdev fails
+core-foundation = "0.10"
+core-graphics = "0.25"
+# UI utilities (hold badge, caret tracking) - modern objc2-* crates
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSColor", "NSEvent", "NSBezierPath", "NSGraphics", "NSResponder"] }
+# Legacy objc for runtime declarations (ClassDecl) and msg_send! macro
+objc = "0.2"
+# Grand Central Dispatch for main thread operations
+dispatch = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+# Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
+unexpected_cfgs = "allow"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

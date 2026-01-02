@@ -14,7 +14,7 @@
 #
 # The script will:
 #   1. Verify uv is installed (required at runtime)
-#   2. Copy src/codescribe/ Python package
+#   2. Copy server/codescribe/ Python package
 #   3. Copy whisper_server.py and whisper_server module
 #   4. Copy pyproject.toml for uv to resolve dependencies
 #   5. Copy assets (*.jsonl vocabulary files, etc.)

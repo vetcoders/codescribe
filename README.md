@@ -110,7 +110,7 @@ All the usual checks can be run locally before pushing:
 ```bash
 uvx ruff format --check .
 uvx ruff check .
-uvx python -m bandit -c tools/bandit.yaml -r src/codescribe
+uvx python -m bandit -c tools/bandit.yaml -r server/codescribe
 uv run mypy                 # uses the repo’s [tool.mypy] settings
 uv run pytest -q            # full suite
 ```

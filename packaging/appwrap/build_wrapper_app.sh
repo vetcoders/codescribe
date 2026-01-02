@@ -44,12 +44,12 @@ mkdir -p "$ASSETS_DST" "$PYTHON_DST" "$MODELS_DST"
 
 bundle_whisper_model() {
   local variant="$1"
-  local src=""
+  local server=""
   for candidate in \
     "$ROOT_DIR/models/whisper-${variant}" \
     "$ROOT_DIR/models/${variant}"; do
     if [[ -d "$candidate" ]]; then
-      src="$candidate"
+      server="$candidate"
       break
     fi
   done
