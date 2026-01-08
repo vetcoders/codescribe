@@ -109,7 +109,7 @@ use crate::config::Config;
 use crate::tray::{update_tray_status, TrayStatus};
 use crate::voice_chat::{VoiceChatClient, VoiceChatEvent};
 use crate::voice_chat_ui;
-use codescribe::{hide_hold_badge, show_hold_badge};
+use codescribe::{hide_hold_badge, show_badge_for_mode, BadgeMode};
 
 // TODO: Re-enable when implementing recorder
 use crate::audio::Recorder;
@@ -354,7 +354,13 @@ impl RecordingController {
         let beep = config.beep_on_start;
         drop(config); // Release read lock
 
-        debug!("Scheduling hold-start after {}ms delay", delay_ms);
+        // Capture assistive mode for badge display
+        let is_assistive = *self.assistive_mode.read().await;
+
+        debug!(
+            "Scheduling hold-start after {}ms delay (assistive={})",
+            delay_ms, is_assistive
+        );
 
         // Cancel any existing delayed start
         self.cancel_pending_hold_start().await;
@@ -393,12 +399,20 @@ impl RecordingController {
                 crate::sound::play_sound("Tink");
             }
 
-            // Show red dot indicator near cursor/caret
-            show_hold_badge();
+            // Show badge with appropriate mode (Hold=red solid, Assistive=purple)
+            let badge_mode = if is_assistive {
+                BadgeMode::Assistive
+            } else {
+                BadgeMode::Hold
+            };
+            show_badge_for_mode(badge_mode);
 
             // Transition to REC_HOLD
             *state.write().await = State::RecHold;
-            info!("STATE TRANSITION: IDLE → REC_HOLD");
+            info!(
+                "STATE TRANSITION: IDLE → REC_HOLD (assistive={})",
+                is_assistive
+            );
 
             // Update tray status to Listening
             let _ = update_tray_status(TrayStatus::Listening);
@@ -454,12 +468,12 @@ impl RecordingController {
             crate::sound::play_sound("Tink");
         }
 
-        // Show red dot indicator near cursor/caret
-        show_hold_badge();
+        // Show pulsing red badge for toggle mode (hands-off recording)
+        show_badge_for_mode(BadgeMode::Toggle);
 
         // Transition to REC_TOGGLE
         *self.state.write().await = State::RecToggle;
-        info!("STATE TRANSITION: IDLE → REC_TOGGLE");
+        info!("STATE TRANSITION: IDLE → REC_TOGGLE (pulsing badge)");
 
         // Update tray status to Listening
         let _ = update_tray_status(TrayStatus::Listening);
@@ -506,6 +520,9 @@ impl RecordingController {
         // Get session ID and assistive mode before we reset them
         let session_id = self.session_id.read().await.clone();
         let assistive = *self.assistive_mode.read().await;
+
+        // Switch badge to processing mode (orange, pulsing)
+        show_badge_for_mode(BadgeMode::Processing);
 
         let result = self.process_recording(session_id, assistive).await;
 

@@ -54,6 +54,49 @@ const kAXValueCFRangeType: i32 = 3;
 // Window level constants
 const NS_STATUS_WINDOW_LEVEL: i64 = 25;
 
+/// Badge display mode for different recording/processing states
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BadgeMode {
+    /// Hold mode (Ctrl): Red, solid - "trzymaj palec!"
+    Hold,
+    /// Toggle mode (⌥⌥): Red, pulsing - "nagrywam hands-off"
+    Toggle,
+    /// Processing: Orange - "transkrybuję/formatuję"
+    Processing,
+    /// Assistive mode (Ctrl+Shift): Purple with glow - "AI słucha"
+    Assistive,
+}
+
+impl BadgeMode {
+    /// Get the base color for this mode (RGBA)
+    pub fn color(&self) -> (f64, f64, f64, f64) {
+        match self {
+            BadgeMode::Hold => (1.0, 0.0, 0.0, 0.8),       // Red
+            BadgeMode::Toggle => (1.0, 0.0, 0.0, 0.8),     // Red (will pulse)
+            BadgeMode::Processing => (1.0, 0.5, 0.0, 0.85), // Orange
+            BadgeMode::Assistive => (0.6, 0.2, 0.9, 0.85), // Purple
+        }
+    }
+
+    /// Whether this mode should pulse (opacity animation)
+    pub fn should_pulse(&self) -> bool {
+        matches!(self, BadgeMode::Toggle | BadgeMode::Processing)
+    }
+
+    /// Whether this mode has glow effect
+    pub fn has_glow(&self) -> bool {
+        matches!(self, BadgeMode::Assistive)
+    }
+
+    /// Get diameter multiplier for this mode
+    pub fn diameter_multiplier(&self) -> f64 {
+        match self {
+            BadgeMode::Assistive => 1.2, // Slightly larger for AI mode
+            _ => 1.0,
+        }
+    }
+}
+
 /// Configuration for the hold badge
 #[derive(Debug, Clone)]
 pub struct HoldBadgeConfig {
@@ -65,6 +108,8 @@ pub struct HoldBadgeConfig {
     pub update_interval_ms: u64,
     /// Badge color (R, G, B, A)
     pub color: (f64, f64, f64, f64),
+    /// Badge mode for animations
+    pub mode: BadgeMode,
 }
 
 impl Default for HoldBadgeConfig {
@@ -74,6 +119,20 @@ impl Default for HoldBadgeConfig {
             offset: (10.0, -10.0),
             update_interval_ms: 150,
             color: (1.0, 0.0, 0.0, 0.8), // Red with 80% opacity
+            mode: BadgeMode::Hold,
+        }
+    }
+}
+
+impl HoldBadgeConfig {
+    /// Create config from badge mode with appropriate colors
+    pub fn from_mode(mode: BadgeMode) -> Self {
+        let base = Self::default();
+        Self {
+            diameter: base.diameter * mode.diameter_multiplier(),
+            color: mode.color(),
+            mode,
+            ..base
         }
     }
 }
@@ -426,9 +485,14 @@ unsafe fn update_badge_position(window: Id, config: &HoldBadgeConfig) {
     let _: () = msg_send![window, setFrameOrigin: new_origin];
 }
 
-/// Show the hold badge and start position tracking
+/// Show the hold badge and start position tracking (default: Hold mode)
 pub fn show_hold_badge() {
     show_hold_badge_with_config(HoldBadgeConfig::default());
+}
+
+/// Show badge for specific mode with appropriate color/animation
+pub fn show_badge_for_mode(mode: BadgeMode) {
+    show_hold_badge_with_config(HoldBadgeConfig::from_mode(mode));
 }
 
 /// Internal implementation that must run on the main thread
@@ -458,10 +522,14 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
         state.config = config.clone();
         state.timer_running = true;
 
-        // Start position update timer
+        // Start position update timer (and pulse animation if needed)
         let update_interval = config.update_interval_ms;
+        let should_pulse = config.mode.should_pulse();
 
         thread::spawn(move || {
+            let mut pulse_phase: f64 = 0.0;
+            let pulse_speed = 0.15; // Radians per update cycle
+
             while BADGE_STATE.lock().unwrap().timer_running {
                 thread::sleep(Duration::from_millis(update_interval));
 
@@ -471,11 +539,35 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
                 }
 
                 if let Some(window_ptr) = state.window {
-                    // Position updates also need main thread
+                    // Calculate pulse opacity (sine wave from 0.4 to 1.0)
+                    let pulse_opacity = if should_pulse {
+                        pulse_phase += pulse_speed;
+                        0.7 + 0.3 * pulse_phase.sin() // Range: 0.4 to 1.0
+                    } else {
+                        1.0
+                    };
+
+                    // Position and opacity updates need main thread
                     Queue::main().exec_async(move || {
                         let window = window_ptr as Id;
                         let state = BADGE_STATE.lock().unwrap();
                         update_badge_position(window, &state.config);
+
+                        // Update opacity for pulsing effect
+                        if should_pulse {
+                            let content_view: Id = msg_send![window, contentView];
+                            if !content_view.is_null() {
+                                let subviews: Id = msg_send![content_view, subviews];
+                                let count: usize = msg_send![subviews, count];
+                                if count > 0 {
+                                    let badge_view: Id = msg_send![subviews, objectAtIndex: 0usize];
+                                    let layer: Id = msg_send![badge_view, layer];
+                                    if !layer.is_null() {
+                                        let _: () = msg_send![layer, setOpacity: pulse_opacity as f32];
+                                    }
+                                }
+                            }
+                        }
                     });
                 }
             }
@@ -520,6 +612,55 @@ pub fn hide_hold_badge() {
             let _: () = msg_send![window, close];
             state.window = None;
         }
+    });
+}
+
+/// Embedded icon for Dock (same as tray icon source)
+const DOCK_ICON_BYTES: &[u8] = include_bytes!("../assets/icon.png");
+
+/// Set the Dock icon programmatically (for unbundled binaries)
+///
+/// This allows the app to show its custom icon in the Dock even when
+/// running as a raw binary (not from a .app bundle).
+pub fn set_dock_icon() {
+    debug!("Setting Dock icon programmatically");
+
+    Queue::main().exec_async(|| unsafe {
+        // Get NSApplication shared instance
+        let ns_app_class = Class::get("NSApplication").expect("NSApplication class not found");
+        let shared_app: Id = msg_send![ns_app_class, sharedApplication];
+
+        if shared_app.is_null() {
+            warn!("Failed to get NSApplication sharedApplication");
+            return;
+        }
+
+        // Create NSData from embedded bytes
+        let ns_data_class = Class::get("NSData").expect("NSData class not found");
+        let ns_data: Id = msg_send![
+            ns_data_class,
+            dataWithBytes: DOCK_ICON_BYTES.as_ptr()
+            length: DOCK_ICON_BYTES.len()
+        ];
+
+        if ns_data.is_null() {
+            warn!("Failed to create NSData from icon bytes");
+            return;
+        }
+
+        // Create NSImage from NSData
+        let ns_image_class = Class::get("NSImage").expect("NSImage class not found");
+        let ns_image: Id = msg_send![ns_image_class, alloc];
+        let ns_image: Id = msg_send![ns_image, initWithData: ns_data];
+
+        if ns_image.is_null() {
+            warn!("Failed to create NSImage from icon data");
+            return;
+        }
+
+        // Set as application icon
+        let _: () = msg_send![shared_app, setApplicationIconImage: ns_image];
+        debug!("Dock icon set successfully");
     });
 }
 

@@ -24,7 +24,8 @@ pub use audio::{Recorder, RecorderConfig, RecorderDiagnostics};
 #[cfg(target_os = "macos")]
 pub use ui::{
     focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-    show_hold_badge, show_hold_badge_with_config, HoldBadgeConfig,
+    set_dock_icon, show_badge_for_mode, show_hold_badge, show_hold_badge_with_config, BadgeMode,
+    HoldBadgeConfig,
 };
 
 #[cfg(target_os = "macos")]

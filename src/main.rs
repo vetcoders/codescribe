@@ -138,19 +138,19 @@ fn handle_config_command() -> Result<()> {
 # Created by: codescribe --config
 
 # === STT (Speech-to-Text) ===
-STT_ENDPOINT=http://dragon:8100/v1/audio/transcriptions
-STT_API_KEY=your-api-key-here
+STT_ENDPOINT=https://api.libraxis.cloud/v1/audio/transcriptions
+STT_API_KEY=your-api-key-here # get it from https://api.libraxis.cloud/access
 WHISPER_MODEL=mlx-community/whisper-large-v3-mlx
-WHISPER_LANGUAGE=pl
+WHISPER_LANGUAGE=en
 
 # === LLM (AI Formatting/Assistive) ===
-LLM_ENDPOINT=http://dragon:1234/v1/responses
-LLM_API_KEY=your-api-key-here
+LLM_ENDPOINT=https://api.libraxis.cloud/v1/responses
+LLM_API_KEY=your-api-key-here # get it from https://api.libraxis.cloud/access
 LLM_MODEL=gpt-oss-120b-mlx
 AI_FORMATTING_ENABLED=1
 
 # === TTS (Text-to-Speech) - future ===
-# TTS_ENDPOINT=http://dragon:8666/v1/synthesize
+# TTS_ENDPOINT=https://api.libraxis.cloud/v1/synthesize
 # TTS_VOICE=MarekNeural
 
 # === Hotkeys ===
@@ -198,7 +198,7 @@ LOG_LEVEL=INFO
 #[derive(Parser)]
 #[command(name = "codescribe")]
 #[command(version)]
-#[command(author = "Loctree <contact@loctree.io>")]
+#[command(author = "VetCoders <hello@vetcoders.io>")]
 #[command(about = "Speech-to-text tray app for macOS", long_about = None)]
 struct Cli {
     /// Enable verbose/debug logging
@@ -285,6 +285,9 @@ async fn main() -> Result<()> {
     }
 
     info!("CodeScribe starting...");
+
+    // Set Dock icon for unbundled binary (bundled .app uses Info.plist)
+    codescribe::set_dock_icon();
 
     // Load environment variables from ~/.codescribe/.env
     let env_path = std::env::var("HOME")

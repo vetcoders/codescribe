@@ -1,9 +1,9 @@
 [package]
 name = "codescribe"
-version = "0.5.5"
+version = "0.6.0-rc1"
 edition = "2024"
 description = "Speech-to-text tray app for macOS - Rust frontend"
-authors = ["Loctree <contact@loctree.io>"]
+authors = ["VetCoders <hello@vetcoders.io>"]
 license = "BSD-4-Clause"
 
 [dependencies]

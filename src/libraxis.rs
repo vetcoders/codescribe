@@ -20,8 +20,6 @@ use tracing::{debug, error, info, warn};
 /// LibraxisAI API base URL
 pub const LIBRAXIS_API_HOST: &str = "api.libraxis.cloud";
 
-/// Default API key (can be overridden via LIBRAXIS_API_KEY env)
-const DEFAULT_API_KEY: &str = "vista-ZnCro4vqiGZftc2CEMipT0CUzUjOpSN8uPE5ksOjuzU";
 
 /// WebSocket config message
 #[derive(Serialize)]
@@ -78,9 +76,10 @@ fn get_client() -> &'static Client {
     })
 }
 
-/// Get API key from env or use default
-pub fn get_api_key() -> String {
-    std::env::var("LIBRAXIS_API_KEY").unwrap_or_else(|_| DEFAULT_API_KEY.to_string())
+/// Get API key from env (required - no hardcoded default!)
+pub fn get_api_key() -> Result<String> {
+    std::env::var("LIBRAXIS_API_KEY")
+        .context("LIBRAXIS_API_KEY env var not set - required for LibraxisAI API")
 }
 
 /// Callback for partial transcription updates (for UI feedback)
@@ -101,7 +100,7 @@ pub async fn transcribe_websocket(
     language: &str,
     on_partial: Option<PartialCallback>,
 ) -> Result<TranscriptionResult> {
-    let api_key = get_api_key();
+    let api_key = get_api_key()?;
     let url = format!("wss://{}/v1/audio/transcribe", LIBRAXIS_API_HOST);
 
     info!("[LibraxisAI WS] Connecting to {}", url);
@@ -232,7 +231,7 @@ pub async fn transcribe_ndjson(
     content_type: &str,
     on_partial: Option<PartialCallback>,
 ) -> Result<TranscriptionResult> {
-    let api_key = get_api_key();
+    let api_key = get_api_key()?;
     let url = format!("https://{}/v1/audio/transcribe:stream", LIBRAXIS_API_HOST);
 
     info!(
@@ -378,10 +377,9 @@ mod tests {
     }
 
     #[test]
-    fn test_get_api_key_default() {
-        // Without env var, should return default
-        let key = get_api_key();
-        assert!(!key.is_empty());
-        assert!(key.starts_with("vista-"));
+    fn test_get_api_key_requires_env() {
+        // Without env var, should return error (no hardcoded default!)
+        std::env::remove_var("LIBRAXIS_API_KEY");
+        assert!(get_api_key().is_err());
     }
 }
