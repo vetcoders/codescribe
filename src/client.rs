@@ -704,20 +704,86 @@ async fn transcribe_ndjson(
     audio_data: Vec<u8>,
     language: &str,
 ) -> Result<String> {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+
     let start = Instant::now();
+
+    // Parse WAV header to extract sample rate and PCM data
+    // WAV format: RIFF header (12 bytes) + fmt chunk (24+ bytes) + data chunk
+    if audio_data.len() < 44 {
+        anyhow::bail!("Audio data too short for WAV header");
+    }
+
+    // Verify RIFF header
+    if &audio_data[0..4] != b"RIFF" || &audio_data[8..12] != b"WAVE" {
+        anyhow::bail!("Invalid WAV file format");
+    }
+
+    // Extract sample rate from fmt chunk (bytes 24-27, little-endian)
+    let sample_rate = u32::from_le_bytes([
+        audio_data[24],
+        audio_data[25],
+        audio_data[26],
+        audio_data[27],
+    ]);
+
+    // Find data chunk start (skip header, typically 44 bytes but can vary)
+    let mut data_start = 12; // After "WAVE"
+    while data_start + 8 < audio_data.len() {
+        let chunk_id = &audio_data[data_start..data_start + 4];
+        let chunk_size =
+            u32::from_le_bytes([
+                audio_data[data_start + 4],
+                audio_data[data_start + 5],
+                audio_data[data_start + 6],
+                audio_data[data_start + 7],
+            ]) as usize;
+
+        if chunk_id == b"data" {
+            data_start += 8; // Skip "data" + size
+            break;
+        }
+        data_start += 8 + chunk_size;
+    }
+
+    let pcm_data = &audio_data[data_start..];
+
     info!(
-        "[NDJSON STT] POST {} ({} bytes, lang={})",
+        "[NDJSON STT] POST {} ({} bytes PCM @ {}Hz, lang={})",
         url,
-        audio_data.len(),
+        pcm_data.len(),
+        sample_rate,
         language
+    );
+
+    // Build NDJSON payload with base64 audio
+    // Single chunk with all audio (could be chunked for streaming in future)
+    let audio_base64 = BASE64.encode(pcm_data);
+
+    let chunk_json = serde_json::json!({
+        "type": "chunk",
+        "audio_base64": audio_base64,
+        "sample_rate": sample_rate,
+        "encoding": "pcm16",
+        "language": language,
+        "last": true
+    });
+
+    let end_json = serde_json::json!({"type": "end"});
+
+    let ndjson_body = format!("{}\n{}\n", chunk_json, end_json);
+
+    debug!(
+        "[NDJSON STT] Sending {} bytes NDJSON ({} bytes base64)",
+        ndjson_body.len(),
+        audio_base64.len()
     );
 
     let response = get_client()
         .post(url)
         .header("x-api-key", api_key)
-        .header("Content-Type", "audio/wav")
-        .query(&[("language", language)])
-        .body(audio_data)
+        .header("Content-Type", "application/x-ndjson")
+        .body(ndjson_body)
         .send()
         .await
         .context("Failed to send NDJSON STT request")?;
@@ -749,7 +815,23 @@ async fn transcribe_ndjson(
                 continue;
             }
 
-            if let Ok(chunk) = serde_json::from_str::<NdjsonChunk>(line_str) {
+            // Handle SSE format: "data: {...}" or "event: ..." or plain NDJSON
+            let json_str = if line_str.starts_with("data:") {
+                let data = line_str.strip_prefix("data:").unwrap().trim();
+                if data == "[DONE]" {
+                    debug!("[NDJSON STT] Received [DONE] marker");
+                    break;
+                }
+                data
+            } else if line_str.starts_with("event:") {
+                // Skip SSE event lines
+                continue;
+            } else {
+                // Plain NDJSON (no prefix)
+                line_str
+            };
+
+            if let Ok(chunk) = serde_json::from_str::<NdjsonChunk>(json_str) {
                 if let Some(err) = chunk.error {
                     error!("[NDJSON STT] Error in stream: {}", err);
                     anyhow::bail!("NDJSON STT error: {}", err);

@@ -24,8 +24,22 @@ tao = "0.34"   # Event loop for tray (required on macOS)
 cpal = "0.16"
 hound = "3.5"
 
+# Audio decoding
+symphonia = { version = "0.5", features = ["all", "mp3", "pcm", "isomp4", "alac"] }
+
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "multipart", "blocking"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "blocking", "stream"] }
+
+# Local STT
+candle-core = { version = "0.8", features = ["metal"] }
+candle-transformers = { version = "0.8", features = ["metal"] }
+candle-nn = "0.8"
+tokenizers = "0.19"
+indicatif = "0.17"
+zip = "0.6"
+npy = "0.4"
+ndarray = "0.16"
+ndarray-npy = "0.9"
 
 # WebSocket client for voice chat
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
@@ -78,6 +92,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 walkdir = "2.5.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# candle-coreml = "0.3"
+coreml-rs = "0.5"
 # macOS specific - for better hotkey support if rdev fails
 core-foundation = "0.10"
 core-graphics = "0.25"

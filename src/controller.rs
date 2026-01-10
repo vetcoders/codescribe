@@ -106,6 +106,8 @@ impl ValidatedAudioPath {
 }
 
 use crate::config::Config;
+use crate::local_stt::LocalWhisperEngine;
+use crate::models::ModelManager;
 use crate::tray::{update_tray_status, TrayStatus};
 use crate::voice_chat::{VoiceChatClient, VoiceChatEvent};
 use crate::voice_chat_ui;
@@ -183,6 +185,10 @@ pub struct RecordingController {
 
     /// Lock to serialize finish_recording calls
     serial_lock: Arc<Mutex<()>>,
+
+    /// Local STT engine (optional)
+    local_stt: Arc<Mutex<Option<LocalWhisperEngine>>>,
+
 }
 
 impl RecordingController {
@@ -197,6 +203,27 @@ impl RecordingController {
 
         let recorder = Recorder::new().expect("Failed to initialize audio recorder");
 
+        let model_manager = ModelManager::new().expect("Failed to initialize model manager");
+        let model_path = model_manager.get_model_path(&config.local_model);
+
+        let local_stt_engine = if config.use_local_stt && model_manager.check_model_exists(&config.local_model) {
+            match LocalWhisperEngine::new(&model_path) {
+                Ok(engine) => {
+                    info!("Local STT engine initialized with model: {}", config.local_model);
+                    Some(engine)
+                },
+                Err(e) => {
+                    warn!("Failed to initialize local STT engine: {}", e);
+                    None
+                }
+            }
+        } else {
+             if config.use_local_stt {
+                 warn!("Local STT enabled but model not found at: {}", model_path.display());
+             }
+             None
+        };
+
         Self {
             config: Arc::new(RwLock::new(config)),
             state: Arc::new(RwLock::new(State::Idle)),
@@ -205,6 +232,7 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
+            local_stt: Arc::new(Mutex::new(local_stt_engine)),
         }
     }
 
@@ -221,6 +249,27 @@ impl RecordingController {
 
         let recorder = Recorder::new().expect("Failed to initialize audio recorder");
 
+        let model_manager = ModelManager::new().expect("Failed to initialize model manager");
+        let model_path = model_manager.get_model_path(&cfg.local_model);
+
+        let local_stt_engine = if cfg.use_local_stt && model_manager.check_model_exists(&cfg.local_model) {
+            match LocalWhisperEngine::new(&model_path) {
+                Ok(engine) => {
+                    info!("Local STT engine initialized with model: {}", cfg.local_model);
+                    Some(engine)
+                },
+                Err(e) => {
+                    warn!("Failed to initialize local STT engine: {}", e);
+                    None
+                }
+            }
+        } else {
+             if cfg.use_local_stt {
+                 warn!("Local STT enabled but model not found at: {}", model_path.display());
+             }
+             None
+        };
+
         Self {
             config,
             state: Arc::new(RwLock::new(State::Idle)),
@@ -229,6 +278,7 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
+            local_stt: Arc::new(Mutex::new(local_stt_engine)),
         }
     }
 
@@ -579,15 +629,52 @@ impl RecordingController {
 
         // Get language from config
         let language = self.config.read().await.whisper_language;
+
+        // Call backend transcription with language parameter
+        let mut raw_text_opt = None;
+        let use_local_stt = self.config.read().await.use_local_stt;
+
         let language_opt = match language {
             crate::config::Language::Auto => None,
             lang => Some(lang.as_str()),
         };
 
-        // Call backend transcription with language parameter
-        let raw_text = crate::client::transcribe(audio_path.as_path(), language_opt)
-            .await
-            .context("Transcription failed")?;
+        if use_local_stt {
+            let local_engine = self.local_stt.clone();
+            let path_owned = audio_path.as_path().to_path_buf();
+            let language_owned = language_opt.map(|s| s.to_string());
+
+            // Run in blocking task to avoid blocking async runtime
+            // Since we use spawn_blocking, we need to handle JoinError too, but we use ?
+            let local_result = tokio::task::spawn_blocking(move || {
+                let mut guard = local_engine.blocking_lock();
+                match guard.as_mut().as_mut() {
+                    Some(engine) => engine.transcribe_file_with_language(&path_owned, language_owned.as_deref()),
+                    None => Err(anyhow::anyhow!("Local engine not initialized")),
+                }
+            }).await;
+
+            match local_result {
+                Ok(Ok(text)) => {
+                    info!("Local transcription successful");
+                    raw_text_opt = Some(text);
+                },
+                Ok(Err(e)) => {
+                    warn!("Local STT failed: {}", e);
+                },
+                Err(e) => {
+                     warn!("Local STT task failed: {}", e);
+                }
+            }
+        }
+
+        let raw_text = if let Some(text) = raw_text_opt {
+            text
+        } else {
+            crate::client::transcribe(audio_path.as_path(), language_opt)
+                .await
+                .context("Transcription failed")?
+        };
 
         if raw_text.trim().is_empty() {
             error!("Transcription failed: no text returned");

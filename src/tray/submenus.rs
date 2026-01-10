@@ -3,7 +3,7 @@
 //! Each function builds a specific submenu and returns its IDs.
 
 use anyhow::Result;
-use muda::{CheckMenuItem, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, IconMenuItem, MenuId, MenuItem, NativeIcon, PredefinedMenuItem, Submenu};
 
 use crate::tray::state::{
     HISTORY_MENU_ITEMS, HOLD_MENU_ITEMS, MODEL_MENU_ITEMS, TOGGLE_MENU_ITEMS,
@@ -394,17 +394,23 @@ pub fn build_permissions_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId)> 
 pub fn build_tools_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId)> {
     let tools_menu = Submenu::new("Tools", true);
 
-    let tools_voice_lab = MenuItem::new("🔬 Open Voice Lab", true, None);
+    // Voice Lab - Advanced icon (settings/lab)
+    let tools_voice_lab =
+        IconMenuItem::with_native_icon("Open Voice Lab", true, Some(NativeIcon::Advanced), None);
     let tools_voice_lab_id = tools_voice_lab.id().clone();
     tools_menu.append(&tools_voice_lab)?;
 
-    let tools_teacher = MenuItem::new("👨‍🏫 Calibration Teacher", true, None);
+    // Teacher - Info icon (educational)
+    let tools_teacher =
+        IconMenuItem::with_native_icon("Calibration Teacher", true, Some(NativeIcon::Info), None);
     let tools_teacher_id = tools_teacher.id().clone();
     tools_menu.append(&tools_teacher)?;
 
     tools_menu.append(&PredefinedMenuItem::separator())?;
 
-    let tools_new_conversation = MenuItem::new("🔄 New Conversation", true, None);
+    // New Conversation - Add icon (refresh/new)
+    let tools_new_conversation =
+        IconMenuItem::with_native_icon("New Conversation", true, Some(NativeIcon::Add), None);
     let tools_new_conversation_id = tools_new_conversation.id().clone();
     tools_menu.append(&tools_new_conversation)?;
 

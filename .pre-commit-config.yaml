@@ -50,7 +50,7 @@ repos:
     hooks:
       - id: codespell
         args: [
-          "-L", "rumps,te,crate,nd,fo,aks",  # common false positives; extend as needed
+          "-L", "rumps,te,crate,nd,fo,aks,ane",  # common false positives; ANE = Apple Neural Engine
         ]
         exclude: |
           (?x)^(
@@ -66,17 +66,17 @@ repos:
     hooks:
       - id: bandit
         name: bandit (security checks)
-        args: ["-q", "-c", "tools/bandit.yaml", "-r", "server/codescribe"]
+        args: ["-q", "-c", "tools/bandit.yaml", "-r", "tests", "-r", "tools"]
 
   # Semgrep — powerful multi-language static analysis (security & correctness)
-  - repo: https://github.com/returntocorp/semgrep
-    rev: v1.86.0
+  - repo: https://github.com/semgrep/semgrep
+    rev: v1.144.0
     hooks:
       - id: semgrep
         name: semgrep (p/ci ruleset)
         # Run even if pre-commit does not pass filenames (ensures hook fires on every commit)
         pass_filenames: false
-        stages: [commit, push]
+        stages: [pre-commit, pre-push]
         # Exclude path-traversal rule for client.rs - validated at controller level via ValidatedAudioPath
         args: [
           "--config", "p/ci",

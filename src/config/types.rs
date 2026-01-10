@@ -234,6 +234,14 @@ pub struct Config {
     pub history_enabled: bool,
 
     // ===== Backends =====
+    /// Whether to use local STT instead of cloud
+    #[serde(default)]
+    pub use_local_stt: bool,
+
+    /// Local model name (tiny, base, small, large-v3)
+    #[serde(default = "default_local_model")]
+    pub local_model: String,
+
     /// Full STT endpoint URL (e.g., https://api.libraxis.cloud/stt/v1/transcribe)
     pub stt_endpoint: Option<String>,
 
@@ -316,6 +324,8 @@ impl Default for Config {
             sound_name: default_sound_name(),
             sound_volume: default_sound_volume(),
             history_enabled: default_history_enabled(),
+            use_local_stt: false,
+            local_model: default_local_model(),
             stt_endpoint: None,
             whisper_server_url: default_whisper_server_url(),
             llm_server_url: default_llm_server_url(),

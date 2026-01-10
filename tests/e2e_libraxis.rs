@@ -153,7 +153,7 @@ pub async fn transcribe_websocket(
     };
     let config_json = serde_json::to_string(&config)?;
     println!("[WebSocket] Sending config: language={}", language);
-    ws.send(Message::Text(config_json)).await?;
+    ws.send(Message::Text(config_json.into())).await?;
 
     // 2. Send audio binary
     println!(
@@ -167,7 +167,7 @@ pub async fn transcribe_websocket(
 
     // 3. Signal end
     let end = WsEnd { msg_type: "end" };
-    ws.send(Message::Text(serde_json::to_string(&end)?)).await?;
+    ws.send(Message::Text(serde_json::to_string(&end)?.into())).await?;
     println!("[WebSocket] End signal sent, waiting for transcription...");
 
     // 4. Collect responses
@@ -438,9 +438,9 @@ Zwróć tylko sformatowany tekst, bez komentarzy."#;
 
 #[tokio::test]
 async fn test_websocket_transcription() -> Result<()> {
-    println!("\n{'='*60}");
+    println!("\n{}", "=".repeat(60));
     println!("TEST: WebSocket STT Transcription");
-    println!("{'='*60}");
+    println!("{}", "=".repeat(60));
 
     let api_key = get_api_key()?;
     let audio_data = load_test_audio().await?;
@@ -463,9 +463,9 @@ async fn test_websocket_transcription() -> Result<()> {
 
 #[tokio::test]
 async fn test_ndjson_transcription() -> Result<()> {
-    println!("\n{'='*60}");
+    println!("\n{}", "=".repeat(60));
     println!("TEST: NDJSON Streaming Transcription");
-    println!("{'='*60}");
+    println!("{}", "=".repeat(60));
 
     let api_key = get_api_key()?;
     let audio_data = load_test_audio().await?;
@@ -488,9 +488,9 @@ async fn test_ndjson_transcription() -> Result<()> {
 
 #[tokio::test]
 async fn test_ai_formatting() -> Result<()> {
-    println!("\n{'='*60}");
+    println!("\n{}", "=".repeat(60));
     println!("TEST: AI Formatting");
-    println!("{'='*60}");
+    println!("{}", "=".repeat(60));
 
     let api_key = get_api_key()?;
 
@@ -519,9 +519,9 @@ i eee no właściciel mówi że to od jakiegoś tygodnia tak się dzieje"#;
 
 #[tokio::test]
 async fn test_full_e2e_pipeline() -> Result<()> {
-    println!("\n{'='*60}");
+    println!("\n{}", "=".repeat(60));
     println!("TEST: Full E2E Pipeline (Transcription + AI Formatting)");
-    println!("{'='*60}");
+    println!("{}", "=".repeat(60));
 
     let api_key = get_api_key()?;
     let audio_data = load_test_audio().await?;
@@ -550,9 +550,9 @@ async fn test_full_e2e_pipeline() -> Result<()> {
     println!("[{} chars total]", formatted.len());
 
     // Summary
-    println!("\n{'='*60}");
+    println!("\n{}", "=".repeat(60));
     println!("E2E PIPELINE SUMMARY");
-    println!("{'='*60}");
+    println!("{}", "=".repeat(60));
     println!("Transcription time: {:?}", transcribe_time);
     println!("AI formatting time: {:?}", format_time);
     println!("Total pipeline time: {:?}", transcribe_time + format_time);
@@ -562,7 +562,7 @@ async fn test_full_e2e_pipeline() -> Result<()> {
         "Compression ratio: {:.1}%",
         (formatted.len() as f64 / raw_transcript.len() as f64) * 100.0
     );
-    println!("{'='*60}\n");
+    println!("{}\n", "=".repeat(60));
 
     assert!(!formatted.is_empty(), "Formatted text should not be empty");
 
@@ -572,9 +572,9 @@ async fn test_full_e2e_pipeline() -> Result<()> {
 /// Compare WebSocket vs NDJSON performance
 #[tokio::test]
 async fn test_compare_protocols() -> Result<()> {
-    println!("\n{'='*60}");
+    println!("\n{}", "=".repeat(60));
     println!("TEST: Protocol Comparison (WebSocket vs NDJSON)");
-    println!("{'='*60}");
+    println!("{}", "=".repeat(60));
 
     let api_key = get_api_key()?;
     let audio_data = load_test_audio().await?;
@@ -592,9 +592,9 @@ async fn test_compare_protocols() -> Result<()> {
     let ndjson_time = ndjson_start.elapsed();
 
     // Compare
-    println!("\n{'='*60}");
+    println!("\n{}", "=".repeat(60));
     println!("PROTOCOL COMPARISON RESULTS");
-    println!("{'='*60}");
+    println!("{}", "=".repeat(60));
     println!("WebSocket: {:?} ({} chars)", ws_time, ws_transcript.len());
     println!("NDJSON:    {:?} ({} chars)", ndjson_time, ndjson_transcript.len());
 
@@ -622,37 +622,7 @@ async fn test_compare_protocols() -> Result<()> {
         (common_prefix as f64 / ws_transcript.len().max(ndjson_transcript.len()) as f64) * 100.0
     };
     println!("Transcript similarity: {:.1}%", similarity);
-    println!("{'='*60}\n");
+    println!("{}\n", "=".repeat(60));
 
-    Ok(())
-}
-
-// ============================================================================
-// Main (for running as binary)
-// ============================================================================
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    println!("LibraxisAI E2E Test Suite");
-    println!("=========================\n");
-
-    // Run all tests
-    if let Err(e) = test_websocket_transcription().await {
-        eprintln!("WebSocket test failed: {}", e);
-    }
-
-    if let Err(e) = test_ndjson_transcription().await {
-        eprintln!("NDJSON test failed: {}", e);
-    }
-
-    if let Err(e) = test_ai_formatting().await {
-        eprintln!("AI formatting test failed: {}", e);
-    }
-
-    if let Err(e) = test_full_e2e_pipeline().await {
-        eprintln!("E2E pipeline test failed: {}", e);
-    }
-
-    println!("\nAll tests completed!");
     Ok(())
 }

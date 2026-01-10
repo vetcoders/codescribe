@@ -6,7 +6,7 @@
 fn main() {
     use codescribe::{
         focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-        show_hold_badge, HoldBadgeConfig,
+        show_hold_badge, HoldBadgeConfig, BadgeMode,
     };
     use std::thread;
     use std::time::Duration;
@@ -48,6 +48,7 @@ fn main() {
         offset: (-15.0, 15.0),
         update_interval_ms: 100,
         color: (0.2, 0.4, 1.0, 0.9), // Blue-ish
+        mode: BadgeMode::Hold,
     };
     codescribe::show_hold_badge_with_config(custom_config);
     println!("   Badge will be larger and to the left/below cursor");

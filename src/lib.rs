@@ -7,9 +7,13 @@
 #![allow(unexpected_cfgs)]
 
 pub mod audio;
+pub mod audio_loader;
 pub mod clipboard;
 pub mod config;
 pub mod conversation;
+pub mod local_stt;
+pub mod models;
+pub mod whisper_model;
 pub mod voice_chat;
 
 #[cfg(target_os = "macos")]
