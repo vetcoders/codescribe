@@ -108,10 +108,10 @@ impl ValidatedAudioPath {
 use crate::config::Config;
 use crate::local_stt::LocalWhisperEngine;
 use crate::models::ModelManager;
-use crate::tray::{update_tray_status, TrayStatus};
+use crate::tray::{TrayStatus, update_tray_status};
 use crate::voice_chat::{VoiceChatClient, VoiceChatEvent};
 use crate::voice_chat_ui;
-use codescribe::{hide_hold_badge, show_badge_for_mode, BadgeMode};
+use codescribe::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
 // TODO: Re-enable when implementing recorder
 use crate::audio::Recorder;
@@ -188,7 +188,6 @@ pub struct RecordingController {
 
     /// Local STT engine (optional)
     local_stt: Arc<Mutex<Option<LocalWhisperEngine>>>,
-
 }
 
 impl RecordingController {
@@ -211,23 +210,30 @@ impl RecordingController {
         }
         let model_path = model_manager.get_model_path(&config.local_model);
 
-        let local_stt_engine = if config.use_local_stt && model_manager.check_model_exists(&config.local_model) {
-            match LocalWhisperEngine::new(&model_path) {
-                Ok(engine) => {
-                    info!("Local STT engine initialized with model: {}", config.local_model);
-                    Some(engine)
-                },
-                Err(e) => {
-                    warn!("Failed to initialize local STT engine: {}", e);
-                    None
+        let local_stt_engine =
+            if config.use_local_stt && model_manager.check_model_exists(&config.local_model) {
+                match LocalWhisperEngine::new(&model_path) {
+                    Ok(engine) => {
+                        info!(
+                            "Local STT engine initialized with model: {}",
+                            config.local_model
+                        );
+                        Some(engine)
+                    }
+                    Err(e) => {
+                        warn!("Failed to initialize local STT engine: {}", e);
+                        None
+                    }
                 }
-            }
-        } else {
-             if config.use_local_stt {
-                 warn!("Local STT enabled but model not found at: {}", model_path.display());
-             }
-             None
-        };
+            } else {
+                if config.use_local_stt {
+                    warn!(
+                        "Local STT enabled but model not found at: {}",
+                        model_path.display()
+                    );
+                }
+                None
+            };
 
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -262,23 +268,30 @@ impl RecordingController {
         }
         let model_path = model_manager.get_model_path(&cfg.local_model);
 
-        let local_stt_engine = if cfg.use_local_stt && model_manager.check_model_exists(&cfg.local_model) {
-            match LocalWhisperEngine::new(&model_path) {
-                Ok(engine) => {
-                    info!("Local STT engine initialized with model: {}", cfg.local_model);
-                    Some(engine)
-                },
-                Err(e) => {
-                    warn!("Failed to initialize local STT engine: {}", e);
-                    None
+        let local_stt_engine =
+            if cfg.use_local_stt && model_manager.check_model_exists(&cfg.local_model) {
+                match LocalWhisperEngine::new(&model_path) {
+                    Ok(engine) => {
+                        info!(
+                            "Local STT engine initialized with model: {}",
+                            cfg.local_model
+                        );
+                        Some(engine)
+                    }
+                    Err(e) => {
+                        warn!("Failed to initialize local STT engine: {}", e);
+                        None
+                    }
                 }
-            }
-        } else {
-             if cfg.use_local_stt {
-                 warn!("Local STT enabled but model not found at: {}", model_path.display());
-             }
-             None
-        };
+            } else {
+                if cfg.use_local_stt {
+                    warn!(
+                        "Local STT enabled but model not found at: {}",
+                        model_path.display()
+                    );
+                }
+                None
+            };
 
         Self {
             config,
@@ -659,19 +672,22 @@ impl RecordingController {
             let local_result = tokio::task::spawn_blocking(move || {
                 let mut guard = local_engine.blocking_lock();
                 match guard.as_mut().as_mut() {
-                    Some(engine) => engine.transcribe_file_with_language(&path_owned, language_owned.as_deref()),
+                    Some(engine) => {
+                        engine.transcribe_file_with_language(&path_owned, language_owned.as_deref())
+                    }
                     None => Err(anyhow::anyhow!("Local engine not initialized")),
                 }
-            }).await;
+            })
+            .await;
 
             match local_result {
                 Ok(Ok(text)) => {
                     info!("Local STT: {} chars transcribed", text.len());
                     raw_text_opt = Some(text);
-                },
+                }
                 Ok(Err(e)) => {
                     warn!("Local STT failed, falling back to cloud: {}", e);
-                },
+                }
                 Err(e) => {
                     warn!("Local STT task panicked, falling back to cloud: {}", e);
                 }

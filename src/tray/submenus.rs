@@ -3,7 +3,9 @@
 //! Each function builds a specific submenu and returns its IDs.
 
 use anyhow::Result;
-use muda::{CheckMenuItem, IconMenuItem, MenuId, MenuItem, NativeIcon, PredefinedMenuItem, Submenu};
+use muda::{
+    CheckMenuItem, IconMenuItem, MenuId, MenuItem, NativeIcon, PredefinedMenuItem, Submenu,
+};
 
 use crate::tray::state::{
     HISTORY_MENU_ITEMS, HOLD_MENU_ITEMS, MODEL_MENU_ITEMS, TOGGLE_MENU_ITEMS,
@@ -14,8 +16,26 @@ use crate::tray::types::{
 
 // Type aliases
 pub type ModelMenuIds = (MenuId, MenuId, MenuId, MenuId, MenuId, MenuId);
-pub type HoldMenuIds = (MenuId, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId);
-pub type FeedbackMenuIds = (MenuId, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId);
+pub type HoldMenuIds = (
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+);
+pub type FeedbackMenuIds = (
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+    MenuId,
+);
 
 /// Build the Language submenu
 pub fn build_language_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId)> {
@@ -55,11 +75,19 @@ pub fn build_models_submenu() -> Result<(Submenu, ModelMenuIds)> {
     let model_small =
         CheckMenuItem::new("Use Whisper: Small", true, current_whisper == "small", None);
     let model_small_id = model_small.id().clone();
-    let model_medium =
-        CheckMenuItem::new("Use Whisper: Medium", true, current_whisper == "medium", None);
+    let model_medium = CheckMenuItem::new(
+        "Use Whisper: Medium",
+        true,
+        current_whisper == "medium",
+        None,
+    );
     let model_medium_id = model_medium.id().clone();
-    let model_large_v3 =
-        CheckMenuItem::new("Use Whisper: Large v3", true, current_whisper == "large-v3", None);
+    let model_large_v3 = CheckMenuItem::new(
+        "Use Whisper: Large v3",
+        true,
+        current_whisper == "large-v3",
+        None,
+    );
     let model_large_v3_id = model_large_v3.id().clone();
     let model_large_v3_turbo = CheckMenuItem::new(
         "Use Whisper: Large v3 Turbo",
@@ -155,17 +183,33 @@ pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
     hold_menu.append(&hold_current_label)?;
     hold_menu.append(&PredefinedMenuItem::separator())?;
 
-    let hold_ctrl =
-        CheckMenuItem::new(format!("Hold: {}", HoldMods::Ctrl.label()), true, true, None);
+    let hold_ctrl = CheckMenuItem::new(
+        format!("Hold: {}", HoldMods::Ctrl.label()),
+        true,
+        true,
+        None,
+    );
     let hold_ctrl_id = hold_ctrl.id().clone();
-    let hold_ctrl_opt =
-        CheckMenuItem::new(format!("Hold: {}", HoldMods::CtrlAlt.label()), true, false, None);
+    let hold_ctrl_opt = CheckMenuItem::new(
+        format!("Hold: {}", HoldMods::CtrlAlt.label()),
+        true,
+        false,
+        None,
+    );
     let hold_ctrl_opt_id = hold_ctrl_opt.id().clone();
-    let hold_ctrl_shift =
-        CheckMenuItem::new(format!("Hold: {}", HoldMods::CtrlShift.label()), true, false, None);
+    let hold_ctrl_shift = CheckMenuItem::new(
+        format!("Hold: {}", HoldMods::CtrlShift.label()),
+        true,
+        false,
+        None,
+    );
     let hold_ctrl_shift_id = hold_ctrl_shift.id().clone();
-    let hold_ctrl_cmd =
-        CheckMenuItem::new(format!("Hold: {}", HoldMods::CtrlCmd.label()), true, false, None);
+    let hold_ctrl_cmd = CheckMenuItem::new(
+        format!("Hold: {}", HoldMods::CtrlCmd.label()),
+        true,
+        false,
+        None,
+    );
     let hold_ctrl_cmd_id = hold_ctrl_cmd.id().clone();
 
     hold_menu.append(&hold_ctrl)?;
@@ -364,8 +408,11 @@ pub fn build_permissions_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId)> 
         crate::permissions::PermissionStatus::NotDetermined => "?",
         _ => "✗",
     };
-    let perm_status_label =
-        MenuItem::new(format!("AX: {} | Mic: {}", ax_status, mic_status), false, None);
+    let perm_status_label = MenuItem::new(
+        format!("AX: {} | Mic: {}", ax_status, mic_status),
+        false,
+        None,
+    );
     permissions_menu.append(&perm_status_label)?;
     permissions_menu.append(&PredefinedMenuItem::separator())?;
 
@@ -407,8 +454,12 @@ pub fn build_tools_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId, MenuId)
     tools_menu.append(&tools_teacher)?;
 
     // Native Lab (Tauri) - Computer icon (native app)
-    let tools_native_lab =
-        IconMenuItem::with_native_icon("Open Native Lab (Tauri)", true, Some(NativeIcon::Computer), None);
+    let tools_native_lab = IconMenuItem::with_native_icon(
+        "Open Native Lab (Tauri)",
+        true,
+        Some(NativeIcon::Computer),
+        None,
+    );
     let tools_native_lab_id = tools_native_lab.id().clone();
     tools_menu.append(&tools_native_lab)?;
 

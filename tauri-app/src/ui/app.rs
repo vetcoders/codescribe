@@ -1,7 +1,7 @@
-use leptos::prelude::*;
 use crate::ui::lab::LabView;
-use crate::ui::teacher::TeacherView;
 use crate::ui::settings::SettingsView;
+use crate::ui::teacher::TeacherView;
+use leptos::prelude::*;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {

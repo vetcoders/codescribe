@@ -226,7 +226,8 @@ impl Recorder {
             for d in devices {
                 if let Ok(desc) = d.description() {
                     let name = desc.to_string();
-                    if name == preferred || name.to_lowercase().contains(&preferred.to_lowercase()) {
+                    if name == preferred || name.to_lowercase().contains(&preferred.to_lowercase())
+                    {
                         selected = Some(d);
                         break;
                     }
@@ -241,7 +242,10 @@ impl Recorder {
                 .context("No input device available")?
         };
 
-        let device_name = device.description().map(|d| d.to_string()).unwrap_or_else(|_| "Unknown".to_string());
+        let device_name = device
+            .description()
+            .map(|d| d.to_string())
+            .unwrap_or_else(|_| "Unknown".to_string());
         info!("Using input device: {}", device_name);
 
         // Get supported config

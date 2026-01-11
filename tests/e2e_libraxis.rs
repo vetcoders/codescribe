@@ -20,7 +20,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 /// LibraxisAI API base URL
 const LIBRAXIS_API_BASE: &str = "api.libraxis.cloud";
 
-
 /// WebSocket config message
 #[derive(Serialize)]
 struct WsConfig {
@@ -96,11 +95,7 @@ fn get_api_key() -> Option<String> {
 /// Get test audio file path (returns None when not configured or missing).
 fn get_test_audio_path() -> Option<PathBuf> {
     let path = std::env::var("TEST_AUDIO_FILE").ok().map(PathBuf::from)?;
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
+    if path.exists() { Some(path) } else { None }
 }
 
 /// Load test audio file
@@ -111,7 +106,11 @@ async fn load_test_audio(path: &PathBuf) -> Result<Vec<u8>> {
         .await
         .with_context(|| format!("Failed to read test audio file: {:?}", path))?;
 
-    println!("Loaded {} bytes ({:.2} MB)", data.len(), data.len() as f64 / 1_000_000.0);
+    println!(
+        "Loaded {} bytes ({:.2} MB)",
+        data.len(),
+        data.len() as f64 / 1_000_000.0
+    );
     Ok(data)
 }
 
@@ -168,7 +167,8 @@ pub async fn transcribe_websocket(
 
     // 3. Signal end
     let end = WsEnd { msg_type: "end" };
-    ws.send(Message::Text(serde_json::to_string(&end)?.into())).await?;
+    ws.send(Message::Text(serde_json::to_string(&end)?.into()))
+        .await?;
     println!("[WebSocket] End signal sent, waiting for transcription...");
 
     // 4. Collect responses
@@ -229,10 +229,7 @@ pub async fn transcribe_websocket(
     }
 
     let _ = ws.close(None).await;
-    println!(
-        "[WebSocket] Total time: {:?}\n",
-        start.elapsed()
-    );
+    println!("[WebSocket] Total time: {:?}\n", start.elapsed());
 
     if final_text.is_empty() {
         anyhow::bail!("No final transcription received");
@@ -258,10 +255,7 @@ pub async fn transcribe_ndjson(
     api_key: &str,
     language: &str,
 ) -> Result<String> {
-    let url = format!(
-        "https://{}/v1/audio/transcribe:stream",
-        LIBRAXIS_API_BASE
-    );
+    let url = format!("https://{}/v1/audio/transcribe:stream", LIBRAXIS_API_BASE);
     println!("\n[NDJSON] POST to: {}", url);
 
     let client = Client::builder()
@@ -322,10 +316,7 @@ pub async fn transcribe_ndjson(
                 if let Some(text) = chunk.text {
                     if chunk.is_final.unwrap_or(false) {
                         final_text = text;
-                        println!(
-                            "\n[NDJSON] FINAL received in {:?}",
-                            stream_start.elapsed()
-                        );
+                        println!("\n[NDJSON] FINAL received in {:?}", stream_start.elapsed());
                         println!(
                             "[NDJSON] Total partials: {}, Final length: {} chars",
                             partial_count,
@@ -628,7 +619,11 @@ async fn test_compare_protocols() -> Result<()> {
     println!("PROTOCOL COMPARISON RESULTS");
     println!("{}", "=".repeat(60));
     println!("WebSocket: {:?} ({} chars)", ws_time, ws_transcript.len());
-    println!("NDJSON:    {:?} ({} chars)", ndjson_time, ndjson_transcript.len());
+    println!(
+        "NDJSON:    {:?} ({} chars)",
+        ndjson_time,
+        ndjson_transcript.len()
+    );
 
     let faster = if ws_time < ndjson_time {
         "WebSocket"

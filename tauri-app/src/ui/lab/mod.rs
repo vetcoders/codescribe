@@ -196,10 +196,8 @@ fn EndpointPanel() -> impl IntoView {
         set_is_busy.set(true);
 
         leptos::task::spawn_local(async move {
-            let res: Result<String, String> = tauri::invoke(
-                "transcribe_audio",
-                TranscribeArgs { audio_path: path },
-            ).await;
+            let res: Result<String, String> =
+                tauri::invoke("transcribe_audio", TranscribeArgs { audio_path: path }).await;
 
             set_is_busy.set(false);
             match res {
@@ -361,7 +359,8 @@ fn ChatPanel() -> impl IntoView {
             let mut msgs = messages.get();
             msgs.push(ChatMessage {
                 role: "assistant".to_string(),
-                content: "(Chat integration coming soon - connect to LLM endpoint in Settings)".to_string(),
+                content: "(Chat integration coming soon - connect to LLM endpoint in Settings)"
+                    .to_string(),
             });
             set_messages.set(msgs);
             set_is_busy.set(false);

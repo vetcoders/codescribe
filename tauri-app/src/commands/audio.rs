@@ -9,9 +9,7 @@ pub fn list_audio_devices() -> Vec<String> {
         return Vec::new();
     };
 
-    devices
-        .filter_map(|d| d.name().ok())
-        .collect::<Vec<_>>()
+    devices.filter_map(|d| d.name().ok()).collect::<Vec<_>>()
 }
 
 #[tauri::command]

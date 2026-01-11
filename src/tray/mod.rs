@@ -36,22 +36,22 @@ mod state;
 mod submenus;
 mod types;
 
-use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossbeam_channel::TryRecvError;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tracing::{debug, info};
-use tray_icon::{menu::MenuEvent, TrayIconBuilder};
+use tray_icon::{TrayIconBuilder, menu::MenuEvent};
 
 // Re-export public API
 pub use icons::{is_status_glyph_enabled, set_status_glyph_enabled};
-pub use state::{menu_event_receiver, update_history_label, update_model_selection, update_tray_status};
-pub use types::{
-    FormattingProvider, Language, SoundType, TrayMenuEvent, TrayStatus, WhisperModel,
+pub use state::{
+    menu_event_receiver, update_history_label, update_model_selection, update_tray_status,
 };
+pub use types::{FormattingProvider, Language, SoundType, TrayMenuEvent, TrayStatus, WhisperModel};
 
 // Re-export config types that are also used in tests
 #[cfg(test)]

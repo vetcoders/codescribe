@@ -13,8 +13,8 @@ pub mod config;
 pub mod conversation;
 pub mod local_stt;
 pub mod models;
-pub mod whisper_model;
 pub mod voice_chat;
+pub mod whisper_model;
 
 #[cfg(target_os = "macos")]
 pub mod ui;
@@ -27,15 +27,15 @@ pub use audio::{Recorder, RecorderConfig, RecorderDiagnostics};
 
 #[cfg(target_os = "macos")]
 pub use ui::{
-    focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-    set_dock_icon, show_badge_for_mode, show_hold_badge, show_hold_badge_with_config, BadgeMode,
-    HoldBadgeConfig,
+    BadgeMode, HoldBadgeConfig, focused_element_accepts_text, get_caret_position,
+    get_cursor_position, hide_hold_badge, set_dock_icon, show_badge_for_mode, show_hold_badge,
+    show_hold_badge_with_config,
 };
 
 #[cfg(target_os = "macos")]
 pub use voice_chat_ui::{
-    append_voice_chat_delta, clear_voice_chat_text, hide_voice_chat_overlay,
-    is_voice_chat_overlay_visible, reset_voice_chat_activity, set_voice_chat_text,
-    show_voice_chat_overlay, show_voice_chat_overlay_with_config, update_voice_chat_status,
-    VoiceChatOverlayConfig,
+    VoiceChatOverlayConfig, append_voice_chat_delta, clear_voice_chat_text,
+    hide_voice_chat_overlay, is_voice_chat_overlay_visible, reset_voice_chat_activity,
+    set_voice_chat_text, show_voice_chat_overlay, show_voice_chat_overlay_with_config,
+    update_voice_chat_status,
 };

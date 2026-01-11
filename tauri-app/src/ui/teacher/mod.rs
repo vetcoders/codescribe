@@ -70,7 +70,10 @@ pub fn TeacherView() -> impl IntoView {
     let toggle_recording = move |_: web_sys::MouseEvent| {
         if is_recording.get() {
             set_is_recording.set(false);
-            push_status("Recording stopped. Review transcript and click Learn.", "info");
+            push_status(
+                "Recording stopped. Review transcript and click Learn.",
+                "info",
+            );
             // In real implementation, would get transcript from audio stream
             set_transcript.set("(Transcript would appear here after recording)".to_string());
         } else {
@@ -96,11 +99,14 @@ pub fn TeacherView() -> impl IntoView {
 
             // Add a mock calibration run
             let mut runs = calibration_runs.get();
-            runs.insert(0, CalibrationRun {
-                sentence: reference.get(),
-                transcript: transcript.get(),
-                wer: 0.15, // Mock 15% WER
-            });
+            runs.insert(
+                0,
+                CalibrationRun {
+                    sentence: reference.get(),
+                    transcript: transcript.get(),
+                    wer: 0.15, // Mock 15% WER
+                },
+            );
             runs.truncate(50);
             set_calibration_runs.set(runs);
 
@@ -114,7 +120,10 @@ pub fn TeacherView() -> impl IntoView {
             set_lexicon_count.update(|c| *c += 1);
 
             set_is_learning.set(false);
-            push_status("Learned new terms. (Backend integration coming soon)", "info");
+            push_status(
+                "Learned new terms. (Backend integration coming soon)",
+                "info",
+            );
         });
     };
 
@@ -128,7 +137,10 @@ pub fn TeacherView() -> impl IntoView {
         ];
         set_sentences.set(mock_sentences);
         set_wizard_index.set(0);
-        push_status("Generated 3 sample sentences. (Backend integration coming soon)", "info");
+        push_status(
+            "Generated 3 sample sentences. (Backend integration coming soon)",
+            "info",
+        );
     };
 
     let clear_lexicon = move |_: web_sys::MouseEvent| {

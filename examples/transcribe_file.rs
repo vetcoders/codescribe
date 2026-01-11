@@ -31,7 +31,8 @@ fn main() -> anyhow::Result<()> {
         PathBuf::from("models/whisper-large-v3-turbo-mlx-q8"),
     ];
 
-    let model_path = model_candidates.iter()
+    let model_path = model_candidates
+        .iter()
         .find(|p| p.join("tokenizer.json").exists())
         .expect("No complete model found. Need tokenizer.json in model directory.");
 

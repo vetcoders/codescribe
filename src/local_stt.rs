@@ -1,16 +1,16 @@
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use rand::Rng;
 
 use candle_core::safetensors::Load;
-use candle_core::{Device, DType, IndexOp, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::models::whisper::{self as whisper, Config};
 use ndarray::Array2;
 use ndarray_npy::ReadNpyExt;
@@ -49,12 +49,12 @@ pub struct DecodingParams {
 impl Default for DecodingParams {
     fn default() -> Self {
         Self {
-            temperature: 0.0,                  // greedy (mlx_whisper default)
-            no_repeat_ngram_size: 3,           // block 3-gram repetitions (faster-whisper)
+            temperature: 0.0,        // greedy (mlx_whisper default)
+            no_repeat_ngram_size: 3, // block 3-gram repetitions (faster-whisper)
             suppress_blank: true,
-            no_speech_threshold: 0.6,          // mlx_whisper default
-            compression_ratio_threshold: 2.4,  // mlx_whisper default
-            logprob_threshold: -1.0,           // mlx_whisper default
+            no_speech_threshold: 0.6,         // mlx_whisper default
+            compression_ratio_threshold: 2.4, // mlx_whisper default
+            logprob_threshold: -1.0,          // mlx_whisper default
         }
     }
 }
@@ -78,12 +78,14 @@ impl LocalWhisperEngine {
         let tokenizer_path = model_path.join("tokenizer.json");
         let mel_filters_path = model_path.join("mel_filters.npz");
 
-        let config_str = std::fs::read_to_string(&config_path)
-            .context(format!("Failed to read config from {}", config_path.display()))?;
+        let config_str = std::fs::read_to_string(&config_path).context(format!(
+            "Failed to read config from {}",
+            config_path.display()
+        ))?;
 
         // Parse MLX config and map to Candle Config
-        let mlx_config: serde_json::Value = serde_json::from_str(&config_str)
-            .context("Failed to parse MLX config json")?;
+        let mlx_config: serde_json::Value =
+            serde_json::from_str(&config_str).context("Failed to parse MLX config json")?;
 
         let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
         let new_config_json = serde_json::json!({
@@ -184,20 +186,27 @@ impl LocalWhisperEngine {
             candle_nn::VarBuilder::from_tensors(tensor_map, DType::F32, &device)
         };
 
-        let model = Model::load(&vb, config.clone())
-            .context("Failed to create Whisper Model")?;
+        let model = Model::load(&vb, config.clone()).context("Failed to create Whisper Model")?;
 
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| anyhow!("Failed to load tokenizer from {}: {}", tokenizer_path.display(), e))?;
+        let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
+            anyhow!(
+                "Failed to load tokenizer from {}: {}",
+                tokenizer_path.display(),
+                e
+            )
+        })?;
 
         // Load mel filters
         if !mel_filters_path.exists() {
-            return Err(anyhow!("mel_filters.npz not found at {}. Please download it from OpenAI assets.", mel_filters_path.display()));
+            return Err(anyhow!(
+                "mel_filters.npz not found at {}. Please download it from OpenAI assets.",
+                mel_filters_path.display()
+            ));
         }
 
         let n_mels = config.num_mel_bins;
-        let mel_filters = load_mel_filters(&mel_filters_path, n_mels)
-            .context("Failed to load mel filters")?;
+        let mel_filters =
+            load_mel_filters(&mel_filters_path, n_mels).context("Failed to load mel filters")?;
 
         Ok(Self {
             model,
@@ -214,8 +223,8 @@ impl LocalWhisperEngine {
         path: &Path,
         language: Option<&str>,
     ) -> Result<String> {
-        let (samples, sample_rate) = audio_loader::load_audio_file(path)
-            .context("Failed to load audio file")?;
+        let (samples, sample_rate) =
+            audio_loader::load_audio_file(path).context("Failed to load audio file")?;
 
         let duration_secs = samples.len() as f32 / sample_rate as f32;
         tracing::debug!(
@@ -232,8 +241,8 @@ impl LocalWhisperEngine {
 
     #[allow(dead_code)]
     pub fn detect_language_file(&mut self, path: &Path) -> Result<String> {
-        let (samples, sample_rate) = audio_loader::load_audio_file(path)
-            .context("Failed to load audio file")?;
+        let (samples, sample_rate) =
+            audio_loader::load_audio_file(path).context("Failed to load audio file")?;
         self.detect_language(&samples, sample_rate)
     }
 
@@ -311,8 +320,8 @@ impl LocalWhisperEngine {
             }
         };
 
-        let chunk_samples = 16_000usize * 25;  // 25 seconds
-        let overlap = 16_000usize * 5;          // 5 seconds overlap
+        let chunk_samples = 16_000usize * 25; // 25 seconds
+        let overlap = 16_000usize * 5; // 5 seconds overlap
         ensure!(chunk_samples > overlap, "chunk_samples must be > overlap");
         let step = chunk_samples - overlap;
 
@@ -326,7 +335,12 @@ impl LocalWhisperEngine {
             let end = (offset + chunk_samples).min(samples.len());
             let chunk = &samples[offset..end];
 
-            tracing::debug!("Processing chunk {}/{} ({} samples)", chunk_num, total_chunks, chunk.len());
+            tracing::debug!(
+                "Processing chunk {}/{} ({} samples)",
+                chunk_num,
+                total_chunks,
+                chunk.len()
+            );
 
             let text = self.transcribe_samples_16k(chunk, language, debug_tokens)?;
             append_with_overlap_dedup(&mut out, &text);
@@ -498,7 +512,10 @@ impl LocalWhisperEngine {
         let encoder_output = self.model.encoder.forward(&mel, true)?;
 
         // Decoder loop – allow up to the configured maximum target positions minus initial tokens
-        let max_new_tokens = self.config.max_target_positions.saturating_sub(tokens.len());
+        let max_new_tokens = self
+            .config
+            .max_target_positions
+            .saturating_sub(tokens.len());
         let ngram_size = self.decoding_params.no_repeat_ngram_size;
 
         let mut sum_logprob = 0.0f32;
@@ -590,7 +607,10 @@ impl LocalWhisperEngine {
                 // Softmax
                 let max_val = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                 let exp_sum: f32 = scaled.iter().map(|&x| (x - max_val).exp()).sum();
-                let probs: Vec<f32> = scaled.iter().map(|&x| (x - max_val).exp() / exp_sum).collect();
+                let probs: Vec<f32> = scaled
+                    .iter()
+                    .map(|&x| (x - max_val).exp() / exp_sum)
+                    .collect();
 
                 // Sample from distribution
                 let mut rng = rand::thread_rng();
@@ -632,7 +652,12 @@ impl LocalWhisperEngine {
                 if let Some(tok) = self.tokenizer.id_to_token(best_token) {
                     tracing::debug!(step, best_token, best_val, token = %tok, "decoder step");
                 } else {
-                    tracing::debug!(step, best_token, best_val, "decoder step (token decode failed)");
+                    tracing::debug!(
+                        step,
+                        best_token,
+                        best_val,
+                        "decoder step (token decode failed)"
+                    );
                 }
             }
 
@@ -653,14 +678,20 @@ impl LocalWhisperEngine {
         if token_count > 0 {
             let avg_logprob = sum_logprob / token_count as f32;
             if avg_logprob < self.decoding_params.logprob_threshold {
-                tracing::warn!("Low avg logprob ({:.2}) - possible hallucination", avg_logprob);
+                tracing::warn!(
+                    "Low avg logprob ({:.2}) - possible hallucination",
+                    avg_logprob
+                );
             }
         }
 
         // 4. Compression Ratio Threshold
         let ratio = compression_ratio(&text);
         if ratio > self.decoding_params.compression_ratio_threshold {
-            tracing::warn!("High compression ratio ({:.2}) - possible hallucination", ratio);
+            tracing::warn!(
+                "High compression ratio ({:.2}) - possible hallucination",
+                ratio
+            );
         }
 
         Ok(text)
@@ -749,8 +780,8 @@ fn load_mel_filters(path: &Path, n_mels: usize) -> Result<Vec<f32>> {
     }
 
     let cursor = Cursor::new(buf);
-    let array: Array2<f32> = <Array2<f32> as ReadNpyExt>::read_npy(cursor)
-        .context("Failed to parse mel filters npy")?;
+    let array: Array2<f32> =
+        <Array2<f32> as ReadNpyExt>::read_npy(cursor).context("Failed to parse mel filters npy")?;
     let (data, _) = array.into_raw_vec_and_offset();
     Ok(data)
 }
@@ -810,7 +841,12 @@ fn compression_ratio(text: &str) -> f32 {
 }
 
 #[allow(clippy::needless_range_loop)]
-fn dequantize_q8(packed: &Tensor, scales: &Tensor, biases: &Tensor, device: &Device) -> Result<Tensor> {
+fn dequantize_q8(
+    packed: &Tensor,
+    scales: &Tensor,
+    biases: &Tensor,
+    device: &Device,
+) -> Result<Tensor> {
     ensure!(packed.dtype() == DType::U32, "Packed tensor must be u32");
 
     let packed_dims = packed.dims();

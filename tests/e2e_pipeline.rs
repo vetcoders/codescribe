@@ -39,17 +39,20 @@ fn is_model_complete(model_path: &std::path::Path) -> bool {
     if !model_path.exists() {
         return false;
     }
-    let required_files = ["config.json", "weights.safetensors", "tokenizer.json", "mel_filters.npz"];
+    let required_files = [
+        "config.json",
+        "weights.safetensors",
+        "tokenizer.json",
+        "mel_filters.npz",
+    ];
     required_files.iter().all(|f| model_path.join(f).exists())
 }
 
 fn audio_path() -> Option<PathBuf> {
-    let path = std::env::var("CODESCRIBE_TEST_AUDIO_PATH").ok().map(PathBuf::from)?;
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
+    let path = std::env::var("CODESCRIBE_TEST_AUDIO_PATH")
+        .ok()
+        .map(PathBuf::from)?;
+    if path.exists() { Some(path) } else { None }
 }
 
 fn print_header(title: &str) {
@@ -103,7 +106,9 @@ mod local_stt_tests {
 
         if !is_model_complete(&model_path) {
             print_warning("Model incomplete or not found - skipping");
-            println!("  Required files: config.json, weights.safetensors, tokenizer.json, mel_filters.npz");
+            println!(
+                "  Required files: config.json, weights.safetensors, tokenizer.json, mel_filters.npz"
+            );
             println!("  Set CODESCRIBE_TEST_MODEL_DIR to a complete model directory");
             return;
         }
@@ -127,15 +132,33 @@ mod local_stt_tests {
 
         print_section("Default Parameters");
         print_result("temperature", &format!("{:.1}", params.temperature));
-        print_result("no_repeat_ngram_size", &params.no_repeat_ngram_size.to_string());
+        print_result(
+            "no_repeat_ngram_size",
+            &params.no_repeat_ngram_size.to_string(),
+        );
         print_result("suppress_blank", &params.suppress_blank.to_string());
-        print_result("no_speech_threshold", &format!("{:.1}", params.no_speech_threshold));
-        print_result("compression_ratio_threshold", &format!("{:.1}", params.compression_ratio_threshold));
-        print_result("logprob_threshold", &format!("{:.1}", params.logprob_threshold));
+        print_result(
+            "no_speech_threshold",
+            &format!("{:.1}", params.no_speech_threshold),
+        );
+        print_result(
+            "compression_ratio_threshold",
+            &format!("{:.1}", params.compression_ratio_threshold),
+        );
+        print_result(
+            "logprob_threshold",
+            &format!("{:.1}", params.logprob_threshold),
+        );
 
         // Verify mlx_whisper defaults
-        assert_eq!(params.temperature, 0.0, "temperature should be 0.0 (greedy)");
-        assert_eq!(params.no_repeat_ngram_size, 3, "no_repeat_ngram_size should be 3");
+        assert_eq!(
+            params.temperature, 0.0,
+            "temperature should be 0.0 (greedy)"
+        );
+        assert_eq!(
+            params.no_repeat_ngram_size, 3,
+            "no_repeat_ngram_size should be 3"
+        );
         assert!(params.suppress_blank, "suppress_blank should be true");
         assert!((params.no_speech_threshold - 0.6).abs() < 0.01);
         assert!((params.compression_ratio_threshold - 2.4).abs() < 0.01);
@@ -260,7 +283,10 @@ mod local_stt_tests {
 
             match result {
                 Ok(text) => {
-                    print_result(&format!("Run {} time", i), &format!("{:?} ({} chars)", elapsed, text.len()));
+                    print_result(
+                        &format!("Run {} time", i),
+                        &format!("{:?} ({} chars)", elapsed, text.len()),
+                    );
                 }
                 Err(e) => {
                     panic!("Run {} failed: {}", i, e);
@@ -363,7 +389,8 @@ mod audio_loader_tests {
                 // Check audio characteristics
                 let min = samples.iter().cloned().fold(f32::INFINITY, f32::min);
                 let max = samples.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                let rms: f32 = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+                let rms: f32 =
+                    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
 
                 print_section("Audio Characteristics");
                 print_result("Min amplitude", &format!("{:.4}", min));
@@ -388,8 +415,8 @@ mod audio_loader_tests {
             return;
         };
 
-        let (samples, sample_rate) = audio_loader::load_audio_file(&audio_file)
-            .expect("Failed to load audio");
+        let (samples, sample_rate) =
+            audio_loader::load_audio_file(&audio_file).expect("Failed to load audio");
 
         print_result("Original rate", &format!("{} Hz", sample_rate));
         print_result("Original samples", &samples.len().to_string());
@@ -410,7 +437,10 @@ mod audio_loader_tests {
 
         // Allow 1% tolerance for resampling duration
         let diff = (original_duration - resampled_duration).abs();
-        assert!(diff < original_duration * 0.01, "Duration changed too much after resampling");
+        assert!(
+            diff < original_duration * 0.01,
+            "Duration changed too much after resampling"
+        );
 
         print_success("Resampling preserves audio duration");
     }
@@ -452,8 +482,14 @@ mod config_tests {
         print_section("Default Values");
         print_result("Hold delay", &format!("{}ms", config.hold_start_delay_ms));
 
-        assert_eq!(config.hold_start_delay_ms, 800, "Default hold delay should be 800ms");
-        assert!(config.beep_on_start, "Beep on start should be enabled by default");
+        assert_eq!(
+            config.hold_start_delay_ms, 800,
+            "Default hold delay should be 800ms"
+        );
+        assert!(
+            config.beep_on_start,
+            "Beep on start should be enabled by default"
+        );
 
         print_success("Defaults are correct");
     }
@@ -496,7 +532,8 @@ mod integration_tests {
         // Step 2: Detect language
         print_section("Step 2: Detect Language");
         let start = Instant::now();
-        let detected_lang = engine.detect_language_file(&audio_file)
+        let detected_lang = engine
+            .detect_language_file(&audio_file)
             .expect("Language detection failed");
         print_timing("Detection time", start.elapsed());
         print_result("Detected", &detected_lang);
@@ -511,7 +548,10 @@ mod integration_tests {
         let transcribe_time = start.elapsed();
         print_timing("Transcription", transcribe_time);
         print_result("Raw chars", &raw_text.len().to_string());
-        print_result("Word count", &raw_text.split_whitespace().count().to_string());
+        print_result(
+            "Word count",
+            &raw_text.split_whitespace().count().to_string(),
+        );
         print_success("Transcription complete");
 
         // Step 4: Results
@@ -662,11 +702,7 @@ mod cli_transcribe_tests {
     fn vista_e2e_wav() -> Option<PathBuf> {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         let path = PathBuf::from(&home).join(".codescribe/vista-e2e-plan.wav");
-        if path.exists() {
-            Some(path)
-        } else {
-            None
-        }
+        if path.exists() { Some(path) } else { None }
     }
 
     fn codescribe_binary() -> PathBuf {
@@ -760,7 +796,8 @@ mod cli_transcribe_tests {
             .args([
                 "transcribe",
                 audio_file.to_str().unwrap(),
-                "-l", "pl",
+                "-l",
+                "pl",
                 "--format",
             ])
             .output();
@@ -779,7 +816,9 @@ mod cli_transcribe_tests {
                 // Check if formatting was applied (look for markdown indicators)
                 let has_headers = stdout.contains('#');
                 let has_bullets = stdout.contains('-') || stdout.contains('•');
-                let has_numbering = stdout.lines().any(|l| l.starts_with("1.") || l.starts_with("2."));
+                let has_numbering = stdout
+                    .lines()
+                    .any(|l| l.starts_with("1.") || l.starts_with("2."));
 
                 print_section("Format Detection");
                 print_result("Has headers (#)", &has_headers.to_string());
@@ -851,7 +890,8 @@ mod cli_transcribe_tests {
             .args([
                 "transcribe",
                 audio_file.to_str().unwrap(),
-                "-l", "pl",
+                "-l",
+                "pl",
                 "--format",
             ])
             .output();

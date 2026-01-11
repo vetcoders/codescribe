@@ -5,8 +5,8 @@
 #[cfg(target_os = "macos")]
 fn main() {
     use codescribe::{
-        focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-        show_hold_badge, HoldBadgeConfig, BadgeMode,
+        BadgeMode, HoldBadgeConfig, focused_element_accepts_text, get_caret_position,
+        get_cursor_position, hide_hold_badge, show_hold_badge,
     };
     use std::thread;
     use std::time::Duration;

@@ -8,9 +8,15 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     // Paths provided in the issue
-    let model_path = PathBuf::from("/Users/maciejgad/hosted/VetCoders/CodeScribe/models/whisper-large-v3-mlx-q8");
-    let audio_medium = PathBuf::from("/Users/maciejgad/hosted/vista/api-test-suite/test-files/audio-real-medium.m4a");
-    let audio_short = PathBuf::from("/Users/maciejgad/hosted/vista/api-test-suite/test-files/audio-real-short.m4a");
+    let model_path = PathBuf::from(
+        "/Users/maciejgad/hosted/VetCoders/CodeScribe/models/whisper-large-v3-mlx-q8",
+    );
+    let audio_medium = PathBuf::from(
+        "/Users/maciejgad/hosted/vista/api-test-suite/test-files/audio-real-medium.m4a",
+    );
+    let audio_short = PathBuf::from(
+        "/Users/maciejgad/hosted/vista/api-test-suite/test-files/audio-real-short.m4a",
+    );
 
     let language = std::env::var("CODESCRIBE_E2E_LANG").ok();
 
@@ -31,7 +37,8 @@ async fn main() -> Result<()> {
     let mel_filters_path = model_path.join("mel_filters.npz");
     if !mel_filters_path.exists() {
         println!("mel_filters.npz missing. Downloading from OpenAI assets...");
-        let url = "https://raw.githubusercontent.com/openai/whisper/main/whisper/assets/mel_filters.npz";
+        let url =
+            "https://raw.githubusercontent.com/openai/whisper/main/whisper/assets/mel_filters.npz";
         let resp = reqwest::get(url).await?.error_for_status()?;
         let content = resp.bytes().await?;
         fs::write(&mel_filters_path, content)?;
@@ -58,7 +65,8 @@ async fn main() -> Result<()> {
     if run_medium {
         println!("Transcribing medium audio: {}", audio_medium.display());
         let start = std::time::Instant::now();
-        let text_medium = engine.transcribe_file_with_language(&audio_medium, language.as_deref())?;
+        let text_medium =
+            engine.transcribe_file_with_language(&audio_medium, language.as_deref())?;
         let duration = start.elapsed();
         println!("Medium transcription completed in {:?}:", duration);
         println!("---");

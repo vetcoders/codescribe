@@ -11,8 +11,8 @@
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use reqwest::multipart::{Form, Part};
 use reqwest::Client;
+use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -679,7 +679,11 @@ async fn transcribe_websocket(
     let _ = ws.close(None).await;
     let duration_ms = start.elapsed().as_millis();
 
-    info!("[WS STT] Complete in {}ms: {} chars", duration_ms, final_text.len());
+    info!(
+        "[WS STT] Complete in {}ms: {} chars",
+        duration_ms,
+        final_text.len()
+    );
 
     if final_text.is_empty() {
         anyhow::bail!("No transcription received from WebSocket STT");
@@ -704,7 +708,7 @@ async fn transcribe_ndjson(
     audio_data: Vec<u8>,
     language: &str,
 ) -> Result<String> {
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
     let start = Instant::now();
 
@@ -731,13 +735,12 @@ async fn transcribe_ndjson(
     let mut data_start = 12; // After "WAVE"
     while data_start + 8 < audio_data.len() {
         let chunk_id = &audio_data[data_start..data_start + 4];
-        let chunk_size =
-            u32::from_le_bytes([
-                audio_data[data_start + 4],
-                audio_data[data_start + 5],
-                audio_data[data_start + 6],
-                audio_data[data_start + 7],
-            ]) as usize;
+        let chunk_size = u32::from_le_bytes([
+            audio_data[data_start + 4],
+            audio_data[data_start + 5],
+            audio_data[data_start + 6],
+            audio_data[data_start + 7],
+        ]) as usize;
 
         if chunk_id == b"data" {
             data_start += 8; // Skip "data" + size
@@ -847,7 +850,11 @@ async fn transcribe_ndjson(
                         );
                     } else {
                         partial_count += 1;
-                        debug!("[NDJSON STT] partial #{}: {} chars", partial_count, text.len());
+                        debug!(
+                            "[NDJSON STT] partial #{}: {} chars",
+                            partial_count,
+                            text.len()
+                        );
                     }
                 }
             }

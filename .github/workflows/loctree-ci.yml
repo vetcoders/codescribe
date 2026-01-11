@@ -3,17 +3,13 @@ name: Loctree CI
 on:
   workflow_dispatch:
   pull_request:
-    types: [ opened, reopened ]
-    branches: [ main, develop ]
+    types: [opened, reopened]
+    branches: [main, develop]
 
 jobs:
   loctree-analysis:
     name: Loctree Analysis
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -24,57 +20,27 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: loctree-ci-${{ matrix.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            loctree-ci-${{ matrix.os }}-
+          key: loctree-ci-${{ hashFiles('**/Cargo.lock') }}
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install loctree
         run: cargo install loctree --locked
 
-      - name: Analyze Rust crate (codescribe-rs)
+      - name: Analyze codebase
         run: |
-          loct codescribe-rs/src -A --ext rs \
+          loct src -A --ext rs \
             --circular \
             --dead \
             --confidence high
 
-      - name: Analyze Python backend
+      - name: Check for circular imports
         run: |
-          loct src/codescribe -A --ext py \
-            --circular \
-            --dead \
-            --confidence high
-
-      - name: Check for circular imports (Rust)
-        run: |
-          OUTPUT=$(loct codescribe-rs/src -A --circular --json 2>/dev/null || true)
+          OUTPUT=$(loct src --circular --json 2>/dev/null || true)
           CYCLES=$(echo "$OUTPUT" | jq -r '.cycles // [] | length' 2>/dev/null || echo "0")
           if [ "$CYCLES" != "0" ] && [ "$CYCLES" != "" ]; then
-            echo "::warning::Found $CYCLES circular import(s) in codescribe-rs"
+            echo "::warning::Found $CYCLES circular import(s)"
           fi
 
-      - name: Check for circular imports (Python)
-        run: |
-          OUTPUT=$(loct src/codescribe -A --circular --json 2>/dev/null || true)
-          CYCLES=$(echo "$OUTPUT" | jq -r '.cycles // [] | length' 2>/dev/null || echo "0")
-          if [ "$CYCLES" != "0" ] && [ "$CYCLES" != "" ]; then
-            echo "::warning::Found $CYCLES circular import(s) in Python backend"
-          fi
-
-      - name: Generate HTML reports
-        run: |
-          loct codescribe-rs/src -A --ext rs \
-            --report rust-report.html --graph || true
-          loct src/codescribe -A --ext py \
-            --report python-report.html --graph || true
-
-      - name: Upload analysis reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: loctree-analysis-reports-${{ matrix.os }}
-          path: |
-            rust-report.html
-            python-report.html
-          if-no-files-found: ignore
+      - name: Health check
+        run: loct --health

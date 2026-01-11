@@ -50,8 +50,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     menu.append(&history_menu)?;
 
     // 9. Appearance submenu
-    let (appearance_menu, appearance_glyph_id, appearance_refresh_id) =
-        build_appearance_submenu()?;
+    let (appearance_menu, appearance_glyph_id, appearance_refresh_id) = build_appearance_submenu()?;
     menu.append(&appearance_menu)?;
 
     // 10. Feedback submenu
@@ -59,8 +58,13 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     menu.append(&feedback_menu)?;
 
     // 11. Tools submenu
-    let (tools_menu, tools_voice_lab_id, tools_teacher_id, tools_native_lab_id, tools_new_conversation_id) =
-        build_tools_submenu()?;
+    let (
+        tools_menu,
+        tools_voice_lab_id,
+        tools_teacher_id,
+        tools_native_lab_id,
+        tools_new_conversation_id,
+    ) = build_tools_submenu()?;
     menu.append(&tools_menu)?;
 
     // 12. Permissions submenu

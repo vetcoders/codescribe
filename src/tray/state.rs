@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use tracing::{debug, info};
 
 use crate::tray::types::{
@@ -220,11 +220,8 @@ pub fn apply_toggle_trigger_selection(trigger: ToggleTrigger) {
 // ============================================================================
 
 /// Initialize all update channels, returning receivers for the event loop
-pub fn init_channels() -> anyhow::Result<(
-    Receiver<TrayStatus>,
-    Receiver<String>,
-    Receiver<String>,
-)> {
+pub fn init_channels() -> anyhow::Result<(Receiver<TrayStatus>, Receiver<String>, Receiver<String>)>
+{
     // Create channel for status updates
     let (status_tx, status_rx): (Sender<TrayStatus>, Receiver<TrayStatus>) = unbounded();
     STATUS_CHANNEL

@@ -71,10 +71,10 @@ impl BadgeMode {
     /// Get the base color for this mode (RGBA)
     pub fn color(&self) -> (f64, f64, f64, f64) {
         match self {
-            BadgeMode::Hold => (1.0, 0.0, 0.0, 0.8),       // Red
-            BadgeMode::Toggle => (1.0, 0.0, 0.0, 0.8),     // Red (will pulse)
+            BadgeMode::Hold => (1.0, 0.0, 0.0, 0.8),        // Red
+            BadgeMode::Toggle => (1.0, 0.0, 0.0, 0.8),      // Red (will pulse)
             BadgeMode::Processing => (1.0, 0.5, 0.0, 0.85), // Orange
-            BadgeMode::Assistive => (0.6, 0.2, 0.9, 0.85), // Purple
+            BadgeMode::Assistive => (0.6, 0.2, 0.9, 0.85),  // Purple
         }
     }
 
@@ -464,13 +464,15 @@ unsafe extern "C" {
 }
 
 /// Create a CGColor from RGBA components
-unsafe fn create_cg_color(r: f64, g: f64, b: f64, a: f64) -> *const std::ffi::c_void { unsafe {
-    let color_space = CGColorSpaceCreateDeviceRGB();
-    let components: [f64; 4] = [r, g, b, a];
-    let color = CGColorCreate(color_space, components.as_ptr());
-    CGColorSpaceRelease(color_space);
-    color
-}}
+unsafe fn create_cg_color(r: f64, g: f64, b: f64, a: f64) -> *const std::ffi::c_void {
+    unsafe {
+        let color_space = CGColorSpaceCreateDeviceRGB();
+        let components: [f64; 4] = [r, g, b, a];
+        let color = CGColorCreate(color_space, components.as_ptr());
+        CGColorSpaceRelease(color_space);
+        color
+    }
+}
 
 /// Update the badge window position
 unsafe fn update_badge_position(window: Id, config: &HoldBadgeConfig) {
@@ -563,7 +565,8 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
                                     let badge_view: Id = msg_send![subviews, objectAtIndex: 0usize];
                                     let layer: Id = msg_send![badge_view, layer];
                                     if !layer.is_null() {
-                                        let _: () = msg_send![layer, setOpacity: pulse_opacity as f32];
+                                        let _: () =
+                                            msg_send![layer, setOpacity: pulse_opacity as f32];
                                     }
                                 }
                             }

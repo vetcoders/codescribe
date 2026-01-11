@@ -6,14 +6,22 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.is_empty() {
-        println!("Usage: cargo run --release --example test_audio_long -- [--model PATH] <audio1> ...");
+        println!(
+            "Usage: cargo run --release --example test_audio_long -- [--model PATH] <audio1> ..."
+        );
         return Ok(());
     }
 
     let (model, files): (PathBuf, Vec<PathBuf>) = if args[0] == "--model" {
-        (PathBuf::from(&args[1]), args[2..].iter().map(PathBuf::from).collect())
+        (
+            PathBuf::from(&args[1]),
+            args[2..].iter().map(PathBuf::from).collect(),
+        )
     } else {
-        (PathBuf::from("models/whisper-large-v3-mlx-q8"), args.iter().map(PathBuf::from).collect())
+        (
+            PathBuf::from("models/whisper-large-v3-mlx-q8"),
+            args.iter().map(PathBuf::from).collect(),
+        )
     };
 
     println!("Loading model: {:?}", model);

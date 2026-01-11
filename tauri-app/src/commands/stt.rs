@@ -45,7 +45,9 @@ pub async fn transcribe_audio(
     let model_path2 = model_path.clone();
 
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        let mut stt = stt_ptr.lock().map_err(|_| "stt mutex poisoned".to_string())?;
+        let mut stt = stt_ptr
+            .lock()
+            .map_err(|_| "stt mutex poisoned".to_string())?;
 
         let need_reload = stt
             .loaded_model
@@ -58,7 +60,10 @@ pub async fn transcribe_audio(
             stt.loaded_model = Some(model_name2);
         }
 
-        let engine = stt.engine.as_mut().ok_or_else(|| "engine missing".to_string())?;
+        let engine = stt
+            .engine
+            .as_mut()
+            .ok_or_else(|| "engine missing".to_string())?;
         engine
             .transcribe_file_with_language(&audio_path, lang)
             .map_err(|e| e.to_string())

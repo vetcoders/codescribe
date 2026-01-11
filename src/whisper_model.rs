@@ -1,7 +1,7 @@
-use candle_transformers::models::whisper::Config;
+use candle_core::{D, DType, Device, IndexOp, Result, Tensor};
 use candle_nn::Linear;
-use candle_core::{Device, IndexOp, Result, Tensor, D, DType};
-use candle_nn::{embedding, Conv1d, Conv1dConfig, Embedding, LayerNorm, Module, VarBuilder};
+use candle_nn::{Conv1d, Conv1dConfig, Embedding, LayerNorm, Module, VarBuilder, embedding};
+use candle_transformers::models::whisper::Config;
 
 fn linear(in_dim: usize, out_dim: usize, vb: VarBuilder) -> Result<Linear> {
     let weight = vb.get((out_dim, in_dim), "weight")?;
@@ -396,10 +396,7 @@ impl Whisper {
     pub fn load(vb: &VarBuilder, config: Config) -> Result<Self> {
         let encoder = AudioEncoder::load(vb.pp("model.encoder"), &config)?;
         let decoder = TextDecoder::load(vb.pp("model.decoder"), &config)?;
-        Ok(Self {
-            encoder,
-            decoder,
-        })
+        Ok(Self { encoder, decoder })
     }
 
     pub fn reset_kv_cache(&mut self) {

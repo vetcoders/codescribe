@@ -4,6 +4,7 @@
 
 mod ai_formatting;
 mod audio;
+mod audio_loader;
 mod backend;
 mod client;
 mod clipboard;
@@ -15,14 +16,13 @@ mod hotkeys;
 mod lab_server;
 mod launchd;
 mod local_stt;
-mod audio_loader;
-mod whisper_model;
 mod models;
 mod permissions;
 mod sound;
 mod tray;
 mod voice_chat;
 mod voice_chat_ui;
+mod whisper_model;
 
 use anyhow::Result;
 use clap::Parser;
@@ -32,7 +32,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn, Level};
+use tracing::{Level, debug, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 /// PID lock file path
@@ -179,7 +179,12 @@ LOG_LEVEL=INFO
         .unwrap_or_else(|_| {
             // Try common editors
             for editor in &["code", "nvim", "vim", "nano"] {
-                if Command::new("which").arg(editor).output().map(|o| o.status.success()).unwrap_or(false) {
+                if Command::new("which")
+                    .arg(editor)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+                {
                     return editor.to_string();
                 }
             }
@@ -187,9 +192,7 @@ LOG_LEVEL=INFO
         });
 
     println!("📝 Opening in: {}", editor);
-    Command::new(&editor)
-        .arg(&config_path)
-        .status()?;
+    Command::new(&editor).arg(&config_path).status()?;
 
     Ok(())
 }
@@ -214,7 +217,9 @@ async fn handle_transcribe_command(
     let model_name = model.as_deref().unwrap_or("whisper-large-v3-turbo-mlx-q8");
 
     let model_candidates = [
-        PathBuf::from(&home).join(".CodeScribe/models").join(model_name),
+        PathBuf::from(&home)
+            .join(".CodeScribe/models")
+            .join(model_name),
         PathBuf::from("models").join(model_name),
     ];
 
@@ -451,9 +456,13 @@ async fn main() -> Result<()> {
     // Handle subcommands
     if let Some(command) = cli.command {
         return match command {
-            Commands::Transcribe { file, language, model, format, llm } => {
-                handle_transcribe_command(file, language, model, format, llm).await
-            }
+            Commands::Transcribe {
+                file,
+                language,
+                model,
+                format,
+                llm,
+            } => handle_transcribe_command(file, language, model, format, llm).await,
         };
     }
 

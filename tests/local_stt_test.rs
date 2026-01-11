@@ -18,12 +18,10 @@ mod macos_local_stt_tests {
     }
 
     fn audio_path() -> Option<PathBuf> {
-        let path = std::env::var("CODESCRIBE_TEST_AUDIO_PATH").ok().map(PathBuf::from)?;
-        if path.exists() {
-            Some(path)
-        } else {
-            None
-        }
+        let path = std::env::var("CODESCRIBE_TEST_AUDIO_PATH")
+            .ok()
+            .map(PathBuf::from)?;
+        if path.exists() { Some(path) } else { None }
     }
 
     fn sequential_runs() -> usize {
@@ -72,12 +70,18 @@ mod macos_local_stt_tests {
     #[test]
     fn test_local_stt_instantiation() {
         let Some(model_path) = model_dir() else {
-            eprintln!("CODESCRIBE_TEST_MODEL_DIR not set (or missing); skipping instantiation test");
+            eprintln!(
+                "CODESCRIBE_TEST_MODEL_DIR not set (or missing); skipping instantiation test"
+            );
             return;
         };
 
         let engine = LocalWhisperEngine::new(&model_path);
-        assert!(engine.is_ok(), "Failed to instantiate engine: {:?}", engine.err());
+        assert!(
+            engine.is_ok(),
+            "Failed to instantiate engine: {:?}",
+            engine.err()
+        );
     }
 
     #[test]
@@ -91,7 +95,11 @@ mod macos_local_stt_tests {
 
         let mut engine = LocalWhisperEngine::new(&model_path).unwrap();
         let transcribe = engine.transcribe_file_with_language(&audio_path, None);
-        assert!(transcribe.is_ok(), "Autodetect transcription failed: {:?}", transcribe);
+        assert!(
+            transcribe.is_ok(),
+            "Autodetect transcription failed: {:?}",
+            transcribe
+        );
 
         // We primarily care that autodetect path doesn't crash; enforce expected language only if provided.
         let expected = std::env::var("CODESCRIBE_TEST_EXPECT_LANG").ok();
@@ -196,11 +204,14 @@ mod macos_local_stt_tests {
 
         // If we have audio, run it
         if let Some(audio_path) = audio_path() {
-             let result = engine.transcribe_file_with_language(&audio_path, Some("en"));
-             // We don't assert success strongly as params might degrade performance, but it should not crash
-             if result.is_err() {
-                 eprintln!("Transcription with custom params failed: {:?}", result.err());
-             }
+            let result = engine.transcribe_file_with_language(&audio_path, Some("en"));
+            // We don't assert success strongly as params might degrade performance, but it should not crash
+            if result.is_err() {
+                eprintln!(
+                    "Transcription with custom params failed: {:?}",
+                    result.err()
+                );
+            }
         }
     }
 }

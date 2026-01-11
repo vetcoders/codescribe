@@ -132,9 +132,10 @@ mod tests {
     fn test_get_plist_path() {
         let path = get_plist_path().expect("Should get plist path");
         assert!(path.to_string_lossy().contains("Library/LaunchAgents"));
-        assert!(path
-            .to_string_lossy()
-            .ends_with("io.loctree.codescribe.plist"));
+        assert!(
+            path.to_string_lossy()
+                .ends_with("io.loctree.codescribe.plist")
+        );
     }
 
     #[test]

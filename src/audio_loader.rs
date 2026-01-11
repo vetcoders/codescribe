@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Result};
-use std::path::Path;
+use anyhow::{Result, anyhow};
 use std::fs::File;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::probe::Hint;
+use std::path::Path;
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::conv::FromSample;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::probe::Hint;
 
 pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
     let src = File::open(path)?;

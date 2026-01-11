@@ -3,10 +3,10 @@
 //! Handles loading the CodeScribe logo and drawing status indicators.
 
 use anyhow::Result;
-use image::{imageops::FilterType, GenericImageView};
+use image::{GenericImageView, imageops::FilterType};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tray_icon::Icon;
 use tracing::debug;
+use tray_icon::Icon;
 
 use crate::tray::types::TrayStatus;
 

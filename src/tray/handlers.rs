@@ -233,9 +233,15 @@ fn handle_open_native_lab() {
             // Installed app in /Applications
             "/Applications/CodeScribe.app/Contents/MacOS/codescribe-app",
             // Development build (release)
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tauri-app/target/release/codescribe-app"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tauri-app/target/release/codescribe-app"
+            ),
             // Development build (debug)
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tauri-app/target/debug/codescribe-app"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tauri-app/target/debug/codescribe-app"
+            ),
         ];
 
         // First check known paths

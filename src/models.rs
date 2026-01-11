@@ -10,7 +10,9 @@ pub struct ModelManager {
 
 impl ModelManager {
     pub fn new() -> Result<Self> {
-        let env_dir = std::env::var("CODESCRIBE_MODELS_DIR").ok().map(PathBuf::from);
+        let env_dir = std::env::var("CODESCRIBE_MODELS_DIR")
+            .ok()
+            .map(PathBuf::from);
         let repo_models = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models");
 
         let models_dir = env_dir

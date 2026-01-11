@@ -48,7 +48,11 @@ pub fn SettingsView() -> impl IntoView {
             let cfg: Result<Value, String> = tauri::invoke("get_config", NoArgs {}).await;
             match cfg {
                 Ok(v) => {
-                    set_use_local_stt.set(v.get("use_local_stt").and_then(|x| x.as_bool()).unwrap_or(false));
+                    set_use_local_stt.set(
+                        v.get("use_local_stt")
+                            .and_then(|x| x.as_bool())
+                            .unwrap_or(false),
+                    );
                     set_local_model.set(
                         v.get("local_model")
                             .and_then(|x| x.as_str())
@@ -107,17 +111,20 @@ pub fn SettingsView() -> impl IntoView {
             }
 
             // Load models
-            let res: Result<Vec<String>, String> = tauri::invoke("get_available_models", NoArgs {}).await;
+            let res: Result<Vec<String>, String> =
+                tauri::invoke("get_available_models", NoArgs {}).await;
             if let Ok(v) = res {
                 set_models.set(v);
             }
 
             // Load audio devices
-            let devs: Result<Vec<String>, String> = tauri::invoke("list_audio_devices", AudioNoArgs {}).await;
+            let devs: Result<Vec<String>, String> =
+                tauri::invoke("list_audio_devices", AudioNoArgs {}).await;
             if let Ok(v) = devs {
                 set_audio_devices.set(v);
             }
-            let current: Result<Option<String>, String> = tauri::invoke("get_current_audio_device", AudioNoArgs {}).await;
+            let current: Result<Option<String>, String> =
+                tauri::invoke("get_current_audio_device", AudioNoArgs {}).await;
             if let Ok(v) = current {
                 set_current_audio_device.set(v);
             }

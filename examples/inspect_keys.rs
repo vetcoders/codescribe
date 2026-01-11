@@ -1,9 +1,11 @@
+use anyhow::Result;
 use candle_core::safetensors::MmapedSafetensors;
 use std::path::PathBuf;
-use anyhow::Result;
 
 fn main() -> Result<()> {
-    let model_path = PathBuf::from("/Users/maciejgad/hosted/VetCoders/CodeScribe/models/whisper-large-v3-mlx-q8/weights.safetensors");
+    let model_path = PathBuf::from(
+        "/Users/maciejgad/hosted/VetCoders/CodeScribe/models/whisper-large-v3-mlx-q8/weights.safetensors",
+    );
     let tensors = unsafe { MmapedSafetensors::new(&model_path)? };
     let all_tensors = tensors.tensors();
     println!("Found {} tensors.", all_tensors.len());

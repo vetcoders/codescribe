@@ -1,114 +1,55 @@
-# Pre-commit hooks for CodeScribe
-# Strong guardrails without touching runtime. Install once:
-#   pipx install pre-commit    # or: uv tool install pre-commit
-#   pre-commit install
-# Run on demand:
-#   pre-commit run --all-files
+# Pre-commit hooks for CodeScribe (Pure Rust)
+# Install: pipx install pre-commit && pre-commit install
+# Run: pre-commit run --all-files
 
 minimum_pre_commit_version: "3.5.0"
 
 repos:
-  # Essential hygiene hooks
+  # Essential hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-merge-conflict
-      - id: debug-statements
       - id: mixed-line-ending
       - id: detect-private-key
 
-  # Ruff lint/format with friendly auto-fix messaging
-  - repo: local
-    hooks:
-      - id: ruff-check-notice
-        name: ruff
-        entry: python tools/hooks/ruff_check_notice.py
-        language: python
-        additional_dependencies:
-          - ruff==0.8.2
-        types: [python]
-      - id: ruff-format-notice
-        name: ruff-format
-        entry: python tools/hooks/ruff_format_notice.py
-        language: python
-        additional_dependencies:
-          - ruff==0.8.2
-        types: [python]
-
-  # Modernize syntax for the target Python (3.12+)
-  - repo: https://github.com/asottile/pyupgrade
-    rev: v3.19.0
-    hooks:
-      - id: pyupgrade
-        args: ["--py3-plus"]
-
-  # Typo detector (kept lenient; adjust ignore list if needed)
+  # Typo detector
   - repo: https://github.com/codespell-project/codespell
     rev: v2.3.0
     hooks:
       - id: codespell
-        args: [
-          "-L", "rumps,te,crate,nd,fo,aks,ane",  # common false positives; ANE = Apple Neural Engine
-        ]
-        exclude: |
-          (?x)^(
-            docs/MLX_CHEATSHEET.md|
-            docs/menu_tree\.mmd|
-            assets/|
-            .*\.lock$
-          )
-
-  # Security static analysis (Python) — lightweight, recursive
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.9
-    hooks:
-      - id: bandit
-        name: bandit (security checks)
-        args: ["-q", "-c", "tools/bandit.yaml", "-r", "tests", "-r", "tools"]
-
-  # Semgrep — powerful multi-language static analysis (security & correctness)
-  - repo: https://github.com/semgrep/semgrep
-    rev: v1.144.0
-    hooks:
-      - id: semgrep
-        name: semgrep (p/ci ruleset)
-        # Run even if pre-commit does not pass filenames (ensures hook fires on every commit)
-        pass_filenames: false
-        stages: [pre-commit, pre-push]
-        # Exclude path-traversal rule for client.rs - validated at controller level via ValidatedAudioPath
-        args: [
-          "--config", "p/ci",
-          "--error",
-          "--skip-unknown-extensions",
-          "--exclude-rule", "rust.actix.path-traversal.tainted-path.tainted-path"
-        ]
+        args: ["-L", "crate,nd,fo,aks,ane"]
         exclude: |
           (?x)^(
             assets/|
-            codescribe-rs/|
-            dist/|
             models/|
-            logs/|
-            packaging/|
             .*\.lock$
           )
 
-  # Optional typing (kept forgiving; won't block on macOS-only stubs)
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
+  # Rust formatting
+  - repo: local
     hooks:
-      - id: mypy
-        name: mypy (lenient)
-        additional_dependencies:
-          - types-requests
-          - types-PyYAML
-        args: [
-          "--ignore-missing-imports",
-          "--follow-imports=silent",
-          "--install-types",
-          "--non-interactive",
-          "--exclude", "(^tests/|^packaging/|^dist/|^assets/|^\\.venv/|sitecustomize\\.py)"
-        ]
-        exclude: (sitecustomize\.py|^tests/|^tools/)
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test --lib
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
