@@ -101,6 +101,7 @@ pub enum TrayMenuEvent {
     // Tools submenu
     OpenVoiceLab,
     OpenTeacher,
+    OpenNativeLab,
     NewConversation,
 }
 
@@ -303,5 +304,6 @@ pub struct MenuIds {
     // Tools submenu
     pub tools_voice_lab: MenuId,
     pub tools_teacher: MenuId,
+    pub tools_native_lab: MenuId,
     pub tools_new_conversation: MenuId,
 }

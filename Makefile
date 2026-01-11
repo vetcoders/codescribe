@@ -4,7 +4,8 @@
 .PHONY: all build release install bundle install-app start stop restart status logs logs-app logs-backend logs-follow config \
         bump bump-patch bump-minor bump-major version \
         lint format test security check clean help \
-        backend-start backend-stop
+        backend-start backend-stop \
+        tauri-dev tauri-build tauri-check
 
 SHELL := /bin/bash
 VERSION_FILE := Cargo.toml
@@ -174,6 +175,23 @@ backend-logs:
 	@cat /tmp/codescribe-backend.log 2>/dev/null | tail -100
 
 # ============================================================================
+# Tauri Frontend
+# ============================================================================
+
+tauri-dev:
+	@echo "Starting Tauri dev server..."
+	@cd tauri-app && cargo tauri dev
+
+tauri-build:
+	@echo "Building Tauri release..."
+	@cd tauri-app && cargo tauri build
+
+tauri-check:
+	@echo "Checking Tauri compilation..."
+	@cd tauri-app && cargo check --target wasm32-unknown-unknown
+	@cd tauri-app && cargo check
+
+# ============================================================================
 # Linting & Testing
 # ============================================================================
 
@@ -257,3 +275,8 @@ help:
 	@echo "Backend:"
 	@echo "  make backend-start Start Python backend only"
 	@echo "  make backend-stop  Stop Python backend only"
+	@echo ""
+	@echo "Tauri Frontend:"
+	@echo "  make tauri-dev      Start Tauri dev server"
+	@echo "  make tauri-build    Build Tauri release"
+	@echo "  make tauri-check    Check WASM + native compilation"

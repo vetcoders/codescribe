@@ -635,11 +635,7 @@ async fn test_compare_protocols() -> Result<()> {
     } else {
         "NDJSON"
     };
-    let diff = if ws_time < ndjson_time {
-        ndjson_time - ws_time
-    } else {
-        ws_time - ndjson_time
-    };
+    let diff = ws_time.abs_diff(ndjson_time);
     println!("{} is faster by {:?}", faster, diff);
 
     // Check transcript similarity (should be nearly identical)

@@ -391,7 +391,7 @@ pub fn build_permissions_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId)> 
 }
 
 /// Build the Tools submenu
-pub fn build_tools_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId)> {
+pub fn build_tools_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId, MenuId)> {
     let tools_menu = Submenu::new("Tools", true);
 
     // Voice Lab - Advanced icon (settings/lab)
@@ -406,6 +406,12 @@ pub fn build_tools_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId)> {
     let tools_teacher_id = tools_teacher.id().clone();
     tools_menu.append(&tools_teacher)?;
 
+    // Native Lab (Tauri) - Computer icon (native app)
+    let tools_native_lab =
+        IconMenuItem::with_native_icon("Open Native Lab (Tauri)", true, Some(NativeIcon::Computer), None);
+    let tools_native_lab_id = tools_native_lab.id().clone();
+    tools_menu.append(&tools_native_lab)?;
+
     tools_menu.append(&PredefinedMenuItem::separator())?;
 
     // New Conversation - Add icon (refresh/new)
@@ -418,6 +424,7 @@ pub fn build_tools_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId)> {
         tools_menu,
         tools_voice_lab_id,
         tools_teacher_id,
+        tools_native_lab_id,
         tools_new_conversation_id,
     ))
 }

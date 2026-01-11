@@ -139,6 +139,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_open_voice_lab();
     } else if event_id == &menu_ids.tools_teacher {
         handle_open_teacher();
+    } else if event_id == &menu_ids.tools_native_lab {
+        handle_open_native_lab();
     } else if event_id == &menu_ids.tools_new_conversation {
         codescribe::conversation::reset_conversation();
         send_menu_event(TrayMenuEvent::NewConversation);
@@ -215,5 +217,51 @@ fn handle_open_teacher() {
         let teacher_url = format!("{}#calibrate", crate::lab_server::lab_url());
         info!("Opening Calibration Teacher: {}", teacher_url);
         let _ = Command::new("open").arg(&teacher_url).spawn();
+    }
+}
+
+/// Open Native Lab (Tauri app)
+fn handle_open_native_lab() {
+    send_menu_event(TrayMenuEvent::OpenNativeLab);
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+
+        // Try to find codescribe-app binary in common locations
+        let binary_name = "codescribe-app";
+        let possible_paths = [
+            // Installed app in /Applications
+            "/Applications/CodeScribe.app/Contents/MacOS/codescribe-app",
+            // Development build (release)
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tauri-app/target/release/codescribe-app"),
+            // Development build (debug)
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tauri-app/target/debug/codescribe-app"),
+        ];
+
+        // First check known paths
+        for path in &possible_paths {
+            if std::path::Path::new(path).exists() {
+                info!("Launching Native Lab from: {}", path);
+                match Command::new(path).spawn() {
+                    Ok(_) => return,
+                    Err(e) => {
+                        debug!("Failed to launch from {}: {}", path, e);
+                    }
+                }
+            }
+        }
+
+        // Fall back to PATH lookup
+        match Command::new(binary_name).spawn() {
+            Ok(_) => {
+                info!("Launched Native Lab via PATH: {}", binary_name);
+            }
+            Err(e) => {
+                info!(
+                    "Native Lab binary '{}' not found. Build it with: cd tauri-app && cargo tauri build. Error: {}",
+                    binary_name, e
+                );
+            }
+        }
     }
 }

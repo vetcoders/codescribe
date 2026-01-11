@@ -59,7 +59,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     menu.append(&feedback_menu)?;
 
     // 11. Tools submenu
-    let (tools_menu, tools_voice_lab_id, tools_teacher_id, tools_new_conversation_id) =
+    let (tools_menu, tools_voice_lab_id, tools_teacher_id, tools_native_lab_id, tools_new_conversation_id) =
         build_tools_submenu()?;
     menu.append(&tools_menu)?;
 
@@ -126,6 +126,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             perm_microphone: perm_microphone_id,
             tools_voice_lab: tools_voice_lab_id,
             tools_teacher: tools_teacher_id,
+            tools_native_lab: tools_native_lab_id,
             tools_new_conversation: tools_new_conversation_id,
         },
     ))

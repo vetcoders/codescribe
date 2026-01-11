@@ -228,6 +228,10 @@ pub struct Config {
     #[serde(default = "default_sound_volume")]
     pub sound_volume: f32,
 
+    // ===== Audio =====
+    /// Preferred audio input device name (cpal) (optional)
+    pub audio_input_device: Option<String>,
+
     // ===== History =====
     /// Whether to keep transcription history
     #[serde(default = "default_history_enabled")]
@@ -323,6 +327,7 @@ impl Default for Config {
             beep_on_start: default_beep_on_start(),
             sound_name: default_sound_name(),
             sound_volume: default_sound_volume(),
+            audio_input_device: None,
             history_enabled: default_history_enabled(),
             use_local_stt: false,
             local_model: default_local_model(),

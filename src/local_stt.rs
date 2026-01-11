@@ -2,8 +2,12 @@ use anyhow::{anyhow, ensure, Context, Result};
 use std::collections::HashMap;
 use std::env;
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
+
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use rand::Rng;
 
 use candle_core::safetensors::Load;
 use candle_core::{Device, DType, IndexOp, Tensor};
@@ -226,6 +230,7 @@ impl LocalWhisperEngine {
         self.transcribe_long_with_language(&samples, sample_rate, language)
     }
 
+    #[allow(dead_code)]
     pub fn detect_language_file(&mut self, path: &Path) -> Result<String> {
         let (samples, sample_rate) = audio_loader::load_audio_file(path)
             .context("Failed to load audio file")?;
@@ -237,6 +242,7 @@ impl LocalWhisperEngine {
         self.transcribe_file_with_language(path, None)
     }
 
+    #[allow(dead_code)]
     pub fn transcribe_with_language(
         &mut self,
         audio: &[f32],
@@ -336,6 +342,7 @@ impl LocalWhisperEngine {
         Ok(out.trim().to_string())
     }
 
+    #[allow(dead_code)]
     pub fn detect_language(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
         let samples = audio_loader::resample_to_16k(audio, sample_rate);
         self.detect_language_16k(&samples)
@@ -494,6 +501,9 @@ impl LocalWhisperEngine {
         let max_new_tokens = self.config.max_target_positions.saturating_sub(tokens.len());
         let ngram_size = self.decoding_params.no_repeat_ngram_size;
 
+        let mut sum_logprob = 0.0f32;
+        let mut token_count = 0usize;
+
         for step in 0..max_new_tokens {
             let token_tensor = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
             let hidden = self
@@ -506,6 +516,36 @@ impl LocalWhisperEngine {
             let (_b, seq_len, _vocab) = logits.dims3()?;
             let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
             let mut logits_vec = last_logits.to_vec1::<f32>()?;
+
+            // 3. No-Speech Threshold (no_speech_threshold)
+            if step == 0 {
+                if let Some(nos) = nospeech_token {
+                    let nos_idx = nos as usize;
+                    if nos_idx < logits_vec.len() {
+                        // Compute softmax probability for nospeech only
+                        let max_val = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                        let exp_sum: f32 = logits_vec.iter().map(|&x| (x - max_val).exp()).sum();
+                        let nos_prob = (logits_vec[nos_idx] - max_val).exp() / exp_sum;
+
+                        if nos_prob > self.decoding_params.no_speech_threshold {
+                            tracing::debug!("No speech detected (prob={:.3})", nos_prob);
+                            return Ok(String::new()); // Return empty for silence
+                        }
+                    }
+                }
+            }
+
+            // 2. Suppress Blank (suppress_blank)
+            if self.decoding_params.suppress_blank && all_tokens.len() < 4 {
+                // Block common blank tokens (space, empty, etc.)
+                // Token IDs depend on tokenizer - check whisper tokenizer
+                let blank_tokens = [220, 50256];
+                for &tok in &blank_tokens {
+                    if tok < logits_vec.len() {
+                        logits_vec[tok] = f32::NEG_INFINITY;
+                    }
+                }
+            }
 
             // Apply no_repeat_ngram blocking (faster-whisper style)
             // Block tokens that would create a repeated n-gram
@@ -541,14 +581,51 @@ impl LocalWhisperEngine {
                 }
             }
 
-            // Greedy: pick max logit
-            let mut best_token = eot_token;
-            let mut best_val = f32::NEG_INFINITY;
-            for (idx, &val) in logits_vec.iter().enumerate() {
-                if val > best_val {
-                    best_val = val;
-                    best_token = idx as u32;
+            // Select token (greedy or sampling)
+            let (best_token, best_val) = if self.decoding_params.temperature > 0.0 {
+                // Apply temperature scaling
+                let temp = self.decoding_params.temperature;
+                let scaled: Vec<f32> = logits_vec.iter().map(|&x| x / temp).collect();
+
+                // Softmax
+                let max_val = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let exp_sum: f32 = scaled.iter().map(|&x| (x - max_val).exp()).sum();
+                let probs: Vec<f32> = scaled.iter().map(|&x| (x - max_val).exp() / exp_sum).collect();
+
+                // Sample from distribution
+                let mut rng = rand::thread_rng();
+                let r: f32 = rng.r#gen();
+                let mut cumsum = 0.0;
+                let mut selected = 0u32;
+                for (idx, &p) in probs.iter().enumerate() {
+                    cumsum += p;
+                    if r < cumsum {
+                        selected = idx as u32;
+                        break;
+                    }
                 }
+                let val = logits_vec[selected as usize];
+                (selected, val)
+            } else {
+                // Greedy (default)
+                let mut best_token = eot_token;
+                let mut best_val = f32::NEG_INFINITY;
+                for (idx, &val) in logits_vec.iter().enumerate() {
+                    if val > best_val {
+                        best_val = val;
+                        best_token = idx as u32;
+                    }
+                }
+                (best_token, best_val)
+            };
+
+            // Track logprobs (5. Logprob Threshold)
+            {
+                let max_val = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let exp_sum: f32 = logits_vec.iter().map(|&x| (x - max_val).exp()).sum();
+                let token_prob = (logits_vec[best_token as usize] - max_val).exp() / exp_sum;
+                sum_logprob += token_prob.ln();
+                token_count += 1;
             }
 
             if debug_tokens && step < 16 {
@@ -571,6 +648,20 @@ impl LocalWhisperEngine {
             .tokenizer
             .decode(&all_tokens, true)
             .map_err(|e| anyhow!("Tokenizer error: {}", e))?;
+
+        // 5. Logprob Threshold
+        if token_count > 0 {
+            let avg_logprob = sum_logprob / token_count as f32;
+            if avg_logprob < self.decoding_params.logprob_threshold {
+                tracing::warn!("Low avg logprob ({:.2}) - possible hallucination", avg_logprob);
+            }
+        }
+
+        // 4. Compression Ratio Threshold
+        let ratio = compression_ratio(&text);
+        if ratio > self.decoding_params.compression_ratio_threshold {
+            tracing::warn!("High compression ratio ({:.2}) - possible hallucination", ratio);
+        }
 
         Ok(text)
     }
@@ -703,6 +794,19 @@ fn map_tensor_name(name: &str) -> String {
     }
     new_name = new_name.replace(".biases", ".bias");
     new_name
+}
+
+fn compression_ratio(text: &str) -> f32 {
+    let original_len = text.len();
+    if original_len == 0 {
+        return 0.0;
+    }
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(text.as_bytes()).ok();
+    let compressed = encoder.finish().unwrap_or_default();
+
+    original_len as f32 / compressed.len() as f32
 }
 
 #[allow(clippy::needless_range_loop)]

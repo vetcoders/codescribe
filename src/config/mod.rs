@@ -56,16 +56,20 @@ mod tests {
 
     #[test]
     fn test_sanitize_token_limits() {
-        let mut config = Config::default();
-        config.ai_max_tokens = -1;
+        let mut config = Config {
+            ai_max_tokens: -1,
+            ..Default::default()
+        };
         config.sanitize();
         assert_eq!(config.ai_max_tokens, 512);
     }
 
     #[test]
     fn test_sanitize_sound_volume() {
-        let mut config = Config::default();
-        config.sound_volume = 1.5;
+        let mut config = Config {
+            sound_volume: 1.5,
+            ..Default::default()
+        };
         config.sanitize();
         assert_eq!(config.sound_volume, 1.0);
 
@@ -90,7 +94,7 @@ mod tests {
         writeln!(temp_file, "# Comment line").unwrap();
         writeln!(temp_file, "KEY1=value1").unwrap();
         writeln!(temp_file, "KEY2=\"value2\"").unwrap();
-        writeln!(temp_file, "").unwrap();
+        writeln!(temp_file).unwrap();
         writeln!(temp_file, "KEY3=value3").unwrap();
         temp_file.flush().unwrap();
 

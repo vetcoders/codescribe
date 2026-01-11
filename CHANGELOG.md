@@ -42,6 +42,22 @@ branch diffs you requested. Dates follow the Git history recorded in this repo.
 
 ## Unreleased
 
+### Tauri + Leptos Frontend (v0.6.0)
+- **Native desktop UI** – Tauri 2.9 + Leptos 0.8 frontend in `tauri-app/` replaces React Lab UI
+- **Three-tab interface** – Voice Lab (transcription), Teacher (calibration), Settings (configuration)
+- **Pure Rust STT integration** – Local Whisper inference via candle-transformers with Metal GPU
+- **Lexicon backend** – JSONL-based vocabulary storage with Tauri commands for Teacher UI
+- **Tray integration** – "Open Native Lab (Tauri)" menu item launches the native window
+- **Makefile targets** – `make tauri-dev`, `make tauri-build`, `make tauri-check` for development
+
+### Pure Rust STT (v0.5.0)
+- **Local Whisper engine** – candle-transformers with Q8 dequantization for Apple Silicon
+- **DecodingParams** – temperature, no_repeat_ngram_size, suppress_blank, no_speech_threshold
+- **Graceful degradation** – fallback to LibraxisAI cloud if local model fails
+- **Long audio chunking** – 25s chunks with 5s overlap for files > 30s
+
+---
+
 - **Unified user data directory** – settings, transcript history, stats, and onboarding
   configuration now live in `$HOME/.CodeScribe/`, keeping CLI and packaged builds perfectly in
   sync. Scripts (`quickstart_mac.sh`, packaging installers) were updated accordingly and the README

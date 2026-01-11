@@ -751,6 +751,9 @@ async fn main() -> Result<()> {
                         tray::TrayMenuEvent::OpenTeacher => {
                             info!("Open Calibration Teacher (handled in tray.rs)");
                         }
+                        tray::TrayMenuEvent::OpenNativeLab => {
+                            info!("Open Native Lab (handled in tray.rs)");
+                        }
                         tray::TrayMenuEvent::NewConversation => {
                             info!("New conversation started (handled in tray.rs)");
                         }

@@ -174,8 +174,8 @@ impl Recorder {
         // Query default input device at initialization
         let host = cpal::default_host();
         if let Some(device) = host.default_input_device() {
-            if let Ok(name) = device.name() {
-                info!("Default input device: {}", name);
+            if let Ok(desc) = device.description() {
+                info!("Default input device: {}", desc);
             }
         } else {
             warn!("No default input device found");
@@ -209,13 +209,39 @@ impl Recorder {
         self.buffer.lock().unwrap().clear();
         self.diagnostics = RecorderDiagnostics::default();
 
-        // Get default input device
+        // Select input device
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .context("No input device available")?;
 
-        let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+        let preferred = std::env::var("AUDIO_INPUT_DEVICE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let device = if let Some(preferred) = preferred {
+            let devices = host
+                .input_devices()
+                .context("Failed to enumerate input devices")?;
+
+            let mut selected: Option<Device> = None;
+            for d in devices {
+                if let Ok(desc) = d.description() {
+                    let name = desc.to_string();
+                    if name == preferred || name.to_lowercase().contains(&preferred.to_lowercase()) {
+                        selected = Some(d);
+                        break;
+                    }
+                }
+            }
+
+            selected
+                .or_else(|| host.default_input_device())
+                .context("No input device available")?
+        } else {
+            host.default_input_device()
+                .context("No input device available")?
+        };
+
+        let device_name = device.description().map(|d| d.to_string()).unwrap_or_else(|_| "Unknown".to_string());
         info!("Using input device: {}", device_name);
 
         // Get supported config
@@ -225,12 +251,12 @@ impl Recorder {
 
         // Use the device's native sample rate for compatibility
         // (backend will handle resampling if needed)
-        let native_sample_rate = supported_config.sample_rate().0;
+        let native_sample_rate = supported_config.sample_rate();
 
         // Build stream config using native sample rate
         let stream_config = StreamConfig {
             channels: self.config.channels,
-            sample_rate: cpal::SampleRate(native_sample_rate),
+            sample_rate: native_sample_rate,
             buffer_size: cpal::BufferSize::Default, // Let system choose buffer size
         };
 

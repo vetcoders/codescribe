@@ -178,4 +178,29 @@ mod macos_local_stt_tests {
             assert!(result.is_ok());
         }
     }
+
+    #[test]
+    fn test_decoding_params_instantiation() {
+        // Just verify we can set the params on the engine struct
+        let Some(model_path) = model_dir() else {
+            return;
+        };
+        let mut engine = LocalWhisperEngine::new(&model_path).unwrap();
+
+        // Modify params
+        engine.decoding_params.temperature = 0.5;
+        engine.decoding_params.suppress_blank = false;
+        engine.decoding_params.no_speech_threshold = 0.9;
+        engine.decoding_params.compression_ratio_threshold = 10.0;
+        engine.decoding_params.logprob_threshold = -5.0;
+
+        // If we have audio, run it
+        if let Some(audio_path) = audio_path() {
+             let result = engine.transcribe_file_with_language(&audio_path, Some("en"));
+             // We don't assert success strongly as params might degrade performance, but it should not crash
+             if result.is_err() {
+                 eprintln!("Transcription with custom params failed: {:?}", result.err());
+             }
+        }
+    }
 }

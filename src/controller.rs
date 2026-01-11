@@ -204,6 +204,11 @@ impl RecordingController {
         let recorder = Recorder::new().expect("Failed to initialize audio recorder");
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
+        if let Ok(models) = model_manager.list_models() {
+            if !models.is_empty() {
+                info!("Available local models: {:?}", models);
+            }
+        }
         let model_path = model_manager.get_model_path(&config.local_model);
 
         let local_stt_engine = if config.use_local_stt && model_manager.check_model_exists(&config.local_model) {
@@ -250,6 +255,11 @@ impl RecordingController {
         let recorder = Recorder::new().expect("Failed to initialize audio recorder");
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
+        if let Ok(models) = model_manager.list_models() {
+            if !models.is_empty() {
+                info!("Available local models: {:?}", models);
+            }
+        }
         let model_path = model_manager.get_model_path(&cfg.local_model);
 
         let local_stt_engine = if cfg.use_local_stt && model_manager.check_model_exists(&cfg.local_model) {
@@ -656,14 +666,14 @@ impl RecordingController {
 
             match local_result {
                 Ok(Ok(text)) => {
-                    info!("Local transcription successful");
+                    info!("Local STT: {} chars transcribed", text.len());
                     raw_text_opt = Some(text);
                 },
                 Ok(Err(e)) => {
-                    warn!("Local STT failed: {}", e);
+                    warn!("Local STT failed, falling back to cloud: {}", e);
                 },
                 Err(e) => {
-                     warn!("Local STT task failed: {}", e);
+                    warn!("Local STT task panicked, falling back to cloud: {}", e);
                 }
             }
         }
@@ -671,9 +681,10 @@ impl RecordingController {
         let raw_text = if let Some(text) = raw_text_opt {
             text
         } else {
+            info!("Using cloud STT (LibraxisAI)");
             crate::client::transcribe(audio_path.as_path(), language_opt)
                 .await
-                .context("Transcription failed")?
+                .context("Cloud transcription failed")?
         };
 
         if raw_text.trim().is_empty() {

@@ -126,6 +126,11 @@ impl Config {
             }
         }
 
+        // Audio
+        if let Ok(val) = std::env::var("AUDIO_INPUT_DEVICE") {
+            self.audio_input_device = (!val.trim().is_empty()).then_some(val);
+        }
+
         // History
         if let Ok(val) = std::env::var("HISTORY_ENABLED") {
             self.history_enabled = val.parse().unwrap_or(true);
@@ -170,6 +175,14 @@ impl Config {
         // STT_API_KEY for cloud STT
         if let Ok(val) = std::env::var("STT_API_KEY") {
             self.stt_api_key = Some(val);
+        }
+
+        // Local STT (Pure Rust Whisper)
+        if let Ok(val) = std::env::var("USE_LOCAL_STT") {
+            self.use_local_stt = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
+        if let Ok(val) = std::env::var("LOCAL_MODEL") {
+            self.local_model = val;
         }
 
         // Clipboard
