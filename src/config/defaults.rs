@@ -91,5 +91,5 @@ pub fn default_dump_audio_logs() -> bool {
 }
 
 pub fn default_local_model() -> String {
-    "base".to_string()
+    crate::models::DEFAULT_MODEL.to_string()
 }

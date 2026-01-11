@@ -10,6 +10,7 @@ mod client;
 mod clipboard;
 mod config;
 mod controller;
+mod conversation;
 mod history;
 mod hotkeys;
 mod lab_server;

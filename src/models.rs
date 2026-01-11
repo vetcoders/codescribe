@@ -4,8 +4,12 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 
+/// Default bundled model name
+pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
+
 pub struct ModelManager {
     models_dir: PathBuf,
+    bundle_dir: Option<PathBuf>,
 }
 
 impl ModelManager {
@@ -21,15 +25,45 @@ impl ModelManager {
 
         fs::create_dir_all(&models_dir).context("Failed to create models directory")?;
 
-        Ok(Self { models_dir })
+        // Try to find bundle resources path (macOS app bundle)
+        let bundle_dir = Self::find_bundle_resources_dir();
+
+        Ok(Self { models_dir, bundle_dir })
+    }
+
+    /// Find the Resources directory in a macOS app bundle
+    fn find_bundle_resources_dir() -> Option<PathBuf> {
+        // Get current executable path
+        let exe = std::env::current_exe().ok()?;
+
+        // In macOS bundle: /path/to/App.app/Contents/MacOS/binary
+        // Resources are at: /path/to/App.app/Contents/Resources/
+        let contents = exe.parent()?.parent()?;
+        let resources = contents.join("Resources");
+
+        if resources.exists() {
+            Some(resources)
+        } else {
+            None
+        }
     }
 
     pub fn get_model_path(&self, model_name: &str) -> PathBuf {
+        // 1. Check if it's an absolute path that exists
         let candidate = PathBuf::from(model_name);
         if candidate.exists() {
             return candidate;
         }
 
+        // 2. Check bundle resources first (for bundled app)
+        if let Some(ref bundle_dir) = self.bundle_dir {
+            let bundle_path = bundle_dir.join("models").join(model_name);
+            if bundle_path.exists() {
+                return bundle_path;
+            }
+        }
+
+        // 3. Fall back to user models directory
         self.models_dir.join(model_name)
     }
 

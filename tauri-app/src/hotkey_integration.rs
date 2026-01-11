@@ -51,9 +51,9 @@ fn run_hotkey_event_loop(rx: Receiver<HotkeyEvent>, state: Arc<AppState>, _app: 
 
     info!("Hotkey event loop started");
 
-    // Track state for hold mode delay
+    // Track state for hold mode
     let mut hold_pending = false;
-    let mut assistive_mode = false;
+    let mut pending_assistive = false;
 
     loop {
         match rx.recv() {
@@ -62,13 +62,12 @@ fn run_hotkey_event_loop(rx: Receiver<HotkeyEvent>, state: Arc<AppState>, _app: 
 
                 match event {
                     HotkeyEvent::Hold { action, assistive } => {
-                        assistive_mode = assistive;
-
                         match action {
                             HoldAction::Down => {
                                 // Start recording after delay (handled by schedule_hold_start in controller)
                                 // For Tauri, we start immediately but could add delay later
                                 hold_pending = true;
+                                pending_assistive = assistive;
 
                                 let state = Arc::clone(&state);
                                 rt.spawn(async move {
@@ -82,9 +81,9 @@ fn run_hotkey_event_loop(rx: Receiver<HotkeyEvent>, state: Arc<AppState>, _app: 
                                     hold_pending = false;
 
                                     let state = Arc::clone(&state);
-                                    let assistive = assistive_mode;
+                                    let use_assistive = pending_assistive;
                                     rt.spawn(async move {
-                                        if let Err(e) = handle_stop_recording(&state, assistive).await {
+                                        if let Err(e) = handle_stop_recording(&state, use_assistive).await {
                                             error!("Failed to stop recording: {}", e);
                                         }
                                     });

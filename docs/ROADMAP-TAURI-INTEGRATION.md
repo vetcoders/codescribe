@@ -57,11 +57,12 @@
    - Toggle mode: double-tap Option to toggle recording
    - Assistive mode: Shift held during gesture for AI formatting
 
-### Phase 6: Model Bundling (Next Session ~1-2h)
-1. Download `whisper-large-v3-turbo-mlx-q8` (~800MB)
-2. Add to `tauri.conf.json` resources
-3. Modify `local_stt.rs` to load from bundle path
-4. Test cold start performance
+### Phase 6: Model Bundling ✅ COMPLETED
+1. Model `whisper-large-v3-turbo-mlx-q8` (874MB) bundled in app
+2. Added to `tauri.conf.json` resources
+3. Updated `ModelManager` to check bundle path first
+4. Default model set to bundled turbo-mlx-q8
+5. **App size**: 949MB | **DMG**: 843MB
 
 ### Phase 6: Polish & Testing (~2-3h)
 1. Activity glyph for tray (recording/processing states)

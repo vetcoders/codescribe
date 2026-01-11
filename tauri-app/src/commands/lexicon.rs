@@ -59,10 +59,10 @@ pub fn list_lexicon_topics() -> Result<Vec<String>, String> {
     for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
-            if let Some(stem) = path.file_stem() {
-                topics.push(stem.to_string_lossy().to_string());
-            }
+        if path.extension().map(|e| e == "jsonl").unwrap_or(false)
+            && let Some(stem) = path.file_stem()
+        {
+            topics.push(stem.to_string_lossy().to_string());
         }
     }
 
