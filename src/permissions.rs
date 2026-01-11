@@ -16,7 +16,6 @@ use core_foundation::string::CFString;
 
 /// Permission status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum PermissionStatus {
     /// Permission is granted
     Granted,
@@ -24,8 +23,6 @@ pub enum PermissionStatus {
     Denied,
     /// Permission not yet requested (user hasn't been asked)
     NotDetermined,
-    /// Permission is restricted (parental controls, MDM, etc)
-    Restricted,
 }
 
 /// Check if Accessibility permission is granted
@@ -149,9 +146,6 @@ pub fn check_all_permissions() {
         PermissionStatus::Denied => {
             warn!("Microphone permission: DENIED - Recording will not work!");
             warn!("Grant access in: System Settings > Privacy & Security > Microphone");
-        }
-        PermissionStatus::Restricted => {
-            warn!("Microphone permission: Restricted by system policy");
         }
     }
 }

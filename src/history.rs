@@ -114,7 +114,6 @@ pub fn save_entry(text: &str) -> HistoryEntry {
 }
 
 /// Get recent history entries, sorted by modification time (newest first)
-#[allow(dead_code)] // Will be used by Tauri frontend for history panel
 pub fn recent_entries(limit: usize) -> Vec<HistoryEntry> {
     let base_dir = transcriptions_base_dir();
     let mut entries = Vec::new();
