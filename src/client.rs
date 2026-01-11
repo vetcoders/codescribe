@@ -1003,6 +1003,7 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
 // Note: format_text moved to ai_formatting.rs module for OpenAI/Libraxis support
 
 /// Model set response structure
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ModelSetResponse {
     ok: bool,
@@ -1045,6 +1046,7 @@ pub async fn get_current_model() -> Result<String> {
 ///
 /// # Returns
 /// Ok(()) on success, error if model not found or switch failed
+#[allow(dead_code)]
 pub async fn set_whisper_model(variant: &str) -> Result<()> {
     let base_url = get_server_url().await?;
     let url = format!("{}/model/set", base_url);

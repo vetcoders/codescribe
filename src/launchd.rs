@@ -2,6 +2,10 @@
 //!
 //! This module manages a LaunchAgent plist in ~/Library/LaunchAgents/ to enable
 //! CodeScribe to start automatically when the user logs in.
+//!
+//! NOTE: Currently unused - will be connected to Tauri Settings panel.
+
+#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;

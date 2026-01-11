@@ -4,7 +4,7 @@
 //! 1. .env file for all configuration (primary source)
 //! 2. settings.json for backwards compatibility
 //!
-//! Settings are stored in `$HOME/.CodeScribe/` directory by default.
+//! Settings are stored in `$HOME/.codescribe/` directory by default.
 //! .env file takes precedence over settings.json when both exist.
 //!
 //! ## Module Structure
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn test_config_dir() {
         let dir = Config::config_dir();
-        assert!(dir.to_string_lossy().contains(".CodeScribe"));
+        assert!(dir.to_string_lossy().contains(".codescribe"));
     }
 
     #[test]

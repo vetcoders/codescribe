@@ -2,15 +2,21 @@
 //!
 //! Serves static files from assets/lab/ directory.
 //! No external dependencies - just tokio TCP.
+//!
+//! NOTE: Currently unused - will be activated when Tauri frontend is integrated.
+
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
+#[allow(dead_code)] // Used in lab_url() which will be used by Tauri
 const LAB_PORT: u16 = 8237;
 
 /// Get the lab assets directory
+#[allow(dead_code)] // Will be used when lab server is activated
 fn lab_assets_dir() -> PathBuf {
     // Try relative to executable first
     if let Ok(exe) = std::env::current_exe() {

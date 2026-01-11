@@ -10,7 +10,6 @@ mod client;
 mod clipboard;
 mod config;
 mod controller;
-mod dialog;
 mod history;
 mod hotkeys;
 mod lab_server;
@@ -39,7 +38,7 @@ use tracing_subscriber::FmtSubscriber;
 fn pid_file_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
-        .join(".CodeScribe")
+        .join(".codescribe")
         .join("codescribe.pid")
 }
 
@@ -218,7 +217,7 @@ async fn handle_transcribe_command(
 
     let model_candidates = [
         PathBuf::from(&home)
-            .join(".CodeScribe/models")
+            .join(".codescribe/models")
             .join(model_name),
         PathBuf::from("models").join(model_name),
     ];
@@ -649,7 +648,8 @@ async fn main() -> Result<()> {
     )));
 
     // Spawn async task to handle menu events
-    let config_clone = Arc::clone(&shared_config);
+    // Most menu actions are handled directly in handlers.rs (Settings, Help, About)
+    // Only Quit needs main.rs handling for clean shutdown
     let controller_for_menu = Arc::clone(&controller);
     tokio::spawn(async move {
         info!("Menu event loop started");
@@ -659,387 +659,29 @@ async fn main() -> Result<()> {
                     info!("Received menu event: {:?}", event);
                     match event {
                         tray::TrayMenuEvent::Quit => {
-                            info!("Quit event received - showing confirmation dialog...");
-                            // Call dialog from blocking task - osascript handles threading
-                            let choice = tokio::task::spawn_blocking(dialog::show_quit_dialog)
-                                .await
-                                .unwrap_or_else(|e| {
-                                    error!("Dialog task failed: {:?}, defaulting to CloseAll", e);
-                                    dialog::QuitChoice::CloseAll
-                                });
-
-                            info!("Dialog returned: {:?}", choice);
-
-                            match choice {
-                                dialog::QuitChoice::CloseAll => {
-                                    info!("User chose Close All - stopping backend and exiting...");
-                                    // Check if recording is in progress
-                                    if controller_for_menu.is_recording().await {
-                                        warn!("Recording in progress - forcing reset");
-                                        controller_for_menu.reset().await;
-                                    } else if controller_for_menu.is_busy().await {
-                                        warn!("Processing in progress - forcing reset");
-                                        controller_for_menu.reset().await;
-                                    }
-                                    // Stop any running backend servers (all known ports)
-                                    info!("Killing backend processes on known ports...");
-                                    backend::BackendServer::kill_existing_on_known_ports();
-                                    info!("Backend kill complete");
-                                    // Release PID lock before exit
-                                    release_pid_lock();
-                                    info!("Exiting application (backend stopped)");
-                                    // Flush logs before exit
-                                    std::io::Write::flush(&mut std::io::stderr()).ok();
-                                    std::process::exit(0);
-                                }
-                                dialog::QuitChoice::LeaveServerRunning => {
-                                    info!("User chose Leave Server Running - exiting tray only...");
-                                    // Check if recording is in progress
-                                    if controller_for_menu.is_recording().await {
-                                        warn!("Recording in progress - forcing reset");
-                                        controller_for_menu.reset().await;
-                                    } else if controller_for_menu.is_busy().await {
-                                        warn!("Processing in progress - forcing reset");
-                                        controller_for_menu.reset().await;
-                                    }
-                                    // Release PID lock before exit (but don't stop backend)
-                                    release_pid_lock();
-                                    info!("Exiting application (backend still running)");
-                                    std::process::exit(0);
-                                }
-                                dialog::QuitChoice::Cancel => {
-                                    info!("User cancelled quit");
-                                    // Do nothing, continue running
-                                }
-                            }
-                        }
-                        tray::TrayMenuEvent::QuitCloseAll => {
-                            info!("QuitCloseAll event - stopping backend and exiting...");
-                            if controller_for_menu.is_recording().await
-                                || controller_for_menu.is_busy().await
-                            {
+                            info!("Quit event received - clean shutdown...");
+                            // Check if recording is in progress
+                            if controller_for_menu.is_recording().await {
+                                warn!("Recording in progress - forcing reset");
+                                controller_for_menu.reset().await;
+                            } else if controller_for_menu.is_busy().await {
+                                warn!("Processing in progress - forcing reset");
                                 controller_for_menu.reset().await;
                             }
-                            backend::BackendServer::kill_existing_on_known_ports();
+                            // Release PID lock before exit
                             release_pid_lock();
+                            info!("Exiting application");
+                            // Flush logs before exit
+                            std::io::Write::flush(&mut std::io::stderr()).ok();
                             std::process::exit(0);
                         }
-                        tray::TrayMenuEvent::QuitLeaveServer => {
-                            info!("QuitLeaveServer event - exiting tray only...");
-                            if controller_for_menu.is_recording().await
-                                || controller_for_menu.is_busy().await
-                            {
-                                controller_for_menu.reset().await;
-                            }
-                            release_pid_lock();
-                            std::process::exit(0);
+                        // Settings, Help, About are handled directly in handlers.rs
+                        tray::TrayMenuEvent::OpenSettings
+                        | tray::TrayMenuEvent::OpenHelp
+                        | tray::TrayMenuEvent::ShowAbout => {
+                            // Already handled in handlers.rs, just log
+                            debug!("Menu action handled in tray handlers");
                         }
-                        tray::TrayMenuEvent::ToggleHotkeys => {
-                            if hotkeys::are_hotkeys_enabled() {
-                                info!("Disabling hotkeys");
-                                hotkeys::disable_hotkeys();
-                            } else {
-                                info!("Enabling hotkeys");
-                                hotkeys::enable_hotkeys();
-                            }
-                        }
-                        tray::TrayMenuEvent::SetLanguage(lang) => {
-                            let new_lang = match lang {
-                                tray::Language::Auto => config::Language::Auto,
-                                tray::Language::Polish => config::Language::Polish,
-                                tray::Language::English => config::Language::English,
-                            };
-                            info!("Setting language to: {:?}", new_lang);
-                            let mut cfg = config_clone.write().await;
-                            cfg.whisper_language = new_lang;
-                            if let Err(e) = cfg.save_to_env("WHISPER_LANGUAGE", new_lang.as_str()) {
-                                error!("Failed to save language setting: {}", e);
-                            }
-                            // TODO: Refresh tray menu to show updated language selection
-                            // tray::update_language_selection(new_lang.as_str());
-                        }
-                        tray::TrayMenuEvent::CopyLatestToClipboard => {
-                            info!("Copy latest to clipboard requested");
-                            if let Some(entry) = history::latest_entry() {
-                                match std::fs::read_to_string(&entry.path) {
-                                    Ok(text) => {
-                                        if let Err(e) = clipboard::copy(&text) {
-                                            error!("Failed to copy to clipboard: {}", e);
-                                        } else {
-                                            info!(
-                                                "Copied latest transcript to clipboard ({} chars)",
-                                                text.len()
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to read history entry: {}", e);
-                                    }
-                                }
-                            } else {
-                                warn!("No history entries found");
-                            }
-                        }
-                        tray::TrayMenuEvent::OpenHistoryFolder => {
-                            info!("Opening history folder");
-                            history::open_history_folder();
-                        }
-                        tray::TrayMenuEvent::SelectHistoryEntry(index) => {
-                            info!("Selecting history entry at index {}", index);
-                            let entries = history::recent_entries(10);
-                            if let Some(entry) = entries.get(index) {
-                                match std::fs::read_to_string(&entry.path) {
-                                    Ok(text) => {
-                                        if let Err(e) = clipboard::copy(&text) {
-                                            error!("Failed to copy to clipboard: {}", e);
-                                        } else {
-                                            info!(
-                                                "Copied history entry {} to clipboard ({} chars)",
-                                                index,
-                                                text.len()
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to read history entry: {}", e);
-                                    }
-                                }
-                            } else {
-                                warn!("History entry at index {} not found", index);
-                            }
-                        }
-                        tray::TrayMenuEvent::ToggleHistory => {
-                            info!("Toggle history save requested (always enabled for now)");
-                            // History saving is always enabled in current implementation
-                        }
-                        tray::TrayMenuEvent::SetWhisperModel(model) => {
-                            let variant = match model {
-                                tray::WhisperModel::Small => "small",
-                                tray::WhisperModel::Medium => "medium",
-                                tray::WhisperModel::LargeV3 => "large-v3",
-                                tray::WhisperModel::LargeV3Turbo => "large-v3-turbo",
-                                tray::WhisperModel::LargeV3Q8 => "large-v3-mlx-q8",
-                            };
-                            // Skip if model is already set (CheckMenuItem sends event on menu show)
-                            let current = std::env::var("WHISPER_VARIANT").unwrap_or_default();
-                            if current == variant {
-                                debug!(
-                                    "Model already set to {}, ignoring duplicate event",
-                                    variant
-                                );
-                                continue;
-                            }
-                            info!("Setting Whisper model to: {}", variant);
-                            // Call backend to switch model
-                            match client::set_whisper_model(variant).await {
-                                Ok(()) => {
-                                    info!("Whisper model switched to: {}", variant);
-                                    // Update environment for next restart
-                                    // SAFETY: Menu event handler, single-threaded context
-                                    unsafe { std::env::set_var("WHISPER_VARIANT", variant) };
-                                    // Note: Menu checkmarks already updated synchronously in handle_menu_event
-                                }
-                                Err(e) => {
-                                    error!("Failed to switch Whisper model: {}", e);
-                                    // Revert menu to previous state on error
-                                    let current =
-                                        std::env::var("WHISPER_VARIANT").unwrap_or_default();
-                                    if !current.is_empty() {
-                                        tray::update_model_selection(&current);
-                                    }
-                                }
-                            }
-                        }
-                        tray::TrayMenuEvent::OpenModelsFolder => {
-                            info!("Open models folder requested (handled in tray.rs)");
-                            // Action is handled directly in tray.rs handle_menu_event
-                        }
-                        tray::TrayMenuEvent::ToggleAiFormatting => {
-                            info!("Toggle AI formatting requested");
-                            // Toggle the AI formatting setting
-                            let current = std::env::var("FORMAT_ENABLED")
-                                .map(|v| v == "1" || v.to_lowercase() == "true")
-                                .unwrap_or(false);
-                            let new_value = if current { "0" } else { "1" };
-                            // SAFETY: Menu event handler, single-threaded context
-                            unsafe { std::env::set_var("FORMAT_ENABLED", new_value) };
-                            info!(
-                                "AI formatting {}",
-                                if new_value == "1" {
-                                    "enabled"
-                                } else {
-                                    "disabled"
-                                }
-                            );
-                            // TODO: Refresh tray menu to show updated AI formatting state
-                            // tray::update_formatting_toggle(new_value == "1");
-                        }
-                        tray::TrayMenuEvent::SetFormattingProvider(provider) => {
-                            let provider_str = match provider {
-                                tray::FormattingProvider::Harmony => "harmony",
-                                tray::FormattingProvider::Ollama => "ollama",
-                            };
-                            info!("Setting formatting provider to: {}", provider_str);
-                            // SAFETY: Menu event handler, single-threaded context
-                            unsafe { std::env::set_var("AI_PROVIDER", provider_str) };
-                            // TODO: Refresh tray menu to show updated provider selection
-                            // tray::update_formatting_provider(provider_str);
-                        }
-                        // Sound settings
-                        tray::TrayMenuEvent::ToggleStartSound => {
-                            let mut cfg = config_clone.write().await;
-                            cfg.beep_on_start = !cfg.beep_on_start;
-                            let enabled = cfg.beep_on_start;
-                            if let Err(e) =
-                                cfg.save_to_env("BEEP_ON_START", if enabled { "1" } else { "0" })
-                            {
-                                error!("Failed to save beep setting: {}", e);
-                            }
-                            info!(
-                                "Start sound {}",
-                                if enabled { "enabled" } else { "disabled" }
-                            );
-                            // TODO: Refresh tray menu to show updated sound state
-                            // tray::update_sound_settings();
-                        }
-                        tray::TrayMenuEvent::SetSoundType(sound) => {
-                            let sound_name = match sound {
-                                tray::SoundType::Tink => "Tink",
-                                tray::SoundType::Pop => "Pop",
-                            };
-                            info!("Setting sound type to: {}", sound_name);
-                            // SAFETY: Menu event handler, single-threaded context
-                            unsafe { std::env::set_var("SOUND_TYPE", sound_name) };
-                            // Play preview
-                            sound::play_sound(sound_name);
-                            // TODO: Refresh tray menu to show updated sound type
-                            // tray::update_sound_settings();
-                        }
-                        tray::TrayMenuEvent::SetVolume(level) => {
-                            let volume = level.as_f32();
-                            info!("Setting volume to: {} ({})", level.label(), volume);
-                            let mut cfg = config_clone.write().await;
-                            cfg.sound_volume = volume;
-                            if let Err(e) = cfg.save_to_env("SOUND_VOLUME", &volume.to_string()) {
-                                error!("Failed to save volume setting: {}", e);
-                            }
-                            // Play preview sound at new volume
-                            sound::play_sound_with_volume("Tink", volume);
-                            // TODO: Refresh tray menu to show updated volume level
-                            // tray::update_sound_settings();
-                        }
-                        // Hold hotkey settings
-                        tray::TrayMenuEvent::SetHoldMods(mods) => {
-                            info!("Setting hold modifiers to: {:?}", mods);
-                            let mut cfg = config_clone.write().await;
-                            cfg.hold_mods = mods;
-                            if let Err(e) = cfg.save_to_env("HOLD_MODS", mods.as_str()) {
-                                error!("Failed to save hold mods setting: {}", e);
-                            }
-                            // Apply runtime reconfiguration
-                            hotkeys::set_hold_mods(mods);
-                            // TODO: Refresh tray menu to show updated hotkey config
-                            // tray::update_hotkey_settings();
-                        }
-                        tray::TrayMenuEvent::ToggleHoldExclusive => {
-                            let mut cfg = config_clone.write().await;
-                            cfg.hold_exclusive = !cfg.hold_exclusive;
-                            let exclusive = cfg.hold_exclusive;
-                            if let Err(e) =
-                                cfg.save_to_env("HOLD_EXCLUSIVE", if exclusive { "1" } else { "0" })
-                            {
-                                error!("Failed to save exclusive setting: {}", e);
-                            }
-                            // Apply runtime reconfiguration
-                            hotkeys::set_exclusive_mode(exclusive);
-                            info!(
-                                "Exclusive mode {} (applied immediately)",
-                                if exclusive { "enabled" } else { "disabled" }
-                            );
-                            // TODO: Refresh tray menu to show updated hotkey config
-                            // tray::update_hotkey_settings();
-                        }
-                        tray::TrayMenuEvent::SetToggleTrigger(trigger) => {
-                            info!(
-                                "Setting toggle trigger to: {} ({})",
-                                trigger.label(),
-                                trigger.as_str()
-                            );
-                            let mut cfg = config_clone.write().await;
-                            cfg.toggle_trigger = trigger;
-                            if let Err(e) = cfg.save_to_env("TOGGLE_TRIGGER", trigger.as_str()) {
-                                error!("Failed to save toggle trigger setting: {}", e);
-                            }
-                            // Apply runtime reconfiguration
-                            hotkeys::set_toggle_trigger(trigger);
-                            // TODO: Refresh tray menu to show updated hotkey config
-                            // tray::update_hotkey_settings();
-                        }
-                        // Permissions
-                        tray::TrayMenuEvent::CheckPermissions => {
-                            info!("Checking permissions...");
-                            permissions::check_all_permissions();
-                            // Note: Menu needs refresh to show updated status
-                        }
-                        tray::TrayMenuEvent::OpenAccessibilitySettings => {
-                            info!("Open Accessibility Settings (handled in tray.rs)");
-                        }
-                        tray::TrayMenuEvent::OpenMicrophoneSettings => {
-                            info!("Open Microphone Settings (handled in tray.rs)");
-                        }
-                        // Tools submenu
-                        tray::TrayMenuEvent::OpenVoiceLab => {
-                            info!("Open Voice Lab (handled in tray.rs)");
-                        }
-                        tray::TrayMenuEvent::OpenTeacher => {
-                            info!("Open Calibration Teacher (handled in tray.rs)");
-                        }
-                        tray::TrayMenuEvent::OpenNativeLab => {
-                            info!("Open Native Lab (handled in tray.rs)");
-                        }
-                        tray::TrayMenuEvent::NewConversation => {
-                            info!("New conversation started (handled in tray.rs)");
-                        }
-                        // Appearance
-                        tray::TrayMenuEvent::ToggleStatusGlyph => {
-                            let new_state = !tray::is_status_glyph_enabled();
-                            info!(
-                                "Toggling status glyph to: {}",
-                                if new_state { "enabled" } else { "disabled" }
-                            );
-                            tray::set_status_glyph_enabled(new_state);
-                            // Refresh icon to apply change
-                            let _ = tray::update_tray_status(tray::TrayStatus::Idle);
-                        }
-                        tray::TrayMenuEvent::RefreshTrayIcon => {
-                            info!("Refreshing tray icon...");
-                            let _ = tray::update_tray_status(tray::TrayStatus::Idle);
-                        }
-                        // System
-                        tray::TrayMenuEvent::StartAtLogin(enabled) => {
-                            info!("Start at login: {}", enabled);
-                            let result = if enabled {
-                                launchd::enable_login_item()
-                            } else {
-                                launchd::disable_login_item()
-                            };
-
-                            match result {
-                                Ok(()) => {
-                                    info!(
-                                        "Successfully {} Start at Login",
-                                        if enabled { "enabled" } else { "disabled" }
-                                    );
-                                }
-                                Err(e) => {
-                                    error!(
-                                        "Failed to {} Start at Login: {}",
-                                        if enabled { "enable" } else { "disable" },
-                                        e
-                                    );
-                                }
-                            }
-                        } // Note: ToggleHotkeys is handled above (line ~176)
                     }
                 }
                 Err(e) => {

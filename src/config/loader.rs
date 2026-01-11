@@ -1,7 +1,7 @@
 //! Configuration loading and saving functionality.
 //!
 //! Handles loading from .env file and environment variables.
-//! Single source of truth: ~/.CodeScribe/.env
+//! Single source of truth: ~/.codescribe/.env
 
 use directories::BaseDirs;
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ impl Config {
     ///
     /// Priority order:
     /// 1. Environment variables
-    /// 2. .env file in config directory (~/.CodeScribe/.env)
+    /// 2. .env file in config directory (~/.codescribe/.env)
     /// 3. Default values
     ///
     /// If the .env file doesn't exist or is malformed, returns default configuration
@@ -216,6 +216,7 @@ impl Config {
     /// # Arguments
     /// * `key` - Environment variable name (e.g., "BEEP_ON_START")
     /// * `value` - Value to save
+    #[allow(dead_code)]
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let env_path = Self::env_path();
 
@@ -241,8 +242,9 @@ impl Config {
     }
 
     /// Parse .env file into HashMap.
+    #[allow(dead_code)]
     pub fn parse_env_file(path: &PathBuf) -> anyhow::Result<HashMap<String, String>> {
-        // Path comes from Config::env_path() which is hardcoded to ~/.CodeScribe/.env
+        // Path comes from Config::env_path() which is hardcoded to ~/.codescribe/.env
         // nosemgrep: tainted-path
         let contents = fs::read_to_string(path)?;
         let mut vars = HashMap::new();
@@ -272,7 +274,7 @@ impl Config {
 
     /// Write HashMap to .env file.
     pub fn write_env_file(path: &PathBuf, vars: &HashMap<String, String>) -> anyhow::Result<()> {
-        // Path comes from Config::env_path() which is hardcoded to ~/.CodeScribe/.env
+        // Path comes from Config::env_path() which is hardcoded to ~/.codescribe/.env
         // nosemgrep: tainted-path
         let mut file = fs::File::create(path)?;
 
@@ -355,13 +357,10 @@ impl Config {
         }
     }
 
-    /// Get the configuration directory path (`$HOME/.CodeScribe`).
+    /// Get the configuration directory path (`$HOME/.codescribe`).
     ///
     /// Can be overridden with `CODESCRIBE_DATA_DIR` or `CODESCRIBE_APP_DIR`
     /// environment variables.
-    ///
-    /// **IMPORTANT**: This MUST match Python's `path_utils.user_data_root()` which uses
-    /// `.CodeScribe` (uppercase C) to ensure both frontend and backend share the same config.
     pub fn config_dir() -> PathBuf {
         // Check for environment variable overrides
         if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
@@ -372,10 +371,10 @@ impl Config {
             return PathBuf::from(shellexpand::tilde(&custom).into_owned());
         }
 
-        // Default to $HOME/.CodeScribe (uppercase C - matches Python path_utils.py)
+        // Default to $HOME/.codescribe (lowercase - Unix convention)
         BaseDirs::new()
-            .map(|dirs| dirs.home_dir().join(".CodeScribe"))
-            .unwrap_or_else(|| PathBuf::from(".CodeScribe"))
+            .map(|dirs| dirs.home_dir().join(".codescribe"))
+            .unwrap_or_else(|| PathBuf::from(".codescribe"))
     }
 
     /// Get the full path to the .env file.

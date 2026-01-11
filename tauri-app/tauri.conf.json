@@ -1,7 +1,7 @@
 {
   "build": {
-    "beforeDevCommand": "trunk serve",
-    "beforeBuildCommand": "trunk build",
+    "beforeDevCommand": "cd tauri-app && trunk serve",
+    "beforeBuildCommand": "cd tauri-app && trunk build",
     "devUrl": "http://localhost:8080",
     "frontendDist": "dist"
   },

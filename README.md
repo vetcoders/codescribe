@@ -1,160 +1,230 @@
 # CodeScribe
 
-[![Tests](https://github.com/Loctree/CodeScribe/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Loctree/CodeScribe/actions/workflows/tests.yml)
-[![Lint](https://github.com/Loctree/CodeScribe/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/Loctree/CodeScribe/actions/workflows/lint.yml)
+**Local Speech-to-Text for macOS (Pure Rust)**
 
-CodeScribe is a macOS menu-bar companion that records audio through global hotkeys, runs it
-through local MLX Whisper models, and pastes the transcript directly into the currently focused
-application. Optional Harmony- or Ollama-based formatting can polish the output, but the Light+
-formatter keeps everything private and deterministic by default.
+CodeScribe is a native macOS menu-bar application that captures audio through global hotkeys, transcribes it locally using Whisper with Metal GPU acceleration, and pastes the transcript directly into the focused application. Optional AI formatting via Ollama polishes the output while keeping everything private and local.
 
-## Feature Highlights
-- **Zero-cloud capture** – MLX Whisper (Medium, Large V3, Large V3 Turbo, PL fine-tunes) loads from
-  `./models` without API keys.
-- **Tray-first UX** – hold Control (press-or-hold) or double-tap Option to start/stop recording,
-  with animated tray glyphs and optional chimes.
-- **Deterministic Light+ formatting** – always-on cleanup that removes fillers, fixes casing, and
-  stabilizes punctuation before anything touches an LLM.
-- **Optional AI formatting** – Harmony-compatible providers (Libraxis/OpenAI `/v1/responses`) or
-  local Ollama models for “Assistive” mode; toggled live from the Formatting submenu.
-- **Shared backend** – `codescribe_server` exposes REST + NDJSON + WebSocket streaming endpoints so
-  the React/Tauri Vista client can reuse the same transcription core.
-- **Developer utilities** – launch scripts, tester UI (`/tester`) with live spectrogram, and a
-  persistent JSON settings store that is shared between the tray, backend, and packaged apps.
+## Features
 
-## Quick Start
-1. **Install uv** (if missing): `curl -LsSf https://astral.sh/uv/install.sh | sh && exec -l $SHELL`.
-2. **Install dependencies**: `uv sync` (creates/updates `.venv`).
-3. **Copy env template**: `cp .env.example .env` and tweak anything you need (e.g.
-   `WHISPER_VARIANT`, Harmony/Ollama endpoints). All durable settings end up in
-   `$HOME/.CodeScribe/settings.json`, which the tray, backend, and packaged app share.
-4. **Download models**: `uv run python scripts/get_models.py --whisper large-v3-turbo` (repeat for
-   `medium` or PL fine-tunes as needed).
-5. **Run the tray**: `uv run python -m codescribe.main` (foreground) or use the launcher:
-   ```bash
-   ./CodeScribe start            # tray + backend as daemons (logs written to ./logs)
-   ./CodeScribe tester           # ensures backend is up and opens the spectrogram UI
-   ./CodeScribe stop             # stop everything started by the launcher
-   ```
-   For interactive dev runs (foreground, verbose logging), use `./CodeScribe-dev start` or
-   `./CodeScribe-dev tester`.
+- **Pure Rust Implementation** - Native macOS app built entirely in Rust with candle-core + Metal GPU
+- **Local Whisper STT** - whisper-large-v3-turbo-mlx-q8 model (4-layer turbo, 10x faster than full)
+- **Metal GPU Acceleration** - Hardware-accelerated inference on Apple Silicon
+- **System Tray App** - Minimal menu-bar presence with animated status glyphs
+- **Global Hotkeys** - Hold Ctrl or double-tap Option to record
+- **CLI Transcribe Command** - `codescribe transcribe` for batch audio processing
+- **AI Formatting** - Optional post-processing via Ollama for text cleanup
+- **Zero Cloud Dependency** - All processing happens locally, no API keys required
 
-## Repository Layout
-```
-scripts/               # helper scripts (model downloaders, quickstart, diagnostics)
-src/codescribe/       # tray + backend source (controllers, STT, LLM, assets, settings)
-tests/                 # pytest suites (unit + backend streaming/tests/manual)
-docs/                  # documentation (team setup, proposals, tree snapshots under docs/reports)
-packaging/             # py2app + DMG build scripts and wrappers
-tools/                 # auxiliary tooling (bandit config, expose_ollama helper, etc.)
-logs/                  # runtime logs, generated trees, PID files (gitignored)
-```
-The tracked snapshot of the tree lives in `docs/reports/project-tree.txt`. Regenerate it any time
-with `tree -a -L 2 > logs/project-tree.txt` and copy the portion you care about into docs.
+## Requirements
 
-## Configuration & Settings
-- The tray/backend read lightweight config values from `.env`, but persistent toggles (formatting
-  provider, preferred Whisper variant, menu toggles) live in `$HOME/.CodeScribe/` and follow you
-  between the CLI, LaunchAgent, and bundled app.
-- Use `.env.example` in the repo root as the single source of truth. Copy it to `.env`, keep the
-  handful of variables you care about, and let the JSON settings store handle everything else.
-- When automation scripts need deterministic overrides (e.g. CI, the test-instance launcher) they
-  now export the relevant variables inline—no extra template files are required.
-- `HARMONY_BASE_URL` no longer has a baked-in default; set it explicitly (for example
-  `https://api.libraxis.cloud/llm/v1`) whenever the Harmony provider is enabled. The CLI will raise
-  a helpful error if it is missing.
-- `CODESCRIBE_HOST` lets you point the tray utilities (tester, client, chat demo) at a different
-  backend host. It defaults to `127.0.0.1`, but setting it to another hostname/IP saves you from
-  editing random scripts.
+- **macOS 14+** (Sonoma or later)
+- **Apple Silicon** (M1, M2, M3, or later)
+- **Rust Toolchain** (1.85+ with edition 2024 support)
 
-### First-run wizard
-If CodeScribe can’t find `.env` or `~/.CodeScribe/settings.json`, it launches a guided wizard that
-walks through model selection, permissions, and (optionally) AI formatting providers. The dialogs
-force themselves to the front of the desktop stack, so you always see the prompts immediately. To
-re-run the wizard later, remove `~/.CodeScribe/settings.json` (or run `./CodeScribe fresh --yes`)
-and restart the tray.
+## Installation
 
-## Scripts & Automation
-- `CodeScribe` / `CodeScribe-dev`: thin wrappers around `scripts/quickstart_mac.sh`. They ensure
-  permissions, detach processes, handle logs, and expose helpers like `status`, `logs`, `fresh`, and
-  `tester`.
-- `scripts/start_test_instance.sh`: spins up a dedicated backend/tray pair on port 7237 with the
-  baked-in “test” overrides (it no longer depends on a separate `.env.test`).
-- `scripts/test_hotkeys.sh`: guided smoke test for the double-Option vs. Hold workflows.
-- `tools/expose_ollama_tailscale.sh`: networking helper for piping Ollama through Tailscale.
-
-## Background Server Usage
-`CodeScribeServer` is a standalone FastAPI process that powers all transcription and formatting
-requests. You can leave it running even after quitting the tray icon, which is handy when Vista (the
-Tauri frontend) or other tooling needs a local transcription API.
-
-- **Starting the server only** – `./CodeScribe start backend` (or `scripts/quickstart_mac.sh
-  --mode backend`) launches the server as a daemon and records its port in
-  `logs/codescribe-server.port`.
-- **Checking status** – `./CodeScribe status` reports whether the tray and backend processes are
-  alive along with their PIDs.
-- **Quitting from the tray** – the menu item is now labeled **Quit...**. When you click it you get
-  three choices:
-  1. **Quit App & Server** – stops the tray, sends SIGTERM to `CodeScribeServer`, and removes the
-     tray icon.
-  2. **Keep Background Server** – exits the tray but keeps the FastAPI server alive for Vista or any
-     other client.
-  3. **Cancel** – leaves everything running.
-
-If you prefer the CLI, `./CodeScribe stop` or `python -m codescribe.codescribe_server stop`
-performs the same cleanup.
-
-## Quality Gates
-All the usual checks can be run locally before pushing:
+### From Source (Recommended)
 
 ```bash
-uvx ruff format --check .
-uvx ruff check .
-uvx python -m bandit -c tools/bandit.yaml -r server/codescribe
-uv run mypy                 # uses the repo’s [tool.mypy] settings
-uv run pytest -q            # full suite
+# Clone the repository
+git clone https://github.com/VetCoders/CodeScribe.git
+cd CodeScribe
+
+# Install CLI to ~/.cargo/bin
+make install
+
+# Or build only
+make build      # Debug build
+make release    # Release build with optimizations
 ```
-`./CodeScribe-dev lint` wraps the Ruff commands, and `.pre-commit-config.yaml` wires the same stack
-into Git hooks (Ruff, pyupgrade, codespell, Bandit via `tools/bandit.yaml`, Semgrep, mypy).
 
-## Contributing
-We accept pull requests against the `develop` branch only (see [CONTRIBUTING.md](CONTRIBUTING.md)
-for the full workflow, coding style, and PR checklist). In short: keep UI copy in English, run Ruff
-and pytest locally, attach screenshots/logs for tray changes, and delete dead code instead of hiding
-it behind flags. The GitHub Actions badges above mirror the required checks.
+### Install as macOS App Bundle
 
-## Changelog
-The recent stabilization work is summarized in [`CHANGELOG.md`](CHANGELOG.md), broken into two
-phases: `develop` vs `main` (baseline modernization) and `develop` vs `functional` (current modular
-refactor).
+```bash
+# Create CodeScribe.app bundle
+make bundle
+
+# Install to /Applications
+make install-app
+```
+
+## Usage
+
+### System Tray Mode
+
+Run `codescribe` to start the menu-bar app:
+
+```bash
+codescribe          # Start tray app (foreground)
+codescribe -v       # Verbose logging mode
+codescribe --config # Create/edit config file
+```
+
+Or use Make targets:
+
+```bash
+make start     # Start as background daemon
+make stop      # Stop running instance
+make restart   # Restart
+make status    # Show process status
+make logs      # View recent logs
+```
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| **Hold Ctrl** | Hold-to-talk recording (800ms delay to prevent accidental triggers) |
+| **Ctrl+Shift** (hold) | Assistive mode with AI formatting |
+| **Double-tap Option** | Toggle recording on/off |
+
+### CLI Transcription
+
+Transcribe audio files directly without the tray app:
+
+```bash
+# Basic transcription
+codescribe transcribe audio.wav
+
+# With language hint
+codescribe transcribe -l pl audio.m4a
+
+# With AI formatting via Ollama
+codescribe transcribe -f audio.mp3
+
+# Specify model and LLM
+codescribe transcribe -m whisper-large-v3-turbo-mlx-q8 --llm qwen3-coder:480b-cloud audio.wav
+```
+
+**Supported formats:** WAV, MP3, M4A
+
+## Configuration
+
+Configuration is stored in `~/.codescribe/`:
+
+```
+~/.codescribe/
+  .env          # Primary configuration file
+  models/       # Whisper model files
+```
+
+### Environment Variables
+
+Create `~/.codescribe/.env` with:
+
+```bash
+# STT (Speech-to-Text)
+WHISPER_LANGUAGE=auto          # Language: auto, en, pl, de, fr, etc.
+LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
+
+# Hotkeys
+HOLD_MODS=ctrl                 # Hold key: ctrl, ctrl_alt, ctrl_shift
+TOGGLE_TRIGGER=double_option   # Toggle: double_option, double_fn
+
+# Audio
+BEEP_ON_START=1                # Play sound when recording starts
+SOUND_VOLUME=0.25              # 0.0 to 1.0
+
+# AI Formatting (optional - requires Ollama)
+AI_FORMATTING_ENABLED=0        # Enable AI post-processing
+LLM_HOST=http://127.0.0.1:11434
+
+# Logging
+LOG_LEVEL=INFO                 # DEBUG, INFO, WARN, ERROR
+```
+
+Run `codescribe --config` to create a default config and open it in your editor.
+
+## Model
+
+CodeScribe uses **whisper-large-v3-turbo-mlx-q8** by default:
+
+- 4-layer turbo architecture (vs 32 layers in full model)
+- Q8 quantization for reduced memory footprint
+- ~10x faster than whisper-large-v3
+- Metal GPU acceleration via candle-core
+
+Models are stored in `~/.CodeScribe/models/` or `./models/` in the repo.
+
+### Model Files Required
+
+```
+whisper-large-v3-turbo-mlx-q8/
+  config.json
+  weights.safetensors
+  tokenizer.json
+  mel_filters.npz
+```
+
+## Building
+
+```bash
+# Development
+make build          # Debug build
+make lint           # Clippy + format check
+make test           # Run tests
+make check          # Full quality gate (lint + test)
+
+# Production
+make release        # Optimized release build
+make bundle         # Create CodeScribe.app
+make install-app    # Install to /Applications
+
+# Tauri Frontend (optional)
+make tauri-dev      # Start Tauri dev server
+make tauri-build    # Build Tauri release
+```
+
+### Release Profile
+
+The release build uses aggressive optimizations:
+
+```toml
+[profile.release]
+opt-level = "z"     # Size optimization
+lto = true          # Link-time optimization
+codegen-units = 1   # Single codegen unit
+panic = "abort"     # Minimal panic handling
+strip = true        # Strip symbols
+```
+
+## Permissions
+
+CodeScribe requires macOS permissions for:
+
+- **Microphone** - Audio recording
+- **Accessibility** - Global hotkey detection
+- **Input Monitoring** - Keyboard event capture
+
+Grant permissions in System Settings > Privacy & Security when prompted.
 
 ## Troubleshooting
-- **Scripts won’t run** – ensure `scripts/quickstart_mac.sh` is executable and remove quarantine:
-  ```bash
-  chmod +x scripts/quickstart_mac.sh CodeScribe CodeScribe-dev
-  xattr -dr com.apple.quarantine "$(pwd)"
-  ```
-- **CRLF headaches** – if you cloned on Windows or the files came via email:
-  `brew install dos2unix && dos2unix CodeScribe CodeScribe-dev scripts/quickstart_mac.sh`.
-- **No audio / permissions dialog** – macOS Privacy & Security → Microphone, Accessibility, Input
-  Monitoring must allow “Python” (or the terminal app you’re using).
-- **Backend port missing** – the backend rotates through 8237 → 7237 → 6237 → 5237. Check
-  `logs/codescribe-server.port` or `./CodeScribe status`, and ensure nothing else (e.g.
-  `mlx_audio.server`) is bound to 8237.
-- **Multiple instances** – delete `.codescribe.lock` if you hard-killed a tray instance, then
-  relaunch. The launcher already removes stale locks when you call `./CodeScribe stop`.
 
-## License & Contact
-CodeScribe is distributed under the **BSD 4-Clause License** (Original BSD).
+**No audio / permissions dialog:**
+Grant permissions in System Settings > Privacy & Security > Microphone and Accessibility.
 
-- Copyright (c) 2025 Loctree — [contact@loctree.io](mailto:contact@loctree.io)
-- All redistributions—source or binary—must retain the copyright and license text **and** include
-  the acknowledgement: “This product includes software developed by Loctree.”
-- Review [`LICENSE`](LICENSE) for the full wording, including the advertising clause and guidance on
-  how to refer to CodeScribe in marketing copy.
+**Multiple instances:**
+```bash
+make stop
+rm ~/.codescribe/codescribe.pid
+```
 
-### Attribution requirement
-Any marketing, website copy, blog post, release notes, or in-product splash screen that mentions
-CodeScribe’s capabilities must contain the exact sentence above. The DMG README, macOS app
-“Credits” dialog, and external release notes have been updated to reference it—mirroring that text in
-your own derivatives keeps you compliant with the BSD 4-Clause license.
+**Model not found:**
+Ensure model files exist in `~/.CodeScribe/models/whisper-large-v3-turbo-mlx-q8/`.
+
+**Quarantine issues (downloaded app):**
+```bash
+xattr -dr com.apple.quarantine /Applications/CodeScribe.app
+```
+
+## License
+
+CodeScribe is distributed under the **Apache License 2.0**.
+
+Copyright 2024-2026 Maciej Gad & VetCoders
+
+See [LICENSE](LICENSE) for the full license text.
+
+---
+
+Created by M&K (c)2026 VetCoders

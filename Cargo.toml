@@ -16,11 +16,11 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.6.0-rc1"
+version = "0.6.0-rc2"
 edition = "2024"
-description = "Speech-to-text tray app for macOS - Rust frontend"
+description = "Speech-to-text tray app for macOS - Pure Rust"
 authors = ["VetCoders <hello@vetcoders.io>"]
-license = "BSD-4-Clause"
+license = "Apache-2.0"
 
 [dependencies]
 # Async runtime

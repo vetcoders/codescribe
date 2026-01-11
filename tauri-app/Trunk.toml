@@ -1,0 +1,29 @@
+# Trunk configuration for CodeScribe Leptos frontend
+# Built by M&K (c)2026 VetCoders
+
+[build]
+# Output directory for WASM build
+dist = "dist"
+# Target for WASM compilation
+target = "index.html"
+# Disable wasm-opt (incompatible with current rustc output)
+no_optimize = true
+
+[watch]
+# Watch these paths for changes during development
+watch = ["src", "assets", "index.html"]
+# Ignore target directory
+ignore = ["target"]
+
+[serve]
+# Development server settings
+address = "127.0.0.1"
+port = 8080
+# Open browser automatically
+open = false
+
+[[hooks]]
+# Build stage hook for wasm-opt optimization
+stage = "post_build"
+command = "sh"
+command_arguments = ["-c", "echo 'WASM build complete'"]

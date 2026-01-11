@@ -5,35 +5,28 @@
 //!
 //! ## Module Structure
 //!
-//! - `types` - Type definitions (TrayStatus, TrayMenuEvent, etc.)
+//! - `types` - Type definitions (TrayStatus, TrayMenuEvent, MenuIds)
 //! - `icons` - Icon rendering and status glyph management
-//! - `state` - Thread-local state and cross-thread channels
+//! - `state` - Cross-thread channels for status updates
 //! - `menu` - Menu building logic
 //! - `handlers` - Menu action handlers
 //!
-//! ## Unwired Menu Handlers (TODO)
+//! ## Minimal Menu Structure
 //!
-//! The following menu events are sent but NOT yet handled in main.rs:
-//! - `SetHoldMods` - Change hold modifier keys (needs hotkey reconfiguration)
-//! - `ToggleHoldExclusive` - Toggle exclusive mode (needs hotkey reconfiguration)
-//! - `SetToggleTrigger` - Change toggle trigger (needs hotkey reconfiguration)
-//! - `ToggleStatusGlyph` - Show/hide status glyph (needs tray icon update)
-//! - `RefreshTrayIcon` - Force refresh icon (needs tray icon update)
-//! - `ToggleStartSound` - Enable/disable beep (needs config update)
-//! - `SetSoundType` - Change sound type (needs config update)
-//! - `SetVolume` - Set volume level (needs dialog/slider implementation)
-//! - `CheckPermissions` - Refresh permission status (handled locally in handlers)
-//!
-//! Note: OpenAccessibilitySettings and OpenMicrophoneSettings ARE handled
-//! directly in handlers.rs (they open System Settings).
-
-#![allow(dead_code)]
+//! ```text
+//! Status: Idle          ← DYNAMIC
+//! ─────────────────
+//! Settings...           → Opens ~/.codescribe/.env in editor
+//! Help                  → Opens docs/README
+//! About                 → Shows version dialog
+//! ─────────────────
+//! Quit
+//! ```
 
 mod handlers;
 mod icons;
 mod menu;
 mod state;
-mod submenus;
 mod types;
 
 use std::sync::OnceLock;
@@ -47,15 +40,8 @@ use tracing::{debug, info};
 use tray_icon::{TrayIconBuilder, menu::MenuEvent};
 
 // Re-export public API
-pub use icons::{is_status_glyph_enabled, set_status_glyph_enabled};
-pub use state::{
-    menu_event_receiver, update_history_label, update_model_selection, update_tray_status,
-};
-pub use types::{FormattingProvider, Language, SoundType, TrayMenuEvent, TrayStatus, WhisperModel};
-
-// Re-export config types that are also used in tests
-#[cfg(test)]
-pub use types::{HoldMods, ToggleTrigger};
+pub use state::{menu_event_receiver, update_tray_status};
+pub use types::{TrayMenuEvent, TrayStatus};
 
 // ============================================================================
 // Shutdown Management
@@ -68,6 +54,7 @@ static SHUTDOWN_REQUESTED: OnceLock<std::sync::atomic::AtomicBool> = OnceLock::n
 ///
 /// This can be called from any thread to signal that the app should exit.
 /// The event loop will check this flag and perform cleanup before exiting.
+#[allow(dead_code)] // Will be used by Tauri for programmatic shutdown
 pub fn request_shutdown() {
     if let Some(flag) = SHUTDOWN_REQUESTED.get() {
         flag.store(true, Ordering::SeqCst);
@@ -91,6 +78,7 @@ pub fn is_shutdown_requested() -> bool {
 ///
 /// Uses tao event loop for proper macOS integration.
 /// Optionally accepts a HotkeyManager to process hotkey events in the same loop.
+#[allow(dead_code)] // Alternative entry point for tray-only mode
 pub fn run() -> Result<()> {
     run_with_hotkeys(None)
 }
@@ -116,8 +104,8 @@ pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -
     // Initialize shutdown flag
     SHUTDOWN_REQUESTED.get_or_init(|| std::sync::atomic::AtomicBool::new(false));
 
-    // Initialize all channels
-    let (status_rx, model_rx, history_rx) = state::init_channels()?;
+    // Initialize status channel
+    let status_rx = state::init_channels()?;
 
     // Build event loop (must be on main thread for macOS)
     let event_loop = EventLoopBuilder::new().build();
@@ -173,6 +161,9 @@ pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -
             Ok(new_status) => {
                 debug!("Received status update: {:?}", new_status);
 
+                // Update menu label
+                state::apply_status_update(new_status);
+
                 // Update tooltip
                 if let Err(e) = tray_icon.set_tooltip(Some(new_status.tooltip())) {
                     debug!("Failed to update tray tooltip: {}", e);
@@ -192,16 +183,6 @@ pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -
                 info!("Status channel closed, exiting");
                 *control_flow = ControlFlow::Exit;
             }
-        }
-
-        // Check for model selection updates (from async tasks)
-        if let Ok(variant) = model_rx.try_recv() {
-            state::apply_model_selection(&variant);
-        }
-
-        // Check for history label updates (from async tasks)
-        if let Ok(label_text) = history_rx.try_recv() {
-            state::apply_history_label_update(&label_text);
         }
 
         // Check for menu events (non-blocking)
@@ -245,20 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hold_mods_labels() {
-        assert_eq!(HoldMods::Ctrl.label(), "Ctrl only (Raw)");
-        assert_eq!(HoldMods::CtrlAlt.label(), "Ctrl+Option");
-        assert_eq!(HoldMods::CtrlShift.label(), "Ctrl+Shift (AI)");
-        assert_eq!(HoldMods::CtrlCmd.label(), "Ctrl+Command");
-    }
-
-    #[test]
-    fn test_toggle_trigger_labels() {
-        assert_eq!(ToggleTrigger::DoubleOption.label(), "double option");
-        assert_eq!(
-            ToggleTrigger::DoubleRightOption.label(),
-            "double right option"
-        );
-        assert_eq!(ToggleTrigger::None.label(), "disabled");
+    fn test_status_menu_labels() {
+        assert_eq!(TrayStatus::Idle.menu_label(), "Status: Idle");
+        assert_eq!(TrayStatus::Listening.menu_label(), "Status: Recording...");
+        assert_eq!(TrayStatus::Thinking.menu_label(), "Status: Processing...");
+        assert_eq!(TrayStatus::Success.menu_label(), "Status: Done!");
     }
 }

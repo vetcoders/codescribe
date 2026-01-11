@@ -697,6 +697,7 @@ mod macos {
 /// Enable hotkey processing (thread-safe, global)
 ///
 /// When enabled, modifier key events will be captured and sent to the event channel.
+#[allow(dead_code)] // Will be used by Tauri for hotkey toggle
 pub fn enable_hotkeys() {
     macos::enable();
 }
@@ -705,11 +706,13 @@ pub fn enable_hotkeys() {
 ///
 /// When disabled, modifier key events will be ignored and no events will be sent.
 /// The CGEventTap remains running but skips processing.
+#[allow(dead_code)] // Will be used by Tauri for hotkey toggle
 pub fn disable_hotkeys() {
     macos::disable();
 }
 
 /// Check if hotkeys are currently enabled (thread-safe, global)
+#[allow(dead_code)] // Will be used by Tauri for hotkey status
 pub fn are_hotkeys_enabled() -> bool {
     macos::is_enabled()
 }

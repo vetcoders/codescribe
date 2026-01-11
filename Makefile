@@ -4,7 +4,8 @@
 .PHONY: all build release install bundle install-app start stop restart status logs \
         bump bump-patch bump-minor bump-major version \
         lint format test check clean help \
-        tauri-dev tauri-build tauri-check
+        tauri-dev tauri-build tauri-check \
+        dmg dmg-signed notarize download-model
 
 SHELL := /bin/bash
 VERSION_FILE := Cargo.toml
@@ -170,6 +171,13 @@ help:
 	@echo "  make bundle        Create CodeScribe.app bundle"
 	@echo "  make install-app   Install to /Applications"
 	@echo ""
+	@echo "Release & Distribution:"
+	@echo "  make dmg           Build DMG (ad-hoc signed)"
+	@echo "  make dmg-signed    Build DMG (Developer ID signed)"
+	@echo "  make dmg-full      Build DMG with bundled model (~900MB)"
+	@echo "  make notarize      Notarize DMG with Apple"
+	@echo "  make download-model Download Whisper model from HF"
+	@echo ""
 	@echo "Run:"
 	@echo "  make start         Start CodeScribe"
 	@echo "  make stop          Stop CodeScribe"
@@ -194,3 +202,27 @@ help:
 	@echo "  make tauri-dev     Start dev server"
 	@echo "  make tauri-build   Build release"
 	@echo "  make tauri-check   Check compilation"
+
+# ============================================================================
+# Release & Distribution
+# ============================================================================
+
+dmg:
+	@./scripts/build-release.sh
+
+dmg-signed:
+	@./scripts/build-release.sh --sign
+
+dmg-full:
+	@./scripts/build-release.sh --sign --with-model
+
+notarize:
+	@if ls CodeScribe_*.dmg 1> /dev/null 2>&1; then \
+		DMG=$$(ls -t CodeScribe_*.dmg | head -1); \
+		./scripts/notarize.sh "$$DMG"; \
+	else \
+		echo "No DMG found. Run 'make dmg-signed' first."; \
+	fi
+
+download-model:
+	@./scripts/download-model.sh

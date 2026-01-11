@@ -29,6 +29,7 @@ const ICON_SIZE: u32 = 44;
 static SHOW_STATUS_GLYPH: AtomicBool = AtomicBool::new(true);
 
 /// Set whether the status glyph (colored dot) is visible on the icon
+#[allow(dead_code)] // Will be used by Tauri for glyph toggle setting
 pub fn set_status_glyph_enabled(enabled: bool) {
     SHOW_STATUS_GLYPH.store(enabled, Ordering::SeqCst);
     debug!(

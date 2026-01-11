@@ -42,7 +42,7 @@ impl ValidatedAudioPath {
     ///
     /// This prevents path traversal attacks by ensuring the path:
     /// 1. Exists and is a file
-    /// 2. Is within an allowed directory (temp dir or ~/.CodeScribe)
+    /// 2. Is within an allowed directory (temp dir or ~/.codescribe)
     /// 3. After canonicalization, still resolves to an allowed directory
     ///
     /// Returns Ok(ValidatedAudioPath) if valid, or an error if validation fails.
@@ -65,8 +65,8 @@ impl ValidatedAudioPath {
         // Define allowed directories
         let temp_dir = std::env::temp_dir();
         let home_codescribe = directories::BaseDirs::new()
-            .map(|b| b.home_dir().join(".CodeScribe"))
-            .unwrap_or_else(|| PathBuf::from(".CodeScribe"));
+            .map(|b| b.home_dir().join(".codescribe"))
+            .unwrap_or_else(|| PathBuf::from(".codescribe"));
 
         // Canonicalize allowed dirs (they might not exist yet)
         let allowed_dirs: Vec<PathBuf> = vec![
@@ -761,9 +761,6 @@ impl RecordingController {
             crate::history::save_entry_with_timestamp(&formatted_text, Some(recording_timestamp));
         info!("Transcript saved: {}", entry.path.display());
 
-        // Update tray menu history label
-        crate::tray::update_history_label(&formatted_text);
-
         Ok(())
     }
 
@@ -933,8 +930,6 @@ impl RecordingController {
                 Some(recording_timestamp),
             );
             info!("Voice chat response saved: {}", entry.path.display());
-            // Update tray menu history label
-            crate::tray::update_history_label(&full_response);
         }
 
         Ok(())
@@ -977,9 +972,6 @@ impl RecordingController {
         let entry =
             crate::history::save_entry_with_timestamp(&formatted_text, Some(recording_timestamp));
         info!("Transcript saved: {}", entry.path.display());
-
-        // Update tray menu history label
-        crate::tray::update_history_label(&formatted_text);
 
         Ok(())
     }

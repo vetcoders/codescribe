@@ -26,7 +26,7 @@ const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 fn backend_pid_file_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     std::path::PathBuf::from(home)
-        .join(".CodeScribe")
+        .join(".codescribe")
         .join("backend.pid")
 }
 
