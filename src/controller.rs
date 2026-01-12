@@ -106,11 +106,11 @@ impl ValidatedAudioPath {
 }
 
 use crate::config::Config;
-use crate::whisper::LocalWhisperEngine;
 use crate::models::ModelManager;
 use crate::tray::{TrayStatus, update_tray_status};
 use crate::voice_chat::{VoiceChatClient, VoiceChatEvent};
 use crate::voice_chat_ui;
+use crate::whisper::{DecodingParams, LocalWhisperEngine};
 use codescribe::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
 // TODO: Re-enable when implementing recorder
@@ -212,11 +212,12 @@ impl RecordingController {
 
         let local_stt_engine =
             if config.use_local_stt && model_manager.check_model_exists(&config.local_model) {
-                match LocalWhisperEngine::new(&model_path) {
+                match LocalWhisperEngine::new_with_params(&model_path, DecodingParams::default()) {
                     Ok(engine) => {
                         info!(
-                            "Local STT engine initialized with model: {}",
-                            config.local_model
+                            "Local STT engine initialized with model: {} (params: {:?})",
+                            config.local_model,
+                            engine.decoding_params()
                         );
                         Some(engine)
                     }
@@ -270,11 +271,12 @@ impl RecordingController {
 
         let local_stt_engine =
             if cfg.use_local_stt && model_manager.check_model_exists(&cfg.local_model) {
-                match LocalWhisperEngine::new(&model_path) {
+                match LocalWhisperEngine::new_with_params(&model_path, DecodingParams::default()) {
                     Ok(engine) => {
                         info!(
-                            "Local STT engine initialized with model: {}",
-                            cfg.local_model
+                            "Local STT engine reloaded with model: {} (params: {:?})",
+                            cfg.local_model,
+                            engine.decoding_params()
                         );
                         Some(engine)
                     }

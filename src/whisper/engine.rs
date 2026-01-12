@@ -188,6 +188,18 @@ impl LocalWhisperEngine {
         })
     }
 
+    /// Create a new LocalWhisperEngine with custom decoding parameters.
+    pub fn new_with_params(model_path: &Path, params: DecodingParams) -> Result<Self> {
+        let mut engine = Self::new(model_path)?;
+        engine.decoding_params = params;
+        Ok(engine)
+    }
+
+    /// Get current decoding parameters.
+    pub fn decoding_params(&self) -> &DecodingParams {
+        &self.decoding_params
+    }
+
     pub fn transcribe_file_with_language(
         &mut self,
         path: &Path,

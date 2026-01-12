@@ -11,5 +11,5 @@
 mod engine;
 mod params;
 
-pub use engine::{ChunkCallback, LocalWhisperEngine};
+pub use engine::LocalWhisperEngine;
 pub use params::DecodingParams;

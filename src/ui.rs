@@ -532,7 +532,11 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
             let mut pulse_phase: f64 = 0.0;
             let pulse_speed = 0.15; // Radians per update cycle
 
-            while BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner()).timer_running {
+            while BADGE_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .timer_running
+            {
                 thread::sleep(Duration::from_millis(update_interval));
 
                 let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());

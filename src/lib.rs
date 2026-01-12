@@ -12,10 +12,10 @@ pub mod audio_loader;
 pub mod clipboard;
 pub mod config;
 pub mod conversation;
-pub mod whisper;
 pub mod models;
 pub mod sound;
 pub mod voice_chat;
+pub mod whisper;
 pub mod whisper_model;
 
 #[cfg(target_os = "macos")]

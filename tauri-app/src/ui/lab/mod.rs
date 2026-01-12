@@ -114,7 +114,8 @@ fn SpectrogramPanel() -> impl IntoView {
         set_status_text.set("Stopping...".to_string());
 
         leptos::task::spawn_local(async move {
-            let res: Result<Option<String>, String> = tauri::invoke("stop_recording", NoArgs {}).await;
+            let res: Result<Option<String>, String> =
+                tauri::invoke("stop_recording", NoArgs {}).await;
             set_is_streaming.set(false);
 
             match res {

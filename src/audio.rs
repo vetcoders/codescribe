@@ -206,7 +206,10 @@ impl Recorder {
         info!("Starting recording...");
 
         // Clear buffer and reset diagnostics
-        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         self.diagnostics = RecorderDiagnostics::default();
 
         // Select input device
@@ -443,7 +446,10 @@ impl Recorder {
         info!("Audio successfully saved to WAV file");
 
         // Clear buffer
-        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
 
         Ok(Some(temp_path))
     }

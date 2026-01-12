@@ -4,8 +4,8 @@
 //! Created by M&K (c)2026 VetCoders
 
 use crate::state::AppState;
-use codescribe::hotkeys::{HotkeyEvent, HotkeyManager, HoldAction};
-use crossbeam_channel::{unbounded, Receiver};
+use codescribe::hotkeys::{HoldAction, HotkeyEvent, HotkeyManager};
+use crossbeam_channel::{Receiver, unbounded};
 use std::sync::Arc;
 use tauri::AppHandle;
 use tracing::{debug, error, info, warn};
@@ -83,7 +83,9 @@ fn run_hotkey_event_loop(rx: Receiver<HotkeyEvent>, state: Arc<AppState>, _app: 
                                     let state = Arc::clone(&state);
                                     let use_assistive = pending_assistive;
                                     rt.spawn(async move {
-                                        if let Err(e) = handle_stop_recording(&state, use_assistive).await {
+                                        if let Err(e) =
+                                            handle_stop_recording(&state, use_assistive).await
+                                        {
                                             error!("Failed to stop recording: {}", e);
                                         }
                                     });
@@ -260,8 +262,7 @@ async fn handle_stop_recording(state: &AppState, assistive: bool) -> Result<(), 
     };
 
     // Paste to clipboard and active app
-    codescribe::clipboard::paste_text(&final_text)
-        .map_err(|e| format!("Failed to paste: {e}"))?;
+    codescribe::clipboard::paste_text(&final_text).map_err(|e| format!("Failed to paste: {e}"))?;
 
     info!("Text pasted successfully ({} chars)", final_text.len());
 

@@ -27,7 +27,7 @@ pub fn run_backend() {
     use tauri::{
         Manager,
         menu::{Menu, MenuItem},
-        tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent},
+        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     };
 
     let state = state::AppState::new().expect("failed to initialize AppState");
@@ -87,7 +87,8 @@ pub fn run_backend() {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
-                    } = event {
+                    } = event
+                    {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();

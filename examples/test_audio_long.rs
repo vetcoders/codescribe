@@ -1,5 +1,5 @@
 use anyhow::Result;
-use codescribe::local_stt::LocalWhisperEngine;
+use codescribe::whisper::{DecodingParams, LocalWhisperEngine};
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
@@ -26,8 +26,12 @@ fn main() -> Result<()> {
 
     println!("Loading model: {:?}", model);
     let start_load = std::time::Instant::now();
-    let mut engine = LocalWhisperEngine::new(&model)?;
+
+    // Use custom decoding params for better quality
+    let params = DecodingParams::default();
+    let mut engine = LocalWhisperEngine::new_with_params(&model, params)?;
     println!("Model loaded in {:?}\n", start_load.elapsed());
+    println!("Decoding params: {:?}", engine.decoding_params());
 
     if files.is_empty() {
         println!("No audio files specified");
@@ -46,7 +50,6 @@ fn main() -> Result<()> {
         println!("Detected: {} ({:?})", lang, start.elapsed());
 
         let start = std::time::Instant::now();
-        // Use transcribe_long_with_language for chunking!
         let text = engine.transcribe_long_with_language(&samples, sample_rate, Some(&lang))?;
         let elapsed = start.elapsed();
         let rtf = duration_sec / elapsed.as_secs_f32();

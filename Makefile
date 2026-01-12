@@ -145,6 +145,18 @@ test:
 	@echo "=== Integration Tests ==="
 	@cargo test --test '*' || true
 
+demo:
+	@echo "=== Full Pipeline Demo ==="
+	@cargo run --release --example demo_full_pipeline -- $(AUDIO)
+
+demo-raw:
+	@echo "=== Raw Transcription Demo ==="
+	@cargo run --release --example demo_full_pipeline -- --raw $(AUDIO)
+
+demo-assistive:
+	@echo "=== Assistive Mode Demo ==="
+	@cargo run --release --example demo_full_pipeline -- --assistive $(AUDIO)
+
 check: lint test
 	@echo "Quality gate passed"
 

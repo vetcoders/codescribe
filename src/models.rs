@@ -28,7 +28,10 @@ impl ModelManager {
         // Try to find bundle resources path (macOS app bundle)
         let bundle_dir = Self::find_bundle_resources_dir();
 
-        Ok(Self { models_dir, bundle_dir })
+        Ok(Self {
+            models_dir,
+            bundle_dir,
+        })
     }
 
     /// Find the Resources directory in a macOS app bundle

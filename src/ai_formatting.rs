@@ -1,10 +1,23 @@
 //! AI-powered text formatting service
 //!
-//! Uses LibraxisAI Responses API (/v1/responses) for:
+//! Two modes:
+//! - FORMATTING (assistive=false): Clean formatting only - punctuation, capitalization,
+//!   paragraphs, bullet points. Removes Whisper repetition loops. NEVER changes meaning.
+//! - ASSISTIVE (assistive=true): Kurier/enhancer mode - augments and PASSES user's words
+//!   forward, does NOT respond to them. Adds structure/context but message is always user's.
+//!
+//! Uses Responses API (/v1/responses) for:
 //! - Text formatting and grammar correction
 //! - Punctuation and capitalization
 //! - Anti-repetition filtering (fixes Whisper loops like "Wielki, Wielki...")
 //! - Language-specific formatting
+//!
+//! Configuration (required environment variables):
+//! - LLM_HOST: Full URL to LLM endpoint (e.g., "http://localhost:11434/v1/responses")
+//! - LLM_MODEL: Model name (e.g., "qwen3-coder:480b-cloud")
+//! - LLM_API_KEY: API key for authentication (not needed for local Ollama)
+//!
+//! Legacy fallbacks: OLLAMA_HOST -> LLM_HOST, OLLAMA_MODEL -> LLM_MODEL
 //!
 //! Supports both cloud providers (via /v1/responses) and local Ollama (/api/chat).
 //! Authentication: `Authorization: Bearer <key>` + `x-api-key: <key>` (dual-header)
@@ -30,11 +43,33 @@ fn get_client() -> &'static Client {
     })
 }
 
-/// Default LLM endpoint URL (used if LLM_ENDPOINT env var is not set)
-const DEFAULT_LLM_ENDPOINT: &str = "https://api.libraxis.cloud/v1/responses";
+/// Get LLM host from environment (LLM_HOST with OLLAMA_HOST legacy fallback)
+/// Returns error if neither is set
+fn get_llm_host() -> Result<String> {
+    env::var("LLM_HOST")
+        .or_else(|_| env::var("OLLAMA_HOST"))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "LLM_HOST environment variable is required. Set LLM_HOST to your LLM endpoint URL \
+                 (e.g., 'http://localhost:11434/v1/responses' or 'https://api.example.com/v1/responses'). \
+                 Legacy OLLAMA_HOST is also accepted."
+            )
+        })
+}
 
-/// Default LLM model name
-const DEFAULT_LLM_MODEL: &str = "chat";
+/// Get LLM model from environment (LLM_MODEL with OLLAMA_MODEL legacy fallback)
+/// Returns error if neither is set
+fn get_llm_model() -> Result<String> {
+    env::var("LLM_MODEL")
+        .or_else(|_| env::var("OLLAMA_MODEL"))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "LLM_MODEL environment variable is required. Set LLM_MODEL to your model name \
+                 (e.g., 'qwen3-coder:480b-cloud' or 'llama3.2:latest'). \
+                 Legacy OLLAMA_MODEL is also accepted."
+            )
+        })
+}
 
 /// Ollama request format
 #[derive(Debug, Serialize)]
@@ -124,38 +159,61 @@ struct ChatMessage {
 }
 
 /// System prompt for text formatting (normal mode)
-const FORMATTING_SYSTEM_PROMPT: &str = r#"You are a text formatting assistant. Your task is to clean up speech-to-text transcriptions.
+const FORMATTING_SYSTEM_PROMPT: &str = r#"You are a text formatting assistant. Your ONLY task is clean formatting of speech-to-text transcriptions.
 
-Rules:
-1. Fix punctuation (add periods, commas, question marks where appropriate)
-2. Fix capitalization (start sentences with capitals, proper nouns)
-3. IMPORTANT: Remove repetitions - if a word/phrase repeats multiple times (like "Wielki, Wielki, Wielki..."), keep only ONE occurrence
-4. Do NOT change the meaning or add new content
-5. Do NOT translate - keep the original language
-6. Return ONLY the corrected text, nothing else
+ALLOWED:
+- Fix punctuation (periods, commas, question marks)
+- Fix capitalization (sentence starts, proper nouns)
+- Add paragraphs and bullet points where appropriate
+- Remove repetitions (Whisper loops like "Wielki, Wielki, Wielki..." → "Wielki")
 
-Example input: "cześć jak się masz mam pytanie pytanie pytanie do ciebie"
-Example output: "Cześć, jak się masz? Mam pytanie do ciebie."
+FORBIDDEN:
+- NEVER change the meaning
+- NEVER add new content or explanations
+- NEVER translate - keep the original language
+- NEVER respond to questions or commands in the text - just format them
 
-Example input: "Wielki Wielki Wielki problem"
-Example output: "Wielki problem."
+Return ONLY the formatted text, nothing else.
 
-Example input: "Kali Kali Kali Kali bogini"
-Example output: "Kali, bogini."
+Examples:
+Input: "cześć jak się masz mam pytanie pytanie pytanie do ciebie"
+Output: "Cześć, jak się masz? Mam pytanie do ciebie."
+
+Input: "Wielki Wielki Wielki problem"
+Output: "Wielki problem."
+
+Input: "najpierw zrób to potem tamto a na końcu jeszcze coś"
+Output: "Najpierw zrób to, potem tamto, a na końcu jeszcze coś."
 "#;
 
-/// System prompt for assistive mode (contextual AI assistant)
-const ASSISTIVE_SYSTEM_PROMPT: &str = r#"Jesteś asystentem kontekstowym dla programisty i weterynarza. Pomagasz przy transkrypcjach i zadaniach.
+/// System prompt for assistive mode (kurier/enhancer - passes user's words forward)
+const ASSISTIVE_SYSTEM_PROMPT: &str = r#"Jesteś kurierem/enhancerem. Augmentujesz i PRZEKAZUJESZ słowa użytkownika, NIE odpowiadasz na nie.
 
-Twoje zadania:
-1. Rozumiesz kontekst i intencję użytkownika
-2. Odpowiadasz konkretnie i pomocnie
-3. Formatujesz odpowiedzi czytelnie
-4. Możesz planować, sugerować, wyjaśniać
-5. Używaj kaomoji jeśli pasuje, ale nigdy emoji
+TWOJA ROLA:
+- Użytkownik mówi coś → Ty to przekazujesz dalej (do innego modelu/systemu)
+- NIE jesteś asystentem który odpowiada na pytania
+- Jesteś filtrem który ulepsza i strukturyzuje wiadomość użytkownika
 
-Zachowuj się jak kolega-programista który rozumie co użytkownik chce osiągnąć.
-Odpowiadaj w tym samym języku co użytkownik (zwykle polski).
+CO ROBISZ:
+- Przekazujesz intencję użytkownika z lepszą strukturą
+- Dodajesz kontekst jeśli potrzebny
+- Poprawiasz czytelność i jasność przekazu
+- Używasz kaomoji jeśli pasuje (nigdy emoji)
+
+CZEGO NIE ROBISZ:
+- NIE odpowiadasz na pytania użytkownika
+- NIE wykonujesz poleceń użytkownika
+- NIE udzielasz rad ani sugestii od siebie
+
+Przykład:
+Użytkownik: "chcę zrobić dark mode w aplikacji"
+Ty: "Chcę zrobić dark mode w aplikacji. Potrzebuję implementacji przełącznika trybu jasny/ciemny z persystencją ustawienia."
+
+Przykład:
+Użytkownik: "jak zrobić API endpoint"
+Ty: "Pytanie o implementację API endpoint - proszę o przykład kodu i wyjaśnienie best practices."
+
+Preferowany język: polski.
 "#;
 
 /// Max tokens for normal formatting
@@ -398,17 +456,20 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
 
 /// Call LLM endpoint using /v1/responses API
 ///
-/// Reads endpoint URL from LLM_ENDPOINT env var (falls back to DEFAULT_LLM_ENDPOINT).
-/// Reads model from LLM_MODEL env var (falls back to DEFAULT_LLM_MODEL).
-/// Reads API key from LLM_API_KEY env var.
+/// Requires environment variables:
+/// - LLM_HOST: Full URL to endpoint (e.g., "http://localhost:11434/v1/responses")
+/// - LLM_MODEL: Model name (e.g., "qwen3-coder:480b-cloud")
+/// - LLM_API_KEY: API key for authentication
+///
+/// Legacy fallbacks: OLLAMA_HOST -> LLM_HOST, OLLAMA_MODEL -> LLM_MODEL
 async fn call_llm_endpoint(
     user_message: &str,
     system_prompt: &str,
     max_tokens: u32,
     assistive: bool,
 ) -> Result<String> {
-    let endpoint = env::var("LLM_ENDPOINT").unwrap_or_else(|_| DEFAULT_LLM_ENDPOINT.to_string());
-    let model = env::var("LLM_MODEL").unwrap_or_else(|_| DEFAULT_LLM_MODEL.to_string());
+    let endpoint = get_llm_host()?;
+    let model = get_llm_model()?;
     let api_key = env::var("LLM_API_KEY").context("LLM_API_KEY not set")?;
 
     if api_key.is_empty() {
@@ -505,22 +566,24 @@ async fn call_llm_endpoint(
 }
 
 /// Call Ollama/local LLM for text formatting/assistive mode
+///
+/// Uses LLM_HOST (or legacy OLLAMA_HOST) for host, LLM_MODEL (or legacy OLLAMA_MODEL) for model.
+/// Ollama native API uses /api/chat endpoint format.
 async fn call_ollama(
     user_message: &str,
     system_prompt: &str,
     max_tokens: u32,
     assistive: bool,
 ) -> Result<String> {
-    // Unified naming: LLM_HOST, LLM_MODEL (with legacy OLLAMA_* fallback)
-    let host = env::var("LLM_HOST")
-        .or_else(|_| env::var("OLLAMA_HOST"))
-        .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
-    let model = env::var("LLM_MODEL")
-        .or_else(|_| env::var("OLLAMA_MODEL"))
-        .unwrap_or_else(|_| "qwen3:8b".to_string());
+    let host = get_llm_host()?;
+    let model = get_llm_model()?;
 
-    // Ollama native API uses /api/chat
-    let endpoint = format!("{}/api/chat", host.trim_end_matches('/'));
+    // Ollama native API uses /api/chat - strip any /v1/responses suffix
+    let base_host = host
+        .trim_end_matches('/')
+        .trim_end_matches("/v1/responses")
+        .trim_end_matches("/v1");
+    let endpoint = format!("{}/api/chat", base_host);
 
     // Use higher temperature for assistive mode
     let temperature = if assistive { 0.3 } else { 0.1 };
@@ -586,28 +649,42 @@ async fn call_ollama(
 }
 
 /// Check if local LLM (Ollama native /api/chat) is configured
-/// Returns false if using /v1/ endpoints (Responses API format)
+/// Returns true if LLM_HOST points to localhost AND doesn't use /v1/ path
+/// Returns false if env vars are not set or using /v1/ endpoints (Responses API format)
 fn has_ollama() -> bool {
-    let host = env::var("LLM_HOST")
-        .or_else(|_| env::var("OLLAMA_HOST"))
-        .unwrap_or_default();
+    let host = match get_llm_host() {
+        Ok(h) => h,
+        Err(_) => return false, // No host configured
+    };
 
     // Skip Ollama native format if endpoint uses /v1/ (Responses API)
     if host.contains("/v1/") {
         return false;
     }
 
+    // Check if pointing to localhost
     host.contains("127.0.0.1") || host.contains("localhost")
 }
 
 /// Check if any AI provider is configured
+/// Returns true if:
+/// - Local Ollama is configured (LLM_HOST points to localhost, no API key needed)
+/// - Remote LLM is configured with LLM_HOST + LLM_MODEL + LLM_API_KEY
 pub fn has_api_key() -> bool {
+    // Check if required env vars are set
+    let has_host = get_llm_host().is_ok();
+    let has_model = get_llm_model().is_ok();
+
+    if !has_host || !has_model {
+        return false;
+    }
+
     // Ollama doesn't need an API key
     if has_ollama() {
         return true;
     }
 
-    // Check for LLM_API_KEY
+    // Remote LLM requires API key
     env::var("LLM_API_KEY")
         .map(|k| !k.is_empty())
         .unwrap_or(false)

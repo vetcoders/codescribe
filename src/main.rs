@@ -15,13 +15,13 @@ mod history;
 mod hotkeys;
 mod lab_server;
 mod launchd;
-mod whisper;
 mod models;
 mod permissions;
 mod sound;
 mod tray;
 mod voice_chat;
 mod voice_chat_ui;
+mod whisper;
 mod whisper_model;
 
 use anyhow::Result;

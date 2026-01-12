@@ -3,9 +3,9 @@ use codescribe::audio::Recorder;
 #[cfg(not(target_arch = "wasm32"))]
 use codescribe::config::Config;
 #[cfg(not(target_arch = "wasm32"))]
-use codescribe::whisper::LocalWhisperEngine;
-#[cfg(not(target_arch = "wasm32"))]
 use codescribe::models::ModelManager;
+#[cfg(not(target_arch = "wasm32"))]
+use codescribe::whisper::LocalWhisperEngine;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex};

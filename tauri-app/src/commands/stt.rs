@@ -56,7 +56,9 @@ pub async fn transcribe_audio(
             .unwrap_or(true);
 
         if need_reload {
-            stt.engine = Some(LocalWhisperEngine::new(&model_path2).map_err(|e: anyhow::Error| e.to_string())?);
+            stt.engine = Some(
+                LocalWhisperEngine::new(&model_path2).map_err(|e: anyhow::Error| e.to_string())?,
+            );
             stt.loaded_model = Some(model_name2);
         }
 

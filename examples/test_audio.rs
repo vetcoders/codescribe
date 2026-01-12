@@ -1,5 +1,5 @@
 use anyhow::Result;
-use codescribe::local_stt::LocalWhisperEngine;
+use codescribe::whisper::LocalWhisperEngine;
 use std::path::PathBuf;
 
 fn main() -> Result<()> {

@@ -8,7 +8,7 @@ use tracing::{debug, info};
 
 use crate::config::{Config, HoldMods, ToggleTrigger};
 use crate::tray::menu::toggle_ai_formatting;
-use crate::tray::state::{send_menu_event, HOLD_MENU_ITEMS, TOGGLE_MENU_ITEMS};
+use crate::tray::state::{HOLD_MENU_ITEMS, TOGGLE_MENU_ITEMS, send_menu_event};
 use crate::tray::types::{MenuIds, TrayMenuEvent};
 
 /// Handle menu item click and send appropriate event

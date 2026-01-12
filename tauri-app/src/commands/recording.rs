@@ -18,8 +18,8 @@ pub async fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
 
     // Initialize recorder if not present
     if recording.recorder.is_none() {
-        let recorder =
-            codescribe::audio::Recorder::new().map_err(|e| format!("Failed to init recorder: {e}"))?;
+        let recorder = codescribe::audio::Recorder::new()
+            .map_err(|e| format!("Failed to init recorder: {e}"))?;
         recording.recorder = Some(recorder);
     }
 
