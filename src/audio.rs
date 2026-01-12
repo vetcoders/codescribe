@@ -206,7 +206,7 @@ impl Recorder {
         info!("Starting recording...");
 
         // Clear buffer and reset diagnostics
-        self.buffer.lock().unwrap().clear();
+        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.diagnostics = RecorderDiagnostics::default();
 
         // Select input device
@@ -404,7 +404,7 @@ impl Recorder {
 
         // Get buffer data
         let wav_data = {
-            let buf = self.buffer.lock().unwrap();
+            let buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
             if buf.is_empty() {
                 warn!("No audio data captured");
                 self.last_duration = 0.0;
@@ -443,7 +443,7 @@ impl Recorder {
         info!("Audio successfully saved to WAV file");
 
         // Clear buffer
-        self.buffer.lock().unwrap().clear();
+        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
         Ok(Some(temp_path))
     }

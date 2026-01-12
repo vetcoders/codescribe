@@ -501,7 +501,7 @@ pub fn show_badge_for_mode(mode: BadgeMode) {
 fn show_hold_badge_impl(config: HoldBadgeConfig) {
     debug!("Showing hold badge (diameter={})", config.diameter);
     unsafe {
-        let mut state = BADGE_STATE.lock().unwrap();
+        let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
 
         // Hide existing badge if any
         if let Some(window_ptr) = state.window {
@@ -532,10 +532,10 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
             let mut pulse_phase: f64 = 0.0;
             let pulse_speed = 0.15; // Radians per update cycle
 
-            while BADGE_STATE.lock().unwrap().timer_running {
+            while BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner()).timer_running {
                 thread::sleep(Duration::from_millis(update_interval));
 
-                let state = BADGE_STATE.lock().unwrap();
+                let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 if !state.timer_running {
                     break;
                 }
@@ -552,7 +552,7 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
                     // Position and opacity updates need main thread
                     Queue::main().exec_async(move || {
                         let window = window_ptr as Id;
-                        let state = BADGE_STATE.lock().unwrap();
+                        let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                         update_badge_position(window, &state.config);
 
                         // Update opacity for pulsing effect
@@ -603,13 +603,13 @@ pub fn hide_hold_badge() {
 
     // Stop the timer first (can be done on any thread)
     {
-        let mut state = BADGE_STATE.lock().unwrap();
+        let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.timer_running = false;
     }
 
     // Dispatch window close to main thread
     Queue::main().exec_async(|| unsafe {
-        let mut state = BADGE_STATE.lock().unwrap();
+        let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(window_ptr) = state.window {
             let window = window_ptr as Id;
             let _: () = msg_send![window, close];

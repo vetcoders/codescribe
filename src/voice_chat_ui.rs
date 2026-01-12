@@ -79,7 +79,7 @@ pub fn show_voice_chat_overlay_with_config(_config: VoiceChatOverlayConfig) {
 
 fn show_voice_chat_overlay_impl() {
     unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap();
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
 
         // Close existing window if any
         if let Some(window_ptr) = state.window.take() {
@@ -205,7 +205,7 @@ pub fn update_voice_chat_status(status: &str) {
 
 fn update_voice_chat_status_impl(status: &str) {
     unsafe {
-        let state = OVERLAY_STATE.lock().unwrap();
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(status_field_ptr) = state.status_field {
             let status_field = status_field_ptr as Id;
             let ns_string = Class::get("NSString").unwrap();
@@ -230,7 +230,7 @@ pub fn append_voice_chat_delta(delta: &str) {
 
 fn append_voice_chat_delta_impl(delta: &str) {
     unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap();
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.accumulated_text.push_str(delta);
 
         if let Some(text_field_ptr) = state.text_field {
@@ -257,7 +257,7 @@ pub fn set_voice_chat_text(text: &str) {
 
 fn set_voice_chat_text_impl(text: &str) {
     unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap();
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.accumulated_text = text.to_string();
 
         if let Some(text_field_ptr) = state.text_field {
@@ -276,7 +276,7 @@ fn set_voice_chat_text_impl(text: &str) {
 
 /// Get the accumulated text from the overlay
 pub fn get_accumulated_text() -> String {
-    let state = OVERLAY_STATE.lock().unwrap();
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.accumulated_text.clone()
 }
 
@@ -289,7 +289,7 @@ pub fn clear_voice_chat_text() {
 
 fn clear_voice_chat_text_impl() {
     unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap();
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.accumulated_text.clear();
 
         if let Some(text_field_ptr) = state.text_field {
@@ -303,7 +303,7 @@ fn clear_voice_chat_text_impl() {
 
 /// Check if the voice chat overlay is currently visible
 pub fn is_voice_chat_overlay_visible() -> bool {
-    let state = OVERLAY_STATE.lock().unwrap();
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.window.is_some()
 }
 
@@ -322,7 +322,7 @@ pub fn hide_voice_chat_overlay() {
 
 fn hide_voice_chat_overlay_impl() {
     unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap();
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(window_ptr) = state.window.take() {
             let window = window_ptr as Id;
             let _: () = msg_send![window, close];
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn test_overlay_state_initial() {
         // Verify the initial state is empty
-        let state = OVERLAY_STATE.lock().unwrap();
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         // Window should be None initially (unless another test created it)
         // Just verify we can access the state without panic
         let _ = state.accumulated_text.len();
