@@ -81,12 +81,16 @@ struct ResponsesRequest {
 /// Input item for Responses API
 #[derive(Debug, Serialize)]
 struct InputItem {
+    role: &'static str,
+    content: Vec<InputContent>,
+}
+
+/// Content part for input messages
+#[derive(Debug, Serialize)]
+struct InputContent {
     #[serde(rename = "type")]
-    item_type: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    role: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content_type: &'static str,
+    text: String,
 }
 
 /// Responses API response format
@@ -425,9 +429,11 @@ async fn call_llm_endpoint(
     let request = ResponsesRequest {
         model,
         input: vec![InputItem {
-            item_type: "message",
-            role: Some("user"),
-            content: Some(user_message.to_string()),
+            role: "user",
+            content: vec![InputContent {
+                content_type: "input_text",
+                text: user_message.to_string(),
+            }],
         }],
         previous_response_id,
         instructions: Some(system_prompt.to_string()),
@@ -512,6 +518,8 @@ async fn call_ollama(
     let model = env::var("LLM_MODEL")
         .or_else(|_| env::var("OLLAMA_MODEL"))
         .unwrap_or_else(|_| "qwen3:8b".to_string());
+
+    // Ollama native API uses /api/chat
     let endpoint = format!("{}/api/chat", host.trim_end_matches('/'));
 
     // Use higher temperature for assistive mode
@@ -577,12 +585,17 @@ async fn call_ollama(
     Ok(formatted)
 }
 
-/// Check if local LLM (Ollama) is configured
+/// Check if local LLM (Ollama native /api/chat) is configured
+/// Returns false if using /v1/ endpoints (Responses API format)
 fn has_ollama() -> bool {
-    // Check if LLM_HOST points to localhost (Ollama)
     let host = env::var("LLM_HOST")
         .or_else(|_| env::var("OLLAMA_HOST"))
         .unwrap_or_default();
+
+    // Skip Ollama native format if endpoint uses /v1/ (Responses API)
+    if host.contains("/v1/") {
+        return false;
+    }
 
     host.contains("127.0.0.1") || host.contains("localhost")
 }

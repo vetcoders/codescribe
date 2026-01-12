@@ -337,9 +337,12 @@ impl RecordingController {
             event.key_type, event.action, event.assistive, current_state
         );
 
-        // Update assistive mode on down/press
-        if matches!(event.action, HotkeyAction::Down | HotkeyAction::Press) {
-            *self.assistive_mode.write().await = event.assistive;
+        // Update assistive mode from event (can be upgraded mid-hold if Shift added)
+        if event.assistive {
+            *self.assistive_mode.write().await = true;
+        } else if matches!(event.action, HotkeyAction::Down | HotkeyAction::Press) {
+            // Only reset on Down/Press, not Up (preserves upgrade during hold)
+            *self.assistive_mode.write().await = false;
         }
 
         // Ignore all hotkeys when busy
@@ -716,33 +719,35 @@ impl RecordingController {
             warn!("Detected repetition loop in transcription - will clean up");
         }
 
-        // Determine final text based on assistive mode:
-        // - assistive=false (Ctrl only): raw transcript, only local repetition cleanup if needed
-        // - assistive=true (Ctrl+Shift): AI formatting if configured
+        // Determine final text based on mode:
+        // - Ctrl+Shift (assistive=true): ALWAYS augmentation (AI expands, creates plans)
+        // - Ctrl / Double Option (assistive=false): respects AI Formatting toggle
+        //   - Toggle ON: formatting only (corrects, bullet points, no content change)
+        //   - Toggle OFF: raw transcript
         let formatted_text = if assistive {
-            // AI mode: use AI formatting if enabled and configured
+            // Ctrl+Shift: ALWAYS augmentation mode (AI expands content)
+            info!("Assistive mode: augmenting transcript via AI");
+            let lang_str = language_opt.map(String::from);
+            crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), true).await
+        } else {
+            // Ctrl / Double Option: check AI Formatting toggle
             let ai_formatting_enabled = self.config.read().await.ai_formatting_enabled;
             let should_use_ai = ai_formatting_enabled && crate::ai_formatting::has_api_key();
 
             if should_use_ai {
-                info!("Assistive mode: formatting transcript via AI");
+                // Toggle ON: formatting only (no augmentation)
+                info!("Formatting mode: correcting transcript via AI");
                 let lang_str = language_opt.map(String::from);
-                crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), true).await
+                crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), false).await
             } else if has_repetition {
-                info!("Assistive mode: AI not available, using local repetition cleanup");
+                // Toggle OFF with repetition: local cleanup only
+                info!("Raw mode: applying local repetition cleanup");
                 crate::ai_formatting::remove_simple_repetitions(&raw_text)
             } else {
-                info!("Assistive mode: AI not configured, using raw text");
+                // Toggle OFF: raw transcript
+                info!("Raw mode: using raw transcript");
                 raw_text.clone()
             }
-        } else if has_repetition {
-            // Raw mode with repetition: only local cleanup
-            info!("Raw mode: applying local repetition cleanup");
-            crate::ai_formatting::remove_simple_repetitions(&raw_text)
-        } else {
-            // Raw mode: return transcript as-is
-            info!("Raw mode: using raw transcript");
-            raw_text.clone()
         };
 
         info!(

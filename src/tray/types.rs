@@ -61,6 +61,8 @@ impl TrayStatus {
 /// Minimal set for simplified tray menu.
 #[derive(Debug, Clone)]
 pub enum TrayMenuEvent {
+    /// Copy last transcript to clipboard
+    CopyLast,
     /// Open settings file in editor
     OpenSettings,
     /// Open help/documentation in browser
@@ -77,6 +79,8 @@ pub enum TrayMenuEvent {
 
 /// Menu item IDs for tracking clickable items (minimal set)
 pub struct MenuIds {
+    pub ai_formatting: MenuId,
+    pub copy_last: MenuId,
     pub settings: MenuId,
     pub help: MenuId,
     pub about: MenuId,

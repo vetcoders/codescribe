@@ -676,8 +676,9 @@ async fn main() -> Result<()> {
                             std::io::Write::flush(&mut std::io::stderr()).ok();
                             std::process::exit(0);
                         }
-                        // Settings, Help, About are handled directly in handlers.rs
-                        tray::TrayMenuEvent::OpenSettings
+                        // These events are handled directly in handlers.rs
+                        tray::TrayMenuEvent::CopyLast
+                        | tray::TrayMenuEvent::OpenSettings
                         | tray::TrayMenuEvent::OpenHelp
                         | tray::TrayMenuEvent::ShowAbout => {
                             // Already handled in handlers.rs, just log

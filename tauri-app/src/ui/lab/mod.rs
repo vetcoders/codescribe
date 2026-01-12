@@ -7,6 +7,7 @@ use crate::ui::tauri;
 struct NoArgs {}
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct TranscribeArgs {
     audio_path: String,
 }

@@ -1,7 +1,7 @@
 {
   "build": {
-    "beforeDevCommand": "cd tauri-app && trunk serve",
-    "beforeBuildCommand": "cd tauri-app && trunk build",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
     "devUrl": "http://localhost:8080",
     "frontendDist": "dist"
   },
@@ -9,6 +9,7 @@
   "version": "0.6.0",
   "identifier": "io.vetcoders.codescribe",
   "app": {
+    "withGlobalTauri": true,
     "security": {
       "csp": null
     },

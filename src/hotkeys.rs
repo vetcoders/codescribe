@@ -403,6 +403,10 @@ mod macos {
                 assistive: state.assistive_mode,
             });
             state.hold_event_sent = true;
+        } else if combo_active && state.hold_active && is_assistive && !state.assistive_mode {
+            // Shift was added while combo active - upgrade to assistive mode
+            state.assistive_mode = true;
+            tracing::info!("Upgraded to assistive mode (Shift added during hold)");
         } else if !combo_active && state.hold_active {
             // Hold combo just deactivated
             state.hold_active = false;

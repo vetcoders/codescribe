@@ -964,6 +964,7 @@ dependencies = [
  "cpal 0.16.0",
  "crossbeam-channel",
  "gloo-timers",
+ "js-sys",
  "leptos",
  "leptos_router",
  "log",
