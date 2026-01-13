@@ -123,6 +123,8 @@ dispatch = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+mockito = "1"
+serial_test = "3"
 
 [build-dependencies]
 dirs = "6"

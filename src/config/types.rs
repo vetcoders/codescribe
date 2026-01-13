@@ -313,7 +313,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hold_mods: HoldMods::default(),
-            hold_exclusive: false,
+            hold_exclusive: true, // Ignore extra modifiers by default (Ctrl+K won't trigger)
             toggle_trigger: ToggleTrigger::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),
             whisper_language: Language::default(),

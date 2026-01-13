@@ -14,6 +14,12 @@ struct SaveConfigArgs {
 #[derive(serde::Serialize)]
 struct AudioNoArgs {}
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptTypeArgs {
+    prompt_type: String,
+}
+
 #[component]
 pub fn SettingsView() -> impl IntoView {
     let (loaded, set_loaded) = signal(false);
@@ -36,6 +42,11 @@ pub fn SettingsView() -> impl IntoView {
     let (audio_input_device, set_audio_input_device) = signal(String::new());
 
     let (models, set_models) = signal(Vec::<String>::new());
+
+    // AI Prompt state
+    let (formatting_prompt, set_formatting_prompt) = signal(String::new());
+    let (prompt_loading, set_prompt_loading) = signal(false);
+    let (prompt_message, set_prompt_message) = signal(None::<String>);
 
     Effect::new(move |_| {
         if loaded.get() {
@@ -65,8 +76,10 @@ pub fn SettingsView() -> impl IntoView {
                             .unwrap_or("")
                             .to_string(),
                     );
+                    // Try llm_host first, fallback to ollama_host for backwards compat
                     set_llm_host.set(
-                        v.get("ollama_host")
+                        v.get("llm_host")
+                            .or_else(|| v.get("ollama_host"))
                             .and_then(|x| x.as_str())
                             .unwrap_or("")
                             .to_string(),
@@ -127,6 +140,15 @@ pub fn SettingsView() -> impl IntoView {
                 tauri::invoke("get_current_audio_device", AudioNoArgs {}).await;
             if let Ok(v) = current {
                 set_current_audio_device.set(v);
+            }
+
+            // Load formatting prompt
+            let prompt_res: Result<String, String> = tauri::invoke(
+                "get_ai_prompt",
+                PromptTypeArgs { prompt_type: "formatting".to_string() },
+            ).await;
+            if let Ok(p) = prompt_res {
+                set_formatting_prompt.set(p);
             }
         });
     });
@@ -286,6 +308,96 @@ pub fn SettingsView() -> impl IntoView {
                             children=move |d| view! { <option value={d.clone()}>{d.clone()}</option> }
                         />
                     </select>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h3>"AI Prompt"</h3>
+
+                <Show when=move || prompt_message.get().is_some()>
+                    <p class="prompt-message">{move || prompt_message.get().unwrap_or_default()}</p>
+                </Show>
+
+                <div class="row">
+                    <label class="label">"Formatting prompt"</label>
+                    <textarea
+                        class="input prompt-textarea"
+                        rows="6"
+                        prop:value=move || formatting_prompt.get()
+                        on:input=move |ev| set_formatting_prompt.set(event_target_value(&ev))
+                        disabled=move || prompt_loading.get()
+                    ></textarea>
+                </div>
+
+                <div class="row button-group">
+                    <button
+                        class="secondary"
+                        disabled=move || prompt_loading.get()
+                        on:click=move |_| {
+                            set_prompt_loading.set(true);
+                            set_prompt_message.set(None);
+                            leptos::task::spawn_local(async move {
+                                let res: Result<(), String> = tauri::invoke(
+                                    "open_prompt_in_editor",
+                                    PromptTypeArgs { prompt_type: "formatting".to_string() },
+                                ).await;
+                                set_prompt_loading.set(false);
+                                match res {
+                                    Ok(()) => set_prompt_message.set(Some("Opened in editor".to_string())),
+                                    Err(e) => set_prompt_message.set(Some(format!("Error: {}", e))),
+                                }
+                            });
+                        }
+                    >
+                        "Open in Editor"
+                    </button>
+                    <button
+                        class="secondary"
+                        disabled=move || prompt_loading.get()
+                        on:click=move |_| {
+                            set_prompt_loading.set(true);
+                            set_prompt_message.set(None);
+                            leptos::task::spawn_local(async move {
+                                let res: Result<String, String> = tauri::invoke(
+                                    "reset_ai_prompt",
+                                    PromptTypeArgs { prompt_type: "formatting".to_string() },
+                                ).await;
+                                set_prompt_loading.set(false);
+                                match res {
+                                    Ok(default_prompt) => {
+                                        set_formatting_prompt.set(default_prompt);
+                                        set_prompt_message.set(Some("Reset to default".to_string()));
+                                    }
+                                    Err(e) => set_prompt_message.set(Some(format!("Error: {}", e))),
+                                }
+                            });
+                        }
+                    >
+                        "Reset to Default"
+                    </button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h3>"AI Context"</h3>
+                <p class="muted">"Reset conversation context to start fresh with no history."</p>
+                <div class="row">
+                    <button
+                        class="secondary"
+                        on:click=move |_| {
+                            leptos::task::spawn_local(async move {
+                                let res: Result<(), String> = tauri::invoke(
+                                    "reset_ai_context",
+                                    NoArgs {},
+                                ).await;
+                                if res.is_ok() {
+                                    log::info!("AI context reset");
+                                }
+                            });
+                        }
+                    >
+                        "Reset AI Context"
+                    </button>
                 </div>
             </div>
 

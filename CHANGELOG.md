@@ -1,7 +1,69 @@
 # Changelog
 
-This changelog summarizes the two recent stabilization phases based on the
-branch diffs you requested. Dates follow the Git history recorded in this repo.
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [v0.6.0-rc2] – 2026-01-12
+
+### Added
+- **Native desktop UI (Tauri + Leptos)** – Introduced the `tauri-app/` frontend with a
+  three-tab interface (Voice Lab, Teacher, Settings). ([a275ae8](https://github.com/VetCoders/CodeScribe/commit/a275ae8),
+  [7aa0754](https://github.com/VetCoders/CodeScribe/commit/7aa0754))
+- **Pure Rust local Whisper STT (Metal GPU)** – Added local Whisper inference via
+  `candle-transformers` (Metal acceleration), with long-audio chunking + language detection.
+  ([268f5d0](https://github.com/VetCoders/CodeScribe/commit/268f5d0),
+  [69ed294](https://github.com/VetCoders/CodeScribe/commit/69ed294))
+- **Whisper decoding controls** – Added `DecodingParams` (mlx_whisper-compatible) including
+  n-gram blocking and streaming callback support. ([69574fb](https://github.com/VetCoders/CodeScribe/commit/69574fb),
+  [cc0d8aa](https://github.com/VetCoders/CodeScribe/commit/cc0d8aa))
+- **CLI transcription + E2E pipeline tests** – Added file transcription flows and a comprehensive
+  end-to-end pipeline test suite. ([d7bdb4b](https://github.com/VetCoders/CodeScribe/commit/d7bdb4b),
+  [d46c62c](https://github.com/VetCoders/CodeScribe/commit/d46c62c))
+- **Config convenience** – Added `--config` flag to open/create the config file. ([535270c](https://github.com/VetCoders/CodeScribe/commit/535270c))
+- **UX updates** – Added badge modes + Dock icon behavior and tightened environment/API key
+  requirements. ([7946c17](https://github.com/VetCoders/CodeScribe/commit/7946c17))
+
+### Changed
+- **License** – Switched the project license to Apache 2.0 and added release scripts/docs.
+  ([e0e7ec1](https://github.com/VetCoders/CodeScribe/commit/e0e7ec1))
+- **Backend architecture** – Removed the Python backend and updated the Rust CI pipeline to match.
+  ([5c65481](https://github.com/VetCoders/CodeScribe/commit/5c65481))
+- **AI formatting pipeline** – Improved configuration, workflows, and Harmony support; refined
+  formatting behavior and defaults. ([e11400c](https://github.com/VetCoders/CodeScribe/commit/e11400c),
+  [8a3157f](https://github.com/VetCoders/CodeScribe/commit/8a3157f),
+  [d46c62c](https://github.com/VetCoders/CodeScribe/commit/d46c62c))
+- **Tray menu + local STT integration** – Refactored tray menu plumbing while integrating the local
+  Whisper engine and improving related behavior. ([16021b1](https://github.com/VetCoders/CodeScribe/commit/16021b1))
+- **Local model packaging/loading** – Bundled a default model and updated model loading logic.
+  ([13378fe](https://github.com/VetCoders/CodeScribe/commit/13378fe))
+- **Cloud/STT provider work** – Refactored lab assets and migrated cloud provider integration.
+  ([8392cb9](https://github.com/VetCoders/CodeScribe/commit/8392cb9))
+- **Configuration consolidation** – Deduplicated configuration to a single source of truth.
+  ([217a336](https://github.com/VetCoders/CodeScribe/commit/217a336))
+- **Error handling/refactors** – Refactored Whisper engine imports and adopted `anyhow`.
+  ([b9ac5d9](https://github.com/VetCoders/CodeScribe/commit/b9ac5d9))
+- **Repository maintenance** – Restructured the repo and added conversation session tracking.
+  ([07fe69f](https://github.com/VetCoders/CodeScribe/commit/07fe69f))
+- **Developer ergonomics** – Applied `cargo fmt`-driven formatting fixes.
+  ([f8e04ef](https://github.com/VetCoders/CodeScribe/commit/f8e04ef))
+
+### Fixed
+- **Stability** – Handled poisoned mutexes via `into_inner()` fallback to avoid cascading failures
+  after panics. ([b7591ab](https://github.com/VetCoders/CodeScribe/commit/b7591ab))
+- **Backend cleanup** – Ensured backend processes are killed on all known ports.
+  ([417b002](https://github.com/VetCoders/CodeScribe/commit/417b002))
+
+### Removed
+- **Cleanup** – Removed unused and deprecated code to keep the build clean.
+  ([68469dc](https://github.com/VetCoders/CodeScribe/commit/68469dc))
+
+### Changed (Internal)
+- **Foundations** – Landed the initial Rust-based architecture groundwork.
+  ([5a17c3a](https://github.com/VetCoders/CodeScribe/commit/5a17c3a))
 
 ## v0.4.3 – 2025-11-21
 
@@ -40,48 +102,9 @@ branch diffs you requested. Dates follow the Git history recorded in this repo.
   auto-healed if rumps strips them, and the Quit dialog activates the app so
   the alert always appears on top.
 
-## Unreleased
-
-### Tauri + Leptos Frontend (v0.6.0)
-- **Native desktop UI** – Tauri 2.9 + Leptos 0.8 frontend in `tauri-app/` replaces React Lab UI
-- **Three-tab interface** – Voice Lab (transcription), Teacher (calibration), Settings (configuration)
-- **Pure Rust STT integration** – Local Whisper inference via candle-transformers with Metal GPU
-- **Lexicon backend** – JSONL-based vocabulary storage with Tauri commands for Teacher UI
-- **Tray integration** – "Open Native Lab (Tauri)" menu item launches the native window
-- **Makefile targets** – `make tauri-dev`, `make tauri-build`, `make tauri-check` for development
-
-### Pure Rust STT (v0.5.0)
-- **Local Whisper engine** – candle-transformers with Q8 dequantization for Apple Silicon
-- **DecodingParams** – temperature, no_repeat_ngram_size, suppress_blank, no_speech_threshold
-- **Graceful degradation** – fallback to LibraxisAI cloud if local model fails
-- **Long audio chunking** – 25s chunks with 5s overlap for files > 30s
-
-### E2E Pipeline Tests
-- **Comprehensive test suite** – `tests/e2e_pipeline.rs` with 15 tests covering:
-  - Audio loading and 16kHz resampling
-  - Configuration loading and defaults
-  - Model manager initialization and availability
-  - Local STT engine with Q8 model (graceful skip when incomplete)
-  - DecodingParams validation (mlx_whisper compatible)
-  - Full pipeline: Load → Detect Language → Transcribe → Result
-  - Benchmark: Multiple runs with timing statistics
-- **Pipeline modes documentation** – Toggle (hands-off), Hold (800ms delay), AI Assistive (Ctrl+Shift)
-- **Real-time output** – Tests present results visually during execution (`--nocapture`)
-
----
-
-- **Unified user data directory** – settings, transcript history, stats, and onboarding
-  configuration now live in `$HOME/.CodeScribe/`, keeping CLI and packaged builds perfectly in
-  sync. Scripts (`quickstart_mac.sh`, packaging installers) were updated accordingly and the README
-  reflects the new contract.
-- **First-run & quit dialogs stay on top** – both the onboarding wizard and the “Quit…” prompt now
-  activate the app and float above other windows, avoiding the “app froze” confusion reported
-  during testing.
-- **Menu hardening** – dead `menu_manager.py` code was removed, the formatting submenu now uses the
-  shared `set_submenu()` helper, and the Language menu no longer clears itself before the NSMenu
-  exists. Tray submenus render immediately and auto-heal if rumps detaches them.
-- **Docs & polish** – README gained CI badges, clarified the `.CodeScribe` storage layout, and
-  added a quick contributing blurb. CHANGELOG now tracks the above as part of the pending release.
+<!--
+Historical notes below predate the Keep a Changelog-style format used above.
+-->
 
 ## Phase I – `develop` vs `main`
 
@@ -127,3 +150,6 @@ branch diffs you requested. Dates follow the Git history recorded in this repo.
 - Hardened exception handling across the client/backend boundary, added smoke
   tests around the new controllers, and refreshed documentation to mirror the
   current tree/layout.
+
+[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/d46c62c...HEAD
+[v0.6.0-rc2]: https://github.com/VetCoders/CodeScribe/compare/19e05ad...d46c62c

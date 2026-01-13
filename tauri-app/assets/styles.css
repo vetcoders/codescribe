@@ -61,6 +61,31 @@ button[disabled] {
   transform: none;
 }
 
+.button-group {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.prompt-textarea {
+  width: 100%;
+  min-height: 120px;
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.prompt-message {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(102, 224, 208, 0.1);
+  border: 1px solid rgba(102, 224, 208, 0.2);
+  color: var(--vista-accent-mint);
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+}
+
 .controls {
   display: flex;
   align-items: center;
@@ -146,6 +171,58 @@ select {
   padding: 10px 12px;
   font-size: 0.92rem;
   border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.history-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-ts {
+  color: var(--vista-text-muted);
+  font-size: 0.85rem;
+}
+
+.history-text {
+  line-height: 1.4;
+}
+
+.history-text.formatted {
+  color: var(--vista-accent);
+  font-style: italic;
+}
+
+.history-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+}
+
+.mini-btn {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--vista-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mini-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--vista-text-primary);
+}
+
+.mini-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .endpoint-grid {

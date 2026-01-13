@@ -4,7 +4,6 @@
 //! Files are paired: HHMMSS.wav + HHMMSS.txt with matching timestamps.
 
 use chrono::{DateTime, Local};
-use directories::BaseDirs;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,10 +35,10 @@ impl HistoryEntry {
 
 /// Get the transcriptions base directory
 fn transcriptions_base_dir() -> PathBuf {
-    let home = BaseDirs::new()
-        .map(|b| b.home_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".codescribe").join("transcriptions")
+    // Use config_dir as the single source of truth for filesystem roots.
+    // This keeps behavior identical in normal runs (defaults to $HOME/.codescribe)
+    // while allowing deterministic overrides in tests via CODESCRIBE_DATA_DIR.
+    crate::config::Config::config_dir().join("transcriptions")
 }
 
 /// Get the transcriptions directory for a specific date, creating it if needed

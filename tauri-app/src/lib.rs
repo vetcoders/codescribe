@@ -100,8 +100,16 @@ pub fn run_backend() {
 
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // Hide window on close instead of quitting (macOS tray app behavior)
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                window.hide().unwrap_or_default();
+                api.prevent_close();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::stt::transcribe_audio,
+            commands::stt::transcribe_audio_streaming,
             commands::stt::get_available_models,
             commands::stt::get_current_model,
             commands::config::get_config,
@@ -115,6 +123,11 @@ pub fn run_backend() {
             commands::recording::start_recording,
             commands::recording::stop_recording,
             commands::recording::is_recording,
+            commands::formatting::format_transcript,
+            commands::formatting::reset_ai_context,
+            commands::formatting::get_ai_prompt,
+            commands::formatting::open_prompt_in_editor,
+            commands::formatting::reset_ai_prompt,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

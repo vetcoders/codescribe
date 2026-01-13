@@ -18,8 +18,18 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_toggle_ai_formatting();
     } else if event_id == &menu_ids.copy_last {
         handle_copy_last();
+    } else if event_id == &menu_ids.format_last {
+        handle_format_last();
+    } else if event_id == &menu_ids.format_last_five {
+        handle_format_last_five();
     } else if event_id == &menu_ids.settings_edit_config {
         handle_open_settings();
+    } else if event_id == &menu_ids.settings_edit_prompt {
+        handle_edit_prompt();
+    } else if event_id == &menu_ids.settings_open_prompt_folder {
+        handle_open_prompts_folder();
+    } else if event_id == &menu_ids.settings_reset_context {
+        handle_reset_context();
     } else if event_id == &menu_ids.help {
         handle_open_help();
     } else if event_id == &menu_ids.about {
@@ -240,25 +250,10 @@ LOG_LEVEL=INFO
             info!("Created default config: {}", config_path);
         }
 
-        // Try $EDITOR, $VISUAL, then common editors
-        let editor = std::env::var("EDITOR")
-            .or_else(|_| std::env::var("VISUAL"))
-            .unwrap_or_else(|_| {
-                for editor in &["code", "nvim", "vim", "nano"] {
-                    if Command::new("which")
-                        .arg(editor)
-                        .output()
-                        .map(|o| o.status.success())
-                        .unwrap_or(false)
-                    {
-                        return editor.to_string();
-                    }
-                }
-                "open".to_string() // macOS default
-            });
-
-        info!("Opening settings in: {}", editor);
-        let _ = Command::new(&editor).arg(&config_path).spawn();
+        // Use macOS `open -t` for default text editor (works without TTY)
+        // Falls back to TextEdit if no default is set
+        info!("Opening settings with default text editor: {}", config_path);
+        let _ = Command::new("open").arg("-t").arg(&config_path).spawn();
     }
 }
 
@@ -304,4 +299,94 @@ fn handle_show_about() {
         info!("Showing about dialog");
         let _ = Command::new("osascript").arg("-e").arg(&script).spawn();
     }
+}
+
+/// Open prompt files for editing
+fn handle_edit_prompt() {
+    info!("Opening prompt files for editing...");
+    crate::prompts::open_prompt_file("formatting.txt");
+}
+
+/// Reset conversation context
+fn handle_reset_context() {
+    crate::conversation::reset_conversation();
+    crate::ai_formatting::reset_ollama_memory();
+    info!("Conversation context reset");
+}
+
+/// Format last transcript (async in new thread)
+fn handle_format_last() {
+    info!("Formatting last transcript...");
+
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+            
+        rt.block_on(async {
+            if let Some(last_entry) = crate::history::latest_entry() {
+                 if let Ok(text) = std::fs::read_to_string(&last_entry.path) {
+                      crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
+                      let formatted = crate::ai_formatting::format_text(&text, None, false).await;
+                      // Zapisujemy jako nowy wpis, pozostawiając oryginalny raw w historii
+                      crate::history::save_entry(&formatted);
+                      let _ = crate::clipboard::set_clipboard(&formatted);
+
+                      crate::tray::update_tray_status(crate::tray::TrayStatus::Success);
+                      tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                      crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
+                 }
+            } else {
+                info!("No transcript to format");
+            }
+        });
+    });
+}
+
+/// Format last 5 transcripts (async batch)
+fn handle_format_last_five() {
+    info!("Formatting last 5 transcripts...");
+
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let entries = crate::history::recent_entries(5);
+            if entries.is_empty() {
+                info!("No transcripts to format");
+                return;
+            }
+
+            crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
+
+            let mut last_formatted: Option<String> = None;
+
+            for entry in entries {
+                if let Ok(text) = std::fs::read_to_string(&entry.path) {
+                    let formatted = crate::ai_formatting::format_text(&text, None, false).await;
+                    // Zapisujemy jako nowy wpis, raw pozostaje w historii
+                    crate::history::save_entry(&formatted);
+                    last_formatted = Some(formatted);
+                }
+            }
+
+            if let Some(formatted) = last_formatted {
+                let _ = crate::clipboard::set_clipboard(&formatted);
+            }
+
+            crate::tray::update_tray_status(crate::tray::TrayStatus::Success);
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
+        });
+    });
+}
+
+/// Open prompts folder
+fn handle_open_prompts_folder() {
+    crate::prompts::open_prompts_folder();
+    info!("Opened prompts folder");
 }

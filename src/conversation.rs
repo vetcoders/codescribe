@@ -34,9 +34,21 @@ pub fn set_response_id(id: String) {
     }
 }
 
-// TODO: AI Conversation features (reset_conversation, has_active_conversation)
-// will be needed for Tauri AI Assistive mode. Removed for clean build.
-// Restore from git history when integrating.
+/// Reset the conversation context
+///
+/// Clears the previous_response_id, starting a fresh conversation.
+/// Use this when the user wants to start a new topic or clear context.
+pub fn reset_conversation() {
+    if let Ok(mut session) = get_session().write() {
+        info!("Conversation context reset");
+        *session = None;
+    }
+}
+
+/// Check if there's an active conversation
+pub fn has_active_conversation() -> bool {
+    get_previous_response_id().is_some()
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,7 +1,16 @@
 use leptos::prelude::*;
 use serde_json::Value;
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::ui::tauri;
+
+// External binding to Tauri event listener
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"])]
+    fn listen(event: &str, handler: &js_sys::Function) -> js_sys::Promise;
+}
 
 #[derive(serde::Serialize)]
 struct NoArgs {}
@@ -22,6 +31,16 @@ enum LabSection {
 struct TranscriptEntry {
     ts: String,
     text: String,
+    formatted: Option<String>,
+    is_formatting: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormatArgs {
+    text: String,
+    language: Option<String>,
+    assistive: bool,
 }
 
 #[derive(Clone)]
@@ -88,10 +107,28 @@ fn SpectrogramPanel() -> impl IntoView {
     let (buffer_kb, set_buffer_kb) = signal(0.0f32);
     let (transcript, set_transcript) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
+    let (streaming_preview, set_streaming_preview) = signal(String::new());
+
+    // Set up Tauri event listener for streaming transcription chunks
+    Effect::new(move |_| {
+        let set_preview = set_streaming_preview;
+        let closure = Closure::wrap(Box::new(move |event: JsValue| {
+            // Extract payload from Tauri event object
+            if let Ok(payload) = js_sys::Reflect::get(&event, &"payload".into()) {
+                if let Some(text) = payload.as_string() {
+                    set_preview.set(text);
+                }
+            }
+        }) as Box<dyn Fn(JsValue)>);
+
+        let _ = listen("transcript_chunk", closure.as_ref().unchecked_ref());
+        closure.forget(); // Leak closure to keep it alive for the lifetime of the component
+    });
 
     let start_recording = move |_| {
         set_error.set(None);
         set_transcript.set(String::new());
+        set_streaming_preview.set(String::new());
         set_status_text.set("Starting...".to_string());
 
         leptos::task::spawn_local(async move {
@@ -112,6 +149,7 @@ fn SpectrogramPanel() -> impl IntoView {
 
     let stop_recording = move |_| {
         set_status_text.set("Stopping...".to_string());
+        set_streaming_preview.set(String::new()); // Clear live preview when stopping
 
         leptos::task::spawn_local(async move {
             let res: Result<Option<String>, String> =
@@ -120,15 +158,16 @@ fn SpectrogramPanel() -> impl IntoView {
 
             match res {
                 Ok(Some(audio_path)) => {
-                    set_status_text.set("Transcribing...".to_string());
+                    set_status_text.set("Transcribing (streaming)...".to_string());
 
-                    // Auto-transcribe the recorded audio
+                    // Auto-transcribe with streaming - emits transcript_chunk events
                     let transcribe_res: Result<String, String> =
-                        tauri::invoke("transcribe_audio", TranscribeArgs { audio_path }).await;
+                        tauri::invoke("transcribe_audio_streaming", TranscribeArgs { audio_path }).await;
 
                     match transcribe_res {
                         Ok(text) => {
                             set_transcript.set(text);
+                            set_streaming_preview.set(String::new()); // Clear preview, show final
                             set_status_text.set("Done".to_string());
                         }
                         Err(e) => {
@@ -181,6 +220,14 @@ fn SpectrogramPanel() -> impl IntoView {
                 <span>{move || format!("{:.1} KB buffered", buffer_kb.get())}</span>
             </div>
 
+            // Live streaming preview - shown only during recording when there's text
+            <Show when=move || is_streaming.get() && !streaming_preview.get().is_empty()>
+                <div class="streaming-preview">
+                    <span class="preview-label">"Live preview: "</span>
+                    <span class="preview-text">{move || streaming_preview.get()}</span>
+                </div>
+            </Show>
+
             <Show when=move || error.get().is_some()>
                 <pre class="error">{move || error.get().unwrap_or_default()}</pre>
             </Show>
@@ -198,13 +245,12 @@ fn SpectrogramPanel() -> impl IntoView {
 #[component]
 fn TranscriptPanel() -> impl IntoView {
     let (transcript, _set_transcript) = signal(String::new());
-    let (history, _set_history) = signal(Vec::<TranscriptEntry>::new());
+    let (history, set_history) = signal(Vec::<TranscriptEntry>::new());
+    let (format_error, set_format_error) = signal(None::<String>);
 
     let copy_transcript = move |_| {
         let text = transcript.get();
         if !text.is_empty() {
-            // In WASM, we'd use clipboard API
-            // For now, just log
             log::info!("Copy transcript: {}", text);
         }
     };
@@ -229,17 +275,89 @@ fn TranscriptPanel() -> impl IntoView {
                 }}
             </div>
 
+            <Show when=move || format_error.get().is_some()>
+                <pre class="error">{move || format_error.get().unwrap_or_default()}</pre>
+            </Show>
+
             <div class="transcript-history">
-                <For
-                    each=move || history.get()
-                    key=|e| format!("{}-{}", e.ts, e.text)
-                    children=move |entry| view! {
-                        <div class="history-chip">
-                            "[" {entry.ts.clone()} "] " {entry.text.clone()}
-                        </div>
-                    }
-                />
+                {move || {
+                    let entries = history.get();
+                    entries.into_iter().enumerate().map(|(idx, entry)| {
+                        let display_text = entry.formatted.clone().unwrap_or_else(|| entry.text.clone());
+                        let is_formatted = entry.formatted.is_some();
+                        let is_formatting = entry.is_formatting;
+                        let ts = entry.ts.clone();
+                        let text_for_format = display_text.clone();
+
+                        let on_format = {
+                            let set_history = set_history.clone();
+                            let set_format_error = set_format_error.clone();
+                            move |_| {
+                                // Mark as formatting
+                                let mut entries = history.get();
+                                if idx < entries.len() {
+                                    entries[idx].is_formatting = true;
+                                    set_history.set(entries.clone());
+                                }
+                                set_format_error.set(None);
+
+                                let text_to_format = text_for_format.clone();
+                                let set_history = set_history.clone();
+                                let set_format_error = set_format_error.clone();
+
+                                leptos::task::spawn_local(async move {
+                                    let res: Result<String, String> = tauri::invoke(
+                                        "format_transcript",
+                                        FormatArgs {
+                                            text: text_to_format,
+                                            language: None,
+                                            assistive: false,
+                                        },
+                                    ).await;
+
+                                    let mut entries = history.get();
+                                    if idx < entries.len() {
+                                        entries[idx].is_formatting = false;
+                                        match res {
+                                            Ok(formatted) => {
+                                                entries[idx].formatted = Some(formatted);
+                                            }
+                                            Err(e) => {
+                                                set_format_error.set(Some(format!("Format failed: {}", e)));
+                                            }
+                                        }
+                                        set_history.set(entries);
+                                    }
+                                });
+                            }
+                        };
+
+                        view! {
+                            <div class="history-chip">
+                                <div class="history-content">
+                                    <span class="history-ts">"[" {ts} "]"</span>
+                                    <span class={if is_formatted { "history-text formatted" } else { "history-text" }}>
+                                        {display_text.clone()}
+                                    </span>
+                                </div>
+                                <div class="history-actions">
+                                    <button
+                                        class="mini-btn"
+                                        disabled=is_formatting
+                                        on:click=on_format
+                                    >
+                                        {if is_formatting { "..." } else if is_formatted { "Re-format" } else { "Format" }}
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    }).collect_view()
+                }}
             </div>
+
+            <Show when=move || history.get().is_empty()>
+                <p class="muted">"(No history yet - transcripts will appear here)"</p>
+            </Show>
         </section>
     }
 }

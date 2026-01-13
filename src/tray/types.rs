@@ -171,6 +171,8 @@ pub struct MenuIds {
     // Top-level
     pub ai_formatting: MenuId,
     pub copy_last: MenuId,
+    pub format_last: MenuId,
+    pub format_last_five: MenuId,
     pub help: MenuId,
     pub about: MenuId,
     pub quit: MenuId,
@@ -192,4 +194,7 @@ pub struct MenuIds {
 
     // Settings submenu
     pub settings_edit_config: MenuId,
+    pub settings_edit_prompt: MenuId,
+    pub settings_open_prompt_folder: MenuId,
+    pub settings_reset_context: MenuId,
 }

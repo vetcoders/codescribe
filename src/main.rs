@@ -17,6 +17,7 @@ mod lab_server;
 mod launchd;
 mod models;
 mod permissions;
+mod prompts;
 mod sound;
 mod tray;
 mod voice_chat;
@@ -173,7 +174,18 @@ LOG_LEVEL=INFO
         println!("📄 Config exists: {}", config_path.display());
     }
 
-    // Open in editor
+    // Open in editor - use GUI editor if no TTY available
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() {
+            // No TTY - use macOS default text editor
+            println!("📝 Opening in default text editor (no TTY)");
+            Command::new("open").arg("-t").arg(&config_path).status()?;
+            return Ok(());
+        }
+    }
+
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| {

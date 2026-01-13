@@ -79,6 +79,16 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let copy_last_id = copy_last_item.id().clone();
     menu.append(&copy_last_item)?;
 
+    // 4b. Format Last Transcript
+    let format_last_item = MenuItem::new("Format Last Transcript", true, None);
+    let format_last_id = format_last_item.id().clone();
+    menu.append(&format_last_item)?;
+
+    // 4c. Format Last 5 Transcripts
+    let format_last_five_item = MenuItem::new("Format Last 5 Transcripts", true, None);
+    let format_last_five_id = format_last_five_item.id().clone();
+    menu.append(&format_last_five_item)?;
+
     // 5. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
@@ -101,6 +111,21 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let edit_config_item = MenuItem::new("Edit Config File", true, None);
     let edit_config_id = edit_config_item.id().clone();
     settings_menu.append(&edit_config_item)?;
+
+    // 6e. Edit AI Prompt
+    let edit_prompt_item = MenuItem::new("Edit AI Prompt", true, None);
+    let edit_prompt_id = edit_prompt_item.id().clone();
+    settings_menu.append(&edit_prompt_item)?;
+
+    // 6f. Open Prompts Folder
+    let open_prompt_folder_item = MenuItem::new("Open Prompts Folder", true, None);
+    let open_prompt_folder_id = open_prompt_folder_item.id().clone();
+    settings_menu.append(&open_prompt_folder_item)?;
+
+    // 6g. Reset AI Context
+    let reset_context_item = MenuItem::new("Reset AI Context", true, None);
+    let reset_context_id = reset_context_item.id().clone();
+    settings_menu.append(&reset_context_item)?;
 
     menu.append(&settings_menu)?;
 
@@ -139,6 +164,8 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         MenuIds {
             ai_formatting: ai_formatting_id,
             copy_last: copy_last_id,
+            format_last: format_last_id,
+            format_last_five: format_last_five_id,
             help: help_id,
             about: about_id,
             quit: quit_id,
@@ -157,6 +184,9 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             history_open_folder: history_open_folder_id,
             // Settings
             settings_edit_config: edit_config_id,
+            settings_edit_prompt: edit_prompt_id,
+            settings_open_prompt_folder: open_prompt_folder_id,
+            settings_reset_context: reset_context_id,
         },
     ))
 }
