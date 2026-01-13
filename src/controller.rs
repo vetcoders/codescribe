@@ -36,7 +36,6 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 struct ValidatedAudioPath(PathBuf);
 
-#[allow(dead_code)] // read() prepared for future voice chat pipeline
 impl ValidatedAudioPath {
     /// Create a new ValidatedAudioPath after security validation.
     ///
@@ -779,7 +778,6 @@ impl RecordingController {
     /// 3. Streams LLM response tokens back
     ///
     /// The response is displayed in an overlay and copied to clipboard.
-    #[allow(dead_code)] // Prepared for voice chat feature
     async fn process_voice_chat(
         &self,
         audio_path: &ValidatedAudioPath,
@@ -943,7 +941,6 @@ impl RecordingController {
     }
 
     /// Fallback to standard assistive processing when voice chat fails.
-    #[allow(dead_code)] // Called from process_voice_chat (voice chat feature)
     async fn fallback_assistive_processing(
         &self,
         audio_path: &ValidatedAudioPath,

@@ -111,7 +111,6 @@ impl ModelManager {
         Ok(out)
     }
 
-    #[allow(dead_code)] // Used in tests
     pub fn models_dir(&self) -> &PathBuf {
         &self.models_dir
     }

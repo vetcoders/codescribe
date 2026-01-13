@@ -62,7 +62,6 @@ impl TrayStatus {
 
 /// Menu events that can be sent to the main controller.
 /// Some variants are prepared for future use but handlers may not be implemented yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum TrayMenuEvent {
     /// Copy last transcript to clipboard
@@ -89,7 +88,6 @@ pub enum TrayMenuEvent {
 }
 
 /// Volume level presets (prepared for future Feedback submenu)
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeLevel {
     Mute,   // 0%
@@ -101,7 +99,6 @@ pub enum VolumeLevel {
 
 impl VolumeLevel {
     /// Convert to f32 value (0.0 - 1.0)
-    #[allow(dead_code)]
     pub fn as_f32(self) -> f32 {
         match self {
             VolumeLevel::Mute => 0.0,
@@ -129,7 +126,6 @@ impl VolumeLevel {
 // ============================================================================
 
 /// Model menu items for dynamic updates (prepared for future Models submenu)
-#[allow(dead_code)]
 pub struct ModelMenuItems {
     pub small: CheckMenuItem,
     pub medium: CheckMenuItem,
@@ -157,7 +153,6 @@ pub struct ToggleMenuItems {
 }
 
 /// History menu label for dynamic updates
-#[allow(dead_code)]
 pub struct HistoryMenuItems {
     pub latest_label: MenuItem,
 }

@@ -24,7 +24,6 @@ mod data {
 pub fn is_embedded_available() -> bool {
     let cfg_set = cfg!(embed_model);
     let weights_size = data::WEIGHTS.len();
-    // DEBUG: temporary eprintln to diagnose cfg issue
     eprintln!("[DEBUG] Embedded check: cfg={}, weights_size={}", cfg_set, weights_size);
     cfg_set && weights_size > 0
 }

@@ -18,7 +18,6 @@ pub enum HoldMods {
     CtrlCmd,
 }
 
-#[allow(dead_code)]
 impl HoldMods {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -64,7 +63,6 @@ pub enum ToggleTrigger {
     None,
 }
 
-#[allow(dead_code)]
 impl ToggleTrigger {
     pub fn as_str(&self) -> &'static str {
         match self {

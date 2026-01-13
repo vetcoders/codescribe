@@ -216,7 +216,6 @@ impl Config {
     /// # Arguments
     /// * `key` - Environment variable name (e.g., "BEEP_ON_START")
     /// * `value` - Value to save
-    #[allow(dead_code)]
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let env_path = Self::env_path();
 
@@ -242,7 +241,6 @@ impl Config {
     }
 
     /// Parse .env file into HashMap.
-    #[allow(dead_code)]
     pub fn parse_env_file(path: &PathBuf) -> anyhow::Result<HashMap<String, String>> {
         // Path comes from Config::env_path() which is hardcoded to ~/.codescribe/.env
         // nosemgrep: tainted-path

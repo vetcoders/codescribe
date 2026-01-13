@@ -1,6 +1,6 @@
 //! CodeScribe - Speech-to-text tray app for macOS
 //!
-//! Rust frontend that communicates with Python backend (FastAPI + MLX Whisper)
+//! Pure Rust with embedded Whisper model (zero I/O, Metal GPU acceleration)
 
 mod ai_formatting;
 mod audio;

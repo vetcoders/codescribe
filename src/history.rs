@@ -14,15 +14,12 @@ use tracing::{debug, error, info, warn};
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
     pub path: PathBuf,
-    #[allow(dead_code)] // Used for future menu display
     pub timestamp: DateTime<Local>,
-    #[allow(dead_code)] // Used for future menu display
     pub preview: String,
 }
 
 impl HistoryEntry {
     /// Get a formatted label for display in menus
-    #[allow(dead_code)] // Prepared for dynamic menu updates
     pub fn label(&self) -> String {
         let ts = self.timestamp.format("%H:%M:%S").to_string();
         if self.preview.is_empty() {
@@ -118,7 +115,6 @@ pub fn save_entry_with_timestamp(text: &str, timestamp: Option<DateTime<Local>>)
 }
 
 /// Save a transcript to history and return the entry (convenience wrapper)
-#[allow(dead_code)] // Kept for external use and backwards compatibility
 pub fn save_entry(text: &str) -> HistoryEntry {
     save_entry_with_timestamp(text, None)
 }
@@ -180,7 +176,6 @@ pub fn recent_entries(limit: usize) -> Vec<HistoryEntry> {
 }
 
 /// Get the latest history entry, if any
-#[allow(dead_code)] // Will be used by Tauri frontend for recent entry display
 pub fn latest_entry() -> Option<HistoryEntry> {
     recent_entries(1).into_iter().next()
 }
@@ -243,19 +238,16 @@ pub fn save_audio(src_path: &Path, timestamp: DateTime<Local>) -> Option<PathBuf
 ///
 /// Prefer using save_audio() with explicit timestamp for proper pairing with transcripts
 #[deprecated(note = "Use save_audio() with explicit timestamp instead")]
-#[allow(dead_code)]
 pub fn dump_audio(src_path: &Path, _reason: &str) -> Option<PathBuf> {
     save_audio(src_path, Local::now())
 }
 
 /// Open the transcriptions folder in Finder (alias for open_history_folder)
-#[allow(dead_code)]
 pub fn open_audio_logs_folder() {
     open_history_folder();
 }
 
 /// Clear all history entries
-#[allow(dead_code)] // Prepared for future "Clear History" menu option
 pub fn clear_history() {
     let dir = history_dir();
     if let Ok(day_dirs) = fs::read_dir(&dir) {

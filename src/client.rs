@@ -1002,19 +1002,6 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
 
 // Note: format_text moved to ai_formatting.rs module for OpenAI/Libraxis support
 
-/// Model set response structure
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct ModelSetResponse {
-    ok: bool,
-    #[serde(default)]
-    variant: Option<String>,
-    #[serde(default)]
-    path: Option<String>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
 /// Get current Whisper model variant from backend
 pub async fn get_current_model() -> Result<String> {
     let base_url = get_server_url().await?;
@@ -1037,59 +1024,6 @@ pub async fn get_current_model() -> Result<String> {
         .await
         .context("Failed to parse model info")?;
     Ok(info.variant)
-}
-
-/// Set Whisper model variant
-///
-/// # Arguments
-/// * `variant` - Model variant (small, medium, large-v3, large-v3-turbo)
-///
-/// # Returns
-/// Ok(()) on success, error if model not found or switch failed
-#[allow(dead_code)]
-pub async fn set_whisper_model(variant: &str) -> Result<()> {
-    let base_url = get_server_url().await?;
-    let url = format!("{}/model/set", base_url);
-
-    debug!("Setting Whisper model to: {}", variant);
-
-    let response = get_client()
-        .post(&url)
-        .json(&serde_json::json!({ "variant": variant }))
-        .send()
-        .await
-        .context("Failed to send model set request")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "(no body)".to_string());
-        anyhow::bail!("Model set request failed with status {}: {}", status, body);
-    }
-
-    let set_response: ModelSetResponse = response
-        .json()
-        .await
-        .context("Failed to parse model set response")?;
-
-    if !set_response.ok {
-        anyhow::bail!(
-            "Failed to set model: {}",
-            set_response
-                .error
-                .unwrap_or_else(|| "unknown error".to_string())
-        );
-    }
-
-    info!(
-        "Whisper model switched to: {} at {:?}",
-        set_response.variant.unwrap_or_default(),
-        set_response.path
-    );
-
-    Ok(())
 }
 
 #[cfg(test)]

@@ -12,11 +12,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
-#[allow(dead_code)] // Used in lab_url() which will be used by Tauri
 const LAB_PORT: u16 = 8237;
 
 /// Get the lab assets directory
-#[allow(dead_code)] // Will be used when lab server is activated
 fn lab_assets_dir() -> PathBuf {
     // Try relative to executable first
     if let Ok(exe) = std::env::current_exe() {

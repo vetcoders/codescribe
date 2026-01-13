@@ -48,7 +48,6 @@ const kAXSizeAttribute: &str = "AXSize";
 // AXValue types
 const kAXValueCGPointType: i32 = 1;
 const kAXValueCGSizeType: i32 = 2;
-#[allow(dead_code)]
 const kAXValueCFRangeType: i32 = 3;
 
 // Window level constants

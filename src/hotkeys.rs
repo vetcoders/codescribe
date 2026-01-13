@@ -132,7 +132,6 @@ pub struct ModifierFlags {
     pub cmd: bool,
 }
 
-#[allow(dead_code)]
 impl ModifierFlags {
     pub fn new() -> Self {
         Self {
@@ -701,7 +700,6 @@ mod macos {
 /// Enable hotkey processing (thread-safe, global)
 ///
 /// When enabled, modifier key events will be captured and sent to the event channel.
-#[allow(dead_code)] // Will be used by Tauri for hotkey toggle
 pub fn enable_hotkeys() {
     macos::enable();
 }
@@ -710,21 +708,19 @@ pub fn enable_hotkeys() {
 ///
 /// When disabled, modifier key events will be ignored and no events will be sent.
 /// The CGEventTap remains running but skips processing.
-#[allow(dead_code)] // Will be used by Tauri for hotkey toggle
 pub fn disable_hotkeys() {
     macos::disable();
 }
 
 /// Check if hotkeys are currently enabled (thread-safe, global)
-#[allow(dead_code)] // Will be used by Tauri for hotkey status
 pub fn are_hotkeys_enabled() -> bool {
     macos::is_enabled()
 }
 
 /// Manages global hotkey registration and event handling
 pub struct HotkeyManager {
-    #[allow(dead_code)]
-    tx: Sender<HotkeyEvent>,
+    /// Kept for future use (e.g., manual event injection)
+    _tx: Sender<HotkeyEvent>,
 }
 
 impl HotkeyManager {
@@ -736,7 +732,7 @@ impl HotkeyManager {
         // Start the listener
         macos::start_listener(tx.clone())?;
 
-        Ok(Self { tx })
+        Ok(Self { _tx: tx })
     }
 
     /// Process pending hotkey events
@@ -755,7 +751,6 @@ impl HotkeyManager {
 ///
 /// The actual hotkey handling is now done through HotkeyManager integrated
 /// with CGEventTap.
-#[allow(dead_code)]
 pub fn start(
     _tx: Sender<HotkeyEvent>,
     _required_modifiers: ModifierFlags,

@@ -112,12 +112,10 @@ pub fn get_assistive_prompt() -> String {
     load_or_create("assistive.txt", DEFAULT_ASSISTIVE_PROMPT)
 }
 
-#[allow(dead_code)] // Public API for tauri-app and tests
 pub fn get_formatting_prompt_path() -> PathBuf {
     prompts_dir().join("formatting.txt")
 }
 
-#[allow(dead_code)] // Public API for tauri-app and tests
 pub fn get_assistive_prompt_path() -> PathBuf {
     prompts_dir().join("assistive.txt")
 }
@@ -137,7 +135,6 @@ pub fn open_prompt_file(filename: &str) {
         .spawn();
 }
 
-#[allow(dead_code)] // Public API for tauri-app and tests
 pub fn reset_to_defaults() -> std::io::Result<()> {
     ensure_prompts_dir()?;
     fs::write(prompts_dir().join("formatting.txt"), DEFAULT_FORMATTING_PROMPT)?;

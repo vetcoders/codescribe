@@ -69,7 +69,6 @@ static SHUTDOWN_REQUESTED: OnceLock<std::sync::atomic::AtomicBool> = OnceLock::n
 ///
 /// This can be called from any thread to signal that the app should exit.
 /// The event loop will check this flag and perform cleanup before exiting.
-#[allow(dead_code)] // Will be used by Tauri for programmatic shutdown
 pub fn request_shutdown() {
     if let Some(flag) = SHUTDOWN_REQUESTED.get() {
         flag.store(true, Ordering::SeqCst);
@@ -93,7 +92,6 @@ pub fn is_shutdown_requested() -> bool {
 ///
 /// Uses tao event loop for proper macOS integration.
 /// Optionally accepts a HotkeyManager to process hotkey events in the same loop.
-#[allow(dead_code)] // Alternative entry point for tray-only mode
 pub fn run() -> Result<()> {
     run_with_hotkeys(None)
 }

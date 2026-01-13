@@ -299,19 +299,16 @@ impl LocalWhisperEngine {
         self.transcribe_long_with_language(&samples, sample_rate, language)
     }
 
-    #[allow(dead_code)]
     pub fn detect_language_file(&mut self, path: &Path) -> Result<String> {
         let (samples, sample_rate) =
             audio_loader::load_audio_file(path).context("Failed to load audio file")?;
         self.detect_language(&samples, sample_rate)
     }
 
-    #[allow(dead_code)]
     pub fn transcribe_file(&mut self, path: &Path) -> Result<String> {
         self.transcribe_file_with_language(path, None)
     }
 
-    #[allow(dead_code)]
     pub fn transcribe_with_language(
         &mut self,
         audio: &[f32],
@@ -342,7 +339,6 @@ impl LocalWhisperEngine {
         self.transcribe_samples_16k(&samples, language, debug_tokens)
     }
 
-    #[allow(dead_code)]
     pub fn transcribe_long(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
         self.transcribe_long_with_language(audio, sample_rate, None)
     }
@@ -416,7 +412,6 @@ impl LocalWhisperEngine {
         Ok(out.trim().to_string())
     }
 
-    #[allow(dead_code)]
     pub fn detect_language(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
         let samples = audio_loader::resample_to_16k(audio, sample_rate);
         self.detect_language_16k(&samples)
@@ -911,7 +906,6 @@ fn compression_ratio(text: &str) -> f32 {
     original_len as f32 / compressed.len() as f32
 }
 
-#[allow(clippy::needless_range_loop)]
 fn dequantize_q8(
     packed: &Tensor,
     scales: &Tensor,
@@ -950,9 +944,8 @@ fn dequantize_q8(
 
     let mut output: Vec<f32> = Vec::with_capacity(out_dim * in_dim);
 
-    for o in 0..out_dim {
-        for p in 0..packed_in {
-            let val = packed_data[o][p];
+    for (o, packed_row) in packed_data.iter().enumerate() {
+        for (p, &val) in packed_row.iter().enumerate() {
             for b in 0..4 {
                 let idx = p * 4 + b;
                 let group = idx / group_size;

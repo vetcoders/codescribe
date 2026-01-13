@@ -46,7 +46,6 @@ pub fn reset_conversation() {
 }
 
 /// Check if there's an active conversation
-#[allow(dead_code)] // Public API for tauri-app
 pub fn has_active_conversation() -> bool {
     get_previous_response_id().is_some()
 }

@@ -102,7 +102,6 @@ pub struct RecorderConfig {
     /// Enable automatic silence detection
     pub auto_silence: bool,
     /// Block size for audio chunks
-    #[allow(dead_code)]
     pub block_size: usize,
 }
 
@@ -491,25 +490,6 @@ fn calculate_rms_f32(samples: &[f32]) -> f32 {
 
     (sum_squares / samples.len() as f64).sqrt() as f32
 }
-
-/// Calculate RMS (Root Mean Square) amplitude of i16 audio samples.
-#[allow(dead_code)]
-fn calculate_rms(samples: &[i16]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-
-    let sum_squares: f64 = samples
-        .iter()
-        .map(|&s| {
-            let normalized = s as f64 / i16::MAX as f64;
-            normalized * normalized
-        })
-        .sum();
-
-    (sum_squares / samples.len() as f64).sqrt() as f32
-}
-
 /// Write audio samples to a WAV file.
 fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u16) -> Result<()> {
     let spec = WavSpec {

@@ -27,15 +27,9 @@ mod engine;
 mod params;
 pub mod singleton;
 
-// Public API exports - used by library consumers
-#[allow(unused_imports)]
-pub use engine::{ChunkCallback, LocalWhisperEngine};
+// Public API exports
+pub use engine::LocalWhisperEngine;
 pub use params::DecodingParams;
 
-// Re-export singleton functions at module level for convenience
-// These are part of the public API for library consumers
-#[allow(unused_imports)]
-pub use singleton::{
-    detect_language, engine, get_model_path, init, is_initialized, transcribe, transcribe_file,
-    transcribe_streaming, DEFAULT_MODEL,
-};
+// Re-export singleton functions at module level
+pub use singleton::{detect_language, get_model_path, init, transcribe_file};
