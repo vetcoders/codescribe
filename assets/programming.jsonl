@@ -1,0 +1,151 @@
+{"term": "API key", "mispronunciations": ["api ki", "ej pi aj kij", "e pi ki"], "category": "auth"}
+{"term": "API", "mispronunciations": ["api", "ej pi aj"], "category": "tech"}
+{"term": "Actix", "mispronunciations": ["aktiks", "actix"], "category": "rust"}
+{"term": "Axum", "mispronunciations": ["auksum", "aksum", "axom"], "category": "rust"}
+{"term": "Bitbucket", "mispronunciations": ["bitbaket"], "category": "tech"}
+{"term": "Clippy", "mispronunciations": ["klipi", "clippy"], "category": "rust"}
+{"term": "Diesel", "mispronunciations": ["dizel", "diesel"], "category": "rust"}
+{"term": "Docker", "mispronunciations": ["doker"], "category": "tech"}
+{"term": "GitHub", "mispronunciations": ["githab", "git hub"], "category": "tech"}
+{"term": "GitLab", "mispronunciations": ["gitlab"], "category": "tech"}
+{"term": "GraphQL", "mispronunciations": ["graf ql", "graf kju el", "grafikel"], "category": "net"}
+{"term": "HTTP", "mispronunciations": ["http", "h t t p"], "category": "tech"}
+{"term": "HTTPS", "mispronunciations": ["https"], "category": "tech"}
+{"term": "Harmony", "mispronunciations": ["harmoni", "harmony"], "category": "ai"}
+{"term": "JSON", "mispronunciations": ["dżejson", "jason"], "category": "tech"}
+{"term": "JSONL", "mispronunciations": ["dżejson el", "json el", "dżej son el"], "category": "data"}
+{"term": "JWT", "mispronunciations": ["dżej dablju ti", "jot dablju ti", "żut"], "category": "auth"}
+{"term": "JavaScript", "mispronunciations": ["dżawaskrypt", "java script"], "category": "tech"}
+{"term": "Kubernetes", "mispronunciations": ["k8s", "kubernets", "kubernetesa"], "category": "tech"}
+{"term": "LOC", "mispronunciations": ["lock", "lok", "lines of code"], "category": "tech"}
+{"term": "Libraxis", "mispronunciations": ["lajbraxis", "libra axis", "libraxis"], "category": "ai"}
+{"term": "Next.js", "mispronunciations": ["nekst dżej es", "next js"], "category": "tech"}
+{"term": "Node.js", "mispronunciations": ["nod dżej es", "node js", "nołd"], "category": "tech"}
+{"term": "O(1)", "mispronunciations": ["zero w nawiasie jeden", "0 w nawiasie jeden", "o w nawiasie jeden", "o od jeden"], "category": "math"}
+{"term": "O(log n)", "mispronunciations": ["o log n", "o logarytm n"], "category": "math"}
+{"term": "O(n)", "mispronunciations": ["zero w nawiasie n", "0 w nawiasie n", "o w nawiasie n", "o od n", "złożoność o n"], "category": "math"}
+{"term": "O(n^2)", "mispronunciations": ["o n kwadrat", "o do kwadratu"], "category": "math"}
+{"term": "OAuth", "mispronunciations": ["o aut", "ou ot", "o auth"], "category": "auth"}
+{"term": "OpenAPI", "mispronunciations": ["open api", "oupen api", "open a pi"], "category": "net"}
+{"term": "PostgreSQL", "mispronunciations": ["postgres", "postgre sql"], "category": "tech"}
+{"term": "Postgres", "mispronunciations": ["postgres", "postgresq", "post gres"], "category": "tech"}
+{"term": "Promise", "mispronunciations": ["promis", "promiss", "promys"], "category": "js"}
+{"term": "Python", "mispronunciations": ["pajton", "pytona", "pintona"], "category": "tech"}
+{"term": "REST", "mispronunciations": ["rest", "ar i est ti", "rast"], "category": "net"}
+{"term": "React", "mispronunciations": ["riakt"], "category": "tech"}
+{"term": "Redis", "mispronunciations": ["redis"], "category": "tech"}
+{"term": "Rust", "mispronunciations": ["rast"], "category": "tech"}
+{"term": "SQL", "mispronunciations": ["es kju el", "sikłel"], "category": "tech"}
+{"term": "SSE", "mispronunciations": ["es es i", "eses i"], "category": "net"}
+{"term": "Serde", "mispronunciations": ["serd", "ser-de", "serde"], "category": "rust"}
+{"term": "TOML", "mispronunciations": ["tomel", "toml", "tom o el"], "category": "data"}
+{"term": "Tauri", "mispronunciations": ["taurii", "tałri", "taury", "taury real"], "category": "tech"}
+{"term": "Tokio", "mispronunciations": ["tokijo", "tokjo"], "category": "rust"}
+{"term": "TypeScript", "mispronunciations": ["tajpskrypt", "type script"], "category": "tech"}
+{"term": "VistaScribe", "mispronunciations": ["wistaszkrajb", "vista scribe", "wissie skype", "wissie scribe", "vista skribe", "vista skrajb"], "category": "project"}
+{"term": "Vite", "mispronunciations": ["vajt", "vit", "fajt"], "category": "tooling"}
+{"term": "WebSocket", "mispronunciations": ["websoket", "web socket"], "category": "tech"}
+{"term": "YAML", "mispronunciations": ["jamel", "jaml"], "category": "data"}
+{"term": "async/await", "mispronunciations": ["async await", "promise"], "category": "js"}
+{"term": "awk", "mispronunciations": ["awk"], "category": "cmd"}
+{"term": "backend", "mispronunciations": ["back end", "back-end", "bekend"], "category": "tech"}
+{"term": "backend.py", "mispronunciations": ["backend kropka py", "backend py", "backend.pe igrek"], "category": "file"}
+{"term": "branch", "mispronunciations": ["brancz", "branż"], "category": "git"}
+{"term": "calculate_metrics", "mispronunciations": ["calculate matrix", "kalkulejt matriks", "kalkuluj metryki"], "category": "code"}
+{"term": "callback", "mispronunciations": ["kolbek", "call back"], "category": "js"}
+{"term": "cargo build", "mispronunciations": ["kargo bild"], "category": "cmd"}
+{"term": "cargo run", "mispronunciations": ["kargo ran"], "category": "cmd"}
+{"term": "cargo-tarpaulin", "mispronunciations": ["tart papuli", "tarpaulin", "kargo tarpaulin"], "category": "rust"}
+{"term": "commit", "mispronunciations": ["komit"], "category": "git"}
+{"term": "cosine similarity", "mispronunciations": ["kozajn similarity", "kozin similarity", "koza in similarity"], "category": "ai"}
+{"term": "curl", "mispronunciations": ["karl", "kurl", "curl"], "category": "cmd"}
+{"term": "embedding model", "mispronunciations": ["embedding model"], "category": "ai"}
+{"term": "embedding", "mispronunciations": ["embeding", "embadink", "embeding"], "category": "ai"}
+{"term": "endpoint", "mispronunciations": ["end point"], "category": "tech"}
+{"term": "eslint", "mispronunciations": ["es lint", "ez lint", "eś lint"], "category": "tooling"}
+{"term": "exponential backoff", "mispronunciations": ["eksponential bekof", "eksponecial backoff", "eksp back off"], "category": "net"}
+{"term": "fetch", "mispronunciations": ["fecz", "fech", "fetchh"], "category": "js"}
+{"term": "ffmpeg", "mispronunciations": ["ef ef em peg", "efempeg", "ef em peg"], "category": "media"}
+{"term": "frontend", "mispronunciations": ["front end", "front-end"], "category": "tech"}
+{"term": "fullstack", "mispronunciations": ["fulstak", "full stack"], "category": "tech"}
+{"term": "gRPC", "mispronunciations": ["dżi r pi si", "g r p c", "dżi arc pi si"], "category": "net"}
+{"term": "grep", "mispronunciations": ["grep"], "category": "cmd"}
+{"term": "idempotent", "mispronunciations": ["ajdempotent", "idem potent", "idem potent"], "category": "net"}
+{"term": "jq", "mispronunciations": ["dżej ku", "jot ku", "dżej kiu"], "category": "cmd"}
+{"term": "latency", "mispronunciations": ["lejten si", "lejten sji", "lej ten si"], "category": "net"}
+{"term": "loctree", "mispronunciations": ["log tree", "log three", "log 3", "log3", "loc tree", "lock tree", "lock three", "logTree", "logtri", "eloksy", "e loksy", "eloksji"], "category": "tools"}
+{"term": "merge", "mispronunciations": ["merdż", "merdżu"], "category": "git"}
+{"term": "mlx_embeddings", "mispronunciations": ["em el eks embeddings", "mlx embeddings", "emeliks embeddings"], "category": "ai"}
+{"term": "multipart/form-data", "mispronunciations": ["multi part form data", "multi part formdejta", "multipart form data"], "category": "net"}
+{"term": "mypy", "mispronunciations": ["majpi", "maipy", "maj pai"], "category": "python"}
+{"term": "pip install", "mispronunciations": ["pip install"], "category": "python"}
+{"term": "pipx", "mispronunciations": ["pip ex", "pipiks", "pip x"], "category": "python"}
+{"term": "pnpm build", "mispronunciations": ["pnpm bild"], "category": "cmd"}
+{"term": "pnpm dlx", "mispronunciations": ["p en p em de el ex", "pnpm deliks", "pnpm de lux"], "category": "cmd"}
+{"term": "pnpm install", "mispronunciations": ["pnpm install"], "category": "cmd"}
+{"term": "pnpm tauri:dev", "mispronunciations": ["pnpm tauri dev", "pnpm tauri deweloper", "pnpm tauri def", "p en p em tauri dev"], "category": "cmd"}
+{"term": "poetry", "mispronunciations": ["połetry", "poetri", "po etri"], "category": "python"}
+{"term": "postgresql", "mispronunciations": ["postgres", "postgress", "postgresql"], "category": "net"}
+{"term": "pre-commit", "mispronunciations": ["pre komit", "pri komit", "pri komid"], "category": "tooling"}
+{"term": "prettier", "mispronunciations": ["priti er", "pretier", "pre tier"], "category": "tooling"}
+{"term": "protobuf", "mispronunciations": ["proto buf", "pro to baf", "pro to baf"], "category": "net"}
+{"term": "pull request", "mispronunciations": ["pul rikłest", "pr"], "category": "git"}
+{"term": "pytest", "mispronunciations": ["pajtest", "pai test", "pyt est"], "category": "python"}
+{"term": "query limit", "mispronunciations": ["query limit"], "category": "auth"}
+{"term": "rate limit", "mispronunciations": ["rejt limit", "rejt limt", "reit limit"], "category": "net"}
+{"term": "rebase", "mispronunciations": ["ribejs"], "category": "git"}
+{"term": "retry", "mispronunciations": ["ri traj", "rej try"], "category": "net"}
+{"term": "rewrite to rust", "mispronunciations": ["rewrite to rust", "rewrite rust"], "category": "ai"}
+{"term": "ruff", "mispronunciations": ["raf", "raff"], "category": "python"}
+{"term": "sed", "mispronunciations": ["sed", "ted - em", "tedem", "z tedem"], "category": "cmd"}
+{"term": "semgrep", "mispronunciations": ["sem grep", "sem greb", "semgrap", "zemgrep"], "category": "tooling"}
+{"term": "ssh", "mispronunciations": ["es es ha", "sz"], "category": "cmd"}
+{"term": "stash", "mispronunciations": ["stasz"], "category": "git"}
+{"term": "sudo", "mispronunciations": ["sudo", "sudou"], "category": "cmd"}
+{"term": "throughput", "mispronunciations": ["trufput", "tru put", "trupud"], "category": "net"}
+{"term": "tokenizer", "mispronunciations": ["tokenajzer", "tokinaizer", "tokenizer"], "category": "ai"}
+{"term": "trees", "mispronunciations": ["trizes", "tris"], "category": "tech"}
+{"term": "true/false", "mispronunciations": ["true/false"], "category": "ai"}
+{"term": "tsc", "mispronunciations": ["ti es si", "t s si", "ti es ce"], "category": "tooling"}
+{"term": "uv python", "mispronunciations": ["uw pajton", "uv pajton", "juwi pajton"], "category": "cmd"}
+{"term": "uv run", "mispronunciations": ["uw ran", "jwi ran"], "category": "cmd"}
+{"term": "uv sync", "mispronunciations": ["uw sync", "uv synk", "jwi sync"], "category": "cmd"}
+{"term": "vector store", "mispronunciations": ["wektor stor", "vectorstor", "wektor stor"], "category": "ai"}
+{"term": "venv", "mispronunciations": ["wenw", "venw", "ven ef"], "category": "python"}
+{"term": "vibrancy", "mispronunciations": ["wibrancy", "wibrancji", "wajbrancy"], "category": "rust"}
+{"term": "webhook", "mispronunciations": ["web huk", "łebhuk", "web hook"], "category": "net"}
+{"term": "webpack", "mispronunciations": ["łebpak", "web pak", "łeb pak"], "category": "tooling"}
+{"term": "whisper-medium", "mispronunciations": ["łisper midjum", "whisper medium", "łisper medium"], "category": "ai"}
+{"term": "window-vibrancy", "mispronunciations": ["window wajbrancy", "window vibrancy", "łindoł wajbrancy"], "category": "desktop"}
+{"term": "yarn", "mispronunciations": ["jarn", "jorn", "jarn"], "category": "cmd"}
+{"term": "passthrough", "mispronunciations": ["pastrzu", "pastru", "passtru", "passtrough", "pass thru"], "category": "infra"}
+{"term": "invoke hell", "mispronunciations": ["invox hell", "invoks hel", "invox hel"], "category": "infra"}
+{"term": "Clippy", "mispronunciations": ["trippy", "klippy", "klipi"], "category": "rust"}
+{"term": "CORS", "mispronunciations": ["course", "kors", "cors"], "category": "web"}
+{"term": "Rust", "mispronunciations": ["wraz", "rast", "rust"], "category": "lang"}
+{"term": "ConfigMap", "mispronunciations": ["config map", "configmapa", "config mapa"], "category": "k8s"}
+{"term": "hook", "mispronunciations": ["hug", "huk", "hok"], "category": "react"}
+{"term": "feature branch", "mispronunciations": ["fetcher branch", "ficzer branch", "ficzer brancz"], "category": "git"}
+{"term": "force flag", "mispronunciations": ["sforcelag", "forcelag", "fors flag"], "category": "git"}
+{"term": "JWT", "mispronunciations": ["JVT", "dżejwiti", "jwti"], "category": "auth"}
+{"term": "guardrails", "mispronunciations": ["guardialis", "guardrejs", "gwardrejls"], "category": "ai"}
+{"term": "mock", "mispronunciations": ["MOC", "moc", "mok"], "category": "testing"}
+{"term": "truncation", "mispronunciations": ["tronkation", "trunkation", "trankation", "trankejszyn"], "category": "tech"}
+{"term": "badge", "mispronunciations": ["badz", "badzik", "bedż", "bedże"], "category": "ui"}
+{"term": "stderr", "mispronunciations": ["std err", "standard error", "es te de er", "es ti di er", "Stdr", "stdr", "st de er"], "category": "cmd"}
+{"term": "stdout", "mispronunciations": ["std out", "standard out", "es te de ałt", "es ti di ałt"], "category": "cmd"}
+{"term": "race condition", "mispronunciations": ["rejs kondyszyn", "race kondition", "rejs condition"], "category": "concurrency"}
+{"term": "GitHub Actions", "mispronunciations": ["github actions", "git hub actions", "github akszns"], "category": "ci"}
+{"term": "pyproject.toml", "mispronunciations": ["py project toml", "pyprojekt toml", "pi projekt tomel", "PyProject. com", "pyproject com", "pyproject tomel"], "category": "python"}
+{"term": "uv add", "mispronunciations": ["uw ad", "juwi ad", "uv ed", "uvaad", "uvad"], "category": "python"}
+{"term": "JSON", "mispronunciations": ["jasą", "jasa", "dżejson", "jason", "jejson"], "category": "tech"}
+{"term": "requests", "mispronunciations": ["rekresów", "rekresy", "rekłesty", "rikłests"], "category": "python"}
+{"term": "HTTP", "mispronunciations": ["Htt. pl", "htt pl", "h t t p", "ejcz ti ti pi"], "category": "tech"}
+{"term": "bug", "mispronunciations": ["bułk", "bak", "bag"], "category": "tech"}
+{"term": "push", "mispronunciations": ["puż", "pusz", "pash"], "category": "git"}
+{"term": "feature", "mispronunciations": ["fetchu", "ficzer", "feczu", "fitur"], "category": "git"}
+{"term": "WebSocket", "mispronunciations": ["websok", "web socket", "websocket", "łebsoket"], "category": "networking"}
+{"term": "connection timeout", "mispronunciations": ["father expandszn timed out", "konekszon tajmałt"], "category": "networking"}
+{"term": "firewall", "mispronunciations": ["father", "fajerłol", "fire wall"], "category": "networking"}
+{"term": "load balancer", "mispronunciations": ["lot balancer", "load balanser"], "category": "networking"}
+{"term": "sticky sessions", "mispronunciations": ["stiki sessions", "sticky seszns"], "category": "networking"}

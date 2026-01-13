@@ -10,7 +10,7 @@
 #   --format 0|1                        # enable/disable formatting
 #   --llm-id <path|hf-repo>
 #   --active                            # use uv --active (silences VIRTUAL_ENV warning)
-#   --daemon [--log FILE]               # run tray/backend in background (default log: VistaScribe.log)
+#   --daemon [--log FILE]               # run tray/backend in background (default log: CodeScribe.log)
 #   --with-backend                      # start backend alongside tray (same as --mode both)
 #   --no-models                         # skip model downloader
 #   --dev | --verbose                   # enable DEV diagnostics, debug logs; run in foreground
@@ -37,7 +37,7 @@ print_help() {
 
 # Check for uv
 if ! command -v uv >/dev/null 2>&1; then
-  echo "[!] Nie znaleziono 'uv'. Zainstaluj i uruchom ponownie powłokę:"
+  echo "[!] Could not find 'uv'. Install it and restart the shell:"
   echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
   echo "  exec -l $SHELL"
   exit 1
@@ -50,6 +50,37 @@ LOG_DIR="$REPO_DIR/logs"
 mkdir -p "$LOG_DIR"
 PID_DIR="$REPO_DIR/.pids"
 mkdir -p "$PID_DIR"
+
+# Known ports/patterns we manage (clean stop + guard before each start)
+PORT_GUARD_PORTS=(8237 7237 6237 5237)
+PROCESS_PATTERNS=(
+  "CodeScribeTray"
+  "CodeScribeServer"
+  "python -m codescribe.main"
+  "python -m codescribe.codescribe_server"
+)
+PRECOMMIT_SENTINEL=".git/hooks/.codescribe-pre-commit.v1"
+
+ensure_precommit_hooks() {
+  if git -C . config --get core.hooksPath >/dev/null 2>&1; then
+    echo "==> Skipping pre-commit install (core.hooksPath already configured)"
+    return
+  fi
+  if [[ "${SKIP_PRECOMMIT_BOOTSTRAP:-0}" == "1" ]]; then
+    return
+  fi
+  [[ -d .git ]] || return
+  if [[ -f "$PRECOMMIT_SENTINEL" && -f .git/hooks/pre-commit ]]; then
+    return
+  fi
+  echo "==> Installing git hooks (pre-commit)"
+  mkdir -p .git/hooks
+  if uv run ${UV_ACTIVE:+--active} pre-commit install --install-hooks --overwrite; then
+    touch "$PRECOMMIT_SENTINEL"
+  else
+    echo "[!] pre-commit install failed. Run 'uv run pre-commit install --install-hooks' manually." >&2
+  fi
+}
 
 # Ensure we do NOT inherit a foreign virtualenv (e.g., from old ../vista-scribe)
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
@@ -87,7 +118,7 @@ LLM_ID="${LLM_ID:-}"
 UV_ACTIVE=0
 # Default: run in background with logging (nohup + disown)
 DAEMON=1
-LOG_FILE="$LOG_DIR/VistaScribe.log"
+LOG_FILE="$LOG_DIR/CodeScribe.log"
 SKIP_MODELS=0
 PERSIST_ENVS=()
 WITH_BACKEND=0
@@ -98,6 +129,7 @@ DEV_MODE=0
 FRESH=0
 FRESH_YES=0
 RESET_TCC_SELF=0
+FORCE_FOREGROUND_AFTER_FRESH=0
 
 graceful_kill() {
   local pid="$1"; local name="$2"; local timeout=5
@@ -131,6 +163,122 @@ stop_by_name() {
     # fallback by pattern
     pkill -f "$fallback" || true
   fi
+}
+
+kill_patterns() {
+  local signal="$1"; shift
+  local pattern
+  for pattern in "$@"; do
+    pkill "-$signal" -f "$pattern" >/dev/null 2>&1 || true
+  done
+}
+
+collect_running_processes() {
+  local seen=""
+  local results=()
+  local pattern
+  for pattern in "${PROCESS_PATTERNS[@]}"; do
+    while IFS= read -r pid; do
+      [[ -z "$pid" ]] && continue
+      case " $seen " in
+        *" $pid "*) continue ;;
+      esac
+      seen+=" $pid"
+      local cmd
+      cmd=$(ps -p "$pid" -o command= 2>/dev/null | tr -d '\n')
+      results+=("${pid}|${cmd:-unknown}")
+    done < <(pgrep -f "$pattern" 2>/dev/null || true)
+  done
+  if [[ ${#results[@]} -gt 0 ]]; then
+    printf '%s\n' "${results[@]}" | sort -u
+  fi
+}
+
+ensure_processes_stopped() {
+  stop_by_name tray "python -m codescribe.main"
+  stop_by_name server "python -m codescribe.codescribe_server"
+  kill_patterns TERM "${PROCESS_PATTERNS[@]}"
+  sleep 1
+  kill_patterns KILL "${PROCESS_PATTERNS[@]}"
+  local leftovers
+  leftovers=$(collect_running_processes || true)
+  if [[ -n "$leftovers" ]]; then
+    echo "[!] Could not stop existing CodeScribe processes:" >&2
+    while IFS='|' read -r pid cmd; do
+      [[ -z "$pid" ]] && continue
+      echo "    pid $pid → ${cmd:-unknown}" >&2
+    done <<<"$leftovers"
+    echo "[!] Resolve the stuck processes above and rerun the launcher." >&2
+    exit 1
+  fi
+}
+
+listening_pids_for_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    local out
+    out=$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+    printf '%s\n' "$out"
+  else
+    echo ""
+  fi
+}
+
+port_conflicts_snapshot() {
+  local report=""
+  local port
+  for port in "${PORT_GUARD_PORTS[@]}"; do
+    local pids
+    pids=$(listening_pids_for_port "$port")
+    if [[ -n "$pids" ]]; then
+      local pid
+      while IFS= read -r pid; do
+        [[ -z "$pid" ]] && continue
+        local cmd
+        cmd=$(ps -p "$pid" -o command= 2>/dev/null | tr -d '\n')
+        report+="${port}\t${pid}\t${cmd:-unknown}\n"
+      done <<<"$pids"
+    fi
+  done
+  printf '%b' "$report"
+}
+
+ensure_ports_available() {
+  local needs_backend="$1"
+  [[ "$needs_backend" -eq 1 ]] || return 0
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "[!] Port guard requires 'lsof'. Install Command Line Tools (xcode-select --install) to enable it." >&2
+    return 0
+  fi
+  local snapshot
+  snapshot=$(port_conflicts_snapshot || true)
+  if [[ -z "$snapshot" ]]; then
+    return 0
+  fi
+  while IFS=$'\t' read -r port pid cmd; do
+    [[ -z "$port" ]] && continue
+    if [[ "$cmd" == *"CodeScribe"* || "$cmd" == *"codescribe"* ]]; then
+      graceful_kill "$pid" "port-$port"
+    fi
+  done <<<"$snapshot"
+  sleep 1
+  snapshot=$(port_conflicts_snapshot || true)
+  if [[ -z "$snapshot" ]]; then
+    return 0
+  fi
+  echo "[!] Required CodeScribe ports are already in use:" >&2
+  while IFS=$'\t' read -r port pid cmd; do
+    [[ -z "$port" ]] && continue
+    echo "    port $port ← pid $pid (${cmd:-unknown})" >&2
+  done <<<"$snapshot"
+  echo "[!] Stop the processes above or choose a different port, then rerun." >&2
+  exit 1
+}
+
+ensure_clean_start() {
+  local needs_backend="$1"
+  ensure_processes_stopped
+  ensure_ports_available "$needs_backend"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -176,15 +324,76 @@ lower_users() {
   echo "$p"
 }
 
-echo "==> Synchronizuję środowisko (uv sync)…"
+# Optional fresh cleanup (run before building/updating the venv)
+if [[ "$FRESH" -eq 1 ]]; then
+  APP_SUPP_DIR="$HOME/.CodeScribe"
+  LA_PLIST="$HOME/Library/LaunchAgents/com.codescribe.tray.plist"
+  APP_LOG="$HOME/Library/Logs/CodeScribe.app.log"
+  echo "==> Fresh cleanup plan (keeps .env & models):"
+  echo "    - remove .pids/*.pid"
+  echo "    - remove logs/*.log"
+  echo "    - remove logs/codescribe-server.port"
+  echo "    - remove '$APP_SUPP_DIR'"
+  echo "    - unload & remove '$LA_PLIST' (if present)"
+  echo "    - remove '$APP_LOG' (if present)"
+  echo "    - remove Python caches (.venv, .ruff_cache, .mypy_cache, .pytest_cache)"
+  echo "    - uv cache prune (global)"
+  if [[ "$RESET_TCC_SELF" -eq 1 ]]; then
+    bundle="${TCC_BUNDLE_ID:-com.codescribe.app}"
+    echo "    - reset TCC (Accessibility/Input/Mic) for bundle: $bundle"
+  fi
+  if [[ "$FRESH_YES" -ne 1 ]]; then
+    read -r -p "Proceed? [y/N] " ans
+    case "${ans,,}" in
+      y|yes) :;;
+      *) echo "Cancelled fresh cleanup."; exit 1;;
+    esac
+  fi
+  if [[ -f .env ]]; then
+    backup_dir="$REPO_DIR/.archive/envs"
+    mkdir -p "$backup_dir"
+    ts=$(date +"%Y%m%d-%H%M%S")
+    cp .env "$backup_dir/.env.bak.$ts"
+    echo "==> Backed up .env to $backup_dir/.env.bak.$ts"
+  fi
+  # Stop any lingering processes one more time
+  stop_by_name tray "python -m codescribe.main"
+  stop_by_name server "python -m codescribe.codescribe_server"
+  rm -f .pids/*.pid 2>/dev/null || true
+  rm -f logs/*.log 2>/dev/null || true
+  rm -f "$LOG_DIR/codescribe-server.port" 2>/dev/null || true
+  if [[ -f "$LA_PLIST" ]]; then
+    launchctl unload -w "$LA_PLIST" >/dev/null 2>&1 || true
+    rm -f "$LA_PLIST" || true
+  fi
+  rm -rf "$APP_SUPP_DIR" || true
+  rm -f "$APP_LOG" || true
+  rm -rf .venv .ruff_cache .mypy_cache .pytest_cache .uv_cache 2>/dev/null || true
+  uv cache prune --all >/dev/null 2>&1 || true
+  if [[ "$RESET_TCC_SELF" -eq 1 ]]; then
+    bundle="${TCC_BUNDLE_ID:-com.codescribe.app}"
+    echo "==> Resetting macOS permissions for $bundle…"
+    /usr/bin/tccutil reset Accessibility "$bundle" || true
+    /usr/bin/tccutil reset ListenEvent "$bundle" || true
+    /usr/bin/tccutil reset Microphone "$bundle" || true
+    /usr/bin/tccutil reset AppleEvents "$bundle" || true
+  fi
+  echo "==> Fresh cleanup done."
+  FORCE_FOREGROUND_AFTER_FRESH=1
+fi
+
+echo "==> Syncing environment (uv sync)…"
 # Ensure local .venv exists and is used
 if [[ ! -d .venv ]]; then
   uv venv .venv
+elif [[ ! -x .venv/bin/python ]]; then
+  uv venv .venv --upgrade
 fi
 # Activate the venv for this script's process and force uv to use it
 source .venv/bin/activate
 UV_ACTIVE=1
 uv sync --active
+ensure_precommit_hooks
 
 echo "==> Python: $(python -c 'import sys; print(sys.executable)')"
 echo "==> VIRTUAL_ENV=${VIRTUAL_ENV:-}"
@@ -198,62 +407,23 @@ if [[ "$STOP_ALL" -eq 1 ]]; then
 fi
 
 if [[ "$STOP_TRAY" -eq 1 ]]; then
-  stop_by_name tray "python main.py"
+  stop_by_name tray "python -m codescribe.main"
 fi
 if [[ "$STOP_BACK" -eq 1 ]]; then
-  stop_by_name backend "python backend.py"
+  stop_by_name server "python -m codescribe.codescribe_server"
 fi
 if [[ "$STOP_TRAY" -eq 1 || "$STOP_BACK" -eq 1 ]]; then
   echo "==> Stopped as requested."
   exit 0
 fi
 
-# Optional fresh cleanup (after ensuring processes are stopped)
-if [[ "$FRESH" -eq 1 ]]; then
-  APP_SUPP_DIR="$HOME/Library/Application Support/VistaScribe"
-  LA_PLIST="$HOME/Library/LaunchAgents/com.vistascribe.tray.plist"
-  APP_LOG="$HOME/Library/Logs/VistaScribe.app.log"
-  echo "==> Fresh cleanup plan (keeps .env & models):"
-  echo "    - remove .pids/*.pid"
-  echo "    - remove logs/*.log"
-  echo "    - remove '$APP_SUPP_DIR'"
-  echo "    - unload & remove '$LA_PLIST' (if present)"
-  echo "    - remove '$APP_LOG' (if present)"
-  if [[ "$RESET_TCC_SELF" -eq 1 ]]; then
-    bundle="${TCC_BUNDLE_ID:-com.vistascribe.app}"
-    echo "    - reset TCC (Accessibility/Input/Mic) for bundle: $bundle"
-  fi
-  if [[ "$FRESH_YES" -ne 1 ]]; then
-    read -r -p "Proceed? [y/N] " ans
-    case "${ans,,}" in
-      y|yes) :;;
-      *) echo "Cancelled fresh cleanup."; exit 1;;
-    esac
-  fi
-  # Stop any lingering processes one more time
-  stop_by_name tray "python main.py"
-  stop_by_name backend "python backend.py"
-  rm -f .pids/*.pid 2>/dev/null || true
-  rm -f logs/*.log 2>/dev/null || true
-  if [[ -f "$LA_PLIST" ]]; then
-    launchctl unload -w "$LA_PLIST" >/dev/null 2>&1 || true
-    rm -f "$LA_PLIST" || true
-  fi
-  rm -rf "$APP_SUPP_DIR" || true
-  rm -f "$APP_LOG" || true
-  if [[ "$RESET_TCC_SELF" -eq 1 ]]; then
-    bundle="${TCC_BUNDLE_ID:-com.vistascribe.app}"
-    echo "==> Resetting macOS permissions for $bundle…"
-    /usr/bin/tccutil reset Accessibility "$bundle" || true
-    /usr/bin/tccutil reset ListenEvent "$bundle" || true
-    /usr/bin/tccutil reset Microphone "$bundle" || true
-    /usr/bin/tccutil reset AppleEvents "$bundle" || true
-  fi
-  echo "==> Fresh cleanup done."
+if [[ "$FORCE_FOREGROUND_AFTER_FRESH" -eq 1 ]]; then
+  echo "==> Fresh run detected; launching in foreground so onboarding can appear"
+  DAEMON=0
 fi
 
 if [[ "$SKIP_MODELS" -eq 0 ]]; then
-  echo "==> Pobieram modele (Whisper=${WHISPER_VARIANT})…"
+  echo "==> Downloading models (Whisper=${WHISPER_VARIANT})…"
   set +e
   if [[ -n "${LLM_ID}" ]]; then
     uv run ${UV_ACTIVE:+--active} python scripts/get_models.py --whisper "${WHISPER_VARIANT}" --llm "${LLM_ID}"
@@ -267,7 +437,7 @@ if [[ "$SKIP_MODELS" -eq 0 ]]; then
     echo "    Hint: set HF_TOKEN and use tray menu → Models → Download later."
   fi
 else
-  echo "==> Pomijam pobieranie modeli (--no-models)"
+  echo "==> Skipping model download (--no-models)"
 fi
   # Try to find a local LLM model if formatting is enabled
   if [[ "$FORMAT_ENABLED" != "0" && "$FORMAT_ENABLED" != "false" && "$FORMAT_ENABLED" != "no" ]]; then
@@ -287,29 +457,31 @@ fi
     # Normalize path if we found an LLM
     if [[ -n "$LLM_ID" ]]; then
       LLM_ID="$(lower_users "$LLM_ID")"
-      echo "==> Znaleziono model LLM: $LLM_ID"
+      echo "==> Found local LLM model: $LLM_ID"
     fi
   fi
 
-# Resolve WHISPER_DIR
+# Resolve WHISPER_DIR (respect existing value from environment/.env)
 MODEL_DIR="$REPO_DIR/models"
-if [[ -d "$MODEL_DIR/whisper-$WHISPER_VARIANT" ]]; then
-  WHISPER_DIR="$MODEL_DIR/whisper-$WHISPER_VARIANT"
-else
-  # fallback to large then medium
-  if [[ -d "$MODEL_DIR/whisper-large-v3-turbo" ]]; then
-    WHISPER_DIR="$MODEL_DIR/whisper-large-v3-turbo"
+if [[ -z "${WHISPER_DIR:-}" ]]; then
+  if [[ -d "$MODEL_DIR/whisper-$WHISPER_VARIANT" ]]; then
+    WHISPER_DIR="$MODEL_DIR/whisper-$WHISPER_VARIANT"
   else
-    WHISPER_DIR="$MODEL_DIR/whisper-medium"
+    # fallback to large then medium
+    if [[ -d "$MODEL_DIR/whisper-large-v3-turbo" ]]; then
+      WHISPER_DIR="$MODEL_DIR/whisper-large-v3-turbo"
+    else
+      WHISPER_DIR="$MODEL_DIR/whisper-medium"
+    fi
   fi
 fi
 WHISPER_DIR="$(lower_users "$WHISPER_DIR")"
 
-echo "==> Start aplikacji (${MODE})…"
+echo "==> Launching application mode (${MODE})…"
 
-# Persist selected envs into .env jeśli podano flagi
+# Persist selected envs into .env when flags are provided
 if [[ ${#PERSIST_ENVS[@]} -gt 0 ]]; then
-  echo "==> Zapisuję ustawienia do .env: ${PERSIST_ENVS[*]}"
+  echo "==> Persisting settings to .env: ${PERSIST_ENVS[*]}"
   python - <<PY
 from config import update_env_vars
 raw = """${PERSIST_ENVS[*]}""".strip().split()
@@ -324,56 +496,91 @@ if pairs:
 PY
 fi
 
-CMD=(uv run ${UV_ACTIVE:+--active} python)
-if [[ "${MODE}" == "backend" ]]; then
-  TARGET=backend.py
-  echo "Uruchamiam backend (HTTP API) na http://127.0.0.1:8237"
-else
-  TARGET=main.py
-  echo "Uruchamiam aplikację w zasobniku systemowym (tray)"
-fi
+CMD=(uv run ${UV_ACTIVE:+--active} python -m codescribe.main)
+SERVER_OUT="$LOG_DIR/codescribe-server.out.log"
+SERVER_ERR="$LOG_DIR/codescribe-server.err.log"
 
 ENVVARS=(WHISPER_DIR="$WHISPER_DIR" FORMAT_ENABLED="$FORMAT_ENABLED")
+if [[ "$DAEMON" -eq 1 ]]; then
+  ENVVARS+=(NOHUP_MODE="1")
+fi
 [[ -n "$LLM_ID" ]] && ENVVARS+=(LLM_ID="$LLM_ID")
+
+NEEDS_BACKEND=0
+if [[ "$MODE" == "both" || "$MODE" == "backend" || "$WITH_BACKEND" -eq 1 ]]; then
+  NEEDS_BACKEND=1
+fi
+
+ensure_clean_start "$NEEDS_BACKEND"
+
+if [[ "${MODE}" == "backend" ]]; then
+  echo "Starting CodeScribeServer (HTTP API)"
+  if [[ "$DAEMON" -eq 1 ]]; then
+    echo "==> Daemon mode: log → $SERVER_OUT"
+    nohup env "${ENVVARS[@]}" \
+      uv run ${UV_ACTIVE:+--active} python -m codescribe.codescribe_server start >> "$SERVER_OUT" 2>> "$SERVER_ERR" &
+    server_pid=$!
+    disown "$server_pid" || true
+    write_pid server "$server_pid"
+    echo "CodeScribeServer pid: $server_pid (log: $SERVER_OUT)"
+    sleep 1
+    if [[ -f "$LOG_DIR/codescribe-server.port" ]]; then
+      port_msg=$(cat "$LOG_DIR/codescribe-server.port")
+      echo "→ Listening on port: $port_msg"
+    else
+      echo "[!] Server did not write the port file; check log: $SERVER_OUT"
+    fi
+    echo "Use 'uv run python -m codescribe.codescribe_server status' to inspect the state."
+  else
+    env "${ENVVARS[@]}" \
+      uv run ${UV_ACTIVE:+--active} python -m codescribe.codescribe_server start
+  fi
+  exit 0
+fi
+
+echo "Starting the tray application"
 
 # If mode is both or --with-backend, start backend in background first
 if [[ "$MODE" == "both" || "$WITH_BACKEND" -eq 1 ]]; then
-  echo "==> Uruchamiam backend w tle (127.0.0.1:8237)"
-  nohup env "${ENVVARS[@]}" HOST="127.0.0.1" PORT="8237" \
-    uv run ${UV_ACTIVE:+--active} python backend.py >> "$LOG_DIR/backend.out.log" 2>> "$LOG_DIR/backend.err.log" &
+  echo "==> Launching CodeScribeServer in the background"
+  nohup env "${ENVVARS[@]}" \
+    uv run ${UV_ACTIVE:+--active} python -m codescribe.codescribe_server start >> "$SERVER_OUT" 2>> "$SERVER_ERR" &
   back_pid=$!
   disown "$back_pid" || true
-  write_pid backend "$back_pid"
-  echo "backend pid: $back_pid (log: $LOG_DIR/backend.out.log)"
-  echo "backend pid: $back_pid" >> "$LOG_FILE" || true
-  # krótkie oczekiwanie (bez twardego fail)
+  write_pid server "$back_pid"
+  echo "CodeScribeServer pid: $back_pid (log: $SERVER_OUT)"
   sleep 1
+  if [[ -f "$LOG_DIR/codescribe-server.port" ]]; then
+    port_msg=$(cat "$LOG_DIR/codescribe-server.port")
+    echo "→ Listening on port: $port_msg"
+  else
+    echo "[!] Server did not write the port file; check log: $SERVER_OUT"
+  fi
 fi
 
 if [[ "$DAEMON" -eq 1 ]]; then
-  echo "==> Tryb daemon: log → $LOG_FILE"
-  nohup env "${ENVVARS[@]}" "${CMD[@]}" "$TARGET" >> "$LOG_FILE" 2>&1 &
+  echo "==> Daemon mode: log → $LOG_FILE"
+  nohup env "${ENVVARS[@]}" "${CMD[@]}" >> "$LOG_FILE" 2>&1 &
   tray_pid=$!
   disown "$tray_pid" || true
   write_pid tray "$tray_pid"
   echo "tray pid: $tray_pid (log: $LOG_FILE)"
   echo "tray pid: $tray_pid" >> "$LOG_FILE" || true
 else
-  env "${ENVVARS[@]}" "${CMD[@]}" "$TARGET"
+  env "${ENVVARS[@]}" "${CMD[@]}"
 fi
 
 # Notes for the user (reached after app exits)
 cat <<'EOF'
 
-Gotowe.
-- Jeśli nic nie nagrywa / nie wkleja: System Settings → Privacy & Security:
-  • Microphone (Terminal/Python)
-  • Accessibility (Terminal/Python)
-  • Input Monitoring (Terminal/Python)
-- Skróty:
-  • Podwójny Option (⌥⌥) – start/stop
-  • Shift+Command+/ (⇧⌘/) – start/stop
-  • Przytrzymaj Control – naciśnij i mów
-- Jeśli używasz ścieżek absolutnych do modeli i MLX narzeka na /Users, spróbuj /users.
+Done.
+- If nothing records/pastes: System Settings → Privacy & Security → allow Microphone,
+  Accessibility, and Input Monitoring for your shell/Python.
+- Hotkeys (configured in the tray menu):
+  • Hold (Ctrl by default) – records while pressed
+  • Hold + Shift – assistive AI mode (El Niño)
+  • Double-Option (⌥⌥) – hands-off toggle start/stop
+- Formatting: Light Plus always runs; AI (Ollama/Harmony) is optional.
+- When MLX complains about `/Users/...`, try the lowercase `/users/...` path instead.
 
 EOF

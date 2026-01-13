@@ -1,52 +1,98 @@
-# VistaScribe — Kroki dla Moniki i Bartka (wewnętrzne)
+# CodeScribe - Team Setup (Pure Rust Era)
 
-## Opcja A — instalacja z DMG (najprostsza)
-1) Skopiuj plik `packaging/dmg/VistaScribe.dmg` na swój Mac i otwórz.
-2) W oknie DMG:
-   - Helpers → `Get Models.command` (pobierze Whisper — wybierz Large v3 Turbo lub Medium).
-   - Helpers → `Install App.command` (skopiuje do `/Applications` i uruchomi).
-3) Przy pierwszym uruchomieniu nadaj uprawnienia macOS (System Settings → Privacy & Security):
-   - Microphone (Terminal/Python)
-   - Accessibility (Terminal/Python)
-   - Input Monitoring (Terminal/Python)
-4) Użycie:
-   - Przytrzymaj `Ctrl` ≥ 500 ms → nagrywanie → puszczasz → wkleja tekst.
-   - Dwuklik `Option (⌥)` → tryb toggle.
+## Quick Start
 
-## Opcja B — uruchomienie z repo (dev)
-1) Skopiuj repo (`VistaScribe`) i przejdź do katalogu głównego.
-2) Zainstaluj zależności:
-   ```bash
-   uv sync
-   ```
-3) Pobierz modele (lub skopiuj je do `./models`):
-   ```bash
-   uv run python scripts/get_models.py --whisper large-v3-turbo
-   ```
-4) Start w tle (tray + backend):
-   ```bash
-   ./scripts/quickstart_mac.sh --mode both --daemon --log VistaScribe.log
-   ```
-   - Log podgląd: `tail -f VistaScribe.log`
-   - Zatrzymanie: `./scripts/quickstart_mac.sh --stop-all`
+### 1. Prerequisites
+- macOS 14+ (Apple Silicon recommended)
+- Rust 1.83+ with `wasm32-unknown-unknown` target
+- Trunk (`cargo install trunk`)
+- Tauri CLI (`cargo install tauri-cli`)
 
-## Skróty i ustawienia
-- Domyślnie aktywny jest **Light Plus** (FORMAT_STRATEGY=light_plus) — szybkie i bez modelu LLM.
-- W tray → Hotkey Settings: zmiana kombinacji (Ctrl / Ctrl+Option / Ctrl+Shift / Ctrl+Command) i tryb Exclusive (Ctrl nie działa z innymi modyfikatorami). Zapis do `.env` robi się automatycznie.
-- Tray → Feedback: dźwięk startu (Tink/Pop) + głośność. Też zapisuje do `.env`.
+### 2. Build & Run
 
-## Gdzie są logi i PIDy
-- Tray (wrapper): `~/Library/Logs/VistaScribe.app.log`
-- Z quickstarta: `VistaScribe.log`, backend: `logs/backend.*.log`
-- Pliki PID (do awaryjnego kill): `.pids/tray.pid`, `.pids/backend.pid`
+```bash
+# Clone
+git clone git@github.com:VetCoders/CodeScribe.git
+cd CodeScribe
 
-## Wyłącz formatowanie albo użyj modelu LLM
-- Wyłączyć: tray → Disable “Enable Formatting” lub `FORMAT_ENABLED=0` w `.env`.
-- Mały LLM (opcjonalnie): ustaw `LLM_ID=/ścieżka/do/qwen-4b` i `FORMAT_STRATEGY=llm`.
+# Build WASM frontend
+cd tauri-app && trunk build && cd ..
 
-## Rozwiązywanie problemów
-- Brak wklejania/skrótów: sprawdź uprawnienia Accessibility/Input Monitoring.
-- Brak dźwięku: Feedback → Enable Start Sound, SOUND_VOLUME 0.1–0.3.
-- Modele nie widoczne: skopiuj do `./models` albo uruchom `Get Models.command`.
-- Reset: `./scripts/quickstart_mac.sh --stop-all` i start ponownie.
+# Build and run app
+cargo tauri build --no-bundle
+open target/release/bundle/macos/CodeScribe.app
+```
 
+### 3. Development Mode
+
+```bash
+# Terminal 1: Trunk dev server
+cd tauri-app && trunk serve --port 8080
+
+# Terminal 2: Run debug binary
+./target/debug/codescribe-app
+```
+
+## Permissions Required
+
+Grant in: System Settings > Privacy & Security
+
+1. **Microphone** - for audio recording
+2. **Accessibility** - for global hotkeys
+3. **Input Monitoring** - for hotkey capture
+
+## Hotkeys
+
+| Key | Action |
+|-----|--------|
+| Hold **Ctrl** | Start recording |
+| Release **Ctrl** | Stop & transcribe |
+| **Option** (tap) | Toggle pause |
+
+## Model
+
+Bundled in app: `whisper-large-v3-turbo-mlx-q8` (874MB)
+
+Location (dev): `models/whisper-large-v3-turbo-mlx-q8/`
+
+## CLI Usage
+
+```bash
+# Transcribe audio file
+codescribe transcribe audio.wav
+
+# With AI formatting
+codescribe transcribe audio.wav --format
+
+# Specify language
+codescribe transcribe audio.wav --language pl
+```
+
+## Configuration
+
+File: `~/.codescribe/.env`
+
+```env
+USE_LOCAL_STT=true
+LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
+WHISPER_LANGUAGE=auto
+LLM_HOST=http://localhost:11434
+```
+
+## Troubleshooting
+
+### App doesn't start
+- Check Console.app for crash logs
+- Ensure model exists in `models/` directory
+
+### Hotkeys don't work
+- Grant Accessibility permission
+- Grant Input Monitoring permission
+- Restart app after granting
+
+### No transcription
+- Check `USE_LOCAL_STT=true` in config
+- Verify model path exists
+
+---
+*Created by M&K (c)2026 VetCoders*

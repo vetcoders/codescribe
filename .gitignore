@@ -1,54 +1,61 @@
-# .gitignore
-
-# python virtual environment
-.venv/
-
-# environment variables file
-.env
-
-# pycache
+# Build / Dist
+build/
+dist/
+*.spec
+*.dmg
+*.app/
 __pycache__/
 *.pyc
-
-# OS / editor
-.DS_Store
-# Share only JetBrains Run/Debug configurations
-.idea/*
-!.idea/runConfigurations/
-!.idea/runConfigurations/*.xml
-.vscode/
-.junie/
-assets/*
-!assets/icon.png
-logs/
-
-# runtime logs and state
-VistaScribe.log
-.vista_scribe.lock
-user-messages/
-
-# build artifacts
-packaging/dist/
-packaging/build/
-dist/
-build/
-*.egg-info/
-
-# local data and outputs
-models/
-outputs/
-*.log
+.venv/
+.env
 .pids/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+logs/
+models/
+output.log
 
-# local email extraction leftovers (if present)
-Raw/
-extracted/
+# IDEs
+.idea/
+.vscode/
+.DS_Store
 
-# archives and large binaries
-*.zip
+# Temp
+tmp/
+temp/
 
-# misc
-*.commands.txt
-packaging/.DS_Store
-/.fleet
-/packaging
+# Local assets not tracked
+src/codescribe/assets/lab/
+!src/codescribe/assets/lab/app.js
+!src/codescribe/assets/lab/styles.css
+!src/codescribe/assets/lab/components/
+!src/codescribe/assets/lab/controllers/
+!src/codescribe/assets/lab/hooks/
+!src/codescribe/assets/lab/lib/
+/.archive
+/.codescribe
+/.codex
+/.gemini
+/extracted_frames
+/server/CodeScribe.egg-info
+/.gemini-clipboard
+/CodeScribe.egg-info
+.codescribe.lock
+/$HOME
+/.fastembed_cache
+CLAUDE.md
+/codescribe-rs/target
+/.loctree
+/.ai-agents
+/codescribe-rs/.loctree
+.output.txt
+.ai-agents/
+.loctree/
+CONFIG_AUDIT.md
+/target
+/src/CodeScribe.egg-info
+/.claude
+nohup.out

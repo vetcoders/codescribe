@@ -12,4 +12,3 @@ fi
 echo "[pre-push] OK" >&2
 
 # tip: bypass with `git push --no-verify` if needed
-

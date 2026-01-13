@@ -6,12 +6,12 @@
 #
 # Usage examples:
 #   packaging/scripts/notary_quick.sh \
-#     --app packaging/dist/VistaScribe.app \
-#     --dmg packaging/dmg/VistaScribe.dmg \
+#     --app packaging/dist/CodeScribe.app \
+#     --dmg packaging/dmg/CodeScribe.dmg \
 #     --apple-id you@example.com --team-id ABCDE12345
 #
 #   # If you already stored a notarytool profile (VSNotary):
-#   packaging/scripts/notary_quick.sh --app packaging/dist/VistaScribe.app --profile VSNotary
+#   packaging/scripts/notary_quick.sh --app packaging/dist/CodeScribe.app --profile VSNotary
 
 set -euo pipefail
 
@@ -90,9 +90,9 @@ fi
 echo "✍️  Using identity: ${IDENTITY:-AD-HOC}"
 
 # 2) Codesign (inner launcher first, then bundle)
-if [[ -f "$APP/Contents/MacOS/vistascribe" && -n "$IDENTITY" ]]; then
+if [[ -f "$APP/Contents/MacOS/codescribe" && -n "$IDENTITY" ]]; then
   # Sign the launcher script first (no entitlements; scripts aren't Mach-O)
-  codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/vistascribe"
+  codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/codescribe"
 fi
 
 if [[ -n "$IDENTITY" ]]; then

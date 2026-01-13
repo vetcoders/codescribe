@@ -23,8 +23,8 @@ targets=(
   "logs/*"
   "outputs/*"
   "user-messages/*"
-  "VistaScribe.log"
-  ".vista_scribe.lock"
+  "CodeScribe.log"
+  ".codescribe.lock"
   ".pytest_cache"
   "__pycache__"
   "packaging/dist"
@@ -53,4 +53,3 @@ if $APPLY; then
 else
   echo "(dry-run) Nothing removed. Re-run with --apply to clean."
 fi
-

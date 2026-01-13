@@ -22,4 +22,3 @@ run $RUFFF format --quiet .
 run $RUFFF check --fix --exit-non-zero-on-fix .
 
 echo "[pre-commit] Ruff passed."
-

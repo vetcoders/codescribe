@@ -33,7 +33,7 @@ for f in "$@"; do
   fi
   # Notification
   if command -v osascript >/dev/null 2>&1; then
-    osascript -e 'display notification "Transkrypcja gotowa i w schowku" with title "VistaScribe" subtitle '"$stem"''
+    osascript -e 'display notification "Transkrypcja gotowa i w schowku" with title "CodeScribe" subtitle '"$stem"''
   fi
   echo "OK -> $outpath"
 done

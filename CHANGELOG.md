@@ -1,0 +1,155 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [v0.6.0] – 2026-01-13
+
+### Added
+- **Native desktop UI (Tauri + Leptos)** – Introduced the `tauri-app/` frontend with a
+  three-tab interface (Voice Lab, Teacher, Settings). ([a275ae8](https://github.com/VetCoders/CodeScribe/commit/a275ae8),
+  [7aa0754](https://github.com/VetCoders/CodeScribe/commit/7aa0754))
+- **Pure Rust local Whisper STT (Metal GPU)** – Added local Whisper inference via
+  `candle-transformers` (Metal acceleration), with long-audio chunking + language detection.
+  ([268f5d0](https://github.com/VetCoders/CodeScribe/commit/268f5d0),
+  [69ed294](https://github.com/VetCoders/CodeScribe/commit/69ed294))
+- **Whisper decoding controls** – Added `DecodingParams` (mlx_whisper-compatible) including
+  n-gram blocking and streaming callback support. ([69574fb](https://github.com/VetCoders/CodeScribe/commit/69574fb),
+  [cc0d8aa](https://github.com/VetCoders/CodeScribe/commit/cc0d8aa))
+- **CLI transcription + E2E pipeline tests** – Added file transcription flows and a comprehensive
+  end-to-end pipeline test suite. ([d7bdb4b](https://github.com/VetCoders/CodeScribe/commit/d7bdb4b),
+  [d46c62c](https://github.com/VetCoders/CodeScribe/commit/d46c62c))
+- **Config convenience** – Added `--config` flag to open/create the config file. ([535270c](https://github.com/VetCoders/CodeScribe/commit/535270c))
+- **UX updates** – Added badge modes + Dock icon behavior and tightened environment/API key
+  requirements. ([7946c17](https://github.com/VetCoders/CodeScribe/commit/7946c17))
+
+### Changed
+- **License** – Switched the project license to Apache 2.0 and added release scripts/docs.
+  ([e0e7ec1](https://github.com/VetCoders/CodeScribe/commit/e0e7ec1))
+- **Backend architecture** – Removed the Python backend and updated the Rust CI pipeline to match.
+  ([5c65481](https://github.com/VetCoders/CodeScribe/commit/5c65481))
+- **AI formatting pipeline** – Improved configuration, workflows, and Harmony support; refined
+  formatting behavior and defaults. ([e11400c](https://github.com/VetCoders/CodeScribe/commit/e11400c),
+  [8a3157f](https://github.com/VetCoders/CodeScribe/commit/8a3157f),
+  [d46c62c](https://github.com/VetCoders/CodeScribe/commit/d46c62c))
+- **Tray menu + local STT integration** – Refactored tray menu plumbing while integrating the local
+  Whisper engine and improving related behavior. ([16021b1](https://github.com/VetCoders/CodeScribe/commit/16021b1))
+- **Local model packaging/loading** – Bundled a default model and updated model loading logic.
+  ([13378fe](https://github.com/VetCoders/CodeScribe/commit/13378fe))
+- **Cloud/STT provider work** – Refactored lab assets and migrated cloud provider integration.
+  ([8392cb9](https://github.com/VetCoders/CodeScribe/commit/8392cb9))
+- **Configuration consolidation** – Deduplicated configuration to a single source of truth.
+  ([217a336](https://github.com/VetCoders/CodeScribe/commit/217a336))
+- **Error handling/refactors** – Refactored Whisper engine imports and adopted `anyhow`.
+  ([b9ac5d9](https://github.com/VetCoders/CodeScribe/commit/b9ac5d9))
+- **Repository maintenance** – Restructured the repo and added conversation session tracking.
+  ([07fe69f](https://github.com/VetCoders/CodeScribe/commit/07fe69f))
+- **Developer ergonomics** – Applied `cargo fmt`-driven formatting fixes.
+  ([f8e04ef](https://github.com/VetCoders/CodeScribe/commit/f8e04ef))
+
+### Fixed
+- **Stability** – Handled poisoned mutexes via `into_inner()` fallback to avoid cascading failures
+  after panics. ([b7591ab](https://github.com/VetCoders/CodeScribe/commit/b7591ab))
+- **Backend cleanup** – Ensured backend processes are killed on all known ports.
+  ([417b002](https://github.com/VetCoders/CodeScribe/commit/417b002))
+
+### Removed
+- **Cleanup** – Removed unused and deprecated code to keep the build clean.
+  ([68469dc](https://github.com/VetCoders/CodeScribe/commit/68469dc))
+
+### Changed (Internal)
+- **Foundations** – Landed the initial Rust-based architecture groundwork.
+  ([5a17c3a](https://github.com/VetCoders/CodeScribe/commit/5a17c3a))
+
+## v0.4.3 – 2025-11-21
+
+- TODO: Add release notes.
+
+## v0.4.1 – 2025-11-11
+
+- TODO: Add release notes.
+
+## v0.4.0 – 2025-11-11
+
+- **License clarification** – Switched from MIT to BSD 4-Clause (Original BSD) to
+  make attribution to Maciej Gad & Loctree explicit in any advertising or
+  bundled distribution. If this acknowledgement requirement becomes a burden for
+  downstream adopters we can soften it to BSD 3-Clause, but for now the
+  advertising clause captures the desired attribution policy.
+- **Configurator hardening** – `hardware_detector.py` now works cross-platform,
+  checks for Ollama/Tailscale binaries before probing, scales MAX tokens with
+  available RAM, and no longer spews text unless the CLI entry point runs.
+- **First-run portability** – onboarding config lives in a platform-aware
+  support directory, carries a `config_version`, and logs JSON errors instead of
+  silently dropping them. Cancelling the wizard leaves the config untouched so
+  the user can retry next launch.
+- **Backend & API hardening** – Whisper/format servers no longer configure
+  logging at import time, enforce 20 MB upload limits with MIME/extension
+  checks, expose SSE heartbeats so proxies stay connected, and run uvicorn via
+  the fully qualified `codescribe.whisper_server:app` target.
+- **Tooling & packaging** – PID/port files are written with 0600 perms,
+  packaging scripts locate `src/codescribe/assets/icon.png` automatically,
+  manual tests clean up temporary WAVs, launcher scripts pre-create `.pids/`
+  and `logs/`, and the DMG Readme now includes the required BSD attribution.
+- **CI & types** – Added `src/codescribe/py.typed`, made Ruff/mypy part of the
+  macOS workflow with concurrency guards, and dropped the outdated
+  `docs/legacy` bundle ahead of the public release.
+- **Menu robustness** – Submenus are now built before attaching to the tray,
+  auto-healed if rumps strips them, and the Quit dialog activates the app so
+  the alert always appears on top.
+
+<!--
+Historical notes below predate the Keep a Changelog-style format used above.
+-->
+
+## Phase I – `develop` vs `main`
+
+**Platform & Backends**
+- Introduced `CodeScribeServer` as a single-instance backend runner with lazy
+  MLX loading and a documented CLI so the React/Tauri Vista client can share the
+  same transcription core.
+- Added transcript telemetry hooks plus developer metrics scripts and new
+  backend endpoint guards to tighten observability and error handling.
+- Patched critical audio leaks, remote binding safeguards, and background launch
+  prompts to keep recorder lifecycles predictable on macOS.
+
+**AI & Formatting**
+- Landed the Ollama LLM backend, multimodal chat client, and the initial dual
+  mode AI formatting pipeline (Light+ by default, Harmony/Ollama assistive mode
+  when enabled).
+- Added conveniences for Polish Whisper fine-tunes, refined model selection, and
+  relaxed overly aggressive formatting to avoid Markdown hallucinations.
+
+**UX & Tooling**
+- Rebuilt the tray menus (appearance, permissions, history) and introduced live
+  transcription glyph customizations plus extra developer tools.
+- Added `.env.example`, run/debug profiles, troubleshooting docs, MLX cheat
+  sheets, and improved diagnostics for quickstart scripts.
+
+## Phase II – `develop` vs `functional`
+
+**Runtime Modularization**
+- Split the monolithic tray runtime into controllers/mixins (`recording`,
+  `history`, `models`, `appearance`, etc.) so hotkeys, menus, and async loops can
+  evolve independently.
+- Added compatibility shims for legacy imports (`whisper_server`, client config)
+  to keep Vista integrations working during the refactor.
+
+**Configuration & Tests**
+- Simplified environment management: consolidated env templates, updated
+  sitecustomize hooks, and made the settings store the single source of truth for
+  AI/provider toggles.
+- Refactored manual Ollama tests to share helpers and moved utility specs under
+  `tests/manual`, alongside new pytest-based diagnostics.
+
+**Quality of Life**
+- Hardened exception handling across the client/backend boundary, added smoke
+  tests around the new controllers, and refreshed documentation to mirror the
+  current tree/layout.
+
+[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/d46c62c...HEAD
+[v0.6.0-rc2]: https://github.com/VetCoders/CodeScribe/compare/19e05ad...d46c62c
