@@ -16,7 +16,7 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.6.0-rc2"
+version = "0.6.0"
 edition = "2024"
 description = "Speech-to-text tray app for macOS - Pure Rust"
 authors = ["VetCoders <hello@vetcoders.io>"]
@@ -128,6 +128,10 @@ serial_test = "3"
 
 [build-dependencies]
 dirs = "6"
+zstd = "0.13"
+
+[dependencies.zstd]
+version = "0.13"
 
 [lints.rust]
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)

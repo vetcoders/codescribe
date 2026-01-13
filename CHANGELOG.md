@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [v0.6.0-rc2] – 2026-01-12
+## [v0.6.0] – 2026-01-13
 
 ### Added
 - **Native desktop UI (Tauri + Leptos)** – Introduced the `tauri-app/` frontend with a
