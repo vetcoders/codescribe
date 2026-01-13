@@ -12,6 +12,7 @@ pub mod audio_loader;
 pub mod clipboard;
 pub mod config;
 pub mod conversation;
+pub mod history;
 pub mod permissions;
 pub mod prompts;
 pub mod models;

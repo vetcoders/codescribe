@@ -59,16 +59,22 @@ async fn e2e_ollama_memory_real_response_chajnik_query() {
     }
 
     let tmp = TempDir::new().expect("tempdir");
-    std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
+    unsafe {
+        std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
+    }
 
     // Ensure `ai_formatting` uses Ollama native path.
-    std::env::set_var("LLM_HOST", host);
-    std::env::set_var("LLM_MODEL", model);
-    std::env::remove_var("LLM_API_KEY");
+    unsafe {
+        std::env::set_var("LLM_HOST", host);
+        std::env::set_var("LLM_MODEL", model);
+        std::env::remove_var("LLM_API_KEY");
+    }
 
     // Avoid retries here (we want a clear 2-turn test), and allow enough time for local inference.
-    std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
-    std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "20000");
+    unsafe {
+        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
+        std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "20000");
+    }
 
     // Deterministic test prompt that makes memory usage observable via the *real* response.
     let test_prompt = r#"You are a deterministic test agent.

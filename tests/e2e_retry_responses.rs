@@ -18,13 +18,15 @@ async fn e2e_retry_on_failure_responses_api() {
     let endpoint = format!("{}/v1/responses", server.url());
 
     // Speed up test execution (production defaults remain 5s/2.5s).
-    std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "1");
-    std::env::set_var("CODESCRIBE_AI_RETRY_DELAY_MS", "10");
-    std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "500");
+    unsafe {
+        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "1");
+        std::env::set_var("CODESCRIBE_AI_RETRY_DELAY_MS", "10");
+        std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "500");
 
-    std::env::set_var("LLM_HOST", &endpoint);
-    std::env::set_var("LLM_MODEL", "test-model");
-    std::env::set_var("LLM_API_KEY", "test-key");
+        std::env::set_var("LLM_HOST", &endpoint);
+        std::env::set_var("LLM_MODEL", "test-model");
+        std::env::set_var("LLM_API_KEY", "test-key");
+    }
 
     // 1) First attempt: any request body that does NOT contain CRITICAL => fail.
     let m1 = server

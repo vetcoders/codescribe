@@ -258,29 +258,70 @@ pub fn clear_history() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
 
-    #[test]
-    fn test_transcriptions_dir() {
-        let dir = transcriptions_dir(&Local::now());
-        assert!(dir.to_string_lossy().contains("transcriptions"));
-        assert!(dir.to_string_lossy().contains(".codescribe"));
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set_to_temp_dir(key: &'static str, dir: &TempDir) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, dir.path());
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
     }
 
     #[test]
+    #[serial]
+    fn test_transcriptions_dir() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+
+        let dir = transcriptions_dir(&Local::now());
+        assert!(dir.to_string_lossy().contains("transcriptions"));
+        assert!(dir.starts_with(tmp.path()));
+    }
+
+    #[test]
+    #[serial]
     fn test_save_and_retrieve() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+
         let text = "Test transcript content";
         let entry = save_entry(text);
 
         assert!(entry.path.exists());
         assert_eq!(entry.preview, text);
         assert!(entry.path.to_string_lossy().ends_with(".txt"));
+        assert!(entry.path.starts_with(tmp.path()));
 
         // Clean up
         let _ = fs::remove_file(&entry.path);
     }
 
     #[test]
+    #[serial]
     fn test_save_entry_with_timestamp() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+
         let text = "Timestamped transcript";
         let now = Local::now();
         let entry = save_entry_with_timestamp(text, Some(now));
@@ -296,6 +337,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_entry_label() {
         let entry = HistoryEntry {
             path: PathBuf::from("/tmp/test.txt"),

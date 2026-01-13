@@ -6,11 +6,13 @@ use mockito::Matcher;
 use serial_test::serial;
 use tempfile::TempDir;
 
-#[tokio::test]
+#[test]
 #[serial]
-async fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
+fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
     let tmp = TempDir::new().expect("tempdir");
-    std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
+    unsafe {
+        std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
+    }
 
     // --- Prompts: load-or-create ---
     let formatting = prompts::get_formatting_prompt();
@@ -44,11 +46,13 @@ async fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
     let mut server = mockito::Server::new();
     let endpoint = format!("{}/v1/responses", server.url());
 
-    std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
-    std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "500");
-    std::env::set_var("LLM_HOST", &endpoint);
-    std::env::set_var("LLM_MODEL", "test-model");
-    std::env::set_var("LLM_API_KEY", "test-key");
+    unsafe {
+        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
+        std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "500");
+        std::env::set_var("LLM_HOST", &endpoint);
+        std::env::set_var("LLM_MODEL", "test-model");
+        std::env::set_var("LLM_API_KEY", "test-key");
+    }
 
     let _m = server
         .mock("POST", "/v1/responses")
@@ -62,7 +66,11 @@ async fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
 
     let last = history::latest_entry().expect("latest_entry");
     let raw = fs::read_to_string(last.path).expect("read last");
-    let formatted = ai_formatting::format_text(&raw, None, false).await;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let formatted = rt.block_on(ai_formatting::format_text(&raw, None, false));
     let e2 = history::save_entry(&formatted);
 
     // New entry created, raw entry kept.
