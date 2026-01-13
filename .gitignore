@@ -58,3 +58,4 @@ CONFIG_AUDIT.md
 /target
 /src/CodeScribe.egg-info
 /.claude
+nohup.out

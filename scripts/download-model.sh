@@ -4,11 +4,11 @@
 #
 # Prerequisites:
 #   - HF_TOKEN environment variable (for gated models)
-#   - huggingface-cli installed: pip install huggingface_hub
+#   - hf CLI installed: pip install huggingface_hub[cli]
 #
 # Usage:
 #   HF_TOKEN=hf_xxx ./scripts/download-model.sh
-#   ./scripts/download-model.sh  # Uses cached token from `huggingface-cli login`
+#   ./scripts/download-model.sh  # Uses cached token from `hf auth login`
 #
 # Created by M&K (c)2026 VetCoders
 
@@ -42,9 +42,9 @@ if [ -d "$MODEL_DIR" ] && [ -f "${MODEL_DIR}/weights.safetensors" ]; then
 fi
 
 # Check for HuggingFace CLI
-if ! command -v huggingface-cli &> /dev/null; then
+if ! command -v hf &> /dev/null; then
     echo ""
-    echo "▶ Installing huggingface-cli..."
+    echo "▶ Installing hf CLI..."
     pip install -q huggingface_hub[cli]
 fi
 
@@ -52,15 +52,15 @@ fi
 echo ""
 if [ -n "${HF_TOKEN:-}" ]; then
     echo "▶ Using HF_TOKEN from environment"
-    export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
-elif huggingface-cli whoami &>/dev/null; then
+    export HF_TOKEN="$HF_TOKEN"
+elif hf auth whoami &>/dev/null; then
     echo "▶ Using cached HuggingFace credentials"
 else
     echo "⚠ No HuggingFace authentication found"
     echo ""
     echo "  For gated models, you need to authenticate:"
     echo "    1. Create token at https://huggingface.co/settings/tokens"
-    echo "    2. Run: huggingface-cli login"
+    echo "    2. Run: hf auth login"
     echo "    3. Or set: export HF_TOKEN=hf_xxx"
     echo ""
     read -p "  Continue without auth? (y/n) " -n 1 -r
@@ -79,9 +79,7 @@ echo "▶ Downloading model (~900MB)..."
 echo "  This may take a few minutes..."
 echo ""
 
-huggingface-cli download "$MODEL_REPO" \
-    --local-dir "$MODEL_DIR" \
-    --local-dir-use-symlinks False
+hf download "$MODEL_REPO" --local-dir "$MODEL_DIR"
 
 # Verify download
 echo ""
