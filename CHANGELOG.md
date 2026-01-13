@@ -151,5 +151,5 @@ Historical notes below predate the Keep a Changelog-style format used above.
   tests around the new controllers, and refreshed documentation to mirror the
   current tree/layout.
 
-[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/d46c62c...HEAD
-[v0.6.0-rc2]: https://github.com/VetCoders/CodeScribe/compare/19e05ad...d46c62c
+[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.6.0...HEAD
+[v0.6.0]: https://github.com/VetCoders/CodeScribe/compare/19e05ad...v0.6.0

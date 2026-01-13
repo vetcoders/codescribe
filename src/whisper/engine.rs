@@ -2,6 +2,12 @@
 //!
 //! This module contains the LocalWhisperEngine struct that handles
 //! local speech-to-text transcription using Candle and Whisper models.
+//!
+//! Supports two loading modes:
+//! - `new(path)` - load from filesystem (development, external models)
+//! - `from_embedded()` - load from binary-embedded bytes (production, zero I/O)
+//!
+//! Created by M&K (c)2026 VetCoders
 
 use anyhow::{Context, Result, anyhow, ensure};
 use std::collections::HashMap;
@@ -24,6 +30,7 @@ use tokenizers::Tokenizer;
 use crate::audio_loader;
 use crate::whisper_model::Whisper as Model;
 
+use super::embedded::EmbeddedModel;
 use super::params::DecodingParams;
 
 /// Callback for streaming chunk results (called after each chunk is transcribed)
@@ -177,6 +184,77 @@ impl LocalWhisperEngine {
         let n_mels = config.num_mel_bins;
         let mel_filters =
             load_mel_filters(&mel_filters_path, n_mels).context("Failed to load mel filters")?;
+
+        Ok(Self {
+            model,
+            tokenizer,
+            device,
+            config,
+            mel_filters,
+            decoding_params: DecodingParams::default(),
+        })
+    }
+
+    /// Create engine from embedded model bytes - zero disk I/O!
+    ///
+    /// Model data is `include_bytes!` from binary at compile time.
+    /// At runtime: bytes → tensors → GPU. No temp files, no extraction.
+    pub fn from_embedded(embedded: &EmbeddedModel) -> Result<Self> {
+        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+        tracing::info!(
+            "Loading embedded Whisper model ({:.1} MB) to {:?}",
+            embedded.total_size() as f64 / 1_000_000.0,
+            device
+        );
+
+        // Parse config from bytes
+        let config_str = std::str::from_utf8(embedded.config)
+            .context("Invalid UTF-8 in embedded config.json")?;
+        let mlx_config: serde_json::Value =
+            serde_json::from_str(config_str).context("Failed to parse embedded config json")?;
+
+        let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
+        let new_config_json = serde_json::json!({
+            "num_mel_bins": n_mels,
+            "max_source_positions": mlx_config["n_audio_ctx"].as_u64().unwrap_or(1500),
+            "d_model": mlx_config["n_audio_state"].as_u64().unwrap_or(512),
+            "encoder_attention_heads": mlx_config["n_audio_head"].as_u64().unwrap_or(8),
+            "encoder_layers": mlx_config["n_audio_layer"].as_u64().unwrap_or(6),
+            "vocab_size": mlx_config["n_vocab"].as_u64().unwrap_or(51865),
+            "decoder_attention_heads": mlx_config["n_text_head"].as_u64().unwrap_or(8),
+            "decoder_layers": mlx_config["n_text_layer"].as_u64().unwrap_or(6),
+            "max_target_positions": mlx_config["n_text_ctx"].as_u64().unwrap_or(448),
+            "activation_function": "gelu",
+            "dropout": 0.0,
+            "attention_dropout": 0.0,
+            "activation_dropout": 0.0,
+            "init_std": 0.02,
+            "encoder_layerdrop": 0.0,
+            "decoder_layerdrop": 0.0,
+            "use_cache": true,
+            "scale_embedding": false
+        });
+
+        let config: Config = serde_json::from_value(new_config_json)
+            .context("Failed to build Config from embedded MLX values")?;
+
+        // Load weights directly from bytes - NO DISK I/O!
+        let raw_tensors = candle_core::safetensors::load_buffer(embedded.weights, &Device::Cpu)
+            .context("Failed to deserialize embedded weights")?;
+
+        let vb = build_varbuilder_from_tensors(raw_tensors, &device)?;
+        let model = Model::load(&vb, config.clone()).context("Failed to create Whisper Model")?;
+
+        // Load tokenizer from bytes
+        let tokenizer = Tokenizer::from_bytes(embedded.tokenizer).map_err(|e| {
+            anyhow!("Failed to load embedded tokenizer: {}", e)
+        })?;
+
+        // Load mel filters from bytes
+        let mel_filters = load_mel_filters_from_bytes(embedded.mel_filters, n_mels as usize)
+            .context("Failed to load embedded mel filters")?;
+
+        tracing::info!("Embedded Whisper model loaded successfully");
 
         Ok(Self {
             model,
@@ -742,7 +820,18 @@ fn append_with_overlap_dedup(out: &mut String, segment: &str) {
 
 fn load_mel_filters(path: &Path, n_mels: usize) -> Result<Vec<f32>> {
     let file = File::open(path)?;
-    let mut zip = zip::ZipArchive::new(file)?;
+    load_mel_filters_from_reader(file, n_mels)
+}
+
+/// Load mel filters from bytes (for embedded model)
+fn load_mel_filters_from_bytes(data: &[u8], n_mels: usize) -> Result<Vec<f32>> {
+    let cursor = Cursor::new(data);
+    load_mel_filters_from_reader(cursor, n_mels)
+}
+
+/// Common mel filter loading logic
+fn load_mel_filters_from_reader<R: Read + std::io::Seek>(reader: R, n_mels: usize) -> Result<Vec<f32>> {
+    let mut zip = zip::ZipArchive::new(reader)?;
 
     let key = format!("mel_{}", n_mels);
     let candidates = [format!("{}.npy", key), key.clone()];
@@ -877,4 +966,75 @@ fn dequantize_q8(
     }
 
     Ok(Tensor::from_vec(output, (out_dim, in_dim), device)?)
+}
+
+/// Build VarBuilder from raw tensors with Q8 dequantization
+///
+/// Handles MLX quantized weights (packed U32 + scales + biases)
+/// and converts tensor names to Candle format.
+fn build_varbuilder_from_tensors(
+    raw_tensors: HashMap<String, Tensor>,
+    device: &Device,
+) -> Result<candle_nn::VarBuilder<'static>> {
+    let mut tensor_map = HashMap::new();
+    let mut quantized_weights: Vec<String> = Vec::new();
+
+    // First pass: handle non-quantized tensors and collect quantized weight names
+    for (name, tensor) in raw_tensors.iter() {
+        if name.ends_with(".weight") && tensor.dtype() == DType::U32 {
+            quantized_weights.push(name.clone());
+            continue;
+        }
+
+        if name.ends_with(".scales") || name.ends_with(".biases") {
+            continue;
+        }
+
+        let mapped_name = map_tensor_name(name);
+        let mut t = tensor.clone();
+        if t.dtype() != DType::F32 {
+            t = t.to_dtype(DType::F32)?;
+        }
+
+        // Fix shape for conv weights (MLX [out, kernel, in] -> Candle [out, in, kernel])
+        if mapped_name.ends_with("conv1.weight") || mapped_name.ends_with("conv2.weight") {
+            let dims = t.dims();
+            if dims.len() == 3 && dims[1] == 3 {
+                t = t.permute((0, 2, 1))?.contiguous()?;
+            }
+        }
+
+        let t = t.to_device(device)?;
+        tensor_map.insert(mapped_name, t);
+    }
+
+    // Second pass: dequantize packed Q8 weights
+    for weight_name in quantized_weights {
+        let base = weight_name.trim_end_matches(".weight");
+        let packed = raw_tensors
+            .get(&weight_name)
+            .context(format!("Missing packed tensor for {}", weight_name))?;
+        let scales_key = format!("{}.scales", base);
+        let biases_key = format!("{}.biases", base);
+        let scales = raw_tensors
+            .get(&scales_key)
+            .context(format!("Missing scales tensor for {}", weight_name))?;
+        let biases = raw_tensors
+            .get(&biases_key)
+            .context(format!("Missing biases tensor for {}", weight_name))?;
+
+        let mut dequant = dequantize_q8(packed, scales, biases, device)?;
+        let mapped_name = map_tensor_name(&weight_name);
+
+        if mapped_name.ends_with("conv1.weight") || mapped_name.ends_with("conv2.weight") {
+            let dims = dequant.dims();
+            if dims.len() == 3 && dims[1] == 3 {
+                dequant = dequant.permute((0, 2, 1))?.contiguous()?;
+            }
+        }
+
+        tensor_map.insert(mapped_name, dequant);
+    }
+
+    Ok(candle_nn::VarBuilder::from_tensors(tensor_map, DType::F32, device))
 }

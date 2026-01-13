@@ -128,14 +128,11 @@ serial_test = "3"
 
 [build-dependencies]
 dirs = "6"
-zstd = "0.13"
-
-[dependencies.zstd]
-version = "0.13"
 
 [lints.rust]
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
-unexpected_cfgs = "allow"
+# embed_model is set by build.rs when model is available
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)'] }
 
 [lints.clippy]
 # Rust 2024: Allow collapsible_if for now (let-chains are new, can refactor later)

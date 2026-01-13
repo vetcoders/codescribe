@@ -22,6 +22,7 @@
 //! - `engine` - The LocalWhisperEngine implementation
 //! - `params` - Decoding parameters
 
+pub mod embedded;
 mod engine;
 mod params;
 pub mod singleton;

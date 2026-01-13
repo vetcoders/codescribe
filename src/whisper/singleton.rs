@@ -1,7 +1,9 @@
-//! Global Whisper engine singleton - model as part of the process.
+//! Global Whisper engine singleton - model welded to the process.
 //!
-//! The model is loaded once and kept in memory. No dynamic path searching.
-//! Works for both bundled .app and development mode.
+//! Release builds: Model bytes are embedded in binary, loaded directly to GPU.
+//! Zero disk I/O, zero temp files, zero extraction.
+//!
+//! Debug builds: Uses CODESCRIBE_MODEL_PATH or bundled .app model.
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -17,36 +19,33 @@ use tracing::{info, warn};
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
 
-/// Default model name
+/// Default model name (for dev/fallback mode)
 pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
 
 /// Global singleton engine
 static ENGINE: OnceLock<Mutex<LocalWhisperEngine>> = OnceLock::new();
 
-/// Model path - resolved once at startup
+/// Model path - only used for non-embedded (dev) mode
 static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// Resolve the model path (called once)
+/// Resolve the model path for dev/fallback mode
 ///
-/// Priority:
-/// 1. Bundled .app: Contents/Resources/models/{model}
-/// 2. Development: ./models/{model}
-/// 3. CODESCRIBE_MODEL_PATH env override
-fn resolve_model_path() -> Result<PathBuf> {
-    // Environment override (for testing/custom setups)
+/// Only called when embedded model is NOT available.
+fn resolve_model_path_fallback() -> Result<PathBuf> {
+    // 1. Dev override
     if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH") {
         let p = PathBuf::from(&path);
         if p.join("tokenizer.json").exists() {
-            info!("Using model from CODESCRIBE_MODEL_PATH: {}", p.display());
+            info!("DEV: Using model from CODESCRIBE_MODEL_PATH: {}", p.display());
             return Ok(p);
         }
         warn!("CODESCRIBE_MODEL_PATH set but model incomplete: {}", path);
     }
 
+    // 2. Bundled .app fallback (Tauri builds without embedding)
     let exe = std::env::current_exe().context("Failed to get executable path")?;
     let exe_dir = exe.parent().context("Failed to get executable directory")?;
 
-    // 1. Bundled .app: Contents/MacOS/binary -> Contents/Resources/models/
     let bundled_path = exe_dir
         .join("../Resources/models")
         .join(DEFAULT_MODEL);
@@ -57,64 +56,56 @@ fn resolve_model_path() -> Result<PathBuf> {
         return Ok(canonical);
     }
 
-    // 2. Development: ./models/ relative to repo root
-    //    exe is in target/debug/ or target/release/, models is at repo root
-    let dev_candidates = [
-        // From target/debug/codescribe -> ../../models/
-        exe_dir.join("../../models").join(DEFAULT_MODEL),
-        // Direct ./models/ (running from repo root)
-        PathBuf::from("models").join(DEFAULT_MODEL),
-    ];
-
-    for candidate in &dev_candidates {
-        if candidate.join("tokenizer.json").exists() {
-            let canonical = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
-            info!("Using development model: {}", canonical.display());
-            return Ok(canonical);
-        }
-    }
-
     Err(anyhow!(
-        "Whisper model '{}' not found.\n\
-         Searched:\n\
-         - Bundled: {}\n\
-         - Dev: {:?}\n\n\
-         Download with: ./scripts/download_models.sh",
-        DEFAULT_MODEL,
-        bundled_path.display(),
-        dev_candidates
+        "Whisper model not available.\n\
+         Debug builds: Set CODESCRIBE_MODEL_PATH\n\
+         Release builds: Model should be embedded\n\n\
+         Download with: ./scripts/download-model.sh"
     ))
 }
 
-/// Get the resolved model path
+/// Get the resolved model path (only for non-embedded mode)
 pub fn get_model_path() -> Result<&'static PathBuf> {
-    // Try to get existing path
     if let Some(path) = MODEL_PATH.get() {
         return Ok(path);
     }
 
-    // Resolve and store
-    let path = resolve_model_path()?;
+    let path = resolve_model_path_fallback()?;
     let _ = MODEL_PATH.set(path.clone());
 
-    // Return the stored path (handles race condition)
     MODEL_PATH
         .get()
         .ok_or_else(|| anyhow!("Failed to store model path"))
 }
 
 /// Initialize the global engine (call once at startup)
+///
+/// Uses embedded model if available (zero I/O), otherwise falls back to path-based loading.
 pub fn init() -> Result<()> {
-    let path = get_model_path()?;
+    // 1. Embedded model (release builds) - ZERO DISK I/O
+    //    Model bytes → GPU tensors, no temp files
+    if let Some(embedded) = super::embedded::get_embedded_data() {
+        let engine = LocalWhisperEngine::from_embedded(&embedded)
+            .context("Failed to initialize from embedded model")?;
 
+        ENGINE
+            .set(Mutex::new(engine))
+            .map_err(|_| anyhow!("Engine already initialized"))?;
+
+        info!("Whisper engine initialized from embedded model (zero I/O)");
+        return Ok(());
+    }
+
+    // 2. Fallback to path-based loading (dev mode, bundled .app)
+    let path = get_model_path()?;
     let engine = LocalWhisperEngine::new_with_params(path, DecodingParams::default())
-        .context("Failed to initialize Whisper engine")?;
+        .context("Failed to initialize Whisper engine from path")?;
 
     ENGINE
         .set(Mutex::new(engine))
         .map_err(|_| anyhow!("Engine already initialized"))?;
 
-    info!("Whisper engine initialized and ready");
+    info!("Whisper engine initialized from path: {}", path.display());
     Ok(())
 }
 

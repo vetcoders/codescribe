@@ -213,7 +213,7 @@ LOG_LEVEL=INFO
 async fn handle_transcribe_command(
     file: PathBuf,
     language: Option<String>,
-    model: Option<String>,
+    _model: Option<String>, // Ignored when embedded model available
     format: bool,
     llm_model: String,
 ) -> Result<()> {
@@ -224,32 +224,22 @@ async fn handle_transcribe_command(
         anyhow::bail!("File not found: {}", file.display());
     }
 
-    // Find model directory
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let model_name = model.as_deref().unwrap_or("whisper-large-v3-turbo-mlx-q8");
-
-    let model_candidates = [
-        PathBuf::from(&home)
-            .join(".codescribe/models")
-            .join(model_name),
-        PathBuf::from("models").join(model_name),
-    ];
-
-    let model_path = model_candidates
-        .iter()
-        .find(|p| p.join("tokenizer.json").exists())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Model '{}' not found or incomplete. Required files: config.json, weights.safetensors, tokenizer.json, mel_filters.npz",
-                model_name
-            )
-        })?;
-
+    // Use singleton (embedded model in release, or fallback)
     eprintln!("═══════════════════════════════════════════════════════════");
     eprintln!("  CodeScribe Local Transcription");
     eprintln!("═══════════════════════════════════════════════════════════");
     eprintln!("  Audio: {}", file.display());
-    eprintln!("  Model: {}", model_path.display());
+
+    // Initialize singleton (uses embedded model if available)
+    eprintln!("  Loading Whisper model...");
+    let start = Instant::now();
+    whisper::init()?;
+    // Model info - embedded or path
+    if whisper::embedded::is_embedded_available() {
+        eprintln!("  Model: embedded (zero I/O)");
+    } else if let Ok(path) = whisper::get_model_path() {
+        eprintln!("  Model: {}", path.display());
+    }
     eprintln!(
         "  Language: {}",
         language.as_deref().unwrap_or("auto-detect")
@@ -258,11 +248,6 @@ async fn handle_transcribe_command(
         eprintln!("  Format: {} (via Ollama)", llm_model);
     }
     eprintln!("───────────────────────────────────────────────────────────");
-
-    // Load model
-    eprintln!("  Loading Whisper model...");
-    let start = Instant::now();
-    let mut engine = whisper::LocalWhisperEngine::new(model_path)?;
     eprintln!("  Model loaded in {:?}", start.elapsed());
 
     // Detect language if not specified
@@ -271,7 +256,8 @@ async fn handle_transcribe_command(
     } else {
         eprintln!("  Detecting language...");
         let start = Instant::now();
-        let detected = engine.detect_language_file(&file)?;
+        let (samples, sample_rate) = audio_loader::load_audio_file(&file)?;
+        let detected = whisper::detect_language(&samples, sample_rate)?;
         eprintln!("  Detected: {} ({:?})", detected, start.elapsed());
         detected
     };
@@ -279,7 +265,7 @@ async fn handle_transcribe_command(
     // Transcribe
     eprintln!("  Transcribing...");
     let start = Instant::now();
-    let raw_text = engine.transcribe_file_with_language(&file, Some(&lang))?;
+    let raw_text = whisper::transcribe_file(&file, Some(&lang))?;
     let transcribe_time = start.elapsed();
 
     eprintln!("───────────────────────────────────────────────────────────");
