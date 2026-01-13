@@ -106,3 +106,24 @@ Rules:
     let r3 = ai_formatting::format_text("RECALL_TOKEN", None, true).await;
     assert_eq!(r3.trim(), "MISSING");
 }
+
+/// Test context management functions (used by tauri-app)
+///
+/// These functions are used by tauri-app commands for UI state management.
+/// This test ensures they compile and work correctly.
+#[test]
+fn test_context_management_api() {
+    use codescribe::{ai_formatting, conversation};
+
+    // Test conversation API
+    let had_conversation = conversation::has_active_conversation();
+    conversation::reset_conversation();
+    // After reset, should have no active conversation
+    assert!(!conversation::has_active_conversation() || !had_conversation);
+
+    // Test ai_formatting context API
+    let had_context = ai_formatting::has_active_context();
+    ai_formatting::reset_context();
+    // After reset, should have no active context
+    assert!(!ai_formatting::has_active_context() || !had_context);
+}

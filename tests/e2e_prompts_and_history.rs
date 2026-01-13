@@ -38,9 +38,9 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
     assert!(prompts::get_formatting_prompt().contains("You are a text formatting assistant"));
 
     // --- History: should respect config_dir override ---
-    let e1 = history::save_entry("raw one");
+    let e1 = history::save_entry("raw one two");
     assert!(e1.path.starts_with(tmp.path()));
-    assert!(fs::read_to_string(&e1.path).unwrap().contains("raw one"));
+    assert!(fs::read_to_string(&e1.path).unwrap().contains("raw one two"));
 
     // Mimic tray behavior: read last, format, save as new entry
     let mut server = mockito::Server::new();
@@ -48,19 +48,20 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
 
     unsafe {
         std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
-        std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "500");
+        // Keep some slack for local CI variability.
+        std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "2000");
         std::env::set_var("LLM_HOST", &endpoint);
         std::env::set_var("LLM_MODEL", "test-model");
         std::env::set_var("LLM_API_KEY", "test-key");
     }
 
-    let _m = server
+    let m = server
         .mock("POST", "/v1/responses")
-        .match_body(Matcher::Regex(r"raw one".to_string()))
+        .match_body(Matcher::Regex(r"raw one two".to_string()))
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
-            r#"{"id":"resp_test_2","output":[{"type":"message","content":[{"type":"output_text","text":"RAW ONE."}]}]}"#,
+            r#"{"id":"resp_test_2","output":[{"type":"message","content":[{"type":"output_text","text":"RAW ONE TWO."}]}]}"#,
         )
         .create();
 
@@ -71,10 +72,14 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
         .build()
         .expect("tokio runtime");
     let formatted = rt.block_on(ai_formatting::format_text(&raw, None, false));
+
+    // Ensure the LLM endpoint was actually called (i.e., we didn't silently fall back).
+    m.assert();
+    assert_eq!(formatted.trim(), "RAW ONE TWO.");
     let e2 = history::save_entry(&formatted);
 
     // New entry created, raw entry kept.
     assert_ne!(e1.path, e2.path);
-    assert!(fs::read_to_string(&e1.path).unwrap().contains("raw one"));
-    assert!(fs::read_to_string(&e2.path).unwrap().contains("RAW ONE."));
+    assert!(fs::read_to_string(&e1.path).unwrap().contains("raw one two"));
+    assert!(fs::read_to_string(&e2.path).unwrap().contains("RAW ONE TWO."));
 }

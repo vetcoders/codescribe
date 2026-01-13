@@ -75,9 +75,20 @@ pub fn save_entry_with_timestamp(text: &str, timestamp: Option<DateTime<Local>>)
     // Get transcriptions directory for this date
     let day_dir = transcriptions_dir(&now);
 
-    // Create file with HHMMSS.txt format
-    let filename = now.format("%H%M%S.txt").to_string();
-    let path = day_dir.join(&filename);
+    // Create file with HHMMSS.txt format.
+    // Note: multiple writes within the same second can collide (e.g. raw + formatted back-to-back),
+    // so we ensure a unique filename by appending an incrementing suffix.
+    let base = now.format("%H%M%S").to_string();
+    let mut path = day_dir.join(format!("{}.txt", base));
+    if path.exists() {
+        for i in 1..=10_000 {
+            let candidate = day_dir.join(format!("{}_{}.txt", base, i));
+            if !candidate.exists() {
+                path = candidate;
+                break;
+            }
+        }
+    }
 
     match fs::File::create(&path) {
         Ok(mut file) => {
@@ -202,9 +213,19 @@ pub fn save_audio(src_path: &Path, timestamp: DateTime<Local>) -> Option<PathBuf
     // Get transcriptions directory for this date
     let dest_dir = transcriptions_dir(&timestamp);
 
-    // Create filename with HHMMSS.wav format
-    let filename = timestamp.format("%H%M%S.wav").to_string();
-    let dest_path = dest_dir.join(&filename);
+    // Create filename with HHMMSS.wav format.
+    // Ensure uniqueness for multiple saves within the same second.
+    let base = timestamp.format("%H%M%S").to_string();
+    let mut dest_path = dest_dir.join(format!("{}.wav", base));
+    if dest_path.exists() {
+        for i in 1..=10_000 {
+            let candidate = dest_dir.join(format!("{}_{}.wav", base, i));
+            if !candidate.exists() {
+                dest_path = candidate;
+                break;
+            }
+        }
+    }
 
     match fs::copy(src_path, &dest_path) {
         Ok(_) => {

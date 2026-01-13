@@ -33,6 +33,11 @@ pub mod voice_chat_ui;
 // Re-export commonly used types
 pub use audio::{Recorder, RecorderConfig, RecorderDiagnostics};
 
+// Re-export API functions used by tauri-app and tests
+pub use ai_formatting::{has_active_context, reset_context};
+pub use conversation::has_active_conversation;
+pub use prompts::{get_assistive_prompt_path, get_formatting_prompt_path, reset_to_defaults};
+
 #[cfg(target_os = "macos")]
 pub use ui::{
     BadgeMode, HoldBadgeConfig, focused_element_accepts_text, get_caret_position,

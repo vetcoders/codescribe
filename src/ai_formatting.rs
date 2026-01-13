@@ -831,11 +831,13 @@ pub fn has_api_key() -> bool {
 ///
 /// Clears the previous_response_id, starting a fresh conversation.
 /// Use this when the user wants to start a new topic or clear context.
+#[allow(dead_code)] // Public API for tauri-app
 pub fn reset_context() {
     crate::conversation::reset_conversation();
 }
 
 /// Check if there's an active AI conversation
+#[allow(dead_code)] // Public API for tauri-app
 pub fn has_active_context() -> bool {
     crate::conversation::has_active_conversation()
 }
@@ -895,5 +897,13 @@ mod tests {
             remove_simple_repetitions("normalny tekst bez powtórzeń"),
             "normalny tekst bez powtórzeń"
         );
+    }
+
+    #[test]
+    fn test_context_api() {
+        // Test the context management API (used by tauri-app)
+        let _ = has_active_context();
+        reset_context();
+        assert!(!has_active_context());
     }
 }

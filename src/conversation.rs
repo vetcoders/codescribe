@@ -46,6 +46,7 @@ pub fn reset_conversation() {
 }
 
 /// Check if there's an active conversation
+#[allow(dead_code)] // Public API for tauri-app
 pub fn has_active_conversation() -> bool {
     get_previous_response_id().is_some()
 }
@@ -56,13 +57,20 @@ mod tests {
 
     #[test]
     fn test_conversation_lifecycle() {
-        // Basic get/set test
-        assert!(get_previous_response_id().is_none());
+        // Reset first to ensure clean state
+        reset_conversation();
+        assert!(!has_active_conversation());
 
         set_response_id("resp_123".to_string());
+        assert!(has_active_conversation());
         assert_eq!(get_previous_response_id(), Some("resp_123".to_string()));
 
         set_response_id("resp_456".to_string());
         assert_eq!(get_previous_response_id(), Some("resp_456".to_string()));
+
+        // Test reset clears conversation
+        reset_conversation();
+        assert!(!has_active_conversation());
+        assert!(get_previous_response_id().is_none());
     }
 }

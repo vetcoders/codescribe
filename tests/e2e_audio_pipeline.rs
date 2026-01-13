@@ -43,7 +43,7 @@ fn test_audio_loading_mp3() {
 
     // MP3 is typically 44100 or 48000 Hz
     assert!(
-        sample_rate >= 8000 && sample_rate <= 96000,
+        (8000..=96000).contains(&sample_rate),
         "Unexpected sample rate: {}",
         sample_rate
     );
@@ -190,7 +190,7 @@ fn test_chunk_boundaries_synthetic() {
 
     // Whisper uses 30-second chunks, so 25s per chunk with overlap
     let chunk_samples = 25 * sample_rate as usize;
-    let num_chunks = (samples.len() + chunk_samples - 1) / chunk_samples;
+    let num_chunks = samples.len().div_ceil(chunk_samples);
 
     println!(
         "Audio: {} samples ({:.1}s), chunk size: {}, num chunks: {}",

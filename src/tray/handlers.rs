@@ -327,15 +327,15 @@ fn handle_format_last() {
         rt.block_on(async {
             if let Some(last_entry) = crate::history::latest_entry() {
                  if let Ok(text) = std::fs::read_to_string(&last_entry.path) {
-                      crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
+                      let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
                       let formatted = crate::ai_formatting::format_text(&text, None, false).await;
                       // Zapisujemy jako nowy wpis, pozostawiając oryginalny raw w historii
                       crate::history::save_entry(&formatted);
                       let _ = crate::clipboard::set_clipboard(&formatted);
 
-                      crate::tray::update_tray_status(crate::tray::TrayStatus::Success);
+                      let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Success);
                       tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                      crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
+                      let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
                  }
             } else {
                 info!("No transcript to format");
@@ -361,7 +361,7 @@ fn handle_format_last_five() {
                 return;
             }
 
-            crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
+            let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
 
             let mut last_formatted: Option<String> = None;
 
@@ -378,9 +378,9 @@ fn handle_format_last_five() {
                 let _ = crate::clipboard::set_clipboard(&formatted);
             }
 
-            crate::tray::update_tray_status(crate::tray::TrayStatus::Success);
+            let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Success);
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
+            let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
         });
     });
 }
