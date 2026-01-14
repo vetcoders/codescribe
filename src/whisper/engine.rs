@@ -27,8 +27,8 @@ use ndarray::Array2;
 use ndarray_npy::ReadNpyExt;
 use tokenizers::Tokenizer;
 
-use crate::audio_loader;
-use crate::whisper_model::Whisper as Model;
+use crate::audio::loader as audio_loader;
+use super::model::Whisper as Model;
 
 use super::embedded::EmbeddedModel;
 use super::params::DecodingParams;

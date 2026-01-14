@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use codescribe::audio_loader;
+use codescribe::audio;
 
 /// Path to synthetic test audio file
 fn test_audio_path() -> PathBuf {
@@ -31,7 +31,7 @@ fn test_asset_exists() {
 #[test]
 fn test_audio_loading_mp3() {
     let path = test_audio_path();
-    let result = audio_loader::load_audio_file(&path);
+    let result = audio::load_audio_file(&path);
 
     assert!(result.is_ok(), "Failed to load audio: {:?}", result.err());
 
@@ -69,9 +69,9 @@ fn test_audio_loading_mp3() {
 #[test]
 fn test_resampling_to_16k() {
     let path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&path).expect("load audio");
 
-    let resampled = audio_loader::resample_to_16k(&samples, sample_rate);
+    let resampled = audio::resample_to_16k(&samples, sample_rate);
 
     // Verify resampled length is proportional
     let expected_len = (samples.len() as f32 * 16000.0 / sample_rate as f32).ceil() as usize;
@@ -103,7 +103,7 @@ fn test_resampling_to_16k() {
 fn test_16k_passthrough() {
     let samples: Vec<f32> = (0..16000).map(|i| (i as f32 * 0.001).sin()).collect();
 
-    let resampled = audio_loader::resample_to_16k(&samples, 16000);
+    let resampled = audio::resample_to_16k(&samples, 16000);
 
     assert_eq!(
         samples.len(),
@@ -156,7 +156,7 @@ fn test_full_transcription() {
 
     // Load and transcribe
     let audio_path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&audio_path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
 
     let start = std::time::Instant::now();
     let text = engine

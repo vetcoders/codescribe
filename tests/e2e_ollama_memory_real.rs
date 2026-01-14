@@ -1,6 +1,6 @@
 use std::fs;
 
-use codescribe::{ai_formatting, prompts};
+use codescribe::{ai_formatting, config::prompts};
 
 use serial_test::serial;
 use tempfile::TempDir;
@@ -113,17 +113,11 @@ Rules:
 /// This test ensures they compile and work correctly.
 #[test]
 fn test_context_management_api() {
-    use codescribe::{ai_formatting, conversation};
+    use codescribe::state::conversation;
 
     // Test conversation API
     let had_conversation = conversation::has_active_conversation();
     conversation::reset_conversation();
     // After reset, should have no active conversation
     assert!(!conversation::has_active_conversation() || !had_conversation);
-
-    // Test ai_formatting context API
-    let had_context = ai_formatting::has_active_context();
-    ai_formatting::reset_context();
-    // After reset, should have no active context
-    assert!(!ai_formatting::has_active_context() || !had_context);
 }

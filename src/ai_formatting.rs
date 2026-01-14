@@ -190,6 +190,8 @@ struct ResponsesRequest {
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
 }
 
 /// Input item for Responses API
@@ -228,6 +230,26 @@ struct ContentPart {
     part_type: String,
     #[serde(default)]
     text: Option<String>,
+}
+
+/// SSE streaming chunk from Responses API
+#[derive(Debug, Deserialize)]
+struct StreamChunk {
+    #[serde(rename = "type")]
+    chunk_type: String,
+    #[serde(default)]
+    delta: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    response: Option<StreamResponse>,
+}
+
+/// Response object in stream chunks (for response.completed event)
+#[derive(Debug, Deserialize)]
+struct StreamResponse {
+    #[serde(default)]
+    id: String,
 }
 
 /// Legacy chat message (for Ollama compatibility)
@@ -465,12 +487,12 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
             if attempt == 0 {
                 info!("Using assistive mode (AI assistant)");
             }
-            (crate::prompts::get_assistive_prompt(), ASSISTIVE_MAX_TOKENS)
+            (crate::config::prompts::get_assistive_prompt(), ASSISTIVE_MAX_TOKENS)
         } else {
             if attempt == 0 {
                 info!("Using formatting mode");
             }
-            (crate::prompts::get_formatting_prompt(), FORMATTING_MAX_TOKENS)
+            (crate::config::prompts::get_formatting_prompt(), FORMATTING_MAX_TOKENS)
         };
 
         // If retrying, wait and strengthen instructions
@@ -518,21 +540,47 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
 
         // Try LLM endpoint if Ollama failed/skipped
         if result_opt.is_none() {
-            match tokio::time::timeout(
-                attempt_timeout,
-                call_llm_endpoint(&user_message, &system_prompt, max_tokens, assistive),
-            )
-            .await
-            {
-                Ok(Ok(formatted)) => result_opt = Some(formatted),
-                Ok(Err(e)) => {
-                    warn!("LLM endpoint failed (attempt {}): {}", attempt, e);
+            let endpoint = get_llm_host().unwrap_or_default();
+            let use_streaming = is_openai_endpoint(&endpoint);
+
+            // Streaming gets longer timeout (60s), sync gets 30s
+            let llm_timeout = if use_streaming {
+                Duration::from_secs(60)
+            } else {
+                Duration::from_secs(30)
+            };
+
+            if use_streaming {
+                // SSE streaming for OpenAI/Libraxis
+                match tokio::time::timeout(
+                    llm_timeout,
+                    call_llm_endpoint_streaming(&user_message, &system_prompt, max_tokens, assistive),
+                )
+                .await
+                {
+                    Ok(Ok(formatted)) => result_opt = Some(formatted),
+                    Ok(Err(e)) => {
+                        warn!("LLM streaming failed (attempt {}): {}", attempt, e);
+                    }
+                    Err(_) => {
+                        warn!("LLM streaming timed out after {:?} (attempt {})", llm_timeout, attempt);
+                    }
                 }
-                Err(_) => {
-                    warn!(
-                        "LLM endpoint timed out after {:?} (attempt {})",
-                        attempt_timeout, attempt
-                    );
+            } else {
+                // Sync mode for other providers
+                match tokio::time::timeout(
+                    llm_timeout,
+                    call_llm_endpoint(&user_message, &system_prompt, max_tokens, assistive),
+                )
+                .await
+                {
+                    Ok(Ok(formatted)) => result_opt = Some(formatted),
+                    Ok(Err(e)) => {
+                        warn!("LLM endpoint failed (attempt {}): {}", attempt, e);
+                    }
+                    Err(_) => {
+                        warn!("LLM endpoint timed out after {:?} (attempt {})", llm_timeout, attempt);
+                    }
                 }
             }
         }
@@ -620,7 +668,7 @@ async fn call_llm_endpoint(
 
     // Get previous_response_id for conversation continuity (only in assistive mode)
     let previous_response_id = if assistive {
-        crate::conversation::get_previous_response_id()
+        crate::state::conversation::get_previous_response_id()
     } else {
         None
     };
@@ -639,6 +687,7 @@ async fn call_llm_endpoint(
         instructions: Some(system_prompt.to_string()),
         max_output_tokens: Some(max_tokens),
         temperature: Some(temperature),
+        stream: false,
     };
 
     debug!(
@@ -689,7 +738,7 @@ async fn call_llm_endpoint(
 
     // Store response_id for conversation continuity (only in assistive mode)
     if assistive {
-        crate::conversation::set_response_id(responses_result.id.clone());
+        crate::state::conversation::set_response_id(responses_result.id.clone());
     }
 
     // Sanity check - only for formatting mode (assistive can return any length)
@@ -701,6 +750,150 @@ async fn call_llm_endpoint(
     }
 
     debug!("Response id: {}", responses_result.id);
+    Ok(formatted)
+}
+
+/// Check if endpoint is OpenAI-compatible (supports SSE streaming)
+fn is_openai_endpoint(endpoint: &str) -> bool {
+    endpoint.contains("openai.com") || endpoint.contains("libraxis")
+}
+
+/// Call LLM endpoint with SSE streaming (OpenAI Responses API)
+///
+/// Uses Server-Sent Events for faster first-token response.
+/// Falls back to sync mode if streaming fails.
+async fn call_llm_endpoint_streaming(
+    user_message: &str,
+    system_prompt: &str,
+    max_tokens: u32,
+    assistive: bool,
+) -> Result<String> {
+    use futures_util::StreamExt;
+
+    let endpoint = get_llm_host()?;
+    let model = get_llm_model()?;
+    let api_key = env::var("LLM_API_KEY").context("LLM_API_KEY not set")?;
+
+    let temperature = if assistive { 0.3 } else { 0.1 };
+
+    let previous_response_id = if assistive {
+        crate::state::conversation::get_previous_response_id()
+    } else {
+        None
+    };
+
+    let request = ResponsesRequest {
+        model,
+        input: vec![InputItem {
+            role: "user",
+            content: vec![InputContent {
+                content_type: "input_text",
+                text: user_message.to_string(),
+            }],
+        }],
+        previous_response_id,
+        instructions: Some(system_prompt.to_string()),
+        max_output_tokens: Some(max_tokens),
+        temperature: Some(temperature),
+        stream: true,
+    };
+
+    debug!(
+        "SSE streaming to {} for {} (max_tokens={})",
+        endpoint,
+        if assistive { "assistive" } else { "formatting" },
+        max_tokens
+    );
+
+    let response = get_client()
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .json(&request)
+        .send()
+        .await
+        .context("SSE request failed")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP {} - {}", status, body);
+    }
+
+    // Parse SSE stream
+    let mut collected_text = String::new();
+    let mut response_id = String::new();
+    let mut stream = response.bytes_stream();
+
+    let mut buffer = String::new();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.context("Stream read error")?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        // Process complete lines
+        while let Some(newline_pos) = buffer.find('\n') {
+            let line = buffer[..newline_pos].trim().to_string();
+            buffer = buffer[newline_pos + 1..].to_string();
+
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
+
+            // Parse SSE data lines
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data == "[DONE]" {
+                    break;
+                }
+
+                if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                    match chunk.chunk_type.as_str() {
+                        "response.output_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                collected_text.push_str(&delta);
+                            }
+                        }
+                        "response.output_text.done" => {
+                            // Full text available - use it if we missed deltas
+                            if let Some(text) = chunk.text {
+                                if collected_text.is_empty() {
+                                    collected_text = text;
+                                }
+                            }
+                        }
+                        "response.completed" | "response.done" => {
+                            if let Some(resp) = chunk.response {
+                                response_id = resp.id;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    let formatted = collected_text.trim().to_string();
+
+    if formatted.is_empty() {
+        anyhow::bail!("No text content in SSE stream");
+    }
+
+    // Store response_id for conversation continuity
+    if assistive && !response_id.is_empty() {
+        crate::state::conversation::set_response_id(response_id.clone());
+    }
+
+    // Sanity check for formatting mode
+    if !assistive {
+        let max_len_multiplier = 2;
+        if formatted.len() > user_message.len() * max_len_multiplier {
+            anyhow::bail!("Response too long");
+        }
+    }
+
+    debug!("SSE complete, response_id: {}", response_id);
     Ok(formatted)
 }
 
@@ -827,19 +1020,6 @@ pub fn has_api_key() -> bool {
         .unwrap_or(false)
 }
 
-/// Reset the AI conversation context
-///
-/// Clears the previous_response_id, starting a fresh conversation.
-/// Use this when the user wants to start a new topic or clear context.
-pub fn reset_context() {
-    crate::conversation::reset_conversation();
-}
-
-/// Check if there's an active AI conversation
-pub fn has_active_context() -> bool {
-    crate::conversation::has_active_conversation()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,13 +1075,5 @@ mod tests {
             remove_simple_repetitions("normalny tekst bez powtórzeń"),
             "normalny tekst bez powtórzeń"
         );
-    }
-
-    #[test]
-    fn test_context_api() {
-        // Test the context management API (used by tauri-app)
-        let _ = has_active_context();
-        reset_context();
-        assert!(!has_active_context());
     }
 }

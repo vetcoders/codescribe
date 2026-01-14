@@ -83,7 +83,7 @@ fn handle_copy_last() {
     send_menu_event(TrayMenuEvent::CopyLast);
 
     // Get last transcript from history
-    if let Some(last_entry) = crate::history::latest_entry() {
+    if let Some(last_entry) = crate::state::history::latest_entry() {
         if let Ok(text) = std::fs::read_to_string(&last_entry.path) {
             if let Err(e) = crate::clipboard::set_clipboard(&text) {
                 info!("Failed to copy to clipboard: {}", e);
@@ -179,7 +179,7 @@ fn handle_toggle_history() {
 fn handle_copy_latest_to_clipboard() {
     send_menu_event(TrayMenuEvent::CopyLatestToClipboard);
 
-    if let Some(last_entry) = crate::history::latest_entry() {
+    if let Some(last_entry) = crate::state::history::latest_entry() {
         if let Ok(text) = std::fs::read_to_string(&last_entry.path) {
             if let Err(e) = crate::clipboard::set_clipboard(&text) {
                 info!("Failed to copy to clipboard: {}", e);
@@ -198,7 +198,7 @@ fn handle_copy_latest_to_clipboard() {
 /// Open history folder in Finder
 fn handle_open_history_folder() {
     send_menu_event(TrayMenuEvent::OpenHistoryFolder);
-    crate::history::open_history_folder();
+    crate::state::history::open_history_folder();
     info!("Opening history folder");
 }
 
@@ -304,12 +304,12 @@ fn handle_show_about() {
 /// Open prompt files for editing
 fn handle_edit_prompt() {
     info!("Opening prompt files for editing...");
-    crate::prompts::open_prompt_file("formatting.txt");
+    crate::config::prompts::open_prompt_file("formatting.txt");
 }
 
 /// Reset conversation context
 fn handle_reset_context() {
-    crate::conversation::reset_conversation();
+    crate::state::conversation::reset_conversation();
     crate::ai_formatting::reset_ollama_memory();
     info!("Conversation context reset");
 }
@@ -325,12 +325,12 @@ fn handle_format_last() {
             .unwrap();
             
         rt.block_on(async {
-            if let Some(last_entry) = crate::history::latest_entry() {
+            if let Some(last_entry) = crate::state::history::latest_entry() {
                  if let Ok(text) = std::fs::read_to_string(&last_entry.path) {
                       let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
                       let formatted = crate::ai_formatting::format_text(&text, None, false).await;
                       // Zapisujemy jako nowy wpis, pozostawiając oryginalny raw w historii
-                      crate::history::save_entry(&formatted);
+                      crate::state::history::save_entry(&formatted);
                       let _ = crate::clipboard::set_clipboard(&formatted);
 
                       let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Success);
@@ -355,7 +355,7 @@ fn handle_format_last_five() {
             .unwrap();
 
         rt.block_on(async {
-            let entries = crate::history::recent_entries(5);
+            let entries = crate::state::history::recent_entries(5);
             if entries.is_empty() {
                 info!("No transcripts to format");
                 return;
@@ -369,7 +369,7 @@ fn handle_format_last_five() {
                 if let Ok(text) = std::fs::read_to_string(&entry.path) {
                     let formatted = crate::ai_formatting::format_text(&text, None, false).await;
                     // Zapisujemy jako nowy wpis, raw pozostaje w historii
-                    crate::history::save_entry(&formatted);
+                    crate::state::history::save_entry(&formatted);
                     last_formatted = Some(formatted);
                 }
             }
@@ -387,6 +387,6 @@ fn handle_format_last_five() {
 
 /// Open prompts folder
 fn handle_open_prompts_folder() {
-    crate::prompts::open_prompts_folder();
+    crate::config::prompts::open_prompts_folder();
     info!("Opened prompts folder");
 }

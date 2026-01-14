@@ -24,6 +24,7 @@
 
 pub mod embedded;
 mod engine;
+mod model;
 mod params;
 pub mod singleton;
 
@@ -31,5 +32,8 @@ pub mod singleton;
 pub use engine::LocalWhisperEngine;
 pub use params::DecodingParams;
 
-// Re-export singleton functions at module level
-pub use singleton::{detect_language, get_model_path, init, transcribe_file};
+// Re-export singleton functions at module level (main API)
+pub use singleton::{
+    detect_language, get_model_path, init, is_initialized,
+    transcribe, transcribe_file, transcribe_streaming,
+};

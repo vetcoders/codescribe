@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use codescribe::{ai_formatting, audio_loader, history};
+use codescribe::{ai_formatting, audio, state::history};
 use mockito::Matcher;
 use serial_test::serial;
 use tempfile::TempDir;
@@ -72,7 +72,7 @@ fn test_full_pipeline_audio_to_history() {
 
     // 1. Load audio (simulates what happens after recording stops)
     let audio_path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&audio_path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
 
     println!(
         "Step 1: Loaded audio - {} samples @ {} Hz",
@@ -132,7 +132,7 @@ fn test_full_pipeline_with_streaming() {
     };
 
     let audio_path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&audio_path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
 
     let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
 
@@ -197,7 +197,7 @@ async fn test_full_pipeline_with_formatting_mocked() {
 
     // 1. Transcribe
     let audio_path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&audio_path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
 
     let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
     let raw_text = engine
@@ -298,7 +298,7 @@ async fn test_full_pipeline_with_real_formatting() {
 
     // 1. Transcribe
     let audio_path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&audio_path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
 
     let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
     let raw_text = engine

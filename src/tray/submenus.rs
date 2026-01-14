@@ -277,7 +277,7 @@ pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
 pub fn build_history_submenu() -> Result<(Submenu, MenuId, MenuId, MenuId)> {
     let history_menu = Submenu::new("Recent Transcripts", true);
 
-    let recent_entries = crate::history::recent_entries(5);
+    let recent_entries = crate::state::history::recent_entries(5);
     let latest_label = if let Some(entry) = recent_entries.first() {
         format!("Latest: {}", entry.label())
     } else {

@@ -1,0 +1,1035 @@
+{
+  "project": "/Users/maciejgad/hosted/VetCoders/CodeScribe",
+  "generated_at": "2026-01-13T21:55:57.057395000Z",
+  "summary": {
+    "files_analyzed": 76,
+    "total_loc": 19211,
+    "dead_exports": 0,
+    "duplicate_exports": 29,
+    "circular_imports": 2,
+    "missing_handlers": 0,
+    "unregistered_handlers": 0,
+    "unused_handlers": 20,
+    "unused_high_confidence": 20,
+    "cascade_imports": 6,
+    "dynamic_imports": 0,
+    "twins_dead_parrots": 0,
+    "twins_same_language": 11,
+    "twins_cross_language": 0,
+    "indexed_params": 166,
+    "functions_with_params": 105,
+    "priority": "CLEANUP: 20 unused handlers (high confidence) can be safely removed. 0 dead exports, 29 duplicate exports.",
+    "health_score": 79,
+    "health_details": {
+      "certain": {
+        "count": 2,
+        "penalty": 5.569197743652034
+      },
+      "high": {
+        "count": 20,
+        "penalty": 9.260162660963758
+      },
+      "smell": {
+        "count": 22,
+        "penalty": 6.357907149848728
+      }
+    },
+    "normalized_density": 0.38594245426792645
+  },
+  "sections": [
+    {
+      "id": "section-0",
+      "root": "/Users/maciejgad/hosted/VetCoders/CodeScribe",
+      "files": 76,
+      "loc": 0,
+      "issues": 49,
+      "slice_cmd": "loct slice /Users/maciejgad/hosted/VetCoders/CodeScribe --json"
+    }
+  ],
+  "quick_wins": [
+    {
+      "priority": 1,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "format_transcript",
+      "location": "tauri-app/src/commands/formatting.rs:16",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the format_transcript function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace format_transcript",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fformatting.rs&l=16"
+    },
+    {
+      "priority": 2,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "get_ai_prompt",
+      "location": "tauri-app/src/commands/formatting.rs:51",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the get_ai_prompt function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace get_ai_prompt",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fformatting.rs&l=51"
+    },
+    {
+      "priority": 3,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "get_available_models",
+      "location": "tauri-app/src/commands/stt.rs:183",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the get_available_models function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace get_available_models",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fstt.rs&l=183"
+    },
+    {
+      "priority": 4,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "get_config",
+      "location": "tauri-app/src/commands/config.rs:37",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the get_config function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace get_config",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fconfig.rs&l=37"
+    },
+    {
+      "priority": 5,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "get_current_audio_device",
+      "location": "tauri-app/src/commands/audio.rs:16",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the get_current_audio_device function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace get_current_audio_device",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Faudio.rs&l=16"
+    },
+    {
+      "priority": 6,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "get_current_model",
+      "location": "tauri-app/src/commands/stt.rs:197",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the get_current_model function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace get_current_model",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fstt.rs&l=197"
+    },
+    {
+      "priority": 7,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "get_env_var",
+      "location": "tauri-app/src/commands/config.rs:142",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the get_env_var function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace get_env_var",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fconfig.rs&l=142"
+    },
+    {
+      "priority": 8,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "get_lexicon_entries",
+      "location": "tauri-app/src/commands/lexicon.rs:25",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the get_lexicon_entries function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace get_lexicon_entries",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Flexicon.rs&l=25"
+    },
+    {
+      "priority": 9,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "is_recording",
+      "location": "tauri-app/src/commands/recording.rs:70",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the is_recording function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace is_recording",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Frecording.rs&l=70"
+    },
+    {
+      "priority": 10,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "list_audio_devices",
+      "location": "tauri-app/src/commands/audio.rs:6",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the list_audio_devices function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace list_audio_devices",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Faudio.rs&l=6"
+    },
+    {
+      "priority": 11,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "list_lexicon_topics",
+      "location": "tauri-app/src/commands/lexicon.rs:50",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the list_lexicon_topics function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace list_lexicon_topics",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Flexicon.rs&l=50"
+    },
+    {
+      "priority": 12,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "open_prompt_in_editor",
+      "location": "tauri-app/src/commands/formatting.rs:64",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the open_prompt_in_editor function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace open_prompt_in_editor",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fformatting.rs&l=64"
+    },
+    {
+      "priority": 13,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "reset_ai_context",
+      "location": "tauri-app/src/commands/formatting.rs:42",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the reset_ai_context function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace reset_ai_context",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fformatting.rs&l=42"
+    },
+    {
+      "priority": 14,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "reset_ai_prompt",
+      "location": "tauri-app/src/commands/formatting.rs:106",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the reset_ai_prompt function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace reset_ai_prompt",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fformatting.rs&l=106"
+    },
+    {
+      "priority": 15,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "save_config",
+      "location": "tauri-app/src/commands/config.rs:47",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the save_config function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace save_config",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fconfig.rs&l=47"
+    },
+    {
+      "priority": 16,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "save_lexicon_entry",
+      "location": "tauri-app/src/commands/lexicon.rs:74",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the save_lexicon_entry function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace save_lexicon_entry",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Flexicon.rs&l=74"
+    },
+    {
+      "priority": 17,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "start_recording",
+      "location": "tauri-app/src/commands/recording.rs:12",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the start_recording function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace start_recording",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Frecording.rs&l=12"
+    },
+    {
+      "priority": 18,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "stop_recording",
+      "location": "tauri-app/src/commands/recording.rs:44",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the stop_recording function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace stop_recording",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Frecording.rs&l=44"
+    },
+    {
+      "priority": 19,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "transcribe_audio",
+      "location": "tauri-app/src/commands/stt.rs:11",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the transcribe_audio function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace transcribe_audio",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fstt.rs&l=11"
+    },
+    {
+      "priority": 20,
+      "kind": "unused_handler",
+      "action": "Remove unused handler",
+      "target": "transcribe_audio_streaming",
+      "location": "tauri-app/src/commands/stt.rs:82",
+      "impact": "Dead code - handler defined but never invoked",
+      "why": "No invoke() calls found in frontend for this handler",
+      "fix_hint": "Delete the transcribe_audio_streaming function and remove from generate_handler![]",
+      "complexity": "easy",
+      "trace_cmd": "loct trace transcribe_audio_streaming",
+      "open_url": "loctree://open?f=tauri-app%2Fsrc%2Fcommands%2Fstt.rs&l=82"
+    },
+    {
+      "priority": 21,
+      "kind": "circular_import",
+      "action": "Break circular import",
+      "target": "src/tray/icons.rs -> src/tray/types.rs -> src/tray/icons.rs",
+      "location": "src/tray/icons.rs",
+      "impact": "Circular imports can cause runtime errors and make code harder to understand",
+      "why": "Dependency cycle detected: src/tray/icons.rs → src/tray/types.rs → src/tray/icons.rs",
+      "fix_hint": "Extract shared code into a third module, or make the dependency unidirectional",
+      "complexity": "medium",
+      "trace_cmd": null,
+      "open_url": "loctree://open?f=src%2Ftray%2Ficons.rs"
+    },
+    {
+      "priority": 22,
+      "kind": "circular_import",
+      "action": "Break circular import",
+      "target": "src/tray/state.rs -> src/tray/submenus.rs -> src/tray/menu.rs -> src/tray/state.rs",
+      "location": "src/tray/state.rs",
+      "impact": "Circular imports can cause runtime errors and make code harder to understand",
+      "why": "Dependency cycle detected: src/tray/state.rs → src/tray/submenus.rs → src/tray/menu.rs → src/tray/state.rs",
+      "fix_hint": "Extract shared code into a third module, or make the dependency unidirectional",
+      "complexity": "medium",
+      "trace_cmd": null,
+      "open_url": "loctree://open?f=src%2Ftray%2Fstate.rs"
+    },
+    {
+      "priority": 23,
+      "kind": "opaque_passthrough",
+      "action": "Harden opaque passthrough type",
+      "target": "HoldMenuIds",
+      "location": "src/tray/submenus.rs:22",
+      "impact": "Severity: medium. Type is only flowing through function signatures; callers cannot import it directly",
+      "why": "'HoldMenuIds' is never imported directly but is used in signatures of build_hold_hotkeys_submenu (return)",
+      "fix_hint": "Either make the type private, or re-export it in the public API if intentional",
+      "complexity": "medium",
+      "trace_cmd": "loct query where-symbol HoldMenuIds",
+      "open_url": "loctree://open?f=src%2Ftray%2Fsubmenus.rs&l=22"
+    }
+  ],
+  "priority_tasks": [
+    {
+      "priority": 1,
+      "kind": "unused_handler",
+      "target": "format_transcript",
+      "location": "tauri-app/src/commands/formatting.rs:16",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the format_transcript function and remove from generate_handler![]",
+      "verify_cmd": "loct trace format_transcript"
+    },
+    {
+      "priority": 2,
+      "kind": "unused_handler",
+      "target": "get_ai_prompt",
+      "location": "tauri-app/src/commands/formatting.rs:51",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the get_ai_prompt function and remove from generate_handler![]",
+      "verify_cmd": "loct trace get_ai_prompt"
+    },
+    {
+      "priority": 3,
+      "kind": "unused_handler",
+      "target": "get_available_models",
+      "location": "tauri-app/src/commands/stt.rs:183",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the get_available_models function and remove from generate_handler![]",
+      "verify_cmd": "loct trace get_available_models"
+    },
+    {
+      "priority": 4,
+      "kind": "unused_handler",
+      "target": "get_config",
+      "location": "tauri-app/src/commands/config.rs:37",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the get_config function and remove from generate_handler![]",
+      "verify_cmd": "loct trace get_config"
+    },
+    {
+      "priority": 5,
+      "kind": "unused_handler",
+      "target": "get_current_audio_device",
+      "location": "tauri-app/src/commands/audio.rs:16",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the get_current_audio_device function and remove from generate_handler![]",
+      "verify_cmd": "loct trace get_current_audio_device"
+    },
+    {
+      "priority": 6,
+      "kind": "unused_handler",
+      "target": "get_current_model",
+      "location": "tauri-app/src/commands/stt.rs:197",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the get_current_model function and remove from generate_handler![]",
+      "verify_cmd": "loct trace get_current_model"
+    },
+    {
+      "priority": 7,
+      "kind": "unused_handler",
+      "target": "get_env_var",
+      "location": "tauri-app/src/commands/config.rs:142",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the get_env_var function and remove from generate_handler![]",
+      "verify_cmd": "loct trace get_env_var"
+    },
+    {
+      "priority": 8,
+      "kind": "unused_handler",
+      "target": "get_lexicon_entries",
+      "location": "tauri-app/src/commands/lexicon.rs:25",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the get_lexicon_entries function and remove from generate_handler![]",
+      "verify_cmd": "loct trace get_lexicon_entries"
+    },
+    {
+      "priority": 9,
+      "kind": "unused_handler",
+      "target": "is_recording",
+      "location": "tauri-app/src/commands/recording.rs:70",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the is_recording function and remove from generate_handler![]",
+      "verify_cmd": "loct trace is_recording"
+    },
+    {
+      "priority": 10,
+      "kind": "unused_handler",
+      "target": "list_audio_devices",
+      "location": "tauri-app/src/commands/audio.rs:6",
+      "why": "No invoke() calls found in frontend for this handler",
+      "risk": "low",
+      "fix_hint": "Delete the list_audio_devices function and remove from generate_handler![]",
+      "verify_cmd": "loct trace list_audio_devices"
+    }
+  ],
+  "hub_files": [
+    {
+      "path": "src/lib.rs",
+      "loc": 88,
+      "imports_count": 19,
+      "exports_count": 39,
+      "importers_count": 0,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/lib.rs --json"
+    },
+    {
+      "path": "src/hotkeys.rs",
+      "loc": 876,
+      "imports_count": 10,
+      "exports_count": 27,
+      "importers_count": 2,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/hotkeys.rs --json"
+    },
+    {
+      "path": "src/config/mod.rs",
+      "loc": 120,
+      "imports_count": 8,
+      "exports_count": 11,
+      "importers_count": 8,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/config/mod.rs --json"
+    },
+    {
+      "path": "src/tray/types.rs",
+      "loc": 195,
+      "imports_count": 6,
+      "exports_count": 15,
+      "importers_count": 6,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/tray/types.rs --json"
+    },
+    {
+      "path": "src/whisper/engine.rs",
+      "loc": 1033,
+      "imports_count": 19,
+      "exports_count": 14,
+      "importers_count": 1,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/whisper/engine.rs --json"
+    },
+    {
+      "path": "src/config/defaults.rs",
+      "loc": 95,
+      "imports_count": 0,
+      "exports_count": 23,
+      "importers_count": 1,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/config/defaults.rs --json"
+    },
+    {
+      "path": "src/controller.rs",
+      "loc": 1172,
+      "imports_count": 16,
+      "exports_count": 13,
+      "importers_count": 1,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/controller.rs --json"
+    },
+    {
+      "path": "src/ui.rs",
+      "loc": 699,
+      "imports_count": 12,
+      "exports_count": 15,
+      "importers_count": 1,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/ui.rs --json"
+    },
+    {
+      "path": "src/state/mod.rs",
+      "loc": 21,
+      "imports_count": 4,
+      "exports_count": 14,
+      "importers_count": 3,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/state/mod.rs --json"
+    },
+    {
+      "path": "src/tray/mod.rs",
+      "loc": 248,
+      "imports_count": 16,
+      "exports_count": 8,
+      "importers_count": 2,
+      "commands_count": 0,
+      "slice_cmd": "loct slice src/tray/mod.rs --json"
+    }
+  ],
+  "bundle": {
+    "handlers": {
+      "missing": [],
+      "unused": [
+        {
+          "name": "format_transcript",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/formatting.rs",
+            "line": 16,
+            "symbol": "format_transcript"
+          }
+        },
+        {
+          "name": "get_ai_prompt",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/formatting.rs",
+            "line": 51,
+            "symbol": "get_ai_prompt"
+          }
+        },
+        {
+          "name": "get_available_models",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/stt.rs",
+            "line": 183,
+            "symbol": "get_available_models"
+          }
+        },
+        {
+          "name": "get_config",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/config.rs",
+            "line": 37,
+            "symbol": "get_config"
+          }
+        },
+        {
+          "name": "get_current_audio_device",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/audio.rs",
+            "line": 16,
+            "symbol": "get_current_audio_device"
+          }
+        },
+        {
+          "name": "get_current_model",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/stt.rs",
+            "line": 197,
+            "symbol": "get_current_model"
+          }
+        },
+        {
+          "name": "get_env_var",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/config.rs",
+            "line": 142,
+            "symbol": "get_env_var"
+          }
+        },
+        {
+          "name": "get_lexicon_entries",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/lexicon.rs",
+            "line": 25,
+            "symbol": "get_lexicon_entries"
+          }
+        },
+        {
+          "name": "is_recording",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/recording.rs",
+            "line": 70,
+            "symbol": "is_recording"
+          }
+        },
+        {
+          "name": "list_audio_devices",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/audio.rs",
+            "line": 6,
+            "symbol": "list_audio_devices"
+          }
+        },
+        {
+          "name": "list_lexicon_topics",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/lexicon.rs",
+            "line": 50,
+            "symbol": "list_lexicon_topics"
+          }
+        },
+        {
+          "name": "open_prompt_in_editor",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/formatting.rs",
+            "line": 64,
+            "symbol": "open_prompt_in_editor"
+          }
+        },
+        {
+          "name": "reset_ai_context",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/formatting.rs",
+            "line": 42,
+            "symbol": "reset_ai_context"
+          }
+        },
+        {
+          "name": "reset_ai_prompt",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/formatting.rs",
+            "line": 106,
+            "symbol": "reset_ai_prompt"
+          }
+        },
+        {
+          "name": "save_config",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/config.rs",
+            "line": 47,
+            "symbol": "save_config"
+          }
+        },
+        {
+          "name": "save_lexicon_entry",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/lexicon.rs",
+            "line": 74,
+            "symbol": "save_lexicon_entry"
+          }
+        },
+        {
+          "name": "start_recording",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/recording.rs",
+            "line": 12,
+            "symbol": "start_recording"
+          }
+        },
+        {
+          "name": "stop_recording",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/recording.rs",
+            "line": 44,
+            "symbol": "stop_recording"
+          }
+        },
+        {
+          "name": "transcribe_audio",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/stt.rs",
+            "line": 11,
+            "symbol": "transcribe_audio"
+          }
+        },
+        {
+          "name": "transcribe_audio_streaming",
+          "status": "unused_handler",
+          "frontend": [],
+          "backend": {
+            "path": "tauri-app/src/commands/stt.rs",
+            "line": 82,
+            "symbol": "transcribe_audio_streaming"
+          }
+        }
+      ],
+      "unregistered": []
+    },
+    "duplicates": [
+      {
+        "name": "label",
+        "canonical": "src/config/types.rs",
+        "canonical_line": 76,
+        "score": 7,
+        "severity": "cross_module",
+        "files": 4
+      },
+      {
+        "name": "as_str",
+        "canonical": "src/config/types.rs",
+        "canonical_line": 109,
+        "score": 6,
+        "severity": "same_package",
+        "files": 3
+      },
+      {
+        "name": "start",
+        "canonical": "src/audio/recorder.rs",
+        "canonical_line": 200,
+        "score": 6,
+        "severity": "cross_module",
+        "files": 3
+      },
+      {
+        "name": "transcribe",
+        "canonical": "src/client.rs",
+        "canonical_line": 330,
+        "score": 6,
+        "severity": "cross_module",
+        "files": 3
+      },
+      {
+        "name": "CONFIG",
+        "canonical": "build.rs",
+        "canonical_line": 40,
+        "score": 4,
+        "severity": "cross_crate",
+        "files": 2
+      },
+      {
+        "name": "DEFAULT_MODEL",
+        "canonical": "src/config/models.rs",
+        "canonical_line": 14,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      },
+      {
+        "name": "MEL_FILTERS",
+        "canonical": "build.rs",
+        "canonical_line": 42,
+        "score": 4,
+        "severity": "cross_crate",
+        "files": 2
+      },
+      {
+        "name": "TOKENIZER",
+        "canonical": "build.rs",
+        "canonical_line": 41,
+        "score": 4,
+        "severity": "cross_crate",
+        "files": 2
+      },
+      {
+        "name": "WEIGHTS",
+        "canonical": "build.rs",
+        "canonical_line": 43,
+        "score": 4,
+        "severity": "cross_crate",
+        "files": 2
+      },
+      {
+        "name": "check_accessibility",
+        "canonical": "src/permissions.rs",
+        "canonical_line": 50,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      },
+      {
+        "name": "check_microphone",
+        "canonical": "src/permissions.rs",
+        "canonical_line": 96,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      },
+      {
+        "name": "detect_language",
+        "canonical": "src/whisper/engine.rs",
+        "canonical_line": 415,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      },
+      {
+        "name": "disable",
+        "canonical": "src/hotkeys.rs",
+        "canonical_line": 689,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      },
+      {
+        "name": "enable",
+        "canonical": "src/hotkeys.rs",
+        "canonical_line": 685,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      },
+      {
+        "name": "forward",
+        "canonical": "src/whisper/model.rs",
+        "canonical_line": 359,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      },
+      {
+        "name": "get_current_model",
+        "canonical": "src/client.rs",
+        "canonical_line": 1006,
+        "score": 4,
+        "severity": "cross_crate",
+        "files": 2
+      },
+      {
+        "name": "get_model_path",
+        "canonical": "src/config/models.rs",
+        "canonical_line": 75,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      },
+      {
+        "name": "is_enabled",
+        "canonical": "src/hotkeys.rs",
+        "canonical_line": 693,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      },
+      {
+        "name": "is_recording",
+        "canonical": "src/controller.rs",
+        "canonical_line": 1010,
+        "score": 4,
+        "severity": "cross_crate",
+        "files": 2
+      },
+      {
+        "name": "play_sound",
+        "canonical": "src/audio/playback.rs",
+        "canonical_line": 38,
+        "score": 4,
+        "severity": "same_package",
+        "files": 2
+      }
+    ],
+    "dead_exports": [],
+    "dynamic_imports": [],
+    "largest_files": [
+      {
+        "path": "src/controller.rs",
+        "loc": 1172
+      },
+      {
+        "path": "src/client.rs",
+        "loc": 1116
+      },
+      {
+        "path": "src/whisper/engine.rs",
+        "loc": 1033
+      },
+      {
+        "path": "src/ai_formatting.rs",
+        "loc": 907
+      },
+      {
+        "path": "src/hotkeys.rs",
+        "loc": 876
+      },
+      {
+        "path": "src/main.rs",
+        "loc": 743
+      },
+      {
+        "path": "src/ui.rs",
+        "loc": 699
+      },
+      {
+        "path": "tauri-app/src/ui/lab/mod.rs",
+        "loc": 624
+      },
+      {
+        "path": "src/audio/recorder.rs",
+        "loc": 548
+      },
+      {
+        "path": "src/tray/submenus.rs",
+        "loc": 484
+      },
+      {
+        "path": "src/backend.rs",
+        "loc": 476
+      },
+      {
+        "path": "src/clipboard.rs",
+        "loc": 467
+      },
+      {
+        "path": "src/voice_chat.rs",
+        "loc": 438
+      },
+      {
+        "path": "tauri-app/src/ui/settings/mod.rs",
+        "loc": 435
+      },
+      {
+        "path": "src/whisper/model.rs",
+        "loc": 409
+      },
+      {
+        "path": "src/voice_chat_ui.rs",
+        "loc": 399
+      },
+      {
+        "path": "src/tray/handlers.rs",
+        "loc": 392
+      },
+      {
+        "path": "src/config/loader.rs",
+        "loc": 386
+      },
+      {
+        "path": "src/config/types.rs",
+        "loc": 385
+      },
+      {
+        "path": "src/libraxis.rs",
+        "loc": 385
+      },
+      {
+        "path": "tests/e2e_tauri_full_flow.rs",
+        "loc": 373
+      },
+      {
+        "path": "src/state/history.rs",
+        "loc": 364
+      },
+      {
+        "path": "tauri-app/src/ui/teacher/mod.rs",
+        "loc": 313
+      },
+      {
+        "path": "tauri-app/src/hotkey_integration.rs",
+        "loc": 273
+      },
+      {
+        "path": "src/tray/mod.rs",
+        "loc": 248
+      }
+    ],
+    "cycles": [
+      {
+        "kind": "strict",
+        "members": [
+          "src/tray/icons.rs",
+          "src/tray/types.rs"
+        ]
+      },
+      {
+        "kind": "strict",
+        "members": [
+          "src/tray/state.rs",
+          "src/tray/submenus.rs",
+          "src/tray/menu.rs"
+        ]
+      }
+    ]
+  }
+}

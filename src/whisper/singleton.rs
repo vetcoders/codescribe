@@ -149,7 +149,7 @@ pub fn transcribe_streaming<'a>(
 
 /// Transcribe a file
 pub fn transcribe_file(path: &std::path::Path, language: Option<&str>) -> Result<String> {
-    let (samples, sample_rate) = crate::audio_loader::load_audio_file(path)
+    let (samples, sample_rate) = crate::audio::load_audio_file(path)
         .context("Failed to load audio file")?;
 
     transcribe(&samples, sample_rate, language)
@@ -173,7 +173,7 @@ mod tests {
     fn test_model_path_resolution() {
         // This test verifies the path resolution logic works
         // It may or may not find a model depending on environment
-        let result = resolve_model_path();
+        let result = resolve_model_path_fallback();
 
         // In CI without model, this will fail - that's expected
         if let Ok(path) = result {

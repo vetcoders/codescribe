@@ -93,22 +93,11 @@ impl ValidatedAudioPath {
     fn as_path(&self) -> &Path {
         &self.0
     }
-
-    /// Read the validated file contents.
-    ///
-    /// This is safe because the path has already been validated.
-    async fn read(&self) -> Result<Vec<u8>> {
-        tokio::fs::read(&self.0)
-            .await
-            .with_context(|| format!("Failed to read audio file: {:?}", self.0))
-    }
 }
 
 use crate::config::Config;
-use crate::models::ModelManager;
+use crate::config::models::ModelManager;
 use crate::tray::{TrayStatus, update_tray_status};
-use crate::voice_chat::{VoiceChatClient, VoiceChatEvent};
-use crate::voice_chat_ui;
 use crate::whisper::{DecodingParams, LocalWhisperEngine};
 use codescribe::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
@@ -473,7 +462,7 @@ impl RecordingController {
 
             // Play start beep if enabled
             if beep {
-                crate::sound::play_sound("Tink");
+                crate::audio::play_sound("Tink");
             }
 
             // Show badge with appropriate mode (Hold=red solid, Assistive=purple)
@@ -542,7 +531,7 @@ impl RecordingController {
         // Play start beep if enabled
         let beep_enabled = self.config.read().await.beep_on_start;
         if beep_enabled {
-            crate::sound::play_sound("Tink");
+            crate::audio::play_sound("Tink");
         }
 
         // Show pulsing red badge for toggle mode (hands-off recording)
@@ -645,7 +634,7 @@ impl RecordingController {
 
         // Save audio to transcriptions folder if enabled
         if self.config.read().await.dump_audio_logs {
-            crate::history::save_audio(audio_path.as_path(), recording_timestamp);
+            crate::state::history::save_audio(audio_path.as_path(), recording_timestamp);
         }
 
         // Normal transcription flow
@@ -764,217 +753,7 @@ impl RecordingController {
 
         // Save to history with same timestamp as audio file
         let entry =
-            crate::history::save_entry_with_timestamp(&formatted_text, Some(recording_timestamp));
-        info!("Transcript saved: {}", entry.path.display());
-
-        Ok(())
-    }
-
-    /// Process recording through Voice Chat WebSocket pipeline.
-    ///
-    /// This sends the audio to the backend via WebSocket, which:
-    /// 1. Transcribes the audio
-    /// 2. Detects sentence boundaries
-    /// 3. Streams LLM response tokens back
-    ///
-    /// The response is displayed in an overlay and copied to clipboard.
-    async fn process_voice_chat(
-        &self,
-        audio_path: &ValidatedAudioPath,
-        recording_timestamp: chrono::DateTime<chrono::Local>,
-    ) -> Result<()> {
-        use crossbeam_channel::unbounded;
-        use std::time::Duration;
-
-        // Show the overlay
-        voice_chat_ui::show_voice_chat_overlay();
-        voice_chat_ui::update_voice_chat_status("Connecting...");
-
-        // Create event channel for voice chat
-        let (event_tx, event_rx) = unbounded::<VoiceChatEvent>();
-
-        // Connect to voice chat WebSocket
-        let client = match VoiceChatClient::connect(event_tx).await {
-            Ok(client) => client,
-            Err(e) => {
-                error!("Failed to connect to voice chat: {}", e);
-                voice_chat_ui::update_voice_chat_status("Connection failed");
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                voice_chat_ui::hide_voice_chat_overlay();
-
-                // Fall back to normal assistive formatting
-                warn!("Falling back to standard assistive formatting");
-                return self
-                    .fallback_assistive_processing(audio_path, recording_timestamp)
-                    .await;
-            }
-        };
-
-        voice_chat_ui::update_voice_chat_status("Sending audio...");
-
-        // Read and send audio file in chunks (path already validated)
-        let audio_data = audio_path.read().await?;
-
-        const CHUNK_SIZE: usize = 16 * 1024; // 16KB chunks
-        let chunks: Vec<&[u8]> = audio_data.chunks(CHUNK_SIZE).collect();
-        let total_chunks = chunks.len();
-
-        info!(
-            "Sending {} audio chunks ({} bytes total)",
-            total_chunks,
-            audio_data.len()
-        );
-
-        for (i, chunk) in chunks.iter().enumerate() {
-            let is_last = i == total_chunks - 1;
-            if let Err(e) = client.send_audio_chunk(chunk, 16000, is_last).await {
-                error!("Failed to send audio chunk: {}", e);
-                voice_chat_ui::update_voice_chat_status("Send failed");
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                voice_chat_ui::hide_voice_chat_overlay();
-                return Err(e);
-            }
-
-            // Small delay between chunks
-            if !is_last {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
-
-        // Signal end of audio
-        if let Err(e) = client.send_end().await {
-            error!("Failed to send end signal: {}", e);
-        }
-
-        voice_chat_ui::update_voice_chat_status("Processing...");
-
-        // Process events from the voice chat
-        let mut full_response = String::new();
-        let mut got_response = false;
-        let timeout = Duration::from_secs(60); // 60 second timeout for LLM response
-        let start = std::time::Instant::now();
-
-        loop {
-            if start.elapsed() > timeout {
-                warn!("Voice chat timeout");
-                voice_chat_ui::update_voice_chat_status("Timeout");
-                break;
-            }
-
-            match event_rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(event) => match event {
-                    VoiceChatEvent::Connected => {
-                        debug!("Voice chat connected");
-                    }
-                    VoiceChatEvent::Transcript(text) => {
-                        info!("Transcript received: {}", text);
-                        voice_chat_ui::update_voice_chat_status("Thinking...");
-                    }
-                    VoiceChatEvent::SentenceComplete(text) => {
-                        info!("Sentence complete: {}", text);
-                    }
-                    VoiceChatEvent::LlmDelta(delta) => {
-                        voice_chat_ui::append_voice_chat_delta(&delta);
-                        full_response.push_str(&delta);
-                    }
-                    VoiceChatEvent::LlmDone {
-                        text,
-                        response_id: _,
-                    } => {
-                        info!("LLM response complete: {} chars", text.len());
-                        full_response = text;
-                        got_response = true;
-
-                        // Copy to clipboard
-                        if let Err(e) = crate::clipboard::copy(&full_response) {
-                            error!("Failed to copy to clipboard: {}", e);
-                        } else {
-                            info!("Response copied to clipboard");
-                        }
-
-                        voice_chat_ui::update_voice_chat_status("Copied to clipboard!");
-                        break;
-                    }
-                    VoiceChatEvent::Error(msg) => {
-                        error!("Voice chat error: {}", msg);
-                        voice_chat_ui::update_voice_chat_status(&format!("Error: {}", msg));
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        break;
-                    }
-                    VoiceChatEvent::Disconnected => {
-                        info!("Voice chat disconnected");
-                        break;
-                    }
-                },
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Continue waiting
-                    continue;
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    info!("Voice chat event channel closed");
-                    break;
-                }
-            }
-        }
-
-        // Close the WebSocket
-        let _ = client.close().await;
-
-        // Keep overlay visible for a moment, then hide
-        if got_response {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-        } else {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-        voice_chat_ui::hide_voice_chat_overlay();
-
-        // Save to history if we got a response (with same timestamp as audio)
-        if !full_response.is_empty() {
-            let entry = crate::history::save_entry_with_timestamp(
-                &full_response,
-                Some(recording_timestamp),
-            );
-            info!("Voice chat response saved: {}", entry.path.display());
-        }
-
-        Ok(())
-    }
-
-    /// Fallback to standard assistive processing when voice chat fails.
-    async fn fallback_assistive_processing(
-        &self,
-        audio_path: &ValidatedAudioPath,
-        recording_timestamp: chrono::DateTime<chrono::Local>,
-    ) -> Result<()> {
-        info!("Using fallback assistive processing");
-
-        let language = self.config.read().await.whisper_language;
-        let language_opt = match language {
-            crate::config::Language::Auto => None,
-            lang => Some(lang.as_str()),
-        };
-
-        // Transcribe (path already validated)
-        let raw_text = crate::client::transcribe(audio_path.as_path(), language_opt)
-            .await
-            .context("Transcription failed")?;
-
-        if raw_text.trim().is_empty() {
-            error!("Transcription failed: no text returned");
-            anyhow::bail!("Empty transcript");
-        }
-
-        // Format with assistive mode
-        let lang_str = language_opt.map(String::from);
-        let formatted_text =
-            crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), true).await;
-
-        // Paste
-        crate::clipboard::paste_text(&formatted_text).context("Failed to paste text")?;
-
-        // Save to history with same timestamp as audio
-        let entry =
-            crate::history::save_entry_with_timestamp(&formatted_text, Some(recording_timestamp));
+            crate::state::history::save_entry_with_timestamp(&formatted_text, Some(recording_timestamp));
         info!("Transcript saved: {}", entry.path.display());
 
         Ok(())

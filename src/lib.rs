@@ -1,25 +1,40 @@
-//! CodeScribe - Speech-to-text tray app for macOS
+//! CodeScribe - Speech-to-text with embedded Whisper model
 //!
-//! This is the library interface for CodeScribe components.
-//! The main binary is in `main.rs`.
+//! ## Quick Start
+//!
+//! ```ignore
+//! // Transcribe with embedded model (zero config!)
+//! codescribe::whisper::init()?;
+//! let text = codescribe::whisper::transcribe(&samples, 16000, Some("pl"))?;
+//! ```
+//!
+//! ## Architecture
+//!
+//! - **whisper** - Embedded Whisper model (~900MB in binary), zero I/O
+//! - **audio** - Recording and audio loading
+//! - **config** - User configuration
+//! - **ai_formatting** - Post-processing with LLMs
+//!
+//! Created by M&K (c)2026 VetCoders
 
-// Allow unexpected cfgs from objc crate's msg_send! macro
 #![allow(unexpected_cfgs)]
+
+// ═══════════════════════════════════════════════════════════
+// Core modules
+// ═══════════════════════════════════════════════════════════
 
 pub mod ai_formatting;
 pub mod audio;
-pub mod audio_loader;
 pub mod clipboard;
 pub mod config;
-pub mod conversation;
-pub mod history;
 pub mod permissions;
-pub mod prompts;
-pub mod models;
-pub mod sound;
+pub mod state;
 pub mod voice_chat;
 pub mod whisper;
-pub mod whisper_model;
+
+// ═══════════════════════════════════════════════════════════
+// macOS-specific modules
+// ═══════════════════════════════════════════════════════════
 
 #[cfg(target_os = "macos")]
 pub mod hotkeys;
@@ -30,13 +45,31 @@ pub mod ui;
 #[cfg(target_os = "macos")]
 pub mod voice_chat_ui;
 
-// Re-export commonly used types
+// ═══════════════════════════════════════════════════════════
+// Public API - Whisper (main interface)
+// ═══════════════════════════════════════════════════════════
+
+/// Initialize and transcribe with embedded model
+pub mod stt {
+    pub use crate::whisper::{
+        init, is_initialized, transcribe, transcribe_file, transcribe_streaming,
+        detect_language, get_model_path,
+    };
+    pub use crate::whisper::embedded::{is_embedded_available, get_embedded_data, EmbeddedModel};
+}
+
+// ═══════════════════════════════════════════════════════════
+// Public API - Audio
+// ═══════════════════════════════════════════════════════════
+
 pub use audio::{Recorder, RecorderConfig, RecorderDiagnostics};
 
-// Re-export API functions used by tauri-app and tests
-pub use ai_formatting::{has_active_context, reset_context};
-pub use conversation::has_active_conversation;
-pub use prompts::{get_assistive_prompt_path, get_formatting_prompt_path, reset_to_defaults};
+// ═══════════════════════════════════════════════════════════
+// Public API - AI & Context
+// ═══════════════════════════════════════════════════════════
+
+pub use config::{get_assistive_prompt_path, get_formatting_prompt_path, reset_to_defaults};
+pub use state::has_active_conversation;
 
 #[cfg(target_os = "macos")]
 pub use ui::{

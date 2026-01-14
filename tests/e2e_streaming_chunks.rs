@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use codescribe::audio_loader;
+use codescribe::audio;
 
 /// Path to synthetic test audio file
 fn test_audio_path() -> PathBuf {
@@ -58,7 +58,7 @@ fn test_streaming_callback_invoked() {
     let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
 
     let audio_path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&audio_path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
 
     // Track callback invocations
     let callback_count = Arc::new(AtomicUsize::new(0));
@@ -154,7 +154,7 @@ fn test_streaming_no_callback() {
     let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
 
     let audio_path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&audio_path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
 
     // No callback - should still transcribe
     let result = engine
@@ -201,7 +201,7 @@ fn test_chunk_word_boundaries() {
     let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
 
     let audio_path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&audio_path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
 
     let chunks: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let chunks_clone = Arc::clone(&chunks);

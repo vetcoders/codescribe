@@ -4,26 +4,20 @@
 
 mod ai_formatting;
 mod audio;
-mod audio_loader;
 mod backend;
 mod client;
 mod clipboard;
 mod config;
 mod controller;
-mod conversation;
-mod history;
 mod hotkeys;
 mod lab_server;
 mod launchd;
-mod models;
 mod permissions;
-mod prompts;
-mod sound;
+mod state;
 mod tray;
 mod voice_chat;
 mod voice_chat_ui;
 mod whisper;
-mod whisper_model;
 
 use anyhow::Result;
 use clap::Parser;
@@ -256,7 +250,7 @@ async fn handle_transcribe_command(
     } else {
         eprintln!("  Detecting language...");
         let start = Instant::now();
-        let (samples, sample_rate) = audio_loader::load_audio_file(&file)?;
+        let (samples, sample_rate) = audio::load_audio_file(&file)?;
         let detected = whisper::detect_language(&samples, sample_rate)?;
         eprintln!("  Detected: {} ({:?})", detected, start.elapsed());
         detected

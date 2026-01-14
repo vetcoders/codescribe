@@ -518,17 +518,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_calculate_rms() {
-        let samples = vec![0i16, 1000, -1000, 500, -500];
-        let rms = calculate_rms(&samples);
+    fn test_calculate_rms_f32() {
+        // Normalized f32 samples in range [-1.0, 1.0]
+        let samples = vec![0.0f32, 0.5, -0.5, 0.25, -0.25];
+        let rms = calculate_rms_f32(&samples);
         assert!(rms > 0.0);
         assert!(rms < 1.0);
     }
 
     #[test]
-    fn test_calculate_rms_empty() {
-        let samples: Vec<i16> = vec![];
-        let rms = calculate_rms(&samples);
+    fn test_calculate_rms_f32_empty() {
+        let samples: Vec<f32> = vec![];
+        let rms = calculate_rms_f32(&samples);
         assert_eq!(rms, 0.0);
     }
 
