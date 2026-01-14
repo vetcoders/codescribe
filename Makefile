@@ -1,11 +1,13 @@
 # CodeScribe - Pure Rust Build System
 # Speech-to-text tray app for macOS
 
-.PHONY: all build release install bundle install-app start stop restart status logs \
+.PHONY: all build release install install-no-embed config bundle install-app \
+        start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
-        lint format test check clean help \
+        lint format test demo demo-raw demo-assistive check clean help \
         tauri-dev tauri-build tauri-check \
-        dmg dmg-signed notarize download-model
+        dmg dmg-signed dmg-full notarize download-model \
+        hooks
 
 SHELL := /bin/bash
 VERSION_FILE := Cargo.toml
@@ -26,11 +28,27 @@ release:
 	@cargo build --release
 
 install:
-	@echo "Installing CodeScribe..."
+	@echo "Installing CodeScribe (with embedded model)..."
 	@cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
 	@echo "Installed: codescribe $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
+
+install-no-embed:
+	@echo "Installing CodeScribe (no embedded model)..."
+	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
+	@mkdir -p ~/.codescribe
+	@pwd > ~/.codescribe/repo_path
+	@echo "Installed: codescribe $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
+	@echo "Note: Set CODESCRIBE_MODEL_PATH at runtime"
+
+config:
+	@mkdir -p ~/.codescribe
+	@if [ ! -f ~/.codescribe/.env ]; then \
+		cp .env.example ~/.codescribe/.env 2>/dev/null || echo "# CodeScribe Config" > ~/.codescribe/.env; \
+		echo "Created ~/.codescribe/.env"; \
+	fi
+	@$(EDITOR) ~/.codescribe/.env
 
 bundle: release
 	@echo "Creating macOS app bundle..."
@@ -161,6 +179,16 @@ check: lint test
 	@echo "Quality gate passed"
 
 # ============================================================================
+# Git Hooks
+# ============================================================================
+
+hooks:
+	@echo "Installing pre-commit hooks..."
+	@command -v pre-commit >/dev/null 2>&1 || { echo "Install pre-commit: pipx install pre-commit"; exit 1; }
+	@pre-commit install --hook-type pre-commit --hook-type pre-push
+	@echo "Hooks installed: pre-commit (check+fmt) + pre-push (clippy+semgrep)"
+
+# ============================================================================
 # Cleanup
 # ============================================================================
 
@@ -177,43 +205,46 @@ help:
 	@echo "CodeScribe - Speech-to-text (Pure Rust)"
 	@echo ""
 	@echo "Build & Install:"
-	@echo "  make build         Build debug binary"
-	@echo "  make release       Build release binary"
-	@echo "  make install       Install CLI to ~/.cargo/bin"
-	@echo "  make bundle        Create CodeScribe.app bundle"
-	@echo "  make install-app   Install to /Applications"
+	@echo "  make build           Build debug binary"
+	@echo "  make release         Build release binary (with embedded model)"
+	@echo "  make install         Install CLI (~888MB with embedded model)"
+	@echo "  make install-no-embed Install without model (needs CODESCRIBE_MODEL_PATH)"
+	@echo "  make config          Edit ~/.codescribe/.env"
+	@echo "  make bundle          Create CodeScribe.app bundle"
+	@echo "  make install-app     Install to /Applications"
 	@echo ""
 	@echo "Release & Distribution:"
-	@echo "  make dmg           Build DMG (ad-hoc signed)"
-	@echo "  make dmg-signed    Build DMG (Developer ID signed)"
-	@echo "  make dmg-full      Build DMG with bundled model (~900MB)"
-	@echo "  make notarize      Notarize DMG with Apple"
-	@echo "  make download-model Download Whisper model from HF"
+	@echo "  make dmg             Build DMG (ad-hoc signed)"
+	@echo "  make dmg-signed      Build DMG (Developer ID signed)"
+	@echo "  make dmg-full        Build DMG with embedded model (~888MB)"
+	@echo "  make notarize        Notarize DMG with Apple"
+	@echo "  make download-model  Download Whisper model from HF"
 	@echo ""
 	@echo "Run:"
-	@echo "  make start         Start CodeScribe"
-	@echo "  make stop          Stop CodeScribe"
-	@echo "  make restart       Restart"
-	@echo "  make status        Show status"
-	@echo "  make logs          Show logs"
-	@echo "  make logs-follow   Tail logs"
+	@echo "  make start           Start CodeScribe"
+	@echo "  make stop            Stop CodeScribe"
+	@echo "  make restart         Restart"
+	@echo "  make status          Show status"
+	@echo "  make logs            Show logs"
+	@echo "  make logs-follow     Tail logs"
 	@echo ""
 	@echo "Version:"
-	@echo "  make version       Show current version"
-	@echo "  make bump-patch    Bump patch (0.5.1 -> 0.5.2)"
-	@echo "  make bump-minor    Bump minor (0.5.1 -> 0.6.0)"
-	@echo "  make bump-major    Bump major (0.5.1 -> 1.0.0)"
+	@echo "  make version         Show current version"
+	@echo "  make bump-patch      Bump patch (0.5.1 -> 0.5.2)"
+	@echo "  make bump-minor      Bump minor (0.5.1 -> 0.6.0)"
+	@echo "  make bump-major      Bump major (0.5.1 -> 1.0.0)"
 	@echo ""
 	@echo "Quality:"
-	@echo "  make lint          Run clippy + fmt check"
-	@echo "  make format        Format code"
-	@echo "  make test          Run tests"
-	@echo "  make check         Full quality gate"
+	@echo "  make lint            Run clippy + fmt check"
+	@echo "  make format          Format code"
+	@echo "  make test            Run tests"
+	@echo "  make check           Full quality gate"
+	@echo "  make hooks           Install pre-commit + pre-push hooks"
 	@echo ""
 	@echo "Tauri:"
-	@echo "  make tauri-dev     Start dev server"
-	@echo "  make tauri-build   Build release"
-	@echo "  make tauri-check   Check compilation"
+	@echo "  make tauri-dev       Start dev server"
+	@echo "  make tauri-build     Build release"
+	@echo "  make tauri-check     Check compilation"
 
 # ============================================================================
 # Release & Distribution

@@ -16,7 +16,7 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
 
     // --- Prompts: load-or-create ---
     let formatting = prompts::get_formatting_prompt();
-    assert!(formatting.contains("You are a text formatting assistant"));
+    assert!(formatting.contains("TRANSCRIPTION FORMATTER"));
 
     let assistive = prompts::get_assistive_prompt();
     assert!(assistive.contains("Jesteś kurierem/enhancerem"));
@@ -35,7 +35,7 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
 
     // Reset to defaults
     prompts::reset_to_defaults().expect("reset prompts");
-    assert!(prompts::get_formatting_prompt().contains("You are a text formatting assistant"));
+    assert!(prompts::get_formatting_prompt().contains("TRANSCRIPTION FORMATTER"));
 
     // --- History: should respect config_dir override ---
     let e1 = history::save_entry("raw one two");
@@ -50,7 +50,7 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
         std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
         // Keep some slack for local CI variability.
         std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "2000");
-        std::env::set_var("LLM_HOST", &endpoint);
+        std::env::set_var("LLM_ENDPOINT", &endpoint);
         std::env::set_var("LLM_MODEL", "test-model");
         std::env::set_var("LLM_API_KEY", "test-key");
     }

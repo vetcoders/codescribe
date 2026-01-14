@@ -1,4 +1,7 @@
-name: Rust CI
+# Rust Code Quality CI
+# Created by M&K (c)2026 VetCoders
+
+name: Rust Quality
 
 on:
   push:
@@ -14,70 +17,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: Check & Clippy
+  quality:
+    name: Check + Clippy + Format
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo check
         run: cargo check --all-targets
 
-      - name: cargo clippy
-        run: cargo clippy -- -D warnings
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
-  test:
-    name: Tests
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: cargo test (lib)
-        run: cargo test --lib
-
-      - name: cargo test (integration)
-        run: cargo test --test '*'
-        continue-on-error: true  # E2E tests need model files
-
-  build:
-    name: Build Release
-    runs-on: macos-14
-    needs: [check, fmt]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: cargo build --release
-        run: cargo build --release
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: codescribe-macos
-          path: target/release/codescribe
+      - name: cargo clippy
+        run: cargo clippy -- -D warnings

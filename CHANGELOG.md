@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.6.1] – 2026-01-14
+
+### Added
+- **Model embedded in binary** – Release builds now include the Whisper model directly via
+  `include_bytes!`, eliminating runtime model loading and disk I/O. Binary size ~888MB with
+  model welded in. Debug builds still use external model path.
+- **Provider separation** – New `LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}` convention
+  allows different LLM providers for formatting (Ctrl hold) vs assistive mode (Ctrl+Shift hold).
+- **Keep Audio toggle** – Added "Keep Audio" option to History submenu for enabling/disabling
+  paired `.wav` + `.txt` storage on the fly.
+- **Slug in filenames** – Transcription and audio files now include first 3 words as slug for
+  easier identification: `2026-01-14_12-30-00_hello-world-test.txt`.
+- **Whisper singleton API** – `whisper::singleton::init()` and `transcribe()` for shared model
+  instance with automatic embedded vs external path resolution.
+
+### Changed
+- **Responses API optimization** – Instructions are now sent only on first request; subsequent
+  requests rely on `previous_response_id` to preserve context, reducing payload size.
+- **Build safety** – Release builds now hard-fail when model is missing. Set
+  `CODESCRIBE_NO_EMBED=1` to build without embedding (binary will require `CODESCRIBE_MODEL_PATH`
+  at runtime).
+- **Language enum** – Removed `Auto` variant from `Language` enum; use explicit language codes.
+- **Tray menu restructure** – Reorganized submenus for History, Modes, and Settings.
+- **Environment schema** – Updated `.env.example` with complete configuration reference including
+  provider separation, audio settings, and debug options.
+
+### Fixed
+- **Clippy warnings** – Resolved unused imports, dead code, and type complexity warnings.
+- **E2E tests** – Fixed `LLM_HOST` → `LLM_ENDPOINT` migration in all test files.
+- **Borrow checker** – Fixed move-after-borrow in AI formatting trace logging.
+
 ## [v0.6.0] – 2026-01-13
 
 ### Added
@@ -151,5 +182,6 @@ Historical notes below predate the Keep a Changelog-style format used above.
   tests around the new controllers, and refreshed documentation to mirror the
   current tree/layout.
 
-[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.6.1...HEAD
+[v0.6.1]: https://github.com/VetCoders/CodeScribe/compare/v0.6.0...v0.6.1
 [v0.6.0]: https://github.com/VetCoders/CodeScribe/compare/19e05ad...v0.6.0

@@ -32,6 +32,27 @@ impl HistoryEntry {
     }
 }
 
+/// Create a filename-safe slug from the first N words of text
+/// Returns empty string if no valid words found
+fn make_slug(text: &str, max_words: usize) -> String {
+    let slug: String = text
+        .split_whitespace()
+        .take(max_words)
+        .collect::<Vec<_>>()
+        .join("-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .collect::<String>()
+        .to_lowercase();
+
+    // Limit length to avoid filesystem issues
+    if slug.len() > 30 {
+        slug.chars().take(30).collect()
+    } else {
+        slug
+    }
+}
+
 /// Get the transcriptions base directory
 fn transcriptions_base_dir() -> PathBuf {
     // Use config_dir as the single source of truth for filesystem roots.
@@ -75,10 +96,16 @@ pub fn save_entry_with_timestamp(text: &str, timestamp: Option<DateTime<Local>>)
     // Get transcriptions directory for this date
     let day_dir = transcriptions_dir(&now);
 
-    // Create file with HHMMSS.txt format.
+    // Create file with HHMMSS_slug.txt format (slug = first 3 words)
     // Note: multiple writes within the same second can collide (e.g. raw + formatted back-to-back),
     // so we ensure a unique filename by appending an incrementing suffix.
-    let base = now.format("%H%M%S").to_string();
+    let time_base = now.format("%H%M%S").to_string();
+    let slug = make_slug(text, 3);
+    let base = if slug.is_empty() {
+        time_base.clone()
+    } else {
+        format!("{}_{}", time_base, slug)
+    };
     let mut path = day_dir.join(format!("{}.txt", base));
     if path.exists() {
         for i in 1..=10_000 {
@@ -191,18 +218,19 @@ pub fn open_history_folder() {
     }
 }
 
-/// Save audio file to transcriptions folder with the given timestamp
+/// Save audio file to transcriptions folder with the given timestamp and optional slug
 ///
-/// Creates a paired file alongside the transcript (e.g., 143052.wav pairs with 143052.txt)
+/// Creates a paired file alongside the transcript (e.g., 143052_cześć-jak.wav pairs with 143052_cześć-jak.txt)
 ///
 /// # Arguments
 /// * `src_path` - Path to the source WAV file (typically a temp file)
 /// * `timestamp` - Timestamp to use for the filename (should match the transcript)
+/// * `transcript_text` - Optional transcript text to generate slug from (first 3 words)
 ///
 /// # Returns
 /// * `Some(PathBuf)` - Path to the saved audio file on success
 /// * `None` - If src_path doesn't exist or copy failed
-pub fn save_audio(src_path: &Path, timestamp: DateTime<Local>) -> Option<PathBuf> {
+pub fn save_audio(src_path: &Path, timestamp: DateTime<Local>, transcript_text: Option<&str>) -> Option<PathBuf> {
     if !src_path.exists() {
         warn!("save_audio: source file does not exist: {:?}", src_path);
         return None;
@@ -211,9 +239,14 @@ pub fn save_audio(src_path: &Path, timestamp: DateTime<Local>) -> Option<PathBuf
     // Get transcriptions directory for this date
     let dest_dir = transcriptions_dir(&timestamp);
 
-    // Create filename with HHMMSS.wav format.
-    // Ensure uniqueness for multiple saves within the same second.
-    let base = timestamp.format("%H%M%S").to_string();
+    // Create filename with HHMMSS_slug.wav format (matching transcript naming)
+    let time_base = timestamp.format("%H%M%S").to_string();
+    let slug = transcript_text.map(|t| make_slug(t, 3)).unwrap_or_default();
+    let base = if slug.is_empty() {
+        time_base.clone()
+    } else {
+        format!("{}_{}", time_base, slug)
+    };
     let mut dest_path = dest_dir.join(format!("{}.wav", base));
     if dest_path.exists() {
         for i in 1..=10_000 {
@@ -243,7 +276,7 @@ pub fn save_audio(src_path: &Path, timestamp: DateTime<Local>) -> Option<PathBuf
 #[deprecated(note = "Use save_audio() with explicit timestamp instead")]
 #[allow(dead_code)] // Legacy API
 pub fn dump_audio(src_path: &Path, _reason: &str) -> Option<PathBuf> {
-    save_audio(src_path, Local::now())
+    save_audio(src_path, Local::now(), None)
 }
 
 /// Open the transcriptions folder in Finder (alias for open_history_folder)

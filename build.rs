@@ -2,6 +2,10 @@
 //! Build script for CodeScribe
 //! Exports embedded model data and configuration.
 //! Generates embedded_model_data.rs in OUT_DIR for release builds.
+//!
+//! Release builds REQUIRE the model by default.
+//! Set CODESCRIBE_NO_EMBED=1 to build without embedding (for dev/CI).
+//!
 //! Created by M&K (c)2026 VetCoders
 
 use std::env;
@@ -16,14 +20,15 @@ fn main() {
     println!("cargo:rerun-if-changed=models/{}", MODEL_NAME);
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-    let should_try_embed = profile == "release";
+    let is_release = profile == "release";
+    let no_embed = env::var("CODESCRIBE_NO_EMBED").is_ok();
 
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
         let codescribe_dir = dirs::home_dir()
             .map(|h| h.join(".codescribe"))
             .unwrap_or_else(|| PathBuf::from("/tmp/.codescribe"));
 
-        if profile == "release" {
+        if is_release {
             let _ = fs::create_dir_all(&codescribe_dir);
             let repo_path_file = codescribe_dir.join("repo_path");
             let _ = fs::write(&repo_path_file, &manifest_dir);
@@ -32,8 +37,10 @@ fn main() {
         let model_path = Path::new(&manifest_dir).join("models").join(MODEL_NAME);
         let out_dir = env::var("OUT_DIR").unwrap();
         let dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
+        let model_exists = model_path.join("tokenizer.json").exists();
 
-        if should_try_embed && model_path.join("tokenizer.json").exists() {
+        if is_release && model_exists {
+            // Release + model found → embed it
             println!("cargo:warning=Embedding model from: {}", model_path.display());
             let content = format!(
                 r#"
@@ -50,10 +57,27 @@ fn main() {
             fs::write(&dest_path, content).expect("Failed to write embedded_model_data.rs");
             println!("cargo:rustc-cfg=embed_model");
             println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR={}", model_path.display());
+        } else if is_release && !model_exists && !no_embed {
+            // Release + no model + no opt-out → HARD FAIL
+            eprintln!();
+            eprintln!("═══════════════════════════════════════════════════════════════");
+            eprintln!("  ERROR: Whisper model not found for embedding!");
+            eprintln!("═══════════════════════════════════════════════════════════════");
+            eprintln!("  Expected: {}", model_path.display());
+            eprintln!();
+            eprintln!("  Solutions:");
+            eprintln!("    1. Download model:  make download-model");
+            eprintln!("    2. Skip embedding:  CODESCRIBE_NO_EMBED=1 cargo build --release");
+            eprintln!();
+            eprintln!("  Note: Without embedded model, set CODESCRIBE_MODEL_PATH at runtime.");
+            eprintln!("═══════════════════════════════════════════════════════════════");
+            eprintln!();
+            std::process::exit(1);
         } else {
-            if should_try_embed {
-                 println!("cargo:warning=Model not found for embedding at: {}", model_path.display());
-                 println!("cargo:warning=Run: ./scripts/download-model.sh");
+            // Debug build OR explicit no-embed → skip embedding
+            if is_release && no_embed {
+                println!("cargo:warning=CODESCRIBE_NO_EMBED set - skipping model embedding");
+                println!("cargo:warning=Binary will require CODESCRIBE_MODEL_PATH at runtime");
             }
             println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
         }

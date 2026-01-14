@@ -37,7 +37,8 @@
                     ┌─────────┴─────────┐
                     │ Whisper Model     │
                     │ large-v3-turbo    │
-                    │ mlx-q8 (~800MB)   │
+                    │ mlx-q8 (~888MB)   │
+                    │ (embedded in bin) │
                     └───────────────────┘
 ```
 
@@ -153,12 +154,21 @@ The `hotkey_integration.rs` module:
 
 ### Model Location
 
-**Production**: Bundled in `Resources/models/whisper-large-v3-turbo-mlx-q8/`
-**Development**: `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
+**Release Builds**: Model is embedded directly in the binary via `include_bytes!` (~888MB total).
+Zero disk I/O, zero file paths, model bytes loaded directly into GPU memory.
+
+**Development**: External model from:
+1. `CODESCRIBE_MODEL_PATH` environment variable
+2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
+3. `./models/whisper-large-v3-turbo-mlx-q8/` in repo
+
+**Build Options**:
+- `cargo build --release` → embedded model (default)
+- `CODESCRIBE_NO_EMBED=1 cargo build --release` → no embedding
 
 Model files required:
 - `config.json`
-- `model.safetensors` (~800MB)
+- `weights.safetensors` (~894MB)
 - `tokenizer.json`
 - `mel_filters.npz`
 
@@ -191,27 +201,29 @@ CodeScribe/
 │   │   └── state.rs          # AppState (config, stt engine)
 │   ├── Trunk.toml            # WASM build config
 │   └── tauri.conf.json       # Tauri config
-└── docs/
-    ├── ARCHITECTURE.md       # This file
-    └── ROADMAP-TAURI-INTEGRATION.md
+├── docs/
+│   ├── ARCHITECTURE.md       # This file
+│   └── TEAM_SETUP.md         # Team setup guide
+└── .ai-agents/               # Planning/internal docs
 ```
 
-## Next Steps
+## Implementation Status
 
-### Phase 4: Wire Streaming (Priority)
-1. Add `start_recording` IPC command
-2. Add `stop_recording` IPC command
-3. Connect "Start streaming" button → `start_recording`
-4. Implement audio capture in Tauri backend (cpal)
-5. On stop → auto-transcribe → return result
+### ✅ Completed (v0.6.1)
 
-### Phase 5: Hotkey Integration
-1. Add hotkey listener thread to Tauri setup
-2. Emit Tauri events on hotkey press/release
-3. Frontend can listen and show recording state
-4. Or: backend handles full flow (paste to active app)
+- **Phase 4: Streaming** - `start_recording`/`stop_recording` IPC implemented, cpal audio capture working
+- **Phase 5: Hotkeys** - CGEventTap integration, hold Ctrl/Ctrl+Shift modes, double-Option toggle
+- **Phase 6: Model Embedding** - Model baked into binary via `include_bytes!`, zero disk I/O
 
-### Phase 6: Model Bundling
-1. Add model to `tauri.conf.json` resources
-2. Modify `local_stt.rs` to check bundle path first
-3. Test cold start (~5-10s for model load)
+### Current Capabilities
+
+| Feature | Status |
+|---------|--------|
+| Local Whisper STT (Metal GPU) | ✅ |
+| Embedded model (~888MB binary) | ✅ |
+| Global hotkeys (CGEventTap) | ✅ |
+| AI formatting (Responses API) | ✅ |
+| Provider separation (formatting/assistive) | ✅ |
+| Tray app with submenus | ✅ |
+| Tauri GUI (Voice Lab, Settings) | ✅ |
+| History with slug filenames | ✅ |

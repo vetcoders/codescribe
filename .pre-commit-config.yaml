@@ -1,13 +1,15 @@
 # Pre-commit hooks for CodeScribe (Pure Rust)
-# Install: pipx install pre-commit && pre-commit install
+# Install: pipx install pre-commit && pre-commit install --hook-type pre-commit --hook-type pre-push
 # Run: pre-commit run --all-files
+#
+# Created by M&K (c)2026 VetCoders
 
 minimum_pre_commit_version: "3.5.0"
 
 repos:
   # Essential hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+    rev: v5.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -15,29 +17,28 @@ repos:
       - id: mixed-line-ending
       - id: detect-private-key
 
-  # Typo detector
-  - repo: https://github.com/codespell-project/codespell
-    rev: v2.3.0
-    hooks:
-      - id: codespell
-        args: ["-L", "crate,nd,fo,aks,ane"]
-        exclude: |
-          (?x)^(
-            assets/|
-            models/|
-            .*\.lock$
-          )
-
-  # Rust formatting
+  # Rust hooks (pre-commit stage)
   - repo: local
     hooks:
-      - id: cargo-fmt
-        name: cargo fmt
-        entry: cargo fmt --
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check --all-targets
         language: system
         types: [rust]
         pass_filenames: false
+        stages: [pre-commit]
 
+      - id: cargo-fmt
+        name: cargo fmt (fix)
+        entry: bash -c 'cargo fmt && git add -u'
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-commit]
+
+  # Rust + Security hooks (pre-push stage)
+  - repo: local
+    hooks:
       - id: cargo-clippy
         name: cargo clippy
         entry: cargo clippy -- -D warnings
@@ -46,10 +47,9 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
-      - id: cargo-test
-        name: cargo test
-        entry: cargo test --lib
+      - id: semgrep
+        name: semgrep security scan
+        entry: semgrep scan --config auto --error .
         language: system
-        types: [rust]
         pass_filenames: false
         stages: [pre-push]

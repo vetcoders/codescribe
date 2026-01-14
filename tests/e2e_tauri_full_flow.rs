@@ -7,7 +7,7 @@
 //!
 //! To run with formatting (requires LLM):
 //!   CODESCRIBE_E2E_STT=1 CODESCRIBE_E2E_FORMATTING=1 \
-//!   LLM_HOST=... LLM_MODEL=... cargo test --test e2e_tauri_full_flow
+//!   LLM_ENDPOINT=... LLM_MODEL=... cargo test --test e2e_tauri_full_flow
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -213,7 +213,7 @@ async fn test_full_pipeline_with_formatting_mocked() {
     unsafe {
         std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
         std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "2000");
-        std::env::set_var("LLM_HOST", &endpoint);
+        std::env::set_var("LLM_ENDPOINT", &endpoint);
         std::env::set_var("LLM_MODEL", "test-model");
         std::env::set_var("LLM_API_KEY", "test-key");
     }
@@ -271,11 +271,11 @@ async fn test_full_pipeline_with_real_formatting() {
     }
 
     // Check LLM config
-    let llm_host = std::env::var("LLM_HOST").ok();
+    let llm_host = std::env::var("LLM_ENDPOINT").ok();
     let llm_model = std::env::var("LLM_MODEL").ok();
 
     if llm_host.is_none() || llm_model.is_none() {
-        eprintln!("Skipping: LLM_HOST and LLM_MODEL required");
+        eprintln!("Skipping: LLM_ENDPOINT and LLM_MODEL required");
         return;
     }
 

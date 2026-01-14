@@ -43,7 +43,7 @@ async fn e2e_sse_streaming_mock() {
 
     unsafe {
         std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
-        std::env::set_var("LLM_HOST", &endpoint);
+        std::env::set_var("LLM_ENDPOINT", &endpoint);
         std::env::set_var("LLM_MODEL", "gpt-4o");
         // Fake key but contains "openai" won't trigger - need endpoint detection
         std::env::set_var("LLM_API_KEY", "sk-test-fake-key");
@@ -81,7 +81,7 @@ async fn e2e_sse_streaming_real_openai() {
     }
 
     unsafe {
-        std::env::set_var("LLM_HOST", "https://api.openai.com/v1/responses");
+        std::env::set_var("LLM_ENDPOINT", "https://api.openai.com/v1/responses");
         std::env::set_var("LLM_MODEL", "gpt-4o");
         std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
     }

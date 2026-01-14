@@ -632,12 +632,7 @@ impl RecordingController {
         // Capture timestamp NOW for pairing audio with transcript
         let recording_timestamp = chrono::Local::now();
 
-        // Save audio to transcriptions folder if enabled
-        if self.config.read().await.dump_audio_logs {
-            crate::state::history::save_audio(audio_path.as_path(), recording_timestamp);
-        }
-
-        // Normal transcription flow
+        // Normal transcription flow (audio saved AFTER we have text for slug)
         info!(
             "Transcribing audio file: {}",
             audio_path.as_path().display()
@@ -700,6 +695,15 @@ impl RecordingController {
         }
 
         info!("Raw transcript captured ({} chars)", raw_text.len());
+
+        // Save audio to transcriptions folder if enabled (now we have text for slug)
+        if self.config.read().await.dump_audio_logs {
+            crate::state::history::save_audio(
+                audio_path.as_path(),
+                recording_timestamp,
+                Some(&raw_text),
+            );
+        }
 
         // Check for repetition loops (Whisper hallucination like "Wielki, Wielki, Wielki...")
         let has_repetition = crate::ai_formatting::has_repetition_loop(&raw_text);
