@@ -22,7 +22,10 @@ pub mod prompts;
 mod types;
 
 // Re-export types
-pub use types::{Config, HoldMods, Language, ToggleTrigger};
+pub use types::{Config, HoldMods, ToggleTrigger};
+// Language re-exported for external consumers (tauri-app)
+#[allow(unused_imports)]
+pub use types::Language;
 
 // Re-export prompts API (public API for tauri-app)
 #[allow(unused_imports)] // Public API for external consumers
@@ -41,7 +44,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.hold_mods, HoldMods::Ctrl);
-        assert_eq!(config.whisper_language, Language::Auto);
+        assert_eq!(config.whisper_language, Language::Polish); // Polish is default
         assert_eq!(config.ai_provider, AiProvider::Harmony);
         assert_eq!(config.ai_max_tokens, 512);
         assert!(!config.ai_formatting_enabled);
@@ -58,9 +61,10 @@ mod tests {
 
     #[test]
     fn test_language_parsing() {
-        assert_eq!("auto".parse::<Language>(), Ok(Language::Auto));
         assert_eq!("pl".parse::<Language>(), Ok(Language::Polish));
         assert_eq!("en".parse::<Language>(), Ok(Language::English));
+        // "auto" maps to Polish (legacy compatibility)
+        assert_eq!("auto".parse::<Language>(), Ok(Language::Polish));
         assert!("invalid".parse::<Language>().is_err());
     }
 

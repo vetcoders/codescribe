@@ -12,12 +12,14 @@ use tracing::{debug, error, info, warn};
 
 /// A single history entry
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields prepared for history menu UI
 pub struct HistoryEntry {
     pub path: PathBuf,
     pub timestamp: DateTime<Local>,
     pub preview: String,
 }
 
+#[allow(dead_code)] // Prepared for history menu UI
 impl HistoryEntry {
     /// Get a formatted label for display in menus
     pub fn label(&self) -> String {

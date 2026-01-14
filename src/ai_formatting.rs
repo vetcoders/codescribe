@@ -12,14 +12,10 @@
 //! - Anti-repetition filtering (fixes Whisper loops like "Wielki, Wielki...")
 //! - Language-specific formatting
 //!
-//! Configuration (required environment variables):
-//! - LLM_HOST: Full URL to LLM endpoint (e.g., "http://localhost:11434/v1/responses")
-//! - LLM_MODEL: Model name (e.g., "qwen3-coder:480b-cloud")
-//! - LLM_API_KEY: API key for authentication (not needed for local Ollama)
+//! Configuration contract:
+//! - LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY} - mode-specific config
+//! - LLM_{ENDPOINT,MODEL,API_KEY} - shared fallback defaults
 //!
-//! Legacy fallbacks: OLLAMA_HOST -> LLM_HOST, OLLAMA_MODEL -> LLM_MODEL
-//!
-//! Supports both cloud providers (via /v1/responses) and local Ollama (/api/chat).
 //! Authentication: `Authorization: Bearer <key>` + `x-api-key: <key>` (dual-header)
 
 use anyhow::{Context, Result};
@@ -28,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// HTTP client for AI providers
 static AI_CLIENT: OnceLock<Client> = OnceLock::new();
@@ -75,14 +71,57 @@ fn get_env_non_empty(candidates: &[&str], what: &str) -> Result<String> {
     );
 }
 
-/// Get LLM host from environment (LLM_HOST with OLLAMA_HOST legacy fallback)
-fn get_llm_host() -> Result<String> {
-    get_env_non_empty(&["LLM_HOST", "OLLAMA_HOST"], "LLM host")
+// ============================================================================
+// LLM Configuration - Separate providers for Formatting vs Assistive
+// ============================================================================
+//
+// Contract: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
+// Fallback: LLM_{ENDPOINT,MODEL,API_KEY} (shared defaults)
+//
+// FORMATTING mode (cheap, fast): punctuation, structure, cleanup
+// ASSISTIVE mode (smart): Voice Chat, AI assistant
+//
+// NO legacy variables. Clean contract only.
+
+/// Helper: get specific var or fall back to shared default
+fn get_mode_config(specific_key: &str, default_key: &str, what: &str) -> Result<String> {
+    // Try specific first
+    if let Ok(val) = env::var(specific_key) {
+        let val = val.trim();
+        if !val.is_empty() {
+            return Ok(val.to_string());
+        }
+    }
+    // Fall back to shared default
+    get_env_non_empty(&[default_key], what)
 }
 
-/// Get LLM model from environment (LLM_MODEL with OLLAMA_MODEL legacy fallback)
-fn get_llm_model() -> Result<String> {
-    get_env_non_empty(&["LLM_MODEL", "OLLAMA_MODEL"], "LLM model")
+// ---- FORMATTING mode config ----
+
+fn get_formatting_endpoint() -> Result<String> {
+    get_mode_config("LLM_FORMATTING_ENDPOINT", "LLM_ENDPOINT", "LLM endpoint (formatting)")
+}
+
+fn get_formatting_model() -> Result<String> {
+    get_mode_config("LLM_FORMATTING_MODEL", "LLM_MODEL", "LLM model (formatting)")
+}
+
+fn get_formatting_api_key() -> Result<String> {
+    get_mode_config("LLM_FORMATTING_API_KEY", "LLM_API_KEY", "LLM API key (formatting)")
+}
+
+// ---- ASSISTIVE mode config ----
+
+fn get_assistive_endpoint() -> Result<String> {
+    get_mode_config("LLM_ASSISTIVE_ENDPOINT", "LLM_ENDPOINT", "LLM endpoint (assistive)")
+}
+
+fn get_assistive_model() -> Result<String> {
+    get_mode_config("LLM_ASSISTIVE_MODEL", "LLM_MODEL", "LLM model (assistive)")
+}
+
+fn get_assistive_api_key() -> Result<String> {
+    get_mode_config("LLM_ASSISTIVE_API_KEY", "LLM_API_KEY", "LLM API key (assistive)")
 }
 
 fn prune_memory(memory: &mut Vec<MemoryMessage>) {
@@ -259,11 +298,7 @@ struct ChatMessage {
     content: String,
 }
 
-/// Max tokens for normal formatting
-const FORMATTING_MAX_TOKENS: u32 = 2048;
-
-/// Max tokens for assistive mode (higher for complex responses)
-const ASSISTIVE_MAX_TOKENS: u32 = 4096;
+// No token limits - let the API decide. Tokens are cheap, lost notes are not.
 
 /// Check if output is effectively the same as input (raw-like)
 /// Returns true if normalized content (lowercase, alphanumeric only) matches.
@@ -482,17 +517,19 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
             assistive,
             cleaned.len()
         );
-        // Select prompt and max tokens based on mode
-        let (mut system_prompt, max_tokens) = if assistive {
+        // Select prompt based on mode
+        let mut system_prompt = if assistive {
             if attempt == 0 {
-                info!("Using assistive mode (AI assistant)");
+                let model = get_assistive_model().unwrap_or_else(|_| "unknown".into());
+                info!("Using assistive mode (model: {})", model);
             }
-            (crate::config::prompts::get_assistive_prompt(), ASSISTIVE_MAX_TOKENS)
+            crate::config::prompts::get_assistive_prompt()
         } else {
             if attempt == 0 {
-                info!("Using formatting mode");
+                let model = get_formatting_model().unwrap_or_else(|_| "unknown".into());
+                info!("Using formatting mode (model: {})", model);
             }
-            (crate::config::prompts::get_formatting_prompt(), FORMATTING_MAX_TOKENS)
+            crate::config::prompts::get_formatting_prompt()
         };
 
         // If retrying, wait and strengthen instructions
@@ -520,7 +557,7 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
         let mut result_opt = if has_ollama() {
             match tokio::time::timeout(
                 attempt_timeout,
-                call_ollama(&user_message, &system_prompt, max_tokens, assistive),
+                call_ollama(&user_message, &system_prompt, assistive),
             )
             .await
             {
@@ -540,7 +577,11 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
 
         // Try LLM endpoint if Ollama failed/skipped
         if result_opt.is_none() {
-            let endpoint = get_llm_host().unwrap_or_default();
+            let endpoint = if assistive {
+                get_assistive_endpoint().unwrap_or_default()
+            } else {
+                get_formatting_endpoint().unwrap_or_default()
+            };
             let use_streaming = is_openai_endpoint(&endpoint);
 
             // Streaming gets longer timeout (60s), sync gets 30s
@@ -554,7 +595,7 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
                 // SSE streaming for OpenAI/Libraxis
                 match tokio::time::timeout(
                     llm_timeout,
-                    call_llm_endpoint_streaming(&user_message, &system_prompt, max_tokens, assistive),
+                    call_llm_endpoint_streaming(&user_message, &system_prompt, assistive),
                 )
                 .await
                 {
@@ -570,7 +611,7 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
                 // Sync mode for other providers
                 match tokio::time::timeout(
                     llm_timeout,
-                    call_llm_endpoint(&user_message, &system_prompt, max_tokens, assistive),
+                    call_llm_endpoint(&user_message, &system_prompt, assistive),
                 )
                 .await
                 {
@@ -586,6 +627,20 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
         }
 
         if let Some(formatted) = result_opt {
+             // Detect AI refusal responses (OpenAI content policy)
+             let formatted_lower = formatted.to_lowercase();
+             let is_refusal = formatted_lower.contains("i'm sorry")
+                 || formatted_lower.contains("i cannot")
+                 || formatted_lower.contains("i can't assist")
+                 || formatted_lower.contains("i can't help")
+                 || formatted_lower.contains("i'm not able")
+                 || formatted_lower.contains("as an ai");
+
+             if is_refusal {
+                 warn!("AI returned refusal response, returning raw input instead");
+                 return cleaned;
+             }
+
              // Analyze result quality
              let cleaned_trim = cleaned.trim();
              let formatted_trim = formatted.trim();
@@ -643,25 +698,19 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
 
 /// Call LLM endpoint using /v1/responses API
 ///
-/// Requires environment variables:
-/// - LLM_HOST: Full URL to endpoint (e.g., "http://localhost:11434/v1/responses")
-/// - LLM_MODEL: Model name (e.g., "qwen3-coder:480b-cloud")
-/// - LLM_API_KEY: API key for authentication
-///
-/// Legacy fallbacks: OLLAMA_HOST -> LLM_HOST, OLLAMA_MODEL -> LLM_MODEL
+/// Uses mode-aware config: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
+/// Falls back to LLM_{ENDPOINT,MODEL,API_KEY} if specific vars not set.
 async fn call_llm_endpoint(
     user_message: &str,
     system_prompt: &str,
-    max_tokens: u32,
     assistive: bool,
 ) -> Result<String> {
-    let endpoint = get_llm_host()?;
-    let model = get_llm_model()?;
-    let api_key = env::var("LLM_API_KEY").context("LLM_API_KEY not set")?;
-
-    if api_key.is_empty() {
-        anyhow::bail!("LLM_API_KEY is empty");
-    }
+    // Mode-aware config: formatting vs assistive use different providers
+    let (endpoint, model, api_key) = if assistive {
+        (get_assistive_endpoint()?, get_assistive_model()?, get_assistive_api_key()?)
+    } else {
+        (get_formatting_endpoint()?, get_formatting_model()?, get_formatting_api_key()?)
+    };
 
     // Use higher temperature for assistive mode (more creative responses)
     let temperature = if assistive { 0.3 } else { 0.1 };
@@ -670,7 +719,24 @@ async fn call_llm_endpoint(
     // Even in formatting mode - helps LLM understand thematic context (e.g., "Rust" vs "roost")
     let previous_response_id = crate::state::conversation::get_previous_response_id();
 
-    // Build Responses API request
+    // TRACE: full chain details for debugging (before model is moved)
+    trace!(
+        "LLM request chain: endpoint={}, model={}, mode={}, temp={}, api_key={}...{}",
+        endpoint,
+        model,
+        if assistive { "assistive" } else { "formatting" },
+        temperature,
+        &api_key[..8.min(api_key.len())],
+        &api_key[api_key.len().saturating_sub(4)..]
+    );
+    debug!(
+        "Calling LLM endpoint {} for {} (temp={})",
+        endpoint,
+        if assistive { "assistive" } else { "formatting" },
+        temperature
+    );
+
+    // Build Responses API request (no token limit - let API decide)
     let request = ResponsesRequest {
         model,
         input: vec![InputItem {
@@ -680,20 +746,13 @@ async fn call_llm_endpoint(
                 text: user_message.to_string(),
             }],
         }],
-        previous_response_id,
-        instructions: Some(system_prompt.to_string()),
-        max_output_tokens: Some(max_tokens),
+        previous_response_id: previous_response_id.clone(),
+        // Only send instructions on first request - Responses API preserves them via previous_response_id
+        instructions: if previous_response_id.is_some() { None } else { Some(system_prompt.to_string()) },
+        max_output_tokens: None,
         temperature: Some(temperature),
         stream: false,
     };
-
-    debug!(
-        "Calling LLM endpoint {} for {} (max_tokens={}, temp={})",
-        endpoint,
-        if assistive { "assistive" } else { "formatting" },
-        max_tokens,
-        temperature
-    );
 
     // Dual-header authentication (both Bearer and x-api-key for compatibility)
     let response = get_client()
@@ -735,15 +794,6 @@ async fn call_llm_endpoint(
 
     // Store response_id for conversation continuity (all modes - thematic context)
     crate::state::conversation::set_response_id(responses_result.id.clone());
-
-    // Sanity check - only for formatting mode (assistive can return any length)
-    if !assistive {
-        let max_len_multiplier = 2;
-        if formatted.len() > user_message.len() * max_len_multiplier {
-            anyhow::bail!("Response too long");
-        }
-    }
-
     debug!("Response id: {}", responses_result.id);
     Ok(formatted)
 }
@@ -755,25 +805,44 @@ fn is_openai_endpoint(endpoint: &str) -> bool {
 
 /// Call LLM endpoint with SSE streaming (OpenAI Responses API)
 ///
-/// Uses Server-Sent Events for faster first-token response.
-/// Falls back to sync mode if streaming fails.
+/// Uses mode-aware config: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
 async fn call_llm_endpoint_streaming(
     user_message: &str,
     system_prompt: &str,
-    max_tokens: u32,
     assistive: bool,
 ) -> Result<String> {
     use futures_util::StreamExt;
 
-    let endpoint = get_llm_host()?;
-    let model = get_llm_model()?;
-    let api_key = env::var("LLM_API_KEY").context("LLM_API_KEY not set")?;
+    // Mode-aware config: formatting vs assistive use different providers
+    let (endpoint, model, api_key) = if assistive {
+        (get_assistive_endpoint()?, get_assistive_model()?, get_assistive_api_key()?)
+    } else {
+        (get_formatting_endpoint()?, get_formatting_model()?, get_formatting_api_key()?)
+    };
 
     let temperature = if assistive { 0.3 } else { 0.1 };
 
     // Get previous_response_id - thematic context helps even in formatting mode
     let previous_response_id = crate::state::conversation::get_previous_response_id();
 
+    // TRACE: full chain details for debugging (before model is moved)
+    trace!(
+        "SSE request chain: endpoint={}, model={}, mode={}, temp={}, api_key={}...{}",
+        endpoint,
+        model,
+        if assistive { "assistive" } else { "formatting" },
+        temperature,
+        &api_key[..8.min(api_key.len())],
+        &api_key[api_key.len().saturating_sub(4)..]
+    );
+    debug!(
+        "SSE streaming to {} for {} (temp={})",
+        endpoint,
+        if assistive { "assistive" } else { "formatting" },
+        temperature
+    );
+
+    // No token limit - let API decide
     let request = ResponsesRequest {
         model,
         input: vec![InputItem {
@@ -783,19 +852,13 @@ async fn call_llm_endpoint_streaming(
                 text: user_message.to_string(),
             }],
         }],
-        previous_response_id,
-        instructions: Some(system_prompt.to_string()),
-        max_output_tokens: Some(max_tokens),
+        previous_response_id: previous_response_id.clone(),
+        // Only send instructions on first request - Responses API preserves them via previous_response_id
+        instructions: if previous_response_id.is_some() { None } else { Some(system_prompt.to_string()) },
+        max_output_tokens: None,
         temperature: Some(temperature),
         stream: true,
     };
-
-    debug!(
-        "SSE streaming to {} for {} (max_tokens={})",
-        endpoint,
-        if assistive { "assistive" } else { "formatting" },
-        max_tokens
-    );
 
     let response = get_client()
         .post(&endpoint)
@@ -877,30 +940,24 @@ async fn call_llm_endpoint_streaming(
         crate::state::conversation::set_response_id(response_id.clone());
     }
 
-    // Sanity check for formatting mode
-    if !assistive {
-        let max_len_multiplier = 2;
-        if formatted.len() > user_message.len() * max_len_multiplier {
-            anyhow::bail!("Response too long");
-        }
-    }
-
     debug!("SSE complete, response_id: {}", response_id);
     Ok(formatted)
 }
 
 /// Call Ollama/local LLM for text formatting/assistive mode
 ///
-/// Uses LLM_HOST (or legacy OLLAMA_HOST) for host, LLM_MODEL (or legacy OLLAMA_MODEL) for model.
-/// Ollama native API uses /api/chat endpoint format.
+/// Uses mode-aware config. Ollama native API uses /api/chat endpoint format.
 async fn call_ollama(
     user_message: &str,
     system_prompt: &str,
-    max_tokens: u32,
     assistive: bool,
 ) -> Result<String> {
-    let host = get_llm_host()?;
-    let model = get_llm_model()?;
+    // Mode-aware config
+    let (host, model) = if assistive {
+        (get_assistive_endpoint()?, get_assistive_model()?)
+    } else {
+        (get_formatting_endpoint()?, get_formatting_model()?)
+    };
 
     // Ollama native API uses /api/chat - strip any /v1/responses suffix
     let base_host = host
@@ -914,20 +971,20 @@ async fn call_ollama(
 
     let messages = build_ollama_messages(system_prompt, user_message, assistive);
 
+    // No token limit - let Ollama decide
     let request = OllamaRequest {
         model,
         messages,
         stream: false,
         options: OllamaOptions {
             temperature,
-            num_predict: max_tokens,
+            num_predict: 0, // 0 = no limit in Ollama
         },
     };
 
     debug!(
-        "Calling Ollama for {} (max_tokens={}, temp={})",
+        "Calling Ollama for {} (temp={})",
         if assistive { "assistive" } else { "formatting" },
-        max_tokens,
         temperature
     );
 
@@ -970,46 +1027,41 @@ async fn call_ollama(
     Ok(formatted)
 }
 
-/// Check if local LLM (Ollama native /api/chat) is configured
-/// Returns true if LLM_HOST points to localhost AND doesn't use /v1/ path
-/// Returns false if env vars are not set or using /v1/ endpoints (Responses API format)
+/// Check if local Ollama is configured for formatting mode
+/// Returns true if endpoint points to localhost AND doesn't use /v1/ path
 fn has_ollama() -> bool {
-    let host = match get_llm_host() {
-        Ok(h) => h,
-        Err(_) => return false, // No host configured
+    let endpoint = match get_formatting_endpoint() {
+        Ok(e) => e,
+        Err(_) => return false,
     };
 
     // Skip Ollama native format if endpoint uses /v1/ (Responses API)
-    if host.contains("/v1/") {
+    if endpoint.contains("/v1/") {
         return false;
     }
 
     // Check if pointing to localhost
-    host.contains("127.0.0.1") || host.contains("localhost")
+    endpoint.contains("127.0.0.1") || endpoint.contains("localhost")
 }
 
-/// Check if any AI provider is configured
-/// Returns true if:
-/// - Local Ollama is configured (LLM_HOST points to localhost, no API key needed)
-/// - Remote LLM is configured with LLM_HOST + LLM_MODEL + LLM_API_KEY
+/// Check if AI formatting is available
+/// Returns true if at least formatting mode is configured
 pub fn has_api_key() -> bool {
-    // Check if required env vars are set
-    let has_host = get_llm_host().is_ok();
-    let has_model = get_llm_model().is_ok();
+    // Need endpoint and model for formatting
+    let has_endpoint = get_formatting_endpoint().is_ok();
+    let has_model = get_formatting_model().is_ok();
 
-    if !has_host || !has_model {
+    if !has_endpoint || !has_model {
         return false;
     }
 
-    // Ollama doesn't need an API key
+    // Local Ollama doesn't need API key
     if has_ollama() {
         return true;
     }
 
     // Remote LLM requires API key
-    env::var("LLM_API_KEY")
-        .map(|k| !k.is_empty())
-        .unwrap_or(false)
+    get_formatting_api_key().is_ok()
 }
 
 #[cfg(test)]

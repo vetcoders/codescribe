@@ -189,6 +189,7 @@ pub struct MenuIds {
 
     // History submenu
     pub history_save: MenuId,
+    pub keep_audio: MenuId,
     pub history_copy_latest: MenuId,
     pub history_open_folder: MenuId,
 

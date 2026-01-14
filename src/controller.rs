@@ -650,10 +650,8 @@ impl RecordingController {
         let mut raw_text_opt = None;
         let use_local_stt = self.config.read().await.use_local_stt;
 
-        let language_opt = match language {
-            crate::config::Language::Auto => None,
-            lang => Some(lang.as_str()),
-        };
+        // Always pass explicit language - no auto-detect (causes Whisper issues)
+        let language_opt = Some(language.as_str());
 
         if use_local_stt {
             let local_engine = self.local_stt.clone();

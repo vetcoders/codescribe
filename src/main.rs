@@ -143,9 +143,24 @@ WHISPER_MODEL=mlx-community/whisper-large-v3-mlx
 WHISPER_LANGUAGE=en
 
 # === LLM (AI Formatting/Assistive) ===
+# Contract: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
+# Fallback: LLM_{ENDPOINT,MODEL,API_KEY} (shared defaults)
+
+# Shared defaults
 LLM_ENDPOINT=https://api.libraxis.cloud/v1/responses
+LLM_MODEL=gpt-4o-mini
 LLM_API_KEY=your-api-key-here # get it from https://api.libraxis.cloud/access
-LLM_MODEL=gpt-oss-120b-mlx
+
+# Formatting mode: cheap & fast (uses shared defaults by default)
+# LLM_FORMATTING_ENDPOINT=
+# LLM_FORMATTING_MODEL=
+# LLM_FORMATTING_API_KEY=
+
+# Assistive mode: smart model for Voice Chat
+# LLM_ASSISTIVE_ENDPOINT=
+LLM_ASSISTIVE_MODEL=claude-sonnet-4-20250514
+# LLM_ASSISTIVE_API_KEY=
+
 AI_FORMATTING_ENABLED=1
 
 # === TTS (Text-to-Speech) - future ===

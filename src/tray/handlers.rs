@@ -60,6 +60,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     // History submenu
     else if event_id == &menu_ids.history_save {
         handle_toggle_history();
+    } else if event_id == &menu_ids.keep_audio {
+        handle_toggle_keep_audio();
     } else if event_id == &menu_ids.history_copy_latest {
         handle_copy_latest_to_clipboard();
     } else if event_id == &menu_ids.history_open_folder {
@@ -171,6 +173,17 @@ fn handle_toggle_history() {
     let _ = config.save_to_env("HISTORY_ENABLED", if new_state { "1" } else { "0" });
     info!(
         "History saving toggled: {}",
+        if new_state { "ON" } else { "OFF" }
+    );
+}
+
+/// Toggle audio dump (keep audio files)
+fn handle_toggle_keep_audio() {
+    let config = Config::load();
+    let new_state = !config.dump_audio_logs;
+    let _ = config.save_to_env("DUMP_AUDIO_LOGS", if new_state { "1" } else { "0" });
+    info!(
+        "Keep Audio toggled: {}",
         if new_state { "ON" } else { "OFF" }
     );
 }
