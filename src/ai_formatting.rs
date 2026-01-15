@@ -874,9 +874,13 @@ async fn call_llm_endpoint(
     Ok(formatted)
 }
 
-/// Check if endpoint is OpenAI-compatible (supports SSE streaming)
-fn is_openai_endpoint(endpoint: &str) -> bool {
-    endpoint.contains("openai.com") || endpoint.contains("libraxis")
+/// Check if streaming should be used for this endpoint
+fn is_openai_endpoint(_endpoint: &str) -> bool {
+    // TODO: Fix SSE parser - streaming is MORE reliable but our parser has bugs
+    // Enable with LLM_USE_STREAMING=1 when parser is fixed
+    env::var("LLM_USE_STREAMING")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false)
 }
 
 /// Call LLM endpoint with SSE streaming (OpenAI Responses API)
