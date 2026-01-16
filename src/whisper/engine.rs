@@ -270,6 +270,7 @@ impl LocalWhisperEngine {
     }
 
     /// Get current decoding parameters.
+    #[allow(dead_code)] // Public API for external consumers
     pub fn decoding_params(&self) -> &DecodingParams {
         &self.decoding_params
     }
@@ -768,7 +769,8 @@ fn parse_language_token(token: &str) -> Option<&str> {
     }
 }
 
-fn append_with_overlap_dedup(out: &mut String, segment: &str) {
+/// Helper for deduplication at chunk boundaries
+pub fn append_with_overlap_dedup(out: &mut String, segment: &str) {
     let seg = segment.trim();
     if seg.is_empty() {
         return;

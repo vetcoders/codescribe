@@ -98,11 +98,10 @@ impl ValidatedAudioPath {
 use crate::config::Config;
 use crate::config::models::ModelManager;
 use crate::tray::{TrayStatus, update_tray_status};
-use crate::whisper::{DecodingParams, LocalWhisperEngine};
 use codescribe::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
 // TODO: Re-enable when implementing recorder
-use crate::audio::Recorder;
+use crate::audio::streaming_recorder::StreamingRecorder;
 
 /// Application state enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +159,7 @@ pub struct RecordingController {
     state: Arc<RwLock<State>>,
 
     /// Audio recorder instance
-    recorder: Arc<Mutex<Recorder>>,
+    recorder: Arc<Mutex<StreamingRecorder>>,
 
     /// Whether assistive formatting mode is enabled
     assistive_mode: Arc<RwLock<bool>>,
@@ -173,9 +172,6 @@ pub struct RecordingController {
 
     /// Lock to serialize finish_recording calls
     serial_lock: Arc<Mutex<()>>,
-
-    /// Local STT engine (optional)
-    local_stt: Arc<Mutex<Option<LocalWhisperEngine>>>,
 }
 
 impl RecordingController {
@@ -188,7 +184,7 @@ impl RecordingController {
             config.hold_start_delay_ms, config.beep_on_start, config.whisper_language
         );
 
-        let recorder = Recorder::new().expect("Failed to initialize audio recorder");
+        let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
         if let Ok(models) = model_manager.list_models() {
@@ -196,33 +192,11 @@ impl RecordingController {
                 info!("Available local models: {:?}", models);
             }
         }
-        let model_path = model_manager.get_model_path(&config.local_model);
 
-        let local_stt_engine =
-            if config.use_local_stt && model_manager.check_model_exists(&config.local_model) {
-                match LocalWhisperEngine::new_with_params(&model_path, DecodingParams::default()) {
-                    Ok(engine) => {
-                        info!(
-                            "Local STT engine initialized with model: {} (params: {:?})",
-                            config.local_model,
-                            engine.decoding_params()
-                        );
-                        Some(engine)
-                    }
-                    Err(e) => {
-                        warn!("Failed to initialize local STT engine: {}", e);
-                        None
-                    }
-                }
-            } else {
-                if config.use_local_stt {
-                    warn!(
-                        "Local STT enabled but model not found at: {}",
-                        model_path.display()
-                    );
-                }
-                None
-            };
+        // Initialize Whisper engine (singleton)
+        if let Err(e) = crate::whisper::init() {
+            warn!("Failed to initialize Whisper engine: {}", e);
+        }
 
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -232,7 +206,6 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
-            local_stt: Arc::new(Mutex::new(local_stt_engine)),
         }
     }
 
@@ -247,7 +220,7 @@ impl RecordingController {
             cfg.hold_start_delay_ms, cfg.beep_on_start, cfg.whisper_language
         );
 
-        let recorder = Recorder::new().expect("Failed to initialize audio recorder");
+        let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
         if let Ok(models) = model_manager.list_models() {
@@ -255,33 +228,11 @@ impl RecordingController {
                 info!("Available local models: {:?}", models);
             }
         }
-        let model_path = model_manager.get_model_path(&cfg.local_model);
 
-        let local_stt_engine =
-            if cfg.use_local_stt && model_manager.check_model_exists(&cfg.local_model) {
-                match LocalWhisperEngine::new_with_params(&model_path, DecodingParams::default()) {
-                    Ok(engine) => {
-                        info!(
-                            "Local STT engine reloaded with model: {} (params: {:?})",
-                            cfg.local_model,
-                            engine.decoding_params()
-                        );
-                        Some(engine)
-                    }
-                    Err(e) => {
-                        warn!("Failed to initialize local STT engine: {}", e);
-                        None
-                    }
-                }
-            } else {
-                if cfg.use_local_stt {
-                    warn!(
-                        "Local STT enabled but model not found at: {}",
-                        model_path.display()
-                    );
-                }
-                None
-            };
+        // Initialize Whisper engine (singleton)
+        if let Err(e) = crate::whisper::init() {
+            warn!("Failed to initialize Whisper engine: {}", e);
+        }
 
         Self {
             config,
@@ -291,7 +242,6 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
-            local_stt: Arc::new(Mutex::new(local_stt_engine)),
         }
     }
 
@@ -418,6 +368,7 @@ impl RecordingController {
         let config = self.config.read().await;
         let delay_ms = config.hold_start_delay_ms;
         let beep = config.beep_on_start;
+        let language = config.whisper_language;
         drop(config); // Release read lock
 
         // Capture assistive mode for badge display
@@ -455,7 +406,7 @@ impl RecordingController {
 
             // Start the recorder
             let mut rec = recorder.lock().await;
-            if let Err(e) = rec.start().await {
+            if let Err(e) = rec.start(Some(language.as_str().to_string())).await {
                 error!("Failed to start recorder: {}", e);
                 return;
             }
@@ -524,9 +475,11 @@ impl RecordingController {
 
         info!("Starting toggle recording (session={})", new_session_id);
 
+        let language = self.config.read().await.whisper_language;
+
         // Start the recorder
         let mut recorder = self.recorder.lock().await;
-        recorder.start().await?;
+        recorder.start(Some(language.as_str().to_string())).await?;
 
         // Play start beep if enabled
         let beep_enabled = self.config.read().await.beep_on_start;
@@ -619,90 +572,72 @@ impl RecordingController {
     async fn process_recording(&self, _session_id: Option<String>, assistive: bool) -> Result<()> {
         // Stop the recorder and get audio file path
         let mut recorder = self.recorder.lock().await;
-        let raw_audio_path = recorder
-            .stop()
-            .await
-            .context("Failed to stop recorder")?
-            .ok_or_else(|| anyhow::anyhow!("No audio file produced"))?;
+        let (streaming_text, raw_audio_path_opt) =
+            recorder.stop().await.context("Failed to stop recorder")?;
         drop(recorder); // Release lock
 
-        // Validate audio path to prevent path traversal attacks
-        let audio_path = ValidatedAudioPath::new(&raw_audio_path)?;
+        // Check audio path validity (if present)
+        let audio_path = if let Some(path) = raw_audio_path_opt {
+            match ValidatedAudioPath::new(&path) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    warn!("Invalid audio path: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Capture timestamp NOW for pairing audio with transcript
         let recording_timestamp = chrono::Local::now();
 
-        // Normal transcription flow (audio saved AFTER we have text for slug)
-        info!(
-            "Transcribing audio file: {}",
-            audio_path.as_path().display()
-        );
-
         // Get language from config
         let language = self.config.read().await.whisper_language;
-
-        // Call backend transcription with language parameter
-        let mut raw_text_opt = None;
+        let language_opt = Some(language.as_str());
         let use_local_stt = self.config.read().await.use_local_stt;
 
-        // Always pass explicit language - no auto-detect (causes Whisper issues)
-        let language_opt = Some(language.as_str());
+        let mut raw_text_opt = None;
 
+        // 1. Try Streaming Result (Local)
         if use_local_stt {
-            let local_engine = self.local_stt.clone();
-            let path_owned = audio_path.as_path().to_path_buf();
-            let language_owned = language_opt.map(|s| s.to_string());
-
-            // Run in blocking task to avoid blocking async runtime
-            // Since we use spawn_blocking, we need to handle JoinError too, but we use ?
-            let local_result = tokio::task::spawn_blocking(move || {
-                let mut guard = local_engine.blocking_lock();
-                match guard.as_mut().as_mut() {
-                    Some(engine) => {
-                        engine.transcribe_file_with_language(&path_owned, language_owned.as_deref())
-                    }
-                    None => Err(anyhow::anyhow!("Local engine not initialized")),
-                }
-            })
-            .await;
-
-            match local_result {
-                Ok(Ok(text)) => {
-                    info!("Local STT: {} chars transcribed", text.len());
-                    raw_text_opt = Some(text);
-                }
-                Ok(Err(e)) => {
-                    warn!("Local STT failed, falling back to cloud: {}", e);
-                }
-                Err(e) => {
-                    warn!("Local STT task panicked, falling back to cloud: {}", e);
-                }
+            if !streaming_text.trim().is_empty() {
+                info!(
+                    "Using streaming transcription result ({} chars)",
+                    streaming_text.len()
+                );
+                raw_text_opt = Some(streaming_text);
+            } else {
+                warn!("Streaming returned empty text");
             }
         }
 
-        let raw_text = if let Some(text) = raw_text_opt {
-            text
-        } else {
-            info!("Using cloud STT (LibraxisAI)");
-            crate::client::transcribe(audio_path.as_path(), language_opt)
-                .await
-                .context("Cloud transcription failed")?
-        };
-
-        if raw_text.trim().is_empty() {
-            error!("Transcription failed: no text returned");
-            anyhow::bail!("Empty transcript");
+        // 2. Fallback to Cloud if needed (and we have audio file)
+        if raw_text_opt.is_none() {
+            if let Some(path) = &audio_path {
+                info!("Falling back to cloud STT (LibraxisAI)");
+                match crate::client::transcribe(path.as_path(), language_opt).await {
+                    Ok(text) => raw_text_opt = Some(text),
+                    Err(e) => error!("Cloud transcription failed: {}", e),
+                }
+            } else {
+                warn!("No audio file available for cloud fallback");
+            }
         }
+
+        let raw_text = raw_text_opt.ok_or_else(|| anyhow::anyhow!("Empty transcript"))?;
 
         info!("Raw transcript captured ({} chars)", raw_text.len());
 
         // Save audio to transcriptions folder if enabled (now we have text for slug)
         if self.config.read().await.dump_audio_logs {
-            crate::state::history::save_audio(
-                audio_path.as_path(),
-                recording_timestamp,
-                Some(&raw_text),
-            );
+            if let Some(path) = &audio_path {
+                crate::state::history::save_audio(
+                    path.as_path(),
+                    recording_timestamp,
+                    Some(&raw_text),
+                );
+            }
         }
 
         // Check for repetition loops (Whisper hallucination like "Wielki, Wielki, Wielki...")

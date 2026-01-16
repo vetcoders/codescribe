@@ -49,7 +49,7 @@ impl Config {
             }
         }
         if let Ok(val) = std::env::var("HOLD_EXCLUSIVE") {
-            self.hold_exclusive = val.parse().unwrap_or(false);
+            self.hold_exclusive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
         if let Ok(val) = std::env::var("TOGGLE_TRIGGER") {
             if let Ok(trigger) = val.parse::<ToggleTrigger>() {
@@ -115,7 +115,7 @@ impl Config {
 
         // Sound
         if let Ok(val) = std::env::var("BEEP_ON_START") {
-            self.beep_on_start = val.parse().unwrap_or(true);
+            self.beep_on_start = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
         if let Ok(val) = std::env::var("SOUND_NAME") {
             self.sound_name = val;
@@ -197,7 +197,7 @@ impl Config {
 
         // System
         if let Ok(val) = std::env::var("START_AT_LOGIN") {
-            self.start_at_login = val.parse().unwrap_or(false);
+            self.start_at_login = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
 
         // Debugging

@@ -82,6 +82,7 @@ impl ModelManager {
         self.models_dir.join(model_name)
     }
 
+    #[allow(dead_code)] // Public API for tauri-app
     pub fn check_model_exists(&self, model_name: &str) -> bool {
         let path = self.get_model_path(model_name);
         path.join("tokenizer.json").exists()

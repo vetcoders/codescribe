@@ -140,10 +140,12 @@ pub struct RecorderDiagnostics {
 
 type AudioBuffer = Arc<Mutex<Vec<i16>>>;
 
+pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
+
 // --- recorder ---
 
 pub struct Recorder {
-    config: RecorderConfig,
+    pub config: RecorderConfig,
     buffer: AudioBuffer,
     stream: Option<Stream>,
     device: Option<Device>,
@@ -153,6 +155,7 @@ pub struct Recorder {
     diagnostics: RecorderDiagnostics,
     /// Actual sample rate used for recording (may differ from config)
     actual_sample_rate: u32,
+    on_data: Option<AudioCallback>,
 }
 
 // Safety: Recorder can be sent between threads because:
@@ -191,7 +194,13 @@ impl Recorder {
             last_duration: 0.0,
             diagnostics: RecorderDiagnostics::default(),
             actual_sample_rate: config.sample_rate, // Will be updated in start()
+            on_data: None,
         })
+    }
+
+    /// Set a callback to receive raw audio data (f32 samples)
+    pub fn set_callback(&mut self, callback: AudioCallback) {
+        self.on_data = Some(callback);
     }
 
     /// Starts the audio recording process.
@@ -293,11 +302,17 @@ impl Recorder {
 
         let silent_frames = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let silent_frames_clone = Arc::clone(&silent_frames);
+        let on_data = self.on_data.take();
 
         let stream = device
             .build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    // Send data to callback if present
+                    if let Some(ref cb) = on_data {
+                        cb(data);
+                    }
+
                     // Convert f32 samples to i16 and append to buffer
                     if let Ok(mut buf) = buffer.lock() {
                         for &sample in data {
