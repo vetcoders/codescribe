@@ -51,14 +51,6 @@ impl StreamingRecorder {
         // Buffer size: enough to hold a few seconds if worker is slow
         let (tx, rx) = mpsc::channel::<Vec<f32>>(500);
 
-        // Start transcription worker
-        let transcript_buffer = self.transcript_buffer.clone();
-        let sample_rate = self.sample_rate;
-
-        self.transcription_handle = Some(tokio::spawn(async move {
-            transcription_worker(rx, transcript_buffer, sample_rate, language).await;
-        }));
-
         // Setup callback to send audio data
         // Note: try_send to avoid blocking audio thread
         self.recorder.set_callback(Box::new(move |data| {
@@ -69,7 +61,28 @@ impl StreamingRecorder {
             }
         }));
 
+        // Start the actual audio stream first, so we know the *real* sample rate (often 48kHz).
         self.recorder.start().await?;
+
+        // Update sample rate to the one used by the input stream.
+        // This is critical: we must pass the correct `sample_rate` to Whisper so it can resample.
+        let actual_sample_rate = self.recorder.actual_sample_rate();
+        if actual_sample_rate != self.sample_rate {
+            info!(
+                "StreamingRecorder sample_rate updated: config={}Hz -> actual={}Hz",
+                self.sample_rate, actual_sample_rate
+            );
+            self.sample_rate = actual_sample_rate;
+        } else {
+            debug!("StreamingRecorder sample_rate: {}Hz", actual_sample_rate);
+        }
+
+        // Start transcription worker (after we know the real sample rate)
+        let transcript_buffer = self.transcript_buffer.clone();
+        self.transcription_handle = Some(tokio::spawn(async move {
+            transcription_worker(rx, transcript_buffer, actual_sample_rate, language).await;
+        }));
+
         Ok(())
     }
 

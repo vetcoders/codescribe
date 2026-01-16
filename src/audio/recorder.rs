@@ -203,6 +203,14 @@ impl Recorder {
         self.on_data = Some(callback);
     }
 
+    /// Actual sample rate used by the underlying input stream.
+    ///
+    /// Note: This may differ from `config.sample_rate` because we always open
+    /// the device stream at its native rate for compatibility.
+    pub fn actual_sample_rate(&self) -> u32 {
+        self.actual_sample_rate
+    }
+
     /// Starts the audio recording process.
     ///
     /// Clears the buffer, creates and starts a new input stream,

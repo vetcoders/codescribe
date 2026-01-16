@@ -59,3 +59,4 @@ CONFIG_AUDIT.md
 /src/CodeScribe.egg-info
 /.claude
 nohup.out
+nohup.out.backup
