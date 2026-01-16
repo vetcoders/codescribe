@@ -4,13 +4,18 @@
 
 ## Overview
 
-CodeScribe is a native macOS menu-bar application that captures audio through global hotkeys, transcribes it locally using Whisper with Metal GPU acceleration, and pastes the transcript directly into the focused application. Optional AI formatting via LLM polishes the output while keeping everything private and local.
+CodeScribe is a native macOS menu-bar application that captures audio through global hotkeys, transcribes it locally
+using Whisper with Metal GPU acceleration, and pastes the transcript directly into the focused application. Optional AI
+formatting via LLM polishes the output while keeping everything private and local.
 
-> **Status:** v0.6.1 — Embedded model (~888MB binary), provider separation, slug filenames.
+> **Status:** v0.6.2 — Embedded model (~888MB binary) + *Whisper Live* (streaming transcription during recording).
+
+See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md)
 
 ## API Provider
 
-CodeScribe uses the **Responses API** (`/v1/responses`) for AI formatting. Compatible with OpenAI, LibraxisAI, Anthropic, and any provider supporting this format.
+CodeScribe uses the **Responses API** (`/v1/responses`) for AI formatting. Compatible with OpenAI, LibraxisAI,
+Anthropic, and any provider supporting this format.
 
 ### Multi-Provider Setup (Recommended)
 
@@ -41,6 +46,8 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 
 - **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
 - **Embedded Whisper Model** — whisper-large-v3-turbo-mlx-q8 baked into binary (~888MB), zero disk I/O
+- **Whisper Live (Streaming)** — transcription happens *during recording* (chunks + overlap), so `stop()` is
+  near-instant
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
 - **Global Hotkeys** — Hold Ctrl or double-tap Option to record
@@ -51,16 +58,16 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 
 ## Tech Stack
 
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Language | Rust 2024 Edition | Native performance |
-| ML Framework | candle-core + candle-transformers | Whisper inference |
-| GPU Acceleration | Metal (Apple Silicon) | Hardware-accelerated STT |
-| System Tray | tray-icon + muda + tao | Menu bar app |
-| Hotkeys | CGEventTap (core-graphics) | Global key detection |
-| Audio | cpal + hound + symphonia | Recording & format support |
-| HTTP Client | reqwest | LLM API calls |
-| API Format | openai-harmony | Responses API support |
+| Component        | Technology                        | Purpose                    |
+|------------------|-----------------------------------|----------------------------|
+| Language         | Rust 2024 Edition                 | Native performance         |
+| ML Framework     | candle-core + candle-transformers | Whisper inference          |
+| GPU Acceleration | Metal (Apple Silicon)             | Hardware-accelerated STT   |
+| System Tray      | tray-icon + muda + tao            | Menu bar app               |
+| Hotkeys          | CGEventTap (core-graphics)        | Global key detection       |
+| Audio            | cpal + hound + symphonia          | Recording & format support |
+| HTTP Client      | reqwest                           | LLM API calls              |
+| API Format       | openai-harmony                    | Responses API support      |
 
 ## Installation
 
@@ -93,7 +100,7 @@ codescribe --version
 make build              # Debug build (external model)
 make release            # Release build (embedded model)
 make install            # Install with embedded model (~888MB)
-make install-no-embed   # Install without model (needs CODESCRIBE_MODEL_PATH)
+make install-no-embed   # Dev-only: install without embedding (needs CODESCRIBE_MODEL_PATH)
 ```
 
 ## Quick Start
@@ -122,26 +129,27 @@ flowchart TD
     A[Hotkey Press] --> B{Mode?}
     B -->|Hold Ctrl| C[Start Recording]
     B -->|Double Option| C
-    C --> D[Release / Toggle]
-    D --> E[Audio Capture]
-    E --> F[Whisper STT]
-    F --> G{AI Enabled?}
-    G -->|Yes| H[LLM Formatting]
-    G -->|No| I[Raw Transcript]
-    H --> J[Paste to Active App]
-    I --> J
+    C --> D[Recording]
+    D -->|live chunks| E[Whisper STT (streaming)]
+    D -->|Release / Toggle| F[Stop]
+    F --> G[Finalize last chunk]
+    G --> H{AI Enabled?}
+    H -->|Yes| I[LLM Formatting]
+    H -->|No| J[Raw Transcript]
+    I --> K[Paste to Active App]
+    J --> K
 
-    F -.- F1[Metal GPU • embedded model]
-    H -.- H1[Responses API • previous_response_id]
+    E -.- E1[Metal GPU • embedded model]
+    I -.- I1[Responses API • previous_response_id]
 ```
 
 ### Recording Modes
 
-| Mode | Trigger | Description |
-|------|---------|-------------|
+| Mode             | Trigger                 | Description                   |
+|------------------|-------------------------|-------------------------------|
 | **Hold-to-talk** | Hold Ctrl (800ms delay) | Release to transcribe + paste |
-| **Assistive** | Hold Ctrl+Shift | AI augmentation mode |
-| **Toggle** | Double-tap Option | Start/stop recording |
+| **Assistive**    | Hold Ctrl+Shift         | AI augmentation mode          |
+| **Toggle**       | Double-tap Option       | Start/stop recording          |
 
 ## Configuration
 
@@ -240,7 +248,7 @@ Release builds include the model via `include_bytes!`:
 
 ```bash
 cargo build --release          # ~888MB binary with model
-CODESCRIBE_NO_EMBED=1 cargo build --release  # Without embedding
+CODESCRIBE_NO_EMBED=1 cargo build --release  # Dev-only experiment (not supported for distribution)
 ```
 
 ### External Model (Development)
@@ -252,6 +260,7 @@ For development or custom models:
 3. `./models/whisper-large-v3-turbo-mlx-q8/`
 
 Model files required:
+
 - `config.json`
 - `weights.safetensors`
 - `tokenizer.json`
@@ -271,9 +280,11 @@ CodeScribe/
 │   │   ├── engine.rs          # LocalWhisperEngine (candle)
 │   │   ├── embedded.rs        # Embedded model bytes
 │   │   ├── singleton.rs       # Shared model instance
-│   │   └── decoding.rs        # DecodingParams
+│   │   ├── model.rs           # Model wrapper
+│   │   └── params.rs          # DecodingParams
 │   ├── audio/
 │   │   ├── recorder.rs        # cpal audio capture
+│   │   ├── streaming_recorder.rs # Live (streaming) transcription during recording
 │   │   ├── loader.rs          # File loading + resampling
 │   │   └── playback.rs        # System sound playback
 │   ├── hotkeys/
@@ -293,6 +304,7 @@ CodeScribe/
 ├── models/                    # Whisper model files
 ├── tests/                     # Unit + E2E tests
 └── docs/
+    ├── WHISPER_LIVE.md        # Embedded + streaming transcription (DONE)
     └── ARCHITECTURE.md        # Technical documentation
 ```
 
@@ -325,7 +337,7 @@ make tauri-build    # Build Tauri release
 make build            # Debug build
 make release          # Release build (embedded model)
 make install          # Install CLI (~888MB)
-make install-no-embed # Install without model
+make install-no-embed # Dev-only: install without embedding
 make config           # Edit ~/.codescribe/.env
 make bundle           # Create CodeScribe.app
 make install-app      # Install to /Applications
@@ -340,11 +352,11 @@ make download-model   # Download Whisper model
 
 ## Code Quality
 
-| Tool | Purpose | Config |
-|------|---------|--------|
-| **Clippy** | Linting | `-D warnings` |
-| **rustfmt** | Formatting | Rust 2024 edition |
-| **cargo test** | Testing | Unit + E2E |
+| Tool           | Purpose    | Config            |
+|----------------|------------|-------------------|
+| **Clippy**     | Linting    | `-D warnings`     |
+| **rustfmt**    | Formatting | Rust 2024 edition |
+| **cargo test** | Testing    | Unit + E2E        |
 
 ## Permissions
 
@@ -385,5 +397,5 @@ Apache License 2.0
 
 ---
 
-**Made with (งಠ_ಠ)ง by the ⌜ CodeScribe ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026
-Maciej & Monika + Klaudiusz (AI) + Mixerka (AI)**
+**Made with (งಠ_ಠ)ง by the ⌜ VetCoders ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026
+Maciej & Monika + Klaudiusz (AI) + Junie (AI)**

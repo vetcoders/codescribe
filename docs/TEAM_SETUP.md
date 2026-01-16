@@ -3,6 +3,7 @@
 ## Quick Start
 
 ### 1. Prerequisites
+
 - macOS 14+ (Apple Silicon recommended)
 - Rust 1.83+ with `wasm32-unknown-unknown` target
 - Trunk (`cargo install trunk`)
@@ -43,17 +44,28 @@ Grant in: System Settings > Privacy & Security
 
 ## Hotkeys
 
-| Key | Action |
-|-----|--------|
-| Hold **Ctrl** | Start recording |
-| Release **Ctrl** | Stop & transcribe |
-| **Option** (tap) | Toggle pause |
+| Key                   | Action                             |
+|-----------------------|------------------------------------|
+| Hold **Ctrl**         | Start recording (hold-to-talk)     |
+| Release **Ctrl**      | Stop → finalize last chunk → paste |
+| Double-tap **Option** | Toggle recording (hands-free)      |
 
 ## Model
 
-Bundled in app: `whisper-large-v3-turbo-mlx-q8` (874MB)
+**Embedded in the binary (release)**: `whisper-large-v3-turbo-mlx-q8` (~888MB)
 
-Location (dev): `models/whisper-large-v3-turbo-mlx-q8/`
+- No runtime model download
+- No `Resources/models/*` bundling in the `.app`
+- Model bytes are loaded directly into Metal (zero disk I/O)
+
+**Developer note:** to build an embedded release locally you still need the model folder present
+so it can be embedded at build time:
+
+```bash
+make download-model
+```
+
+Location (dev/build-time): `models/whisper-large-v3-turbo-mlx-q8/`
 
 ## CLI Usage
 
@@ -73,26 +85,35 @@ codescribe transcribe audio.wav --language pl
 File: `~/.codescribe/.env`
 
 ```env
-USE_LOCAL_STT=true
-LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
-WHISPER_LANGUAGE=auto
-LLM_HOST=http://localhost:11434
+USE_LOCAL_STT=1
+
+# Whisper
+WHISPER_LANGUAGE=pl
+
+# AI formatting (optional)
+AI_FORMATTING_ENABLED=1
+LLM_ENDPOINT=https://api.openai.com/v1/responses
+LLM_MODEL=gpt-4.1-mini
+LLM_API_KEY=sk-proj-xxx
 ```
 
 ## Troubleshooting
 
 ### App doesn't start
+
 - Check Console.app for crash logs
-- Ensure model exists in `models/` directory
+- If building locally: ensure the model exists in `models/` (for embedding at build time)
 
 ### Hotkeys don't work
+
 - Grant Accessibility permission
 - Grant Input Monitoring permission
 - Restart app after granting
 
 ### No transcription
-- Check `USE_LOCAL_STT=true` in config
-- Verify model path exists
+
+- Check `USE_LOCAL_STT=1` in config
+- If using local STT: confirm the app is using the embedded engine (default in release builds)
 
 ---
 *Created by M&K (c)2026 VetCoders*

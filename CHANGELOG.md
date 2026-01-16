@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.6.2] – 2026-01-16
+
+### Added
+- **Whisper Live (streaming transcription)** – Local transcription now happens *during recording*.
+  Audio from the CPAL callback is chunked and processed in the background, so on `stop()` we only
+  finalize the last chunk for near-instant time-to-paste.
+- **StreamingRecorder** – New streaming capture/transcription pipeline built around a non-blocking
+  channel from the audio callback, plus overlap + deduplication between chunks.
+- **DMG packaging improvements (embedded-only)** – Release packaging is now aligned with the
+  embedded-model strategy (no bundling `Resources/models/*` that would duplicate ~900MB).
+
+### Changed
+- **Docs & pitch** – Documentation and README now highlight the core differentiator: embedded Whisper
+  + live streaming transcription.
+
 ## [v0.6.1] – 2026-01-14
 
 ### Added
@@ -25,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Responses API optimization** – Instructions are now sent only on first request; subsequent
   requests rely on `previous_response_id` to preserve context, reducing payload size.
-- **Build safety** – Release builds now hard-fail when model is missing. Set
+- **Build safety** – Release builds now hard-fail when model is missing. Dev-only: set
   `CODESCRIBE_NO_EMBED=1` to build without embedding (binary will require `CODESCRIBE_MODEL_PATH`
   at runtime).
 - **Language enum** – Removed `Auto` variant from `Language` enum; use explicit language codes.
@@ -182,6 +197,7 @@ Historical notes below predate the Keep a Changelog-style format used above.
   tests around the new controllers, and refreshed documentation to mirror the
   current tree/layout.
 
-[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.6.2...HEAD
+[v0.6.2]: https://github.com/VetCoders/CodeScribe/compare/v0.6.1...v0.6.2
 [v0.6.1]: https://github.com/VetCoders/CodeScribe/compare/v0.6.0...v0.6.1
 [v0.6.0]: https://github.com/VetCoders/CodeScribe/compare/19e05ad...v0.6.0

@@ -8,15 +8,16 @@ usually raises questions is the *advertising clause*:
 
 What this means in practice:
 
-| Scenario | Requirement |
-| --- | --- |
-| README / documentation inside this repo | already satisfied (see README §License). |
-| Public marketing site, blog post, product page mentioning CodeScribe | include the acknowledgement sentence verbatim. |
-| Binary redistributions (DMG, PKG) | include the acknowledgement in the splash / "About" dialog or accompanying README. |
-| Internal deployments (no external advertising) | no additional action beyond keeping the LICENSE file intact. |
+| Scenario                                                             | Requirement                                                                        |
+|----------------------------------------------------------------------|------------------------------------------------------------------------------------|
+| README / documentation inside this repo                              | already satisfied (see README §License).                                           |
+| Public marketing site, blog post, product page mentioning CodeScribe | include the acknowledgement sentence verbatim.                                     |
+| Binary redistributions (DMG, PKG)                                    | include the acknowledgement in the splash / "About" dialog or accompanying README. |
+| Internal deployments (no external advertising)                       | no additional action beyond keeping the LICENSE file intact.                       |
 
 If you fork CodeScribe and redistribute it, you must keep the LICENSE file and the acknowledgement
 sentence wherever you describe the fork. If you embed CodeScribe inside another product, place the
 acknowledgement next to other third‑party credits.
 
-For questions about alternative licensing please reach out Loctree team at [contact@loctree.io](mailto:contact@loctree.io).
+For questions about alternative licensing please reach out Loctree team
+at [contact@loctree.io](mailto:contact@loctree.io).
