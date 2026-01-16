@@ -378,7 +378,7 @@ Rules:
         stream: false,
         options: OllamaOptions {
             temperature: 0.1,
-            num_predict: 4096,
+            num_predict: 0, // 0 = no limit in Ollama
         },
     };
 
@@ -704,6 +704,7 @@ async fn main() -> Result<()> {
     // Get runtime handle BEFORE spawning thread (must be in tokio context)
     let rt = tokio::runtime::Handle::current();
     let controller_clone = Arc::clone(&controller);
+    let config_clone = Arc::clone(&shared_config);
     std::thread::spawn(move || {
         info!("Hotkey event loop started");
         loop {
@@ -729,6 +730,29 @@ async fn main() -> Result<()> {
                             action: controller::HotkeyAction::Press,
                             assistive: false,
                         },
+                        hotkeys::HotkeyEvent::TripleToggle => {
+                            // Toggle AI formatting globally (not a recording action)
+                            let new_state = tray::toggle_ai_formatting();
+                            let status = if new_state { "ON" } else { "OFF" };
+                            info!("Triple-tap: AI Formatting toggled to {}", status);
+
+                            // Update shared config so controller sees the change
+                            // (blocking_write for sync context in std::thread)
+                            config_clone.blocking_write().ai_formatting_enabled = new_state;
+
+                            // Show macOS notification toast
+                            let msg = format!("AI Formatting: {}", status);
+                            let _ = std::process::Command::new("osascript")
+                                .arg("-e")
+                                .arg(format!(
+                                    r#"display notification "{}" with title "CodeScribe""#,
+                                    msg
+                                ))
+                                .spawn();
+
+                            // Don't forward to controller - this is a settings change
+                            continue;
+                        }
                     };
 
                     // Handle the event asynchronously (don't block the receiver thread)

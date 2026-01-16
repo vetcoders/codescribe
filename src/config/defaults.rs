@@ -6,12 +6,13 @@ pub fn default_hold_start_delay_ms() -> u64 {
     800
 }
 
+// Token limits removed - API decides. Tokens are cheap, lost notes are not.
 pub fn default_ai_max_tokens() -> i32 {
-    512
+    0 // 0 = no limit
 }
 
 pub fn default_ai_assistive_max_tokens() -> i32 {
-    2048
+    0 // 0 = no limit
 }
 
 pub fn default_show_tray_glyph() -> bool {

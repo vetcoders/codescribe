@@ -46,7 +46,7 @@ mod tests {
         assert_eq!(config.hold_mods, HoldMods::Ctrl);
         assert_eq!(config.whisper_language, Language::Polish); // Polish is default
         assert_eq!(config.ai_provider, AiProvider::Harmony);
-        assert_eq!(config.ai_max_tokens, 512);
+        assert_eq!(config.ai_max_tokens, 0); // 0 = no limit (API decides)
         assert!(!config.ai_formatting_enabled);
         assert_eq!(config.backend_ports, vec![8237, 7237, 6237, 5237]);
     }
@@ -69,13 +69,14 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_token_limits() {
+    fn test_token_limits_not_overridden() {
+        // Token limits: 0 = no limit. Sanitize should NOT override.
         let mut config = Config {
-            ai_max_tokens: -1,
+            ai_max_tokens: 0,
             ..Default::default()
         };
         config.sanitize();
-        assert_eq!(config.ai_max_tokens, 512);
+        assert_eq!(config.ai_max_tokens, 0); // Stays 0, not overridden
     }
 
     #[test]

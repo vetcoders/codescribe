@@ -45,7 +45,7 @@ fn ollama_memory() -> &'static RwLock<Vec<MemoryMessage>> {
 fn get_client() -> &'static Client {
     AI_CLIENT.get_or_init(|| {
         Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(90)) // Longer timeout for GPT-5.x with long inputs
             .connect_timeout(Duration::from_secs(5))
             .build()
             .expect("Failed to create AI HTTP client")
@@ -633,12 +633,8 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
             };
             let use_streaming = is_openai_endpoint(&endpoint);
 
-            // Streaming gets longer timeout (60s), sync gets 30s
-            let llm_timeout = if use_streaming {
-                Duration::from_secs(60)
-            } else {
-                Duration::from_secs(30)
-            };
+            // GPT-5.x needs more time for longer inputs
+            let llm_timeout = Duration::from_secs(90);
 
             if use_streaming {
                 // SSE streaming for OpenAI/Libraxis
@@ -875,12 +871,14 @@ async fn call_llm_endpoint(
 }
 
 /// Check if streaming should be used for this endpoint
-fn is_openai_endpoint(_endpoint: &str) -> bool {
-    // TODO: Fix SSE parser - streaming is MORE reliable but our parser has bugs
-    // Enable with LLM_USE_STREAMING=1 when parser is fixed
-    env::var("LLM_USE_STREAMING")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false)
+/// SSE streaming = immediate handshake, no timeout issues
+fn is_openai_endpoint(endpoint: &str) -> bool {
+    // Disable streaming with LLM_USE_STREAMING=0 if needed
+    if let Ok(val) = env::var("LLM_USE_STREAMING") {
+        return val == "1" || val.to_lowercase() == "true";
+    }
+    // Default: enable streaming for OpenAI/Libraxis Responses API
+    endpoint.contains("openai.com") || endpoint.contains("libraxis")
 }
 
 /// Call LLM endpoint with SSE streaming (OpenAI Responses API)

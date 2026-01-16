@@ -161,8 +161,12 @@ pub struct RecordingController {
     /// Audio recorder instance
     recorder: Arc<Mutex<StreamingRecorder>>,
 
-    /// Whether assistive formatting mode is enabled
+    /// Whether assistive formatting mode is enabled (Ctrl+Shift = always AI augmentation)
     assistive_mode: Arc<RwLock<bool>>,
+
+    /// Whether to force RAW mode (Ctrl Hold without Shift = always raw, ignores AI toggle)
+    /// Toggle mode (Double Option) keeps this false and respects AI_FORMATTING_ENABLED setting.
+    force_raw_mode: Arc<RwLock<bool>>,
 
     /// Current session ID for tracking
     session_id: Arc<RwLock<Option<String>>>,
@@ -203,6 +207,7 @@ impl RecordingController {
             state: Arc::new(RwLock::new(State::Idle)),
             recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
+            force_raw_mode: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
@@ -239,6 +244,7 @@ impl RecordingController {
             state: Arc::new(RwLock::new(State::Idle)),
             recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
+            force_raw_mode: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
@@ -269,6 +275,11 @@ impl RecordingController {
     ///
     /// This method implements the state machine logic and delegates to
     /// appropriate handlers based on current state and event type.
+    ///
+    /// ## Mode Determination (NEW architecture):
+    /// - **Hold + assistive=false**: force RAW mode (ignores AI_FORMATTING_ENABLED)
+    /// - **Hold + assistive=true**: force Assistive mode (Shift pressed = AI augmentation)
+    /// - **Toggle**: respects AI_FORMATTING_ENABLED setting
     pub async fn handle_hotkey_event(&self, event: HotkeyInput) -> Result<()> {
         let current_state = self.current_state().await;
 
@@ -280,9 +291,16 @@ impl RecordingController {
         // Update assistive mode from event (can be upgraded mid-hold if Shift added)
         if event.assistive {
             *self.assistive_mode.write().await = true;
+            // Shift pressed = NOT force_raw (Assistive takes precedence)
+            *self.force_raw_mode.write().await = false;
         } else if matches!(event.action, HotkeyAction::Down | HotkeyAction::Press) {
             // Only reset on Down/Press, not Up (preserves upgrade during hold)
             *self.assistive_mode.write().await = false;
+
+            // Hold without Shift = force RAW mode
+            // Toggle = respects AI_FORMATTING_ENABLED setting
+            let force_raw = matches!(event.key_type, HotkeyType::Hold);
+            *self.force_raw_mode.write().await = force_raw;
         }
 
         // Ignore all hotkeys when busy
@@ -536,18 +554,22 @@ impl RecordingController {
         debug!("STATE TRANSITION: {} → BUSY", current_state);
         *self.state.write().await = State::Busy;
 
-        // Get session ID and assistive mode before we reset them
+        // Get session ID and mode flags before we reset them
         let session_id = self.session_id.read().await.clone();
         let assistive = *self.assistive_mode.read().await;
+        let force_raw = *self.force_raw_mode.read().await;
 
         // Switch badge to processing mode (orange, pulsing)
         show_badge_for_mode(BadgeMode::Processing);
 
-        let result = self.process_recording(session_id, assistive).await;
+        let result = self
+            .process_recording(session_id, assistive, force_raw)
+            .await;
 
         // Always reset to IDLE, even on error
         *self.state.write().await = State::Idle;
         *self.assistive_mode.write().await = false;
+        *self.force_raw_mode.write().await = false;
         *self.session_id.write().await = None;
 
         // Hide red dot indicator
@@ -569,7 +591,17 @@ impl RecordingController {
     }
 
     /// Process the recording: stop, transcribe, format, paste
-    async fn process_recording(&self, _session_id: Option<String>, assistive: bool) -> Result<()> {
+    ///
+    /// ## Mode Logic:
+    /// - `assistive=true`: ALWAYS AI augmentation (Ctrl+Shift held)
+    /// - `force_raw=true`: ALWAYS raw transcript (Ctrl held without Shift)
+    /// - Neither: Toggle mode - respects AI_FORMATTING_ENABLED setting
+    async fn process_recording(
+        &self,
+        _session_id: Option<String>,
+        assistive: bool,
+        force_raw: bool,
+    ) -> Result<()> {
         // Stop the recorder and get audio file path
         let mut recorder = self.recorder.lock().await;
         let (streaming_text, raw_audio_path_opt) =
@@ -646,41 +678,62 @@ impl RecordingController {
             warn!("Detected repetition loop in transcription - will clean up");
         }
 
-        // Determine final text based on mode:
-        // - Ctrl+Shift (assistive=true): ALWAYS augmentation (AI expands, creates plans)
-        // - Ctrl / Double Option (assistive=false): respects AI Formatting toggle
-        //   - Toggle ON: formatting only (corrects, bullet points, no content change)
-        //   - Toggle OFF: raw transcript
+        // Determine final text based on mode (NEW architecture):
+        //
+        // 1. Ctrl+Shift (assistive=true): ALWAYS AI augmentation (expands, creates plans)
+        // 2. Ctrl Hold (force_raw=true): ALWAYS raw transcript (ignores AI toggle)
+        // 3. Double Option (neither): respects AI_FORMATTING_ENABLED toggle
+        //
+        // This allows users to choose mode via hotkey:
+        // - Quick dictation? → Ctrl (fast, raw)
+        // - Need formatting? → Double Option (respects setting)
+        // - Need AI help? → Ctrl+Shift (always AI)
         let formatted_text = if assistive {
             // Ctrl+Shift: ALWAYS augmentation mode (AI expands content)
-            info!("Assistive mode: augmenting transcript via AI");
+            info!("Assistive mode (Ctrl+Shift): augmenting transcript via AI");
             let lang_str = language_opt.map(String::from);
             crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), true).await
+        } else if force_raw {
+            // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
+            if has_repetition {
+                info!("Raw mode (Ctrl): applying local repetition cleanup only");
+                crate::ai_formatting::remove_simple_repetitions(&raw_text)
+            } else {
+                info!("Raw mode (Ctrl): using raw transcript");
+                raw_text.clone()
+            }
         } else {
-            // Ctrl / Double Option: check AI Formatting toggle
+            // Double Option: respects AI Formatting toggle setting
             let ai_formatting_enabled = self.config.read().await.ai_formatting_enabled;
             let should_use_ai = ai_formatting_enabled && crate::ai_formatting::has_api_key();
 
             if should_use_ai {
                 // Toggle ON: formatting only (no augmentation)
-                info!("Formatting mode: correcting transcript via AI");
+                info!("Formatting mode (Toggle): correcting transcript via AI");
                 let lang_str = language_opt.map(String::from);
                 crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), false).await
             } else if has_repetition {
                 // Toggle OFF with repetition: local cleanup only
-                info!("Raw mode: applying local repetition cleanup");
+                info!("Raw mode (Toggle OFF): applying local repetition cleanup");
                 crate::ai_formatting::remove_simple_repetitions(&raw_text)
             } else {
                 // Toggle OFF: raw transcript
-                info!("Raw mode: using raw transcript");
+                info!("Raw mode (Toggle OFF): using raw transcript");
                 raw_text.clone()
             }
         };
 
+        let mode_label = if assistive {
+            "assistive"
+        } else if force_raw {
+            "raw"
+        } else {
+            "toggle"
+        };
         info!(
             "Final transcript ready ({} chars, mode={})",
             formatted_text.len(),
-            if assistive { "AI" } else { "raw" }
+            mode_label
         );
 
         // Paste the text into the active application
@@ -713,6 +766,7 @@ impl RecordingController {
     async fn reset_state(&self) {
         *self.state.write().await = State::Idle;
         *self.assistive_mode.write().await = false;
+        *self.force_raw_mode.write().await = false;
         *self.session_id.write().await = None;
 
         // Hide UI indicators
@@ -886,5 +940,250 @@ mod tests {
         // BUSY - not recording (processing)
         *controller.state.write().await = State::Busy;
         assert!(!controller.is_recording().await);
+    }
+
+    // ============================================================
+    // NEW HOTKEY ARCHITECTURE TESTS (force_raw_mode logic)
+    // ============================================================
+    //
+    // These tests verify the new mode determination logic:
+    // - Ctrl Hold (no Shift) → force_raw=true, assistive=false → RAW mode
+    // - Ctrl+Shift Hold → force_raw=false, assistive=true → Assistive mode
+    // - Double Option → force_raw=false, assistive=false → Toggle mode (respects setting)
+
+    #[tokio::test]
+    async fn test_hold_down_sets_force_raw_mode() {
+        let controller = RecordingController::new();
+
+        // Verify initial state
+        assert!(!*controller.force_raw_mode.read().await);
+        assert!(!*controller.assistive_mode.read().await);
+
+        // Hold Down without Shift → force_raw=true
+        let event = HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Down,
+            assistive: false,
+        };
+        controller.handle_hotkey_event(event).await.unwrap();
+
+        // force_raw should be true, assistive should be false
+        assert!(
+            *controller.force_raw_mode.read().await,
+            "Hold Down should set force_raw_mode=true"
+        );
+        assert!(
+            !*controller.assistive_mode.read().await,
+            "Hold Down without Shift should keep assistive_mode=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_toggle_press_does_not_set_force_raw_mode() {
+        let controller = RecordingController::new();
+
+        // Toggle Press → force_raw=false (respects AI_FORMATTING_ENABLED)
+        let event = HotkeyInput {
+            key_type: HotkeyType::Toggle,
+            action: HotkeyAction::Press,
+            assistive: false,
+        };
+        controller.handle_hotkey_event(event).await.unwrap();
+
+        // force_raw should be false
+        assert!(
+            !*controller.force_raw_mode.read().await,
+            "Toggle should NOT set force_raw_mode (respects setting)"
+        );
+        assert!(
+            !*controller.assistive_mode.read().await,
+            "Toggle without assistive should keep assistive_mode=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hold_with_shift_sets_assistive_not_force_raw() {
+        let controller = RecordingController::new();
+
+        // Hold Down WITH Shift → assistive=true, force_raw=false
+        let event = HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Down,
+            assistive: true, // Shift was held from the start (Ctrl+Shift)
+        };
+        controller.handle_hotkey_event(event).await.unwrap();
+
+        // assistive should be true, force_raw should be false
+        assert!(
+            *controller.assistive_mode.read().await,
+            "Hold with Shift should set assistive_mode=true"
+        );
+        assert!(
+            !*controller.force_raw_mode.read().await,
+            "Hold with Shift should NOT set force_raw_mode (Assistive takes precedence)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
+        let controller = RecordingController::new();
+
+        // First: Hold Down without Shift (starts as RAW mode)
+        let down_event = HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Down,
+            assistive: false,
+        };
+        controller.handle_hotkey_event(down_event).await.unwrap();
+
+        // Verify RAW mode is set
+        assert!(*controller.force_raw_mode.read().await);
+        assert!(!*controller.assistive_mode.read().await);
+
+        // Now: User adds Shift mid-hold (upgrade to Assistive)
+        // This comes as another event with assistive=true
+        let upgrade_event = HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Down, // Still "down" - modifier flags changed
+            assistive: true,
+        };
+        controller.handle_hotkey_event(upgrade_event).await.unwrap();
+
+        // Should upgrade to Assistive, force_raw should be cleared
+        assert!(
+            *controller.assistive_mode.read().await,
+            "Shift added mid-hold should upgrade to assistive_mode=true"
+        );
+        assert!(
+            !*controller.force_raw_mode.read().await,
+            "Shift upgrade should clear force_raw_mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hold_up_preserves_mode_flags_when_idle() {
+        let controller = RecordingController::new();
+
+        // Set up flags manually (simulating mid-session state)
+        *controller.force_raw_mode.write().await = true;
+        *controller.assistive_mode.write().await = false;
+        // Keep state IDLE - Up event in IDLE just cancels pending hold start
+
+        // Hold Up when IDLE should NOT modify the flags
+        let up_event = HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Up,
+            assistive: false,
+        };
+        controller.handle_hotkey_event(up_event).await.unwrap();
+
+        // Flags should still be set (Up action doesn't touch them in IDLE state)
+        assert!(
+            *controller.force_raw_mode.read().await,
+            "Hold Up in IDLE should preserve force_raw_mode"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires audio hardware"]
+    async fn test_hold_up_triggers_finish_recording() {
+        // This test verifies that Hold Up in REC_HOLD state triggers finish_recording
+        // which reads force_raw_mode and assistive_mode before processing.
+        // Requires audio hardware to actually record/transcribe.
+        let controller = RecordingController::new();
+        *controller.state.write().await = State::RecHold;
+        *controller.force_raw_mode.write().await = true;
+
+        let up_event = HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Up,
+            assistive: false,
+        };
+        controller.handle_hotkey_event(up_event).await.unwrap();
+
+        // After finish_recording, flags should be reset to false
+        assert!(!*controller.force_raw_mode.read().await);
+    }
+
+    #[tokio::test]
+    async fn test_reset_clears_all_mode_flags() {
+        let controller = RecordingController::new();
+
+        // Set up various flags
+        *controller.state.write().await = State::RecHold;
+        *controller.force_raw_mode.write().await = true;
+        *controller.assistive_mode.write().await = true;
+        *controller.session_id.write().await = Some("test-session".to_string());
+
+        // Reset should clear everything
+        controller.reset().await;
+
+        assert_eq!(controller.current_state().await, State::Idle);
+        assert!(
+            !*controller.force_raw_mode.read().await,
+            "reset should clear force_raw_mode"
+        );
+        assert!(
+            !*controller.assistive_mode.read().await,
+            "reset should clear assistive_mode"
+        );
+        assert!(
+            controller.session_id.read().await.is_none(),
+            "reset should clear session_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mode_matrix_coverage() {
+        // This test documents all possible mode combinations:
+        //
+        // | Hotkey          | force_raw | assistive | Result                    |
+        // |-----------------|-----------|-----------|---------------------------|
+        // | Ctrl Hold       | true      | false     | RAW (ignore AI setting)   |
+        // | Ctrl+Shift Hold | false     | true      | Assistive (always AI)     |
+        // | Double Option   | false     | false     | Toggle (respects setting) |
+
+        let controller = RecordingController::new();
+
+        // Case 1: Ctrl Hold
+        let ctrl_hold = HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Down,
+            assistive: false,
+        };
+        controller.handle_hotkey_event(ctrl_hold).await.unwrap();
+        assert!(*controller.force_raw_mode.read().await);
+        assert!(!*controller.assistive_mode.read().await);
+
+        // Reset for next case
+        *controller.force_raw_mode.write().await = false;
+        *controller.assistive_mode.write().await = false;
+
+        // Case 2: Ctrl+Shift Hold
+        let ctrl_shift_hold = HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Down,
+            assistive: true,
+        };
+        controller
+            .handle_hotkey_event(ctrl_shift_hold)
+            .await
+            .unwrap();
+        assert!(!*controller.force_raw_mode.read().await);
+        assert!(*controller.assistive_mode.read().await);
+
+        // Reset for next case
+        *controller.force_raw_mode.write().await = false;
+        *controller.assistive_mode.write().await = false;
+
+        // Case 3: Double Option
+        let double_option = HotkeyInput {
+            key_type: HotkeyType::Toggle,
+            action: HotkeyAction::Press,
+            assistive: false,
+        };
+        controller.handle_hotkey_event(double_option).await.unwrap();
+        assert!(!*controller.force_raw_mode.read().await);
+        assert!(!*controller.assistive_mode.read().await);
     }
 }

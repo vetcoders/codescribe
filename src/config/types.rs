@@ -353,13 +353,8 @@ impl Default for Config {
 impl Config {
     /// Sanitize configuration values to ensure they're valid.
     pub fn sanitize(&mut self) {
-        // Ensure token limits are reasonable
-        if self.ai_max_tokens <= 0 {
-            self.ai_max_tokens = 512;
-        }
-        if self.ai_assistive_max_tokens <= 0 {
-            self.ai_assistive_max_tokens = 2048;
-        }
+        // Token limits: 0 = no limit (API decides). Don't override.
+        // Tokens are cheap, lost notes are not.
 
         // Validate audio thresholds (legacy)
         if self.silence_db > 0.0 || self.silence_db < -100.0 {

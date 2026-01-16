@@ -121,6 +121,8 @@ pub enum HotkeyEvent {
     Hold { action: HoldAction, assistive: bool },
     /// Toggle gesture detected (double-tap Option within threshold)
     Toggle,
+    /// Triple-tap Option detected - toggle AI formatting globally
+    TripleToggle,
 }
 
 /// Modifier flags for hold gesture detection
@@ -197,6 +199,7 @@ mod macos {
     type CGEventField = u32;
 
     // CGEventType values
+    const K_CG_EVENT_KEY_DOWN: CGEventType = 10;
     const K_CG_EVENT_FLAGS_CHANGED: CGEventType = 12;
 
     // CGEventFlags masks
@@ -267,14 +270,18 @@ mod macos {
         assistive_mode: bool,
         /// Hold event already sent (prevent duplicates)
         hold_event_sent: bool,
-        /// Last Option tap timestamp (for double-tap detection)
+        /// Last Option tap timestamp (for multi-tap detection)
         last_option_tap_ts: Option<Instant>,
+        /// Consecutive tap count (for double/triple detection)
+        tap_count: u8,
         /// Option is currently held
         option_down: bool,
         /// Whether the currently held Option is the RIGHT Option key
         right_option_held: bool,
         /// Whether the last tap was from RIGHT Option key (for double-tap matching)
         last_tap_was_right_option: bool,
+        /// A non-modifier key was pressed while modifier(s) held - invalidates gesture
+        key_pressed_during_modifier: bool,
         /// Event sender
         tx: Sender<HotkeyEvent>,
     }
@@ -287,9 +294,11 @@ mod macos {
                 assistive_mode: false,
                 hold_event_sent: false,
                 last_option_tap_ts: None,
+                tap_count: 0,
                 option_down: false,
                 right_option_held: false,
                 last_tap_was_right_option: false,
+                key_pressed_during_modifier: false,
                 tx,
             }
         }
@@ -329,7 +338,7 @@ mod macos {
     static RUNNING: AtomicBool = AtomicBool::new(false);
     static ENABLED: AtomicBool = AtomicBool::new(true);
 
-    /// CGEventTap callback - processes modifier key events
+    /// CGEventTap callback - processes modifier key events and key presses
     extern "C" fn event_callback(
         _proxy: CGEventTapProxy,
         event_type: CGEventType,
@@ -341,7 +350,61 @@ mod macos {
             return event;
         }
 
-        // Only process flags changed events (type 12 = kCGEventFlagsChanged)
+        let state = unsafe {
+            match GLOBAL_STATE {
+                Some(ptr) => &mut *ptr,
+                None => return event,
+            }
+        };
+
+        // Handle KEY_DOWN: cancel pending gestures if non-modifier key pressed
+        if event_type == K_CG_EVENT_KEY_DOWN {
+            let flags = unsafe { CGEventGetFlags(event) };
+            let ctrl_held = (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0;
+            let option_held = (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0;
+
+            // If Ctrl is held and hold gesture is in the delay window (~800ms)
+            // → cancel the hold gesture by sending Hold Up (Ctrl+K, Ctrl+C, etc.)
+            // After delay, recording has started - don't cancel on key presses
+            const HOLD_DELAY_MS: u64 = 850; // Slightly longer than controller's 800ms
+            if ctrl_held && state.hold_active {
+                let in_delay_window = state
+                    .hold_active_ts
+                    .map(|ts| ts.elapsed() < Duration::from_millis(HOLD_DELAY_MS))
+                    .unwrap_or(false);
+
+                if in_delay_window {
+                    tracing::info!(
+                        "Key pressed during Ctrl hold delay - canceling (Ctrl+key combo detected)"
+                    );
+                    // Send Hold Up to cancel the pending hold in controller
+                    let _ = state.tx.send(HotkeyEvent::Hold {
+                        action: HoldAction::Up,
+                        assistive: state.assistive_mode,
+                    });
+                    state.hold_active = false;
+                    state.hold_active_ts = None;
+                    state.hold_event_sent = false;
+                    state.key_pressed_during_modifier = true;
+                } else {
+                    tracing::debug!("Key pressed during recording - allowed (past delay window)");
+                }
+            }
+
+            // If Option is held → invalidate tap sequence (Option+Arrow, etc.)
+            // This is NOT a tap - it's a modifier combo, so discard the sequence
+            if option_held && state.option_down {
+                tracing::debug!("Key pressed while Option held - this is a combo, not a tap");
+                state.key_pressed_during_modifier = true;
+                // Discard any pending tap sequence - do NOT send Toggle
+                state.tap_count = 0;
+                state.last_option_tap_ts = None;
+            }
+
+            return event;
+        }
+
+        // Only process flags changed events from here
         if event_type != K_CG_EVENT_FLAGS_CHANGED {
             return event;
         }
@@ -360,18 +423,16 @@ mod macos {
             (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0
         );
 
-        let state = unsafe {
-            match GLOBAL_STATE {
-                Some(ptr) => &mut *ptr,
-                None => return event,
-            }
-        };
-
         // Check current modifier states
         let ctrl_now = (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0;
         let shift_now = (flags & K_CG_EVENT_FLAG_MASK_SHIFT) != 0;
         let option_now = (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0;
         let cmd_now = (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0;
+
+        // Reset key_pressed flag when all modifiers released
+        if !ctrl_now && !option_now && !cmd_now {
+            state.key_pressed_during_modifier = false;
+        }
 
         // Determine if this is specifically the right Option key
         let is_right_option = keycode == K_VK_RIGHT_OPTION;
@@ -461,12 +522,20 @@ mod macos {
                 keycode
             );
 
-            // Don't trigger toggle if hold combo was/is active or other modifiers held
-            // (except Option itself which is allowed for CtrlAlt mode)
+            // Don't trigger toggle if:
+            // - hold combo was/is active or other modifiers held
+            // - a key was pressed while Option was held (Option+Arrow is a combo, not a tap)
             let hold_mods_block_toggle = match hold_mods {
                 HoldMods::CtrlAlt => false, // Option is part of hold combo, don't block
                 _ => ctrl_now || cmd_now || state.hold_active,
             };
+
+            // Skip if this was a combo (Option+Arrow, etc.) not a pure tap
+            if state.key_pressed_during_modifier {
+                tracing::debug!("Option released after combo - not a tap, skipping");
+                state.key_pressed_during_modifier = false;
+                return event;
+            }
 
             if !hold_mods_block_toggle {
                 // Check if this release matches the trigger requirements
@@ -481,58 +550,82 @@ mod macos {
                 if matches_trigger {
                     let now = Instant::now();
 
+                    // For DoubleRightOption mode, all taps must be from right Option
+                    let tap_matches = match toggle_trigger {
+                        ToggleTrigger::DoubleOption => true,
+                        ToggleTrigger::DoubleRightOption => current_tap_is_right,
+                        ToggleTrigger::None => false,
+                    };
+
                     if let Some(last_tap) = state.last_option_tap_ts {
                         let interval = now.duration_since(last_tap);
 
-                        // For DoubleRightOption mode, both taps must be from right Option
-                        let both_taps_match = match toggle_trigger {
-                            ToggleTrigger::DoubleOption => true,
-                            ToggleTrigger::DoubleRightOption => {
-                                state.last_tap_was_right_option && current_tap_is_right
-                            }
-                            ToggleTrigger::None => false,
-                        };
-
-                        if interval <= Duration::from_millis(DOUBLE_TAP_INTERVAL_MS)
-                            && both_taps_match
+                        if interval <= Duration::from_millis(DOUBLE_TAP_INTERVAL_MS) && tap_matches
                         {
-                            // Double-tap detected!
+                            // Tap within interval - increment count
+                            state.tap_count += 1;
+                            state.last_option_tap_ts = Some(now);
+
+                            if state.tap_count >= 3 {
+                                // Triple-tap detected - ONLY AI toggle, no recording!
+                                tracing::info!(
+                                    "Option TRIPLE-tap detected - AI formatting toggle (cancels double-tap)"
+                                );
+                                let _ = state.tx.send(HotkeyEvent::TripleToggle);
+                                // Reset sequence - double-tap was NOT sent
+                                state.tap_count = 0;
+                                state.last_option_tap_ts = None;
+                                state.last_tap_was_right_option = false;
+                            } else if state.tap_count == 2 {
+                                // Double-tap detected - DON'T send yet, wait for potential triple
+                                tracing::debug!(
+                                    "Option double-tap detected ({:?}) - waiting for potential triple",
+                                    interval
+                                );
+                                state.last_tap_was_right_option = current_tap_is_right;
+                            }
+                        } else {
+                            // Too slow or wrong key - flush pending double-tap first
+                            if state.tap_count == 2 {
+                                tracing::debug!(
+                                    "Triple-tap window expired - sending delayed Toggle"
+                                );
+                                let _ = state.tx.send(HotkeyEvent::Toggle);
+                            }
+                            // Start new sequence
                             tracing::debug!(
-                                "Option double-tap detected ({:?}, trigger={:?}) - sending Toggle",
-                                interval,
-                                toggle_trigger
-                            );
-                            let _ = state.tx.send(HotkeyEvent::Toggle);
-                            state.last_option_tap_ts = None;
-                            state.last_tap_was_right_option = false;
-                        } else if !both_taps_match {
-                            // Wrong key combination for DoubleRightOption, reset sequence
-                            tracing::debug!(
-                                "Option tap mismatch (need both right, got last={}, current={}), resetting",
-                                state.last_tap_was_right_option,
+                                "Option tap: starting new sequence (right={})",
                                 current_tap_is_right
                             );
-                            state.last_option_tap_ts = Some(now);
-                            state.last_tap_was_right_option = current_tap_is_right;
-                        } else {
-                            // Too slow, start new sequence
-                            tracing::debug!("Option tap too slow ({:?}), resetting", interval);
+                            state.tap_count = 1;
                             state.last_option_tap_ts = Some(now);
                             state.last_tap_was_right_option = current_tap_is_right;
                         }
                     } else {
-                        // First tap
+                        // First tap - but first check if we had pending double-tap
+                        if state.tap_count == 2 {
+                            tracing::debug!(
+                                "New sequence started - sending delayed Toggle from previous"
+                            );
+                            let _ = state.tx.send(HotkeyEvent::Toggle);
+                        }
                         tracing::debug!("Option first tap (right={})", current_tap_is_right);
+                        state.tap_count = 1;
                         state.last_option_tap_ts = Some(now);
                         state.last_tap_was_right_option = current_tap_is_right;
                     }
                 } else {
-                    // Key doesn't match trigger requirement, reset sequence
+                    // Key doesn't match trigger requirement - flush pending and reset
+                    if state.tap_count == 2 {
+                        tracing::debug!("Wrong key - sending delayed Toggle before reset");
+                        let _ = state.tx.send(HotkeyEvent::Toggle);
+                    }
                     tracing::debug!(
                         "Option release doesn't match trigger {:?} (right={}), resetting sequence",
                         toggle_trigger,
                         current_tap_is_right
                     );
+                    state.tap_count = 0;
                     state.last_option_tap_ts = None;
                     state.last_tap_was_right_option = false;
                 }
@@ -588,8 +681,8 @@ mod macos {
             GLOBAL_STATE = Some(state_ptr);
         }
 
-        // Event mask for flags changed events only
-        let event_mask: u64 = 1 << K_CG_EVENT_FLAGS_CHANGED;
+        // Event mask: flags changed + key down (to detect Ctrl+K style combos)
+        let event_mask: u64 = (1 << K_CG_EVENT_FLAGS_CHANGED) | (1 << K_CG_EVENT_KEY_DOWN);
 
         // Create the event tap
         let tap = unsafe {
