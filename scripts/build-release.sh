@@ -3,9 +3,8 @@
 # Builds, signs, and packages CodeScribe.app
 #
 # Usage:
-#   ./scripts/build-release.sh              # Ad-hoc signing (dev)
-#   ./scripts/build-release.sh --sign       # Developer ID signing (prod)
-#   ./scripts/build-release.sh --with-model # Include Whisper model (~900MB)
+#   ./scripts/build-release.sh         # Ad-hoc signing (dev)
+#   ./scripts/build-release.sh --sign  # Developer ID signing (prod)
 #
 # Created by M&K (c)2026 VetCoders
 
@@ -25,13 +24,27 @@ BUNDLE_DIR="bundle/${APP_NAME}.app"
 ENTITLEMENTS="bundle/entitlements.plist"
 MODEL_NAME="whisper-large-v3-turbo-mlx-q8"
 
+# Temp/mount state (for cleanup on failure)
+DMG_TEMP=""
+MOUNT_POINT=""
+
+cleanup() {
+    if [ -n "${MOUNT_POINT}" ]; then
+        hdiutil detach "${MOUNT_POINT}" -quiet 2>/dev/null || hdiutil detach "${MOUNT_POINT}" -force 2>/dev/null || true
+        MOUNT_POINT=""
+    fi
+    if [ -n "${DMG_TEMP}" ] && [ -f "${DMG_TEMP}" ]; then
+        rm -f "${DMG_TEMP}" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
+
 # Parse arguments
 SIGN_MODE="adhoc"
-INCLUDE_MODEL=false
 for arg in "$@"; do
     case $arg in
         --sign) SIGN_MODE="identity" ;;
-        --with-model) INCLUDE_MODEL=true ;;
     esac
 done
 
@@ -39,7 +52,7 @@ echo "════════════════════════�
 echo "  CodeScribe Release Build v${VERSION}"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Sign mode: ${SIGN_MODE}"
-echo "  Include model: ${INCLUDE_MODEL}"
+echo "  Model: embedded (in binary)"
 echo "───────────────────────────────────────────────────────────"
 
 # Step 1: Build release binary
@@ -56,6 +69,15 @@ fi
 BINARY_SIZE=$(du -h "$BINARY" | cut -f1)
 echo "  Binary: ${BINARY} (${BINARY_SIZE})"
 
+# Guardrail: we expect the embedded model in production.
+# If the binary is suspiciously small, it likely means embedding didn't happen.
+BIN_SIZE_MB=$(du -m "$BINARY" | awk '{print $1}')
+if [ "${BIN_SIZE_MB}" -lt 500 ]; then
+    echo "✗ Binary seems too small (${BIN_SIZE_MB}MB). Expected embedded model in release build." >&2
+    echo "  Make sure models/${MODEL_NAME} exists and CODESCRIBE_NO_EMBED is NOT set." >&2
+    exit 1
+fi
+
 # Step 2: Create app bundle structure
 echo ""
 echo "▶ Creating app bundle..."
@@ -71,25 +93,7 @@ if [ -f "assets/AppIcon.icns" ]; then
     cp "assets/AppIcon.icns" "${BUNDLE_DIR}/Contents/Resources/"
 fi
 
-# Step 3: Include model if requested (heavy install)
-if [ "$INCLUDE_MODEL" = true ]; then
-    echo ""
-    echo "▶ Including Whisper model (heavy install)..."
-    MODEL_SRC="models/${MODEL_NAME}"
-    MODEL_DST="${BUNDLE_DIR}/Contents/Resources/models/${MODEL_NAME}"
-
-    if [ -d "$MODEL_SRC" ]; then
-        mkdir -p "${BUNDLE_DIR}/Contents/Resources/models"
-        cp -R "$MODEL_SRC" "$MODEL_DST"
-        MODEL_SIZE=$(du -sh "$MODEL_DST" | cut -f1)
-        echo "  Model bundled: ${MODEL_SIZE}"
-    else
-        echo "  ⚠ Model not found at ${MODEL_SRC}"
-        echo "  Run: ./scripts/download-model.sh"
-    fi
-fi
-
-# Step 4: Create Info.plist
+# Step 3: Create Info.plist
 echo ""
 echo "▶ Creating Info.plist..."
 cat > "${BUNDLE_DIR}/Contents/Info.plist" << EOF
@@ -127,7 +131,7 @@ cat > "${BUNDLE_DIR}/Contents/Info.plist" << EOF
 </plist>
 EOF
 
-# Step 5: Code signing
+# Step 4: Code signing
 echo ""
 echo "▶ Code signing..."
 
@@ -163,24 +167,23 @@ else
     echo "  Signed: ${IDENTITY}"
 fi
 
-# Step 6: Verify signature
+# Step 5: Verify signature
 echo ""
 echo "▶ Verifying signature..."
 codesign --verify --deep --strict --verbose=2 "${BUNDLE_DIR}" 2>&1 | head -5
 
-# Step 7: Create DMG with Applications symlink
+# Step 6: Create DMG with Applications symlink
 echo ""
 echo "▶ Creating DMG..."
 DMG_NAME="${APP_NAME}_${VERSION}_$(date +%Y%m%d).dmg"
 DMG_TEMP="${APP_NAME}_temp.dmg"
 rm -f "$DMG_NAME" "$DMG_TEMP"
 
-# Calculate size (app + headroom for Applications alias)
-if [ "$INCLUDE_MODEL" = true ]; then
-    DMG_SIZE="1200m"
-else
-    DMG_SIZE="20m"
-fi
+# Calculate DMG size dynamically based on bundle size (+ headroom for FS overhead + /Applications symlink)
+APP_SIZE_MB=$(du -sm "${BUNDLE_DIR}" | awk '{print $1}')
+# 400MB headroom keeps things safe for HFS+ overhead, xattrs, signing metadata, etc.
+DMG_SIZE_MB=$((APP_SIZE_MB + 400))
+DMG_SIZE="${DMG_SIZE_MB}m"
 
 # Create writable DMG
 hdiutil create -size "$DMG_SIZE" -fs HFS+ -volname "${APP_NAME}" "$DMG_TEMP"
@@ -194,6 +197,7 @@ ln -s /Applications "$MOUNT_POINT/Applications"
 
 # Detach
 hdiutil detach "$MOUNT_POINT" -quiet
+MOUNT_POINT=""
 
 # Convert to compressed read-only
 hdiutil convert "$DMG_TEMP" -format UDZO -o "$DMG_NAME"

@@ -257,7 +257,7 @@ dmg-signed:
 	@./scripts/build-release.sh --sign
 
 dmg-full:
-	@./scripts/build-release.sh --sign --with-model
+	@./scripts/build-release.sh --sign
 
 notarize:
 	@if ls CodeScribe_*.dmg 1> /dev/null 2>&1; then \
