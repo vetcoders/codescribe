@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.0] – 2026-01-17
+
+### Added
+- **IPC server** – nowy serwer IPC i typy komunikatów do stabilnej integracji runtime.
+- **Quality loop** – automatyczna pętla oceny jakości transkrypcji.
+- **Quality report** – generator raportów batchowych jakości.
+- **Stream postprocess** – semantyczne „gating” i czyszczenie strumienia w pipeline live.
+- **New CLI tools** – `codescribe-quality`, `codescribe-loop`.
+- **serial_test** – serializacja testów E2E, mniej race conditions.
+
+### Changed
+- **Version unification** – spójne wersjonowanie w projekcie.
+- **Security hardening** – `cap-std` i ograniczenie operacji plikowych do dozwolonych ścieżek.
+
+### Fixed
+- Poprawki w formatowaniu SSE i zbieraniu końcowego tekstu.
+
 ## [v0.6.3] – 2026-01-16
 
 ### Added
@@ -222,7 +239,8 @@ Historical notes below predate the Keep a Changelog-style format used above.
   tests around the new controllers, and refreshed documentation to mirror the
   current tree/layout.
 
-[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.7.0...HEAD
+[v0.7.0]: https://github.com/VetCoders/CodeScribe/compare/v0.6.3...v0.7.0
 [v0.6.3]: https://github.com/VetCoders/CodeScribe/compare/v0.6.2...v0.6.3
 [v0.6.2]: https://github.com/VetCoders/CodeScribe/compare/v0.6.1...v0.6.2
 [v0.6.1]: https://github.com/VetCoders/CodeScribe/compare/v0.6.0...v0.6.1

@@ -671,13 +671,6 @@ impl RecordingController {
 
         info!("Raw transcript captured ({} chars)", raw_text.len());
 
-        // Save audio to transcriptions folder if enabled (now we have text for slug)
-        if self.config.read().await.dump_audio_logs
-            && let Some(path) = &audio_path
-        {
-            crate::state::history::save_audio(path.as_path(), recording_timestamp, Some(&raw_text));
-        }
-
         // Check for repetition loops (Whisper hallucination like "Wielki, Wielki, Wielki...")
         let has_repetition = crate::ai_formatting::has_repetition_loop(&raw_text);
         if has_repetition {
@@ -694,19 +687,36 @@ impl RecordingController {
         // - Quick dictation? → Ctrl (fast, raw)
         // - Need formatting? → Double Option (respects setting)
         // - Need AI help? → Ctrl+Shift (always AI)
-        let formatted_text = if assistive {
+        let (formatted_text, output_kind) = if assistive {
             // Ctrl+Shift: ALWAYS augmentation mode (AI expands content)
             info!("Assistive mode (Ctrl+Shift): augmenting transcript via AI");
             let lang_str = language_opt.map(String::from);
-            crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), true).await
+            let result =
+                crate::ai_formatting::format_text_with_status(&raw_text, lang_str.as_deref(), true)
+                    .await;
+            let kind = match result.status {
+                crate::ai_formatting::AiFormatStatus::Applied => {
+                    crate::state::history::TranscriptKind::Ai
+                }
+                crate::ai_formatting::AiFormatStatus::Failed => {
+                    crate::state::history::TranscriptKind::AiFailed
+                }
+                crate::ai_formatting::AiFormatStatus::Skipped => {
+                    crate::state::history::TranscriptKind::Raw
+                }
+            };
+            (result.text, kind)
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
             if has_repetition {
                 info!("Raw mode (Ctrl): applying local repetition cleanup only");
-                crate::ai_formatting::remove_simple_repetitions(&raw_text)
+                (
+                    crate::ai_formatting::remove_simple_repetitions(&raw_text),
+                    crate::state::history::TranscriptKind::Raw,
+                )
             } else {
                 info!("Raw mode (Ctrl): using raw transcript");
-                raw_text.clone()
+                (raw_text.clone(), crate::state::history::TranscriptKind::Raw)
             }
         } else {
             // Double Option: respects AI Formatting toggle setting
@@ -717,15 +727,35 @@ impl RecordingController {
                 // Toggle ON: formatting only (no augmentation)
                 info!("Formatting mode (Toggle): correcting transcript via AI");
                 let lang_str = language_opt.map(String::from);
-                crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), false).await
+                let result = crate::ai_formatting::format_text_with_status(
+                    &raw_text,
+                    lang_str.as_deref(),
+                    false,
+                )
+                .await;
+                let kind = match result.status {
+                    crate::ai_formatting::AiFormatStatus::Applied => {
+                        crate::state::history::TranscriptKind::Ai
+                    }
+                    crate::ai_formatting::AiFormatStatus::Failed => {
+                        crate::state::history::TranscriptKind::AiFailed
+                    }
+                    crate::ai_formatting::AiFormatStatus::Skipped => {
+                        crate::state::history::TranscriptKind::Raw
+                    }
+                };
+                (result.text, kind)
             } else if has_repetition {
                 // Toggle OFF with repetition: local cleanup only
                 info!("Raw mode (Toggle OFF): applying local repetition cleanup");
-                crate::ai_formatting::remove_simple_repetitions(&raw_text)
+                (
+                    crate::ai_formatting::remove_simple_repetitions(&raw_text),
+                    crate::state::history::TranscriptKind::Raw,
+                )
             } else {
                 // Toggle OFF: raw transcript
                 info!("Raw mode (Toggle OFF): using raw transcript");
-                raw_text.clone()
+                (raw_text.clone(), crate::state::history::TranscriptKind::Raw)
             }
         };
 
@@ -742,6 +772,18 @@ impl RecordingController {
             mode_label
         );
 
+        // Save audio to transcriptions folder if enabled (now we have final text)
+        if self.config.read().await.dump_audio_logs
+            && let Some(path) = &audio_path
+        {
+            crate::state::history::save_audio(
+                path.as_path(),
+                recording_timestamp,
+                Some(&formatted_text),
+                output_kind,
+            );
+        }
+
         // Paste the text into the active application
         crate::clipboard::paste_text(&formatted_text).context("Failed to paste text")?;
 
@@ -751,6 +793,7 @@ impl RecordingController {
         let entry = crate::state::history::save_entry_with_timestamp(
             &formatted_text,
             Some(recording_timestamp),
+            output_kind,
         );
         info!("Transcript saved: {}", entry.path.display());
 

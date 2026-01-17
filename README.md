@@ -48,13 +48,16 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 - **Embedded Whisper Model** — whisper-large-v3-turbo-mlx-q8 baked into binary (~888MB), zero disk I/O
 - **Whisper Live (Streaming)** — transcription happens *during recording* (chunks + overlap), so `stop()` is
   near-instant
+- **Stream postprocess** — semantic gating + cleanup of live chunks before final output
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
 - **Global Hotkeys** — Hold Ctrl or double-tap Option to record
 - **Provider Separation** — Different LLM providers for formatting vs assistive mode
 - **AI Formatting** — Optional post-processing via Responses API
+- **IPC Server** — Stable runtime interface for GUI/clients
+- **Quality Loop + Report** — Automated quality scoring and batch reports
 - **Slug Filenames** — Transcripts named with first 3 words for easy identification
-- **CLI Transcribe Command** — `codescribe transcribe` for batch audio processing
+- **CLI Suite** — `codescribe`, `codescribe-quality`, `codescribe-loop`
 
 ## Tech Stack
 
@@ -68,6 +71,8 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 | Audio            | cpal + hound + symphonia          | Recording & format support |
 | HTTP Client      | reqwest                           | LLM API calls              |
 | API Format       | openai-harmony                    | Responses API support      |
+| Security         | cap-std                           | Path safety hardening      |
+| Embeddings       | fastembed                         | Local vector utilities     |
 
 ## Installation
 

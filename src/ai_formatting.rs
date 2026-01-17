@@ -29,6 +29,19 @@ use tracing::{debug, info, trace, warn};
 /// HTTP client for AI providers
 static AI_CLIENT: OnceLock<Client> = OnceLock::new();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiFormatStatus {
+    Applied,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone)]
+pub struct AiFormatResult {
+    pub text: String,
+    pub status: AiFormatStatus,
+}
+
 #[derive(Clone)]
 struct MemoryMessage {
     role: String,
@@ -520,9 +533,23 @@ pub fn remove_simple_repetitions(text: &str) -> String {
 /// # Returns
 /// Formatted text or original if all providers fail
 pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) -> String {
+    format_text_with_status(text, language, assistive)
+        .await
+        .text
+}
+
+/// Format text using AI provider with fallback chain, returning status
+pub async fn format_text_with_status(
+    text: &str,
+    language: Option<&str>,
+    assistive: bool,
+) -> AiFormatResult {
     // Skip very short texts (but not in assistive mode - user might say "help")
     if text.len() < 10 && !assistive {
-        return text.to_string();
+        return AiFormatResult {
+            text: text.to_string(),
+            status: AiFormatStatus::Skipped,
+        };
     }
 
     // Check for repetition loops - apply simple fix first
@@ -689,7 +716,10 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
 
             if is_refusal {
                 warn!("AI returned refusal response, returning raw input instead");
-                return cleaned;
+                return AiFormatResult {
+                    text: cleaned,
+                    status: AiFormatStatus::Failed,
+                };
             }
 
             // Analyze result quality
@@ -729,6 +759,15 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
                     continue;
                 } else {
                     warn!("Max retries reached, accepting output.");
+                    let status = if raw_like {
+                        AiFormatStatus::Failed
+                    } else {
+                        AiFormatStatus::Applied
+                    };
+                    return AiFormatResult {
+                        text: formatted,
+                        status,
+                    };
                 }
             }
 
@@ -740,13 +779,19 @@ pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) ->
                 content_match,
                 raw_like
             );
-            return formatted;
+            return AiFormatResult {
+                text: formatted,
+                status: AiFormatStatus::Applied,
+            };
         }
     }
 
     // All providers failed
     warn!("All AI providers/retries failed, returning cleaned text");
-    cleaned
+    AiFormatResult {
+        text: cleaned,
+        status: AiFormatStatus::Failed,
+    }
 }
 
 /// Call LLM endpoint using /v1/responses API

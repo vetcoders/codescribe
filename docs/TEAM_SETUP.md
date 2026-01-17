@@ -91,6 +91,18 @@ codescribe transcribe audio.wav --format
 codescribe transcribe audio.wav --language pl
 ```
 
+## Quality & Tools
+
+Nowe narzędzia CLI (batch/automation):
+
+```bash
+# Raport jakości batch
+codescribe-quality --help
+
+# Pętla jakości (self-improving loop)
+codescribe-loop --help
+```
+
 ## Configuration
 
 File: `~/.codescribe/.env`

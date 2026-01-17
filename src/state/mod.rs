@@ -18,6 +18,6 @@ pub use conversation::{
 };
 #[allow(unused_imports)] // Public API for external consumers
 pub use history::{
-    HistoryEntry, latest_entry, open_history_folder, recent_entries, save_audio, save_entry,
-    save_entry_with_timestamp,
+    HistoryEntry, TranscriptKind, latest_entry, open_history_folder, recent_entries, save_audio,
+    save_entry, save_entry_with_kind, save_entry_with_timestamp,
 };

@@ -1,9 +1,10 @@
 //! Simple transcript history manager for CodeScribe
 //!
 //! Saves transcripts and audio to ~/.codescribe/transcriptions/YYYY-MM-DD/
-//! Files are paired: HHMMSS.wav + HHMMSS.txt with matching timestamps.
+//! Files are paired: HHMMSS_slug_kind.wav + HHMMSS_slug_kind.txt with matching timestamps.
 
 use chrono::{DateTime, Local};
+use deunicode::deunicode;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,25 @@ pub struct HistoryEntry {
     pub path: PathBuf,
     pub timestamp: DateTime<Local>,
     pub preview: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptKind {
+    Raw,
+    Ai,
+    AiFailed,
+    Failed,
+}
+
+impl TranscriptKind {
+    fn suffix(self) -> &'static str {
+        match self {
+            TranscriptKind::Raw => "raw",
+            TranscriptKind::Ai => "ai",
+            TranscriptKind::AiFailed => "ai-failed",
+            TranscriptKind::Failed => "failed",
+        }
+    }
 }
 
 impl HistoryEntry {
@@ -33,13 +53,14 @@ impl HistoryEntry {
 /// Create a filename-safe slug from the first N words of text
 /// Returns empty string if no valid words found
 fn make_slug(text: &str, max_words: usize) -> String {
-    let slug: String = text
+    let ascii = deunicode(text);
+    let slug: String = ascii
         .split_whitespace()
         .take(max_words)
         .collect::<Vec<_>>()
         .join("-")
         .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect::<String>()
         .to_lowercase();
 
@@ -48,6 +69,14 @@ fn make_slug(text: &str, max_words: usize) -> String {
         slug.chars().take(30).collect()
     } else {
         slug
+    }
+}
+
+fn build_base_name(time_base: &str, slug: &str, kind: TranscriptKind) -> String {
+    if slug.is_empty() {
+        format!("{}_{}", time_base, kind.suffix())
+    } else {
+        format!("{}_{}_{}", time_base, slug, kind.suffix())
     }
 }
 
@@ -86,23 +115,24 @@ pub fn history_dir() -> PathBuf {
 /// * `text` - The transcript text to save
 /// * `timestamp` - Optional timestamp to use (for pairing with audio files).
 ///   If None, uses current time.
-pub fn save_entry_with_timestamp(text: &str, timestamp: Option<DateTime<Local>>) -> HistoryEntry {
+/// * `kind` - What kind of transcript this is (raw/ai/ai-failed)
+pub fn save_entry_with_timestamp(
+    text: &str,
+    timestamp: Option<DateTime<Local>>,
+    kind: TranscriptKind,
+) -> HistoryEntry {
     let text = text.trim();
     let now = timestamp.unwrap_or_else(Local::now);
 
     // Get transcriptions directory for this date
     let day_dir = transcriptions_dir(&now);
 
-    // Create file with HHMMSS_slug.txt format (slug = first 3 words)
+    // Create file with HHMMSS_slug_kind.txt format (slug = first 3 words)
     // Note: multiple writes within the same second can collide (e.g. raw + formatted back-to-back),
     // so we ensure a unique filename by appending an incrementing suffix.
     let time_base = now.format("%H%M%S").to_string();
     let slug = make_slug(text, 3);
-    let base = if slug.is_empty() {
-        time_base.clone()
-    } else {
-        format!("{}_{}", time_base, slug)
-    };
+    let base = build_base_name(&time_base, &slug, kind);
     let mut path = day_dir.join(format!("{}.txt", base));
     if path.exists() {
         for i in 1..=10_000 {
@@ -142,8 +172,13 @@ pub fn save_entry_with_timestamp(text: &str, timestamp: Option<DateTime<Local>>)
 }
 
 /// Save a transcript to history and return the entry (convenience wrapper)
+pub fn save_entry_with_kind(text: &str, kind: TranscriptKind) -> HistoryEntry {
+    save_entry_with_timestamp(text, None, kind)
+}
+
+/// Save a transcript to history and return the entry (convenience wrapper)
 pub fn save_entry(text: &str) -> HistoryEntry {
-    save_entry_with_timestamp(text, None)
+    save_entry_with_timestamp(text, None, TranscriptKind::Raw)
 }
 
 /// Get recent history entries, sorted by modification time (newest first)
@@ -217,12 +252,13 @@ pub fn open_history_folder() {
 
 /// Save audio file to transcriptions folder with the given timestamp and optional slug
 ///
-/// Creates a paired file alongside the transcript (e.g., 143052_cześć-jak.wav pairs with 143052_cześć-jak.txt)
+/// Creates a paired file alongside the transcript (e.g., 143052_czesc-jak_raw.wav pairs with 143052_czesc-jak_raw.txt)
 ///
 /// # Arguments
 /// * `src_path` - Path to the source WAV file (typically a temp file)
 /// * `timestamp` - Timestamp to use for the filename (should match the transcript)
 /// * `transcript_text` - Optional transcript text to generate slug from (first 3 words)
+/// * `kind` - What kind of transcript this is (raw/ai/ai-failed)
 ///
 /// # Returns
 /// * `Some(PathBuf)` - Path to the saved audio file on success
@@ -231,6 +267,7 @@ pub fn save_audio(
     src_path: &Path,
     timestamp: DateTime<Local>,
     transcript_text: Option<&str>,
+    kind: TranscriptKind,
 ) -> Option<PathBuf> {
     if !src_path.exists() {
         warn!("save_audio: source file does not exist: {:?}", src_path);
@@ -240,14 +277,10 @@ pub fn save_audio(
     // Get transcriptions directory for this date
     let dest_dir = transcriptions_dir(&timestamp);
 
-    // Create filename with HHMMSS_slug.wav format (matching transcript naming)
+    // Create filename with HHMMSS_slug_kind.wav format (matching transcript naming)
     let time_base = timestamp.format("%H%M%S").to_string();
     let slug = transcript_text.map(|t| make_slug(t, 3)).unwrap_or_default();
-    let base = if slug.is_empty() {
-        time_base.clone()
-    } else {
-        format!("{}_{}", time_base, slug)
-    };
+    let base = build_base_name(&time_base, &slug, kind);
     let mut dest_path = dest_dir.join(format!("{}.wav", base));
     if dest_path.exists() {
         for i in 1..=10_000 {
@@ -276,7 +309,7 @@ pub fn save_audio(
 /// Prefer using save_audio() with explicit timestamp for proper pairing with transcripts
 #[deprecated(note = "Use save_audio() with explicit timestamp instead")]
 pub fn dump_audio(src_path: &Path, _reason: &str) -> Option<PathBuf> {
-    save_audio(src_path, Local::now(), None)
+    save_audio(src_path, Local::now(), None, TranscriptKind::Raw)
 }
 
 /// Open the transcriptions folder in Finder (alias for open_history_folder)
@@ -374,7 +407,7 @@ mod tests {
 
         let text = "Timestamped transcript";
         let now = Local::now();
-        let entry = save_entry_with_timestamp(text, Some(now));
+        let entry = save_entry_with_timestamp(text, Some(now), TranscriptKind::Raw);
 
         assert!(entry.path.exists());
         assert_eq!(

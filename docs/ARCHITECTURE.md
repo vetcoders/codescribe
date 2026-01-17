@@ -199,10 +199,15 @@ CodeScribe/
 ├── src/                      # codescribe crate (backend library)
 │   ├── whisper/              # Embedded + singleton Whisper engine
 │   ├── audio/                # Recorder + StreamingRecorder
+│   ├── ipc/                  # IPC server + types (runtime interface)
+│   ├── stream_postprocess.rs # Semantic gating for live chunks
+│   ├── quality_loop.rs       # Automated quality loop
+│   ├── quality_report.rs     # Batch quality reports
 │   ├── hotkeys/              # CGEventTap hotkey handler
 │   ├── controller.rs         # Recording/transcription orchestration (uses StreamingRecorder)
 │   ├── config/               # Configuration management
 │   └── ...
+├── src/bin/                   # CLI tools (codescribe-quality, codescribe-loop)
 ├── tauri-app/                # Tauri application
 │   ├── src/
 │   │   ├── lib.rs            # Tauri setup + tray + hotkey init
@@ -249,6 +254,9 @@ CodeScribe/
 | Tray app with submenus                     | ✅      |
 | Tauri GUI (Voice Lab, Settings)            | ✅      |
 | History with slug filenames                | ✅      |
+| IPC server (runtime interface)             | ✅      |
+| Stream postprocess (semantic gating)       | ✅      |
+| Quality loop + report                      | ✅      |
 
 ---
 

@@ -50,6 +50,15 @@ Practical win:
 
 - **~35s recording:** `stop()` is ~0.5s (last chunk only) instead of ~4s (whole audio)
 
+## What’s new around Whisper Live
+
+- **Stream postprocess** (`src/stream_postprocess.rs`) — semantic gating and cleanup of chunk output
+  before final paste/LLM, reducing low‑quality fragments in live mode.
+- **IPC server** (`src/ipc/`) — stable runtime interface for GUI/clients; Whisper Live can be
+  consumed and extended outside the tray flow.
+- **Quality loop/report** (`src/quality_loop.rs`, `src/quality_report.rs`) — automated scoring and
+  batch diagnostics for streaming accuracy and regressions.
+
 ## How it works (high level)
 
 ```mermaid
