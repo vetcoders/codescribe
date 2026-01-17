@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "codescribe"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "arboard",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "codescribe-app"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "codescribe",
