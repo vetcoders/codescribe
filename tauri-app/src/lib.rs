@@ -14,7 +14,11 @@ mod ui;
 mod commands;
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 mod hotkey_integration;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod ipc_client;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod state;
@@ -35,30 +39,12 @@ pub fn start_frontend() {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_backend() {
-    use std::sync::Arc;
-
     let state = state::AppState::new().expect("failed to initialize AppState");
-
-    // Clone state for hotkey listener (shares internal Arcs)
-    let state_for_hotkeys = Arc::new(state.clone());
 
     tauri::Builder::default()
         .manage(state)
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
-        .setup(move |app| {
-            // Start hotkey listener in background thread
-            // Note: Tray is managed by CLI, this is GUI-only mode
-            if let Err(e) = hotkey_integration::start_hotkey_listener(
-                app.handle().clone(),
-                Arc::clone(&state_for_hotkeys),
-            ) {
-                log::warn!("Failed to start hotkey listener: {}", e);
-                // Continue anyway - GUI still works without hotkeys
-            }
-
-            Ok(())
-        })
         .on_window_event(|window, event| {
             // Hide window on close instead of quitting (tray app behavior)
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

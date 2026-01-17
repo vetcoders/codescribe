@@ -178,7 +178,7 @@ fn SpectrogramPanel() -> impl IntoView {
                     }
                 }
                 Ok(None) => {
-                    set_status_text.set("No audio captured".to_string());
+                    set_status_text.set("Recording handled by CLI".to_string());
                 }
                 Err(e) => {
                     set_status_text.set("Error".to_string());

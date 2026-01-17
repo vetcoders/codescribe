@@ -19,6 +19,7 @@ use tokio::sync::Mutex as TokioMutex;
 pub struct RecordingState {
     pub recorder: Option<Recorder>,
     pub is_recording: bool,
+    pub via_ipc: bool,
 }
 
 /// Application state
@@ -47,6 +48,7 @@ impl AppState {
             recording: Arc::new(TokioMutex::new(RecordingState {
                 recorder: None,
                 is_recording: false,
+                via_ipc: false,
             })),
         })
     }

@@ -46,6 +46,9 @@ enum Commands {
         #[arg(long, default_value = "qwen3-coder:480b-cloud")]
         llm: String,
     },
+
+    /// Run as daemon with tray icon (default when no args)
+    Daemon,
 }
 
 #[tokio::main]
@@ -65,16 +68,7 @@ async fn main() -> Result<()> {
             format,
             llm,
         }) => handle_transcribe_command(file, language, format, llm).await,
-        None => {
-            eprintln!("CodeScribe CLI - Local speech-to-text transcription");
-            eprintln!();
-            eprintln!("Usage:");
-            eprintln!("  codescribe transcribe <file>     Transcribe audio file");
-            eprintln!("  codescribe --config              Open config file");
-            eprintln!();
-            eprintln!("For the full app with tray icon and hotkeys, run CodeScribe.app");
-            Ok(())
-        }
+        Some(Commands::Daemon) | None => run_daemon().await,
     }
 }
 
@@ -297,4 +291,116 @@ Rules:
         .message
         .map(|m| m.content.trim().to_string())
         .ok_or_else(|| anyhow::anyhow!("Empty Ollama response"))
+}
+
+async fn run_daemon() -> Result<()> {
+    use anyhow::Context;
+    use codescribe::config::Config;
+    use codescribe::controller::RecordingController;
+    use codescribe::hotkeys::HotkeyEvent;
+    use codescribe::{hotkeys, ipc, tray};
+    use crossbeam_channel::unbounded;
+    use std::sync::Arc;
+    use tokio::runtime::Handle;
+
+    eprintln!("CodeScribe daemon starting...");
+
+    codescribe::whisper::init().context("Failed to initialize Whisper")?;
+    let controller = Arc::new(RecordingController::new());
+
+    let config = Config::load();
+    sync_hotkey_config(&config);
+
+    let ipc_controller = Arc::clone(&controller);
+    tokio::spawn(async move {
+        if let Err(e) = ipc::run_server(ipc_controller).await {
+            eprintln!("IPC server error: {}", e);
+        }
+    });
+
+    let menu_rx = tray::menu_event_receiver()?;
+    let menu_controller = Arc::clone(&controller);
+    let menu_handle = Handle::current();
+    std::thread::spawn(move || {
+        for event in menu_rx {
+            let controller = Arc::clone(&menu_controller);
+            let handle = menu_handle.clone();
+            handle.spawn(async move {
+                let config = Config::load();
+                sync_hotkey_config(&config);
+                controller.set_config(config).await;
+            });
+
+            if matches!(event, tray::TrayMenuEvent::Quit) {
+                break;
+            }
+        }
+    });
+
+    let (tx, rx) = unbounded::<HotkeyEvent>();
+    let hotkey_manager = hotkeys::HotkeyManager::new(tx).map_err(|e| anyhow::anyhow!(e))?;
+
+    let hotkey_controller = Arc::clone(&controller);
+    let hotkey_handle = Handle::current();
+    std::thread::spawn(move || {
+        for event in rx {
+            let controller = Arc::clone(&hotkey_controller);
+            let handle = hotkey_handle.clone();
+            handle.spawn(async move {
+                if let Err(e) = dispatch_hotkey_event(event, controller).await {
+                    eprintln!("Hotkey event error: {}", e);
+                }
+            });
+        }
+    });
+
+    tray::run_with_hotkeys(Some(hotkey_manager))?;
+
+    Ok(())
+}
+
+fn sync_hotkey_config(config: &codescribe::config::Config) {
+    codescribe::hotkeys::set_hold_mods(config.hold_mods);
+    codescribe::hotkeys::set_toggle_trigger(config.toggle_trigger);
+    codescribe::hotkeys::set_exclusive_mode(config.hold_exclusive);
+}
+
+async fn dispatch_hotkey_event(
+    event: codescribe::hotkeys::HotkeyEvent,
+    controller: std::sync::Arc<codescribe::controller::RecordingController>,
+) -> Result<()> {
+    use codescribe::config::Config;
+    use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType};
+    use codescribe::hotkeys::{HoldAction, HotkeyEvent};
+
+    match event {
+        HotkeyEvent::Hold { action, assistive } => {
+            let mapped_action = match action {
+                HoldAction::Down => HotkeyAction::Down,
+                HoldAction::Up => HotkeyAction::Up,
+            };
+            let input = HotkeyInput {
+                key_type: HotkeyType::Hold,
+                action: mapped_action,
+                assistive,
+            };
+            controller.handle_hotkey_event(input).await?;
+        }
+        HotkeyEvent::Toggle => {
+            let input = HotkeyInput {
+                key_type: HotkeyType::Toggle,
+                action: HotkeyAction::Press,
+                assistive: false,
+            };
+            controller.handle_hotkey_event(input).await?;
+        }
+        HotkeyEvent::TripleToggle => {
+            let _ = codescribe::tray::toggle_ai_formatting();
+            let config = Config::load();
+            sync_hotkey_config(&config);
+            controller.set_config(config).await;
+        }
+    }
+
+    Ok(())
 }

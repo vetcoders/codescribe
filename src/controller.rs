@@ -98,7 +98,7 @@ impl ValidatedAudioPath {
 use crate::config::Config;
 use crate::config::models::ModelManager;
 use crate::tray::{TrayStatus, update_tray_status};
-use codescribe::{BadgeMode, hide_hold_badge, show_badge_for_mode};
+use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
 // TODO: Re-enable when implementing recorder
 use crate::audio::streaming_recorder::StreamingRecorder;
@@ -191,10 +191,10 @@ impl RecordingController {
         let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
-        if let Ok(models) = model_manager.list_models() {
-            if !models.is_empty() {
-                info!("Available local models: {:?}", models);
-            }
+        if let Ok(models) = model_manager.list_models()
+            && !models.is_empty()
+        {
+            info!("Available local models: {:?}", models);
         }
 
         // Initialize Whisper engine (singleton)
@@ -228,10 +228,10 @@ impl RecordingController {
         let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
-        if let Ok(models) = model_manager.list_models() {
-            if !models.is_empty() {
-                info!("Available local models: {:?}", models);
-            }
+        if let Ok(models) = model_manager.list_models()
+            && !models.is_empty()
+        {
+            info!("Available local models: {:?}", models);
         }
 
         // Initialize Whisper engine (singleton)
@@ -256,15 +256,25 @@ impl RecordingController {
         *self.state.read().await
     }
 
+    /// Replace controller configuration at runtime
+    pub async fn set_config(&self, config: Config) {
+        *self.config.write().await = config;
+    }
+
+    /// Snapshot of current controller configuration
+    pub async fn get_config(&self) -> Config {
+        self.config.read().await.clone()
+    }
+
     /// Cancel any pending delayed hold-start task
     async fn cancel_pending_hold_start(&self) {
         let mut task_guard = self.hold_start_task.lock().await;
-        if let Some(task) = task_guard.take() {
-            if !task.is_finished() {
-                debug!("Cancelling pending hold-start task");
-                task.abort();
-                let _ = task.await; // Suppress cancellation errors
-            }
+        if let Some(task) = task_guard.take()
+            && !task.is_finished()
+        {
+            debug!("Cancelling pending hold-start task");
+            task.abort();
+            let _ = task.await; // Suppress cancellation errors
         }
     }
 
@@ -662,14 +672,10 @@ impl RecordingController {
         info!("Raw transcript captured ({} chars)", raw_text.len());
 
         // Save audio to transcriptions folder if enabled (now we have text for slug)
-        if self.config.read().await.dump_audio_logs {
-            if let Some(path) = &audio_path {
-                crate::state::history::save_audio(
-                    path.as_path(),
-                    recording_timestamp,
-                    Some(&raw_text),
-                );
-            }
+        if self.config.read().await.dump_audio_logs
+            && let Some(path) = &audio_path
+        {
+            crate::state::history::save_audio(path.as_path(), recording_timestamp, Some(&raw_text));
         }
 
         // Check for repetition loops (Whisper hallucination like "Wielki, Wielki, Wielki...")

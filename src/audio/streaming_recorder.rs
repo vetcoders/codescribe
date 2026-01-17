@@ -1,4 +1,5 @@
 use crate::audio::recorder::{Recorder, RecorderConfig};
+use crate::stream_postprocess::StreamPostProcessor;
 use crate::whisper::append_with_overlap_dedup;
 use crate::whisper::singleton::engine as get_engine;
 use anyhow::{Context, Result, anyhow};
@@ -78,8 +79,16 @@ impl StreamingRecorder {
 
         // Start transcription worker (after we know the real sample rate)
         let transcript_buffer = self.transcript_buffer.clone();
+        let postprocessor = StreamPostProcessor::new();
         self.transcription_handle = Some(tokio::spawn(async move {
-            transcription_worker(rx, transcript_buffer, actual_sample_rate, language).await;
+            transcription_worker(
+                rx,
+                transcript_buffer,
+                actual_sample_rate,
+                language,
+                postprocessor,
+            )
+            .await;
         }));
 
         Ok(())
@@ -108,6 +117,7 @@ async fn transcription_worker(
     transcript_buffer: Arc<Mutex<String>>,
     sample_rate: u32,
     language: Option<String>,
+    mut postprocessor: StreamPostProcessor,
 ) {
     info!("Transcription worker started");
 
@@ -129,6 +139,7 @@ async fn transcription_worker(
                 &transcript_buffer,
                 sample_rate,
                 language.as_deref(),
+                &mut postprocessor,
             )
             .await;
 
@@ -151,6 +162,7 @@ async fn transcription_worker(
             &transcript_buffer,
             sample_rate,
             language.as_deref(),
+            &mut postprocessor,
         )
         .await;
     }
@@ -163,6 +175,7 @@ async fn process_chunk(
     transcript_buffer: &Arc<Mutex<String>>,
     sample_rate: u32,
     language: Option<&str>,
+    postprocessor: &mut StreamPostProcessor,
 ) {
     if samples.is_empty() {
         return;
@@ -214,8 +227,12 @@ async fn process_chunk(
         Ok(Ok(text)) => {
             if !text.trim().is_empty() {
                 debug!("Chunk transcribed: '{}'", text.trim());
-                let mut buffer = transcript_buffer.lock().await;
-                append_with_overlap_dedup(&mut buffer, &text);
+                if let Some(cleaned) = postprocessor.process(&text) {
+                    let mut buffer = transcript_buffer.lock().await;
+                    append_with_overlap_dedup(&mut buffer, &cleaned);
+                } else {
+                    debug!("Stream postprocessor dropped chunk");
+                }
             }
         }
         Ok(Err(e)) => {

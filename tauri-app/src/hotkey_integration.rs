@@ -155,6 +155,7 @@ async fn handle_start_recording(state: &AppState) -> Result<(), String> {
             .await
             .map_err(|e| format!("Failed to start recording: {e}"))?;
         recording.is_recording = true;
+        recording.via_ipc = false;
         info!("Recording started via hotkey");
 
         // Play start beep
@@ -182,6 +183,7 @@ async fn handle_stop_recording(state: &AppState, assistive: bool) -> Result<(), 
             .await
             .map_err(|e| format!("Failed to stop recording: {e}"))?;
         recording.is_recording = false;
+        recording.via_ipc = false;
         result
     } else {
         recording.is_recording = false;

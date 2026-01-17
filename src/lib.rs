@@ -30,6 +30,7 @@ pub mod config;
 pub mod permissions;
 pub mod safe_path;
 pub mod state;
+mod stream_postprocess;
 pub mod voice_chat;
 pub mod whisper;
 
@@ -39,6 +40,15 @@ pub mod whisper;
 
 #[cfg(target_os = "macos")]
 pub mod hotkeys;
+
+#[cfg(target_os = "macos")]
+pub mod controller;
+
+#[cfg(target_os = "macos")]
+pub mod client;
+
+#[cfg(target_os = "macos")]
+pub mod ipc;
 
 #[cfg(target_os = "macos")]
 pub mod ui;

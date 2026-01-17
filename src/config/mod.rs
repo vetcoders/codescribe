@@ -22,7 +22,7 @@ pub mod prompts;
 mod types;
 
 // Re-export types
-pub use types::{Config, HoldMods, ToggleTrigger};
+pub use types::{AiProvider, Config, HoldMods, ToggleTrigger};
 // Language re-exported for external consumers (tauri-app)
 #[allow(unused_imports)]
 pub use types::Language;
