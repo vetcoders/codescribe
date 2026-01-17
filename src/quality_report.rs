@@ -1,0 +1,1329 @@
+//! Quality report pipeline for batch audio evaluation.
+//!
+//! Flow: batch WAV -> streaming transcription (raw + postprocess) -> AI formatting + cloud ref
+//! -> metrics -> artifacts + HTML/JSON/MD reports.
+//!
+//! Created by M&K (c)2026 VetCoders
+
+use anyhow::{Context, Result, anyhow};
+use chrono::{DateTime, Local};
+use serde::Serialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::ai_formatting;
+use crate::audio::load_audio_file;
+use crate::audio::streaming_recorder::transcribe_streaming_samples;
+use crate::config::Config;
+use crate::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
+use crate::{client, whisper};
+
+#[derive(Debug, Clone)]
+pub struct QualityReportConfig {
+    pub input_dir: PathBuf,
+    pub output_dir: PathBuf,
+    pub date_filter: Option<String>,
+    pub limit: usize,
+    pub language: Option<String>,
+    pub skip_cloud: bool,
+    pub skip_formatting: bool,
+    pub debug_mode: bool,
+    pub copy_audio: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QualityReport {
+    pub generated_at: String,
+    pub environment: ReportEnvironment,
+    pub summary: ReportSummary,
+    pub entries: Vec<ReportEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReportEnvironment {
+    pub stt_endpoint: Option<String>,
+    pub stt_api_key_present: bool,
+    pub llm_formatting_endpoint: Option<String>,
+    pub llm_formatting_model: Option<String>,
+    pub llm_formatting_key_present: bool,
+    pub local_model: Option<String>,
+    pub whisper_language: Option<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct ReportSummary {
+    pub total_files: usize,
+    pub processed_files: usize,
+    pub avg_raw_wer: Option<f32>,
+    pub avg_post_wer: Option<f32>,
+    pub avg_ai_wer: Option<f32>,
+    pub avg_cloud_wer: Option<f32>,
+    pub avg_raw_cer: Option<f32>,
+    pub avg_post_cer: Option<f32>,
+    pub avg_ai_cer: Option<f32>,
+    pub avg_cloud_cer: Option<f32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReportEntry {
+    pub id: String,
+    pub audio_path: String,
+    pub audio_rel_path: String,
+    pub reference_path: Option<String>,
+    pub duration_secs: f32,
+    pub transcripts: ReportTranscripts,
+    pub metrics: ReportMetrics,
+    pub postprocess_stats: Option<StreamPostProcessStats>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct ReportTranscripts {
+    pub raw: Option<String>,
+    pub post: Option<String>,
+    pub ai_formatted: Option<String>,
+    pub cloud: Option<String>,
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct ReportMetrics {
+    pub raw_wer: Option<f32>,
+    pub raw_cer: Option<f32>,
+    pub post_wer: Option<f32>,
+    pub post_cer: Option<f32>,
+    pub ai_wer: Option<f32>,
+    pub ai_cer: Option<f32>,
+    pub cloud_wer: Option<f32>,
+    pub cloud_cer: Option<f32>,
+}
+
+pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
+    let now: DateTime<Local> = Local::now();
+    let generated_at = now.to_rfc3339();
+
+    let env_snapshot = snapshot_environment();
+
+    let pairs = collect_pairs(
+        &config.input_dir,
+        config.date_filter.as_deref(),
+        config.limit,
+    );
+    if pairs.is_empty() {
+        anyhow::bail!("No WAV+TXT pairs found in {}", config.input_dir.display());
+    }
+
+    fs::create_dir_all(&config.output_dir)
+        .with_context(|| format!("Failed to create {}", config.output_dir.display()))?;
+    let artifacts_dir = config.output_dir.join("artifacts");
+    let audio_dir = config.output_dir.join("audio");
+    fs::create_dir_all(&artifacts_dir)?;
+    fs::create_dir_all(&audio_dir)?;
+
+    ensure_model_path()?;
+    whisper::init().context("Failed to init Whisper")?;
+
+    let mut entries = Vec::new();
+    let mut totals = Totals::default();
+
+    for pair in pairs {
+        let entry = process_pair(&pair, &config, &artifacts_dir, &audio_dir).await?;
+        totals.accumulate(&entry.metrics);
+        entries.push(entry);
+    }
+
+    let summary = totals.finish(entries.len());
+    let report = QualityReport {
+        generated_at,
+        environment: env_snapshot,
+        summary,
+        entries,
+    };
+
+    write_report_files(&report, &config, &artifacts_dir)?;
+
+    Ok(config.output_dir)
+}
+
+async fn process_pair(
+    pair: &CorpusPair,
+    config: &QualityReportConfig,
+    artifacts_dir: &Path,
+    audio_dir: &Path,
+) -> Result<ReportEntry> {
+    let audio_path = pair.audio_path.clone();
+    let reference_path = pair.reference_path.clone();
+    let id = pair.id.clone();
+
+    let audio_rel_path = ensure_audio_asset(&audio_path, audio_dir, &id, config.copy_audio)?;
+
+    let mut errors = Vec::new();
+    let reference = if reference_path.exists() {
+        match fs::read_to_string(&reference_path) {
+            Ok(content) => {
+                let trimmed = content.trim().to_string();
+                if trimmed.is_empty() {
+                    errors.push("Reference transcript is empty".into());
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }
+            Err(e) => {
+                errors.push(format!("Reference read failed: {}", e));
+                None
+            }
+        }
+    } else {
+        errors.push("Reference transcript missing".into());
+        None
+    };
+
+    let (samples, sample_rate) = load_audio_file(&audio_path)
+        .with_context(|| format!("Failed to load audio {}", audio_path.display()))?;
+    let duration_secs = samples.len() as f32 / sample_rate as f32;
+
+    let raw =
+        match transcribe_streaming_samples(&samples, sample_rate, config.language.as_deref(), None)
+        {
+            Ok(text) => Some(text),
+            Err(e) => {
+                errors.push(format!("Raw transcription failed: {}", e));
+                None
+            }
+        };
+    if raw
+        .as_deref()
+        .map(|text| text.trim().is_empty())
+        .unwrap_or(false)
+    {
+        errors.push("Raw transcript is empty".into());
+    }
+
+    let mut postprocessor = StreamPostProcessor::new();
+    let post = match transcribe_streaming_samples(
+        &samples,
+        sample_rate,
+        config.language.as_deref(),
+        Some(&mut postprocessor),
+    ) {
+        Ok(text) => Some(text),
+        Err(e) => {
+            errors.push(format!("Post transcription failed: {}", e));
+            None
+        }
+    };
+    if post
+        .as_deref()
+        .map(|text| text.trim().is_empty())
+        .unwrap_or(false)
+    {
+        errors.push("Postprocess transcript is empty".into());
+    }
+
+    let ai_formatted = if config.skip_formatting {
+        None
+    } else if !ai_formatting::is_formatting_available() {
+        errors.push("AI formatting skipped: missing endpoint/model/key".into());
+        None
+    } else if let Some(post_text) = post.as_deref() {
+        Some(ai_formatting::format_text(post_text, config.language.as_deref(), false).await)
+    } else {
+        None
+    };
+
+    let cloud = if config.skip_cloud {
+        None
+    } else if std::env::var("STT_ENDPOINT").is_ok() && std::env::var("STT_API_KEY").is_ok() {
+        match client::transcribe(&audio_path, config.language.as_deref()).await {
+            Ok(text) => Some(text),
+            Err(e) => {
+                errors.push(format!("Cloud transcription failed: {}", e));
+                None
+            }
+        }
+    } else {
+        errors.push("Cloud transcription skipped: STT_ENDPOINT/STT_API_KEY missing".into());
+        None
+    };
+
+    let metrics = compute_metrics(
+        reference.as_deref(),
+        raw.as_deref(),
+        post.as_deref(),
+        ai_formatted.as_deref(),
+        cloud.as_deref(),
+    );
+
+    let transcripts = ReportTranscripts {
+        raw: raw.clone(),
+        post: post.clone(),
+        ai_formatted: ai_formatted.clone(),
+        cloud: cloud.clone(),
+        reference: reference.clone(),
+    };
+
+    write_artifacts(&id, artifacts_dir, &transcripts)?;
+
+    Ok(ReportEntry {
+        id,
+        audio_path: audio_path.to_string_lossy().to_string(),
+        audio_rel_path,
+        reference_path: if reference_path.exists() {
+            Some(reference_path.to_string_lossy().to_string())
+        } else {
+            None
+        },
+        duration_secs,
+        transcripts,
+        metrics,
+        postprocess_stats: Some(postprocessor.stats()),
+        errors,
+    })
+}
+
+fn compute_metrics(
+    reference: Option<&str>,
+    raw: Option<&str>,
+    post: Option<&str>,
+    ai_formatted: Option<&str>,
+    cloud: Option<&str>,
+) -> ReportMetrics {
+    let Some(reference) = reference else {
+        return ReportMetrics::default();
+    };
+
+    let (ref_tokens, ref_norm) = normalize_for_eval(reference);
+
+    let (raw_wer, raw_cer) = match raw {
+        Some(text) => {
+            let (tokens, norm) = normalize_for_eval(text);
+            (
+                Some(word_error_rate(&ref_tokens, &tokens)),
+                Some(char_error_rate(&ref_norm, &norm)),
+            )
+        }
+        None => (None, None),
+    };
+
+    let (post_wer, post_cer) = match post {
+        Some(text) => {
+            let (tokens, norm) = normalize_for_eval(text);
+            (
+                Some(word_error_rate(&ref_tokens, &tokens)),
+                Some(char_error_rate(&ref_norm, &norm)),
+            )
+        }
+        None => (None, None),
+    };
+
+    let (ai_wer, ai_cer) = match ai_formatted {
+        Some(text) => {
+            let (tokens, norm) = normalize_for_eval(text);
+            (
+                Some(word_error_rate(&ref_tokens, &tokens)),
+                Some(char_error_rate(&ref_norm, &norm)),
+            )
+        }
+        None => (None, None),
+    };
+
+    let (cloud_wer, cloud_cer) = match cloud {
+        Some(text) => {
+            let (tokens, norm) = normalize_for_eval(text);
+            (
+                Some(word_error_rate(&ref_tokens, &tokens)),
+                Some(char_error_rate(&ref_norm, &norm)),
+            )
+        }
+        None => (None, None),
+    };
+
+    ReportMetrics {
+        raw_wer,
+        raw_cer,
+        post_wer,
+        post_cer,
+        ai_wer,
+        ai_cer,
+        cloud_wer,
+        cloud_cer,
+    }
+}
+
+fn write_artifacts(id: &str, artifacts_dir: &Path, transcripts: &ReportTranscripts) -> Result<()> {
+    if let Some(text) = transcripts.raw.as_deref() {
+        fs::write(artifacts_dir.join(format!("{id}.raw.txt")), text)?;
+    }
+    if let Some(text) = transcripts.post.as_deref() {
+        fs::write(artifacts_dir.join(format!("{id}.post.txt")), text)?;
+    }
+    if let Some(text) = transcripts.ai_formatted.as_deref() {
+        fs::write(artifacts_dir.join(format!("{id}.ai.txt")), text)?;
+    }
+    if let Some(text) = transcripts.cloud.as_deref() {
+        fs::write(artifacts_dir.join(format!("{id}.cloud.txt")), text)?;
+    }
+    if let Some(text) = transcripts.reference.as_deref() {
+        fs::write(artifacts_dir.join(format!("{id}.reference.txt")), text)?;
+    }
+    Ok(())
+}
+
+fn write_report_files(
+    report: &QualityReport,
+    config: &QualityReportConfig,
+    artifacts_dir: &Path,
+) -> Result<()> {
+    let json_path = config.output_dir.join("report.json");
+    let md_path = config.output_dir.join("report.md");
+    let html_path = config.output_dir.join("index.html");
+    let ingest_path = config.output_dir.join("ingest.jsonl");
+
+    let json = serde_json::to_string_pretty(report)?;
+    fs::write(json_path, json)?;
+
+    let md = render_markdown(report);
+    fs::write(md_path, md)?;
+
+    let html = render_html(report, config);
+    fs::write(html_path, html)?;
+
+    let jsonl = render_ingest_jsonl(report, artifacts_dir)?;
+    fs::write(ingest_path, jsonl)?;
+
+    Ok(())
+}
+
+fn render_markdown(report: &QualityReport) -> String {
+    let mut out = String::new();
+    out.push_str("# CodeScribe Quality Report\n\n");
+    out.push_str(&format!("Generated: {}\n\n", report.generated_at));
+    out.push_str("| File | WER raw | WER post | WER ai | WER cloud | CER raw | CER post | CER ai | CER cloud |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+
+    for entry in &report.entries {
+        let m = &entry.metrics;
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            entry.id,
+            fmt_opt(m.raw_wer),
+            fmt_opt(m.post_wer),
+            fmt_opt(m.ai_wer),
+            fmt_opt(m.cloud_wer),
+            fmt_opt(m.raw_cer),
+            fmt_opt(m.post_cer),
+            fmt_opt(m.ai_cer),
+            fmt_opt(m.cloud_cer),
+        ));
+    }
+
+    out.push_str("\n## Summary\n\n");
+    out.push_str(&format!(
+        "- Files: {}/{}\n",
+        report.summary.processed_files, report.summary.total_files
+    ));
+    out.push_str(&format!(
+        "- Avg WER raw/post/ai/cloud: {}/{}/{}/{}\n",
+        fmt_opt(report.summary.avg_raw_wer),
+        fmt_opt(report.summary.avg_post_wer),
+        fmt_opt(report.summary.avg_ai_wer),
+        fmt_opt(report.summary.avg_cloud_wer),
+    ));
+    out.push_str(&format!(
+        "- Avg CER raw/post/ai/cloud: {}/{}/{}/{}\n",
+        fmt_opt(report.summary.avg_raw_cer),
+        fmt_opt(report.summary.avg_post_cer),
+        fmt_opt(report.summary.avg_ai_cer),
+        fmt_opt(report.summary.avg_cloud_cer),
+    ));
+
+    out
+}
+
+fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
+    let debug = config.debug_mode;
+    let mut body = String::new();
+
+    body.push_str(&format!(
+        "<h1>CodeScribe Quality Report</h1><p>Generated: {}</p>",
+        html_escape(&report.generated_at)
+    ));
+
+    body.push_str("<div class=\"toolbar\">");
+    body.push_str("<div class=\"controls\">");
+    body.push_str("<div class=\"control-group\">");
+    body.push_str("<button id=\"playPauseBtn\" type=\"button\">Play/Pause</button>");
+    body.push_str("<button id=\"backBtn\" type=\"button\">Back 2s</button>");
+    body.push_str("<button id=\"fwdBtn\" type=\"button\">Fwd 2s</button>");
+    body.push_str("<button id=\"back10Btn\" type=\"button\">Back 10s</button>");
+    body.push_str("<button id=\"fwd10Btn\" type=\"button\">Fwd 10s</button>");
+    body.push_str("<button id=\"slowerBtn\" type=\"button\">Slower</button>");
+    body.push_str("<button id=\"fasterBtn\" type=\"button\">Faster</button>");
+    body.push_str("<span id=\"rateLabel\">1.0x</span>");
+    body.push_str("</div>");
+    body.push_str("<span class=\"active\">Active: <span id=\"activeEntry\">none</span></span>");
+    body.push_str("</div>");
+
+    body.push_str("<div class=\"tags\">");
+    body.push_str("<label for=\"tagInput\">Tag presets</label>");
+    body.push_str("<input id=\"tagInput\" type=\"text\" placeholder=\"Comma-separated tags\"/>");
+    body.push_str("<button id=\"saveTagsBtn\" type=\"button\">Save tags</button>");
+    body.push_str("<div id=\"tagPalette\" class=\"tag-palette\"></div>");
+    body.push_str("</div>");
+
+    body.push_str("<div class=\"hotkeys\">");
+    body.push_str("Hotkeys: Ctrl+Cmd+Space play/pause; Ctrl+Cmd+Left/Right seek; Ctrl+Cmd+Shift+Left/Right seek 10s; ");
+    body.push_str("Ctrl+Cmd+[ / ] speed; Ctrl+Cmd+1..9 insert tag; Ctrl+Cmd+N/P next/prev entry; Ctrl+Cmd+Enter reveal");
+    body.push_str("</div>");
+
+    body.push_str("<div class=\"toolbar-actions\"><button id=\"exportBtn\" type=\"button\">Export annotations</button></div>");
+    body.push_str("</div>");
+
+    for entry in &report.entries {
+        let t = &entry.transcripts;
+        let stats_json = entry
+            .postprocess_stats
+            .as_ref()
+            .and_then(|s| serde_json::to_string(s).ok())
+            .unwrap_or_else(|| "{}".to_string());
+
+        body.push_str(&format!(
+            "<div class=\"entry\" data-entry=\"{}\" id=\"entry-{}\">",
+            html_escape(&entry.id),
+            html_escape(&entry.id)
+        ));
+        body.push_str(&format!(
+            "<h2>{}</h2><p class=\"meta\">{:.1}s • {}</p>",
+            html_escape(&entry.id),
+            entry.duration_secs,
+            html_escape(&entry.audio_path)
+        ));
+        body.push_str(&format!(
+            "<audio class=\"entry-audio\" data-entry=\"{}\" controls preload=\"metadata\" src=\"{}\"></audio>",
+            html_escape(&entry.id),
+            html_escape(&entry.audio_rel_path)
+        ));
+
+        body.push_str("<div class=\"metrics\"><table>");
+        body.push_str("<tr><th></th><th>WER</th><th>CER</th></tr>");
+        body.push_str(&format!(
+            "<tr><td>Raw</td><td>{}</td><td>{}</td></tr>",
+            fmt_opt(entry.metrics.raw_wer),
+            fmt_opt(entry.metrics.raw_cer)
+        ));
+        body.push_str(&format!(
+            "<tr><td>Post</td><td>{}</td><td>{}</td></tr>",
+            fmt_opt(entry.metrics.post_wer),
+            fmt_opt(entry.metrics.post_cer)
+        ));
+        body.push_str(&format!(
+            "<tr><td>AI</td><td>{}</td><td>{}</td></tr>",
+            fmt_opt(entry.metrics.ai_wer),
+            fmt_opt(entry.metrics.ai_cer)
+        ));
+        body.push_str(&format!(
+            "<tr><td>Cloud</td><td>{}</td><td>{}</td></tr>",
+            fmt_opt(entry.metrics.cloud_wer),
+            fmt_opt(entry.metrics.cloud_cer)
+        ));
+        body.push_str("</table></div>");
+
+        body.push_str("<div class=\"human\">");
+        body.push_str(&format!(
+            "<label>Human transcript</label><textarea data-entry=\"{}\" spellcheck=\"false\" placeholder=\"Transcribe from audio...\"></textarea>",
+            html_escape(&entry.id)
+        ));
+        body.push_str("</div>");
+
+        body.push_str(&format!(
+            "<button class=\"reveal\" type=\"button\" data-entry=\"{}\" {}>Reveal references</button>",
+            html_escape(&entry.id),
+            if debug { "" } else { "disabled" }
+        ));
+
+        body.push_str(&format!(
+            "<div class=\"stats\" data-entry=\"{}\" data-stats='{}'><strong>Postprocess stats</strong>: {}</div>",
+            html_escape(&entry.id),
+            html_escape(&stats_json),
+            html_escape(&stats_summary(entry.postprocess_stats.as_ref()))
+        ));
+
+        body.push_str("<div class=\"refs\">");
+        render_ref_section(&mut body, "Raw (no postprocess)", t.raw.as_deref(), debug);
+        render_ref_section(
+            &mut body,
+            "Postprocess (candidate)",
+            t.post.as_deref(),
+            debug,
+        );
+        render_ref_section(
+            &mut body,
+            "AI formatted (candidate)",
+            t.ai_formatted.as_deref(),
+            debug,
+        );
+        render_ref_section(&mut body, "Cloud reference", t.cloud.as_deref(), debug);
+        render_ref_section(
+            &mut body,
+            "Corpus reference (.txt)",
+            t.reference.as_deref(),
+            debug,
+        );
+        body.push_str("</div>");
+
+        if !entry.errors.is_empty() {
+            body.push_str("<div class=\"errors\"><strong>Errors:</strong><ul>");
+            for err in &entry.errors {
+                body.push_str(&format!("<li>{}</li>", html_escape(err)));
+            }
+            body.push_str("</ul></div>");
+        }
+
+        body.push_str("</div>");
+    }
+
+    let debug_flag = if debug { "true" } else { "false" };
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CodeScribe Quality Report</title>
+<style>
+body {{ font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 24px; color: #111; }}
+h1 {{ margin-bottom: 8px; }}
+.toolbar {{ border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin: 16px 0; display: flex; flex-direction: column; gap: 10px; }}
+.controls {{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }}
+.control-group {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+.tags {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }}
+.tags input {{ min-width: 240px; padding: 6px 8px; }}
+.tag-palette {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+.tag {{ border: 1px solid #ccc; border-radius: 999px; padding: 4px 10px; font-size: 0.85rem; cursor: pointer; }}
+.hotkeys {{ font-size: 0.85rem; color: #555; }}
+.toolbar-actions {{ display: flex; justify-content: flex-end; }}
+.entry {{ border: 1px solid #ddd; border-radius: 10px; padding: 16px; margin-bottom: 18px; }}
+.entry.active {{ border-color: #111; box-shadow: 0 0 0 2px rgba(0,0,0,0.08); }}
+.meta {{ color: #555; font-size: 0.9rem; }}
+audio {{ width: 100%; margin: 8px 0; }}
+.metrics table {{ width: 100%; border-collapse: collapse; margin: 8px 0; }}
+.metrics th, .metrics td {{ border-bottom: 1px solid #eee; padding: 4px 6px; text-align: left; }}
+.stats {{ font-size: 0.85rem; color: #444; margin-top: 6px; }}
+.human textarea {{ width: 100%; min-height: 140px; padding: 8px; font-size: 1rem; }}
+.reveal {{ margin: 8px 0; }}
+.refs {{ margin-top: 12px; }}
+.ref {{ margin-top: 8px; }}
+.ref pre {{ background: #f6f6f6; padding: 10px; border-radius: 6px; white-space: pre-wrap; }}
+.ref.hidden {{ display: none; }}
+.errors {{ margin-top: 10px; color: #a00; }}
+</style>
+</head>
+<body>
+{body}
+<script>
+const DEBUG = {debug_flag};
+const MIN_LEN = 40;
+const TAG_STORAGE_KEY = 'codescribe:tags';
+const DEFAULT_TAGS = ['NIEWYRAZNE', 'NIESLYSZALNE', 'BELKOT', 'PRZERWA', 'SZUM'];
+const TAG_COLORS = ['#e3f2fd', '#e8f5e9', '#fff8e1', '#fce4ec', '#ede7f6', '#f3e5f5', '#e0f7fa'];
+const RATE_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+let activeEntryId = null;
+let activeTextarea = null;
+let activeAudio = null;
+let currentTags = [];
+
+function entryElements() {{
+  return Array.from(document.querySelectorAll('.entry'));
+}}
+
+function findEntry(entryId) {{
+  return document.querySelector('.entry[data-entry=\"' + entryId + '\"]');
+}}
+
+function setActiveEntry(entryId) {{
+  const entry = findEntry(entryId);
+  if (!entry) return;
+  entryElements().forEach(el => el.classList.remove('active'));
+  entry.classList.add('active');
+  activeEntryId = entryId;
+  activeTextarea = entry.querySelector('textarea[data-entry]');
+  activeAudio = entry.querySelector('audio');
+  const label = document.getElementById('activeEntry');
+  if (label) label.textContent = entryId;
+  updateRateLabel(activeAudio);
+}}
+
+function setActiveFromElement(el) {{
+  const entry = el?.closest?.('.entry');
+  if (entry) setActiveEntry(entry.dataset.entry);
+}}
+
+function getActiveAudio() {{
+  if (activeAudio) return activeAudio;
+  const first = document.querySelector('audio');
+  return first || null;
+}}
+
+function updateRateLabel(audio) {{
+  const label = document.getElementById('rateLabel');
+  if (!label) return;
+  const rate = audio ? audio.playbackRate : 1.0;
+  label.textContent = rate.toFixed(2) + 'x';
+}}
+
+function togglePlayPause() {{
+  const audio = getActiveAudio();
+  if (!audio) return;
+  if (audio.paused) {{
+    audio.play();
+  }} else {{
+    audio.pause();
+  }}
+}}
+
+function seek(delta) {{
+  const audio = getActiveAudio();
+  if (!audio) return;
+  const next = Math.min(Math.max(audio.currentTime + delta, 0), audio.duration || audio.currentTime + delta);
+  audio.currentTime = next;
+}}
+
+function changeRate(step) {{
+  const audio = getActiveAudio();
+  if (!audio) return;
+  const idx = RATE_STEPS.findIndex(r => Math.abs(r - audio.playbackRate) < 0.01);
+  const nextIdx = Math.min(Math.max((idx < 0 ? 2 : idx) + step, 0), RATE_STEPS.length - 1);
+  audio.playbackRate = RATE_STEPS[nextIdx];
+  updateRateLabel(audio);
+}}
+
+function insertAtCursor(area, text) {{
+  if (!area) return;
+  const start = area.selectionStart ?? area.value.length;
+  const end = area.selectionEnd ?? area.value.length;
+  const before = area.value.slice(0, start);
+  const after = area.value.slice(end);
+  let insert = text;
+  if (before && !before.endsWith(' ')) insert = ' ' + insert;
+  if (after && !after.startsWith(' ')) insert = insert + ' ';
+  area.value = before + insert + after;
+  const nextPos = (before + insert).length;
+  area.selectionStart = nextPos;
+  area.selectionEnd = nextPos;
+  area.dispatchEvent(new Event('input'));
+}}
+
+function insertTag(tag) {{
+  if (!activeTextarea) {{
+    const first = document.querySelector('textarea[data-entry]');
+    if (first) {{
+      first.focus();
+      activeTextarea = first;
+    }}
+  }}
+  if (!activeTextarea) return;
+  insertAtCursor(activeTextarea, '[' + tag + ']');
+}}
+
+function parseTags(value) {{
+  return value
+    .split(',')
+    .map(t => t.trim())
+    .filter(Boolean);
+}}
+
+function loadTags() {{
+  const stored = localStorage.getItem(TAG_STORAGE_KEY);
+  if (!stored) return [...DEFAULT_TAGS];
+  try {{
+    const parsed = JSON.parse(stored);
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+  }} catch (_) {{
+    return parseTags(stored);
+  }}
+  return [...DEFAULT_TAGS];
+}}
+
+function saveTags(tags) {{
+  localStorage.setItem(TAG_STORAGE_KEY, JSON.stringify(tags));
+}}
+
+function renderTags(tags) {{
+  const palette = document.getElementById('tagPalette');
+  if (!palette) return;
+  palette.innerHTML = '';
+  tags.forEach((tag, idx) => {{
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tag';
+    btn.textContent = tag;
+    btn.style.background = TAG_COLORS[idx % TAG_COLORS.length];
+    btn.addEventListener('click', () => insertTag(tag));
+    palette.appendChild(btn);
+  }});
+}}
+
+function loadAnnotations() {{
+  document.querySelectorAll('textarea[data-entry]').forEach(area => {{
+    const key = 'codescribe:human:' + area.dataset.entry;
+    const saved = localStorage.getItem(key);
+    if (saved) area.value = saved;
+    area.addEventListener('input', () => {{
+      localStorage.setItem(key, area.value);
+      updateReveal(area.dataset.entry);
+    }});
+    area.addEventListener('focus', () => {{
+      setActiveEntry(area.dataset.entry);
+    }});
+  }});
+  const first = document.querySelector('textarea[data-entry]');
+  if (first) setActiveEntry(first.dataset.entry);
+}}
+
+function updateReveal(entryId) {{
+  const area = document.querySelector('textarea[data-entry=\"' + entryId + '\"]');
+  const button = document.querySelector('button.reveal[data-entry=\"' + entryId + '\"]');
+  if (!area || !button) return;
+  if (DEBUG) {{
+    button.disabled = false;
+    reveal(entryId);
+    return;
+  }}
+  button.disabled = area.value.trim().length < MIN_LEN;
+}}
+
+function reveal(entryId) {{
+  if (!canReveal(entryId)) return;
+  document.querySelectorAll('.entry').forEach(entry => {{
+    if (entry.querySelector('textarea[data-entry]')?.dataset.entry !== entryId) return;
+    entry.querySelectorAll('.ref').forEach(ref => ref.classList.remove('hidden'));
+  }});
+}}
+
+function canReveal(entryId) {{
+  if (DEBUG) return true;
+  const button = document.querySelector('button.reveal[data-entry=\"' + entryId + '\"]');
+  return button && !button.disabled;
+}}
+
+function attachRevealButtons() {{
+  document.querySelectorAll('button.reveal').forEach(btn => {{
+    btn.addEventListener('click', () => reveal(btn.dataset.entry));
+    if (DEBUG) {{
+      btn.disabled = false;
+      reveal(btn.dataset.entry);
+    }}
+  }});
+}}
+
+function exportAnnotations() {{
+  const items = [];
+  document.querySelectorAll('textarea[data-entry]').forEach(area => {{
+    items.push({{
+      id: area.dataset.entry,
+      human: area.value.trim()
+    }});
+  }});
+  const blob = new Blob([JSON.stringify(items, null, 2)], {{type: 'application/json'}});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'annotations.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}}
+
+function bindAudio() {{
+  document.querySelectorAll('audio.entry-audio').forEach(audio => {{
+    audio.addEventListener('play', () => setActiveEntry(audio.dataset.entry));
+    audio.addEventListener('click', () => setActiveEntry(audio.dataset.entry));
+    audio.addEventListener('ratechange', () => updateRateLabel(audio));
+  }});
+}}
+
+function focusEntry(offset) {{
+  const entries = entryElements();
+  if (!entries.length) return;
+  const current = activeEntryId ? entries.findIndex(e => e.dataset.entry === activeEntryId) : -1;
+  const nextIdx = Math.min(Math.max(current + offset, 0), entries.length - 1);
+  const nextEntry = entries[nextIdx];
+  if (!nextEntry) return;
+  const area = nextEntry.querySelector('textarea[data-entry]');
+  if (area) {{
+    area.focus();
+  }} else {{
+    setActiveEntry(nextEntry.dataset.entry);
+  }}
+  nextEntry.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+}}
+
+function handleHotkeys(event) {{
+  if (!(event.ctrlKey && event.metaKey)) return;
+  const key = event.key.toLowerCase();
+  if (event.code === 'Space') {{
+    event.preventDefault();
+    togglePlayPause();
+    return;
+  }}
+  if (event.code === 'ArrowLeft') {{
+    event.preventDefault();
+    seek(event.shiftKey ? -10 : -2);
+    return;
+  }}
+  if (event.code === 'ArrowRight') {{
+    event.preventDefault();
+    seek(event.shiftKey ? 10 : 2);
+    return;
+  }}
+  if (event.code === 'BracketLeft') {{
+    event.preventDefault();
+    changeRate(-1);
+    return;
+  }}
+  if (event.code === 'BracketRight') {{
+    event.preventDefault();
+    changeRate(1);
+    return;
+  }}
+  if (event.code === 'Enter') {{
+    event.preventDefault();
+    if (activeEntryId) reveal(activeEntryId);
+    return;
+  }}
+  if (key >= '1' && key <= '9') {{
+    event.preventDefault();
+    const idx = Number(key) - 1;
+    if (currentTags[idx]) insertTag(currentTags[idx]);
+    return;
+  }}
+  if (key === 'n') {{
+    event.preventDefault();
+    focusEntry(1);
+    return;
+  }}
+  if (key === 'p') {{
+    event.preventDefault();
+    focusEntry(-1);
+    return;
+  }}
+}}
+
+document.getElementById('exportBtn')?.addEventListener('click', exportAnnotations);
+document.getElementById('playPauseBtn')?.addEventListener('click', togglePlayPause);
+document.getElementById('backBtn')?.addEventListener('click', () => seek(-2));
+document.getElementById('fwdBtn')?.addEventListener('click', () => seek(2));
+document.getElementById('back10Btn')?.addEventListener('click', () => seek(-10));
+document.getElementById('fwd10Btn')?.addEventListener('click', () => seek(10));
+document.getElementById('slowerBtn')?.addEventListener('click', () => changeRate(-1));
+document.getElementById('fasterBtn')?.addEventListener('click', () => changeRate(1));
+
+const tagInput = document.getElementById('tagInput');
+const saveTagsBtn = document.getElementById('saveTagsBtn');
+if (tagInput && saveTagsBtn) {{
+  saveTagsBtn.addEventListener('click', () => {{
+    currentTags = parseTags(tagInput.value);
+    if (currentTags.length === 0) currentTags = [...DEFAULT_TAGS];
+    saveTags(currentTags);
+    renderTags(currentTags);
+  }});
+  tagInput.addEventListener('keydown', (event) => {{
+    if (event.key === 'Enter') {{
+      event.preventDefault();
+      saveTagsBtn.click();
+    }}
+  }});
+}}
+
+currentTags = loadTags();
+if (tagInput) tagInput.value = currentTags.join(', ');
+renderTags(currentTags);
+loadAnnotations();
+document.querySelectorAll('textarea[data-entry]').forEach(area => updateReveal(area.dataset.entry));
+attachRevealButtons();
+bindAudio();
+document.addEventListener('keydown', handleHotkeys);
+</script>
+</body>
+</html>"#
+    )
+}
+
+fn render_ref_section(body: &mut String, label: &str, text: Option<&str>, debug: bool) {
+    if let Some(text) = text {
+        let hidden_class = if debug { "" } else { " hidden" };
+        body.push_str(&format!(
+            "<div class=\"ref{hidden_class}\"><h3>{}</h3><pre>{}</pre></div>",
+            html_escape(label),
+            html_escape(text)
+        ));
+    }
+}
+
+fn stats_summary(stats: Option<&StreamPostProcessStats>) -> String {
+    let Some(stats) = stats else {
+        return "n/a".to_string();
+    };
+
+    format!(
+        "in={}, out={}, drop={}, gate={}, lexicon={}, repeat={}, suspicious={}",
+        stats.input_chunks,
+        stats.output_chunks,
+        stats.dropped_chunks,
+        stats.gate_drops,
+        stats.lexicon_rewrites,
+        stats.repetition_cleanups,
+        stats.suspicious_chunks
+    )
+}
+
+fn render_ingest_jsonl(report: &QualityReport, artifacts_dir: &Path) -> Result<String> {
+    let mut out = String::new();
+    for entry in &report.entries {
+        let base = artifacts_dir.join(&entry.id);
+        let lang = report.environment.whisper_language.clone();
+        for (suffix, text_opt, source) in [
+            ("raw.txt", entry.transcripts.raw.as_deref(), "raw"),
+            ("post.txt", entry.transcripts.post.as_deref(), "postprocess"),
+            (
+                "ai.txt",
+                entry.transcripts.ai_formatted.as_deref(),
+                "ai_formatted",
+            ),
+            ("cloud.txt", entry.transcripts.cloud.as_deref(), "cloud"),
+            (
+                "reference.txt",
+                entry.transcripts.reference.as_deref(),
+                "reference",
+            ),
+        ] {
+            let Some(text) = text_opt else { continue };
+            let record = serde_json::json!({
+                "id": entry.id,
+                "audio_path": entry.audio_path,
+                "text": text,
+                "source": source,
+                "language": lang,
+                "artifact_path": base.with_extension(suffix).to_string_lossy(),
+            });
+            out.push_str(&record.to_string());
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+fn snapshot_environment() -> ReportEnvironment {
+    let config = Config::load();
+    ReportEnvironment {
+        stt_endpoint: std::env::var("STT_ENDPOINT").ok(),
+        stt_api_key_present: std::env::var("STT_API_KEY").is_ok(),
+        llm_formatting_endpoint: std::env::var("LLM_FORMATTING_ENDPOINT").ok(),
+        llm_formatting_model: std::env::var("LLM_FORMATTING_MODEL").ok(),
+        llm_formatting_key_present: std::env::var("LLM_FORMATTING_API_KEY").is_ok()
+            || std::env::var("LLM_API_KEY").is_ok(),
+        local_model: Some(config.local_model),
+        whisper_language: Some(config.whisper_language.as_str().to_string()),
+    }
+}
+
+fn ensure_model_path() -> Result<()> {
+    if std::env::var("CODESCRIBE_MODEL_PATH").is_ok() {
+        return Ok(());
+    }
+
+    let config = Config::load();
+    let candidates = [
+        PathBuf::from("models").join(&config.local_model),
+        Config::config_dir()
+            .join("models")
+            .join(&config.local_model),
+    ];
+
+    for path in candidates {
+        if path.join("tokenizer.json").exists() {
+            // SAFETY: setting env before any model load is safe in this CLI.
+            unsafe {
+                std::env::set_var("CODESCRIBE_MODEL_PATH", &path);
+            }
+            return Ok(());
+        }
+    }
+
+    Err(anyhow!(
+        "Missing local model. Set CODESCRIBE_MODEL_PATH or download via ./scripts/download-model.sh"
+    ))
+}
+
+fn ensure_audio_asset(
+    audio_path: &Path,
+    audio_dir: &Path,
+    asset_id: &str,
+    copy_audio: bool,
+) -> Result<String> {
+    let ext = audio_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("wav");
+    let filename = format!("{asset_id}.{ext}");
+    let dest = audio_dir.join(&filename);
+    if dest.exists() {
+        return Ok(format!("audio/{}", filename));
+    }
+
+    if copy_audio {
+        fs::copy(audio_path, &dest)?;
+    } else {
+        #[cfg(target_family = "unix")]
+        {
+            if let Err(_) = std::os::unix::fs::symlink(audio_path, &dest) {
+                fs::copy(audio_path, &dest)?;
+            }
+        }
+        #[cfg(not(target_family = "unix"))]
+        {
+            fs::copy(audio_path, &dest)?;
+        }
+    }
+
+    Ok(format!("audio/{}", filename))
+}
+
+#[derive(Debug, Clone)]
+struct CorpusPair {
+    id: String,
+    audio_path: PathBuf,
+    reference_path: PathBuf,
+}
+
+fn collect_pairs(root: &Path, date_filter: Option<&str>, limit: usize) -> Vec<CorpusPair> {
+    let mut pairs = Vec::new();
+    if !root.exists() {
+        return pairs;
+    }
+
+    let mut subdirs = Vec::new();
+    if let Some(date) = date_filter {
+        let dir = root.join(date);
+        if dir.exists() {
+            subdirs.push(dir);
+        }
+    } else if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                subdirs.push(path);
+            }
+        }
+    }
+
+    subdirs.sort();
+
+    for dir in subdirs {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut wavs = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("wav") {
+                wavs.push(path);
+            }
+        }
+
+        wavs.sort();
+        for wav in wavs {
+            let stem = match wav.file_stem().and_then(|s| s.to_str()) {
+                Some(stem) => stem,
+                None => continue,
+            };
+            let txt = wav.with_file_name(format!("{stem}.txt"));
+            if txt.exists() {
+                let id = make_entry_id(&wav);
+                pairs.push(CorpusPair {
+                    id,
+                    audio_path: wav,
+                    reference_path: txt,
+                });
+            }
+        }
+    }
+
+    if limit > 0 && pairs.len() > limit {
+        let start = pairs.len() - limit;
+        pairs = pairs[start..].to_vec();
+    }
+
+    pairs
+}
+
+fn make_entry_id(audio_path: &Path) -> String {
+    let stem = audio_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("recording");
+    let date = audio_path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str());
+    let raw_id = match date {
+        Some(date) => format!("{date}__{stem}"),
+        None => stem.to_string(),
+    };
+    raw_id.replace('/', "_").replace('\\', "_")
+}
+
+fn normalize_for_eval(text: &str) -> (Vec<String>, String) {
+    let mut normalized = String::with_capacity(text.len());
+    for ch in text.to_lowercase().chars() {
+        if ch.is_alphanumeric() || ch.is_whitespace() {
+            normalized.push(ch);
+        } else {
+            normalized.push(' ');
+        }
+    }
+    let tokens: Vec<String> = normalized
+        .split_whitespace()
+        .map(|t| t.to_string())
+        .collect();
+    let normalized = tokens.join(" ");
+    (tokens, normalized)
+}
+
+fn word_error_rate(reference: &[String], hypothesis: &[String]) -> f32 {
+    let dist = levenshtein(reference, hypothesis);
+    let denom = reference.len().max(1) as f32;
+    dist as f32 / denom
+}
+
+fn char_error_rate(reference: &str, hypothesis: &str) -> f32 {
+    let ref_chars: Vec<char> = reference.chars().collect();
+    let hyp_chars: Vec<char> = hypothesis.chars().collect();
+    let dist = levenshtein(&ref_chars, &hyp_chars);
+    let denom = ref_chars.len().max(1) as f32;
+    dist as f32 / denom
+}
+
+fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+
+    for (i, item_a) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, item_b) in b.iter().enumerate() {
+            let cost = if item_a == item_b { 0 } else { 1 };
+            cur[j + 1] = std::cmp::min(std::cmp::min(prev[j + 1] + 1, cur[j] + 1), prev[j] + cost);
+        }
+        prev.clone_from(&cur);
+    }
+
+    prev[b.len()]
+}
+
+fn html_escape(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn fmt_opt(value: Option<f32>) -> String {
+    value
+        .map(|v| format!("{:.3}", v))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+#[derive(Default)]
+struct Totals {
+    raw_wer: Vec<f32>,
+    post_wer: Vec<f32>,
+    ai_wer: Vec<f32>,
+    cloud_wer: Vec<f32>,
+    raw_cer: Vec<f32>,
+    post_cer: Vec<f32>,
+    ai_cer: Vec<f32>,
+    cloud_cer: Vec<f32>,
+    processed: usize,
+}
+
+impl Totals {
+    fn accumulate(&mut self, metrics: &ReportMetrics) {
+        self.processed += 1;
+        if let Some(v) = metrics.raw_wer {
+            self.raw_wer.push(v);
+        }
+        if let Some(v) = metrics.post_wer {
+            self.post_wer.push(v);
+        }
+        if let Some(v) = metrics.ai_wer {
+            self.ai_wer.push(v);
+        }
+        if let Some(v) = metrics.cloud_wer {
+            self.cloud_wer.push(v);
+        }
+        if let Some(v) = metrics.raw_cer {
+            self.raw_cer.push(v);
+        }
+        if let Some(v) = metrics.post_cer {
+            self.post_cer.push(v);
+        }
+        if let Some(v) = metrics.ai_cer {
+            self.ai_cer.push(v);
+        }
+        if let Some(v) = metrics.cloud_cer {
+            self.cloud_cer.push(v);
+        }
+    }
+
+    fn finish(self, total_files: usize) -> ReportSummary {
+        ReportSummary {
+            total_files,
+            processed_files: self.processed,
+            avg_raw_wer: avg(&self.raw_wer),
+            avg_post_wer: avg(&self.post_wer),
+            avg_ai_wer: avg(&self.ai_wer),
+            avg_cloud_wer: avg(&self.cloud_wer),
+            avg_raw_cer: avg(&self.raw_cer),
+            avg_post_cer: avg(&self.post_cer),
+            avg_ai_cer: avg(&self.ai_cer),
+            avg_cloud_cer: avg(&self.cloud_cer),
+        }
+    }
+}
+
+fn avg(values: &[f32]) -> Option<f32> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().sum::<f32>() / values.len() as f32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_word_error_rate() {
+        let (ref_tokens, _) = normalize_for_eval("ala ma kota");
+        let (hyp_tokens, _) = normalize_for_eval("ala ma psa");
+        let wer = word_error_rate(&ref_tokens, &hyp_tokens);
+        assert!((wer - 0.333).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_html_escape() {
+        let input = "<tag>&\"'";
+        let escaped = html_escape(input);
+        assert_eq!(escaped, "&lt;tag&gt;&amp;&quot;&#39;");
+    }
+}

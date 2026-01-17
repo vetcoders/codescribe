@@ -3,7 +3,7 @@
 //! Tests the simplified CLI interface:
 //! - `codescribe transcribe <file>` - transcription
 //! - `codescribe --config` - config management
-//! - `codescribe` (no args) - usage info
+//! - `codescribe` (no args) - daemon (tray/hotkeys)
 //!
 //! Run with:
 //!   cargo test --test e2e_cli_commands
@@ -86,27 +86,35 @@ fn test_cli_version() {
     assert!(stdout.contains("codescribe"), "Should contain app name");
 }
 
-/// Test: `codescribe` (no args) shows usage info
+/// Test: `codescribe` (no args) starts daemon (opt-in)
 #[test]
 fn test_cli_no_args() {
     ensure_cli_built();
 
-    let output = Command::new(cli_binary())
-        .output()
-        .expect("Failed to run CLI");
+    let enabled = std::env::var("CODESCRIBE_E2E_DAEMON")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !enabled {
+        eprintln!("Skipping daemon E2E (set CODESCRIBE_E2E_DAEMON=1 to enable)");
+        return;
+    }
 
-    assert!(output.status.success(), "CLI with no args should succeed");
-    assert!(
-        stderr.contains("CodeScribe CLI"),
-        "Should show CLI description"
-    );
-    assert!(
-        stderr.contains("transcribe"),
-        "Should mention transcribe usage"
-    );
-    assert!(stderr.contains("CodeScribe.app"), "Should mention full app");
+    let mut child = Command::new(cli_binary())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("Failed to start daemon");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    if let Some(status) = child.try_wait().expect("Failed to poll daemon") {
+        panic!("Daemon exited early with status: {}", status);
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Test: `codescribe transcribe --help` shows transcribe options

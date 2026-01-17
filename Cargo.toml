@@ -26,6 +26,10 @@ license = "Apache-2.0"
 name = "codescribe"
 path = "src/main.rs"
 
+[[bin]]
+name = "codescribe-quality"
+path = "src/bin/codescribe_quality.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

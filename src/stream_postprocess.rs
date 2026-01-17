@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::Result;
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
@@ -154,6 +154,10 @@ impl SemanticGate {
     }
 
     fn semantic_embedding(&mut self, text: &str) -> Option<Vec<f32>> {
+        if !embeddings_enabled() {
+            return None;
+        }
+
         let embedder = EMBEDDER.get_or_init(|| Mutex::new(None));
         let mut guard = embedder.lock().ok()?;
 
@@ -180,6 +184,19 @@ impl SemanticGate {
 pub struct StreamPostProcessor {
     lexicon: Lexicon,
     gate: SemanticGate,
+    stats: StreamPostProcessStats,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct StreamPostProcessStats {
+    pub input_chunks: u64,
+    pub output_chunks: u64,
+    pub dropped_chunks: u64,
+    pub gate_drops: u64,
+    pub suspicious_chunks: u64,
+    pub lexicon_rewrites: u64,
+    pub repetition_cleanups: u64,
+    pub embeddings_enabled: bool,
 }
 
 impl StreamPostProcessor {
@@ -187,28 +204,54 @@ impl StreamPostProcessor {
         Self {
             lexicon: Lexicon::from_builtin(),
             gate: SemanticGate::new(),
+            stats: StreamPostProcessStats {
+                embeddings_enabled: embeddings_enabled(),
+                ..StreamPostProcessStats::default()
+            },
         }
     }
 
     pub fn process(&mut self, text: &str) -> Option<String> {
+        self.stats.input_chunks += 1;
+
         if text.trim().is_empty() {
+            self.stats.dropped_chunks += 1;
             return None;
         }
 
         let mut cleaned = self.lexicon.apply(text);
-        cleaned = cleanup_artifacts(&cleaned);
+        if cleaned != text {
+            self.stats.lexicon_rewrites += 1;
+        }
+
+        let cleaned_after_cleanup = cleanup_artifacts(&cleaned);
+        if cleaned_after_cleanup != cleaned {
+            self.stats.repetition_cleanups += 1;
+        }
+        cleaned = cleaned_after_cleanup;
         cleaned = normalize_whitespace(&cleaned);
 
         if cleaned.trim().is_empty() {
+            self.stats.dropped_chunks += 1;
             return None;
         }
 
-        if is_suspicious(&cleaned) && self.gate.should_drop(&cleaned) {
-            return None;
+        if is_suspicious(&cleaned) {
+            self.stats.suspicious_chunks += 1;
+            if self.gate.should_drop(&cleaned) {
+                self.stats.dropped_chunks += 1;
+                self.stats.gate_drops += 1;
+                return None;
+            }
         }
 
         self.gate.observe(&cleaned);
+        self.stats.output_chunks += 1;
         Some(cleaned)
+    }
+
+    pub fn stats(&self) -> StreamPostProcessStats {
+        self.stats.clone()
     }
 }
 
@@ -224,6 +267,25 @@ fn env_f32(key: &str, default: f32) -> f32 {
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(default)
+}
+
+fn env_bool(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn embeddings_enabled() -> bool {
+    if env_bool("CODESCRIBE_STREAM_DISABLE_EMBEDDINGS") {
+        return false;
+    }
+
+    if cfg!(test) && !env_bool("CODESCRIBE_STREAM_FORCE_EMBEDDINGS") {
+        return false;
+    }
+
+    true
 }
 
 fn tokenize(text: &str) -> Vec<String> {
@@ -324,4 +386,37 @@ fn truncate_for_embedding(text: &str) -> String {
     }
 
     text.chars().take(MAX_EMBED_CHARS).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lexicon_rewrite() {
+        let mut processor = StreamPostProcessor::new();
+        let input = "Uzywam doker do kontenerow i mam api key do github.";
+        let output = processor.process(input).expect("expected output");
+        assert!(
+            output.contains("Docker"),
+            "expected lexicon to rewrite 'doker' -> 'Docker': {output}"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_and_whitespace() {
+        let mut processor = StreamPostProcessor::new();
+        let input = "To jest to jest to jest   bardzo  wazny \n test systemu.";
+        let output = processor.process(input).expect("expected output");
+        assert_eq!(output, "To jest bardzo wazny test systemu.");
+    }
+
+    #[test]
+    fn test_is_suspicious_heuristics() {
+        assert!(is_suspicious("ok"));
+        assert!(is_suspicious("test test test test"));
+        assert!(!is_suspicious(
+            "To jest normalny tekst bez powtorzen i z roznymi slowami."
+        ));
+    }
 }

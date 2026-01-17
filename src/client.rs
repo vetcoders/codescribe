@@ -330,9 +330,14 @@ pub async fn check_health() -> Result<bool> {
 /// # Example
 /// ```no_run
 /// use std::path::Path;
+/// use codescribe::client;
 ///
+/// # #[tokio::main]
+/// # async fn main() -> anyhow::Result<()> {
 /// let transcript = client::transcribe(Path::new("recording.wav"), Some("pl")).await?;
 /// println!("Transcript: {}", transcript);
+/// # Ok(())
+/// # }
 /// ```
 pub async fn transcribe(path: &Path, language: Option<&str>) -> Result<String> {
     info!("transcribe() START for path: {:?}", path);

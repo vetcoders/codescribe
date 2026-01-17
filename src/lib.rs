@@ -28,6 +28,7 @@ pub mod audio;
 pub mod clipboard;
 pub mod config;
 pub mod permissions;
+pub mod quality_report;
 pub mod safe_path;
 pub mod state;
 mod stream_postprocess;

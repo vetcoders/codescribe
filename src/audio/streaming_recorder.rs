@@ -243,3 +243,303 @@ async fn process_chunk(
         }
     }
 }
+
+pub(crate) fn transcribe_streaming_samples(
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    mut postprocessor: Option<&mut StreamPostProcessor>,
+) -> Result<String> {
+    if samples.is_empty() {
+        return Ok(String::new());
+    }
+
+    let chunk_limit = (sample_rate as f32 * CHUNK_DURATION_SEC) as usize;
+    let overlap_size = (sample_rate as f32 * OVERLAP_SEC) as usize;
+    let step = chunk_limit.saturating_sub(overlap_size).max(1);
+
+    let engine_mutex = get_engine()?;
+    let mut engine = engine_mutex
+        .lock()
+        .map_err(|e| anyhow!("Lock error: {}", e))?;
+
+    let mut out = String::new();
+    let mut offset = 0usize;
+
+    while offset < samples.len() {
+        let end = (offset + chunk_limit).min(samples.len());
+        let chunk = &samples[offset..end];
+        let text = engine.transcribe_with_language(chunk, sample_rate, language)?;
+
+        if let Some(processor) = postprocessor.as_deref_mut() {
+            if let Some(cleaned) = processor.process(&text) {
+                append_with_overlap_dedup(&mut out, &cleaned);
+            }
+        } else {
+            append_with_overlap_dedup(&mut out, &text);
+        }
+
+        if end == samples.len() {
+            break;
+        }
+        offset = offset.saturating_add(step);
+    }
+
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::load_audio_file;
+    use crate::whisper;
+    use serial_test::serial;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    #[serial]
+    fn test_stream_postprocess_corpus_pairs() {
+        if !env_bool("CODESCRIBE_E2E_CORPUS") {
+            eprintln!("Skipping corpus E2E (set CODESCRIBE_E2E_CORPUS=1 to enable)");
+            return;
+        }
+
+        let corpus_dir = corpus_root();
+        let date_filter = std::env::var("CODESCRIBE_E2E_CORPUS_DATE").ok();
+        let limit = env_usize("CODESCRIBE_E2E_CORPUS_LIMIT", 3);
+        let max_regression = env_f32("CODESCRIBE_E2E_CORPUS_MAX_REGRESSION", 0.05);
+
+        let pairs = collect_pairs(&corpus_dir, date_filter.as_deref(), limit);
+        if pairs.is_empty() {
+            eprintln!("No WAV+TXT pairs found in {}", corpus_dir.to_string_lossy());
+            return;
+        }
+
+        whisper::init().expect("Failed to init Whisper");
+        let language = std::env::var("CODESCRIBE_E2E_CORPUS_LANGUAGE").ok();
+        let mut failures = Vec::new();
+        let mut total_raw_wer = 0.0;
+        let mut total_post_wer = 0.0;
+        let mut total_raw_cer = 0.0;
+        let mut total_post_cer = 0.0;
+        let mut processed = 0usize;
+
+        for (wav_path, txt_path) in pairs {
+            let reference = fs::read_to_string(&txt_path)
+                .unwrap_or_else(|_| String::new())
+                .trim()
+                .to_string();
+            if reference.is_empty() {
+                eprintln!("Skipping empty reference: {}", txt_path.display());
+                continue;
+            }
+
+            let (samples, sample_rate) = load_audio_file(&wav_path).expect("Failed to load audio");
+
+            let raw =
+                transcribe_streaming_samples(&samples, sample_rate, language.as_deref(), None)
+                    .expect("Raw streaming transcription failed");
+            let mut postprocessor = StreamPostProcessor::new();
+            let post = transcribe_streaming_samples(
+                &samples,
+                sample_rate,
+                language.as_deref(),
+                Some(&mut postprocessor),
+            )
+            .expect("Post streaming transcription failed");
+
+            let (ref_tokens, ref_norm) = normalize_for_eval(&reference);
+            let (raw_tokens, raw_norm) = normalize_for_eval(&raw);
+            let (post_tokens, post_norm) = normalize_for_eval(&post);
+
+            let wer_raw = word_error_rate(&ref_tokens, &raw_tokens);
+            let wer_post = word_error_rate(&ref_tokens, &post_tokens);
+            let cer_raw = char_error_rate(&ref_norm, &raw_norm);
+            let cer_post = char_error_rate(&ref_norm, &post_norm);
+
+            processed += 1;
+            total_raw_wer += wer_raw;
+            total_post_wer += wer_post;
+            total_raw_cer += cer_raw;
+            total_post_cer += cer_post;
+
+            println!(
+                "Corpus: {}\n  WER raw={:.3} post={:.3} (Δ={:.3})\n  CER raw={:.3} post={:.3} (Δ={:.3})",
+                wav_path.file_name().unwrap_or_default().to_string_lossy(),
+                wer_raw,
+                wer_post,
+                wer_post - wer_raw,
+                cer_raw,
+                cer_post,
+                cer_post - cer_raw,
+            );
+
+            if wer_post > wer_raw + max_regression {
+                failures.push(format!(
+                    "{}: WER regression {:.3} > {:.3}",
+                    wav_path.display(),
+                    wer_post - wer_raw,
+                    max_regression
+                ));
+            }
+        }
+
+        if processed > 0 {
+            let denom = processed as f32;
+            let avg_raw_wer = total_raw_wer / denom;
+            let avg_post_wer = total_post_wer / denom;
+            let avg_raw_cer = total_raw_cer / denom;
+            let avg_post_cer = total_post_cer / denom;
+
+            println!(
+                "Average WER raw={:.3} post={:.3} | CER raw={:.3} post={:.3}",
+                avg_raw_wer, avg_post_wer, avg_raw_cer, avg_post_cer
+            );
+        }
+
+        if !failures.is_empty() {
+            panic!(
+                "Corpus postprocess regressions detected:\n{}",
+                failures.join("\n")
+            );
+        }
+    }
+
+    fn env_bool(key: &str) -> bool {
+        std::env::var(key)
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    }
+
+    fn env_f32(key: &str, default: f32) -> f32 {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(default)
+    }
+
+    fn env_usize(key: &str, default: usize) -> usize {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(default)
+    }
+
+    fn corpus_root() -> PathBuf {
+        if let Ok(dir) = std::env::var("CODESCRIBE_E2E_CORPUS_DIR") {
+            return PathBuf::from(shellexpand::tilde(&dir).into_owned());
+        }
+
+        crate::config::Config::config_dir().join("transcriptions")
+    }
+
+    fn collect_pairs(
+        root: &Path,
+        date_filter: Option<&str>,
+        limit: usize,
+    ) -> Vec<(PathBuf, PathBuf)> {
+        let mut pairs = Vec::new();
+        if !root.exists() {
+            return pairs;
+        }
+
+        let mut subdirs = Vec::new();
+        if let Some(date) = date_filter {
+            let dir = root.join(date);
+            if dir.exists() {
+                subdirs.push(dir);
+            }
+        } else if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    subdirs.push(path);
+                }
+            }
+        }
+
+        subdirs.sort();
+
+        for dir in subdirs {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            let mut wavs = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("wav") {
+                    wavs.push(path);
+                }
+            }
+
+            wavs.sort();
+            for wav in wavs {
+                let stem = match wav.file_stem().and_then(|s| s.to_str()) {
+                    Some(stem) => stem,
+                    None => continue,
+                };
+                let txt = wav.with_file_name(format!("{stem}.txt"));
+                if txt.exists() {
+                    pairs.push((wav, txt));
+                }
+            }
+        }
+
+        if limit > 0 && pairs.len() > limit {
+            let start = pairs.len() - limit;
+            pairs = pairs[start..].to_vec();
+        }
+
+        pairs
+    }
+
+    fn normalize_for_eval(text: &str) -> (Vec<String>, String) {
+        let mut normalized = String::with_capacity(text.len());
+        for ch in text.to_lowercase().chars() {
+            if ch.is_alphanumeric() || ch.is_whitespace() {
+                normalized.push(ch);
+            } else {
+                normalized.push(' ');
+            }
+        }
+        let tokens: Vec<String> = normalized
+            .split_whitespace()
+            .map(|t| t.to_string())
+            .collect();
+        let normalized = tokens.join(" ");
+        (tokens, normalized)
+    }
+
+    fn word_error_rate(reference: &[String], hypothesis: &[String]) -> f32 {
+        let dist = levenshtein(reference, hypothesis);
+        let denom = reference.len().max(1) as f32;
+        dist as f32 / denom
+    }
+
+    fn char_error_rate(reference: &str, hypothesis: &str) -> f32 {
+        let ref_chars: Vec<char> = reference.chars().collect();
+        let hyp_chars: Vec<char> = hypothesis.chars().collect();
+        let dist = levenshtein(&ref_chars, &hyp_chars);
+        let denom = ref_chars.len().max(1) as f32;
+        dist as f32 / denom
+    }
+
+    fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        let mut cur = vec![0usize; b.len() + 1];
+
+        for (i, item_a) in a.iter().enumerate() {
+            cur[0] = i + 1;
+            for (j, item_b) in b.iter().enumerate() {
+                let cost = if item_a == item_b { 0 } else { 1 };
+                cur[j + 1] =
+                    std::cmp::min(std::cmp::min(prev[j + 1] + 1, cur[j] + 1), prev[j] + cost);
+            }
+            prev.clone_from(&cur);
+        }
+
+        prev[b.len()]
+    }
+}

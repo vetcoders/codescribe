@@ -1159,6 +1159,11 @@ pub fn has_api_key() -> bool {
     get_formatting_api_key().is_ok()
 }
 
+/// Check if AI formatting is available for report/test flows.
+pub fn is_formatting_available() -> bool {
+    has_api_key()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
