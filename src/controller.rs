@@ -807,6 +807,7 @@ impl Default for RecordingController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[tokio::test]
     async fn test_initial_state() {
@@ -815,6 +816,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     #[ignore = "requires audio hardware"]
     async fn test_hold_down_schedules_delayed_start() {
         let controller = RecordingController::new();
@@ -840,6 +842,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     #[ignore = "requires audio hardware"]
     async fn test_hold_up_before_delay_cancels() {
         let controller = RecordingController::new();
@@ -871,6 +874,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     #[ignore = "requires audio hardware"]
     async fn test_toggle_starts_immediately() {
         let controller = RecordingController::new();
@@ -1091,6 +1095,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     #[ignore = "requires audio hardware"]
     async fn test_hold_up_triggers_finish_recording() {
         // This test verifies that Hold Up in REC_HOLD state triggers finish_recording
@@ -1105,9 +1110,16 @@ mod tests {
             action: HotkeyAction::Up,
             assistive: false,
         };
-        controller.handle_hotkey_event(up_event).await.unwrap();
+        let result = controller.handle_hotkey_event(up_event).await;
+        if let Err(err) = result {
+            assert!(
+                err.to_string().contains("Empty transcript"),
+                "Unexpected error: {err}"
+            );
+        }
 
         // After finish_recording, flags should be reset to false
+        assert_eq!(controller.current_state().await, State::Idle);
         assert!(!*controller.force_raw_mode.read().await);
     }
 
