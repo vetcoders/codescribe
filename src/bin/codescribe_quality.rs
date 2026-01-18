@@ -10,7 +10,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use codescribe::config::Config;
-use codescribe::quality_report::{QualityReportConfig, run};
+use codescribe::quality_report::{MetricsReference, QualityReportConfig, run};
 
 #[derive(Parser)]
 #[command(name = "codescribe-quality")]
@@ -56,6 +56,16 @@ struct Args {
     /// Disable embedding gate for postprocess (faster, less strict)
     #[arg(long, default_value_t = false)]
     no_embeddings: bool,
+
+    /// Reference source for metrics (corpus .txt or cloud transcript)
+    #[arg(long, value_enum, default_value = "corpus")]
+    metrics_reference: ReferenceSourceArg,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum ReferenceSourceArg {
+    Corpus,
+    Cloud,
 }
 
 #[tokio::main]
@@ -91,6 +101,10 @@ async fn main() -> Result<()> {
         skip_formatting: args.skip_formatting,
         debug_mode,
         copy_audio: args.copy_audio,
+        metrics_reference: match args.metrics_reference {
+            ReferenceSourceArg::Corpus => MetricsReference::Corpus,
+            ReferenceSourceArg::Cloud => MetricsReference::Cloud,
+        },
     };
 
     let out = run(report_config).await?;

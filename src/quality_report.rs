@@ -33,6 +33,22 @@ pub struct QualityReportConfig {
     pub skip_formatting: bool,
     pub debug_mode: bool,
     pub copy_audio: bool,
+    pub metrics_reference: MetricsReference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MetricsReference {
+    Corpus,
+    Cloud,
+}
+
+impl MetricsReference {
+    fn as_str(self) -> &'static str {
+        match self {
+            MetricsReference::Corpus => "corpus",
+            MetricsReference::Cloud => "cloud",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,6 +68,7 @@ pub struct ReportEnvironment {
     pub llm_formatting_key_present: bool,
     pub local_model: Option<String>,
     pub whisper_language: Option<String>,
+    pub metrics_reference: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -106,7 +123,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     let now: DateTime<Local> = Local::now();
     let generated_at = now.to_rfc3339();
 
-    let env_snapshot = snapshot_environment();
+    let env_snapshot = snapshot_environment(config.metrics_reference);
 
     let config_root = Config::config_dir();
     let input_root = resolve_input_root(&config.input_dir, &config_root)?;
@@ -283,8 +300,15 @@ async fn process_pair(
         None
     };
 
+    let metrics_reference = match config.metrics_reference {
+        MetricsReference::Corpus => reference.as_deref(),
+        MetricsReference::Cloud => cloud.as_deref(),
+    };
+    if matches!(config.metrics_reference, MetricsReference::Cloud) && cloud.is_none() {
+        errors.push("Metrics reference missing: cloud transcript unavailable".into());
+    }
     let metrics = compute_metrics(
-        reference.as_deref(),
+        metrics_reference,
         raw.as_deref(),
         post.as_deref(),
         ai_formatted.as_deref(),
@@ -459,6 +483,10 @@ fn render_markdown(report: &QualityReport) -> String {
     let mut out = String::new();
     out.push_str("# CodeScribe Quality Report\n\n");
     out.push_str(&format!("Generated: {}\n\n", report.generated_at));
+    out.push_str(&format!(
+        "Metrics reference: {}\n\n",
+        report.environment.metrics_reference
+    ));
     out.push_str("| File | WER raw | WER post | WER ai | WER cloud | CER raw | CER post | CER ai | CER cloud |\n");
     out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
 
@@ -506,8 +534,9 @@ fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
     let mut body = String::new();
 
     body.push_str(&format!(
-        "<h1>CodeScribe Quality Report</h1><p>Generated: {}</p>",
-        html_escape(&report.generated_at)
+        "<h1>CodeScribe Quality Report</h1><p>Generated: {}</p><p>Metrics reference: {}</p>",
+        html_escape(&report.generated_at),
+        html_escape(&report.environment.metrics_reference)
     ));
 
     body.push_str("<div class=\"toolbar\">");
@@ -1074,7 +1103,7 @@ fn render_ingest_jsonl(report: &QualityReport, artifacts_dir: &Path) -> Result<S
     Ok(out)
 }
 
-fn snapshot_environment() -> ReportEnvironment {
+fn snapshot_environment(metrics_reference: MetricsReference) -> ReportEnvironment {
     let config = Config::load();
     ReportEnvironment {
         stt_endpoint: std::env::var("STT_ENDPOINT").ok(),
@@ -1085,6 +1114,7 @@ fn snapshot_environment() -> ReportEnvironment {
             || std::env::var("LLM_API_KEY").is_ok(),
         local_model: Some(config.local_model),
         whisper_language: Some(config.whisper_language.as_str().to_string()),
+        metrics_reference: metrics_reference.as_str().to_string(),
     }
 }
 

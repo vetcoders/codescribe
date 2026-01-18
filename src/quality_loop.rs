@@ -30,10 +30,26 @@ pub struct QualityLoopConfig {
     pub regression_threshold: f32,
     pub apply_updates: bool,
     pub update_lexicon: bool,
+    pub lexicon_source: LexiconSource,
     pub update_gate: bool,
     pub update_prompts: bool,
     pub update_embeddings: bool,
     pub max_lexicon_updates: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LexiconSource {
+    Corpus,
+    Cloud,
+}
+
+impl LexiconSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            LexiconSource::Corpus => "corpus",
+            LexiconSource::Cloud => "cloud",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -127,8 +143,12 @@ pub async fn run(config: QualityLoopConfig) -> Result<PathBuf> {
     }
 
     if config.update_lexicon
-        && let Some(update) =
-            propose_lexicon_updates(&report, config.max_lexicon_updates, config.apply_updates)?
+        && let Some(update) = propose_lexicon_updates(
+            &report,
+            config.max_lexicon_updates,
+            config.apply_updates,
+            config.lexicon_source,
+        )?
     {
         updates.push(update);
     }
@@ -755,8 +775,9 @@ fn propose_lexicon_updates(
     report: &QualityReport,
     max_updates: usize,
     apply: bool,
+    source: LexiconSource,
 ) -> Result<Option<UpdateAction>> {
-    let suggestions = extract_lexicon_suggestions(report, max_updates);
+    let suggestions = extract_lexicon_suggestions(report, max_updates, source);
     if suggestions.is_empty() {
         return Ok(None);
     }
@@ -770,8 +791,9 @@ fn propose_lexicon_updates(
     };
 
     let detail = format!(
-        "lexicon.custom.jsonl suggestions={} (top: {})",
+        "lexicon.custom.jsonl suggestions={} source={} (top: {})",
         suggestions.len(),
+        source.as_str(),
         suggestions
             .iter()
             .take(3)
@@ -797,11 +819,16 @@ struct LexiconSuggestion {
 fn extract_lexicon_suggestions(
     report: &QualityReport,
     max_updates: usize,
+    source: LexiconSource,
 ) -> Vec<LexiconSuggestion> {
     let mut counts: HashMap<(String, String), usize> = HashMap::new();
 
     for entry in &report.entries {
-        let Some(reference) = entry.transcripts.reference.as_deref() else {
+        let reference = match source {
+            LexiconSource::Corpus => entry.transcripts.reference.as_deref(),
+            LexiconSource::Cloud => entry.transcripts.cloud.as_deref(),
+        };
+        let Some(reference) = reference else {
             continue;
         };
         let Some(raw) = entry.transcripts.raw.as_deref() else {

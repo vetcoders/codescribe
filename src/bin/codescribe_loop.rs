@@ -10,8 +10,8 @@ use clap::Parser;
 use std::path::{Path, PathBuf};
 
 use codescribe::config::Config;
-use codescribe::quality_loop::{QualityLoopConfig, run};
-use codescribe::quality_report::QualityReportConfig;
+use codescribe::quality_loop::{LexiconSource, QualityLoopConfig, run};
+use codescribe::quality_report::{MetricsReference, QualityReportConfig};
 
 #[derive(Parser)]
 #[command(name = "codescribe-loop")]
@@ -93,6 +93,20 @@ struct Args {
     /// Disable embeddings tuning updates
     #[arg(long, default_value_t = false)]
     no_embeddings_tuning: bool,
+
+    /// Reference source for metrics (corpus .txt or cloud transcript)
+    #[arg(long, value_enum, default_value = "corpus")]
+    metrics_reference: ReferenceSourceArg,
+
+    /// Lexicon source (corpus .txt or cloud transcript)
+    #[arg(long, value_enum, default_value = "corpus")]
+    lexicon_source: ReferenceSourceArg,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum ReferenceSourceArg {
+    Corpus,
+    Cloud,
 }
 
 #[tokio::main]
@@ -132,6 +146,10 @@ async fn main() -> Result<()> {
         skip_formatting: args.skip_formatting,
         debug_mode,
         copy_audio: args.copy_audio,
+        metrics_reference: match args.metrics_reference {
+            ReferenceSourceArg::Corpus => MetricsReference::Corpus,
+            ReferenceSourceArg::Cloud => MetricsReference::Cloud,
+        },
     };
 
     let baseline_report = args.baseline.map(|path| resolve_report_path(&path));
@@ -143,6 +161,10 @@ async fn main() -> Result<()> {
         regression_threshold: args.regression_threshold,
         apply_updates: args.apply,
         update_lexicon: !args.no_lexicon,
+        lexicon_source: match args.lexicon_source {
+            ReferenceSourceArg::Corpus => LexiconSource::Corpus,
+            ReferenceSourceArg::Cloud => LexiconSource::Cloud,
+        },
         update_gate: !args.no_gate,
         update_prompts: !args.no_prompt,
         update_embeddings: !args.no_embeddings_tuning,
