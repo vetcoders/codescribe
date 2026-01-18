@@ -1,12 +1,62 @@
 # ⌜ CodeScribe ⌟
 
-**Local speech-to-text for macOS with AI formatting — Pure Rust, Metal GPU, embedded Whisper.**
+**Native macOS Audio Intelligence Platform — Embedded Whisper Live, Quality Loop & Semantic Postprocessing.**
 
 ## Overview
 
 CodeScribe is a native macOS menu-bar application that captures audio through global hotkeys, transcribes it locally
 using Whisper with Metal GPU acceleration, and pastes the transcript directly into the focused application. Optional AI
 formatting via LLM polishes the output while keeping everything private and local.
+
+```mermaid
+flowchart TB
+    %% Minimal monochrome styling
+    classDef default fill:#fff,stroke:#333,stroke-width:1px;
+    classDef box fill:#fafafa,stroke:#666,stroke-width:1px,stroke-dasharray: 0;
+
+    subgraph APP[CodeScribe Application]
+        direction TB
+
+        subgraph UI[Leptos WASM Frontend]
+            direction LR
+            VL[Voice Lab] --- TE[Teacher] --- SET[Settings]
+        end
+
+        subgraph BACKEND[Tauri Rust Backend]
+            CMD[Command Handlers]
+        end
+
+        UI -->|IPC invoke| BACKEND
+
+        subgraph CORE[Core Library]
+            direction TB
+            REC[Streaming Recorder]
+            POST[Stream Postprocess]
+            WH[Whisper Engine]
+            IPC[IPC Server]
+            QL[Quality Loop]
+
+            REC -->|Live Chunks| POST
+            POST -->|Semantic Gating| WH
+            WH -->|Transcript| IPC
+            QL -.->|Self-Improvement| WH
+        end
+
+        BACKEND --> CORE
+    end
+
+    MODEL[Embedded Whisper Model\nlarge-v3-turbo-mlx-q8\n(~888MB)]
+    WH === MODEL
+
+    subgraph TOOLS[CLI Suite]
+        QCLI[codescribe-quality]
+        LCLI[codescribe-loop]
+    end
+
+    CORE -.-> TOOLS
+
+    class APP,UI,BACKEND,CORE,TOOLS box
+```
 
 > **Status:** current release (see `Cargo.toml`) — Embedded model (~888MB binary) + *Whisper Live* (streaming transcription during recording).
 
@@ -45,19 +95,19 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 ## Features
 
 - **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
-- **Embedded Whisper Model** — whisper-large-v3-turbo-mlx-q8 baked into binary (~888MB), zero disk I/O
-- **Whisper Live (Streaming)** — transcription happens *during recording* (chunks + overlap), so `stop()` is
+- **Embedded Whisper (always)** — whisper-large-v3-turbo-mlx-q8 baked into binary (~888MB), zero disk I/O
+- **Whisper Live** — Streaming transcription happens *during recording* (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
+- **IPC Server** — Stable runtime interface for GUI/clients
+- **Quality Loop + Report** — Automated quality scoring and batch reports
+- **CLI Suite** — `codescribe`, `codescribe-quality`, `codescribe-loop`
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
 - **Global Hotkeys** — Hold Ctrl or double-tap Option to record
 - **Provider Separation** — Different LLM providers for formatting vs assistive mode
 - **AI Formatting** — Optional post-processing via Responses API
-- **IPC Server** — Stable runtime interface for GUI/clients
-- **Quality Loop + Report** — Automated quality scoring and batch reports
 - **Slug Filenames** — Transcripts named with first 3 words for easy identification
-- **CLI Suite** — `codescribe`, `codescribe-quality`, `codescribe-loop`
 
 ## Tech Stack
 

@@ -30,6 +30,9 @@ pub enum IpcCommand {
         language: Option<String>,
         assistive: bool,
     },
+    TranscribeFile {
+        path: String,
+    },
 
     // Status
     GetStatus,

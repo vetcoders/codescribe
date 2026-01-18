@@ -42,9 +42,9 @@ enum Commands {
         #[arg(short, long)]
         format: bool,
 
-        /// LLM model for formatting
-        #[arg(long, default_value = "qwen3-coder:480b-cloud")]
-        llm: String,
+        /// LLM model for formatting (defaults to config)
+        #[arg(long)]
+        llm: Option<String>,
     },
 
     /// Run as daemon with tray icon (default when no args)
@@ -172,7 +172,7 @@ async fn handle_transcribe_command(
     file: PathBuf,
     language: Option<String>,
     format: bool,
-    llm_model: String,
+    llm_model: Option<String>,
 ) -> Result<()> {
     use std::time::Instant;
 
@@ -217,6 +217,8 @@ async fn handle_transcribe_command(
 
     // Format with AI if requested
     let final_text = if format {
+        let llm_model =
+            llm_model.unwrap_or_else(|| codescribe::config::Config::load().ollama_model);
         eprintln!("Formatting with AI ({})...", llm_model);
         let start = Instant::now();
         match format_with_ollama(&raw_text, &llm_model, &lang).await {

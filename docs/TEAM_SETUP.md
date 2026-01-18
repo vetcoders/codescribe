@@ -4,7 +4,7 @@
 
 ### 1. Prerequisites
 
-- macOS 14+ (Apple Silicon recommended)
+- macOS 14+ (Apple Silicon ARM64 only)
 - Rust 1.83+ with `wasm32-unknown-unknown` target
 - Trunk (`cargo install trunk`)
 - Tauri CLI (`cargo install tauri-cli`)
@@ -31,7 +31,7 @@ open target/release/bundle/macos/CodeScribe.app
 cd tauri-app && trunk serve --port 8080
 
 # Terminal 2: Run debug binary
-./target/debug/codescribe-app
+cargo run
 ```
 
 ## Permissions Required
@@ -44,13 +44,13 @@ Grant in: System Settings > Privacy & Security
 
 ## Hotkeys
 
-| Key                       | Action                                      | AI Mode                |
-|---------------------------|---------------------------------------------|------------------------|
-| Hold **Ctrl**             | Record → paste raw transcript               | ALWAYS RAW (no AI)     |
-| Hold **Ctrl+Shift**       | Record → AI assistant response              | ALWAYS Assistive       |
-| Double-tap **Option**     | Toggle recording (hands-free)               | Respects AI toggle     |
-| Triple-tap **Option**     | Toggle AI Formatting on/off                 | Shows toast            |
-| **Shift** during Ctrl hold| Upgrade to Assistive mode mid-recording     | —                      |
+| Key                        | Action                                  | AI Mode            |
+|----------------------------|-----------------------------------------|--------------------|
+| Hold **Ctrl**              | Record → paste raw transcript           | ALWAYS RAW (no AI) |
+| Hold **Ctrl+Shift**        | Record → AI assistant response          | ALWAYS Assistive   |
+| Double-tap **Option**      | Toggle recording (hands-free)           | Respects AI toggle |
+| Triple-tap **Option**      | Toggle AI Formatting on/off             | Shows toast        |
+| **Shift** during Ctrl hold | Upgrade to Assistive mode mid-recording | —                  |
 
 ### Mode Behavior
 
@@ -93,13 +93,13 @@ codescribe transcribe audio.wav --language pl
 
 ## Quality & Tools
 
-Nowe narzędzia CLI (batch/automation):
+New CLI tools for batch processing and automation:
 
 ```bash
-# Raport jakości batch
+# Batch quality report
 codescribe-quality --help
 
-# Pętla jakości (self-improving loop)
+# Self-improving quality loop
 codescribe-loop --help
 ```
 

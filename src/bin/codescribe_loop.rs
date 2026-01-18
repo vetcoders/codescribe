@@ -42,6 +42,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     skip_cloud: bool,
 
+    /// Max concurrent cloud STT requests (0 = unlimited)
+    #[arg(long, default_value_t = 0)]
+    cloud_concurrency: usize,
+
     /// Skip AI formatting
     #[arg(long, default_value_t = false)]
     skip_formatting: bool,
@@ -143,6 +147,7 @@ async fn main() -> Result<()> {
         limit: args.limit,
         language: args.language,
         skip_cloud: args.skip_cloud,
+        cloud_concurrency: args.cloud_concurrency,
         skip_formatting: args.skip_formatting,
         debug_mode,
         copy_audio: args.copy_audio,

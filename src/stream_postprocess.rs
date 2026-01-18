@@ -11,7 +11,10 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 
-const BUILTIN_LEXICON: &str = include_str!("../assets/programming.jsonl");
+const BUILTIN_LEXICONS: &[(&str, &str)] = &[
+    ("programming", include_str!("../assets/programming.jsonl")),
+    ("veterinary", include_str!("../assets/veterinary.jsonl")),
+];
 const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.93;
 const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
 const MAX_EMBED_CHARS: usize = 512;
@@ -39,7 +42,10 @@ struct Lexicon {
 impl Lexicon {
     fn from_builtin() -> Self {
         let mut rules = Vec::new();
-        let builtin_count = load_rules_from_jsonl(BUILTIN_LEXICON, "builtin", &mut rules);
+        let mut builtin_count = 0usize;
+        for (label, source) in BUILTIN_LEXICONS {
+            builtin_count += load_rules_from_jsonl(source, label, &mut rules);
+        }
         let custom_count = load_custom_lexicon()
             .map(|content| load_rules_from_jsonl(&content, "custom", &mut rules))
             .unwrap_or(0);

@@ -9,13 +9,15 @@
 //!
 //! Created by M&K (c)2026 VetCoders
 
+use crate::ipc_client::IpcClient;
 use crate::state::AppState;
+use codescribe::ipc::{IpcCommand, IpcResponse};
 use std::path::PathBuf;
 
-/// Transcribe audio file (DEPRECATED - CLI manages Whisper)
+/// Transcribe audio file (DEPRECATED - use IPC)
 ///
-/// This function now uses the embedded Whisper singleton.
-/// For best results, use CLI's IPC commands.
+/// This function forwards to the IPC server for consistent
+/// Whisper + StreamPostProcess behavior.
 #[tauri::command]
 pub async fn transcribe_audio(
     _state: tauri::State<'_, AppState>,
@@ -26,16 +28,21 @@ pub async fn transcribe_audio(
         return Err(format!("Audio file not found: {}", audio_path.display()));
     }
 
-    // Use embedded Whisper singleton
-    codescribe::whisper::init().map_err(|e| format!("Failed to init Whisper: {}", e))?;
+    let mut client = IpcClient::connect().map_err(|e| e.to_string())?;
+    let response: IpcResponse = client
+        .send(&IpcCommand::TranscribeFile {
+            path: audio_path.to_string_lossy().to_string(),
+        })
+        .map_err(|e| e.to_string())?;
 
-    let result = codescribe::whisper::transcribe_file(&audio_path, None)
-        .map_err(|e| format!("Transcription failed: {}", e))?;
-
-    Ok(result)
+    match response {
+        IpcResponse::Message(text) => Ok(text),
+        IpcResponse::Error(err) => Err(err),
+        _ => Err("Unexpected IPC response for TranscribeFile".to_string()),
+    }
 }
 
-/// Transcribe with streaming (DEPRECATED - use CLI)
+/// Transcribe with streaming (DEPRECATED - use IPC)
 #[tauri::command]
 pub async fn transcribe_audio_streaming(
     _state: tauri::State<'_, AppState>,
@@ -49,27 +56,22 @@ pub async fn transcribe_audio_streaming(
         return Err(format!("Audio file not found: {}", audio_path.display()));
     }
 
-    // Use embedded Whisper singleton
-    codescribe::whisper::init().map_err(|e| format!("Failed to init Whisper: {}", e))?;
+    let mut client = IpcClient::connect().map_err(|e| e.to_string())?;
+    let response: IpcResponse = client
+        .send(&IpcCommand::TranscribeFile {
+            path: audio_path.to_string_lossy().to_string(),
+        })
+        .map_err(|e| e.to_string())?;
 
-    // Load audio
-    let (samples, sample_rate) = codescribe::audio::load_audio_file(&audio_path)
-        .map_err(|e| format!("Failed to load audio: {}", e))?;
-
-    // Transcribe with streaming callback
-    let app_clone = app.clone();
-    let callback = move |chunk: &str| {
-        let _ = app_clone.emit("transcript_chunk", chunk);
-    };
-
-    let result =
-        codescribe::whisper::transcribe_streaming(&samples, sample_rate, None, Some(&callback))
-            .map_err(|e| format!("Transcription failed: {}", e))?;
-
-    // Emit final result
-    let _ = app.emit("transcription_complete", &result);
-
-    Ok(result)
+    match response {
+        IpcResponse::Message(text) => {
+            let _ = app.emit("transcript_chunk", &text);
+            let _ = app.emit("transcription_complete", &text);
+            Ok(text)
+        }
+        IpcResponse::Error(err) => Err(err),
+        _ => Err("Unexpected IPC response for TranscribeFile".to_string()),
+    }
 }
 
 /// Get available models (returns embedded model info)

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,18 +9,30 @@ use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
 use super::types::{AppStatus, IpcCommand, IpcResponse};
+use crate::audio::load_audio_file;
+use crate::audio::streaming_recorder::transcribe_streaming_samples;
 use crate::config::prompts::{
     DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, get_assistive_prompt,
     get_assistive_prompt_path, get_formatting_prompt, get_formatting_prompt_path,
 };
 use crate::config::{AiProvider, Config};
 use crate::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
+use crate::stream_postprocess::StreamPostProcessor;
 use crate::{ai_formatting, hotkeys};
 
 const SOCKET_PATH: &str = "/tmp/codescribe.sock";
 
 pub async fn run_server(controller: Arc<RecordingController>) -> Result<()> {
-    let _ = std::fs::remove_file(SOCKET_PATH);
+    match std::fs::remove_file(SOCKET_PATH) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => {
+            warn!(
+                "Failed to remove existing IPC socket {}: {}",
+                SOCKET_PATH, e
+            );
+        }
+    }
 
     let listener = UnixListener::bind(SOCKET_PATH)?;
     info!("IPC server listening on {}", SOCKET_PATH);
@@ -140,6 +153,40 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
                 IpcResponse::Error("Formatting returned empty result".to_string())
             } else {
                 IpcResponse::Message(formatted)
+            }
+        }
+        IpcCommand::TranscribeFile { path } => {
+            let audio_path = PathBuf::from(&path);
+            if !audio_path.exists() {
+                return IpcResponse::Error(format!(
+                    "Audio file not found: {}",
+                    audio_path.display()
+                ));
+            }
+
+            let (samples, sample_rate) = match load_audio_file(&audio_path) {
+                Ok(data) => data,
+                Err(e) => {
+                    return IpcResponse::Error(format!("Failed to load audio: {}", e));
+                }
+            };
+
+            let language = Config::load().whisper_language;
+            let mut postprocessor = StreamPostProcessor::new();
+            match transcribe_streaming_samples(
+                &samples,
+                sample_rate,
+                Some(language.as_str()),
+                Some(&mut postprocessor),
+            ) {
+                Ok(text) => {
+                    if text.trim().is_empty() {
+                        IpcResponse::Error("Transcription returned empty result".to_string())
+                    } else {
+                        IpcResponse::Message(text)
+                    }
+                }
+                Err(e) => IpcResponse::Error(format!("Transcription failed: {}", e)),
             }
         }
         IpcCommand::GetStatus => {

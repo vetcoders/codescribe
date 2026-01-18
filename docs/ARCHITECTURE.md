@@ -44,18 +44,35 @@ flowchart TB
             CO[config/]
             AU[audio/\n(cpal + stream)]
             HK[hotkeys/]
+            IPC[ipc/\n(unix socket server)]
 
             LENTRY --> WH
             LENTRY --> CO
             LENTRY --> AU
             LENTRY --> HK
+            LENTRY --> IPC
         end
 
         BENTRY --> LENTRY
     end
 
     WH --> MODEL[Whisper Model\nlarge-v3-turbo\nmlx-q8 (~888MB)\n(embedded in bin)]
+
+    subgraph TOOLS[Quality & CLI Tools]
+        CLI[codescribe-quality]
+        LOOP[codescribe-loop]
+    end
+
+    LIB -.-> TOOLS
 ```
+
+## Runtime & Quality Tools
+
+- **IPC Server**: Unix socket server (`src/ipc/`) allowing external clients (or CLI tools) to control the
+  recording/transcription session and receive real-time events.
+- **Quality Loop**: Automated self-tuning system (`src/quality_loop.rs`) that evaluates transcription accuracy.
+- **Stream Postprocess**: Pipeline stage (`src/stream_postprocess.rs`) that applies semantic gating and cleanup to live
+  chunks.
 
 ## IPC Commands Reference
 

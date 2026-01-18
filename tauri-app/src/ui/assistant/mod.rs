@@ -107,9 +107,15 @@ pub fn AssistantView() -> impl IntoView {
             use wasm_bindgen_futures::spawn_local;
 
             spawn_local(async move {
-                let _ = invoke::<()>("reset_ai_context", ()).await;
-                set_messages.set(Vec::new());
-                set_error.set(None);
+                match invoke::<()>("reset_ai_context", ()).await {
+                    Ok(()) => {
+                        set_messages.set(Vec::new());
+                        set_error.set(None);
+                    }
+                    Err(e) => {
+                        set_error.set(Some(format!("Error resetting context: {}", e)));
+                    }
+                }
             });
         }
 

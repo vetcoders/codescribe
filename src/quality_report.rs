@@ -5,9 +5,10 @@
 //!
 //! Created by M&K (c)2026 VetCoders
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +22,8 @@ use crate::safe_path::{
 };
 use crate::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
 use crate::{client, whisper};
+use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone)]
 pub struct QualityReportConfig {
@@ -30,6 +33,7 @@ pub struct QualityReportConfig {
     pub limit: usize,
     pub language: Option<String>,
     pub skip_cloud: bool,
+    pub cloud_concurrency: usize,
     pub skip_formatting: bool,
     pub debug_mode: bool,
     pub copy_audio: bool,
@@ -119,6 +123,41 @@ pub struct ReportMetrics {
     pub cloud_cer: Option<f32>,
 }
 
+enum CloudJobSet {
+    Disabled,
+    Skipped(String),
+    Running(HashMap<String, JoinHandle<Result<String>>>),
+}
+
+impl CloudJobSet {
+    async fn take_for(&mut self, id: &str, errors: &mut Vec<String>) -> Option<String> {
+        match self {
+            CloudJobSet::Disabled => None,
+            CloudJobSet::Skipped(reason) => {
+                errors.push(reason.clone());
+                None
+            }
+            CloudJobSet::Running(jobs) => match jobs.remove(id) {
+                Some(handle) => match handle.await {
+                    Ok(Ok(text)) => Some(text),
+                    Ok(Err(e)) => {
+                        errors.push(format!("Cloud transcription failed: {}", e));
+                        None
+                    }
+                    Err(e) => {
+                        errors.push(format!("Cloud transcription task failed: {}", e));
+                        None
+                    }
+                },
+                None => {
+                    errors.push("Cloud transcription missing for entry".into());
+                    None
+                }
+            },
+        }
+    }
+}
+
 pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     let now: DateTime<Local> = Local::now();
     let generated_at = now.to_rfc3339();
@@ -131,7 +170,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
 
     let pairs = collect_pairs(&input_root, config.date_filter.as_deref(), config.limit);
     if pairs.is_empty() {
-        anyhow::bail!("No WAV+TXT pairs found in {}", input_root.display());
+        bail!("No WAV+TXT pairs found in {}", input_root.display());
     }
 
     fs::create_dir_all(&output_root)
@@ -146,6 +185,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
 
     let mut entries = Vec::new();
     let mut totals = Totals::default();
+    let mut cloud_jobs = prepare_cloud_jobs(&pairs, &config, &input_root);
 
     for pair in pairs {
         let entry = process_pair(
@@ -155,6 +195,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
             &output_root,
             &artifacts_dir,
             &audio_dir,
+            &mut cloud_jobs,
         )
         .await?;
         totals.accumulate(&entry.metrics);
@@ -174,6 +215,55 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     Ok(output_root)
 }
 
+fn prepare_cloud_jobs(
+    pairs: &[CorpusPair],
+    config: &QualityReportConfig,
+    input_root: &Path,
+) -> CloudJobSet {
+    if config.skip_cloud {
+        return CloudJobSet::Disabled;
+    }
+
+    if std::env::var("STT_ENDPOINT").is_err() || std::env::var("STT_API_KEY").is_err() {
+        return CloudJobSet::Skipped(
+            "Cloud transcription skipped: STT_ENDPOINT/STT_API_KEY missing".into(),
+        );
+    }
+
+    let total = pairs.len().max(1);
+    let max_concurrency = if config.cloud_concurrency == 0 {
+        total
+    } else {
+        config.cloud_concurrency.max(1)
+    };
+    let semaphore = std::sync::Arc::new(Semaphore::new(max_concurrency));
+    let mut jobs = HashMap::new();
+
+    for pair in pairs {
+        let id = pair.id.clone();
+        let audio_path = pair.audio_path.clone();
+        let input_root = input_root.to_path_buf();
+        let language = config.language.clone();
+        let permitter = semaphore.clone();
+
+        let handle = tokio::spawn(async move {
+            let _permit = permitter
+                .acquire_owned()
+                .await
+                .map_err(|e| anyhow!("Cloud concurrency closed: {}", e))?;
+            let audio_canon =
+                safe_canonicalize_bounded(&audio_path, &input_root).with_context(|| {
+                    format!("Audio path escapes input root: {}", audio_path.display())
+                })?;
+            client::transcribe(&audio_canon, language.as_deref()).await
+        });
+
+        jobs.insert(id, handle);
+    }
+
+    CloudJobSet::Running(jobs)
+}
+
 async fn process_pair(
     pair: &CorpusPair,
     config: &QualityReportConfig,
@@ -181,6 +271,7 @@ async fn process_pair(
     output_root: &Path,
     artifacts_dir: &Path,
     audio_dir: &Path,
+    cloud_jobs: &mut CloudJobSet,
 ) -> Result<ReportEntry> {
     let audio_path = pair.audio_path.clone();
     let reference_path = pair.reference_path.clone();
@@ -285,20 +376,7 @@ async fn process_pair(
         None
     };
 
-    let cloud = if config.skip_cloud {
-        None
-    } else if std::env::var("STT_ENDPOINT").is_ok() && std::env::var("STT_API_KEY").is_ok() {
-        match client::transcribe(&audio_path, config.language.as_deref()).await {
-            Ok(text) => Some(text),
-            Err(e) => {
-                errors.push(format!("Cloud transcription failed: {}", e));
-                None
-            }
-        }
-    } else {
-        errors.push("Cloud transcription skipped: STT_ENDPOINT/STT_API_KEY missing".into());
-        None
-    };
+    let cloud = cloud_jobs.take_for(&id, &mut errors).await;
 
     let metrics_reference = match config.metrics_reference {
         MetricsReference::Corpus => reference.as_deref(),
