@@ -23,6 +23,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -179,6 +180,9 @@ pub struct RecordingController {
 
     /// Lock to serialize finish_recording calls
     serial_lock: Arc<Mutex<()>>,
+
+    /// Flag set by VAD (silence detection) when recording should auto-stop
+    vad_triggered: Arc<AtomicBool>,
 }
 
 impl RecordingController {
@@ -215,6 +219,7 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
+            vad_triggered: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -253,6 +258,7 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
+            vad_triggered: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -269,6 +275,16 @@ impl RecordingController {
     /// Snapshot of current controller configuration
     pub async fn get_config(&self) -> Config {
         self.config.read().await.clone()
+    }
+
+    /// Check if VAD (silence detection) has triggered auto-stop
+    pub fn is_vad_triggered(&self) -> bool {
+        self.vad_triggered.load(Ordering::SeqCst)
+    }
+
+    /// Clear the VAD triggered flag
+    pub fn clear_vad_triggered(&self) {
+        self.vad_triggered.store(false, Ordering::SeqCst);
     }
 
     /// Cancel any pending delayed hold-start task
@@ -466,6 +482,10 @@ impl RecordingController {
             };
             show_badge_for_mode(badge_mode);
 
+            // Show live transcription overlay
+            crate::clear_voice_chat_text();
+            crate::show_voice_chat_overlay();
+
             // Transition to REC_HOLD
             *state.write().await = State::RecHold;
             info!(
@@ -519,8 +539,16 @@ impl RecordingController {
 
         let language = self.config.read().await.whisper_language;
 
-        // Start the recorder
+        // Reset VAD flag and set callback
+        self.vad_triggered.store(false, Ordering::SeqCst);
+        let vad_flag = Arc::clone(&self.vad_triggered);
+
+        // Start the recorder with VAD callback
         let mut recorder = self.recorder.lock().await;
+        recorder.recorder.set_on_vad_stop(move || {
+            info!("VAD callback: setting vad_triggered flag");
+            vad_flag.store(true, Ordering::SeqCst);
+        });
         recorder.start(Some(language.as_str().to_string())).await?;
 
         // Play start beep if enabled
@@ -531,6 +559,10 @@ impl RecordingController {
 
         // Show pulsing red badge for toggle mode (hands-off recording)
         show_badge_for_mode(BadgeMode::Toggle);
+
+        // Show live transcription overlay
+        crate::clear_voice_chat_text();
+        crate::show_voice_chat_overlay();
 
         // Transition to REC_TOGGLE
         *self.state.write().await = State::RecToggle;
@@ -709,15 +741,42 @@ impl RecordingController {
         let (formatted_text, output_kind) = if assistive {
             // Ctrl+Shift: ALWAYS augmentation mode (AI expands content)
             info!("Assistive mode (Ctrl+Shift): augmenting transcript via AI");
+
+            // Update overlay status to show AI is thinking
+            crate::voice_chat_ui::update_voice_chat_status("Thinking...");
+
             let lang_str = language_opt.map(String::from);
             let result =
                 crate::ai_formatting::format_text_with_status(&raw_text, lang_str.as_deref(), true)
                     .await;
             let kind = match result.status {
                 crate::ai_formatting::AiFormatStatus::Applied => {
+                    // Display AI response in overlay
+                    crate::voice_chat_ui::update_voice_chat_status("AI Response:");
+                    crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                    info!(
+                        "Assistive response displayed in overlay ({} chars)",
+                        result.text.len()
+                    );
+
+                    // Auto-hide overlay after 5 seconds
+                    // Created by M&K (c)2026 VetCoders
+                    tokio::spawn(async {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        crate::voice_chat_ui::hide_voice_chat_overlay();
+                    });
+
                     crate::state::history::TranscriptKind::Ai
                 }
                 crate::ai_formatting::AiFormatStatus::Failed => {
+                    crate::voice_chat_ui::update_voice_chat_status("AI Failed");
+
+                    // Auto-hide overlay after 3 seconds on failure
+                    tokio::spawn(async {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        crate::voice_chat_ui::hide_voice_chat_overlay();
+                    });
+
                     crate::state::history::TranscriptKind::AiFailed
                 }
                 crate::ai_formatting::AiFormatStatus::Skipped => {

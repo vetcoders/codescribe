@@ -145,4 +145,7 @@ pub struct MenuIds {
     pub settings_open_prompt_folder: MenuId,
     pub settings_reset_context: MenuId,
     pub settings_open_gui: MenuId,
+
+    // Quality submenu
+    pub quality_open_report: MenuId,
 }

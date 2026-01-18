@@ -238,11 +238,16 @@ async fn process_chunk(
                     let mut buffer = transcript_buffer.lock().await;
                     let before_len = buffer.len();
                     append_with_overlap_dedup(&mut buffer, &cleaned);
-                    if let Some(path) = stream_log_path
-                        && let Some(delta) = buffer.get(before_len..)
+                    if let Some(delta) = buffer.get(before_len..)
                         && !delta.trim().is_empty()
                     {
-                        let _ = append_to_stream_log(path, delta);
+                        // Emit to overlay for live feedback
+                        crate::voice_chat_ui::append_voice_chat_delta(delta);
+
+                        // Log to file if enabled
+                        if let Some(path) = stream_log_path {
+                            let _ = append_to_stream_log(path, delta);
+                        }
                     }
                 } else {
                     debug!("Stream postprocessor dropped chunk");

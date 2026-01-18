@@ -77,7 +77,7 @@ pub mod stt {
 // Public API - Audio
 // ═══════════════════════════════════════════════════════════
 
-pub use audio::recorder::Recorder;
+pub use audio::recorder::{Recorder, RecorderConfig};
 
 // ═══════════════════════════════════════════════════════════
 // Public API - AI & Context

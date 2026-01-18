@@ -1097,3 +1097,58 @@ fn update_env_var(path: &Path, root: &Path, key: &str, value: &str) -> Result<bo
     }
     Ok(changed)
 }
+
+// ============================================================================
+// Quality Daemon State (for tray integration)
+// ============================================================================
+
+/// Daemon state stored in quality_daemon.json
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QualityDaemonState {
+    pub pending_mismatches: usize,
+    #[serde(default)]
+    pub last_check: String,
+    pub latest_report: Option<String>,
+}
+
+/// Get path to daemon state file
+pub fn daemon_state_path() -> PathBuf {
+    Config::config_dir().join("quality_daemon.json")
+}
+
+/// Read daemon state from file
+pub fn read_daemon_state() -> QualityDaemonState {
+    let path = daemon_state_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return QualityDaemonState::default(),
+    };
+
+    serde_json::from_str(&content).unwrap_or_default()
+}
+
+/// Get pending mismatch count from daemon state
+pub fn get_pending_mismatches() -> usize {
+    read_daemon_state().pending_mismatches
+}
+
+/// Get path to the latest HTML report
+pub fn get_latest_report_html() -> Option<PathBuf> {
+    let state = read_daemon_state();
+    state
+        .latest_report
+        .map(|dir| PathBuf::from(dir).join("index.html"))
+}
+
+/// Open the latest quality report in default browser
+pub fn open_latest_report() -> bool {
+    if let Some(html_path) = get_latest_report_html()
+        && html_path.exists()
+    {
+        return std::process::Command::new("open")
+            .arg(&html_path)
+            .spawn()
+            .is_ok();
+    }
+    false
+}

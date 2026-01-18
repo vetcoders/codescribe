@@ -204,7 +204,9 @@ demo-assistive:
 
 check:
 	@echo "=== Format (fix) ==="
-	@cargo fmt
+	@cargo fmt --all
+	@echo "=== Prettier (non-Rust) ==="
+	@npx --yes prettier@2.7.1 --write . --ignore-path .prettierignore --ignore-unknown
 	@echo "=== Clippy (workspace, all targets) ==="
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@echo "=== Semgrep ==="

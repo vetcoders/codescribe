@@ -56,7 +56,7 @@ use tracing::{debug, info};
 use tray_icon::{TrayIconBuilder, menu::MenuEvent};
 
 // Re-export public API
-pub use menu::toggle_ai_formatting;
+pub use menu::{toggle_ai_formatting, update_quality_label};
 pub use state::{menu_event_receiver, update_tray_status};
 pub use types::{MenuIds, TrayMenuEvent, TrayStatus};
 

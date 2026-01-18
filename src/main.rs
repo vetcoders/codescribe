@@ -400,6 +400,21 @@ async fn run_daemon() -> Result<()> {
         }
     });
 
+    // VAD monitor task - auto-finish recording when silence detected
+    let vad_controller = Arc::clone(&controller);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            if vad_controller.is_vad_triggered() {
+                eprintln!("VAD triggered - auto-finishing recording");
+                vad_controller.clear_vad_triggered();
+                if let Err(e) = vad_controller.finish_recording().await {
+                    eprintln!("VAD finish_recording error: {}", e);
+                }
+            }
+        }
+    });
+
     tray::run_with_hotkeys(Some(hotkey_manager))?;
 
     Ok(())

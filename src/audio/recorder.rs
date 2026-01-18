@@ -155,6 +155,8 @@ pub struct Recorder {
     /// Actual sample rate used for recording (may differ from config)
     actual_sample_rate: u32,
     on_data: Option<AudioCallback>,
+    /// Callback invoked when VAD (silence detection) stops recording
+    on_vad_stop: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 // Safety: Recorder can be sent between threads because:
@@ -194,12 +196,21 @@ impl Recorder {
             diagnostics: RecorderDiagnostics::default(),
             actual_sample_rate: config.sample_rate, // Will be updated in start()
             on_data: None,
+            on_vad_stop: None,
         })
     }
 
     /// Set a callback to receive raw audio data (f32 samples)
     pub fn set_callback(&mut self, callback: AudioCallback) {
         self.on_data = Some(callback);
+    }
+
+    /// Set a callback invoked when VAD (silence detection) stops recording
+    pub fn set_on_vad_stop<F>(&mut self, callback: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_vad_stop = Some(Arc::new(callback));
     }
 
     /// Actual sample rate used by the underlying input stream.
@@ -375,6 +386,7 @@ impl Recorder {
         // Spawn monitoring task
         let is_recording_clone = Arc::clone(&self.is_recording);
         let stop_tx_clone = self.stop_tx.clone();
+        let on_vad_stop_clone = self.on_vad_stop.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -385,6 +397,11 @@ impl Recorder {
                     _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
                         if !is_recording_clone.load(Ordering::SeqCst) {
                             debug!("Recording stopped by silence detection");
+                            // Invoke VAD callback if set
+                            if let Some(ref callback) = on_vad_stop_clone {
+                                info!("VAD triggered - invoking callback");
+                                callback();
+                            }
                             if let Some(tx) = stop_tx_clone.as_ref() {
                                 let _ = tx.send(()).await;
                             }

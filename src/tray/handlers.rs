@@ -70,6 +70,10 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     // Settings - Open GUI
     else if event_id == &menu_ids.settings_open_gui {
         open_gui();
+    }
+    // Quality - Open Report
+    else if event_id == &menu_ids.quality_open_report {
+        handle_open_quality_report();
     } else {
         debug!("Unknown menu event id: {:?}", event_id);
     }
@@ -437,6 +441,16 @@ fn handle_open_prompts_folder() {
 pub fn open_gui() {
     info!("Opening GUI...");
 
+    if activate_running_gui() {
+        info!("Activated running GUI instance");
+        return;
+    }
+
+    if open_gui_app_bundle() {
+        info!("Opened GUI app bundle");
+        return;
+    }
+
     // Try to launch codescribe-gui binary
     // First check if it exists in same directory as codescribe
     let gui_binary = if let Ok(exe_path) = std::env::current_exe() {
@@ -466,5 +480,43 @@ pub fn open_gui() {
                 .arg(r#"display notification "GUI binary not found. Build with: cd tauri-app && cargo tauri build" with title "CodeScribe""#)
                 .spawn();
         }
+    }
+}
+
+fn activate_running_gui() -> bool {
+    Command::new("osascript")
+        .arg("-e")
+        .arg(r#"tell application "CodeScribe" to activate"#)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn open_gui_app_bundle() -> bool {
+    Command::new("open")
+        .arg("-a")
+        .arg("CodeScribe")
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+// ============================================================================
+// Quality Handlers
+// ============================================================================
+
+/// Open the latest quality report in browser
+fn handle_open_quality_report() {
+    info!("Opening quality report...");
+
+    if crate::quality_loop::open_latest_report() {
+        info!("Opened quality report");
+    } else {
+        // No report available - show notification
+        info!("No quality report available");
+        let _ = Command::new("osascript")
+            .arg("-e")
+            .arg(r#"display notification "No quality report available. Run: codescribe-loop --daemon" with title "CodeScribe Quality""#)
+            .spawn();
     }
 }
