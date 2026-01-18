@@ -4,6 +4,7 @@ use crate::whisper::append_with_overlap_dedup;
 use crate::whisper::singleton::engine as get_engine;
 use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
+use std::{fs::OpenOptions, io::Write, path::Path};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
@@ -80,6 +81,7 @@ impl StreamingRecorder {
         // Start transcription worker (after we know the real sample rate)
         let transcript_buffer = self.transcript_buffer.clone();
         let postprocessor = StreamPostProcessor::new();
+        let stream_log_path = stream_log_path();
         self.transcription_handle = Some(tokio::spawn(async move {
             transcription_worker(
                 rx,
@@ -87,6 +89,7 @@ impl StreamingRecorder {
                 actual_sample_rate,
                 language,
                 postprocessor,
+                stream_log_path,
             )
             .await;
         }));
@@ -118,6 +121,7 @@ async fn transcription_worker(
     sample_rate: u32,
     language: Option<String>,
     mut postprocessor: StreamPostProcessor,
+    stream_log_path: Option<std::path::PathBuf>,
 ) {
     info!("Transcription worker started");
 
@@ -140,6 +144,7 @@ async fn transcription_worker(
                 sample_rate,
                 language.as_deref(),
                 &mut postprocessor,
+                stream_log_path.as_deref(),
             )
             .await;
 
@@ -163,6 +168,7 @@ async fn transcription_worker(
             sample_rate,
             language.as_deref(),
             &mut postprocessor,
+            stream_log_path.as_deref(),
         )
         .await;
     }
@@ -176,6 +182,7 @@ async fn process_chunk(
     sample_rate: u32,
     language: Option<&str>,
     postprocessor: &mut StreamPostProcessor,
+    stream_log_path: Option<&Path>,
 ) {
     if samples.is_empty() {
         return;
@@ -229,7 +236,14 @@ async fn process_chunk(
                 debug!("Chunk transcribed: '{}'", text.trim());
                 if let Some(cleaned) = postprocessor.process(&text) {
                     let mut buffer = transcript_buffer.lock().await;
+                    let before_len = buffer.len();
                     append_with_overlap_dedup(&mut buffer, &cleaned);
+                    if let Some(path) = stream_log_path
+                        && let Some(delta) = buffer.get(before_len..)
+                        && !delta.trim().is_empty()
+                    {
+                        let _ = append_to_stream_log(path, delta);
+                    }
                 } else {
                     debug!("Stream postprocessor dropped chunk");
                 }
@@ -242,6 +256,39 @@ async fn process_chunk(
             error!("Transcription task join error: {}", e);
         }
     }
+}
+
+fn stream_log_path() -> Option<std::path::PathBuf> {
+    if let Ok(path) = std::env::var("CODESCRIBE_STREAM_LOG_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(std::path::PathBuf::from(trimmed));
+        }
+    }
+
+    if env_bool("CODESCRIBE_STREAM_LOG") {
+        let root = crate::config::Config::config_dir();
+        return Some(root.join("stream.log"));
+    }
+
+    None
+}
+
+fn append_to_stream_log(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{}", text.trim_end())?;
+    Ok(())
+}
+
+fn env_bool(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 pub(crate) fn transcribe_streaming_samples(

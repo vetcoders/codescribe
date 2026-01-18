@@ -764,6 +764,20 @@ fn parse_language_token(token: &str) -> Option<&str> {
     }
 }
 
+fn normalize_token_for_overlap(token: &str) -> String {
+    let mut out = String::new();
+    for ch in token.chars() {
+        if ch.is_alphanumeric() {
+            out.extend(ch.to_lowercase());
+        }
+    }
+    if out.is_empty() {
+        token.to_lowercase()
+    } else {
+        out
+    }
+}
+
 /// Helper for deduplication at chunk boundaries
 pub fn append_with_overlap_dedup(out: &mut String, segment: &str) {
     let seg = segment.trim();
@@ -787,10 +801,19 @@ pub fn append_with_overlap_dedup(out: &mut String, segment: &str) {
         return;
     }
 
+    let out_norm: Vec<String> = out_words
+        .iter()
+        .map(|word| normalize_token_for_overlap(word))
+        .collect();
+    let seg_norm: Vec<String> = seg_words
+        .iter()
+        .map(|word| normalize_token_for_overlap(word))
+        .collect();
+
     let max_overlap = out_words.len().min(seg_words.len()).min(20);
     let mut overlap = 0usize;
     for k in (1..=max_overlap).rev() {
-        if out_words[out_words.len() - k..] == seg_words[..k] {
+        if out_norm[out_norm.len() - k..] == seg_norm[..k] {
             overlap = k;
             break;
         }

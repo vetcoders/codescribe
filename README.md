@@ -58,7 +58,7 @@ flowchart TB
     class APP,UI,BACKEND,CORE,TOOLS box
 ```
 
-> **Status:** current release (see `Cargo.toml`) — Embedded model (~888MB binary) + *Whisper Live* (streaming transcription during recording).
+> **Status:** current release (see `Cargo.toml`) — **Strictly Embedded Model** (~888MB binary, zero exceptions) + *Whisper Live* (streaming transcription).
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md)
 
@@ -95,7 +95,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 ## Features
 
 - **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
-- **Embedded Whisper (always)** — whisper-large-v3-turbo-mlx-q8 baked into binary (~888MB), zero disk I/O
+- **Strictly Embedded Whisper** — Model is welded into the binary (~888MB). No external files, zero disk I/O, no exceptions.
 - **Whisper Live** — Streaming transcription happens *during recording* (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output

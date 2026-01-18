@@ -1,9 +1,12 @@
 use std::collections::HashMap;
+use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
@@ -20,28 +23,37 @@ use crate::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingControll
 use crate::stream_postprocess::StreamPostProcessor;
 use crate::{ai_formatting, hotkeys};
 
-const SOCKET_PATH: &str = "/tmp/codescribe.sock";
+const REDACTED_VALUE: &str = "<redacted>";
 
 pub async fn run_server(controller: Arc<RecordingController>) -> Result<()> {
-    match std::fs::remove_file(SOCKET_PATH) {
+    let socket_path = super::socket_path();
+    ensure_socket_dir(&socket_path)?;
+
+    match fs::remove_file(&socket_path) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {}
         Err(e) => {
             warn!(
                 "Failed to remove existing IPC socket {}: {}",
-                SOCKET_PATH, e
+                socket_path.display(),
+                e
             );
         }
     }
 
-    let listener = UnixListener::bind(SOCKET_PATH)?;
-    info!("IPC server listening on {}", SOCKET_PATH);
+    let listener = UnixListener::bind(&socket_path)?;
+    set_socket_permissions(&socket_path);
+    info!("IPC server listening on {}", socket_path.display());
 
     loop {
         let (stream, _) = listener.accept().await?;
         let controller = Arc::clone(&controller);
 
         tokio::spawn(async move {
+            if let Err(e) = verify_peer(&stream) {
+                warn!("IPC client rejected: {}", e);
+                return;
+            }
             if let Err(e) = handle_client(stream, controller).await {
                 warn!("IPC client error: {}", e);
             }
@@ -86,9 +98,12 @@ async fn write_response(
 
 async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> IpcResponse {
     match cmd {
-        IpcCommand::GetConfig => IpcResponse::Config(Box::new(Config::load())),
+        IpcCommand::GetConfig => {
+            let config = redact_config_for_ipc(Config::load());
+            IpcResponse::Config(Box::new(config))
+        }
         IpcCommand::SaveConfig { config } => {
-            let config = *config;
+            let config = merge_sensitive_fields(*config);
             if let Err(e) = persist_config(&config) {
                 return IpcResponse::Error(format!("Failed to save config: {}", e));
             }
@@ -206,6 +221,7 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
                 key_type: HotkeyType::Toggle,
                 action: HotkeyAction::Press,
                 assistive,
+                force_ai: false,
             };
 
             match controller.handle_hotkey_event(event).await {
@@ -453,4 +469,113 @@ fn ai_provider_to_env(provider: AiProvider) -> String {
         AiProvider::Harmony => "harmony".to_string(),
         AiProvider::Ollama => "ollama".to_string(),
     }
+}
+
+fn redact_config_for_ipc(mut config: Config) -> Config {
+    if config.llm_api_key.is_some() {
+        config.llm_api_key = Some(REDACTED_VALUE.to_string());
+    }
+    if config.stt_api_key.is_some() {
+        config.stt_api_key = Some(REDACTED_VALUE.to_string());
+    }
+    config
+}
+
+fn merge_sensitive_fields(mut config: Config) -> Config {
+    let existing = Config::load();
+    if config.llm_api_key.as_deref() == Some(REDACTED_VALUE) || config.llm_api_key.is_none() {
+        config.llm_api_key = existing.llm_api_key;
+    }
+    if config.stt_api_key.as_deref() == Some(REDACTED_VALUE) || config.stt_api_key.is_none() {
+        config.stt_api_key = existing.stt_api_key;
+    }
+    config
+}
+
+fn ensure_socket_dir(socket_path: &Path) -> Result<()> {
+    let dir = socket_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("IPC socket path missing parent"))?;
+    fs::create_dir_all(dir)?;
+    let permissions = fs::Permissions::from_mode(0o700);
+    if let Err(e) = fs::set_permissions(dir, permissions) {
+        warn!(
+            "Failed to set IPC socket directory permissions for {}: {}",
+            dir.display(),
+            e
+        );
+    }
+    Ok(())
+}
+
+fn set_socket_permissions(socket_path: &Path) {
+    let permissions = fs::Permissions::from_mode(0o600);
+    if let Err(e) = fs::set_permissions(socket_path, permissions) {
+        warn!(
+            "Failed to set IPC socket permissions for {}: {}",
+            socket_path.display(),
+            e
+        );
+    }
+}
+
+fn verify_peer(stream: &UnixStream) -> Result<()> {
+    let current_uid = unsafe { libc::geteuid() };
+    let Some(peer_uid) = peer_uid(stream) else {
+        bail!("Unable to determine peer uid");
+    };
+    if peer_uid != current_uid {
+        bail!(
+            "Peer uid {} does not match current uid {}",
+            peer_uid,
+            current_uid
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn peer_uid(stream: &UnixStream) -> Option<libc::uid_t> {
+    let fd = stream.as_raw_fd();
+    let mut ucred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut ucred as *mut _ as *mut _,
+            &mut len,
+        )
+    };
+    (rc == 0).then_some(ucred.uid)
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn peer_uid(stream: &UnixStream) -> Option<libc::uid_t> {
+    let fd = stream.as_raw_fd();
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    let rc = unsafe { libc::getpeereid(fd, &mut uid, &mut gid) };
+    (rc == 0).then_some(uid)
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)))]
+fn peer_uid(_stream: &UnixStream) -> Option<libc::uid_t> {
+    None
 }

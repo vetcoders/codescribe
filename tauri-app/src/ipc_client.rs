@@ -3,15 +3,14 @@ use std::os::unix::net::UnixStream;
 
 use anyhow::Result;
 
-const SOCKET_PATH: &str = "/tmp/codescribe.sock";
-
 pub struct IpcClient {
     stream: UnixStream,
 }
 
 impl IpcClient {
     pub fn connect() -> Result<Self> {
-        let stream = UnixStream::connect(SOCKET_PATH)?;
+        let socket_path = codescribe::ipc::socket_path();
+        let stream = UnixStream::connect(socket_path)?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
         Ok(Self { stream })
     }

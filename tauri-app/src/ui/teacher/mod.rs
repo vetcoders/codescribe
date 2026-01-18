@@ -1,5 +1,7 @@
 use leptos::prelude::*;
 
+const TEACHER_WIP: bool = true;
+
 #[derive(Clone)]
 struct LexiconEntry {
     term: String,
@@ -13,6 +15,7 @@ struct CalibrationRun {
 
 #[component]
 pub fn TeacherView() -> impl IntoView {
+    let wip = TEACHER_WIP;
     let (topic, set_topic) = signal("general".to_string());
     let (reference, set_reference) = signal(String::new());
     let (transcript, set_transcript) = signal(String::new());
@@ -26,6 +29,7 @@ pub fn TeacherView() -> impl IntoView {
     let (wizard_index, set_wizard_index) = signal(0usize);
     let (calibration_runs, set_calibration_runs) = signal(Vec::<CalibrationRun>::new());
 
+    let wip_notice = "Teacher is WIP. Backend integration pending.";
     let push_status = move |msg: &str, kind: &str| {
         let line = format!("[{}] {}", kind, msg);
         set_status.set(line.clone());
@@ -45,12 +49,20 @@ pub fn TeacherView() -> impl IntoView {
     };
 
     let copy_to_ref = move |text: String| {
+        if wip {
+            push_status(wip_notice, "info");
+            return;
+        }
         set_reference.set(text);
         set_transcript.set(String::new());
         push_status("Reference set. Click Record and read it aloud.", "info");
     };
 
     let next_wizard = move |_: web_sys::MouseEvent| {
+        if wip {
+            push_status(wip_notice, "info");
+            return;
+        }
         let sents = sentences.get();
         if sents.is_empty() {
             return;
@@ -65,14 +77,16 @@ pub fn TeacherView() -> impl IntoView {
     };
 
     let toggle_recording = move |_: web_sys::MouseEvent| {
+        if wip {
+            push_status(wip_notice, "info");
+            return;
+        }
         if is_recording.get() {
             set_is_recording.set(false);
             push_status(
                 "Recording stopped. Review transcript and click Learn.",
                 "info",
             );
-            // In real implementation, would get transcript from audio stream
-            set_transcript.set("(Transcript would appear here after recording)".to_string());
         } else {
             set_transcript.set(String::new());
             set_is_recording.set(true);
@@ -81,6 +95,10 @@ pub fn TeacherView() -> impl IntoView {
     };
 
     let handle_learn = move |_: web_sys::MouseEvent| {
+        if wip {
+            push_status(wip_notice, "info");
+            return;
+        }
         let ref_text = reference.get();
         if ref_text.is_empty() {
             push_status("Please enter reference text first.", "err");
@@ -123,22 +141,18 @@ pub fn TeacherView() -> impl IntoView {
     };
 
     let generate_sentences = move |_: web_sys::MouseEvent| {
+        if wip {
+            push_status(wip_notice, "info");
+            return;
+        }
         push_status("Generating sentences...", "info");
-        // Mock sentences for now
-        let mock_sentences = vec![
-            format!("This is a sample sentence about {}.", topic.get()),
-            format!("Another example related to {} topic.", topic.get()),
-            format!("Practice reading this {} text clearly.", topic.get()),
-        ];
-        set_sentences.set(mock_sentences);
-        set_wizard_index.set(0);
-        push_status(
-            "Generated 3 sample sentences. (Backend integration coming soon)",
-            "info",
-        );
     };
 
     let clear_lexicon = move |_: web_sys::MouseEvent| {
+        if wip {
+            push_status(wip_notice, "info");
+            return;
+        }
         set_lexicon_preview.set(Vec::new());
         set_lexicon_count.set(0);
         push_status("Lexicon cleared.", "info");
@@ -147,6 +161,11 @@ pub fn TeacherView() -> impl IntoView {
     view! {
         <div class="teacher-view">
             <h2>"🎓 The Teacher (Active Learning)"</h2>
+            <Show when=move || wip>
+                <div class="teacher-wip">
+                    "Teacher is WIP. Backend integration pending."
+                </div>
+            </Show>
 
             <section class="vista-panel">
                 <h3>"Topic & Controls"</h3>
@@ -155,6 +174,7 @@ pub fn TeacherView() -> impl IntoView {
                     <label>"Topic:"</label>
                     <input
                         class="input"
+                        disabled=move || wip
                         prop:value=move || topic.get()
                         on:input=move |ev| set_topic.set(event_target_value(&ev))
                         placeholder="e.g. veterinary, programming, cooking"
@@ -162,10 +182,10 @@ pub fn TeacherView() -> impl IntoView {
                 </div>
 
                 <div class="controls row" style="margin-top: 12px;">
-                    <button class="secondary" on:click=generate_sentences>
+                    <button class="secondary" disabled=move || wip on:click=generate_sentences>
                         "Generate Set"
                     </button>
-                    <button class="secondary" on:click=clear_lexicon>
+                    <button class="secondary" disabled=move || wip on:click=clear_lexicon>
                         "Clear Lexicon"
                     </button>
                 </div>
@@ -177,7 +197,7 @@ pub fn TeacherView() -> impl IntoView {
                         <h3>{move || format!("Calibration Sentences ({})", sentences.get().len())}</h3>
                         <div class="wizard-meta">
                             <span>{move || format!("Step {} / {}", wizard_index.get() + 1, sentences.get().len())}</span>
-                            <button class="secondary sm-btn" on:click=next_wizard>"Next ▶"</button>
+                            <button class="secondary sm-btn" disabled=move || wip on:click=next_wizard>"Next ▶"</button>
                         </div>
                     </div>
                     <ul class="sentence-list">
@@ -191,6 +211,7 @@ pub fn TeacherView() -> impl IntoView {
                                     <li>
                                         <button
                                             class="icon-btn"
+                                            disabled=move || wip
                                             on:click=move |_: web_sys::MouseEvent| copy_to_ref(s.clone())
                                         >
                                             "📋"
@@ -223,7 +244,7 @@ pub fn TeacherView() -> impl IntoView {
                 <div class="record-section">
                     <button
                         class=move || if is_recording.get() { "record-btn recording" } else { "record-btn" }
-                        disabled=move || is_learning.get()
+                        disabled=move || wip || is_learning.get()
                         on:click=toggle_recording
                     >
                         {move || if is_recording.get() { "⏹️ Stop Recording" } else { "🎙️ Record" }}
@@ -240,6 +261,7 @@ pub fn TeacherView() -> impl IntoView {
                             class="input"
                             rows="5"
                             placeholder="Paste correct text here..."
+                            disabled=move || wip
                             prop:value=move || reference.get()
                             on:input=move |ev| set_reference.set(event_target_value(&ev))
                         ></textarea>
@@ -250,6 +272,7 @@ pub fn TeacherView() -> impl IntoView {
                             class="input"
                             rows="5"
                             placeholder="Waiting for transcript..."
+                            disabled=move || wip
                             prop:value=move || transcript.get()
                             on:input=move |ev| set_transcript.set(event_target_value(&ev))
                         ></textarea>
@@ -259,7 +282,7 @@ pub fn TeacherView() -> impl IntoView {
                 <div class="actions row" style="margin-top: 12px;">
                     <button
                         class="primary"
-                        disabled=move || is_learning.get() || reference.get().is_empty()
+                        disabled=move || wip || is_learning.get() || reference.get().is_empty()
                         on:click=handle_learn
                     >
                         {move || if is_learning.get() { "Learning..." } else { "🧠 Fix & Learn" }}

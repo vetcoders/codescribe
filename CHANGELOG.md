@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [v0.7.0] – 2026-01-17
 
 ### Added
+- **Strict Embedded Policy** – Model Whisper jest zawsze spawany z binarką release. Zero zewnętrznych plików modelu, zero wyjątków.
 - **IPC server** – nowy serwer IPC i typy komunikatów do stabilnej integracji runtime.
 - **Quality loop** – automatyczna pętla oceny jakości transkrypcji.
 - **Quality report** – generator raportów batchowych jakości.

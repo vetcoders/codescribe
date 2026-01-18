@@ -415,7 +415,6 @@ async fn dispatch_hotkey_event(
     event: codescribe::hotkeys::HotkeyEvent,
     controller: std::sync::Arc<codescribe::controller::RecordingController>,
 ) -> Result<()> {
-    use codescribe::config::Config;
     use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType};
     use codescribe::hotkeys::{HoldAction, HotkeyEvent};
 
@@ -429,22 +428,27 @@ async fn dispatch_hotkey_event(
                 key_type: HotkeyType::Hold,
                 action: mapped_action,
                 assistive,
+                force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
         }
-        HotkeyEvent::Toggle => {
+        HotkeyEvent::ToggleNormal => {
             let input = HotkeyInput {
                 key_type: HotkeyType::Toggle,
                 action: HotkeyAction::Press,
                 assistive: false,
+                force_ai: true,
             };
             controller.handle_hotkey_event(input).await?;
         }
-        HotkeyEvent::TripleToggle => {
-            let _ = codescribe::tray::toggle_ai_formatting();
-            let config = Config::load();
-            sync_hotkey_config(&config);
-            controller.set_config(config).await;
+        HotkeyEvent::ToggleAssistive => {
+            let input = HotkeyInput {
+                key_type: HotkeyType::Toggle,
+                action: HotkeyAction::Press,
+                assistive: true,
+                force_ai: false,
+            };
+            controller.handle_hotkey_event(input).await?;
         }
     }
 

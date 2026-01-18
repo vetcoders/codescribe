@@ -75,8 +75,8 @@ impl ToggleTrigger {
     /// Human-readable label for menu display
     pub fn label(&self) -> &'static str {
         match self {
-            Self::DoubleOption => "double option",
-            Self::DoubleRightOption => "double right option",
+            Self::DoubleOption => "left+right option",
+            Self::DoubleRightOption => "right option only",
             Self::None => "disabled",
         }
     }
@@ -164,7 +164,10 @@ pub struct Config {
     #[serde(default)]
     pub hold_exclusive: bool,
 
-    /// Toggle trigger method (double Option, double RAlt, or none)
+    /// Toggle trigger method:
+    /// - DoubleOption: left=normal toggle, right=assistive toggle
+    /// - DoubleRightOption: right=assistive only
+    /// - None: disabled
     #[serde(default)]
     pub toggle_trigger: ToggleTrigger,
 

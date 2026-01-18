@@ -118,6 +118,7 @@ flate2 = "1.0"
 # Lazy static for global state
 lazy_static = "1.4"
 deunicode = "1.6"
+libc = "0.2"
 
 # Image processing (for tray icon)
 image = { version = "0.25", default-features = false, features = ["png"] }

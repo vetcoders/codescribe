@@ -63,20 +63,20 @@ Grant in: System Settings > Privacy & Security
 
 ## Model
 
-**Embedded in the binary (release)**: `whisper-large-v3-turbo-mlx-q8` (~888MB)
+**Strictly Embedded (Release Policy)**: `whisper-large-v3-turbo-mlx-q8` (~888MB)
 
-- No runtime model download
-- No `Resources/models/*` bundling in the `.app`
-- Model bytes are loaded directly into Metal (zero disk I/O)
+- **Zero Exceptions:** Release binaries ALWAYS contain the model.
+- **No external files:** We never bundle `Resources/models/*`.
+- **Zero I/O:** Model loads from memory directly to Metal.
 
-**Developer note:** to build an embedded release locally you still need the model folder present
-so it can be embedded at build time:
+**Developer note (Build Time):**
+You still need the model files locally to *build* the app (because they are `include_bytes!`-ed into the binary).
 
 ```bash
-make download-model
+make download-model  # Required for build
 ```
 
-Location (dev/build-time): `models/whisper-large-v3-turbo-mlx-q8/`
+Location (build-time only): `models/whisper-large-v3-turbo-mlx-q8/`
 
 ## CLI Usage
 

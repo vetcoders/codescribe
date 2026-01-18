@@ -527,6 +527,14 @@ details summary {
   font-size: 1.4rem;
 }
 
+.teacher-wip {
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px dashed var(--vista-accent-amber);
+  background: rgba(255, 212, 121, 0.12);
+  color: var(--vista-text-primary);
+}
+
 .form-row {
   display: flex;
   align-items: center;

@@ -87,29 +87,6 @@ pub enum TrayMenuEvent {
     SelectHistoryEntry(usize),
 }
 
-/// Volume level presets (prepared for future Feedback submenu)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VolumeLevel {
-    Mute,   // 0%
-    Low,    // 25%
-    Medium, // 50%
-    High,   // 75%
-    Full,   // 100%
-}
-
-impl VolumeLevel {
-    /// Get display label
-    pub fn label(self) -> &'static str {
-        match self {
-            VolumeLevel::Mute => "Mute (0%)",
-            VolumeLevel::Low => "Low (25%)",
-            VolumeLevel::Medium => "Medium (50%)",
-            VolumeLevel::High => "High (75%)",
-            VolumeLevel::Full => "Full (100%)",
-        }
-    }
-}
-
 // ============================================================================
 // Menu Item Storage Structs
 // ============================================================================

@@ -94,8 +94,8 @@ fn run_hotkey_event_loop(rx: Receiver<HotkeyEvent>, state: Arc<AppState>, _app: 
                             }
                         }
                     },
-                    HotkeyEvent::Toggle => {
-                        // Toggle mode: start or stop depending on current state
+                    HotkeyEvent::ToggleNormal => {
+                        // Toggle mode: start or stop depending on current state (normal formatting)
                         let state = Arc::clone(&state);
                         rt.spawn(async move {
                             let recording = state.recording.lock().await;
@@ -105,20 +105,30 @@ fn run_hotkey_event_loop(rx: Receiver<HotkeyEvent>, state: Arc<AppState>, _app: 
                             if is_recording {
                                 // Stop and transcribe
                                 if let Err(e) = handle_stop_recording(&state, false).await {
-                                    error!("Failed to stop recording (toggle): {}", e);
+                                    error!("Failed to stop recording (toggle normal): {}", e);
                                 }
-                            } else {
-                                // Start recording
-                                if let Err(e) = handle_start_recording(&state).await {
-                                    error!("Failed to start recording (toggle): {}", e);
-                                }
+                            } else if let Err(e) = handle_start_recording(&state).await {
+                                error!("Failed to start recording (toggle normal): {}", e);
                             }
                         });
                     }
-                    HotkeyEvent::TripleToggle => {
-                        // Triple-tap Option: toggle AI formatting globally
-                        // This is primarily handled by CLI, but log for awareness
-                        info!("Triple-toggle detected - AI formatting toggle (handled by CLI)");
+                    HotkeyEvent::ToggleAssistive => {
+                        // Toggle mode: start or stop depending on current state (assistive)
+                        let state = Arc::clone(&state);
+                        rt.spawn(async move {
+                            let recording = state.recording.lock().await;
+                            let is_recording = recording.is_recording;
+                            drop(recording);
+
+                            if is_recording {
+                                // Stop and transcribe
+                                if let Err(e) = handle_stop_recording(&state, true).await {
+                                    error!("Failed to stop recording (toggle assistive): {}", e);
+                                }
+                            } else if let Err(e) = handle_start_recording(&state).await {
+                                error!("Failed to start recording (toggle assistive): {}", e);
+                            }
+                        });
                     }
                 }
             }
