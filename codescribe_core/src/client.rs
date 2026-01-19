@@ -330,7 +330,7 @@ pub async fn check_health() -> Result<bool> {
 /// # Example
 /// ```no_run
 /// use std::path::Path;
-/// use codescribe::client;
+/// use codescribe_core::client;
 ///
 /// # #[tokio::main]
 /// # async fn main() -> anyhow::Result<()> {

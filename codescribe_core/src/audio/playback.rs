@@ -15,7 +15,7 @@ use tracing::debug;
 ///
 /// # Examples
 /// ```no_run
-/// use codescribe::audio::play_sound;
+/// use codescribe_core::audio::play_sound;
 /// play_sound("Tink");  // Plays confirmation beep
 /// play_sound("Pop");   // Plays pop sound
 /// ```

@@ -1,7 +1,7 @@
 use crate::ipc_client::IpcClient;
 
-use codescribe::config::{HoldMods, Language, ToggleTrigger};
-use codescribe::ipc::{IpcCommand, IpcResponse};
+use codescribe_core::config::{HoldMods, Language, ToggleTrigger};
+use codescribe_core::ipc::{IpcCommand, IpcResponse};
 use serde::Deserialize;
 use std::str::FromStr;
 

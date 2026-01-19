@@ -11,7 +11,7 @@
 
 use crate::ipc_client::IpcClient;
 use crate::state::AppState;
-use codescribe::ipc::{IpcCommand, IpcResponse};
+use codescribe_core::ipc::{IpcCommand, IpcResponse};
 use std::path::PathBuf;
 
 /// Transcribe audio file (DEPRECATED - use IPC)
@@ -78,7 +78,7 @@ pub async fn transcribe_audio_streaming(
 #[tauri::command]
 pub fn get_available_models(_state: tauri::State<'_, AppState>) -> Vec<String> {
     // With embedded model, there's only one option
-    if codescribe::whisper::embedded::is_embedded_available() {
+    if codescribe_core::whisper::embedded::is_embedded_available() {
         vec!["embedded (large-v3-turbo-q8)".to_string()]
     } else {
         vec!["large-v3-turbo".to_string()]
@@ -88,7 +88,7 @@ pub fn get_available_models(_state: tauri::State<'_, AppState>) -> Vec<String> {
 /// Get current model name
 #[tauri::command]
 pub fn get_current_model(_state: tauri::State<'_, AppState>) -> String {
-    if codescribe::whisper::embedded::is_embedded_available() {
+    if codescribe_core::whisper::embedded::is_embedded_available() {
         "embedded".to_string()
     } else {
         "large-v3-turbo".to_string()

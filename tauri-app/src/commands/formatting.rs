@@ -5,7 +5,7 @@
 //! Created by M&K (c)2026 VetCoders
 
 use crate::ipc_client::IpcClient;
-use codescribe::ipc::{IpcCommand, IpcResponse};
+use codescribe_core::ipc::{IpcCommand, IpcResponse};
 
 /// Format a transcript using AI
 ///
@@ -78,11 +78,11 @@ pub fn get_ai_prompt(prompt_type: String) -> Result<String, String> {
 pub fn open_prompt_in_editor(prompt_type: String) -> Result<(), String> {
     match prompt_type.as_str() {
         "formatting" => {
-            codescribe::config::open_prompt_file("formatting.txt");
+            codescribe_core::config::open_prompt_file("formatting.txt");
             Ok(())
         }
         "assistive" => {
-            codescribe::config::open_prompt_file("assistive.txt");
+            codescribe_core::config::open_prompt_file("assistive.txt");
             Ok(())
         }
         _ => Err(format!("Unknown prompt type: {}", prompt_type)),

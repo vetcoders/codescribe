@@ -17,8 +17,6 @@
 //!
 //! Created by M&K (c)2026 VetCoders
 
-#![allow(unexpected_cfgs)]
-
 // ═══════════════════════════════════════════════════════════
 // Core modules
 // ═══════════════════════════════════════════════════════════
@@ -27,6 +25,7 @@ pub mod ai_formatting;
 pub mod audio;
 pub mod client;
 pub mod config;
+pub mod ipc;
 pub mod quality_loop;
 pub mod quality_report;
 pub mod safe_path;

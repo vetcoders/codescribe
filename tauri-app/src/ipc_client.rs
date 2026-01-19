@@ -9,7 +9,7 @@ pub struct IpcClient {
 
 impl IpcClient {
     pub fn connect() -> Result<Self> {
-        let socket_path = codescribe::ipc::socket_path();
+        let socket_path = codescribe_core::ipc::socket_path();
         let stream = UnixStream::connect(socket_path)?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
         Ok(Self { stream })

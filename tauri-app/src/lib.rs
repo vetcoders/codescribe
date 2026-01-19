@@ -14,10 +14,6 @@ mod ui;
 mod commands;
 
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-mod hotkey_integration;
-
-#[cfg(not(target_arch = "wasm32"))]
 mod ipc_client;
 
 #[cfg(not(target_arch = "wasm32"))]

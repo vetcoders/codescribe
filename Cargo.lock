@@ -1019,7 +1019,7 @@ name = "codescribe-app"
 version = "0.7.0"
 dependencies = [
  "anyhow",
- "codescribe",
+ "codescribe_core",
  "console_error_panic_hook",
  "console_log",
  "cpal 0.16.0",

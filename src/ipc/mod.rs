@@ -3,10 +3,10 @@
 //! Socket path: <config_dir>/ipc/codescribe.sock (user-only)
 
 mod server;
-mod types;
 
 pub use server::run_server;
-pub use types::{AppStatus, IpcCommand, IpcResponse};
+// Re-export types from core
+pub use codescribe_core::ipc::{AppStatus, IpcCommand, IpcResponse};
 
 use std::path::PathBuf;
 

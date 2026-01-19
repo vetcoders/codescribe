@@ -37,23 +37,24 @@ flowchart TB
 
         INV -->|Tauri IPC| BENTRY
 
-        subgraph LIB[codescribe crate (lib)]
+        subgraph CORE[codescribe_core crate]
             direction LR
-            LENTRY[Core modules]
             WH[whisper/\n(embedded + singleton)]
             CO[config/]
             AU[audio/\n(cpal + stream)]
-            HK[hotkeys/]
-            IPC[ipc/\n(unix socket server)]
-
-            LENTRY --> WH
-            LENTRY --> CO
-            LENTRY --> AU
-            LENTRY --> HK
-            LENTRY --> IPC
+            IPC_CORE[ipc types]
         end
 
-        BENTRY --> LENTRY
+        subgraph APP[codescribe crate (bin/daemon)]
+            direction LR
+            HK[hotkeys/\n(macOS CGEventTap)]
+            CTRL[controller.rs]
+            IPC_SERVER[ipc/server.rs]
+            TRAY[tray/]
+        end
+
+        BENTRY --> CORE
+        APP --> CORE
     end
 
     WH --> MODEL[Whisper Model\nlarge-v3-turbo\nmlx-q8 (~888MB)\n(embedded in bin)]
@@ -63,7 +64,7 @@ flowchart TB
         LOOP[codescribe-loop]
     end
 
-    LIB -.-> TOOLS
+    APP -.-> TOOLS
 ```
 
 ## Runtime & Quality Tools

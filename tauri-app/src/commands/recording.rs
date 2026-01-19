@@ -3,7 +3,7 @@
 
 use crate::ipc_client::IpcClient;
 use crate::state::AppState;
-use codescribe::ipc::{IpcCommand, IpcResponse};
+use codescribe_core::ipc::{IpcCommand, IpcResponse};
 use tauri::State;
 
 /// Start audio recording
@@ -37,8 +37,8 @@ pub async fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
 
     // Initialize recorder if not present
     if recording.recorder.is_none() {
-        let recorder =
-            codescribe::Recorder::new().map_err(|e| format!("Failed to init recorder: {e}"))?;
+        let recorder = codescribe_core::Recorder::new()
+            .map_err(|e| format!("Failed to init recorder: {e}"))?;
         recording.recorder = Some(recorder);
     }
 

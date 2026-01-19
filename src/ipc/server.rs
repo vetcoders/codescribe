@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{info, warn};
 
-use super::types::{AppStatus, IpcCommand, IpcResponse};
+use super::{AppStatus, IpcCommand, IpcResponse};
 use crate::audio::load_audio_file;
 use crate::audio::streaming_recorder::transcribe_streaming_samples;
 use crate::config::prompts::{

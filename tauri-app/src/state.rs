@@ -5,9 +5,9 @@
 //! Created by M&K (c)2026 VetCoders
 
 #[cfg(not(target_arch = "wasm32"))]
-use codescribe::Recorder;
+use codescribe_core::Recorder;
 #[cfg(not(target_arch = "wasm32"))]
-use codescribe::config::Config;
+use codescribe_core::config::Config;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex};
