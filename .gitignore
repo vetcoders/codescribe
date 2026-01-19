@@ -44,7 +44,6 @@ src/codescribe/assets/lab/
 /.gemini-clipboard
 /CodeScribe.egg-info
 .codescribe.lock
-/$HOME
 /.fastembed_cache
 CLAUDE.md
 /codescribe-rs/target

@@ -1197,15 +1197,20 @@ fn snapshot_environment(metrics_reference: MetricsReference) -> ReportEnvironmen
 }
 
 fn ensure_model_path() -> Result<()> {
+    // Embedded model has priority - no disk I/O needed
+    if crate::whisper::embedded::is_embedded_available() {
+        return Ok(());
+    }
+
     if std::env::var("CODESCRIBE_MODEL_PATH").is_ok() {
         return Ok(());
     }
 
     let config = Config::load();
     let candidates = [
-        PathBuf::from("../models").join(&config.local_model),
+        PathBuf::from("models").join(&config.local_model),
         Config::config_dir()
-            .join("../models")
+            .join("models")
             .join(&config.local_model),
     ];
 

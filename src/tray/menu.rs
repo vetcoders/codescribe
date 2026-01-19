@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 
 use anyhow::Result;
+use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::config::Config;
@@ -61,15 +62,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         *cell.borrow_mut() = Some(status_item);
     });
 
-    // 2. Open GUI (launches Tauri window) - first action after status
-    let open_gui_item = MenuItem::new("Open GUI...", true, None);
-    let open_gui_id = open_gui_item.id().clone();
-    menu.append(&open_gui_item)?;
-
-    // 3. Separator
-    menu.append(&PredefinedMenuItem::separator())?;
-
-    // 4. Copy last to clipboard (quick action)
+    // 2. Copy last to clipboard (quick action)
     let copy_last_item = MenuItem::new("Copy Last to Clipboard", true, None);
     let copy_last_id = copy_last_item.id().clone();
     menu.append(&copy_last_item)?;
@@ -158,8 +151,9 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     // 12. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 13. Quit
-    let quit_item = MenuItem::new("Quit", true, None);
+    // 13. Quit (Cmd+Q)
+    let quit_accel = Accelerator::new(Some(Modifiers::SUPER), Code::KeyQ);
+    let quit_item = MenuItem::new("Quit", true, Some(quit_accel));
     let quit_id = quit_item.id().clone();
     menu.append(&quit_item)?;
 
@@ -214,7 +208,6 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             settings_edit_prompt: edit_prompt_id,
             settings_open_prompt_folder: open_prompt_folder_id,
             settings_reset_context: reset_context_id,
-            settings_open_gui: open_gui_id,
             // Quality
             quality_open_report: quality_open_report_id,
         },

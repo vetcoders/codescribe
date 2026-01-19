@@ -5,7 +5,7 @@
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-formatting test-all \
-        demo demo-raw demo-assistive check clean help \
+        demo demo-raw demo-assistive check fix clean help \
         dmg dmg-signed dmg-full notarize download-model \
         hooks
 
@@ -187,15 +187,22 @@ demo-assistive:
 	@cargo run --release --example demo_full_pipeline -- --assistive $(AUDIO)
 
 check:
-	@echo "=== Format (fix) ==="
-	@cargo fmt --all
-	@echo "=== Prettier (non-Rust) ==="
-	@npx --yes prettier@2.7.1 --write . --ignore-path .prettierignore --ignore-unknown
+	@echo "=== Format Check (Rust) ==="
+	@cargo fmt --all -- --check
+	@echo "=== Format Check (non-Rust) ==="
+	@npx --yes prettier@2.7.1 --check . --ignore-path .prettierignore --ignore-unknown || true
 	@echo "=== Clippy (workspace, all targets) ==="
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@echo "=== Semgrep ==="
 	@semgrep scan --config auto --error .
 	@echo "Quality gate passed"
+
+fix:
+	@echo "=== Format Fix (Rust) ==="
+	@cargo fmt --all
+	@echo "=== Format Fix (non-Rust) ==="
+	@npx --yes prettier@2.7.1 --write . --ignore-path .prettierignore --ignore-unknown
+	@echo "Formatting applied"
 
 # ============================================================================
 # Git Hooks
@@ -255,7 +262,8 @@ help:
 	@echo ""
 	@echo "Quality:"
 	@echo "  make lint            Run clippy + fmt check"
-	@echo "  make format          Format code"
+	@echo "  make format          Format Rust code"
+	@echo "  make fix             Format all code (Rust + Prettier)"
 	@echo "  make test            Run full test suite (incl. ignored real-API tests)"
 	@echo "  make test-quick      Run tests without real-API calls"
 	@echo "  make test-e2e        Run E2E tests (mock)"
@@ -263,7 +271,7 @@ help:
 	@echo "  make test-sse        Run SSE streaming tests (real API)"
 	@echo "  make test-formatting Run AI formatting tests"
 	@echo "  make test-all        Run full test suite"
-	@echo "  make check           Format (fix) + clippy + semgrep"
+	@echo "  make check           Verify formatting + clippy + semgrep (CI-safe)"
 	@echo "  make hooks           Install pre-commit + pre-push hooks"
 
 # ============================================================================

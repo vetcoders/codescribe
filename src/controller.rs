@@ -860,19 +860,51 @@ impl RecordingController {
             let should_use_ai = crate::ai_formatting::has_api_key();
             if should_use_ai {
                 info!("Formatting mode (Left Option): correcting transcript via AI");
+
+                // Update overlay status to show AI is formatting
+                crate::voice_chat_ui::update_voice_chat_status("Formatting...");
+
                 let lang_str = language_opt.map(String::from);
+
+                // Callback for streaming AI response to overlay
+                let delta_callback = Arc::new(|text: &str| {
+                    crate::voice_chat_ui::append_voice_chat_delta(text);
+                });
+
                 let result = crate::ai_formatting::format_text_with_status(
                     &raw_text,
                     lang_str.as_deref(),
                     false,
-                    None,
+                    Some(delta_callback),
                 )
                 .await;
                 let kind = match result.status {
                     crate::ai_formatting::AiFormatStatus::Applied => {
+                        // Display formatted text in overlay
+                        crate::voice_chat_ui::update_voice_chat_status("Formatted:");
+                        crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                        info!(
+                            "Formatted response displayed in overlay ({} chars)",
+                            result.text.len()
+                        );
+
+                        // Auto-hide overlay after 8 seconds
+                        tokio::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            crate::voice_chat_ui::hide_voice_chat_overlay();
+                        });
+
                         crate::state::history::TranscriptKind::Ai
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
+                        crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
+
+                        // Auto-hide overlay after 3 seconds on failure
+                        tokio::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            crate::voice_chat_ui::hide_voice_chat_overlay();
+                        });
+
                         crate::state::history::TranscriptKind::AiFailed
                     }
                     crate::ai_formatting::AiFormatStatus::Skipped => {
@@ -898,19 +930,51 @@ impl RecordingController {
             if should_use_ai {
                 // Toggle ON: formatting only (no augmentation)
                 info!("Formatting mode (Toggle): correcting transcript via AI");
+
+                // Update overlay status to show AI is formatting
+                crate::voice_chat_ui::update_voice_chat_status("Formatting...");
+
                 let lang_str = language_opt.map(String::from);
+
+                // Callback for streaming AI response to overlay
+                let delta_callback = Arc::new(|text: &str| {
+                    crate::voice_chat_ui::append_voice_chat_delta(text);
+                });
+
                 let result = crate::ai_formatting::format_text_with_status(
                     &raw_text,
                     lang_str.as_deref(),
                     false,
-                    None,
+                    Some(delta_callback),
                 )
                 .await;
                 let kind = match result.status {
                     crate::ai_formatting::AiFormatStatus::Applied => {
+                        // Display formatted text in overlay
+                        crate::voice_chat_ui::update_voice_chat_status("Formatted:");
+                        crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                        info!(
+                            "Formatted response displayed in overlay ({} chars)",
+                            result.text.len()
+                        );
+
+                        // Auto-hide overlay after 8 seconds
+                        tokio::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            crate::voice_chat_ui::hide_voice_chat_overlay();
+                        });
+
                         crate::state::history::TranscriptKind::Ai
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
+                        crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
+
+                        // Auto-hide overlay after 3 seconds on failure
+                        tokio::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            crate::voice_chat_ui::hide_voice_chat_overlay();
+                        });
+
                         crate::state::history::TranscriptKind::AiFailed
                     }
                     crate::ai_formatting::AiFormatStatus::Skipped => {

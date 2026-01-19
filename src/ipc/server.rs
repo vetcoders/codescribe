@@ -9,6 +9,7 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use super::{AppStatus, IpcCommand, IpcResponse};
@@ -24,6 +25,10 @@ use crate::stream_postprocess::StreamPostProcessor;
 use crate::{ai_formatting, hotkeys};
 
 const REDACTED_VALUE: &str = "<redacted>";
+
+/// Maximum number of concurrent IPC client connections.
+/// Prevents resource exhaustion from malicious/buggy local clients.
+const MAX_CONCURRENT_CLIENTS: usize = 32;
 
 pub async fn run_server(controller: Arc<RecordingController>) -> Result<()> {
     let socket_path = super::socket_path();
@@ -45,11 +50,25 @@ pub async fn run_server(controller: Arc<RecordingController>) -> Result<()> {
     set_socket_permissions(&socket_path);
     info!("IPC server listening on {}", socket_path.display());
 
+    // Semaphore to limit concurrent connections (DoS protection)
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CLIENTS));
+
     loop {
         let (stream, _) = listener.accept().await?;
         let controller = Arc::clone(&controller);
 
+        // Acquire permit before spawning (blocks if at limit)
+        let permit = Arc::clone(&semaphore).acquire_owned().await;
+        if permit.is_err() {
+            warn!("IPC semaphore closed unexpectedly");
+            continue;
+        }
+        let permit = permit.unwrap();
+
         tokio::spawn(async move {
+            // Permit is held for the duration of the connection
+            let _permit = permit;
+
             if let Err(e) = verify_peer(&stream) {
                 warn!("IPC client rejected: {}", e);
                 return;

@@ -89,6 +89,10 @@ struct Args {
     #[arg(long, default_value_t = 50)]
     lexicon_max: usize,
 
+    /// Minimum occurrence count for lexicon suggestions (1 = include single occurrences)
+    #[arg(long, default_value_t = 2)]
+    lexicon_min_count: usize,
+
     /// Disable lexicon auto-updates
     #[arg(long, default_value_t = false)]
     no_lexicon: bool,
@@ -206,6 +210,7 @@ async fn run_single(args: &Args) -> Result<()> {
         update_prompts: !args.no_prompt,
         update_embeddings: !args.no_embeddings_tuning,
         max_lexicon_updates: args.lexicon_max,
+        lexicon_min_count: args.lexicon_min_count,
     };
 
     let out = run(loop_config).await?;

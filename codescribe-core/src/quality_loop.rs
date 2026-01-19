@@ -35,6 +35,8 @@ pub struct QualityLoopConfig {
     pub update_prompts: bool,
     pub update_embeddings: bool,
     pub max_lexicon_updates: usize,
+    /// Minimum occurrence count for lexicon suggestions (default: 2)
+    pub lexicon_min_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +148,7 @@ pub async fn run(config: QualityLoopConfig) -> Result<PathBuf> {
         && let Some(update) = propose_lexicon_updates(
             &report,
             config.max_lexicon_updates,
+            config.lexicon_min_count,
             config.apply_updates,
             config.lexicon_source,
         )?
@@ -774,10 +777,11 @@ fn propose_prompt_tuning(
 fn propose_lexicon_updates(
     report: &QualityReport,
     max_updates: usize,
+    min_count: usize,
     apply: bool,
     source: LexiconSource,
 ) -> Result<Option<UpdateAction>> {
-    let suggestions = extract_lexicon_suggestions(report, max_updates, source);
+    let suggestions = extract_lexicon_suggestions(report, max_updates, min_count, source);
     if suggestions.is_empty() {
         return Ok(None);
     }
@@ -819,6 +823,7 @@ struct LexiconSuggestion {
 fn extract_lexicon_suggestions(
     report: &QualityReport,
     max_updates: usize,
+    min_count: usize,
     source: LexiconSource,
 ) -> Vec<LexiconSuggestion> {
     let mut counts: HashMap<(String, String), usize> = HashMap::new();
@@ -846,7 +851,9 @@ fn extract_lexicon_suggestions(
             if term.eq_ignore_ascii_case(&mis) {
                 continue;
             }
-            if word_distance(&term, &mis) > 2 {
+            // Allow higher distance for Polish morphology (odmiana)
+            // dist 4 catches: odpowiedział↔odpowiadał, remote'a↔remontu
+            if word_distance(&term, &mis) > 4 {
                 continue;
             }
 
@@ -857,7 +864,7 @@ fn extract_lexicon_suggestions(
 
     let mut suggestions: Vec<LexiconSuggestion> = counts
         .into_iter()
-        .filter(|(_, count)| *count >= 2)
+        .filter(|(_, count)| *count >= min_count)
         .map(|((term, mis), count)| LexiconSuggestion { term, mis, count })
         .collect();
 
