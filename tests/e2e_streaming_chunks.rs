@@ -39,8 +39,8 @@ fn test_streaming_callback_invoked() {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let model_candidates = [
         PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-turbo-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8"),
     ];
 
     let model_path = model_candidates
@@ -140,8 +140,8 @@ fn test_streaming_no_callback() {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let model_candidates = [
         PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-turbo-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8"),
     ];
 
     let model_path = match model_candidates
@@ -187,8 +187,8 @@ fn test_chunk_word_boundaries() {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let model_candidates = [
         PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-turbo-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8"),
     ];
 
     let model_path = match model_candidates

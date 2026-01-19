@@ -6,7 +6,6 @@
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-formatting test-all \
         demo demo-raw demo-assistive check clean help \
-        tauri-dev tauri-build tauri-check \
         dmg dmg-signed dmg-full notarize download-model \
         hooks
 
@@ -266,11 +265,6 @@ help:
 	@echo "  make test-all        Run full test suite"
 	@echo "  make check           Format (fix) + clippy + semgrep"
 	@echo "  make hooks           Install pre-commit + pre-push hooks"
-	@echo ""
-	@echo "Tauri GUI:"
-	@echo "  make tauri-dev       Start dev server (hot reload)"
-	@echo "  make tauri-build     Build CodeScribe.app (~850MB)"
-	@echo "  make tauri-check     Check compilation"
 
 # ============================================================================
 # Release & Distribution

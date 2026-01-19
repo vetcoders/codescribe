@@ -19,7 +19,7 @@ fn main() -> Result<()> {
         )
     } else {
         (
-            PathBuf::from("models/whisper-large-v3-mlx-q8"),
+            PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8"),
             args.iter().map(PathBuf::from).collect(),
         )
     };

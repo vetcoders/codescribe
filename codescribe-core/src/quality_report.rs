@@ -1203,9 +1203,9 @@ fn ensure_model_path() -> Result<()> {
 
     let config = Config::load();
     let candidates = [
-        PathBuf::from("models").join(&config.local_model),
+        PathBuf::from("../models").join(&config.local_model),
         Config::config_dir()
-            .join("models")
+            .join("../models")
             .join(&config.local_model),
     ];
 

@@ -15,7 +15,7 @@ __pycache__/
 .coverage
 htmlcov/
 logs/
-models/
+codescribe-core/models/
 output.log
 
 # IDEs

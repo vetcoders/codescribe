@@ -58,7 +58,7 @@ impl ModelManager {
         }
 
         // 3. Direct ./models/ (running from repo root)
-        let local_path = PathBuf::from("models");
+        let local_path = PathBuf::from("../../models");
         if local_path.exists() {
             return local_path
                 .canonicalize()
@@ -144,7 +144,7 @@ mod tests {
     #[serial]
     fn test_model_manager_custom_models() {
         let temp_dir = TempDir::new().unwrap();
-        let models_dir = temp_dir.path().join("models");
+        let models_dir = temp_dir.path().join("../../models");
         fs::create_dir_all(&models_dir).unwrap();
 
         let model_names = [
