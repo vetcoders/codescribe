@@ -12,8 +12,11 @@ use tracing::{debug, info, warn};
 use crate::config::Config;
 
 const BUILTIN_LEXICONS: &[(&str, &str)] = &[
-    ("programming", include_str!("../assets/programming.jsonl")),
-    ("veterinary", include_str!("../assets/veterinary.jsonl")),
+    (
+        "programming",
+        include_str!("../../assets/programming.jsonl"),
+    ),
+    ("veterinary", include_str!("../../assets/veterinary.jsonl")),
 ];
 const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.93;
 const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
@@ -298,6 +301,12 @@ impl StreamPostProcessor {
 
     pub fn stats(&self) -> StreamPostProcessStats {
         self.stats.clone()
+    }
+}
+
+impl Default for StreamPostProcessor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

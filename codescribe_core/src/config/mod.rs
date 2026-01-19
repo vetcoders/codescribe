@@ -37,6 +37,7 @@ pub use prompts::{
 
 #[cfg(test)]
 mod tests {
+    use super::models;
     use super::*;
     use types::AiProvider;
 
@@ -48,6 +49,7 @@ mod tests {
         assert_eq!(config.ai_provider, AiProvider::Harmony);
         assert_eq!(config.ai_max_tokens, 0); // 0 = no limit (API decides)
         assert!(!config.ai_formatting_enabled);
+        assert_eq!(config.local_model, models::DEFAULT_MODEL);
         assert_eq!(config.backend_ports, vec![8237, 7237, 6237, 5237]);
     }
 

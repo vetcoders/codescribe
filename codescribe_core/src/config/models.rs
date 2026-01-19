@@ -118,8 +118,12 @@ impl ModelManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
+    #[serial]
     fn test_model_manager_list_models() {
         let manager = ModelManager::new().unwrap();
         let models = manager.list_models();
@@ -129,9 +133,53 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_model_manager_check_exists() {
         let manager = ModelManager::new().unwrap();
         // Non-existent model should return false
         assert!(!manager.check_model_exists("nonexistent-model-xyz"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_model_manager_custom_models() {
+        let temp_dir = TempDir::new().unwrap();
+        let models_dir = temp_dir.path().join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+
+        let model_names = [
+            "whisper-base-mlx-q8",
+            "whisper-medium-mlx-q8",
+            "whisper-large-v3-turbo-mlx-q8",
+        ];
+
+        for name in &model_names {
+            let model_path = models_dir.join(name);
+            fs::create_dir_all(&model_path).unwrap();
+            fs::write(model_path.join("tokenizer.json"), "{}").unwrap();
+        }
+
+        let previous = std::env::var("CODESCRIBE_MODELS_DIR").ok();
+        unsafe {
+            std::env::set_var("CODESCRIBE_MODELS_DIR", &models_dir);
+        }
+
+        let manager = ModelManager::new().unwrap();
+        let models = manager.list_models().unwrap();
+
+        for name in &model_names {
+            assert!(models.contains(&name.to_string()));
+            assert!(manager.check_model_exists(name));
+        }
+
+        if let Some(value) = previous {
+            unsafe {
+                std::env::set_var("CODESCRIBE_MODELS_DIR", value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("CODESCRIBE_MODELS_DIR");
+            }
+        }
     }
 }

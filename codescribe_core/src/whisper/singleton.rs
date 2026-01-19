@@ -16,6 +16,9 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{Context, Result, anyhow};
 use tracing::{info, warn};
 
+use crate::config::Config;
+use crate::config::models::ModelManager;
+
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
 
@@ -45,7 +48,20 @@ fn resolve_model_path_fallback() -> Result<PathBuf> {
         warn!("CODESCRIBE_MODEL_PATH set but model incomplete: {}", path);
     }
 
-    // 2. Bundled .app fallback (Tauri builds without embedding)
+    // 2. Configured model (LOCAL_MODEL)
+    let config = Config::load();
+    let configured_model = config.local_model;
+    if !configured_model.trim().is_empty()
+        && let Ok(manager) = ModelManager::new()
+    {
+        let candidate = manager.get_model_path(&configured_model);
+        if candidate.join("tokenizer.json").exists() {
+            info!("Using configured model: {}", candidate.display());
+            return Ok(candidate);
+        }
+    }
+
+    // 3. Bundled .app fallback (Tauri builds without embedding)
     let exe = std::env::current_exe().context("Failed to get executable path")?;
     let exe_dir = exe.parent().context("Failed to get executable directory")?;
 

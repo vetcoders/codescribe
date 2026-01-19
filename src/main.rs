@@ -65,6 +65,7 @@ enum Commands {
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum MigrateKind {
     Raw,
+    Cloud,
     Ai,
     AiFailed,
     Failed,
@@ -109,7 +110,7 @@ fn handle_config_command() -> Result<()> {
 
     // Create default config if missing
     if !config_path.exists() {
-        let default_config = include_str!("config/default_env.txt");
+        let default_config = include_str!("../codescribe_core/src/config/default_env.txt");
         fs::write(&config_path, default_config)?;
         println!("Created default config: {}", config_path.display());
     } else {
@@ -152,6 +153,7 @@ fn handle_config_command() -> Result<()> {
 fn handle_migrate_history_command(dry_run: bool, assume_kind: MigrateKind) -> Result<()> {
     let kind = match assume_kind {
         MigrateKind::Raw => codescribe::state::history::TranscriptKind::Raw,
+        MigrateKind::Cloud => codescribe::state::history::TranscriptKind::Cloud,
         MigrateKind::Ai => codescribe::state::history::TranscriptKind::Ai,
         MigrateKind::AiFailed => codescribe::state::history::TranscriptKind::AiFailed,
         MigrateKind::Failed => codescribe::state::history::TranscriptKind::Failed,

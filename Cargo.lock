@@ -966,6 +966,7 @@ dependencies = [
  "cap-std",
  "chrono",
  "clap",
+ "codescribe_core",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
  "coreml-rs",
@@ -1040,6 +1041,50 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "codescribe_core"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "cap-std",
+ "chrono",
+ "cpal 0.17.1",
+ "crossbeam-channel",
+ "deunicode",
+ "directories",
+ "dirs",
+ "dotenvy",
+ "fastembed",
+ "flate2",
+ "futures-util",
+ "hound",
+ "indicatif 0.18.3",
+ "lazy_static",
+ "mockito",
+ "ndarray 0.16.1",
+ "ndarray-npy",
+ "openai-harmony",
+ "rand 0.8.5",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "shellexpand",
+ "symphonia",
+ "tempfile",
+ "tokenizers",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "uuid",
+ "zip 0.6.6",
 ]
 
 [[package]]

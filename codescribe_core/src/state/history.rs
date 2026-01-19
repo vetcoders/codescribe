@@ -24,6 +24,7 @@ pub struct HistoryEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptKind {
     Raw,
+    Cloud,
     Ai,
     AiFailed,
     Failed,
@@ -33,6 +34,7 @@ impl TranscriptKind {
     fn suffix(self) -> &'static str {
         match self {
             TranscriptKind::Raw => "raw",
+            TranscriptKind::Cloud => "cloud",
             TranscriptKind::Ai => "ai",
             TranscriptKind::AiFailed => "ai-failed",
             TranscriptKind::Failed => "failed",
@@ -93,6 +95,7 @@ fn build_base_name(time_base: &str, slug: &str, kind: TranscriptKind) -> String 
 fn kind_from_suffix(suffix: &str) -> Option<TranscriptKind> {
     match suffix {
         "raw" => Some(TranscriptKind::Raw),
+        "cloud" => Some(TranscriptKind::Cloud),
         "ai" => Some(TranscriptKind::Ai),
         "ai-failed" => Some(TranscriptKind::AiFailed),
         "failed" => Some(TranscriptKind::Failed),
@@ -219,6 +222,16 @@ pub fn save_entry_with_timestamp(
     timestamp: Option<DateTime<Local>>,
     kind: TranscriptKind,
 ) -> HistoryEntry {
+    save_entry_with_timestamp_and_slug(text, timestamp, kind, None)
+}
+
+/// Save a transcript to history with explicit slug source (for consistent pairing)
+pub fn save_entry_with_timestamp_and_slug(
+    text: &str,
+    timestamp: Option<DateTime<Local>>,
+    kind: TranscriptKind,
+    slug_hint: Option<&str>,
+) -> HistoryEntry {
     let text = text.trim();
     let now = timestamp.unwrap_or_else(Local::now);
 
@@ -229,7 +242,8 @@ pub fn save_entry_with_timestamp(
     // Note: multiple writes within the same second can collide (e.g. raw + formatted back-to-back),
     // so we ensure a unique filename by appending an incrementing suffix.
     let time_base = now.format("%H%M%S").to_string();
-    let slug = make_slug(text, 3);
+    let slug_source = slug_hint.unwrap_or(text);
+    let slug = make_slug(slug_source, 3);
     let base = build_base_name(&time_base, &slug, kind);
     let mut path = day_dir.join(format!("{}.txt", base));
     if path.exists() {
@@ -737,5 +751,33 @@ mod tests {
 
         let label = entry.label();
         assert!(label.contains("Hello world"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_entry_with_slug_hint_consistency() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+
+        let now = Local::now();
+        let raw = save_entry_with_timestamp_and_slug(
+            "raw content",
+            Some(now),
+            TranscriptKind::Raw,
+            Some("shared slug source"),
+        );
+        let ai = save_entry_with_timestamp_and_slug(
+            "ai content",
+            Some(now),
+            TranscriptKind::Ai,
+            Some("shared slug source"),
+        );
+
+        let raw_stem = raw.path.file_stem().unwrap().to_string_lossy();
+        let ai_stem = ai.path.file_stem().unwrap().to_string_lossy();
+        let raw_base = raw_stem.strip_suffix("_raw").unwrap_or(&raw_stem);
+        let ai_base = ai_stem.strip_suffix("_ai").unwrap_or(&ai_stem);
+
+        assert_eq!(raw_base, ai_base, "Slug hint should align base name");
     }
 }

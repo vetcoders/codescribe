@@ -12,11 +12,14 @@ use tracing::{debug, error, info};
 const CHUNK_DURATION_SEC: f32 = 15.0;
 const OVERLAP_SEC: f32 = 2.0; // Overlap for context
 
+pub type StreamDeltaCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
 pub struct StreamingRecorder {
     pub recorder: Recorder,
     transcript_buffer: Arc<Mutex<String>>,
     transcription_handle: Option<JoinHandle<()>>,
     sample_rate: u32,
+    delta_callback: Option<StreamDeltaCallback>,
 }
 
 impl StreamingRecorder {
@@ -29,6 +32,7 @@ impl StreamingRecorder {
             transcript_buffer: Arc::new(Mutex::new(String::new())),
             transcription_handle: None,
             sample_rate,
+            delta_callback: None,
         })
     }
 
@@ -41,7 +45,12 @@ impl StreamingRecorder {
             transcript_buffer: Arc::new(Mutex::new(String::new())),
             transcription_handle: None,
             sample_rate,
+            delta_callback: None,
         })
+    }
+
+    pub fn set_delta_callback(&mut self, callback: Option<StreamDeltaCallback>) {
+        self.delta_callback = callback;
     }
 
     pub async fn start(&mut self, language: Option<String>) -> Result<()> {
@@ -82,6 +91,7 @@ impl StreamingRecorder {
         let transcript_buffer = self.transcript_buffer.clone();
         let postprocessor = StreamPostProcessor::new();
         let stream_log_path = stream_log_path();
+        let delta_callback = self.delta_callback.clone();
         self.transcription_handle = Some(tokio::spawn(async move {
             transcription_worker(
                 rx,
@@ -89,6 +99,7 @@ impl StreamingRecorder {
                 actual_sample_rate,
                 language,
                 postprocessor,
+                delta_callback,
                 stream_log_path,
             )
             .await;
@@ -121,6 +132,7 @@ async fn transcription_worker(
     sample_rate: u32,
     language: Option<String>,
     mut postprocessor: StreamPostProcessor,
+    delta_callback: Option<StreamDeltaCallback>,
     stream_log_path: Option<std::path::PathBuf>,
 ) {
     info!("Transcription worker started");
@@ -144,6 +156,7 @@ async fn transcription_worker(
                 sample_rate,
                 language.as_deref(),
                 &mut postprocessor,
+                delta_callback.as_ref(),
                 stream_log_path.as_deref(),
             )
             .await;
@@ -168,6 +181,7 @@ async fn transcription_worker(
             sample_rate,
             language.as_deref(),
             &mut postprocessor,
+            delta_callback.as_ref(),
             stream_log_path.as_deref(),
         )
         .await;
@@ -182,6 +196,7 @@ async fn process_chunk(
     sample_rate: u32,
     language: Option<&str>,
     postprocessor: &mut StreamPostProcessor,
+    delta_callback: Option<&StreamDeltaCallback>,
     stream_log_path: Option<&Path>,
 ) {
     if samples.is_empty() {
@@ -241,8 +256,9 @@ async fn process_chunk(
                     if let Some(delta) = buffer.get(before_len..)
                         && !delta.trim().is_empty()
                     {
-                        // Emit to overlay for live feedback
-                        crate::voice_chat_ui::append_voice_chat_delta(delta);
+                        if let Some(callback) = delta_callback {
+                            callback(delta);
+                        }
 
                         // Log to file if enabled
                         if let Some(path) = stream_log_path {
@@ -296,7 +312,7 @@ fn env_bool(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn transcribe_streaming_samples(
+pub fn transcribe_streaming_samples(
     samples: &[f32],
     sample_rate: u32,
     language: Option<&str>,

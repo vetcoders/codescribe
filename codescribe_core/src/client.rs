@@ -379,7 +379,7 @@ pub async fn transcribe(path: &Path, language: Option<&str>) -> Result<String> {
     if let Err(validation_error) = validate_audio(&buffer) {
         error!("Audio validation failed: {}", validation_error);
         // Update tray to show error state
-        let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
+        crate::status::notify_status(crate::status::StatusSignal::Error);
         anyhow::bail!("Audio validation failed: {}", validation_error);
     }
     info!("Audio validation passed");
@@ -436,7 +436,7 @@ pub async fn transcribe(path: &Path, language: Option<&str>) -> Result<String> {
 
                 if attempt < TRANSCRIPTION_MAX_RETRIES && is_retryable {
                     // Update tray with retry status
-                    let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
+                    crate::status::notify_status(crate::status::StatusSignal::Thinking);
 
                     // Exponential backoff delay
                     let delay_ms = TRANSCRIPTION_RETRY_DELAY_MS * attempt as u64;
@@ -455,7 +455,7 @@ pub async fn transcribe(path: &Path, language: Option<&str>) -> Result<String> {
     }
 
     // All retries exhausted
-    let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
+    crate::status::notify_status(crate::status::StatusSignal::Error);
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Transcription failed after all retries")))
 }
 
@@ -558,7 +558,7 @@ async fn transcribe_external(
     // Pre-flight validation
     if let Err(validation_error) = validate_audio(&buffer) {
         error!("Audio validation failed: {}", validation_error);
-        let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
+        crate::status::notify_status(crate::status::StatusSignal::Error);
         anyhow::bail!("Audio validation failed: {}", validation_error);
     }
 
@@ -960,7 +960,7 @@ async fn transcribe_multipart(
                 );
 
                 if attempt < TRANSCRIPTION_MAX_RETRIES && is_retryable {
-                    let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
+                    crate::status::notify_status(crate::status::StatusSignal::Thinking);
 
                     let delay_ms = TRANSCRIPTION_RETRY_DELAY_MS * attempt as u64;
                     info!(
@@ -977,7 +977,7 @@ async fn transcribe_multipart(
         }
     }
 
-    let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
+    crate::status::notify_status(crate::status::StatusSignal::Error);
     Err(last_error
         .unwrap_or_else(|| anyhow::anyhow!("Multipart STT transcription failed after all retries")))
 }

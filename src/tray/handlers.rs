@@ -493,11 +493,30 @@ fn activate_running_gui() -> bool {
 }
 
 fn open_gui_app_bundle() -> bool {
+    // Try direct path first (more reliable)
+    let app_path = "/Applications/CodeScribe.app";
+    if std::path::Path::new(app_path).exists() {
+        info!("Found app bundle at {}", app_path);
+        return Command::new("open")
+            .arg(app_path)
+            .status()
+            .map(|status| {
+                info!("open {} returned: {}", app_path, status.success());
+                status.success()
+            })
+            .unwrap_or(false);
+    }
+
+    // Fallback to -a flag
+    info!("App bundle not in /Applications, trying open -a");
     Command::new("open")
         .arg("-a")
         .arg("CodeScribe")
         .status()
-        .map(|status| status.success())
+        .map(|status| {
+            info!("open -a CodeScribe returned: {}", status.success());
+            status.success()
+        })
         .unwrap_or(false)
 }
 

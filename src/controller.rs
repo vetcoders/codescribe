@@ -195,7 +195,11 @@ impl RecordingController {
             config.hold_start_delay_ms, config.beep_on_start, config.whisper_language
         );
 
-        let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        let mut recorder =
+            StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        recorder.set_delta_callback(Some(Arc::new(|delta| {
+            crate::append_voice_chat_delta(delta);
+        })));
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
         if let Ok(models) = model_manager.list_models()
@@ -234,7 +238,11 @@ impl RecordingController {
             cfg.hold_start_delay_ms, cfg.beep_on_start, cfg.whisper_language
         );
 
-        let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        let mut recorder =
+            StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        recorder.set_delta_callback(Some(Arc::new(|delta| {
+            crate::append_voice_chat_delta(delta);
+        })));
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
         if let Ok(models) = model_manager.list_models()
@@ -688,8 +696,29 @@ impl RecordingController {
         let language = self.config.read().await.whisper_language;
         let language_opt = Some(language.as_str());
         let use_local_stt = self.config.read().await.use_local_stt;
+        let cloud_enabled = cloud_stt_enabled();
+        let raw_save_enabled = raw_save_enabled();
 
         let mut raw_text_opt = None;
+        let mut cloud_text_opt = None;
+        let mut cloud_handle: Option<JoinHandle<Result<String>>> = None;
+
+        // Start cloud transcription in parallel (for early mismatch detection)
+        if cloud_enabled {
+            if let Some(path) = &audio_path {
+                if cloud_credentials_available() {
+                    let cloud_path = path.as_path().to_path_buf();
+                    let cloud_language = language_opt.map(str::to_string);
+                    cloud_handle = Some(tokio::spawn(async move {
+                        crate::client::transcribe(&cloud_path, cloud_language.as_deref()).await
+                    }));
+                } else {
+                    warn!("Cloud STT disabled: STT_ENDPOINT/STT_API_KEY missing");
+                }
+            } else {
+                warn!("Cloud STT disabled: no audio file available");
+            }
+        }
 
         // 1. Try Streaming Result (Local)
         if use_local_stt {
@@ -704,22 +733,36 @@ impl RecordingController {
             }
         }
 
-        // 2. Fallback to Cloud if needed (and we have audio file)
+        // 2. Fallback to Cloud if needed
         if raw_text_opt.is_none() {
-            if let Some(path) = &audio_path {
+            if let Some(handle) = cloud_handle.take() {
                 info!("Falling back to cloud STT (LibraxisAI)");
-                match crate::client::transcribe(path.as_path(), language_opt).await {
-                    Ok(text) => raw_text_opt = Some(text),
-                    Err(e) => error!("Cloud transcription failed: {}", e),
+                match handle.await {
+                    Ok(Ok(text)) => {
+                        cloud_text_opt = Some(text.clone());
+                        raw_text_opt = Some(text);
+                    }
+                    Ok(Err(e)) => error!("Cloud transcription failed: {}", e),
+                    Err(e) => error!("Cloud transcription task failed: {}", e),
                 }
-            } else {
-                warn!("No audio file available for cloud fallback");
+            } else if cloud_enabled {
+                warn!("Cloud fallback unavailable (cloud disabled or missing credentials)");
             }
         }
 
         let raw_text = raw_text_opt.ok_or_else(|| anyhow::anyhow!("Empty transcript"))?;
 
         info!("Raw transcript captured ({} chars)", raw_text.len());
+
+        if raw_save_enabled {
+            let raw_entry = crate::state::history::save_entry_with_timestamp_and_slug(
+                &raw_text,
+                Some(recording_timestamp),
+                crate::state::history::TranscriptKind::Raw,
+                Some(&raw_text),
+            );
+            info!("Raw transcript saved: {}", raw_entry.path.display());
+        }
 
         // Check for repetition loops (Whisper hallucination like "Wielki, Wielki, Wielki...")
         let has_repetition = crate::ai_formatting::has_repetition_loop(&raw_text);
@@ -886,15 +929,15 @@ impl RecordingController {
             mode_label
         );
 
-        // Save audio to transcriptions folder if enabled (now we have final text)
+        // Save audio to transcriptions folder if enabled (pair with RAW for reports)
         if self.config.read().await.dump_audio_logs
             && let Some(path) = &audio_path
         {
             crate::state::history::save_audio(
                 path.as_path(),
                 recording_timestamp,
-                Some(&formatted_text),
-                output_kind,
+                Some(&raw_text),
+                crate::state::history::TranscriptKind::Raw,
             );
         }
 
@@ -903,13 +946,49 @@ impl RecordingController {
 
         info!("Text pasted successfully");
 
-        // Save to history with same timestamp as audio file
-        let entry = crate::state::history::save_entry_with_timestamp(
-            &formatted_text,
-            Some(recording_timestamp),
-            output_kind,
-        );
-        info!("Transcript saved: {}", entry.path.display());
+        // Save final transcript (skip duplicate when RAW already stored and unchanged)
+        let needs_final_save = !raw_save_enabled
+            || output_kind != crate::state::history::TranscriptKind::Raw
+            || formatted_text.trim() != raw_text.trim();
+        if needs_final_save {
+            let entry = crate::state::history::save_entry_with_timestamp_and_slug(
+                &formatted_text,
+                Some(recording_timestamp),
+                output_kind,
+                Some(&raw_text),
+            );
+            info!("Transcript saved: {}", entry.path.display());
+        } else {
+            info!("Final transcript matches RAW; skipping duplicate save");
+        }
+
+        if let Some(cloud_text) = cloud_text_opt {
+            let entry = crate::state::history::save_entry_with_timestamp_and_slug(
+                &cloud_text,
+                Some(recording_timestamp),
+                crate::state::history::TranscriptKind::Cloud,
+                Some(&raw_text),
+            );
+            info!("Cloud transcript saved: {}", entry.path.display());
+        } else if let Some(handle) = cloud_handle {
+            let slug_hint = raw_text.clone();
+            let timestamp = recording_timestamp;
+            tokio::spawn(async move {
+                match handle.await {
+                    Ok(Ok(text)) => {
+                        let entry = crate::state::history::save_entry_with_timestamp_and_slug(
+                            &text,
+                            Some(timestamp),
+                            crate::state::history::TranscriptKind::Cloud,
+                            Some(&slug_hint),
+                        );
+                        info!("Cloud transcript saved: {}", entry.path.display());
+                    }
+                    Ok(Err(e)) => error!("Cloud transcription failed: {}", e),
+                    Err(e) => error!("Cloud transcription task failed: {}", e),
+                }
+            });
+        }
 
         Ok(())
     }
@@ -960,6 +1039,25 @@ impl Default for RecordingController {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn env_bool(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn raw_save_enabled() -> bool {
+    !env_bool("CODESCRIBE_QUALITY_DISABLE_RAW_SAVE")
+}
+
+fn cloud_stt_enabled() -> bool {
+    !env_bool("CODESCRIBE_QUALITY_DISABLE_CLOUD")
+}
+
+fn cloud_credentials_available() -> bool {
+    std::env::var("STT_ENDPOINT").is_ok() && std::env::var("STT_API_KEY").is_ok()
 }
 
 #[cfg(test)]

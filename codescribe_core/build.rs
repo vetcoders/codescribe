@@ -13,11 +13,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Default model to embed
-const MODEL_NAME: &str = "whisper-large-v3-turbo-mlx-q8";
+const DEFAULT_MODEL_NAME: &str = "whisper-large-v3-turbo-mlx-q8";
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-changed=models/{}", MODEL_NAME);
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let is_release = profile == "release";
@@ -34,7 +35,12 @@ fn main() {
             let _ = fs::write(&repo_path_file, &manifest_dir);
         }
 
-        let model_path = Path::new(&manifest_dir).join("models").join(MODEL_NAME);
+        let embed_model = env::var("CODESCRIBE_EMBED_MODEL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
+        let model_path = resolve_embed_model_path(&manifest_dir, &embed_model);
+        println!("cargo:rerun-if-changed={}", model_path.display());
         let out_dir = env::var("OUT_DIR").unwrap();
         let dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
         let model_exists = model_path.join("tokenizer.json").exists();
@@ -88,4 +94,17 @@ fn main() {
             println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
         }
     }
+}
+
+fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
+    let candidate = PathBuf::from(embed_model);
+    if candidate.is_absolute() {
+        return candidate;
+    }
+
+    if candidate.components().count() > 1 {
+        return Path::new(manifest_dir).join(candidate);
+    }
+
+    Path::new(manifest_dir).join("models").join(embed_model)
 }
