@@ -36,6 +36,8 @@ pub enum AiFormatStatus {
     Skipped,
 }
 
+pub type AiStreamCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
 #[derive(Debug, Clone)]
 pub struct AiFormatResult {
     pub text: String,
@@ -543,7 +545,7 @@ pub async fn format_text_with_status(
     text: &str,
     language: Option<&str>,
     assistive: bool,
-    on_delta: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    on_delta: Option<AiStreamCallback>,
 ) -> AiFormatResult {
     // Skip very short texts (but not in assistive mode - user might say "help")
     if text.len() < 10 && !assistive {
@@ -939,7 +941,7 @@ async fn call_llm_endpoint_streaming(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
-    on_delta: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    on_delta: Option<AiStreamCallback>,
 ) -> Result<String> {
     use futures_util::StreamExt;
 

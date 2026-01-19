@@ -818,10 +818,10 @@ impl RecordingController {
                         result.text.len()
                     );
 
-                    // Auto-hide overlay after 5 seconds
+                    // Auto-hide overlay after 10 seconds
                     // Created by M&K (c)2026 VetCoders
                     tokio::spawn(async {
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        tokio::time::sleep(Duration::from_secs(10)).await;
                         crate::voice_chat_ui::hide_voice_chat_overlay();
                     });
 

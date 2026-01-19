@@ -29,37 +29,30 @@
 ## 1. Core / Backend (CodeScribe Daemon)
 
 ### 1.1. Voice Activity Detection (VAD)
-- **Status**: 🟡 Implemented but not actively used for auto-stop
-- **Implementation**: `vad_triggered` flag in `src/controller.rs` (lines 185, 289-295, 551-557)
+- **Status**: ✅ Implemented & Active
+- **Implementation**: `codescribe-core/src/audio/recorder.rs` (RMS/silence logic) + `src/main.rs` (Watchdog task)
 - **Goal**: Enable "Hands-off" mode where recording stops automatically after silence
-- **Trigger**: Double-press Option to start → Listen → Silence (3-8s threshold from envvars) → Stop & Transcribe
-- **Files**: `src/controller.rs` (needs state machine update to use VAD flag for auto-stop)
+- **Trigger**: Double-press Option to start → Listen → Silence (3-8s threshold) → Stop & Transcribe
+- **Behavior**: Auto-stop triggers `finish_recording()` via VAD watchdog
 
 ### 1.2. Overlay Text Preview
-- **Status**: 🟡 Code exists but not fully integrated
-- **Implementation**: `src/voice_chat_ui.rs` (400 lines) — macOS Native Overlay with:
-  - `show_voice_chat_overlay()` / `hide_voice_chat_overlay()`
-  - `append_voice_chat_delta()` — streaming text support
-  - `get_accumulated_text()` — retrieve full text
-  - `is_voice_chat_overlay_visible()` — visibility check
+- **Status**: ✅ Integrated
+- **Implementation**: `src/voice_chat_ui.rs` + callbacks in `src/controller.rs`
 - **Current Goal**: Always-on-top overlay showing real-time transcription chunks
-- **Target Goal**:
-  - User sees live Whisper chunks on overlay during speech
-  - After AI response: growing text block with copy-to-clipboard option
-  - Intelligent auto-hide (on silence or manual dismiss)
+- **Behavior**:
+  - Live Whisper chunks appear during recording (via `StreamingRecorder` delta callback)
+  - Live AI response chunks appear during formatting/assistive generation (via `ai_formatting` SSE callback)
+  - Auto-hides after interaction
 
 ### 1.3. Hands-off Mode (Target Implementation)
-- **Status**: 🔴 Not yet implemented (current version is basic toggle)
+- **Status**: ✅ Implemented (Ready for testing)
 - **Description**: Enhanced interaction mode combining VAD + Overlay + streaming preview
-- **Target Flow**:
-  1. **Trigger**: Double-press `Option` key → starts **listening** (not immediate transcription)
-  2. **Overlay appears**: Always-on-top, shows real-time Whisper chunks
-  3. **Recording active**: User speaks, sees live transcription on overlay
-  4. **VAD detects silence**: Threshold from envvars (e.g., 3s or 8s)
-  5. **Transcription/Response**: Depending on mode:
-     - `formatting only` (left_alt) → AI-formatted version of user speech, growing text block, copy option
-     - `assistive` (right_alt) → augmented AI response + (future) TTS via SSE stream tags
-  6. **Cleanup**: Overlay hides or shows final result with copy action
+- **Flow**:
+  1. **Trigger**: Double-press `Option` key → starts listening
+  2. **Overlay appears**: Shows "Listening..." and then live Whisper chunks
+  3. **VAD detects silence**: Stops recording automatically
+  4. **Transcription/Response**: Streamed to overlay (AI formatted or Assistive response)
+  5. **Result**: Pasted to active app (and visible on overlay)
 
 ### 1.4. TTS Integration (Future)
 - **Status**: 🔴 Not started
