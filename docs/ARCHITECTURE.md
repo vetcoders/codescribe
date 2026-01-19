@@ -40,8 +40,9 @@ flowchart TB
 
 - **IPC Server**: Unix socket server (`src/ipc/`) allowing external clients (or CLI tools) to control the
   recording/transcription session and receive real-time events.
-- **Quality Loop**: Automated self-tuning system (`src/quality_loop.rs`) that evaluates transcription accuracy.
-- **Stream Postprocess**: Pipeline stage (`src/stream_postprocess.rs`) that applies semantic gating and cleanup to live
+- **Quality Loop**: Automated self-tuning system (`codescribe-core/src/quality_loop.rs`) that evaluates transcription accuracy.
+- **Quality Report**: Batch quality reports (`codescribe-core/src/quality_report.rs`) for transcription analysis.
+- **Stream Postprocess**: Pipeline stage (`codescribe-core/src/stream_postprocess.rs`) that applies semantic gating and cleanup to live
   chunks.
 
 
@@ -123,8 +124,14 @@ CodeScribe/
 ### ✅ Completed (current release)
 
 - **Whisper Live (Streaming)** - transcription happens during recording (chunking + overlap + dedup)
-- **Hotkeys** - CGEventTap integration, hold Ctrl/Ctrl+Shift modes, double-Option toggle
+- **Hotkeys** - CGEventTap integration, hold Ctrl/Ctrl+Shift modes, double-Option toggle (left/right)
 - **Embedded Model** - Model baked into binary via `include_bytes!`, zero disk I/O
+- **CodeScribe Core** - Extracted as separate crate (`codescribe-core`)
+
+### 🟡 In Progress (implemented but not fully integrated)
+
+- **VAD (Voice Activity Detection)** - `vad_triggered` flag exists in `controller.rs`, not used for auto-stop yet
+- **Overlay Text Preview** - Code exists in `voice_chat_ui.rs`, not fully integrated with recording flow
 
 ### Current Capabilities
 
@@ -136,11 +143,21 @@ CodeScribe/
 | AI formatting (Responses API)              | ✅      |
 | Provider separation (formatting/assistive) | ✅      |
 | Tray app with submenus                     | ✅      |
-| Tauri GUI (Voice Lab, Settings)            | ✅      |
 | History with slug filenames                | ✅      |
 | IPC server (runtime interface)             | ✅      |
 | Stream postprocess (semantic gating)       | ✅      |
 | Quality loop + report                      | ✅      |
+| CodeScribe Core separation                 | ✅      |
+| VAD (auto-stop on silence)                 | 🟡      |
+| Overlay text preview                       | 🟡      |
+| Tauri GUI (Voice Lab, Settings)            | 📋      |
+
+---
+
+**Related Documentation:**
+- [`BACKLOG.md`](BACKLOG.md) — Detailed backlog with target implementations
+- [`ARCHITECTURE_VISION.md`](ARCHITECTURE_VISION.md) — Future Libraxis Qube Protocol architecture
+- [`WHISPER_LIVE.md`](WHISPER_LIVE.md) — Embedded + streaming transcription details
 
 ---
 

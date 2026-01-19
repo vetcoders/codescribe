@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 
@@ -533,7 +533,7 @@ pub fn remove_simple_repetitions(text: &str) -> String {
 /// # Returns
 /// Formatted text or original if all providers fail
 pub async fn format_text(text: &str, language: Option<&str>, assistive: bool) -> String {
-    format_text_with_status(text, language, assistive)
+    format_text_with_status(text, language, assistive, None)
         .await
         .text
 }
@@ -543,6 +543,7 @@ pub async fn format_text_with_status(
     text: &str,
     language: Option<&str>,
     assistive: bool,
+    on_delta: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 ) -> AiFormatResult {
     // Skip very short texts (but not in assistive mode - user might say "help")
     if text.len() < 10 && !assistive {
@@ -667,7 +668,12 @@ pub async fn format_text_with_status(
                 // SSE streaming for OpenAI/Libraxis
                 match tokio::time::timeout(
                     llm_timeout,
-                    call_llm_endpoint_streaming(&user_message, &system_prompt, assistive),
+                    call_llm_endpoint_streaming(
+                        &user_message,
+                        &system_prompt,
+                        assistive,
+                        on_delta.clone(),
+                    ),
                 )
                 .await
                 {
@@ -933,6 +939,7 @@ async fn call_llm_endpoint_streaming(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
+    on_delta: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 ) -> Result<String> {
     use futures_util::StreamExt;
 
@@ -1046,6 +1053,9 @@ async fn call_llm_endpoint_streaming(
                     match chunk.chunk_type.as_str() {
                         "response.output_text.delta" => {
                             if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &on_delta {
+                                    cb(&delta);
+                                }
                                 collected_text.push_str(&delta);
                             }
                         }

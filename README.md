@@ -58,9 +58,11 @@ flowchart TB
     class APP,UI,BACKEND,CORE,TOOLS box
 ```
 
+> **Note:** The diagram above shows the **target architecture** with Tauri GUI. Current release is a **native macOS tray app** (without Tauri). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for current implementation details.
+
 > **Status:** current release (see `Cargo.toml`) — **Strictly Embedded Model** (~888MB binary, zero exceptions) + *Whisper Live* (streaming transcription).
 
-See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md)
+See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/BACKLOG.md`](docs/BACKLOG.md) | [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md)
 
 ## API Provider
 
@@ -200,11 +202,14 @@ flowchart TD
 
 ### Recording Modes
 
-| Mode             | Trigger                 | Description                   |
-|------------------|-------------------------|-------------------------------|
-| **Hold-to-talk** | Hold Ctrl (800ms delay) | Release to transcribe + paste |
-| **Assistive**    | Hold Ctrl+Shift         | AI augmentation mode          |
-| **Toggle**       | Double-tap Option       | Start/stop recording          |
+| Mode                  | Trigger                    | Description                                    |
+|-----------------------|----------------------------|------------------------------------------------|
+| **Hold-to-talk**      | Hold `Ctrl` (800ms delay)  | Release to transcribe + paste (raw transcript) |
+| **Hold Assistive**    | Hold `Ctrl+Shift`          | AI augmentation mode                           |
+| **Toggle Formatting** | Double-tap `Left Option`   | AI-formatted version of speech                 |
+| **Toggle Assistive**  | Double-tap `Right Option`  | Augmented AI response                          |
+
+See [`docs/BACKLOG.md`](docs/BACKLOG.md) for detailed mode descriptions and future enhancements (VAD, Overlay).
 
 ## Configuration
 
@@ -416,14 +421,25 @@ Grant permissions in System Settings > Privacy & Security when prompted.
 - [x] CLI transcribe command
 - [x] History with slug filenames
 - [x] Keep Audio toggle
-- [x] Tauri GUI (Voice Lab, Settings)
+- [x] CodeScribe Core separation (`codescribe-core` crate)
+- [x] Quality Loop & Quality Report CLI tools
+
+### In Progress
+
+- [ ] Voice Activity Detection (VAD) for auto-stop — *implemented but not integrated*
+- [ ] Overlay text preview — *code exists, not fully integrated*
 
 ### Planned
 
-- [ ] Voice chat mode (WebSocket streaming)
+- [ ] Hands-off mode with VAD + Overlay integration
+- [ ] Tauri GUI (Voice Lab, Teacher, Settings)
+- [ ] TTS integration for assistive mode
+- [ ] Libraxis Qube Protocol (WebSocket streaming architecture)
 - [ ] Custom prompt editing in GUI
 - [ ] More languages for prompts
 - [ ] DMG distribution with notarization
+
+See [`docs/BACKLOG.md`](docs/BACKLOG.md) for detailed backlog and [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md) for future architecture.
 
 ## License
 

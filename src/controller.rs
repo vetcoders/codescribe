@@ -557,6 +557,12 @@ impl RecordingController {
             info!("VAD callback: setting vad_triggered flag");
             vad_flag.store(true, Ordering::SeqCst);
         });
+
+        // Set streaming callback for overlay updates
+        recorder.set_delta_callback(Some(Arc::new(|text: &str| {
+            crate::voice_chat_ui::append_voice_chat_delta(text);
+        })));
+
         recorder.start(Some(language.as_str().to_string())).await?;
 
         // Play start beep if enabled
@@ -789,9 +795,19 @@ impl RecordingController {
             crate::voice_chat_ui::update_voice_chat_status("Thinking...");
 
             let lang_str = language_opt.map(String::from);
-            let result =
-                crate::ai_formatting::format_text_with_status(&raw_text, lang_str.as_deref(), true)
-                    .await;
+
+            // Callback for streaming AI response to overlay
+            let delta_callback = Arc::new(|text: &str| {
+                crate::voice_chat_ui::append_voice_chat_delta(text);
+            });
+
+            let result = crate::ai_formatting::format_text_with_status(
+                &raw_text,
+                lang_str.as_deref(),
+                true,
+                Some(delta_callback),
+            )
+            .await;
             let kind = match result.status {
                 crate::ai_formatting::AiFormatStatus::Applied => {
                     // Display AI response in overlay
@@ -849,6 +865,7 @@ impl RecordingController {
                     &raw_text,
                     lang_str.as_deref(),
                     false,
+                    None,
                 )
                 .await;
                 let kind = match result.status {
@@ -886,6 +903,7 @@ impl RecordingController {
                     &raw_text,
                     lang_str.as_deref(),
                     false,
+                    None,
                 )
                 .await;
                 let kind = match result.status {

@@ -350,7 +350,8 @@ fn handle_format_last() {
                 if let Ok(text) = std::fs::read_to_string(&last_entry.path) {
                     let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
                     let result =
-                        crate::ai_formatting::format_text_with_status(&text, None, false).await;
+                        crate::ai_formatting::format_text_with_status(&text, None, false, None)
+                            .await;
                     let kind = match result.status {
                         crate::ai_formatting::AiFormatStatus::Applied => {
                             crate::state::history::TranscriptKind::Ai
@@ -401,7 +402,8 @@ fn handle_format_last_five() {
             for entry in entries {
                 if let Ok(text) = std::fs::read_to_string(&entry.path) {
                     let result =
-                        crate::ai_formatting::format_text_with_status(&text, None, false).await;
+                        crate::ai_formatting::format_text_with_status(&text, None, false, None)
+                            .await;
                     let kind = match result.status {
                         crate::ai_formatting::AiFormatStatus::Applied => {
                             crate::state::history::TranscriptKind::Ai
