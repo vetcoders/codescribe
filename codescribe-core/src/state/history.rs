@@ -210,6 +210,73 @@ pub fn history_dir() -> PathBuf {
     transcriptions_dir(&Local::now())
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Voice Drafts - for Mission Control overlay
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Get the drafts directory, creating it if needed
+/// Drafts are voice transcriptions saved for later editing/review
+pub fn drafts_dir() -> PathBuf {
+    let dir = crate::config::Config::config_dir().join("drafts");
+
+    if !dir.exists()
+        && let Err(e) = fs::create_dir_all(&dir)
+    {
+        error!("Failed to create drafts directory: {}", e);
+    }
+
+    dir
+}
+
+/// Save a voice draft and return the file path
+/// Drafts are saved as: ~/.codescribe/drafts/YYYY-MM-DD_HH-MM-SS.txt
+pub fn save_draft(text: &str) -> PathBuf {
+    let now = Local::now();
+    let filename = format!("{}.txt", now.format("%Y-%m-%d_%H-%M-%S"));
+    let path = drafts_dir().join(&filename);
+
+    match fs::write(&path, text) {
+        Ok(_) => info!("Saved voice draft: {}", path.display()),
+        Err(e) => error!("Failed to save voice draft: {}", e),
+    }
+
+    path
+}
+
+/// List all draft files, sorted by modification time (newest first)
+pub fn list_drafts() -> Vec<PathBuf> {
+    let dir = drafts_dir();
+
+    let mut entries: Vec<_> = fs::read_dir(&dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "txt")
+                .unwrap_or(false)
+        })
+        .map(|e| e.path())
+        .collect();
+
+    // Sort by filename (which contains timestamp) - newest first
+    entries.sort_by(|a, b| b.cmp(a));
+
+    entries
+}
+
+/// Get draft content by path
+pub fn read_draft(path: &Path) -> Option<String> {
+    fs::read_to_string(path).ok()
+}
+
+/// Delete a draft file
+pub fn delete_draft(path: &Path) -> bool {
+    fs::remove_file(path).is_ok()
+}
+
 /// Save a transcript to history and return the entry
 ///
 /// # Arguments

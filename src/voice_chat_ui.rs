@@ -71,6 +71,12 @@ struct VoiceChatOverlayState {
     voice_draft_header: Option<usize>,
     voice_send_button: Option<usize>,
     voice_use_button: Option<usize>,
+    // Collapse button for sidecar
+    collapse_button: Option<usize>,
+    sidecar_collapsed: bool,
+    // Right panel tab bar
+    tab_bar: Option<usize>,
+    selected_tab: usize, // 0 = Drafts, 1 = Settings
     // Chat state
     messages: Vec<ChatMessage>,
     // Separated buffers: manual input (left) vs voice streaming (right)
@@ -99,6 +105,10 @@ lazy_static::lazy_static! {
         voice_draft_header: None,
         voice_send_button: None,
         voice_use_button: None,
+        collapse_button: None,
+        sidecar_collapsed: false,
+        tab_bar: None,
+        selected_tab: 0,
         messages: Vec::new(),
         manual_draft: String::new(),
         voice_draft: String::new(),
@@ -149,6 +159,22 @@ fn action_handler_class() -> *const Class {
                 sel!(onToggleAutoSend:),
                 on_toggle_auto_send as extern "C" fn(&Object, Sel, Id),
             );
+            decl.add_method(
+                sel!(onTabChanged:),
+                on_tab_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onCopyLastResponse:),
+                on_copy_last_response as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onAttach:),
+                on_attach as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onToggleCollapse:),
+                on_toggle_collapse as extern "C" fn(&Object, Sel, Id),
+            );
             let cls = decl.register();
             ACTION_HANDLER_CLASS = cls;
         });
@@ -171,7 +197,131 @@ extern "C" fn on_toggle_auto_send(_this: &Object, _cmd: Sel, sender: Id) {
 }
 
 extern "C" fn on_attach(_this: &Object, _cmd: Sel, _sender: Id) {
-    info!("Attach clicked (placeholder)");
+    unsafe {
+        let ns_open_panel = Class::get("NSOpenPanel").unwrap();
+        let panel: Id = msg_send![ns_open_panel, openPanel];
+
+        // Configure panel
+        let _: () = msg_send![panel, setCanChooseFiles: true];
+        let _: () = msg_send![panel, setCanChooseDirectories: false];
+        let _: () = msg_send![panel, setAllowsMultipleSelection: true];
+
+        let ns_string = Class::get("NSString").unwrap();
+        let title: Id =
+            msg_send![ns_string, stringWithUTF8String: c"Select files to attach".as_ptr()];
+        let _: () = msg_send![panel, setTitle: title];
+
+        // Run modal
+        let result: isize = msg_send![panel, runModal];
+
+        // NSModalResponseOK = 1
+        if result == 1 {
+            let urls: Id = msg_send![panel, URLs];
+            let count: usize = msg_send![urls, count];
+
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            for i in 0..count {
+                let url: Id = msg_send![urls, objectAtIndex: i];
+                let path: Id = msg_send![url, path];
+                let path_cstr: *const i8 = msg_send![path, UTF8String];
+                if !path_cstr.is_null() {
+                    let path_str = std::ffi::CStr::from_ptr(path_cstr).to_string_lossy();
+                    state
+                        .attachments
+                        .push(std::path::PathBuf::from(path_str.to_string()));
+                    info!("Attached: {}", path_str);
+                }
+            }
+
+            // Update button to show count
+            if let Some(btn_ptr) = state.attach_button {
+                let btn = btn_ptr as Id;
+                let title_str = format!("📎{}", state.attachments.len());
+                let mut c_str = title_str.as_bytes().to_vec();
+                c_str.push(0);
+                let title: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
+                let _: () = msg_send![btn, setTitle: title];
+            }
+        }
+    }
+}
+
+extern "C" fn on_tab_changed(_this: &Object, _cmd: Sel, sender: Id) {
+    unsafe {
+        let selected: isize = msg_send![sender, selectedSegment];
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.selected_tab = selected as usize;
+        info!(
+            "Tab changed to: {}",
+            if selected == 0 { "Drafts" } else { "Settings" }
+        );
+        // TODO: Switch visible content
+    }
+}
+
+extern "C" fn on_copy_last_response(_this: &Object, _cmd: Sel, _sender: Id) {
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    // Find last assistant message
+    if let Some(msg) = state
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == ChatRole::Assistant)
+    {
+        copy_to_clipboard(&msg.text);
+        info!("Copied last assistant response to clipboard");
+    } else {
+        info!("No assistant response to copy");
+    }
+}
+
+extern "C" fn on_toggle_collapse(_this: &Object, _cmd: Sel, sender: Id) {
+    unsafe {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.sidecar_collapsed = !state.sidecar_collapsed;
+
+        // Update button title
+        let ns_string = Class::get("NSString").unwrap();
+        let new_title = if state.sidecar_collapsed { "<|" } else { ">|" };
+        let mut c_str = new_title.as_bytes().to_vec();
+        c_str.push(0);
+        let title: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
+        let _: () = msg_send![sender, setTitle: title];
+
+        // Hide/show right panel elements (tab_bar, voice_draft_view, etc.)
+        if let Some(tab_ptr) = state.tab_bar {
+            let tab_bar = tab_ptr as Id;
+            let _: () = msg_send![tab_bar, setHidden: state.sidecar_collapsed];
+        }
+        if let Some(view_ptr) = state.voice_draft_view {
+            let voice_draft_view = view_ptr as Id;
+            let _: () = msg_send![voice_draft_view, setHidden: state.sidecar_collapsed];
+        }
+        if let Some(header_ptr) = state.voice_draft_header {
+            let header = header_ptr as Id;
+            let _: () = msg_send![header, setHidden: state.sidecar_collapsed];
+        }
+
+        info!("Sidecar collapsed: {}", state.sidecar_collapsed);
+    }
+}
+
+fn copy_to_clipboard(text: &str) {
+    unsafe {
+        let pasteboard_class = Class::get("NSPasteboard").unwrap();
+        let pasteboard: Id = msg_send![pasteboard_class, generalPasteboard];
+        let _: () = msg_send![pasteboard, clearContents];
+
+        let ns_string = Class::get("NSString").unwrap();
+        let mut c_str = text.as_bytes().to_vec();
+        c_str.push(0);
+        let ns_str: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
+
+        // NSPasteboardTypeString = "public.utf8-plain-text"
+        let type_str: Id =
+            msg_send![ns_string, stringWithUTF8String: c"public.utf8-plain-text".as_ptr()];
+        let _: () = msg_send![pasteboard, setString: ns_str forType: type_str];
+    }
 }
 
 fn is_near_bottom(scroll_view: Id) -> bool {
@@ -274,6 +424,10 @@ fn show_voice_chat_overlay_impl() {
         let window_height = 400.0;
         let margin = 16.0;
 
+        // Split panel layout
+        let left_panel_width = 450.0; // 60% for chat + manual input
+        let _right_panel_width = 300.0; // 40% for drafts sidecar (Phase 2)
+
         let (x, y) = match config.overlay_position_mode {
             OverlayPositionMode::SnappedTopRight => {
                 let right_x = visible_frame.origin.x + visible_frame.size.width;
@@ -373,6 +527,24 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![status_field, setStringValue: initial_status];
         let _: () = msg_send![content_view, addSubview: status_field];
 
+        // Collapse button (right side of status header)
+        let collapse_frame = CGRect {
+            origin: CGPoint {
+                x: window_width - 40.0,
+                y: window_height - header_height + 3.0,
+            },
+            size: CGSize {
+                width: 30.0,
+                height: 24.0,
+            },
+        };
+        let collapse_btn: Id = msg_send![ns_button, alloc];
+        let collapse_btn: Id = msg_send![collapse_btn, initWithFrame: collapse_frame];
+        let collapse_title: Id = msg_send![ns_string, stringWithUTF8String: c">|".as_ptr()];
+        let _: () = msg_send![collapse_btn, setTitle: collapse_title];
+        let _: () = msg_send![collapse_btn, setBezelStyle: 1_isize]; // NSRoundedBezelStyle
+        let _: () = msg_send![content_view, addSubview: collapse_btn];
+
         // 2. Input Area (Below Header)
         // Input Field + Send Button + Auto-Send Checkbox
 
@@ -402,10 +574,29 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![auto_send_cb, setState: state_val];
         let _: () = msg_send![content_view, addSubview: auto_send_cb];
 
-        // Send Button (Right)
+        // Attach button (after Auto checkbox)
+        let attach_width = 30.0;
+        let attach_frame = CGRect {
+            origin: CGPoint {
+                x: input_margin + checkbox_width + 4.0,
+                y: controls_y,
+            },
+            size: CGSize {
+                width: attach_width,
+                height: 24.0,
+            },
+        };
+        let attach_btn: Id = msg_send![ns_button, alloc];
+        let attach_btn: Id = msg_send![attach_btn, initWithFrame: attach_frame];
+        let attach_title: Id = msg_send![ns_string, stringWithUTF8String: c"📎".as_ptr()];
+        let _: () = msg_send![attach_btn, setTitle: attach_title];
+        let _: () = msg_send![attach_btn, setBezelStyle: 1]; // NSRoundedBezelStyle
+        let _: () = msg_send![content_view, addSubview: attach_btn];
+
+        // Send Button (Right of left panel)
         let send_frame = CGRect {
             origin: CGPoint {
-                x: window_width - send_width - input_margin,
+                x: left_panel_width - send_width - input_margin,
                 y: controls_y,
             },
             size: CGSize {
@@ -420,9 +611,9 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![send_button, setBezelStyle: 1]; // NSRoundedBezelStyle
         let _: () = msg_send![content_view, addSubview: send_button];
 
-        // Input Field (Middle)
-        let input_x = input_margin + checkbox_width + input_margin;
-        let input_width = window_width - input_x - send_width - input_margin * 2.0;
+        // Input Field (Middle of left panel, after checkbox and attach button)
+        let input_x = input_margin + checkbox_width + 4.0 + attach_width + input_margin;
+        let input_width = left_panel_width - input_x - send_width - input_margin * 2.0;
         let input_frame = CGRect {
             origin: CGPoint {
                 x: input_x,
@@ -457,13 +648,19 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![auto_send_cb, setTarget: handler];
         let _: () = msg_send![auto_send_cb, setAction: sel!(onToggleAutoSend:)];
 
-        // 3. Chat Log (Below Input Area)
+        let _: () = msg_send![attach_btn, setTarget: handler];
+        let _: () = msg_send![attach_btn, setAction: sel!(onAttach:)];
+
+        let _: () = msg_send![collapse_btn, setTarget: handler];
+        let _: () = msg_send![collapse_btn, setAction: sel!(onToggleCollapse:)];
+
+        // 3. Chat Log (Below Input Area) - constrained to left panel
         let log_y_top = window_height - header_height - input_area_height;
         let scroll_frame = CGRect {
             origin: CGPoint { x: 10.0, y: 10.0 }, // Bottom padding
             size: CGSize {
-                width: window_width - 20.0,
-                height: log_y_top - 10.0, // Remaining height
+                width: left_panel_width - 20.0, // Left panel only (60%)
+                height: log_y_top - 10.0,       // Remaining height
             },
         };
 
@@ -502,10 +699,69 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![scroll_view, setDocumentView: text_view];
         let _: () = msg_send![content_view, addSubview: scroll_view];
 
-        // Attach button (placeholder) - Removed or moved to context menu later?
-        // User asked for copy button.
-        // Let's rely on Selectable for now, as button per message is hard.
-        // Or add a "Copy Last" button in footer if needed, but we used space for Input.
+        // Create context menu for text_view with "Copy Last Response" option
+        let ns_menu = Class::get("NSMenu").unwrap();
+        let ns_menu_item = Class::get("NSMenuItem").unwrap();
+
+        let context_menu: Id = msg_send![ns_menu, alloc];
+        let context_menu: Id = msg_send![context_menu, init];
+
+        // "Kopiuj ostatnia odpowiedz" menu item
+        let menu_item: Id = msg_send![ns_menu_item, alloc];
+        let item_title: Id =
+            msg_send![ns_string, stringWithUTF8String: c"Kopiuj ostatnia odpowiedz".as_ptr()];
+        let empty_key: Id = msg_send![ns_string, stringWithUTF8String: c"".as_ptr()];
+        let menu_item: Id = msg_send![menu_item, initWithTitle: item_title
+                                                        action: sel!(onCopyLastResponse:)
+                                                 keyEquivalent: empty_key];
+        let _: () = msg_send![menu_item, setTarget: handler];
+        let _: () = msg_send![context_menu, addItem: menu_item];
+
+        // Attach menu to text_view
+        let _: () = msg_send![text_view, setMenu: context_menu];
+
+        // --- RIGHT PANEL (Sidecar) ---
+        // 4. Separator line between left and right panels
+        let separator_x = left_panel_width;
+        let ns_box = Class::get("NSBox").unwrap();
+        let separator: Id = msg_send![ns_box, alloc];
+        let separator_frame = CGRect {
+            origin: CGPoint {
+                x: separator_x,
+                y: 10.0,
+            },
+            size: CGSize {
+                width: 1.0,
+                height: window_height - header_height - 20.0,
+            },
+        };
+        let separator: Id = msg_send![separator, initWithFrame: separator_frame];
+        let _: () = msg_send![separator, setBoxType: 1_isize]; // NSBoxSeparator
+        let _: () = msg_send![content_view, addSubview: separator];
+
+        // 5. Tab bar (NSSegmentedControl) for right panel
+        let ns_segmented = Class::get("NSSegmentedControl").unwrap();
+        let tab_bar: Id = msg_send![ns_segmented, alloc];
+        let tab_frame = CGRect {
+            origin: CGPoint {
+                x: separator_x + 10.0,
+                y: window_height - header_height - 35.0,
+            },
+            size: CGSize {
+                width: 280.0,
+                height: 24.0,
+            },
+        };
+        let tab_bar: Id = msg_send![tab_bar, initWithFrame: tab_frame];
+        let _: () = msg_send![tab_bar, setSegmentCount: 2_isize];
+        let drafts_label: Id = msg_send![ns_string, stringWithUTF8String: c"Drafts".as_ptr()];
+        let settings_label: Id = msg_send![ns_string, stringWithUTF8String: c"Settings".as_ptr()];
+        let _: () = msg_send![tab_bar, setLabel: drafts_label forSegment: 0_isize];
+        let _: () = msg_send![tab_bar, setLabel: settings_label forSegment: 1_isize];
+        let _: () = msg_send![tab_bar, setSelectedSegment: state.selected_tab as isize];
+        let _: () = msg_send![tab_bar, setTarget: handler];
+        let _: () = msg_send![tab_bar, setAction: sel!(onTabChanged:)];
+        let _: () = msg_send![content_view, addSubview: tab_bar];
 
         // Show the window
         let _: () = msg_send![window, orderFrontRegardless];
@@ -517,8 +773,10 @@ fn show_voice_chat_overlay_impl() {
         state.input_field = Some(input_field as usize);
         state.send_button = Some(send_button as usize);
         state.auto_send_checkbox = Some(auto_send_cb as usize);
-        // state.attach_button = Some(attach_button as usize); // Removed for now to simplify layout
+        state.attach_button = Some(attach_btn as usize);
         state.action_handler = Some(handler as usize);
+        state.tab_bar = Some(tab_bar as usize);
+        state.collapse_button = Some(collapse_btn as usize);
 
         update_chat_view_with_state(&mut state, true);
         update_input_field_with_state(&mut state);
@@ -574,6 +832,52 @@ fn append_voice_chat_draft_impl(delta: &str) {
     state.is_voice_active = true;
     update_voice_draft_view_with_state(&mut state);
     // Note: We don't update manual input field here - they are separate
+}
+
+/// Finalize voice draft: save to file and clear buffer
+/// Called when VAD stops or recording finishes
+pub fn finalize_voice_draft() -> Option<std::path::PathBuf> {
+    Queue::main().exec_sync(finalize_voice_draft_impl)
+}
+
+fn finalize_voice_draft_impl() -> Option<std::path::PathBuf> {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Don't save empty drafts
+    let draft_text = state.voice_draft.trim();
+    if draft_text.is_empty() {
+        state.is_voice_active = false;
+        return None;
+    }
+
+    // Save draft to file
+    let path = codescribe_core::state::save_draft(draft_text);
+
+    // Clear voice draft buffer
+    state.voice_draft.clear();
+    state.is_voice_active = false;
+
+    // Update UI
+    update_voice_draft_view_with_state(&mut state);
+
+    info!("Voice draft finalized: {}", path.display());
+    Some(path)
+}
+
+/// Get the current voice draft text (for reading without clearing)
+pub fn get_voice_draft() -> String {
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.voice_draft.clone()
+}
+
+/// Clear voice draft without saving (e.g., on cancel)
+pub fn clear_voice_draft() {
+    Queue::main().exec_async(|| {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.voice_draft.clear();
+        state.is_voice_active = false;
+        update_voice_draft_view_with_state(&mut state);
+    });
 }
 
 /// Append a delta to the assistant response (streaming).
@@ -876,6 +1180,7 @@ fn hide_voice_chat_overlay_impl() {
         state.voice_draft_header = None;
         state.voice_send_button = None;
         state.voice_use_button = None;
+        state.tab_bar = None;
         state.messages.clear();
         // Clear both buffers
         state.manual_draft.clear();
@@ -912,7 +1217,7 @@ mod tests {
             auto_hide_timeout_secs: 10,
         };
         assert_eq!(config.width, 600.0);
-        assert_eq!(config.height, 300.0);
+        assert_eq!(config.height, 500.0);
         assert_eq!(config.auto_hide_timeout_secs, 10);
     }
 

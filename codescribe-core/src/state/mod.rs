@@ -18,6 +18,19 @@ pub use conversation::{
 };
 #[allow(unused_imports)] // Public API for external consumers
 pub use history::{
-    HistoryEntry, TranscriptKind, latest_entry, open_history_folder, recent_entries, save_audio,
-    save_entry, save_entry_with_kind, save_entry_with_timestamp,
+    HistoryEntry,
+    TranscriptKind,
+    // Voice Drafts API (Mission Control)
+    delete_draft,
+    drafts_dir,
+    latest_entry,
+    list_drafts,
+    open_history_folder,
+    read_draft,
+    recent_entries,
+    save_audio,
+    save_draft,
+    save_entry,
+    save_entry_with_kind,
+    save_entry_with_timestamp,
 };

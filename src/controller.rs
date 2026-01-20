@@ -689,6 +689,12 @@ impl RecordingController {
             recorder.stop().await.context("Failed to stop recorder")?;
         drop(recorder); // Release lock
 
+        // Save voice draft to file (Mission Control)
+        // This saves the streaming transcription for later review/editing
+        if let Some(draft_path) = crate::voice_chat_ui::finalize_voice_draft() {
+            debug!("Voice draft saved: {}", draft_path.display());
+        }
+
         // Check audio path validity (if present)
         let audio_path = if let Some(path) = raw_audio_path_opt {
             match ValidatedAudioPath::new(&path) {
