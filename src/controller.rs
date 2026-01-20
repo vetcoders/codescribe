@@ -558,6 +558,9 @@ impl RecordingController {
 
         // Start the recorder with VAD callback
         let mut recorder = self.recorder.lock().await;
+        // Configure hands-off timeout (5s) for toggle mode
+        recorder.recorder.config.hang_sec = 5.0;
+
         recorder.recorder.set_on_vad_stop(move || {
             info!("VAD callback: setting vad_triggered flag");
             vad_flag.store(true, Ordering::SeqCst);
@@ -579,8 +582,7 @@ impl RecordingController {
         // Show pulsing red badge for toggle mode (hands-off recording)
         show_badge_for_mode(BadgeMode::Toggle);
 
-        // Show live transcription overlay
-        crate::clear_voice_chat_text();
+        // Show live transcription overlay (do not clear history for persistence)
         crate::show_voice_chat_overlay();
 
         // Transition to REC_TOGGLE
@@ -779,6 +781,20 @@ impl RecordingController {
         let has_repetition = crate::ai_formatting::has_repetition_loop(&raw_text);
         if has_repetition {
             warn!("Detected repetition loop in transcription - will clean up");
+        }
+
+        // NEW: Check auto-send toggle
+        // We respect the UI toggle for all modes EXCEPT direct dictation (Force Raw / Hold Ctrl),
+        // which implies immediate action by nature of holding the key.
+        let auto_send = crate::voice_chat_ui::is_auto_send_enabled();
+        if !auto_send && !force_raw {
+            info!("Auto-send disabled. Placing raw transcript in draft.");
+            crate::voice_chat_ui::set_voice_chat_draft_text(&raw_text);
+            crate::voice_chat_ui::update_voice_chat_status("Draft ready");
+
+            // Reset state to IDLE and return early (skip formatting/pasting)
+            self.reset_state().await;
+            return Ok(());
         }
 
         // Determine final text based on mode (NEW architecture):

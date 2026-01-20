@@ -60,6 +60,20 @@ Assistive mode is designed for:
 | Visual feedback | Solid red badge | Pulsing red badge |
 | Cancel method | Release quickly | Double-tap again |
 
+## Chat Overlay
+
+When recording in hands-off mode, a **Chat Overlay** appears on screen. This window provides live feedback and control over the session:
+
+- **Live Transcript:** Watch your words appear in real-time as you speak.
+- **AI Response:** See the AI's formatted or assistive response stream in.
+- **Chat History:** Previous messages from the current session are preserved, allowing you to review the conversation.
+- **Input Field:** Your speech appears here first. You can edit it manually if needed.
+- **Auto-Send Toggle:**
+  - **checked (default):** Text is automatically processed and sent/pasted after you stop speaking (5s silence).
+  - **unchecked:** Text remains in the input field as a **draft**. You can edit it and press Enter or "Wyślij" to send.
+
+**Copying Text:** You can select any text in the chat history and copy it (Cmd+C). A "Copy Last to Clipboard" option is also available in the tray menu.
+
 ## Visual Indicators
 
 During hands-off recording, a **pulsing red badge** appears near the cursor to
@@ -67,6 +81,12 @@ indicate active recording. This differs from hold mode which shows a solid badge
 
 When processing completes, the badge briefly turns orange, then disappears once
 text is pasted.
+
+## Auto-Stop (VAD)
+
+The system uses Voice Activity Detection (VAD) to automatically stop recording when you finish speaking.
+- **Timeout:** Recording stops after **5 seconds** of silence.
+- **Short Pauses:** Pauses of 1-2 seconds are ignored, allowing you to think without cutting off the recording.
 
 ## Customizing Toggle Triggers
 

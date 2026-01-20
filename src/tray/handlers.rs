@@ -18,6 +18,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_toggle_ai_formatting();
     } else if event_id == &menu_ids.copy_last {
         handle_copy_last();
+    } else if event_id == &menu_ids.show_overlay {
+        crate::show_voice_chat_overlay();
     } else if event_id == &menu_ids.format_last {
         handle_format_last();
     } else if event_id == &menu_ids.format_last_five {
