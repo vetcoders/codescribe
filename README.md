@@ -187,7 +187,7 @@ flowchart TD
     B -->|Hold Ctrl| C[Start Recording]
     B -->|Double Option| C
     C --> D[Recording]
-    D -->|live chunks| E["Whisper STT (streaming)"]
+  D -->|live chunks| E[Whisper STT (streaming)]
     D -->|Release / Toggle| F[Stop]
     F --> G[Finalize last chunk]
     G --> H{AI Enabled?}

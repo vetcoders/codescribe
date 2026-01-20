@@ -759,68 +759,44 @@ dependencies = [
 
 [[package]]
 name = "codescribe"
-version = "0.7.1"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "arboard",
- "base64 0.22.1",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "cap-std",
  "chrono",
  "clap",
  "codescribe-core",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
  "coreml-rs",
- "cpal",
  "crossbeam-channel",
- "deunicode",
  "directories",
- "dirs",
  "dispatch",
- "dotenvy",
- "fastembed",
- "flate2",
  "futures-util",
- "hound",
  "image",
- "indicatif 0.18.3",
  "lazy_static",
  "libc",
  "mockito",
  "muda",
- "ndarray 0.16.1",
- "ndarray-npy",
  "objc",
  "objc2-app-kit",
- "openai-harmony",
- "rand 0.8.5",
- "regex",
  "reqwest",
  "serde",
  "serde_json",
  "serial_test",
- "shellexpand",
- "symphonia",
  "tao",
  "tempfile",
- "thiserror 2.0.17",
- "tokenizers",
  "tokio",
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "tray-icon",
  "uuid",
- "walkdir",
- "zip 0.6.6",
 ]
 
 [[package]]
 name = "codescribe-core"
-version = "0.7.1"
+version = "0.7.7"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

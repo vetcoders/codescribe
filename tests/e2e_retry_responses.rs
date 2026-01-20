@@ -24,6 +24,8 @@ async fn e2e_retry_on_failure_responses_api() {
         std::env::set_var("LLM_ENDPOINT", &endpoint);
         std::env::set_var("LLM_MODEL", "test-model");
         std::env::set_var("LLM_API_KEY", "test-key");
+        // Mock returns plain JSON, not SSE — use sync mode
+        std::env::set_var("LLM_USE_STREAMING", "0");
     }
 
     // First attempt fails with 500, second succeeds.

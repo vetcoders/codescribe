@@ -58,8 +58,13 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
         // Keep some slack for local CI variability.
         std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "2000");
         std::env::set_var("LLM_ENDPOINT", &endpoint);
+        std::env::set_var("LLM_FORMATTING_ENDPOINT", &endpoint);
         std::env::set_var("LLM_MODEL", "test-model");
+        std::env::set_var("LLM_FORMATTING_MODEL", "test-model");
         std::env::set_var("LLM_API_KEY", "test-key");
+        std::env::set_var("LLM_FORMATTING_API_KEY", "test-key");
+        // Mock returns plain JSON, not SSE — use sync mode
+        std::env::set_var("LLM_USE_STREAMING", "0");
     }
 
     let m = server

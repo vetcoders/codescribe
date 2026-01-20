@@ -12,6 +12,28 @@
 SHELL := /bin/bash
 VERSION_FILE := Cargo.toml
 EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo nano)
+ENV_LOAD := set -a; [ -f $$HOME/.codescribe/.env ] && source $$HOME/.codescribe/.env; set +a
+
+# Test defaults (reference/cloud unless forced local)
+TEST_USE_LOCAL_LLM ?= 0
+LOCAL_LLM_ENDPOINT ?= http://localhost:11434/v1/responses
+LOCAL_LLM_MODEL ?= gpt-oss:120b-cloud
+LOCAL_LLM_API_KEY ?= local
+
+define APPLY_TEST_LLM
+if [[ "$(TEST_USE_LOCAL_LLM)" == "1" ]]; then \
+  export LLM_ENDPOINT="$(LOCAL_LLM_ENDPOINT)"; \
+  export LLM_MODEL="$(LOCAL_LLM_MODEL)"; \
+  export LLM_API_KEY="$(LOCAL_LLM_API_KEY)"; \
+  export LLM_FORMATTING_ENDPOINT="$(LOCAL_LLM_ENDPOINT)"; \
+  export LLM_FORMATTING_MODEL="$(LOCAL_LLM_MODEL)"; \
+  export LLM_FORMATTING_API_KEY="$(LOCAL_LLM_API_KEY)"; \
+  export LLM_ASSISTIVE_ENDPOINT="$(LOCAL_LLM_ENDPOINT)"; \
+  export LLM_ASSISTIVE_MODEL="$(LOCAL_LLM_MODEL)"; \
+  export LLM_ASSISTIVE_API_KEY="$(LOCAL_LLM_API_KEY)"; \
+  export LLM_USE_STREAMING=1; \
+fi
+endef
 
 # ============================================================================
 # Build & Install
@@ -144,30 +166,30 @@ lint:
 
 test:
 	@echo "=== Tests (workspace) ==="
-	@cargo test --workspace --all-targets -- --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test --workspace --all-targets -- --nocapture
 	@echo "=== Tests (ignored / real API) ==="
-	@cargo test --workspace --all-targets -- --ignored --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test --workspace --all-targets -- --ignored --nocapture
 
 test-quick:
 	@echo "=== Tests (quick, no real API) ==="
-	@cargo test --workspace --all-targets -- --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test --workspace --all-targets -- --nocapture
 
 test-e2e:
 	@echo "=== E2E Tests (mock) ==="
-	@cargo test e2e --release -- --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test e2e --release -- --nocapture
 
 test-e2e-real:
 	@echo "=== E2E Tests (real API) ==="
 	@echo "Requires: LLM_API_KEY, LLM_ASSISTIVE_API_KEY"
-	@cargo test e2e --release -- --ignored --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test e2e --release -- --ignored --nocapture
 
 test-sse:
 	@echo "=== SSE Streaming Tests ==="
-	@cargo test e2e_sse --release -- --ignored --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test e2e_sse --release -- --ignored --nocapture
 
 test-formatting:
 	@echo "=== AI Formatting Tests ==="
-	@cargo test formatting --release -- --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test formatting --release -- --nocapture
 
 test-all:
 	@echo "=== Full Test Suite ==="

@@ -66,3 +66,11 @@ nohup.out.backup
 /.aiassistant
 *claude*
 *codex*
+/agents
+
+# CodeScribe
+.codescribe/state/
+*ode*cribe_memory_*
+docs/runtime-diagnosis.md
+*.log
+/core/models

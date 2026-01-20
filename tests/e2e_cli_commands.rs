@@ -131,8 +131,10 @@ fn test_cli_transcribe_help() {
 
     assert!(output.status.success(), "transcribe --help should succeed");
     assert!(stdout.contains("--language"), "Should have language option");
+    assert!(stdout.contains("--stream"), "Should have stream option");
     assert!(stdout.contains("--format"), "Should have format option");
     assert!(stdout.contains("--llm"), "Should have llm option");
+    assert!(stdout.contains("live"), "Should mention live subcommand");
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -304,7 +306,54 @@ fn test_cli_transcribe_missing_file() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("required") || stderr.contains("<FILE>") || stderr.contains("file"),
+        stderr.contains("Missing") || stderr.contains("<FILE>") || stderr.contains("live"),
         "Should mention missing file argument"
     );
+}
+
+/// Test: `codescribe transcribe --stream <file>` outputs transcription
+#[test]
+#[serial]
+fn test_cli_transcribe_streaming_output() {
+    let enabled = std::env::var("CODESCRIBE_E2E_STT")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if !enabled {
+        eprintln!("Skipping streaming E2E (set CODESCRIBE_E2E_STT=1 to enable)");
+        return;
+    }
+
+    ensure_cli_built();
+
+    let audio_path = test_audio_path();
+    if !audio_path.exists() {
+        eprintln!("Test audio not found: {}", audio_path.display());
+        return;
+    }
+
+    let output = Command::new(cli_binary())
+        .args([
+            "transcribe",
+            "--stream",
+            audio_path.to_str().unwrap(),
+            "-l",
+            "pl",
+        ])
+        .output()
+        .expect("Failed to run CLI");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!("STDOUT: {}", stdout);
+    println!("STDERR: {}", stderr);
+
+    assert!(
+        output.status.success(),
+        "Streaming transcription should succeed: {}",
+        stderr
+    );
+    assert!(!stdout.is_empty(), "Should output streaming transcription");
 }
