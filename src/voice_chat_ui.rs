@@ -10,6 +10,7 @@
 // Allow unused API methods - they're part of the public interface for future use
 #![allow(dead_code)]
 
+use codescribe_core::config::{Config, OverlayPositionMode};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
@@ -48,7 +49,7 @@ impl Default for VoiceChatOverlayConfig {
 /// Voice chat overlay state
 struct VoiceChatOverlayState {
     window: Option<usize>,
-    text_field: Option<usize>,
+    text_view: Option<usize>,
     status_field: Option<usize>,
     accumulated_text: String,
 }
@@ -56,7 +57,7 @@ struct VoiceChatOverlayState {
 lazy_static::lazy_static! {
     static ref OVERLAY_STATE: Mutex<VoiceChatOverlayState> = Mutex::new(VoiceChatOverlayState {
         window: None,
-        text_field: None,
+        text_view: None,
         status_field: None,
         accumulated_text: String::new(),
     });
@@ -95,27 +96,48 @@ fn show_voice_chat_overlay_impl() {
         // Get screen size to position the overlay
         let ns_screen = Class::get("NSScreen").unwrap();
         let main_screen: Id = msg_send![ns_screen, mainScreen];
-        let screen_frame: CGRect = msg_send![main_screen, frame];
+        let visible_frame: CGRect = msg_send![main_screen, visibleFrame];
 
-        // Create window in bottom-right corner
+        // Load config for position logic
+        let config = Config::load();
+
+        // Create window dimensions
         let window_width = 400.0;
         let window_height = 200.0;
-        let margin = 20.0;
+        let margin = 16.0;
+
+        let (x, y) = match config.overlay_position_mode {
+            OverlayPositionMode::SnappedTopRight => {
+                let right_x = visible_frame.origin.x + visible_frame.size.width;
+                let top_y = visible_frame.origin.y + visible_frame.size.height;
+                (
+                    right_x - window_width - margin,
+                    top_y - window_height - margin,
+                )
+            }
+            OverlayPositionMode::Custom => {
+                let right_x = visible_frame.origin.x + visible_frame.size.width;
+                let top_y = visible_frame.origin.y + visible_frame.size.height;
+                let def_x = right_x - window_width - margin;
+                let def_y = top_y - window_height - margin;
+                (
+                    config.overlay_custom_x.unwrap_or(def_x),
+                    config.overlay_custom_y.unwrap_or(def_y),
+                )
+            }
+        };
 
         let frame = CGRect {
-            origin: CGPoint {
-                x: screen_frame.size.width - window_width - margin,
-                y: margin,
-            },
+            origin: CGPoint { x, y },
             size: CGSize {
                 width: window_width,
                 height: window_height,
             },
         };
 
-        // Create window
+        // Create window with rounded corners style (Title + FullSizeContent + Hidden Title)
         let window: Id = msg_send![ns_window, alloc];
-        let style_mask = NSWindowStyleMask::Borderless;
+        let style_mask = NSWindowStyleMask::Titled | NSWindowStyleMask::FullSizeContentView;
         let backing = NSBackingStoreType::Buffered;
         let window: Id = msg_send![
             window,
@@ -124,6 +146,11 @@ fn show_voice_chat_overlay_impl() {
             backing: backing
             defer: false
         ];
+
+        // Configure rounded corners and dragging
+        let _: () = msg_send![window, setTitleVisibility: 1]; // NSWindowTitleHidden
+        let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
+        let _: () = msg_send![window, setMovableByWindowBackground: true];
 
         // Configure window appearance
         let bg_color = NSColor::colorWithCalibratedRed_green_blue_alpha(0.1, 0.1, 0.1, 0.95);
@@ -137,23 +164,33 @@ fn show_voice_chat_overlay_impl() {
         // Get content view
         let content_view: Id = msg_send![window, contentView];
 
-        // Create status label at top
+        // Create status header bar at top
+        let header_height = 30.0;
         let status_frame = CGRect {
             origin: CGPoint {
-                x: 10.0,
-                y: window_height - 30.0,
+                x: 0.0,
+                y: window_height - header_height,
             },
             size: CGSize {
-                width: window_width - 20.0,
-                height: 20.0,
+                width: window_width,
+                height: header_height,
             },
         };
         let status_field: Id = msg_send![ns_text_field, alloc];
         let status_field: Id = msg_send![status_field, initWithFrame: status_frame];
         let _: () = msg_send![status_field, setBezeled: false];
-        let _: () = msg_send![status_field, setDrawsBackground: false];
+        let _: () = msg_send![status_field, setDrawsBackground: true];
         let _: () = msg_send![status_field, setEditable: false];
         let _: () = msg_send![status_field, setSelectable: false];
+
+        // Header background color
+        let header_color = NSColor::colorWithCalibratedRed_green_blue_alpha(0.2, 0.2, 0.2, 0.8);
+        let header_color_ptr = &*header_color as *const _ as Id;
+        let _: () = msg_send![status_field, setBackgroundColor: header_color_ptr];
+
+        // Alignment center (1 = Center in older constants, or 2 depending on version, safely assumed 1 for now)
+        // Actually let's keep left aligned but with padding if possible.
+        // For now standard left is fine, just added background.
 
         let white_color = NSColor::whiteColor();
         let white_color_ptr = &*white_color as *const _ as Id;
@@ -166,29 +203,56 @@ fn show_voice_chat_overlay_impl() {
 
         let _: () = msg_send![content_view, addSubview: status_field];
 
-        // Create text field for response
-        let text_frame = CGRect {
+        // Create scrollable text view for response
+        let scroll_frame = CGRect {
             origin: CGPoint { x: 10.0, y: 10.0 },
             size: CGSize {
                 width: window_width - 20.0,
                 height: window_height - 50.0,
             },
         };
-        let text_field: Id = msg_send![ns_text_field, alloc];
-        let text_field: Id = msg_send![text_field, initWithFrame: text_frame];
-        let _: () = msg_send![text_field, setBezeled: false];
-        let _: () = msg_send![text_field, setDrawsBackground: false];
-        let _: () = msg_send![text_field, setEditable: false];
-        let _: () = msg_send![text_field, setSelectable: true];
-        let _: () = msg_send![text_field, setTextColor: white_color_ptr];
 
-        let _: () = msg_send![content_view, addSubview: text_field];
+        let ns_scroll_view = Class::get("NSScrollView").unwrap();
+        let scroll_view: Id = msg_send![ns_scroll_view, alloc];
+        let scroll_view: Id = msg_send![scroll_view, initWithFrame: scroll_frame];
+        let _: () = msg_send![scroll_view, setHasVerticalScroller: true];
+        let _: () = msg_send![scroll_view, setBorderType: 0]; // NSNoBorder
+        let _: () = msg_send![scroll_view, setDrawsBackground: false];
+
+        // Content rect for text view
+        let content_size: CGSize = msg_send![scroll_view, contentSize];
+        let text_frame = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: content_size,
+        };
+
+        let ns_text_view = Class::get("NSTextView").unwrap();
+        let text_view: Id = msg_send![ns_text_view, alloc];
+        let text_view: Id = msg_send![text_view, initWithFrame: text_frame];
+
+        let _: () =
+            msg_send![text_view, setMinSize: CGSize { width: 0.0, height: content_size.height }];
+        let _: () = msg_send![text_view, setMaxSize: CGSize { width: f64::MAX, height: f64::MAX }];
+        let _: () = msg_send![text_view, setVerticallyResizable: true];
+        let _: () = msg_send![text_view, setHorizontallyResizable: false];
+        let _: () = msg_send![text_view, setAutoresizingMask: 2]; // NSViewWidthSizable
+
+        let text_container: Id = msg_send![text_view, textContainer];
+        let _: () = msg_send![text_container, setWidthTracksTextView: true];
+
+        let _: () = msg_send![text_view, setEditable: false];
+        let _: () = msg_send![text_view, setSelectable: true];
+        let _: () = msg_send![text_view, setTextColor: white_color_ptr];
+        let _: () = msg_send![text_view, setDrawsBackground: false];
+
+        let _: () = msg_send![scroll_view, setDocumentView: text_view];
+        let _: () = msg_send![content_view, addSubview: scroll_view];
 
         // Show the window
         let _: () = msg_send![window, orderFrontRegardless];
 
         state.window = Some(window as usize);
-        state.text_field = Some(text_field as usize);
+        state.text_view = Some(text_view as usize);
         state.status_field = Some(status_field as usize);
 
         info!("Voice chat overlay shown");
@@ -228,13 +292,20 @@ pub fn append_voice_chat_delta(delta: &str) {
     });
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct NSRange {
+    location: usize,
+    length: usize,
+}
+
 fn append_voice_chat_delta_impl(delta: &str) {
     unsafe {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.accumulated_text.push_str(delta);
 
-        if let Some(text_field_ptr) = state.text_field {
-            let text_field = text_field_ptr as Id;
+        if let Some(text_view_ptr) = state.text_view {
+            let text_view = text_view_ptr as Id;
             let ns_string = Class::get("NSString").unwrap();
 
             // Create null-terminated C string
@@ -242,7 +313,15 @@ fn append_voice_chat_delta_impl(delta: &str) {
             c_str.push(0);
 
             let ns_str: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
-            let _: () = msg_send![text_field, setStringValue: ns_str];
+            let _: () = msg_send![text_view, setString: ns_str];
+
+            // Auto-scroll to end
+            let length: usize = msg_send![ns_str, length];
+            let range = NSRange {
+                location: length,
+                length: 0,
+            };
+            let _: () = msg_send![text_view, scrollRangeToVisible: range];
         }
     }
 }
@@ -260,8 +339,8 @@ fn set_voice_chat_text_impl(text: &str) {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.accumulated_text = text.to_string();
 
-        if let Some(text_field_ptr) = state.text_field {
-            let text_field = text_field_ptr as Id;
+        if let Some(text_view_ptr) = state.text_view {
+            let text_view = text_view_ptr as Id;
             let ns_string = Class::get("NSString").unwrap();
 
             // Create null-terminated C string
@@ -269,7 +348,15 @@ fn set_voice_chat_text_impl(text: &str) {
             c_str.push(0);
 
             let ns_str: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
-            let _: () = msg_send![text_field, setStringValue: ns_str];
+            let _: () = msg_send![text_view, setString: ns_str];
+
+            // Auto-scroll to end
+            let length: usize = msg_send![ns_str, length];
+            let range = NSRange {
+                location: length,
+                length: 0,
+            };
+            let _: () = msg_send![text_view, scrollRangeToVisible: range];
         }
     }
 }
@@ -292,11 +379,11 @@ fn clear_voice_chat_text_impl() {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.accumulated_text.clear();
 
-        if let Some(text_field_ptr) = state.text_field {
-            let text_field = text_field_ptr as Id;
+        if let Some(text_view_ptr) = state.text_view {
+            let text_view = text_view_ptr as Id;
             let ns_string = Class::get("NSString").unwrap();
             let empty: Id = msg_send![ns_string, stringWithUTF8String: c"".as_ptr()];
-            let _: () = msg_send![text_field, setStringValue: empty];
+            let _: () = msg_send![text_view, setString: empty];
         }
     }
 }
@@ -328,7 +415,7 @@ fn hide_voice_chat_overlay_impl() {
             let _: () = msg_send![window, close];
             debug!("Voice chat overlay hidden");
         }
-        state.text_field = None;
+        state.text_view = None;
         state.status_field = None;
         state.accumulated_text.clear();
     }

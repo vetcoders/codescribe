@@ -134,6 +134,8 @@ struct Args {
 enum ReferenceSourceArg {
     Corpus,
     Cloud,
+    /// AI-formatted transcript (Whisper + LLM correction) - best for learning corrections
+    Ai,
 }
 
 #[tokio::main]
@@ -190,6 +192,7 @@ async fn run_single(args: &Args) -> Result<()> {
         metrics_reference: match args.metrics_reference {
             ReferenceSourceArg::Corpus => MetricsReference::Corpus,
             ReferenceSourceArg::Cloud => MetricsReference::Cloud,
+            ReferenceSourceArg::Ai => MetricsReference::AiFormatted,
         },
     };
 
@@ -205,6 +208,7 @@ async fn run_single(args: &Args) -> Result<()> {
         lexicon_source: match args.lexicon_source {
             ReferenceSourceArg::Corpus => LexiconSource::Corpus,
             ReferenceSourceArg::Cloud => LexiconSource::Cloud,
+            ReferenceSourceArg::Ai => LexiconSource::AiFormatted,
         },
         update_gate: !args.no_gate,
         update_prompts: !args.no_prompt,

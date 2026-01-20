@@ -22,7 +22,9 @@ pub mod prompts;
 mod types;
 
 // Re-export types
-pub use types::{AiProvider, Config, HoldMods, ToggleTrigger};
+pub use types::{
+    AiProvider, Config, HoldMods, OverlayPositionMode, ToggleTrigger, TranscriptSendMode,
+};
 // Language re-exported for external consumers (GUI apps)
 #[allow(unused_imports)]
 pub use types::Language;
@@ -122,5 +124,35 @@ mod tests {
         assert_eq!(vars.get("KEY2"), Some(&"value2".to_string()));
         assert_eq!(vars.get("KEY3"), Some(&"value3".to_string()));
         assert_eq!(vars.len(), 3);
+    }
+
+    #[test]
+    fn test_transcript_mode_parsing() {
+        use types::TranscriptSendMode;
+        assert_eq!(
+            "streaming".parse::<TranscriptSendMode>(),
+            Ok(TranscriptSendMode::Streaming)
+        );
+        assert_eq!(
+            "end_of_utterance".parse::<TranscriptSendMode>(),
+            Ok(TranscriptSendMode::EndOfUtterance)
+        );
+        assert_eq!(
+            "end".parse::<TranscriptSendMode>(),
+            Ok(TranscriptSendMode::EndOfUtterance)
+        );
+    }
+
+    #[test]
+    fn test_overlay_position_parsing() {
+        use types::OverlayPositionMode;
+        assert_eq!(
+            "snapped_top_right".parse::<OverlayPositionMode>(),
+            Ok(OverlayPositionMode::SnappedTopRight)
+        );
+        assert_eq!(
+            "custom".parse::<OverlayPositionMode>(),
+            Ok(OverlayPositionMode::Custom)
+        );
     }
 }

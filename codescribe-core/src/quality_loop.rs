@@ -41,8 +41,12 @@ pub struct QualityLoopConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexiconSource {
+    /// Reference from corpus .txt files (human-written)
     Corpus,
+    /// Reference from cloud STT (Google/Deepgram)
     Cloud,
+    /// Reference from AI-formatted transcript (Whisper + LLM correction)
+    AiFormatted,
 }
 
 impl LexiconSource {
@@ -50,6 +54,7 @@ impl LexiconSource {
         match self {
             LexiconSource::Corpus => "corpus",
             LexiconSource::Cloud => "cloud",
+            LexiconSource::AiFormatted => "ai",
         }
     }
 }
@@ -832,6 +837,7 @@ fn extract_lexicon_suggestions(
         let reference = match source {
             LexiconSource::Corpus => entry.transcripts.reference.as_deref(),
             LexiconSource::Cloud => entry.transcripts.cloud.as_deref(),
+            LexiconSource::AiFormatted => entry.transcripts.ai_formatted.as_deref(),
         };
         let Some(reference) = reference else {
             continue;

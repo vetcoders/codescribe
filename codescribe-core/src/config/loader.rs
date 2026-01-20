@@ -10,7 +10,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
-use super::types::{AiProvider, Config, HoldMods, Language, ToggleTrigger};
+use super::types::{
+    AiProvider, Config, HoldMods, Language, OverlayPositionMode, ToggleTrigger, TranscriptSendMode,
+};
 
 impl Config {
     /// Load configuration from disk or environment.
@@ -79,6 +81,11 @@ impl Config {
         {
             self.ai_provider = provider;
         }
+        if let Ok(val) = std::env::var("TRANSCRIPT_SEND_MODE")
+            && let Ok(mode) = val.parse::<TranscriptSendMode>()
+        {
+            self.transcript_send_mode = mode;
+        }
         if let Ok(val) = std::env::var("AI_MAX_TOKENS")
             && let Ok(tokens) = val.parse()
         {
@@ -111,6 +118,22 @@ impl Config {
             && let Ok(offset) = val.parse()
         {
             self.hold_badge_offset_y = offset;
+        }
+
+        if let Ok(val) = std::env::var("OVERLAY_POSITION_MODE")
+            && let Ok(mode) = val.parse::<OverlayPositionMode>()
+        {
+            self.overlay_position_mode = mode;
+        }
+        if let Ok(val) = std::env::var("OVERLAY_CUSTOM_X")
+            && let Ok(x) = val.parse()
+        {
+            self.overlay_custom_x = Some(x);
+        }
+        if let Ok(val) = std::env::var("OVERLAY_CUSTOM_Y")
+            && let Ok(y) = val.parse()
+        {
+            self.overlay_custom_y = Some(y);
         }
 
         // Sound

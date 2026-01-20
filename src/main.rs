@@ -10,6 +10,8 @@ use clap::Parser;
 use codescribe::{audio, whisper};
 use std::path::PathBuf;
 
+mod lab_server;
+
 /// CodeScribe CLI - Local speech-to-text transcription
 ///
 /// For the full app with tray icon and hotkeys, run CodeScribe.app
@@ -416,6 +418,9 @@ async fn run_daemon() -> Result<()> {
             }
         }
     });
+
+    // Start Lab Server (Side-by-side comparison MVP)
+    lab_server::start_lab_server();
 
     tray::run_with_hotkeys(Some(hotkey_manager))?;
 

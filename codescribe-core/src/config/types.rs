@@ -128,6 +128,66 @@ impl FromStr for Language {
     }
 }
 
+/// Strategy for sending transcripts to AI
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptSendMode {
+    #[default]
+    EndOfUtterance, // Wait for silence, then send (classic)
+    Streaming, // Send chunks as they arrive (incremental)
+}
+
+impl TranscriptSendMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::EndOfUtterance => "end_of_utterance",
+            Self::Streaming => "streaming",
+        }
+    }
+}
+
+impl FromStr for TranscriptSendMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "end_of_utterance" | "end" | "delayed" => Ok(Self::EndOfUtterance),
+            "streaming" | "stream" | "incremental" => Ok(Self::Streaming),
+            _ => Err(format!("Unknown TranscriptSendMode: {}", s)),
+        }
+    }
+}
+
+/// Overlay position strategy
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayPositionMode {
+    #[default]
+    SnappedTopRight,
+    Custom,
+}
+
+impl OverlayPositionMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SnappedTopRight => "snapped_top_right",
+            Self::Custom => "custom",
+        }
+    }
+}
+
+impl FromStr for OverlayPositionMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "snapped_top_right" | "snap" | "top_right" => Ok(Self::SnappedTopRight),
+            "custom" | "manual" => Ok(Self::Custom),
+            _ => Err(format!("Unknown OverlayPositionMode: {}", s)),
+        }
+    }
+}
+
 /// AI provider options
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -189,6 +249,10 @@ pub struct Config {
     #[serde(default)]
     pub ai_provider: AiProvider,
 
+    /// Strategy for sending transcript (end-of-utterance vs streaming)
+    #[serde(default)]
+    pub transcript_send_mode: TranscriptSendMode,
+
     /// Maximum tokens for regular AI completions
     #[serde(default = "default_ai_max_tokens")]
     pub ai_max_tokens: i32,
@@ -217,6 +281,18 @@ pub struct Config {
     /// Y offset of hold indicator badge
     #[serde(default = "default_hold_badge_offset_y")]
     pub hold_badge_offset_y: i32,
+
+    /// Overlay position mode
+    #[serde(default)]
+    pub overlay_position_mode: OverlayPositionMode,
+
+    /// Custom X coordinate for overlay (if mode is Custom)
+    #[serde(default)]
+    pub overlay_custom_x: Option<f64>,
+
+    /// Custom Y coordinate for overlay (if mode is Custom)
+    #[serde(default)]
+    pub overlay_custom_y: Option<f64>,
 
     // ===== Sound =====
     /// Whether to play a beep sound when recording starts
@@ -320,6 +396,7 @@ impl Default for Config {
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
             ai_provider: AiProvider::default(),
+            transcript_send_mode: TranscriptSendMode::default(),
             ai_max_tokens: default_ai_max_tokens(),
             ai_assistive_max_tokens: default_ai_assistive_max_tokens(),
             show_tray_glyph: default_show_tray_glyph(),
@@ -327,6 +404,9 @@ impl Default for Config {
             hold_badge_size: default_hold_badge_size(),
             hold_badge_offset_x: default_hold_badge_offset_x(),
             hold_badge_offset_y: default_hold_badge_offset_y(),
+            overlay_position_mode: OverlayPositionMode::default(),
+            overlay_custom_x: None,
+            overlay_custom_y: None,
             beep_on_start: default_beep_on_start(),
             sound_name: default_sound_name(),
             sound_volume: default_sound_volume(),

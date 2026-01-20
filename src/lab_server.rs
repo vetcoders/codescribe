@@ -17,19 +17,19 @@ const LAB_PORT: u16 = 8237;
 /// Get the lab assets directory
 fn lab_assets_dir() -> PathBuf {
     // Try relative to executable first
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let assets = parent.join("assets").join("lab");
-            if assets.exists() {
-                return assets;
-            }
-            // Try one level up (for dev builds)
-            let assets = parent.parent().map(|p| p.join("assets").join("lab"));
-            if let Some(ref a) = assets {
-                if a.exists() {
-                    return a.clone();
-                }
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let assets = parent.join("assets").join("lab");
+        if assets.exists() {
+            return assets;
+        }
+        // Try one level up (for dev builds)
+        let assets = parent.parent().map(|p| p.join("assets").join("lab"));
+        if let Some(ref a) = assets
+            && a.exists()
+        {
+            return a.clone();
         }
     }
 

@@ -796,16 +796,27 @@ impl RecordingController {
 
             let lang_str = language_opt.map(String::from);
 
+            // Determine streaming mode from config
+            let transcript_mode = self.config.read().await.transcript_send_mode;
+            let use_streaming = matches!(
+                transcript_mode,
+                crate::config::TranscriptSendMode::Streaming
+            );
+
             // Callback for streaming AI response to overlay
-            let delta_callback = Arc::new(|text: &str| {
-                crate::voice_chat_ui::append_voice_chat_delta(text);
-            });
+            let delta_callback = if use_streaming {
+                Some(Arc::new(|text: &str| {
+                    crate::voice_chat_ui::append_voice_chat_delta(text);
+                }) as Arc<dyn Fn(&str) + Send + Sync>)
+            } else {
+                None
+            };
 
             let result = crate::ai_formatting::format_text_with_status(
                 &raw_text,
                 lang_str.as_deref(),
                 true,
-                Some(delta_callback),
+                delta_callback,
             )
             .await;
             let kind = match result.status {
@@ -866,16 +877,27 @@ impl RecordingController {
 
                 let lang_str = language_opt.map(String::from);
 
+                // Determine streaming mode from config
+                let transcript_mode = self.config.read().await.transcript_send_mode;
+                let use_streaming = matches!(
+                    transcript_mode,
+                    crate::config::TranscriptSendMode::Streaming
+                );
+
                 // Callback for streaming AI response to overlay
-                let delta_callback = Arc::new(|text: &str| {
-                    crate::voice_chat_ui::append_voice_chat_delta(text);
-                });
+                let delta_callback = if use_streaming {
+                    Some(Arc::new(|text: &str| {
+                        crate::voice_chat_ui::append_voice_chat_delta(text);
+                    }) as Arc<dyn Fn(&str) + Send + Sync>)
+                } else {
+                    None
+                };
 
                 let result = crate::ai_formatting::format_text_with_status(
                     &raw_text,
                     lang_str.as_deref(),
                     false,
-                    Some(delta_callback),
+                    delta_callback,
                 )
                 .await;
                 let kind = match result.status {
@@ -936,16 +958,27 @@ impl RecordingController {
 
                 let lang_str = language_opt.map(String::from);
 
+                // Determine streaming mode from config
+                let transcript_mode = self.config.read().await.transcript_send_mode;
+                let use_streaming = matches!(
+                    transcript_mode,
+                    crate::config::TranscriptSendMode::Streaming
+                );
+
                 // Callback for streaming AI response to overlay
-                let delta_callback = Arc::new(|text: &str| {
-                    crate::voice_chat_ui::append_voice_chat_delta(text);
-                });
+                let delta_callback = if use_streaming {
+                    Some(Arc::new(|text: &str| {
+                        crate::voice_chat_ui::append_voice_chat_delta(text);
+                    }) as Arc<dyn Fn(&str) + Send + Sync>)
+                } else {
+                    None
+                };
 
                 let result = crate::ai_formatting::format_text_with_status(
                     &raw_text,
                     lang_str.as_deref(),
                     false,
-                    Some(delta_callback),
+                    delta_callback,
                 )
                 .await;
                 let kind = match result.status {

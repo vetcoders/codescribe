@@ -44,6 +44,8 @@ pub struct QualityReportConfig {
 pub enum MetricsReference {
     Corpus,
     Cloud,
+    /// AI-formatted transcript (Whisper + LLM correction)
+    AiFormatted,
 }
 
 impl MetricsReference {
@@ -51,6 +53,7 @@ impl MetricsReference {
         match self {
             MetricsReference::Corpus => "corpus",
             MetricsReference::Cloud => "cloud",
+            MetricsReference::AiFormatted => "ai",
         }
     }
 }
@@ -381,9 +384,13 @@ async fn process_pair(
     let metrics_reference = match config.metrics_reference {
         MetricsReference::Corpus => reference.as_deref(),
         MetricsReference::Cloud => cloud.as_deref(),
+        MetricsReference::AiFormatted => ai_formatted.as_deref(),
     };
     if matches!(config.metrics_reference, MetricsReference::Cloud) && cloud.is_none() {
         errors.push("Metrics reference missing: cloud transcript unavailable".into());
+    }
+    if matches!(config.metrics_reference, MetricsReference::AiFormatted) && ai_formatted.is_none() {
+        errors.push("Metrics reference missing: AI formatted transcript unavailable".into());
     }
     let metrics = compute_metrics(
         metrics_reference,
