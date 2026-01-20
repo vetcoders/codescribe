@@ -67,6 +67,11 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let copy_last_id = copy_last_item.id().clone();
     menu.append(&copy_last_item)?;
 
+    // 2a. Show Chat Overlay
+    let show_overlay_item = MenuItem::new("Show Chat Overlay", true, None);
+    let show_overlay_id = show_overlay_item.id().clone();
+    menu.append(&show_overlay_item)?;
+
     // 4. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
@@ -184,6 +189,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         MenuIds {
             ai_formatting: ai_formatting_id,
             copy_last: copy_last_id,
+            show_overlay: show_overlay_id,
             format_last: format_last_id,
             format_last_five: format_last_five_id,
             help: help_id,

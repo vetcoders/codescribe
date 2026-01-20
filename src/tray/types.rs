@@ -117,6 +117,7 @@ pub struct MenuIds {
     // Top-level
     pub ai_formatting: MenuId,
     pub copy_last: MenuId,
+    pub show_overlay: MenuId,
     pub format_last: MenuId,
     pub format_last_five: MenuId,
     pub help: MenuId,

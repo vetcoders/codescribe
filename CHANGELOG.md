@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.2-dev] – 2026-01-20
+
+### Added
+- **Hands-off Chat Overlay** – Full chat interface in overlay with history, user/assistant roles, and input field.
+- **Persistence** – Chat history is preserved between sessions; messages do not disappear on close.
+- **Auto-send Toggle** – UI checkbox to control automatic sending vs. draft mode.
+- **Improved VAD** – 5s timeout for hands-off mode to allow for pauses; short silences (1-2s) are ignored.
+- **Tray Actions** – Added "Show Chat Overlay" and "Copy Last to Clipboard" to tray menu.
+- **UI Improvements** – Input field at top, reversed message flow (newest first), selectable text for copying.
+
+### Fixed
+- **Quality Gates** – Resolved `cargo check` and `make check` warnings; improved code quality.
+- **Reliability** – Fixed issue where overlay would reset state unexpectedly.
+
 ## [v0.7.0] – 2026-01-17
 
 ### Added
