@@ -40,15 +40,23 @@ pub struct VoiceChatOverlayConfig {
 impl Default for VoiceChatOverlayConfig {
     fn default() -> Self {
         Self {
-            width: 400.0,
-            height: 300.0,
+            width: 750.0,  // Mission Control: split view (60% left + 40% right)
+            height: 400.0, // Increased for better chat history visibility
             auto_hide_timeout_secs: 5,
         }
     }
 }
 
+/// Source of the message input
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputSource {
+    Voice,
+    Manual,
+}
+
 /// Voice chat overlay state
 struct VoiceChatOverlayState {
+    // UI element handles
     window: Option<usize>,
     scroll_view: Option<usize>,
     text_view: Option<usize>,
@@ -58,10 +66,22 @@ struct VoiceChatOverlayState {
     attach_button: Option<usize>,
     auto_send_checkbox: Option<usize>,
     action_handler: Option<usize>,
+    // Right panel (sidecar) for voice draft
+    voice_draft_view: Option<usize>,
+    voice_draft_header: Option<usize>,
+    voice_send_button: Option<usize>,
+    voice_use_button: Option<usize>,
+    // Chat state
     messages: Vec<ChatMessage>,
-    draft_text: String,
+    // Separated buffers: manual input (left) vs voice streaming (right)
+    manual_draft: String,
+    voice_draft: String,
+    // Attachments for manual input
+    attachments: Vec<std::path::PathBuf>,
+    // State flags
     is_sending: bool,
     auto_send_enabled: bool,
+    is_voice_active: bool,
 }
 
 lazy_static::lazy_static! {
@@ -75,10 +95,17 @@ lazy_static::lazy_static! {
         attach_button: None,
         auto_send_checkbox: None,
         action_handler: None,
+        voice_draft_view: None,
+        voice_draft_header: None,
+        voice_send_button: None,
+        voice_use_button: None,
         messages: Vec::new(),
-        draft_text: String::new(),
+        manual_draft: String::new(),
+        voice_draft: String::new(),
+        attachments: Vec::new(),
         is_sending: false,
         auto_send_enabled: true,
+        is_voice_active: false,
     });
 }
 
@@ -141,6 +168,10 @@ extern "C" fn on_toggle_auto_send(_this: &Object, _cmd: Sel, sender: Id) {
         state.auto_send_enabled = is_on;
         info!("Auto-send toggled: {}", is_on);
     }
+}
+
+extern "C" fn on_attach(_this: &Object, _cmd: Sel, _sender: Id) {
+    info!("Attach clicked (placeholder)");
 }
 
 fn is_near_bottom(scroll_view: Id) -> bool {
@@ -238,9 +269,9 @@ fn show_voice_chat_overlay_impl() {
         // Load config for position logic
         let config = Config::load();
 
-        // Updated dimensions
-        let window_width = 400.0;
-        let window_height = 300.0; // Increased height
+        // Mission Control dimensions: split view (60% left panel + 40% right sidecar)
+        let window_width = 750.0;
+        let window_height = 400.0;
         let margin = 16.0;
 
         let (x, y) = match config.overlay_position_mode {
@@ -272,9 +303,11 @@ fn show_voice_chat_overlay_impl() {
             },
         };
 
-        // Create window with rounded corners style (Title + FullSizeContent + Hidden Title)
+        // Create window with rounded corners style (Title + Closable + FullSizeContent)
         let window: Id = msg_send![ns_window, alloc];
-        let style_mask = NSWindowStyleMask::Titled | NSWindowStyleMask::FullSizeContentView;
+        let style_mask = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::FullSizeContentView;
         let backing = NSBackingStoreType::Buffered;
         let window: Id = msg_send![
             window,
@@ -536,9 +569,11 @@ struct NSRange {
 
 fn append_voice_chat_draft_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.draft_text.push_str(delta);
-    update_input_field_with_state(&mut state);
-    update_send_button_with_state(&mut state);
+    // Voice streaming goes to voice_draft (right panel / sidecar)
+    state.voice_draft.push_str(delta);
+    state.is_voice_active = true;
+    update_voice_draft_view_with_state(&mut state);
+    // Note: We don't update manual input field here - they are separate
 }
 
 /// Append a delta to the assistant response (streaming).
@@ -584,14 +619,14 @@ pub fn add_voice_chat_error_message(text: &str) {
     });
 }
 
-/// Set the current draft text in the input field.
+/// Set the current voice draft text (streaming from Whisper).
 pub fn set_voice_chat_draft_text(text: &str) {
     let text_owned = text.to_string();
     Queue::main().exec_async(move || {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.draft_text = text_owned;
-        update_input_field_with_state(&mut state);
-        update_send_button_with_state(&mut state);
+        state.voice_draft = text_owned;
+        state.is_voice_active = true;
+        update_voice_draft_view_with_state(&mut state);
     });
 }
 
@@ -617,10 +652,10 @@ pub fn set_voice_chat_sending(is_sending: bool) {
     });
 }
 
-/// Get the current draft text from the overlay.
+/// Get the current voice draft text from the overlay (for auto-send).
 pub fn get_accumulated_text() -> String {
     let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.draft_text.clone()
+    state.voice_draft.clone()
 }
 
 /// Clear the text content of the overlay
@@ -633,10 +668,15 @@ pub fn clear_voice_chat_text() {
 fn clear_voice_chat_text_impl() {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.messages.clear();
-    state.draft_text.clear();
+    // Clear both buffers
+    state.manual_draft.clear();
+    state.voice_draft.clear();
+    state.attachments.clear();
     state.is_sending = false;
+    state.is_voice_active = false;
     update_chat_view_with_state(&mut state, true);
     update_input_field_with_state(&mut state);
+    update_voice_draft_view_with_state(&mut state);
     update_send_button_with_state(&mut state);
 }
 
@@ -684,7 +724,8 @@ fn update_input_field_with_state(state: &mut VoiceChatOverlayState) {
         if let Some(input_ptr) = state.input_field {
             let input_field = input_ptr as Id;
             let ns_string = Class::get("NSString").unwrap();
-            let mut c_str = state.draft_text.as_bytes().to_vec();
+            // Manual input field shows manual_draft (left panel)
+            let mut c_str = state.manual_draft.as_bytes().to_vec();
             c_str.push(0);
             let ns_str: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
             let _: () = msg_send![input_field, setStringValue: ns_str];
@@ -696,8 +737,23 @@ fn update_send_button_with_state(state: &mut VoiceChatOverlayState) {
     unsafe {
         if let Some(send_ptr) = state.send_button {
             let send_button = send_ptr as Id;
-            let enabled = !state.is_sending && !state.draft_text.trim().is_empty();
+            // Send button enabled when manual_draft has content
+            let enabled = !state.is_sending && !state.manual_draft.trim().is_empty();
             let _: () = msg_send![send_button, setEnabled: enabled];
+        }
+    }
+}
+
+/// Update the voice draft view (right panel / sidecar) with current voice_draft text
+fn update_voice_draft_view_with_state(state: &mut VoiceChatOverlayState) {
+    unsafe {
+        if let Some(view_ptr) = state.voice_draft_view {
+            let text_view = view_ptr as Id;
+            let ns_string = Class::get("NSString").unwrap();
+            let mut c_str = state.voice_draft.as_bytes().to_vec();
+            c_str.push(0);
+            let ns_str: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
+            let _: () = msg_send![text_view, setString: ns_str];
         }
     }
 }
@@ -756,9 +812,10 @@ pub fn add_voice_chat_user_message(text: &str) {
 }
 
 fn send_draft_message_impl() {
+    // This sends from manual_draft (left panel input field)
     let callback = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let draft = state.draft_text.trim().to_string();
+        let draft = state.manual_draft.trim().to_string();
         if draft.is_empty() {
             return;
         }
@@ -768,7 +825,7 @@ fn send_draft_message_impl() {
             is_streaming: false,
             is_error: false,
         });
-        state.draft_text.clear();
+        state.manual_draft.clear();
         state.is_sending = true;
         update_chat_view_with_state(&mut state, true);
         update_input_field_with_state(&mut state);
@@ -815,9 +872,17 @@ fn hide_voice_chat_overlay_impl() {
         }
         state.text_view = None;
         state.status_field = None;
+        state.voice_draft_view = None;
+        state.voice_draft_header = None;
+        state.voice_send_button = None;
+        state.voice_use_button = None;
         state.messages.clear();
-        state.draft_text.clear();
+        // Clear both buffers
+        state.manual_draft.clear();
+        state.voice_draft.clear();
+        state.attachments.clear();
         state.is_sending = false;
+        state.is_voice_active = false;
     }
 }
 
@@ -834,8 +899,8 @@ mod tests {
     #[test]
     fn test_overlay_config_default() {
         let config = VoiceChatOverlayConfig::default();
-        assert_eq!(config.width, 400.0);
-        assert_eq!(config.height, 300.0);
+        assert_eq!(config.width, 750.0); // Mission Control split view
+        assert_eq!(config.height, 400.0);
         assert_eq!(config.auto_hide_timeout_secs, 5);
     }
 
@@ -843,7 +908,7 @@ mod tests {
     fn test_overlay_config_custom() {
         let config = VoiceChatOverlayConfig {
             width: 600.0,
-            height: 300.0,
+            height: 500.0,
             auto_hide_timeout_secs: 10,
         };
         assert_eq!(config.width, 600.0);
@@ -864,7 +929,7 @@ mod tests {
         let config = VoiceChatOverlayConfig::default();
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("VoiceChatOverlayConfig"));
-        assert!(debug_str.contains("400"));
+        assert!(debug_str.contains("750")); // Mission Control width
     }
 
     #[test]
@@ -873,7 +938,8 @@ mod tests {
         let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         // Window should be None initially (unless another test created it)
         // Just verify we can access the state without panic
-        let _ = state.draft_text.len();
+        let _ = state.manual_draft.len();
+        let _ = state.voice_draft.len();
     }
 
     #[test]
