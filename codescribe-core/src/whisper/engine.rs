@@ -405,7 +405,8 @@ impl LocalWhisperEngine {
             offset = offset.saturating_add(step);
         }
 
-        Ok(out.trim().to_string())
+        // Apply word/phrase-level repetition deduplication before returning
+        Ok(dedup_repetitions(out.trim()))
     }
 
     pub fn detect_language(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
@@ -1057,4 +1058,142 @@ fn build_varbuilder_from_tensors(
         DType::F32,
         device,
     ))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Repetition Deduplication (Word and Phrase Level)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Normalize word for comparison: lowercase + strip trailing punctuation
+fn normalize_for_compare(word: &str) -> String {
+    word.trim_end_matches(|c: char| c.is_ascii_punctuation())
+        .to_lowercase()
+}
+
+/// Check if two words are equivalent (ignoring case and trailing punctuation)
+fn words_equivalent(a: &str, b: &str) -> bool {
+    normalize_for_compare(a) == normalize_for_compare(b)
+}
+
+/// Remove consecutive repeated words: "test test test value" -> "test value"
+/// Case-insensitive comparison, ignores trailing punctuation.
+/// Preserves original form of first occurrence.
+pub fn dedup_repeated_words(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 2 {
+        return text.to_string();
+    }
+
+    let mut result: Vec<&str> = Vec::with_capacity(words.len());
+    let mut i = 0;
+
+    while i < words.len() {
+        result.push(words[i]);
+        // Skip consecutive duplicates (case-insensitive, punctuation-tolerant)
+        while i + 1 < words.len() && words_equivalent(words[i], words[i + 1]) {
+            i += 1;
+        }
+        i += 1;
+    }
+
+    result.join(" ")
+}
+
+/// Remove repeated 2-4 word phrases: "w tej chwili w tej chwili zajmuje" -> "w tej chwili zajmuje"
+pub fn dedup_repeated_phrases(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 4 {
+        return text.to_string();
+    }
+
+    let mut result: Vec<&str> = Vec::with_capacity(words.len());
+    let mut i = 0;
+
+    while i < words.len() {
+        // Try phrase lengths 4, 3, 2 (longest first)
+        let mut skipped = false;
+        for phrase_len in (2..=4).rev() {
+            if i + phrase_len * 2 <= words.len() {
+                let phrase1 = &words[i..i + phrase_len];
+                let phrase2 = &words[i + phrase_len..i + phrase_len * 2];
+
+                // Case-insensitive, punctuation-tolerant phrase comparison
+                let matches = phrase1
+                    .iter()
+                    .zip(phrase2.iter())
+                    .all(|(a, b)| words_equivalent(a, b));
+
+                if matches {
+                    // Add phrase once, skip the duplicate
+                    result.extend_from_slice(phrase1);
+                    i += phrase_len * 2;
+                    // Continue checking for more repetitions of same phrase
+                    while i + phrase_len <= words.len() {
+                        let next = &words[i..i + phrase_len];
+                        let still_matches = phrase1
+                            .iter()
+                            .zip(next.iter())
+                            .all(|(a, b)| words_equivalent(a, b));
+                        if still_matches {
+                            i += phrase_len;
+                        } else {
+                            break;
+                        }
+                    }
+                    skipped = true;
+                    break;
+                }
+            }
+        }
+
+        if !skipped {
+            result.push(words[i]);
+            i += 1;
+        }
+    }
+
+    result.join(" ")
+}
+
+/// Apply both word and phrase deduplication
+pub fn dedup_repetitions(text: &str) -> String {
+    let pass1 = dedup_repeated_phrases(text);
+    dedup_repeated_words(&pass1)
+}
+
+#[cfg(test)]
+mod dedup_tests {
+    use super::*;
+
+    #[test]
+    fn test_dedup_repeated_words() {
+        assert_eq!(
+            dedup_repeated_words("zaimplementowane. zaimplementowane i w idei"),
+            "zaimplementowane. i w idei"
+        );
+        assert_eq!(dedup_repeated_words("test test test value"), "test value");
+        assert_eq!(
+            dedup_repeated_words("no repetition here"),
+            "no repetition here"
+        );
+    }
+
+    #[test]
+    fn test_dedup_repeated_phrases() {
+        assert_eq!(
+            dedup_repeated_phrases("56 GB. 56 GB. który zajmuje"),
+            "56 GB. który zajmuje"
+        );
+        assert_eq!(
+            dedup_repeated_phrases("w tej chwili w tej chwili zajmuje"),
+            "w tej chwili zajmuje"
+        );
+    }
+
+    #[test]
+    fn test_dedup_repetitions_combined() {
+        let input = "który zajmuje który zajmuje 56 GB. 56 GB. test test";
+        let expected = "który zajmuje 56 GB. test";
+        assert_eq!(dedup_repetitions(input), expected);
+    }
 }

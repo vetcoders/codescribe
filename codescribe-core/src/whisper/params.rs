@@ -30,7 +30,7 @@ impl Default for DecodingParams {
     fn default() -> Self {
         Self {
             temperature: 0.0,        // greedy (mlx_whisper default)
-            no_repeat_ngram_size: 3, // block 3-gram repetitions (faster-whisper)
+            no_repeat_ngram_size: 4, // block 4-gram repetitions (increased for better coverage)
             suppress_blank: true,
             no_speech_threshold: 0.6,         // mlx_whisper default
             compression_ratio_threshold: 2.4, // mlx_whisper default
