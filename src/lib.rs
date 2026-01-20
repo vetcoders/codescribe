@@ -52,8 +52,10 @@ pub use ui::{
 
 #[cfg(target_os = "macos")]
 pub use voice_chat_ui::{
-    VoiceChatOverlayConfig, append_voice_chat_delta, clear_voice_chat_text,
+    VoiceChatOverlayConfig, add_voice_chat_error_message, add_voice_chat_user_message,
+    append_voice_chat_assistant_delta, append_voice_chat_delta, clear_voice_chat_text,
     hide_voice_chat_overlay, is_voice_chat_overlay_visible, reset_voice_chat_activity,
-    set_voice_chat_text, show_voice_chat_overlay, show_voice_chat_overlay_with_config,
-    update_voice_chat_status,
+    send_voice_chat_draft, set_voice_chat_draft_text, set_voice_chat_send_callback,
+    set_voice_chat_sending, set_voice_chat_text, show_voice_chat_overlay,
+    show_voice_chat_overlay_with_config, update_voice_chat_status,
 };

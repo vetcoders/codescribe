@@ -213,8 +213,11 @@ impl RecordingController {
             warn!("Failed to initialize Whisper engine: {}", e);
         }
 
+        let config = Arc::new(RwLock::new(config));
+        setup_voice_chat_send_callback(Arc::clone(&config));
+
         Self {
-            config: Arc::new(RwLock::new(config)),
+            config,
             state: Arc::new(RwLock::new(State::Idle)),
             recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
@@ -255,6 +258,8 @@ impl RecordingController {
         if let Err(e) = crate::whisper::init() {
             warn!("Failed to initialize Whisper engine: {}", e);
         }
+
+        setup_voice_chat_send_callback(Arc::clone(&config));
 
         Self {
             config,
@@ -791,6 +796,10 @@ impl RecordingController {
             // Ctrl+Shift: ALWAYS augmentation mode (AI expands content)
             info!("Assistive mode (Ctrl+Shift): augmenting transcript via AI");
 
+            crate::voice_chat_ui::add_voice_chat_user_message(&raw_text);
+            crate::voice_chat_ui::set_voice_chat_draft_text("");
+            crate::voice_chat_ui::set_voice_chat_sending(true);
+
             // Update overlay status to show AI is thinking
             crate::voice_chat_ui::update_voice_chat_status("Thinking...");
 
@@ -806,7 +815,7 @@ impl RecordingController {
             // Callback for streaming AI response to overlay
             let delta_callback = if use_streaming {
                 Some(Arc::new(|text: &str| {
-                    crate::voice_chat_ui::append_voice_chat_delta(text);
+                    crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
                 }) as Arc<dyn Fn(&str) + Send + Sync>)
             } else {
                 None
@@ -829,27 +838,15 @@ impl RecordingController {
                         result.text.len()
                     );
 
-                    // Auto-hide overlay after 10 seconds
-                    // Created by M&K (c)2026 VetCoders
-                    tokio::spawn(async {
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        crate::voice_chat_ui::hide_voice_chat_overlay();
-                    });
-
                     crate::state::history::TranscriptKind::Ai
                 }
                 crate::ai_formatting::AiFormatStatus::Failed => {
                     crate::voice_chat_ui::update_voice_chat_status("AI Failed");
-
-                    // Auto-hide overlay after 3 seconds on failure
-                    tokio::spawn(async {
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                        crate::voice_chat_ui::hide_voice_chat_overlay();
-                    });
-
+                    crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
                     crate::state::history::TranscriptKind::AiFailed
                 }
                 crate::ai_formatting::AiFormatStatus::Skipped => {
+                    crate::voice_chat_ui::set_voice_chat_sending(false);
                     crate::state::history::TranscriptKind::Raw
                 }
             };
@@ -872,6 +869,10 @@ impl RecordingController {
             if should_use_ai {
                 info!("Formatting mode (Left Option): correcting transcript via AI");
 
+                crate::voice_chat_ui::add_voice_chat_user_message(&raw_text);
+                crate::voice_chat_ui::set_voice_chat_draft_text("");
+                crate::voice_chat_ui::set_voice_chat_sending(true);
+
                 // Update overlay status to show AI is formatting
                 crate::voice_chat_ui::update_voice_chat_status("Formatting...");
 
@@ -887,7 +888,7 @@ impl RecordingController {
                 // Callback for streaming AI response to overlay
                 let delta_callback = if use_streaming {
                     Some(Arc::new(|text: &str| {
-                        crate::voice_chat_ui::append_voice_chat_delta(text);
+                        crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
                     }) as Arc<dyn Fn(&str) + Send + Sync>)
                 } else {
                     None
@@ -909,27 +910,15 @@ impl RecordingController {
                             "Formatted response displayed in overlay ({} chars)",
                             result.text.len()
                         );
-
-                        // Auto-hide overlay after 8 seconds
-                        tokio::spawn(async {
-                            tokio::time::sleep(Duration::from_secs(8)).await;
-                            crate::voice_chat_ui::hide_voice_chat_overlay();
-                        });
-
                         crate::state::history::TranscriptKind::Ai
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
                         crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
-
-                        // Auto-hide overlay after 3 seconds on failure
-                        tokio::spawn(async {
-                            tokio::time::sleep(Duration::from_secs(3)).await;
-                            crate::voice_chat_ui::hide_voice_chat_overlay();
-                        });
-
+                        crate::voice_chat_ui::add_voice_chat_error_message("Formatting Failed");
                         crate::state::history::TranscriptKind::AiFailed
                     }
                     crate::ai_formatting::AiFormatStatus::Skipped => {
+                        crate::voice_chat_ui::set_voice_chat_sending(false);
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
@@ -953,6 +942,10 @@ impl RecordingController {
                 // Toggle ON: formatting only (no augmentation)
                 info!("Formatting mode (Toggle): correcting transcript via AI");
 
+                crate::voice_chat_ui::add_voice_chat_user_message(&raw_text);
+                crate::voice_chat_ui::set_voice_chat_draft_text("");
+                crate::voice_chat_ui::set_voice_chat_sending(true);
+
                 // Update overlay status to show AI is formatting
                 crate::voice_chat_ui::update_voice_chat_status("Formatting...");
 
@@ -968,7 +961,7 @@ impl RecordingController {
                 // Callback for streaming AI response to overlay
                 let delta_callback = if use_streaming {
                     Some(Arc::new(|text: &str| {
-                        crate::voice_chat_ui::append_voice_chat_delta(text);
+                        crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
                     }) as Arc<dyn Fn(&str) + Send + Sync>)
                 } else {
                     None
@@ -990,27 +983,15 @@ impl RecordingController {
                             "Formatted response displayed in overlay ({} chars)",
                             result.text.len()
                         );
-
-                        // Auto-hide overlay after 8 seconds
-                        tokio::spawn(async {
-                            tokio::time::sleep(Duration::from_secs(8)).await;
-                            crate::voice_chat_ui::hide_voice_chat_overlay();
-                        });
-
                         crate::state::history::TranscriptKind::Ai
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
                         crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
-
-                        // Auto-hide overlay after 3 seconds on failure
-                        tokio::spawn(async {
-                            tokio::time::sleep(Duration::from_secs(3)).await;
-                            crate::voice_chat_ui::hide_voice_chat_overlay();
-                        });
-
+                        crate::voice_chat_ui::add_voice_chat_error_message("Formatting Failed");
                         crate::state::history::TranscriptKind::AiFailed
                     }
                     crate::ai_formatting::AiFormatStatus::Skipped => {
+                        crate::voice_chat_ui::set_voice_chat_sending(false);
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
@@ -1154,6 +1135,57 @@ impl Default for RecordingController {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn setup_voice_chat_send_callback(config: Arc<RwLock<Config>>) {
+    let callback_config = Arc::clone(&config);
+    crate::voice_chat_ui::set_voice_chat_send_callback(Some(Arc::new(move |text: String| {
+        let config = Arc::clone(&callback_config);
+        tokio::spawn(async move {
+            crate::voice_chat_ui::update_voice_chat_status("Wysyłam...");
+            crate::voice_chat_ui::set_voice_chat_sending(true);
+
+            let (lang_str, transcript_mode) = {
+                let cfg = config.read().await;
+                (cfg.whisper_language, cfg.transcript_send_mode)
+            };
+
+            let use_streaming = matches!(
+                transcript_mode,
+                crate::config::TranscriptSendMode::Streaming
+            );
+
+            let delta_callback = if use_streaming {
+                Some(Arc::new(|delta: &str| {
+                    crate::voice_chat_ui::append_voice_chat_assistant_delta(delta);
+                }) as Arc<dyn Fn(&str) + Send + Sync>)
+            } else {
+                None
+            };
+
+            let result = crate::ai_formatting::format_text_with_status(
+                &text,
+                Some(lang_str.as_str()),
+                true,
+                delta_callback,
+            )
+            .await;
+
+            match result.status {
+                crate::ai_formatting::AiFormatStatus::Applied => {
+                    crate::voice_chat_ui::update_voice_chat_status("AI Response:");
+                    crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                }
+                crate::ai_formatting::AiFormatStatus::Failed => {
+                    crate::voice_chat_ui::update_voice_chat_status("AI Failed");
+                    crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
+                }
+                crate::ai_formatting::AiFormatStatus::Skipped => {
+                    crate::voice_chat_ui::set_voice_chat_sending(false);
+                }
+            }
+        });
+    })));
 }
 
 fn env_bool(key: &str) -> bool {
