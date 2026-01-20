@@ -45,7 +45,7 @@ flowchart TB
         BACKEND --> CORE
     end
 
-    MODEL[Embedded Whisper Model\nlarge-v3-turbo-mlx-q8\n(~888MB)]
+    MODEL["Embedded Whisper Model<br/>large-v3-turbo-mlx-q8<br/>~888MB"]
     WH === MODEL
 
     subgraph TOOLS[CLI Suite]
@@ -187,7 +187,7 @@ flowchart TD
     B -->|Hold Ctrl| C[Start Recording]
     B -->|Double Option| C
     C --> D[Recording]
-    D -->|live chunks| E[Whisper STT (streaming)]
+    D -->|live chunks| E["Whisper STT (streaming)"]
     D -->|Release / Toggle| F[Stop]
     F --> G[Finalize last chunk]
     G --> H{AI Enabled?}
