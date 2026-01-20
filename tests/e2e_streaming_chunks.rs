@@ -39,8 +39,8 @@ fn test_streaming_callback_invoked() {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let model_candidates = [
         PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-turbo-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8"),
     ];
 
     let model_path = model_candidates
@@ -140,8 +140,8 @@ fn test_streaming_no_callback() {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let model_candidates = [
         PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-turbo-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8"),
     ];
 
     let model_path = match model_candidates
@@ -187,8 +187,8 @@ fn test_chunk_word_boundaries() {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let model_candidates = [
         PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-turbo-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8"),
     ];
 
     let model_path = match model_candidates
@@ -231,18 +231,20 @@ fn test_chunk_word_boundaries() {
 
             // New text should not start with lowercase letter immediately after previous text
             // (would indicate word was split)
-            if !prev.is_empty() && !prev.ends_with(' ') && !prev.ends_with('\n') {
-                if let Some(first_char) = trimmed.chars().next() {
-                    if first_char.is_alphabetic() && first_char.is_lowercase() {
-                        // This might indicate a word split, log it
-                        println!(
-                            "Potential word split at chunk {}: '...{}' + '{}'",
-                            i,
-                            &prev[prev.len().saturating_sub(10)..],
-                            &trimmed[..trimmed.len().min(10)]
-                        );
-                    }
-                }
+            if !prev.is_empty()
+                && !prev.ends_with(' ')
+                && !prev.ends_with('\n')
+                && let Some(first_char) = trimmed.chars().next()
+                && first_char.is_alphabetic()
+                && first_char.is_lowercase()
+            {
+                // This might indicate a word split, log it
+                println!(
+                    "Potential word split at chunk {}: '...{}' + '{}'",
+                    i,
+                    &prev[prev.len().saturating_sub(10)..],
+                    &trimmed[..trimmed.len().min(10)]
+                );
             }
         }
     }

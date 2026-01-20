@@ -33,7 +33,7 @@ APP_PATH="$DIST_DIR/$APP_NAME.app"
 [[ ! -d "$APP_PATH" ]] && err "App not found: $APP_PATH"
 
 # Get version for DMG naming
-VERSION=$(grep '^version' "$ROOT_DIR/codescribe-rs/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
+VERSION=$(grep '^version' "$ROOT_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
 DMG_PATH="$DIST_DIR/${APP_NAME}-${VERSION}.dmg"
 
 # Sign nested binaries first

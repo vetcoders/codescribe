@@ -17,16 +17,18 @@ CodeScribe’s core power-up is:
 
 ## What we shipped
 
-### 1) Embedded Whisper (offline-first)
+### 1) Embedded Whisper (Strict Policy)
 
-- Release builds embed the model bytes in the binary (no runtime extraction, no `models/` in the app bundle).
-- A **global singleton engine** loads the embedded model once and provides process-wide STT access.
+- **ALWAYS Embedded:** The model (`whisper-large-v3-turbo-mlx-q8`) is welded into the release binary.
+  - **Zero Exceptions:** We never bundle the `models/` folder in the `.app`.
+  - **Zero Disk I/O:** Model loads directly from memory to Metal GPU.
+  - **Native Power:** Minimal abstraction layers (approx. 4) compared to typical 32+ in heavy JS/Python bridges.
+- **Global Singleton:** A process-wide engine instance loads once and stays resident.
 
 Key behavior:
 
-- **Release (default):** embedded model, “zero I/O”
-- **Debug/fallback:** can still resolve an external model path for development, but official distribution assumes
-  embedding
+- **Release:** Strict embedded mode. If the model isn't found at build time, the build fails.
+- **Development:** Local debug builds can still resolve external paths for rapid iteration, but the release pipeline enforces embedding.
 
 ### 2) Streaming transcription (during recording)
 
@@ -49,6 +51,15 @@ stop() → transcribe last pending samples → return final transcript → LLM/p
 Practical win:
 
 - **~35s recording:** `stop()` is ~0.5s (last chunk only) instead of ~4s (whole audio)
+
+## What’s new around Whisper Live
+
+- **Stream postprocess** (`src/stream_postprocess.rs`) — semantic gating and cleanup of chunk output
+  before final paste/LLM, reducing low‑quality fragments in live mode.
+- **IPC server** (`src/ipc/`) — stable runtime interface for GUI/clients; Whisper Live can be
+  consumed and extended outside the tray flow.
+- **Quality loop/report** (`src/quality_loop.rs`, `src/quality_report.rs`) — automated scoring and
+  batch diagnostics for streaming accuracy and regressions.
 
 ## How it works (high level)
 

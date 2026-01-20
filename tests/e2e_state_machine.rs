@@ -183,7 +183,7 @@ fn test_state_machine_documentation() {
     //   - Reset assistive_mode
     //   - Clear session_id
 
-    assert!(true, "Documentation test");
+    let _doc = "State machine documentation lives in comments above.";
 }
 
 /// Test that whisper language config works

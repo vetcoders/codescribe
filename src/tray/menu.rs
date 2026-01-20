@@ -12,6 +12,7 @@
 use std::cell::RefCell;
 
 use anyhow::Result;
+use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::config::Config;
@@ -22,6 +23,7 @@ use crate::tray::types::MenuIds;
 thread_local! {
     pub static STATUS_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
     pub static AI_FORMATTING_ITEM: RefCell<Option<CheckMenuItem>> = const { RefCell::new(None) };
+    pub static QUALITY_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
 }
 
 /// Build the tray menu
@@ -29,25 +31,15 @@ thread_local! {
 /// Menu structure:
 /// ```text
 /// Status: Idle
+/// Open GUI...              ← Opens Tauri window
 /// ─────────────
 /// Copy Last to Clipboard
 /// ─────────────
 /// Hold Hotkeys ▸
-///     ├── Ctrl only
-///     ├── Ctrl+Option
-///     ├── Ctrl+Shift
-///     └── Ctrl+Command
 /// History ▸
-///     ├── Format Last Transcript
-///     ├── Format Last 5 Transcripts
-///     ├── ────────────
-///     ├── [✓] Save to History
-///     ├── Copy Latest
-///     └── Open Folder
 /// ─────────────
 /// Settings ▸
 ///     ├── [✓] AI Formatting
-///     ├── ────────────
 ///     ├── Edit Config File
 ///     ├── Edit AI Prompt
 ///     ├── Open Prompts Folder
@@ -70,10 +62,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         *cell.borrow_mut() = Some(status_item);
     });
 
-    // 2. Separator
-    menu.append(&PredefinedMenuItem::separator())?;
-
-    // 3. Copy last to clipboard (quick action)
+    // 2. Copy last to clipboard (quick action)
     let copy_last_item = MenuItem::new("Copy Last to Clipboard", true, None);
     let copy_last_id = copy_last_item.id().clone();
     menu.append(&copy_last_item)?;
@@ -88,6 +77,22 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     // 6. History submenu (with Format Last actions)
     let (history_menu, history_ids) = build_history_submenu()?;
     menu.append(&history_menu)?;
+
+    // 6b. Quality menu item (shows pending mismatches from daemon)
+    let pending = crate::quality_loop::get_pending_mismatches();
+    let quality_label = if pending > 0 {
+        format!("Quality: {} pending", pending)
+    } else {
+        "Quality: OK".to_string()
+    };
+    let quality_item = MenuItem::new(&quality_label, true, None);
+    let quality_open_report_id = quality_item.id().clone();
+    menu.append(&quality_item)?;
+
+    // Store for dynamic updates
+    QUALITY_MENU_ITEM.with(|cell| {
+        *cell.borrow_mut() = Some(quality_item);
+    });
 
     // 7. Separator
     menu.append(&PredefinedMenuItem::separator())?;
@@ -146,8 +151,9 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     // 12. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 13. Quit
-    let quit_item = MenuItem::new("Quit", true, None);
+    // 13. Quit (Cmd+Q)
+    let quit_accel = Accelerator::new(Some(Modifiers::SUPER), Code::KeyQ);
+    let quit_item = MenuItem::new("Quit", true, Some(quit_accel));
     let quit_id = quit_item.id().clone();
     menu.append(&quit_item)?;
 
@@ -202,6 +208,8 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             settings_edit_prompt: edit_prompt_id,
             settings_open_prompt_folder: open_prompt_folder_id,
             settings_reset_context: reset_context_id,
+            // Quality
+            quality_open_report: quality_open_report_id,
         },
     ))
 }
@@ -234,4 +242,21 @@ pub fn toggle_ai_formatting() -> bool {
     let _ = config.save_to_env("AI_FORMATTING_ENABLED", if new_state { "1" } else { "0" });
 
     new_state
+}
+
+/// Update the quality label in the menu
+/// Call this periodically to reflect daemon state changes
+pub fn update_quality_label() {
+    let pending = crate::quality_loop::get_pending_mismatches();
+    let label = if pending > 0 {
+        format!("Quality: {} pending", pending)
+    } else {
+        "Quality: OK".to_string()
+    };
+
+    QUALITY_MENU_ITEM.with(|cell| {
+        if let Some(ref item) = *cell.borrow() {
+            item.set_text(&label);
+        }
+    });
 }

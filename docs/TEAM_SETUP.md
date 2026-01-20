@@ -4,34 +4,26 @@
 
 ### 1. Prerequisites
 
-- macOS 14+ (Apple Silicon recommended)
-- Rust 1.83+ with `wasm32-unknown-unknown` target
-- Trunk (`cargo install trunk`)
-- Tauri CLI (`cargo install tauri-cli`)
+- macOS 14+ (Apple Silicon ARM64 only)
+- Rust 1.83+
 
-### 2. Build & Run
+### 2. Build & Run (CLI)
 
 ```bash
 # Clone
 git clone git@github.com:VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Build WASM frontend
-cd tauri-app && trunk build && cd ..
-
-# Build and run app
-cargo tauri build --no-bundle
-open target/release/bundle/macos/CodeScribe.app
+# Build and run CLI
+cargo build --release -p codescribe
+./target/release/codescribe
 ```
 
 ### 3. Development Mode
 
 ```bash
-# Terminal 1: Trunk dev server
-cd tauri-app && trunk serve --port 8080
-
-# Terminal 2: Run debug binary
-./target/debug/codescribe-app
+# Run debug binary
+cargo run
 ```
 
 ## Permissions Required
@@ -44,13 +36,13 @@ Grant in: System Settings > Privacy & Security
 
 ## Hotkeys
 
-| Key                       | Action                                      | AI Mode                |
-|---------------------------|---------------------------------------------|------------------------|
-| Hold **Ctrl**             | Record → paste raw transcript               | ALWAYS RAW (no AI)     |
-| Hold **Ctrl+Shift**       | Record → AI assistant response              | ALWAYS Assistive       |
-| Double-tap **Option**     | Toggle recording (hands-free)               | Respects AI toggle     |
-| Triple-tap **Option**     | Toggle AI Formatting on/off                 | Shows toast            |
-| **Shift** during Ctrl hold| Upgrade to Assistive mode mid-recording     | —                      |
+| Key                        | Action                                  | AI Mode            |
+|----------------------------|-----------------------------------------|--------------------|
+| Hold **Ctrl**              | Record → paste raw transcript           | ALWAYS RAW (no AI) |
+| Hold **Ctrl+Shift**        | Record → AI assistant response          | ALWAYS Assistive   |
+| Double-tap **Option**      | Toggle recording (hands-free)           | Respects AI toggle |
+| Triple-tap **Option**      | Toggle AI Formatting on/off             | Shows toast        |
+| **Shift** during Ctrl hold | Upgrade to Assistive mode mid-recording | —                  |
 
 ### Mode Behavior
 
@@ -63,20 +55,20 @@ Grant in: System Settings > Privacy & Security
 
 ## Model
 
-**Embedded in the binary (release)**: `whisper-large-v3-turbo-mlx-q8` (~888MB)
+**Strictly Embedded (Release Policy)**: `whisper-large-v3-turbo-mlx-q8` (~888MB)
 
-- No runtime model download
-- No `Resources/models/*` bundling in the `.app`
-- Model bytes are loaded directly into Metal (zero disk I/O)
+- **Zero Exceptions:** Release binaries ALWAYS contain the model.
+- **No external files:** We never bundle `Resources/models/*`.
+- **Zero I/O:** Model loads from memory directly to Metal.
 
-**Developer note:** to build an embedded release locally you still need the model folder present
-so it can be embedded at build time:
+**Developer note (Build Time):**
+You still need the model files locally to *build* the app (because they are `include_bytes!`-ed into the binary).
 
 ```bash
-make download-model
+make download-model  # Required for build
 ```
 
-Location (dev/build-time): `models/whisper-large-v3-turbo-mlx-q8/`
+Location (build-time only): `models/whisper-large-v3-turbo-mlx-q8/`
 
 ## CLI Usage
 
@@ -89,6 +81,18 @@ codescribe transcribe audio.wav --format
 
 # Specify language
 codescribe transcribe audio.wav --language pl
+```
+
+## Quality & Tools
+
+New CLI tools for batch processing and automation:
+
+```bash
+# Batch quality report
+codescribe-quality --help
+
+# Self-improving quality loop
+codescribe-loop --help
 ```
 
 ## Configuration

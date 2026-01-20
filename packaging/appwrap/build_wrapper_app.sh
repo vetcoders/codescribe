@@ -25,12 +25,8 @@ ROOT_DIR="$(cd -- "$(dirname "$0")/../.." && pwd)"
 DIST_DIR="$ROOT_DIR/packaging/dist"
 APP_DIR="$DIST_DIR/CodeScribe.app"
 
-# Resolve version from pyproject.toml if present
-VERSION="0.1.0"
-if [[ -f "$ROOT_DIR/pyproject.toml" ]]; then
-  VER_LINE=$(awk -F '"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT_DIR/pyproject.toml" 2>/dev/null || true)
-  if [[ -n "${VER_LINE:-}" ]]; then VERSION="$VER_LINE"; fi
-fi
+# Resolve version from Cargo.toml
+VERSION=$(awk -F '"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT_DIR/Cargo.toml" 2>/dev/null || echo "0.0.0")
 
 echo "[i] Building CodeScribe.app with Rust frontend at: $APP_DIR"
 rm -rf "$APP_DIR"
@@ -89,9 +85,9 @@ PLIST
 
 # Build Rust binary first
 echo "[i] Building Rust binary..."
-cd "$ROOT_DIR/codescribe-rs"
-cargo build --release
-RUST_BIN="$ROOT_DIR/codescribe-rs/target/release/codescribe"
+cd "$ROOT_DIR"
+cargo build --release -p codescribe
+RUST_BIN="$ROOT_DIR/target/release/codescribe"
 
 if [[ ! -f "$RUST_BIN" ]]; then
   echo "[!] ERROR: Rust binary not found at $RUST_BIN"

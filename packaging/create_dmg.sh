@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
 APP_NAME="CodeScribe"
-DMG_NAME="CodeScribe-$(grep '^version' "$ROOT_DIR/codescribe-rs/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/').dmg"
+DMG_NAME="CodeScribe-$(grep '^version' "$ROOT_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/').dmg"
 
 # Build the app first
 echo "[i] Building CodeScribe.app..."

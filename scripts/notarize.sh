@@ -9,7 +9,7 @@
 #       --apple-id "your@email.com" --team-id "TEAMID" --password "app-specific-pwd"
 #
 # Usage:
-#   ./scripts/notarize.sh CodeScribe_0.6.0_20260111.dmg
+#   ./scripts/notarize.sh CodeScribe-<VERSION>.dmg
 #   NOTARY_PROFILE=MyProfile ./scripts/notarize.sh CodeScribe.dmg
 #
 # Created by M&K (c)2026 VetCoders

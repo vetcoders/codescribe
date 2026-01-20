@@ -397,12 +397,14 @@ pub fn paste_and_restore(text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     // Note: These tests require real clipboard access which may crash in CI
     // environments without a proper display server. Run manually:
     // cargo test --lib -- clipboard --ignored
 
     #[test]
+    #[serial]
     #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_set_and_get_clipboard() {
         let test_text = "Test clipboard content";
@@ -413,6 +415,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_empty_clipboard_warning() {
         // Should not panic, just log warning
         let result = set_clipboard("");
@@ -420,6 +423,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_clipboard_snapshot_capture() {
         // Set some text
@@ -435,6 +439,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_clipboard_snapshot_restore() {
         // Set original content
@@ -456,6 +461,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_copy_alias() {
         let test_text = "Copy alias test";

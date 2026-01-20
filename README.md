@@ -1,6 +1,6 @@
 # ⌜ CodeScribe ⌟
 
-**Local speech-to-text for macOS with AI formatting — Pure Rust, Metal GPU, embedded Whisper.**
+**Native macOS Audio Intelligence Platform — Embedded Whisper Live, Quality Loop & Semantic Postprocessing.**
 
 ## Overview
 
@@ -8,9 +8,61 @@ CodeScribe is a native macOS menu-bar application that captures audio through gl
 using Whisper with Metal GPU acceleration, and pastes the transcript directly into the focused application. Optional AI
 formatting via LLM polishes the output while keeping everything private and local.
 
-> **Status:** v0.6.2 — Embedded model (~888MB binary) + *Whisper Live* (streaming transcription during recording).
+```mermaid
+flowchart TB
+    %% Minimal monochrome styling
+    classDef default fill:#fff,stroke:#333,stroke-width:1px;
+    classDef box fill:#fafafa,stroke:#666,stroke-width:1px,stroke-dasharray: 0;
 
-See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md)
+    subgraph APP[CodeScribe Application]
+        direction TB
+
+        subgraph UI[Leptos WASM Frontend]
+            direction LR
+            VL[Voice Lab] --- TE[Teacher] --- SET[Settings]
+        end
+
+        subgraph BACKEND[Tauri Rust Backend]
+            CMD[Command Handlers]
+        end
+
+        UI -->|IPC invoke| BACKEND
+
+        subgraph CORE[Core Library]
+            direction TB
+            REC[Streaming Recorder]
+            POST[Stream Postprocess]
+            WH[Whisper Engine]
+            IPC[IPC Server]
+            QL[Quality Loop]
+
+            REC -->|Live Chunks| POST
+            POST -->|Semantic Gating| WH
+            WH -->|Transcript| IPC
+            QL -.->|Self-Improvement| WH
+        end
+
+        BACKEND --> CORE
+    end
+
+    MODEL[Embedded Whisper Model\nlarge-v3-turbo-mlx-q8\n(~888MB)]
+    WH === MODEL
+
+    subgraph TOOLS[CLI Suite]
+        QCLI[codescribe-quality]
+        LCLI[codescribe-loop]
+    end
+
+    CORE -.-> TOOLS
+
+    class APP,UI,BACKEND,CORE,TOOLS box
+```
+
+> **Note:** The diagram above shows the **target architecture** with Tauri GUI. Current release is a **native macOS tray app** (without Tauri). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for current implementation details.
+
+> **Status:** current release (see `Cargo.toml`) — **Strictly Embedded Model** (~888MB binary, zero exceptions) + *Whisper Live* (streaming transcription).
+
+See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/BACKLOG.md`](docs/BACKLOG.md) | [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md)
 
 ## API Provider
 
@@ -45,16 +97,19 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 ## Features
 
 - **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
-- **Embedded Whisper Model** — whisper-large-v3-turbo-mlx-q8 baked into binary (~888MB), zero disk I/O
-- **Whisper Live (Streaming)** — transcription happens *during recording* (chunks + overlap), so `stop()` is
+- **Strictly Embedded Whisper** — Model is welded into the binary (~888MB). No external files, zero disk I/O, no exceptions.
+- **Whisper Live** — Streaming transcription happens *during recording* (chunks + overlap), so `stop()` is
   near-instant
+- **Stream postprocess** — semantic gating + cleanup of live chunks before final output
+- **IPC Server** — Stable runtime interface for GUI/clients
+- **Quality Loop + Report** — Automated quality scoring and batch reports
+- **CLI Suite** — `codescribe`, `codescribe-quality`, `codescribe-loop`
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
 - **Global Hotkeys** — Hold Ctrl or double-tap Option to record
 - **Provider Separation** — Different LLM providers for formatting vs assistive mode
 - **AI Formatting** — Optional post-processing via Responses API
 - **Slug Filenames** — Transcripts named with first 3 words for easy identification
-- **CLI Transcribe Command** — `codescribe transcribe` for batch audio processing
 
 ## Tech Stack
 
@@ -68,6 +123,8 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 | Audio            | cpal + hound + symphonia          | Recording & format support |
 | HTTP Client      | reqwest                           | LLM API calls              |
 | API Format       | openai-harmony                    | Responses API support      |
+| Security         | cap-std                           | Path safety hardening      |
+| Embeddings       | fastembed                         | Local vector utilities     |
 
 ## Installation
 
@@ -145,11 +202,14 @@ flowchart TD
 
 ### Recording Modes
 
-| Mode             | Trigger                 | Description                   |
-|------------------|-------------------------|-------------------------------|
-| **Hold-to-talk** | Hold Ctrl (800ms delay) | Release to transcribe + paste |
-| **Assistive**    | Hold Ctrl+Shift         | AI augmentation mode          |
-| **Toggle**       | Double-tap Option       | Start/stop recording          |
+| Mode                  | Trigger                    | Description                                    |
+|-----------------------|----------------------------|------------------------------------------------|
+| **Hold-to-talk**      | Hold `Ctrl` (800ms delay)  | Release to transcribe + paste (raw transcript) |
+| **Hold Assistive**    | Hold `Ctrl+Shift`          | AI augmentation mode                           |
+| **Toggle Formatting** | Double-tap `Left Option`   | AI-formatted version of speech                 |
+| **Toggle Assistive**  | Double-tap `Right Option`  | Augmented AI response                          |
+
+See [`docs/BACKLOG.md`](docs/BACKLOG.md) for detailed mode descriptions and future enhancements (VAD, Overlay).
 
 ## Configuration
 
@@ -270,38 +330,22 @@ Model files required:
 
 ```
 CodeScribe/
+├── codescribe-core/           # Core library (Whisper, audio, config, quality)
+│   ├── src/
+│   │   ├── lib.rs             # Core exports
+│   │   ├── whisper/           # Embedded Whisper engine
+│   │   ├── audio/             # Recorder + streaming
+│   │   ├── config/            # Config + prompts
+│   │   ├── quality_loop.rs    # Self-improvement loop
+│   │   └── ...
 ├── src/
-│   ├── lib.rs                 # Library exports
+│   ├── lib.rs                 # App exports (macOS tray/hotkeys/UI)
 │   ├── main.rs                # CLI entry point
 │   ├── controller.rs          # Recording/transcription orchestration
-│   ├── ai_formatting.rs       # LLM formatting (Responses API)
-│   ├── whisper/
-│   │   ├── mod.rs             # Whisper module exports
-│   │   ├── engine.rs          # LocalWhisperEngine (candle)
-│   │   ├── embedded.rs        # Embedded model bytes
-│   │   ├── singleton.rs       # Shared model instance
-│   │   ├── model.rs           # Model wrapper
-│   │   └── params.rs          # DecodingParams
-│   ├── audio/
-│   │   ├── recorder.rs        # cpal audio capture
-│   │   ├── streaming_recorder.rs # Live (streaming) transcription during recording
-│   │   ├── loader.rs          # File loading + resampling
-│   │   └── playback.rs        # System sound playback
-│   ├── hotkeys/
-│   │   └── mod.rs             # CGEventTap hotkey handler
-│   ├── tray/
-│   │   ├── mod.rs             # Tray app setup
-│   │   ├── menu.rs            # Menu construction
-│   │   ├── handlers.rs        # Menu event handlers
-│   │   └── submenus.rs        # History, Modes, Settings
-│   ├── config/
-│   │   ├── mod.rs             # Config struct + loading
-│   │   └── prompts.rs         # AI prompt management
-│   └── state/
-│       ├── history.rs         # Transcript history + slug naming
-│       └── conversation.rs    # Conversation state
-├── tauri-app/                 # Tauri GUI (Voice Lab, Settings)
-├── models/                    # Whisper model files
+│   ├── tray/                  # Tray menu + handlers
+│   ├── hotkeys.rs             # CGEventTap hotkey handler
+│   └── ...
+├── models/                    # Whisper model files (build-time only)
 ├── tests/                     # Unit + E2E tests
 └── docs/
     ├── WHISPER_LIVE.md        # Embedded + streaming transcription (DONE)
@@ -326,9 +370,6 @@ make check          # Full quality gate
 # Formatting
 make format         # cargo fmt
 
-# Tauri GUI
-make tauri-dev      # Start Tauri dev server
-make tauri-build    # Build Tauri release
 ```
 
 ### Makefile Targets
@@ -339,8 +380,6 @@ make release          # Release build (embedded model)
 make install          # Install CLI (~888MB)
 make install-no-embed # Dev-only: install without embedding
 make config           # Edit ~/.codescribe/.env
-make bundle           # Create CodeScribe.app
-make install-app      # Install to /Applications
 make start            # Start as daemon
 make stop             # Stop running instance
 make logs             # View logs
@@ -382,14 +421,25 @@ Grant permissions in System Settings > Privacy & Security when prompted.
 - [x] CLI transcribe command
 - [x] History with slug filenames
 - [x] Keep Audio toggle
-- [x] Tauri GUI (Voice Lab, Settings)
+- [x] CodeScribe Core separation (`codescribe-core` crate)
+- [x] Quality Loop & Quality Report CLI tools
+
+### In Progress
+
+- [ ] Voice Activity Detection (VAD) for auto-stop — *implemented but not integrated*
+- [ ] Overlay text preview — *code exists, not fully integrated*
 
 ### Planned
 
-- [ ] Voice chat mode (WebSocket streaming)
+- [ ] Hands-off mode with VAD + Overlay integration
+- [ ] Tauri GUI (Voice Lab, Teacher, Settings)
+- [ ] TTS integration for assistive mode
+- [ ] Libraxis Qube Protocol (WebSocket streaming architecture)
 - [ ] Custom prompt editing in GUI
 - [ ] More languages for prompts
 - [ ] DMG distribution with notarization
+
+See [`docs/BACKLOG.md`](docs/BACKLOG.md) for detailed backlog and [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md) for future architecture.
 
 ## License
 

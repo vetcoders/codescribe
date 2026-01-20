@@ -9,19 +9,15 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use tracing::debug;
 
 use crate::tray::menu::update_status_label;
-use crate::tray::types::{
-    HistoryMenuItems, HoldMenuItems, ModelMenuItems, ToggleMenuItems, TrayMenuEvent, TrayStatus,
-};
+use crate::tray::types::{HoldMenuItems, ToggleMenuItems, TrayMenuEvent, TrayStatus};
 
 // ============================================================================
 // Thread-local Menu Item Storage
 // ============================================================================
 
 thread_local! {
-    pub static MODEL_MENU_ITEMS: RefCell<Option<ModelMenuItems>> = const { RefCell::new(None) };
     pub static HOLD_MENU_ITEMS: RefCell<Option<HoldMenuItems>> = const { RefCell::new(None) };
     pub static TOGGLE_MENU_ITEMS: RefCell<Option<ToggleMenuItems>> = const { RefCell::new(None) };
-    pub static HISTORY_MENU_ITEMS: RefCell<Option<HistoryMenuItems>> = const { RefCell::new(None) };
 }
 
 // ============================================================================
@@ -63,10 +59,10 @@ pub fn menu_event_receiver() -> anyhow::Result<Receiver<TrayMenuEvent>> {
 
 /// Send a menu event to the main controller
 pub fn send_menu_event(event: TrayMenuEvent) {
-    if let Some(sender) = MENU_EVENT_CHANNEL.get() {
-        if let Err(e) = sender.send(event) {
-            debug!("Failed to send menu event: {}", e);
-        }
+    if let Some(sender) = MENU_EVENT_CHANNEL.get()
+        && let Err(e) = sender.send(event)
+    {
+        debug!("Failed to send menu event: {}", e);
     }
 }
 

@@ -58,8 +58,8 @@ echo ""
 # Step 1: Build Rust binary
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
   echo "🦀 [1/5] Building Rust binary (release mode)..."
-  cd "$ROOT_DIR/codescribe-rs"
-  cargo build --release
+  cd "$ROOT_DIR"
+  cargo build --release -p codescribe
   echo "✓ Rust binary built: target/release/codescribe"
   echo ""
 else

@@ -23,6 +23,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -98,7 +99,7 @@ impl ValidatedAudioPath {
 use crate::config::Config;
 use crate::config::models::ModelManager;
 use crate::tray::{TrayStatus, update_tray_status};
-use codescribe::{BadgeMode, hide_hold_badge, show_badge_for_mode};
+use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
 // TODO: Re-enable when implementing recorder
 use crate::audio::streaming_recorder::StreamingRecorder;
@@ -148,6 +149,7 @@ pub struct HotkeyInput {
     pub key_type: HotkeyType,
     pub action: HotkeyAction,
     pub assistive: bool,
+    pub force_ai: bool,
 }
 
 /// Recording controller managing state machine and lifecycle
@@ -167,6 +169,8 @@ pub struct RecordingController {
     /// Whether to force RAW mode (Ctrl Hold without Shift = always raw, ignores AI toggle)
     /// Toggle mode (Double Option) keeps this false and respects AI_FORMATTING_ENABLED setting.
     force_raw_mode: Arc<RwLock<bool>>,
+    /// Whether to force AI formatting for the current session (e.g., left double Option)
+    force_ai_mode: Arc<RwLock<bool>>,
 
     /// Current session ID for tracking
     session_id: Arc<RwLock<Option<String>>>,
@@ -176,6 +180,9 @@ pub struct RecordingController {
 
     /// Lock to serialize finish_recording calls
     serial_lock: Arc<Mutex<()>>,
+
+    /// Flag set by VAD (silence detection) when recording should auto-stop
+    vad_triggered: Arc<AtomicBool>,
 }
 
 impl RecordingController {
@@ -188,13 +195,17 @@ impl RecordingController {
             config.hold_start_delay_ms, config.beep_on_start, config.whisper_language
         );
 
-        let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        let mut recorder =
+            StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        recorder.set_delta_callback(Some(Arc::new(|delta| {
+            crate::append_voice_chat_delta(delta);
+        })));
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
-        if let Ok(models) = model_manager.list_models() {
-            if !models.is_empty() {
-                info!("Available local models: {:?}", models);
-            }
+        if let Ok(models) = model_manager.list_models()
+            && !models.is_empty()
+        {
+            info!("Available local models: {:?}", models);
         }
 
         // Initialize Whisper engine (singleton)
@@ -208,9 +219,11 @@ impl RecordingController {
             recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
             force_raw_mode: Arc::new(RwLock::new(false)),
+            force_ai_mode: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
+            vad_triggered: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -225,13 +238,17 @@ impl RecordingController {
             cfg.hold_start_delay_ms, cfg.beep_on_start, cfg.whisper_language
         );
 
-        let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        let mut recorder =
+            StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        recorder.set_delta_callback(Some(Arc::new(|delta| {
+            crate::append_voice_chat_delta(delta);
+        })));
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
-        if let Ok(models) = model_manager.list_models() {
-            if !models.is_empty() {
-                info!("Available local models: {:?}", models);
-            }
+        if let Ok(models) = model_manager.list_models()
+            && !models.is_empty()
+        {
+            info!("Available local models: {:?}", models);
         }
 
         // Initialize Whisper engine (singleton)
@@ -245,9 +262,11 @@ impl RecordingController {
             recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
             force_raw_mode: Arc::new(RwLock::new(false)),
+            force_ai_mode: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
+            vad_triggered: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -256,15 +275,35 @@ impl RecordingController {
         *self.state.read().await
     }
 
+    /// Replace controller configuration at runtime
+    pub async fn set_config(&self, config: Config) {
+        *self.config.write().await = config;
+    }
+
+    /// Snapshot of current controller configuration
+    pub async fn get_config(&self) -> Config {
+        self.config.read().await.clone()
+    }
+
+    /// Check if VAD (silence detection) has triggered auto-stop
+    pub fn is_vad_triggered(&self) -> bool {
+        self.vad_triggered.load(Ordering::SeqCst)
+    }
+
+    /// Clear the VAD triggered flag
+    pub fn clear_vad_triggered(&self) {
+        self.vad_triggered.store(false, Ordering::SeqCst);
+    }
+
     /// Cancel any pending delayed hold-start task
     async fn cancel_pending_hold_start(&self) {
         let mut task_guard = self.hold_start_task.lock().await;
-        if let Some(task) = task_guard.take() {
-            if !task.is_finished() {
-                debug!("Cancelling pending hold-start task");
-                task.abort();
-                let _ = task.await; // Suppress cancellation errors
-            }
+        if let Some(task) = task_guard.take()
+            && !task.is_finished()
+        {
+            debug!("Cancelling pending hold-start task");
+            task.abort();
+            let _ = task.await; // Suppress cancellation errors
         }
     }
 
@@ -279,13 +318,14 @@ impl RecordingController {
     /// ## Mode Determination (NEW architecture):
     /// - **Hold + assistive=false**: force RAW mode (ignores AI_FORMATTING_ENABLED)
     /// - **Hold + assistive=true**: force Assistive mode (Shift pressed = AI augmentation)
-    /// - **Toggle**: respects AI_FORMATTING_ENABLED setting
+    /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
+    /// - **Toggle + assistive=true**: force Assistive hands-off
     pub async fn handle_hotkey_event(&self, event: HotkeyInput) -> Result<()> {
         let current_state = self.current_state().await;
 
         debug!(
-            "Hotkey event: type={:?} action={:?} assistive={} state={}",
-            event.key_type, event.action, event.assistive, current_state
+            "Hotkey event: type={:?} action={:?} assistive={} force_ai={} state={}",
+            event.key_type, event.action, event.assistive, event.force_ai, current_state
         );
 
         // Update assistive mode from event (can be upgraded mid-hold if Shift added)
@@ -293,14 +333,22 @@ impl RecordingController {
             *self.assistive_mode.write().await = true;
             // Shift pressed = NOT force_raw (Assistive takes precedence)
             *self.force_raw_mode.write().await = false;
+            *self.force_ai_mode.write().await = false;
         } else if matches!(event.action, HotkeyAction::Down | HotkeyAction::Press) {
             // Only reset on Down/Press, not Up (preserves upgrade during hold)
             *self.assistive_mode.write().await = false;
 
-            // Hold without Shift = force RAW mode
-            // Toggle = respects AI_FORMATTING_ENABLED setting
-            let force_raw = matches!(event.key_type, HotkeyType::Hold);
-            *self.force_raw_mode.write().await = force_raw;
+            match event.key_type {
+                HotkeyType::Hold => {
+                    // Hold without Shift = force RAW mode
+                    *self.force_raw_mode.write().await = true;
+                    *self.force_ai_mode.write().await = false;
+                }
+                HotkeyType::Toggle => {
+                    *self.force_raw_mode.write().await = false;
+                    *self.force_ai_mode.write().await = event.force_ai;
+                }
+            }
         }
 
         // Ignore all hotkeys when busy
@@ -442,6 +490,10 @@ impl RecordingController {
             };
             show_badge_for_mode(badge_mode);
 
+            // Show live transcription overlay
+            crate::clear_voice_chat_text();
+            crate::show_voice_chat_overlay();
+
             // Transition to REC_HOLD
             *state.write().await = State::RecHold;
             info!(
@@ -495,8 +547,22 @@ impl RecordingController {
 
         let language = self.config.read().await.whisper_language;
 
-        // Start the recorder
+        // Reset VAD flag and set callback
+        self.vad_triggered.store(false, Ordering::SeqCst);
+        let vad_flag = Arc::clone(&self.vad_triggered);
+
+        // Start the recorder with VAD callback
         let mut recorder = self.recorder.lock().await;
+        recorder.recorder.set_on_vad_stop(move || {
+            info!("VAD callback: setting vad_triggered flag");
+            vad_flag.store(true, Ordering::SeqCst);
+        });
+
+        // Set streaming callback for overlay updates
+        recorder.set_delta_callback(Some(Arc::new(|text: &str| {
+            crate::voice_chat_ui::append_voice_chat_delta(text);
+        })));
+
         recorder.start(Some(language.as_str().to_string())).await?;
 
         // Play start beep if enabled
@@ -507,6 +573,10 @@ impl RecordingController {
 
         // Show pulsing red badge for toggle mode (hands-off recording)
         show_badge_for_mode(BadgeMode::Toggle);
+
+        // Show live transcription overlay
+        crate::clear_voice_chat_text();
+        crate::show_voice_chat_overlay();
 
         // Transition to REC_TOGGLE
         *self.state.write().await = State::RecToggle;
@@ -558,18 +628,20 @@ impl RecordingController {
         let session_id = self.session_id.read().await.clone();
         let assistive = *self.assistive_mode.read().await;
         let force_raw = *self.force_raw_mode.read().await;
+        let force_ai = *self.force_ai_mode.read().await;
 
         // Switch badge to processing mode (orange, pulsing)
         show_badge_for_mode(BadgeMode::Processing);
 
         let result = self
-            .process_recording(session_id, assistive, force_raw)
+            .process_recording(session_id, assistive, force_raw, force_ai)
             .await;
 
         // Always reset to IDLE, even on error
         *self.state.write().await = State::Idle;
         *self.assistive_mode.write().await = false;
         *self.force_raw_mode.write().await = false;
+        *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
 
         // Hide red dot indicator
@@ -595,12 +667,14 @@ impl RecordingController {
     /// ## Mode Logic:
     /// - `assistive=true`: ALWAYS AI augmentation (Ctrl+Shift held)
     /// - `force_raw=true`: ALWAYS raw transcript (Ctrl held without Shift)
+    /// - `force_ai=true`: ALWAYS AI formatting (left double Option)
     /// - Neither: Toggle mode - respects AI_FORMATTING_ENABLED setting
     async fn process_recording(
         &self,
         _session_id: Option<String>,
         assistive: bool,
         force_raw: bool,
+        force_ai: bool,
     ) -> Result<()> {
         // Stop the recorder and get audio file path
         let mut recorder = self.recorder.lock().await;
@@ -628,8 +702,29 @@ impl RecordingController {
         let language = self.config.read().await.whisper_language;
         let language_opt = Some(language.as_str());
         let use_local_stt = self.config.read().await.use_local_stt;
+        let cloud_enabled = cloud_stt_enabled();
+        let raw_save_enabled = raw_save_enabled();
 
         let mut raw_text_opt = None;
+        let mut cloud_text_opt = None;
+        let mut cloud_handle: Option<JoinHandle<Result<String>>> = None;
+
+        // Start cloud transcription in parallel (for early mismatch detection)
+        if cloud_enabled {
+            if let Some(path) = &audio_path {
+                if cloud_credentials_available() {
+                    let cloud_path = path.as_path().to_path_buf();
+                    let cloud_language = language_opt.map(str::to_string);
+                    cloud_handle = Some(tokio::spawn(async move {
+                        crate::client::transcribe(&cloud_path, cloud_language.as_deref()).await
+                    }));
+                } else {
+                    warn!("Cloud STT disabled: STT_ENDPOINT/STT_API_KEY missing");
+                }
+            } else {
+                warn!("Cloud STT disabled: no audio file available");
+            }
+        }
 
         // 1. Try Streaming Result (Local)
         if use_local_stt {
@@ -644,16 +739,20 @@ impl RecordingController {
             }
         }
 
-        // 2. Fallback to Cloud if needed (and we have audio file)
+        // 2. Fallback to Cloud if needed
         if raw_text_opt.is_none() {
-            if let Some(path) = &audio_path {
+            if let Some(handle) = cloud_handle.take() {
                 info!("Falling back to cloud STT (LibraxisAI)");
-                match crate::client::transcribe(path.as_path(), language_opt).await {
-                    Ok(text) => raw_text_opt = Some(text),
-                    Err(e) => error!("Cloud transcription failed: {}", e),
+                match handle.await {
+                    Ok(Ok(text)) => {
+                        cloud_text_opt = Some(text.clone());
+                        raw_text_opt = Some(text);
+                    }
+                    Ok(Err(e)) => error!("Cloud transcription failed: {}", e),
+                    Err(e) => error!("Cloud transcription task failed: {}", e),
                 }
-            } else {
-                warn!("No audio file available for cloud fallback");
+            } else if cloud_enabled {
+                warn!("Cloud fallback unavailable (cloud disabled or missing credentials)");
             }
         }
 
@@ -661,15 +760,14 @@ impl RecordingController {
 
         info!("Raw transcript captured ({} chars)", raw_text.len());
 
-        // Save audio to transcriptions folder if enabled (now we have text for slug)
-        if self.config.read().await.dump_audio_logs {
-            if let Some(path) = &audio_path {
-                crate::state::history::save_audio(
-                    path.as_path(),
-                    recording_timestamp,
-                    Some(&raw_text),
-                );
-            }
+        if raw_save_enabled {
+            let raw_entry = crate::state::history::save_entry_with_timestamp_and_slug(
+                &raw_text,
+                Some(recording_timestamp),
+                crate::state::history::TranscriptKind::Raw,
+                Some(&raw_text),
+            );
+            info!("Raw transcript saved: {}", raw_entry.path.display());
         }
 
         // Check for repetition loops (Whisper hallucination like "Wielki, Wielki, Wielki...")
@@ -682,25 +780,169 @@ impl RecordingController {
         //
         // 1. Ctrl+Shift (assistive=true): ALWAYS AI augmentation (expands, creates plans)
         // 2. Ctrl Hold (force_raw=true): ALWAYS raw transcript (ignores AI toggle)
-        // 3. Double Option (neither): respects AI_FORMATTING_ENABLED toggle
+        // 3. Left double Option (force_ai=true): ALWAYS AI formatting
+        // 4. Toggle (neither): respects AI_FORMATTING_ENABLED toggle
         //
         // This allows users to choose mode via hotkey:
         // - Quick dictation? → Ctrl (fast, raw)
         // - Need formatting? → Double Option (respects setting)
         // - Need AI help? → Ctrl+Shift (always AI)
-        let formatted_text = if assistive {
+        let (formatted_text, output_kind) = if assistive {
             // Ctrl+Shift: ALWAYS augmentation mode (AI expands content)
             info!("Assistive mode (Ctrl+Shift): augmenting transcript via AI");
+
+            // Update overlay status to show AI is thinking
+            crate::voice_chat_ui::update_voice_chat_status("Thinking...");
+
             let lang_str = language_opt.map(String::from);
-            crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), true).await
+
+            // Determine streaming mode from config
+            let transcript_mode = self.config.read().await.transcript_send_mode;
+            let use_streaming = matches!(
+                transcript_mode,
+                crate::config::TranscriptSendMode::Streaming
+            );
+
+            // Callback for streaming AI response to overlay
+            let delta_callback = if use_streaming {
+                Some(Arc::new(|text: &str| {
+                    crate::voice_chat_ui::append_voice_chat_delta(text);
+                }) as Arc<dyn Fn(&str) + Send + Sync>)
+            } else {
+                None
+            };
+
+            let result = crate::ai_formatting::format_text_with_status(
+                &raw_text,
+                lang_str.as_deref(),
+                true,
+                delta_callback,
+            )
+            .await;
+            let kind = match result.status {
+                crate::ai_formatting::AiFormatStatus::Applied => {
+                    // Display AI response in overlay
+                    crate::voice_chat_ui::update_voice_chat_status("AI Response:");
+                    crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                    info!(
+                        "Assistive response displayed in overlay ({} chars)",
+                        result.text.len()
+                    );
+
+                    // Auto-hide overlay after 10 seconds
+                    // Created by M&K (c)2026 VetCoders
+                    tokio::spawn(async {
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        crate::voice_chat_ui::hide_voice_chat_overlay();
+                    });
+
+                    crate::state::history::TranscriptKind::Ai
+                }
+                crate::ai_formatting::AiFormatStatus::Failed => {
+                    crate::voice_chat_ui::update_voice_chat_status("AI Failed");
+
+                    // Auto-hide overlay after 3 seconds on failure
+                    tokio::spawn(async {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        crate::voice_chat_ui::hide_voice_chat_overlay();
+                    });
+
+                    crate::state::history::TranscriptKind::AiFailed
+                }
+                crate::ai_formatting::AiFormatStatus::Skipped => {
+                    crate::state::history::TranscriptKind::Raw
+                }
+            };
+            (result.text, kind)
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
             if has_repetition {
                 info!("Raw mode (Ctrl): applying local repetition cleanup only");
-                crate::ai_formatting::remove_simple_repetitions(&raw_text)
+                (
+                    crate::ai_formatting::remove_simple_repetitions(&raw_text),
+                    crate::state::history::TranscriptKind::Raw,
+                )
             } else {
                 info!("Raw mode (Ctrl): using raw transcript");
-                raw_text.clone()
+                (raw_text.clone(), crate::state::history::TranscriptKind::Raw)
+            }
+        } else if force_ai {
+            // Left double Option: ALWAYS formatting (no augmentation)
+            let should_use_ai = crate::ai_formatting::has_api_key();
+            if should_use_ai {
+                info!("Formatting mode (Left Option): correcting transcript via AI");
+
+                // Update overlay status to show AI is formatting
+                crate::voice_chat_ui::update_voice_chat_status("Formatting...");
+
+                let lang_str = language_opt.map(String::from);
+
+                // Determine streaming mode from config
+                let transcript_mode = self.config.read().await.transcript_send_mode;
+                let use_streaming = matches!(
+                    transcript_mode,
+                    crate::config::TranscriptSendMode::Streaming
+                );
+
+                // Callback for streaming AI response to overlay
+                let delta_callback = if use_streaming {
+                    Some(Arc::new(|text: &str| {
+                        crate::voice_chat_ui::append_voice_chat_delta(text);
+                    }) as Arc<dyn Fn(&str) + Send + Sync>)
+                } else {
+                    None
+                };
+
+                let result = crate::ai_formatting::format_text_with_status(
+                    &raw_text,
+                    lang_str.as_deref(),
+                    false,
+                    delta_callback,
+                )
+                .await;
+                let kind = match result.status {
+                    crate::ai_formatting::AiFormatStatus::Applied => {
+                        // Display formatted text in overlay
+                        crate::voice_chat_ui::update_voice_chat_status("Formatted:");
+                        crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                        info!(
+                            "Formatted response displayed in overlay ({} chars)",
+                            result.text.len()
+                        );
+
+                        // Auto-hide overlay after 8 seconds
+                        tokio::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            crate::voice_chat_ui::hide_voice_chat_overlay();
+                        });
+
+                        crate::state::history::TranscriptKind::Ai
+                    }
+                    crate::ai_formatting::AiFormatStatus::Failed => {
+                        crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
+
+                        // Auto-hide overlay after 3 seconds on failure
+                        tokio::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            crate::voice_chat_ui::hide_voice_chat_overlay();
+                        });
+
+                        crate::state::history::TranscriptKind::AiFailed
+                    }
+                    crate::ai_formatting::AiFormatStatus::Skipped => {
+                        crate::state::history::TranscriptKind::Raw
+                    }
+                };
+                (result.text, kind)
+            } else if has_repetition {
+                info!("Formatting mode (Left Option): AI unavailable, cleaning repetitions");
+                (
+                    crate::ai_formatting::remove_simple_repetitions(&raw_text),
+                    crate::state::history::TranscriptKind::Raw,
+                )
+            } else {
+                info!("Formatting mode (Left Option): AI unavailable, using raw transcript");
+                (raw_text.clone(), crate::state::history::TranscriptKind::Raw)
             }
         } else {
             // Double Option: respects AI Formatting toggle setting
@@ -710,16 +952,80 @@ impl RecordingController {
             if should_use_ai {
                 // Toggle ON: formatting only (no augmentation)
                 info!("Formatting mode (Toggle): correcting transcript via AI");
+
+                // Update overlay status to show AI is formatting
+                crate::voice_chat_ui::update_voice_chat_status("Formatting...");
+
                 let lang_str = language_opt.map(String::from);
-                crate::ai_formatting::format_text(&raw_text, lang_str.as_deref(), false).await
+
+                // Determine streaming mode from config
+                let transcript_mode = self.config.read().await.transcript_send_mode;
+                let use_streaming = matches!(
+                    transcript_mode,
+                    crate::config::TranscriptSendMode::Streaming
+                );
+
+                // Callback for streaming AI response to overlay
+                let delta_callback = if use_streaming {
+                    Some(Arc::new(|text: &str| {
+                        crate::voice_chat_ui::append_voice_chat_delta(text);
+                    }) as Arc<dyn Fn(&str) + Send + Sync>)
+                } else {
+                    None
+                };
+
+                let result = crate::ai_formatting::format_text_with_status(
+                    &raw_text,
+                    lang_str.as_deref(),
+                    false,
+                    delta_callback,
+                )
+                .await;
+                let kind = match result.status {
+                    crate::ai_formatting::AiFormatStatus::Applied => {
+                        // Display formatted text in overlay
+                        crate::voice_chat_ui::update_voice_chat_status("Formatted:");
+                        crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                        info!(
+                            "Formatted response displayed in overlay ({} chars)",
+                            result.text.len()
+                        );
+
+                        // Auto-hide overlay after 8 seconds
+                        tokio::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            crate::voice_chat_ui::hide_voice_chat_overlay();
+                        });
+
+                        crate::state::history::TranscriptKind::Ai
+                    }
+                    crate::ai_formatting::AiFormatStatus::Failed => {
+                        crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
+
+                        // Auto-hide overlay after 3 seconds on failure
+                        tokio::spawn(async {
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            crate::voice_chat_ui::hide_voice_chat_overlay();
+                        });
+
+                        crate::state::history::TranscriptKind::AiFailed
+                    }
+                    crate::ai_formatting::AiFormatStatus::Skipped => {
+                        crate::state::history::TranscriptKind::Raw
+                    }
+                };
+                (result.text, kind)
             } else if has_repetition {
                 // Toggle OFF with repetition: local cleanup only
                 info!("Raw mode (Toggle OFF): applying local repetition cleanup");
-                crate::ai_formatting::remove_simple_repetitions(&raw_text)
+                (
+                    crate::ai_formatting::remove_simple_repetitions(&raw_text),
+                    crate::state::history::TranscriptKind::Raw,
+                )
             } else {
                 // Toggle OFF: raw transcript
                 info!("Raw mode (Toggle OFF): using raw transcript");
-                raw_text.clone()
+                (raw_text.clone(), crate::state::history::TranscriptKind::Raw)
             }
         };
 
@@ -727,6 +1033,8 @@ impl RecordingController {
             "assistive"
         } else if force_raw {
             "raw"
+        } else if force_ai {
+            "format"
         } else {
             "toggle"
         };
@@ -736,17 +1044,66 @@ impl RecordingController {
             mode_label
         );
 
+        // Save audio to transcriptions folder if enabled (pair with RAW for reports)
+        if self.config.read().await.dump_audio_logs
+            && let Some(path) = &audio_path
+        {
+            crate::state::history::save_audio(
+                path.as_path(),
+                recording_timestamp,
+                Some(&raw_text),
+                crate::state::history::TranscriptKind::Raw,
+            );
+        }
+
         // Paste the text into the active application
         crate::clipboard::paste_text(&formatted_text).context("Failed to paste text")?;
 
         info!("Text pasted successfully");
 
-        // Save to history with same timestamp as audio file
-        let entry = crate::state::history::save_entry_with_timestamp(
-            &formatted_text,
-            Some(recording_timestamp),
-        );
-        info!("Transcript saved: {}", entry.path.display());
+        // Save final transcript (skip duplicate when RAW already stored and unchanged)
+        let needs_final_save = !raw_save_enabled
+            || output_kind != crate::state::history::TranscriptKind::Raw
+            || formatted_text.trim() != raw_text.trim();
+        if needs_final_save {
+            let entry = crate::state::history::save_entry_with_timestamp_and_slug(
+                &formatted_text,
+                Some(recording_timestamp),
+                output_kind,
+                Some(&raw_text),
+            );
+            info!("Transcript saved: {}", entry.path.display());
+        } else {
+            info!("Final transcript matches RAW; skipping duplicate save");
+        }
+
+        if let Some(cloud_text) = cloud_text_opt {
+            let entry = crate::state::history::save_entry_with_timestamp_and_slug(
+                &cloud_text,
+                Some(recording_timestamp),
+                crate::state::history::TranscriptKind::Cloud,
+                Some(&raw_text),
+            );
+            info!("Cloud transcript saved: {}", entry.path.display());
+        } else if let Some(handle) = cloud_handle {
+            let slug_hint = raw_text.clone();
+            let timestamp = recording_timestamp;
+            tokio::spawn(async move {
+                match handle.await {
+                    Ok(Ok(text)) => {
+                        let entry = crate::state::history::save_entry_with_timestamp_and_slug(
+                            &text,
+                            Some(timestamp),
+                            crate::state::history::TranscriptKind::Cloud,
+                            Some(&slug_hint),
+                        );
+                        info!("Cloud transcript saved: {}", entry.path.display());
+                    }
+                    Ok(Err(e)) => error!("Cloud transcription failed: {}", e),
+                    Err(e) => error!("Cloud transcription task failed: {}", e),
+                }
+            });
+        }
 
         Ok(())
     }
@@ -767,6 +1124,7 @@ impl RecordingController {
         *self.state.write().await = State::Idle;
         *self.assistive_mode.write().await = false;
         *self.force_raw_mode.write().await = false;
+        *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
 
         // Hide UI indicators
@@ -798,9 +1156,29 @@ impl Default for RecordingController {
     }
 }
 
+fn env_bool(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn raw_save_enabled() -> bool {
+    !env_bool("CODESCRIBE_QUALITY_DISABLE_RAW_SAVE")
+}
+
+fn cloud_stt_enabled() -> bool {
+    !env_bool("CODESCRIBE_QUALITY_DISABLE_CLOUD")
+}
+
+fn cloud_credentials_available() -> bool {
+    std::env::var("STT_ENDPOINT").is_ok() && std::env::var("STT_API_KEY").is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[tokio::test]
     async fn test_initial_state() {
@@ -809,6 +1187,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     #[ignore = "requires audio hardware"]
     async fn test_hold_down_schedules_delayed_start() {
         let controller = RecordingController::new();
@@ -819,6 +1198,7 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down,
             assistive: false,
+            force_ai: false,
         };
 
         controller.handle_hotkey_event(event).await.unwrap();
@@ -834,6 +1214,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     #[ignore = "requires audio hardware"]
     async fn test_hold_up_before_delay_cancels() {
         let controller = RecordingController::new();
@@ -845,6 +1226,7 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down,
             assistive: false,
+            force_ai: false,
         };
         controller.handle_hotkey_event(down_event).await.unwrap();
 
@@ -854,6 +1236,7 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Up,
             assistive: false,
+            force_ai: false,
         };
         controller.handle_hotkey_event(up_event).await.unwrap();
 
@@ -865,6 +1248,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     #[ignore = "requires audio hardware"]
     async fn test_toggle_starts_immediately() {
         let controller = RecordingController::new();
@@ -873,6 +1257,7 @@ mod tests {
             key_type: HotkeyType::Toggle,
             action: HotkeyAction::Press,
             assistive: true,
+            force_ai: false,
         };
 
         controller.handle_hotkey_event(event).await.unwrap();
@@ -892,6 +1277,7 @@ mod tests {
             key_type: HotkeyType::Toggle,
             action: HotkeyAction::Press,
             assistive: false,
+            force_ai: false,
         };
 
         controller.handle_hotkey_event(event).await.unwrap();
@@ -949,7 +1335,8 @@ mod tests {
     // These tests verify the new mode determination logic:
     // - Ctrl Hold (no Shift) → force_raw=true, assistive=false → RAW mode
     // - Ctrl+Shift Hold → force_raw=false, assistive=true → Assistive mode
-    // - Double Option → force_raw=false, assistive=false → Toggle mode (respects setting)
+    // - Left Double Option → force_ai=true, assistive=false → Formatting mode
+    // - Toggle (no force_ai) → respects AI_FORMATTING_ENABLED setting
 
     #[tokio::test]
     async fn test_hold_down_sets_force_raw_mode() {
@@ -964,6 +1351,7 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down,
             assistive: false,
+            force_ai: false,
         };
         controller.handle_hotkey_event(event).await.unwrap();
 
@@ -987,6 +1375,7 @@ mod tests {
             key_type: HotkeyType::Toggle,
             action: HotkeyAction::Press,
             assistive: false,
+            force_ai: false,
         };
         controller.handle_hotkey_event(event).await.unwrap();
 
@@ -1002,6 +1391,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_toggle_press_sets_force_ai_mode() {
+        let controller = RecordingController::new();
+
+        let event = HotkeyInput {
+            key_type: HotkeyType::Toggle,
+            action: HotkeyAction::Press,
+            assistive: false,
+            force_ai: true,
+        };
+        controller.handle_hotkey_event(event).await.unwrap();
+
+        assert!(
+            *controller.force_ai_mode.read().await,
+            "Toggle with force_ai should set force_ai_mode=true"
+        );
+    }
+
+    #[tokio::test]
     async fn test_hold_with_shift_sets_assistive_not_force_raw() {
         let controller = RecordingController::new();
 
@@ -1009,7 +1416,8 @@ mod tests {
         let event = HotkeyInput {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down,
-            assistive: true, // Shift was held from the start (Ctrl+Shift)
+            assistive: true,
+            force_ai: false, // Shift was held from the start (Ctrl+Shift)
         };
         controller.handle_hotkey_event(event).await.unwrap();
 
@@ -1033,6 +1441,7 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down,
             assistive: false,
+            force_ai: false,
         };
         controller.handle_hotkey_event(down_event).await.unwrap();
 
@@ -1046,6 +1455,7 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down, // Still "down" - modifier flags changed
             assistive: true,
+            force_ai: false,
         };
         controller.handle_hotkey_event(upgrade_event).await.unwrap();
 
@@ -1074,6 +1484,7 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Up,
             assistive: false,
+            force_ai: false,
         };
         controller.handle_hotkey_event(up_event).await.unwrap();
 
@@ -1085,6 +1496,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     #[ignore = "requires audio hardware"]
     async fn test_hold_up_triggers_finish_recording() {
         // This test verifies that Hold Up in REC_HOLD state triggers finish_recording
@@ -1098,10 +1510,18 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Up,
             assistive: false,
+            force_ai: false,
         };
-        controller.handle_hotkey_event(up_event).await.unwrap();
+        let result = controller.handle_hotkey_event(up_event).await;
+        if let Err(err) = result {
+            assert!(
+                err.to_string().contains("Empty transcript"),
+                "Unexpected error: {err}"
+            );
+        }
 
         // After finish_recording, flags should be reset to false
+        assert_eq!(controller.current_state().await, State::Idle);
         assert!(!*controller.force_raw_mode.read().await);
     }
 
@@ -1112,6 +1532,7 @@ mod tests {
         // Set up various flags
         *controller.state.write().await = State::RecHold;
         *controller.force_raw_mode.write().await = true;
+        *controller.force_ai_mode.write().await = true;
         *controller.assistive_mode.write().await = true;
         *controller.session_id.write().await = Some("test-session".to_string());
 
@@ -1128,6 +1549,10 @@ mod tests {
             "reset should clear assistive_mode"
         );
         assert!(
+            !*controller.force_ai_mode.read().await,
+            "reset should clear force_ai_mode"
+        );
+        assert!(
             controller.session_id.read().await.is_none(),
             "reset should clear session_id"
         );
@@ -1141,7 +1566,7 @@ mod tests {
         // |-----------------|-----------|-----------|---------------------------|
         // | Ctrl Hold       | true      | false     | RAW (ignore AI setting)   |
         // | Ctrl+Shift Hold | false     | true      | Assistive (always AI)     |
-        // | Double Option   | false     | false     | Toggle (respects setting) |
+        // | Left Double Opt | false     | false     | Formatting (force AI)     |
 
         let controller = RecordingController::new();
 
@@ -1150,6 +1575,7 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down,
             assistive: false,
+            force_ai: false,
         };
         controller.handle_hotkey_event(ctrl_hold).await.unwrap();
         assert!(*controller.force_raw_mode.read().await);
@@ -1164,6 +1590,7 @@ mod tests {
             key_type: HotkeyType::Hold,
             action: HotkeyAction::Down,
             assistive: true,
+            force_ai: false,
         };
         controller
             .handle_hotkey_event(ctrl_shift_hold)
@@ -1176,14 +1603,16 @@ mod tests {
         *controller.force_raw_mode.write().await = false;
         *controller.assistive_mode.write().await = false;
 
-        // Case 3: Double Option
+        // Case 3: Left Double Option (force AI)
         let double_option = HotkeyInput {
             key_type: HotkeyType::Toggle,
             action: HotkeyAction::Press,
             assistive: false,
+            force_ai: true,
         };
         controller.handle_hotkey_event(double_option).await.unwrap();
         assert!(!*controller.force_raw_mode.read().await);
         assert!(!*controller.assistive_mode.read().await);
+        assert!(*controller.force_ai_mode.read().await);
     }
 }

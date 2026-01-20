@@ -60,12 +60,12 @@ echo ""
 # Check Rust project
 echo "🦀 Rust Project"
 echo "───────────────"
-if [[ -f "$ROOT_DIR/codescribe-rs/Cargo.toml" ]]; then
-  VERSION=$(awk -F '"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT_DIR/codescribe-rs/Cargo.toml" 2>/dev/null || echo "unknown")
+if [[ -f "$ROOT_DIR/Cargo.toml" ]]; then
+  VERSION=$(awk -F '"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT_DIR/Cargo.toml" 2>/dev/null || echo "unknown")
   echo "✓ Cargo.toml found"
   echo "  Version: $VERSION"
 else
-  echo "✗ Cargo.toml not found at codescribe-rs/Cargo.toml"
+  echo "✗ Cargo.toml not found at $ROOT_DIR/Cargo.toml"
   ((ERRORS++))
 fi
 echo ""

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.0] – 2026-01-17
+
+### Added
+- **Strict Embedded Policy** – Whisper model is always embedded into release binary. Zero external model files, zero exceptions.
+- **IPC server** – New IPC server and message types for stable runtime integration.
+- **Quality loop** – Automated transcription quality assessment loop.
+- **Quality report** – Batch quality report generator with WER/CER metrics.
+- **Stream postprocess** – Semantic gating and stream cleanup in live pipeline.
+- **New CLI tools** – `codescribe-quality`, `codescribe-loop` for quality management.
+- **serial_test** – E2E test serialization to reduce race conditions.
+
+### Changed
+- **Version unification** – Consistent versioning across the project.
+- **Security hardening** – `cap-std` and file operation restrictions to allowed paths only.
+
+### Fixed
+- SSE formatting and final text collection fixes.
+
 ## [v0.6.3] – 2026-01-16
 
 ### Added
@@ -81,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [v0.6.0] – 2026-01-13
 
 ### Added
-- **Native desktop UI (Tauri + Leptos)** – Introduced the `tauri-app/` frontend with a
+- **Native desktop UI (Tauri + Leptos)** – Introduced the (now legacy) Tauri frontend with a
   three-tab interface (Voice Lab, Teacher, Settings). ([a275ae8](https://github.com/VetCoders/CodeScribe/commit/a275ae8),
   [7aa0754](https://github.com/VetCoders/CodeScribe/commit/7aa0754))
 - **Pure Rust local Whisper STT (Metal GPU)** – Added local Whisper inference via
@@ -222,7 +240,8 @@ Historical notes below predate the Keep a Changelog-style format used above.
   tests around the new controllers, and refreshed documentation to mirror the
   current tree/layout.
 
-[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.7.0...HEAD
+[v0.7.0]: https://github.com/VetCoders/CodeScribe/compare/v0.6.3...v0.7.0
 [v0.6.3]: https://github.com/VetCoders/CodeScribe/compare/v0.6.2...v0.6.3
 [v0.6.2]: https://github.com/VetCoders/CodeScribe/compare/v0.6.1...v0.6.2
 [v0.6.1]: https://github.com/VetCoders/CodeScribe/compare/v0.6.0...v0.6.1

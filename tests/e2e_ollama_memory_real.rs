@@ -102,9 +102,9 @@ Rules:
     assert_eq!(r3.trim(), "MISSING");
 }
 
-/// Test context management functions (used by tauri-app)
+/// Test context management functions (used by GUI apps)
 ///
-/// These functions are used by tauri-app commands for UI state management.
+/// These functions are used by GUI commands for UI state management.
 /// This test ensures they compile and work correctly.
 #[test]
 fn test_context_management_api() {

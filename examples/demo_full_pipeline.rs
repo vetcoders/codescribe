@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     }
 
     // Parse args
-    let mut model = PathBuf::from("models/whisper-large-v3-mlx-q8");
+    let mut model = PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8");
     let mut assistive = false;
     let mut raw_only = false;
     let mut audio_file: Option<PathBuf> = None;

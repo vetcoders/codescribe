@@ -5,7 +5,6 @@
 use anyhow::Result;
 use image::{GenericImageView, imageops::FilterType};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::debug;
 use tray_icon::Icon;
 
 use crate::tray::types::TrayStatus;
@@ -27,16 +26,6 @@ const ICON_SIZE: u32 = 44;
 
 /// Global flag for status glyph visibility
 static SHOW_STATUS_GLYPH: AtomicBool = AtomicBool::new(true);
-
-/// Set whether the status glyph (colored dot) is visible on the icon
-#[allow(dead_code)] // Used by tauri-app
-pub fn set_status_glyph_enabled(enabled: bool) {
-    SHOW_STATUS_GLYPH.store(enabled, Ordering::SeqCst);
-    debug!(
-        "Status glyph {}",
-        if enabled { "enabled" } else { "disabled" }
-    );
-}
 
 /// Get whether the status glyph is currently enabled
 pub fn is_status_glyph_enabled() -> bool {

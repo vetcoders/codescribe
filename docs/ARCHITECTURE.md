@@ -8,122 +8,43 @@
 flowchart TB
     %% High-level packaging / layers
 
-    subgraph TAURI[CodeScribe Tauri App]
-        direction TB
+    subgraph APP[codescribe crate (bin/daemon)]
+        direction LR
+        HK[hotkeys/\n(macOS CGEventTap)]
+        CTRL[controller.rs]
+        IPC_SERVER[ipc/server.rs]
+        TRAY[tray/]
 
-        subgraph UI[Leptos WASM Frontend]
+        subgraph CORE[codescribe-core crate]
             direction LR
-            VL[Voice Lab]
-            TE[Teacher]
-            SE[Settings]
-        end
-
-        INV[invoke("command", args)]
-        UI --> INV
-
-        subgraph BACKEND[Tauri Rust Backend (Native)]
-            direction LR
-            BENTRY[Command handlers]
-            STT[commands/stt.rs]
-            CFG[commands/config.rs]
-            AUD[commands/audio.rs]
-            LEX[commands/lexicon.rs]
-
-            BENTRY --> STT
-            BENTRY --> CFG
-            BENTRY --> AUD
-            BENTRY --> LEX
-        end
-
-        INV -->|Tauri IPC| BENTRY
-
-        subgraph LIB[codescribe crate (lib)]
-            direction LR
-            LENTRY[Core modules]
             WH[whisper/\n(embedded + singleton)]
             CO[config/]
             AU[audio/\n(cpal + stream)]
-            HK[hotkeys/]
-
-            LENTRY --> WH
-            LENTRY --> CO
-            LENTRY --> AU
-            LENTRY --> HK
+            IPC_CORE[ipc types]
         end
 
-        BENTRY --> LENTRY
+        APP --> CORE
     end
 
     WH --> MODEL[Whisper Model\nlarge-v3-turbo\nmlx-q8 (~888MB)\n(embedded in bin)]
+
+    subgraph TOOLS[Quality & CLI Tools]
+        CLI[codescribe-quality]
+        LOOP[codescribe-loop]
+    end
+
+    APP -.-> TOOLS
 ```
 
-## IPC Commands Reference
+## Runtime & Quality Tools
 
-### commands/stt.rs
+- **IPC Server**: Unix socket server (`src/ipc/`) allowing external clients (or CLI tools) to control the
+  recording/transcription session and receive real-time events.
+- **Quality Loop**: Automated self-tuning system (`codescribe-core/src/quality_loop.rs`) that evaluates transcription accuracy.
+- **Quality Report**: Batch quality reports (`codescribe-core/src/quality_report.rs`) for transcription analysis.
+- **Stream Postprocess**: Pipeline stage (`codescribe-core/src/stream_postprocess.rs`) that applies semantic gating and cleanup to live
+  chunks.
 
-| Command                | Parameters           | Returns                  | Backend                                               | Status        |
-|------------------------|----------------------|--------------------------|-------------------------------------------------------|---------------|
-| `transcribe_audio`     | `audio_path: String` | `Result<String, String>` | `LocalWhisperEngine::transcribe_file_with_language()` | ✅ IMPLEMENTED |
-| `get_available_models` | none                 | `Vec<String>`            | `ModelManager::list_models()`                         | ✅ IMPLEMENTED |
-| `get_current_model`    | none                 | `String`                 | `config.local_model`                                  | ✅ IMPLEMENTED |
-
-### commands/config.rs
-
-| Command       | Parameters                  | Returns              | Backend                 | Status        |
-|---------------|-----------------------------|----------------------|-------------------------|---------------|
-| `get_config`  | none                        | `serde_json::Value`  | `Config` serialized     | ✅ IMPLEMENTED |
-| `save_config` | `config: serde_json::Value` | `Result<(), String>` | `Config::save_to_env()` | ✅ IMPLEMENTED |
-| `get_env_var` | `key: String`               | `Option<String>`     | `std::env::var()`       | ✅ IMPLEMENTED |
-
-### commands/audio.rs
-
-| Command                    | Parameters | Returns          | Backend                                       | Status        |
-|----------------------------|------------|------------------|-----------------------------------------------|---------------|
-| `list_audio_devices`       | none       | `Vec<String>`    | `cpal::default_host().input_devices()`        | ✅ IMPLEMENTED |
-| `get_current_audio_device` | none       | `Option<String>` | `cpal::default_host().default_input_device()` | ✅ IMPLEMENTED |
-
-### commands/lexicon.rs
-
-| Command               | Parameters              | Returns              | Backend            | Status        |
-|-----------------------|-------------------------|----------------------|--------------------|---------------|
-| `get_lexicon_entries` | `topic: Option<String>` | `Vec<LexiconEntry>`  | File-based storage | ✅ IMPLEMENTED |
-| `list_lexicon_topics` | none                    | `Vec<String>`        | Directory scan     | ✅ IMPLEMENTED |
-| `save_lexicon_entry`  | `entry: LexiconEntry`   | `Result<(), String>` | File write         | ✅ IMPLEMENTED |
-
-### commands/recording.rs
-
-| Command           | Parameters | Returns                          | Backend                                | Status        |
-|-------------------|------------|----------------------------------|----------------------------------------|---------------|
-| `start_recording` | none       | `Result<(), String>`             | `codescribe::audio::Recorder::start()` | ✅ IMPLEMENTED |
-| `stop_recording`  | none       | `Result<Option<String>, String>` | `Recorder::stop()` → returns WAV path  | ✅ IMPLEMENTED |
-| `is_recording`    | none       | `Result<bool, String>`           | State check                            | ✅ IMPLEMENTED |
-
-## UI → IPC Mapping
-
-### Voice Lab (lab/mod.rs)
-
-| UI Element               | Action                                | IPC Call                              | Status      |
-|--------------------------|---------------------------------------|---------------------------------------|-------------|
-| "Start streaming" button | Starts audio capture                  | `start_recording`                     | ✅ Connected |
-| "Stop" button            | Stops audio capture + auto-transcribe | `stop_recording` → `transcribe_audio` | ✅ Connected |
-| "Upload → STT" button    | Transcribe file                       | `transcribe_audio`                    | ✅ Connected |
-| "Copy transcript" button | Copy to clipboard                     | **NONE** - log only                   | ❌ TODO      |
-| "Load config" button     | Fetch config                          | `get_config`                          | ✅ Connected |
-| "List models" button     | Fetch models                          | `get_available_models`                | ✅ Connected |
-| "List devices" button    | Fetch devices                         | `list_audio_devices`                  | ✅ Connected |
-
-### Settings (settings/mod.rs)
-
-| UI Element  | Action           | IPC Call      | Status      |
-|-------------|------------------|---------------|-------------|
-| Config form | Load settings    | `get_config`  | ✅ Connected |
-| Save button | Persist settings | `save_config` | ✅ Connected |
-
-### Chat Panel
-
-| UI Element   | Action   | IPC Call               | Status |
-|--------------|----------|------------------------|--------|
-| Send message | Call LLM | **NONE** - placeholder | ❌ TODO |
 
 ## Hotkey Integration
 
@@ -146,28 +67,6 @@ flowchart TB
   Double Option → Toggle recording
 ```
 
-### Tauri Integration ✅ IMPLEMENTED
-
-**Implementation**: Spawn hotkey thread in Tauri setup (Option A)
-
-```text
-// In tauri-app/src/lib.rs setup()
-// Clone state for hotkey listener (shares internal Arcs)
-let state_for_hotkeys = Arc::new(state.clone());
-
-// In setup closure:
-hotkey_integration::start_hotkey_listener(
-    app.handle().clone(),
-    Arc::clone(&state_for_hotkeys),
-)?;
-```
-
-The `hotkey_integration.rs` module:
-
-- Creates `HotkeyManager` which spawns CGEventTap in background thread
-- Receives `HotkeyEvent` via crossbeam channel
-- Routes Hold Down → `handle_start_recording()`
-- Routes Hold Up / Toggle → `handle_stop_recording()` → transcribe → paste
 
 ### Model Location
 
@@ -196,46 +95,43 @@ Model files required:
 
 ```
 CodeScribe/
-├── src/                      # codescribe crate (backend library)
-│   ├── whisper/              # Embedded + singleton Whisper engine
-│   ├── audio/                # Recorder + StreamingRecorder
-│   ├── hotkeys/              # CGEventTap hotkey handler
-│   ├── controller.rs         # Recording/transcription orchestration (uses StreamingRecorder)
-│   ├── config/               # Configuration management
-│   └── ...
-├── tauri-app/                # Tauri application
+├── codescribe-core/          # Core library (Whisper, audio, config, quality)
 │   ├── src/
-│   │   ├── lib.rs            # Tauri setup + tray + hotkey init
-│   │   ├── hotkey_integration.rs  # CGEventTap → recording → paste
-│   │   ├── state.rs          # AppState (config, stt engine, recording)
-│   │   ├── commands/         # IPC command handlers
-│   │   │   ├── stt.rs
-│   │   │   ├── config.rs
-│   │   │   ├── audio.rs
-│   │   │   ├── recording.rs  # start/stop/is_recording
-│   │   │   └── lexicon.rs
-│   │   ├── ui/               # Leptos components
-│   │   │   ├── app.rs
-│   │   │   ├── lab/mod.rs
-│   │   │   ├── settings/mod.rs
-│   │   │   └── teacher/mod.rs
-│   │   └── state.rs          # AppState (config, stt engine)
-│   ├── Trunk.toml            # WASM build config
-│   └── tauri.conf.json       # Tauri config
+│   │   ├── whisper/           # Embedded + singleton Whisper engine
+│   │   ├── audio/             # Recorder + StreamingRecorder
+│   │   ├── ipc/               # IPC types
+│   │   ├── stream_postprocess.rs # Semantic gating for live chunks
+│   │   ├── quality_loop.rs    # Automated quality loop
+│   │   ├── quality_report.rs  # Batch quality reports
+│   │   ├── config/            # Configuration management
+│   │   └── ...
+├── src/                      # codescribe crate (daemon/CLI)
+│   ├── ipc/                  # IPC server (Unix socket)
+│   ├── hotkeys.rs            # CGEventTap hotkey handler
+│   ├── tray/                 # Tray app setup + menu
+│   ├── controller.rs         # Recording/transcription orchestration
+│   └── ...
+├── src/bin/                  # CLI tools (codescribe-quality, codescribe-loop)
 ├── docs/
 │   ├── ARCHITECTURE.md       # This file
-│   ├── WHISPER_LIVE.md        # Embedded + streaming transcription (DONE)
+│   ├── WHISPER_LIVE.md       # Embedded + streaming transcription (DONE)
 │   └── TEAM_SETUP.md         # Team setup guide
-└── .ai-agents/               # Planning/internal docs
+└── tests/
 ```
 
 ## Implementation Status
 
-### ✅ Completed (v0.6.2)
+### ✅ Completed (current release)
 
 - **Whisper Live (Streaming)** - transcription happens during recording (chunking + overlap + dedup)
-- **Hotkeys** - CGEventTap integration, hold Ctrl/Ctrl+Shift modes, double-Option toggle
+- **Hotkeys** - CGEventTap integration, hold Ctrl/Ctrl+Shift modes, double-Option toggle (left/right)
 - **Embedded Model** - Model baked into binary via `include_bytes!`, zero disk I/O
+- **CodeScribe Core** - Extracted as separate crate (`codescribe-core`)
+
+### 🟡 In Progress (implemented but not fully integrated)
+
+- **VAD (Voice Activity Detection)** - `vad_triggered` flag exists in `controller.rs`, not used for auto-stop yet
+- **Overlay Text Preview** - Code exists in `voice_chat_ui.rs`, not fully integrated with recording flow
 
 ### Current Capabilities
 
@@ -247,8 +143,21 @@ CodeScribe/
 | AI formatting (Responses API)              | ✅      |
 | Provider separation (formatting/assistive) | ✅      |
 | Tray app with submenus                     | ✅      |
-| Tauri GUI (Voice Lab, Settings)            | ✅      |
 | History with slug filenames                | ✅      |
+| IPC server (runtime interface)             | ✅      |
+| Stream postprocess (semantic gating)       | ✅      |
+| Quality loop + report                      | ✅      |
+| CodeScribe Core separation                 | ✅      |
+| VAD (auto-stop on silence)                 | 🟡      |
+| Overlay text preview                       | 🟡      |
+| Tauri GUI (Voice Lab, Settings)            | 📋      |
+
+---
+
+**Related Documentation:**
+- [`BACKLOG.md`](BACKLOG.md) — Detailed backlog with target implementations
+- [`ARCHITECTURE_VISION.md`](ARCHITECTURE_VISION.md) — Future Libraxis Qube Protocol architecture
+- [`WHISPER_LIVE.md`](WHISPER_LIVE.md) — Embedded + streaming transcription details
 
 ---
 

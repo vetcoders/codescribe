@@ -15,7 +15,7 @@ __pycache__/
 .coverage
 htmlcov/
 logs/
-models/
+codescribe-core/models/
 output.log
 
 # IDEs
@@ -44,7 +44,6 @@ src/codescribe/assets/lab/
 /.gemini-clipboard
 /CodeScribe.egg-info
 .codescribe.lock
-/$HOME
 /.fastembed_cache
 CLAUDE.md
 /codescribe-rs/target
@@ -60,3 +59,10 @@ CONFIG_AUDIT.md
 /.claude
 nohup.out
 nohup.out.backup
+/.ai
+/.junie
+/.ai-archive
+/.ai-context
+/.aiassistant
+*claude*
+*codex*

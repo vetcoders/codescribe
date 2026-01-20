@@ -22,10 +22,11 @@ fn find_model_path() -> Option<PathBuf> {
     let model_candidates = [
         // Turbo model (faster)
         PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-turbo-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-turbo-mlx-q8"),
         // Standard large-v3 model
         PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-mlx-q8"),
         PathBuf::from("models/whisper-large-v3-mlx-q8"),
+        PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8"),
     ];
 
     model_candidates

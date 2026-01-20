@@ -50,14 +50,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossbeam_channel::TryRecvError;
+use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tracing::{debug, info};
 use tray_icon::{TrayIconBuilder, menu::MenuEvent};
 
 // Re-export public API
-pub use menu::toggle_ai_formatting;
+pub use menu::{toggle_ai_formatting, update_quality_label};
 pub use state::{menu_event_receiver, update_tray_status};
-pub use types::{TrayMenuEvent, TrayStatus};
+pub use types::{MenuIds, TrayMenuEvent, TrayStatus};
 
 // ============================================================================
 // Shutdown Management
@@ -70,7 +71,6 @@ static SHUTDOWN_REQUESTED: OnceLock<std::sync::atomic::AtomicBool> = OnceLock::n
 ///
 /// This can be called from any thread to signal that the app should exit.
 /// The event loop will check this flag and perform cleanup before exiting.
-#[allow(dead_code)] // Used by tauri-app
 pub fn request_shutdown() {
     if let Some(flag) = SHUTDOWN_REQUESTED.get() {
         flag.store(true, Ordering::SeqCst);
@@ -94,7 +94,6 @@ pub fn is_shutdown_requested() -> bool {
 ///
 /// Uses tao event loop for proper macOS integration.
 /// Optionally accepts a HotkeyManager to process hotkey events in the same loop.
-#[allow(dead_code)] // Used by tauri-app
 pub fn run() -> Result<()> {
     run_with_hotkeys(None)
 }
@@ -156,9 +155,16 @@ pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -
     let poll_interval = Duration::from_millis(100);
 
     // Run the event loop
-    event_loop.run(move |_event, _, control_flow| {
+    event_loop.run(move |event, _, control_flow| {
         // Use WaitUntil to avoid busy-waiting while still checking channels
         *control_flow = ControlFlow::WaitUntil(Instant::now() + poll_interval);
+
+        // Handle dock icon click (macOS Reopen event)
+        // Note: GUI was removed, dock click now just logs the event
+        if let Event::Reopen { .. } = event {
+            debug!("Dock icon clicked (no GUI available)");
+            return;
+        }
 
         // Check for programmatic shutdown request
         if is_shutdown_requested() {
@@ -186,10 +192,10 @@ pub fn run_with_hotkeys(hotkey_manager: Option<crate::hotkeys::HotkeyManager>) -
                 }
 
                 // Update icon
-                if let Ok(new_icon) = new_status.to_icon() {
-                    if let Err(e) = tray_icon.set_icon(Some(new_icon)) {
-                        debug!("Failed to update tray icon: {}", e);
-                    }
+                if let Ok(new_icon) = new_status.to_icon()
+                    && let Err(e) = tray_icon.set_icon(Some(new_icon))
+                {
+                    debug!("Failed to update tray icon: {}", e);
                 }
 
                 info!("Tray status updated to: {:?}", new_status);

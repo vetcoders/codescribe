@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = [".", "tauri-app"]
+members = [".", "codescribe-core"]
 
 [workspace.package]
-version = "0.6.3"
+version = "0.7.1"
 edition = "2024"
 authors = ["VetCoders <hello@vetcoders.io>"]
 
@@ -16,13 +16,28 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.6.3"
+version = "0.7.1"
 edition = "2024"
 description = "Speech-to-text tray app for macOS - Pure Rust"
 authors = ["VetCoders <hello@vetcoders.io>"]
 license = "Apache-2.0"
 
+[[bin]]
+name = "codescribe"
+path = "src/main.rs"
+
+[[bin]]
+name = "codescribe-quality"
+path = "src/bin/codescribe_quality.rs"
+
+[[bin]]
+name = "codescribe-loop"
+path = "src/bin/codescribe_loop.rs"
+
 [dependencies]
+# Core library
+codescribe_core = { package = "codescribe-core", path = "codescribe-core" }
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
@@ -70,6 +85,8 @@ arboard = "3"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+regex = "1"
+fastembed = { version = "5.8.1", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries"] }
 
 # Config/paths
 directories = "6"
@@ -103,10 +120,13 @@ flate2 = "1.0"
 
 # Lazy static for global state
 lazy_static = "1.4"
+deunicode = "1.6"
+libc = "0.2"
 
 # Image processing (for tray icon)
 image = { version = "0.25", default-features = false, features = ["png"] }
 walkdir = "2.5.0"
+cap-std = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # candle-coreml = "0.3"
@@ -133,10 +153,6 @@ dirs = "6"
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
 # embed_model is set by build.rs when model is available
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)'] }
-
-[lints.clippy]
-# Rust 2024: Allow collapsible_if for now (let-chains are new, can refactor later)
-collapsible_if = "allow"
 
 [profile.release]
 opt-level = "z"

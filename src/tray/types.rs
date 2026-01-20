@@ -62,7 +62,6 @@ impl TrayStatus {
 
 /// Menu events that can be sent to the main controller.
 /// Some variants are prepared for future use but handlers may not be implemented yet.
-#[allow(dead_code)] // Used by tauri-app
 #[derive(Debug, Clone)]
 pub enum TrayMenuEvent {
     /// Copy last transcript to clipboard
@@ -88,56 +87,9 @@ pub enum TrayMenuEvent {
     SelectHistoryEntry(usize),
 }
 
-/// Volume level presets (prepared for future Feedback submenu)
-#[allow(dead_code)] // Used by tauri-app
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VolumeLevel {
-    Mute,   // 0%
-    Low,    // 25%
-    Medium, // 50%
-    High,   // 75%
-    Full,   // 100%
-}
-
-#[allow(dead_code)] // Used by tauri-app
-impl VolumeLevel {
-    /// Convert to f32 value (0.0 - 1.0)
-    pub fn as_f32(self) -> f32 {
-        match self {
-            VolumeLevel::Mute => 0.0,
-            VolumeLevel::Low => 0.25,
-            VolumeLevel::Medium => 0.5,
-            VolumeLevel::High => 0.75,
-            VolumeLevel::Full => 1.0,
-        }
-    }
-
-    /// Get display label
-    pub fn label(self) -> &'static str {
-        match self {
-            VolumeLevel::Mute => "Mute (0%)",
-            VolumeLevel::Low => "Low (25%)",
-            VolumeLevel::Medium => "Medium (50%)",
-            VolumeLevel::High => "High (75%)",
-            VolumeLevel::Full => "Full (100%)",
-        }
-    }
-}
-
 // ============================================================================
 // Menu Item Storage Structs
 // ============================================================================
-
-/// Model menu items for dynamic updates (prepared for future Models submenu)
-#[allow(dead_code)] // Used by tauri-app
-pub struct ModelMenuItems {
-    pub small: CheckMenuItem,
-    pub medium: CheckMenuItem,
-    pub large_v3: CheckMenuItem,
-    pub large_v3_turbo: CheckMenuItem,
-    pub large_v3_q8: CheckMenuItem,
-    pub label: MenuItem,
-}
 
 /// Hold Hotkeys menu items for radio-button behavior
 pub struct HoldMenuItems {
@@ -154,12 +106,6 @@ pub struct ToggleMenuItems {
     pub double_ralt: CheckMenuItem,
     pub disabled: CheckMenuItem,
     pub label: MenuItem,
-}
-
-/// History menu label for dynamic updates
-#[allow(dead_code)] // Used by tauri-app
-pub struct HistoryMenuItems {
-    pub latest_label: MenuItem,
 }
 
 // ============================================================================
@@ -198,4 +144,7 @@ pub struct MenuIds {
     pub settings_edit_prompt: MenuId,
     pub settings_open_prompt_folder: MenuId,
     pub settings_reset_context: MenuId,
+
+    // Quality submenu
+    pub quality_open_report: MenuId,
 }
