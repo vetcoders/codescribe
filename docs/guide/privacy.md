@@ -104,7 +104,7 @@ USE_LOCAL_STT=1
 CODESCRIBE_QUALITY_DISABLE_CLOUD=1
 
 # No LLM configuration needed
-# LLM_ENDPOINT=
+# LLM_BASE_URL=
 # LLM_API_KEY=
 ```
 
@@ -123,7 +123,7 @@ ollama serve
 ollama pull llama3.2
 
 # Configure CodeScribe
-LLM_ENDPOINT=http://localhost:11434/v1
+LLM_BASE_URL=http://localhost:11434/v1
 LLM_API_KEY=ollama
 LLM_MODEL=llama3.2
 AI_FORMATTING_ENABLED=1
@@ -194,13 +194,13 @@ Audio files go to `~/.codescribe/audio/`.
 ### CodeScribe Makes No Connections If:
 - AI formatting is disabled
 - Using only Raw mode (Ctrl hold)
-- No LLM_ENDPOINT configured
+- No LLM_BASE_URL configured
 
 ### CodeScribe Connects To:
 
 | Destination | When | Data |
 |-------------|------|------|
-| `LLM_ENDPOINT` | AI formatting | Text transcript |
+| `LLM_BASE_URL` | AI formatting | Text transcript |
 | `STT_ENDPOINT` | Cloud STT fallback | Audio (if enabled) |
 
 ### Verify Network Activity

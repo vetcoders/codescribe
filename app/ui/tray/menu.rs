@@ -82,11 +82,9 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     menu.append(&open_history_item)?;
 
     // 6b. Quality menu item (shows pending mismatches from daemon)
-    let state = crate::quality_loop::read_daemon_state();
-    let quality_label = if !state.available {
-        "Quality: unavailable".to_string()
-    } else if state.pending_mismatches > 0 {
-        format!("Quality: {} pending", state.pending_mismatches)
+    let pending = crate::quality_loop::get_pending_mismatches();
+    let quality_label = if pending > 0 {
+        format!("Quality: {} pending", pending)
     } else {
         "Quality: OK".to_string()
     };
@@ -184,11 +182,9 @@ pub fn toggle_ai_formatting() -> bool {
 /// Update the quality label in the menu
 /// Call this periodically to reflect daemon state changes
 pub fn update_quality_label() {
-    let state = crate::quality_loop::read_daemon_state();
-    let label = if !state.available {
-        "Quality: unavailable".to_string()
-    } else if state.pending_mismatches > 0 {
-        format!("Quality: {} pending", state.pending_mismatches)
+    let pending = crate::quality_loop::get_pending_mismatches();
+    let label = if pending > 0 {
+        format!("Quality: {} pending", pending)
     } else {
         "Quality: OK".to_string()
     };
@@ -203,11 +199,9 @@ pub fn update_quality_label() {
 #[cfg(test)]
 mod tests {
     fn menu_labels_for_test() -> Vec<String> {
-        let state = crate::quality_loop::read_daemon_state();
-        let quality_label = if !state.available {
-            "Quality: unavailable".to_string()
-        } else if state.pending_mismatches > 0 {
-            format!("Quality: {} pending", state.pending_mismatches)
+        let pending = crate::quality_loop::get_pending_mismatches();
+        let quality_label = if pending > 0 {
+            format!("Quality: {} pending", pending)
         } else {
             "Quality: OK".to_string()
         };

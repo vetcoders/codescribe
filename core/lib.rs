@@ -119,10 +119,10 @@ pub use audio::recorder::{Recorder, RecorderConfig};
 pub use config::{get_assistive_prompt_path, get_formatting_prompt_path, reset_to_defaults};
 
 // ═══════════════════════════════════════════════════════════
-// Public re-exports
+// Public re-exports for legacy paths
 // ═══════════════════════════════════════════════════════════
 
-pub use llm::{ai_formatting, client};
+pub use llm::{ai_formatting, client, voice_chat};
 pub use pipeline::stream_postprocess;
 pub use quality::{quality_loop, quality_report};
 pub use util::{safe_path, status};
