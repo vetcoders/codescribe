@@ -143,13 +143,12 @@ pub fn is_assistive_session() -> bool {
     IS_ASSISTIVE_SESSION.load(Ordering::SeqCst)
 }
 
-/// Route transcription delta to appropriate overlay based on session mode
+/// Route transcription delta to transcription overlay (ALWAYS)
+/// Chat is a CONSUMER of transcription, not the display target.
 fn route_transcription_delta(delta: &str) {
-    if is_assistive_session() {
-        crate::append_voice_chat_delta(delta);
-    } else {
-        crate::append_transcription_delta(delta);
-    }
+    // Transkrypcja ZAWSZE idzie do transcription_overlay
+    // Voice chat jest KONSUMENTEM - user decyduje kiedy wysłać do AI
+    crate::append_transcription_delta(delta);
 }
 
 /// Hotkey event types
@@ -522,14 +521,10 @@ impl RecordingController {
             // Set session mode for delta routing
             set_assistive_session(is_assistive);
 
-            // Show appropriate overlay based on mode
-            if is_assistive {
-                crate::clear_voice_chat_text();
-                crate::show_voice_chat_overlay();
-            } else {
-                crate::clear_transcription_text();
-                crate::show_transcription_overlay();
-            }
+            // ALWAYS show transcription overlay for live preview
+            // Chat overlay is opened intentionally by user, not automatically
+            crate::clear_transcription_text();
+            crate::show_transcription_overlay();
 
             // Transition to REC_HOLD
             *state.write().await = State::RecHold;
@@ -622,14 +617,10 @@ impl RecordingController {
         // Set session mode for delta routing
         set_assistive_session(is_assistive);
 
-        // Show appropriate overlay based on mode
-        if is_assistive {
-            crate::clear_voice_chat_text();
-            crate::show_voice_chat_overlay();
-        } else {
-            crate::clear_transcription_text();
-            crate::show_transcription_overlay();
-        }
+        // ALWAYS show transcription overlay for live preview
+        // Chat overlay is opened intentionally by user, not automatically
+        crate::clear_transcription_text();
+        crate::show_transcription_overlay();
 
         // Transition to REC_TOGGLE
         *self.state.write().await = State::RecToggle;

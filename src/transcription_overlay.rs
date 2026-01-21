@@ -31,8 +31,12 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::ui_helpers::{
-    add_subview, animate_fade, color_white, set_text, window_close, window_set_alpha, window_show,
+    add_subview, animate_fade, button_set_action, button_style, color_white, create_button,
+    set_text, window_close, window_set_alpha, window_show,
 };
+use objc::declare::ClassDecl;
+use objc::runtime::Sel;
+use std::sync::Once;
 
 // Type alias for Objective-C object pointers
 type Id = *mut Object;
@@ -67,6 +71,8 @@ struct TranscriptionOverlayState {
     text_field: Option<usize>,
     status_field: Option<usize>,
     blur_view: Option<usize>,
+    transfer_button: Option<usize>,
+    action_handler: Option<usize>,
     accumulated_text: String,
 }
 
@@ -76,6 +82,8 @@ lazy_static::lazy_static! {
         text_field: None,
         status_field: None,
         blur_view: None,
+        transfer_button: None,
+        action_handler: None,
         accumulated_text: String::new(),
     });
 }
@@ -84,6 +92,47 @@ lazy_static::lazy_static! {
 static AUTO_HIDE_PENDING: AtomicBool = AtomicBool::new(false);
 /// Counter to invalidate old timers
 static AUTO_HIDE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+// ═══════════════════════════════════════════════════════════
+// Action Handler Class (for button callbacks)
+// ═══════════════════════════════════════════════════════════
+
+static ACTION_HANDLER_INIT: Once = Once::new();
+static mut ACTION_HANDLER_CLASS: *const Class = std::ptr::null();
+
+fn action_handler_class() -> *const Class {
+    ACTION_HANDLER_INIT.call_once(|| unsafe {
+        let superclass = Class::get("NSObject").unwrap();
+        let mut decl = ClassDecl::new("TranscriptionOverlayActionHandler", superclass).unwrap();
+
+        decl.add_method(
+            sel!(onTransferToChat:),
+            on_transfer_to_chat as extern "C" fn(&Object, Sel, Id),
+        );
+
+        ACTION_HANDLER_CLASS = decl.register();
+    });
+    unsafe { ACTION_HANDLER_CLASS }
+}
+
+/// Handler: Transfer transcription text to voice chat overlay
+extern "C" fn on_transfer_to_chat(_this: &Object, _cmd: Sel, _sender: Id) {
+    let text = get_transcription_text();
+    if text.is_empty() {
+        return;
+    }
+
+    // Transfer text to voice chat draft
+    crate::set_voice_chat_draft_text(&text);
+
+    // Show the voice chat overlay
+    crate::show_voice_chat_overlay();
+
+    // Hide transcription overlay (user made their choice)
+    hide_transcription_overlay();
+
+    info!("Transcription transferred to chat: {} chars", text.len());
+}
 
 /// Show the transcription overlay window
 pub fn show_transcription_overlay() {
@@ -298,14 +347,20 @@ fn show_transcription_overlay_impl() {
         add_subview(content_view, status_field);
 
         // === Text field for transcription (main area) ===
+        let button_height = 28.0;
+        let button_margin = 8.0;
         let text_frame = CGRect {
             origin: CGPoint {
                 x: padding,
-                y: padding,
+                y: padding + button_height + button_margin,
             },
             size: CGSize {
                 width: window_width - padding * 2.0,
-                height: window_height - status_height - padding * 3.0,
+                height: window_height
+                    - status_height
+                    - padding * 3.0
+                    - button_height
+                    - button_margin,
             },
         };
 
@@ -338,6 +393,31 @@ fn show_transcription_overlay_impl() {
 
         add_subview(content_view, text_field);
 
+        // === "Do chatu" button (bottom right) ===
+        let button_width = 90.0;
+        let button_frame = CGRect {
+            origin: CGPoint {
+                x: window_width - padding - button_width,
+                y: padding,
+            },
+            size: CGSize {
+                width: button_width,
+                height: button_height,
+            },
+        };
+
+        let transfer_button = create_button(button_frame, "Do chatu", button_style::ROUNDED);
+
+        // Create action handler instance
+        let handler_class = action_handler_class();
+        let action_handler: Id = msg_send![handler_class, alloc];
+        let action_handler: Id = msg_send![action_handler, init];
+
+        // Wire up button action
+        button_set_action(transfer_button, action_handler, sel!(onTransferToChat:));
+
+        add_subview(content_view, transfer_button);
+
         // Show the window with fade-in animation
         window_set_alpha(window, 0.0);
         window_show(window);
@@ -347,6 +427,8 @@ fn show_transcription_overlay_impl() {
         state.text_field = Some(text_field as usize);
         state.status_field = Some(status_field as usize);
         state.blur_view = Some(blur_view as usize);
+        state.transfer_button = Some(transfer_button as usize);
+        state.action_handler = Some(action_handler as usize);
 
         info!("Transcription overlay shown (Tahoe-style with HudWindow vibrancy)");
     }
@@ -486,6 +568,8 @@ fn hide_transcription_overlay_impl() {
     state.text_field = None;
     state.status_field = None;
     state.blur_view = None;
+    state.transfer_button = None;
+    state.action_handler = None;
     // Note: accumulated_text is NOT cleared here - it's needed for clipboard copy
 }
 

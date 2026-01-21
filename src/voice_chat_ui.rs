@@ -65,6 +65,7 @@ pub enum InputSource {
 struct VoiceChatOverlayState {
     // UI element handles
     window: Option<usize>,
+    window_delegate: Option<usize>,
     scroll_view: Option<usize>,
     // Bubble-based chat rendering (replaces single text_view)
     bubble_container: Option<usize>,   // NSStackView for bubbles
@@ -107,6 +108,7 @@ struct VoiceChatOverlayState {
 lazy_static::lazy_static! {
     static ref OVERLAY_STATE: Mutex<VoiceChatOverlayState> = Mutex::new(VoiceChatOverlayState {
         window: None,
+        window_delegate: None,
         scroll_view: None,
         bubble_container: None,
         bubble_views: Vec::new(),
@@ -162,6 +164,8 @@ struct ChatMessage {
 
 static ACTION_HANDLER_INIT: Once = Once::new();
 static mut ACTION_HANDLER_CLASS: *const Class = std::ptr::null();
+static WINDOW_DELEGATE_INIT: Once = Once::new();
+static mut WINDOW_DELEGATE_CLASS: *const Class = std::ptr::null();
 
 fn action_handler_class() -> *const Class {
     unsafe {
@@ -213,8 +217,32 @@ fn action_handler_class() -> *const Class {
     }
 }
 
+fn window_delegate_class() -> *const Class {
+    unsafe {
+        WINDOW_DELEGATE_INIT.call_once(|| {
+            let superclass = Class::get("NSObject").expect("NSObject not found");
+            let mut decl = ClassDecl::new("VoiceChatOverlayWindowDelegate", superclass)
+                .expect("Failed to declare window delegate class");
+            decl.add_method(
+                sel!(windowWillClose:),
+                on_window_will_close as extern "C" fn(&Object, Sel, Id),
+            );
+            let cls = decl.register();
+            WINDOW_DELEGATE_CLASS = cls;
+        });
+        WINDOW_DELEGATE_CLASS
+    }
+}
+
 extern "C" fn on_send(_this: &Object, _cmd: Sel, _sender: Id) {
     send_draft_message_impl();
+}
+
+extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id) {
+    // Window is closing (user clicked close). Clear state to avoid use-after-free.
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    clear_overlay_state(&mut state);
+    debug!("Voice chat overlay closed by user");
 }
 
 extern "C" fn on_toggle_auto_send(_this: &Object, _cmd: Sel, sender: Id) {
@@ -597,6 +625,9 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![window, setTitleVisibility: 1]; // NSWindowTitleHidden
         let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
         let _: () = msg_send![window, setMovableByWindowBackground: true];
+        let delegate_class = window_delegate_class();
+        let window_delegate: Id = msg_send![delegate_class, new];
+        let _: () = msg_send![window, setDelegate: window_delegate];
 
         // Configure window appearance
         let bg_color = NSColor::colorWithCalibratedRed_green_blue_alpha(0.1, 0.1, 0.1, 0.95);
@@ -912,6 +943,7 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![window, orderFrontRegardless];
 
         state.window = Some(window as usize);
+        state.window_delegate = Some(window_delegate as usize);
         state.scroll_view = Some(scroll_view as usize);
         state.bubble_container = Some(bubble_container as usize);
         state.bubble_views.clear(); // Will be populated by update_chat_view_with_state
@@ -1456,26 +1488,38 @@ fn hide_voice_chat_overlay_impl() {
             let _: () = msg_send![window, close];
             debug!("Voice chat overlay hidden");
         }
-        state.bubble_container = None;
-        state.bubble_views.clear();
-        state.status_field = None;
-        state.voice_draft_view = None;
-        state.voice_draft_header = None;
-        state.voice_send_button = None;
-        state.voice_use_button = None;
-        state.tab_bar = None;
-        state.drafts_scroll_view = None;
-        state.drafts_container = None;
-        state.draft_files.clear();
-        state.selected_draft_index = None;
-        state.messages.clear();
-        // Clear both buffers
-        state.manual_draft.clear();
-        state.voice_draft.clear();
-        state.attachments.clear();
-        state.is_sending = false;
-        state.is_voice_active = false;
+        clear_overlay_state(&mut state);
     }
+}
+
+fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
+    state.window = None;
+    state.window_delegate = None;
+    state.scroll_view = None;
+    state.bubble_container = None;
+    state.bubble_views.clear();
+    state.status_field = None;
+    state.input_field = None;
+    state.send_button = None;
+    state.attach_button = None;
+    state.auto_send_checkbox = None;
+    state.action_handler = None;
+    state.voice_draft_view = None;
+    state.voice_draft_header = None;
+    state.voice_send_button = None;
+    state.voice_use_button = None;
+    state.collapse_button = None;
+    state.tab_bar = None;
+    state.drafts_scroll_view = None;
+    state.drafts_container = None;
+    state.draft_files.clear();
+    state.selected_draft_index = None;
+    state.messages.clear();
+    state.manual_draft.clear();
+    state.voice_draft.clear();
+    state.attachments.clear();
+    state.is_sending = false;
+    state.is_voice_active = false;
 }
 
 #[cfg(test)]
