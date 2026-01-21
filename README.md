@@ -45,7 +45,7 @@ flowchart TB
         BACKEND --> CORE
     end
 
-    MODEL[Embedded Whisper Model\nlarge-v3-turbo-mlx-q8\n(~888MB)]
+    MODEL[Embedded Whisper Model<br/>large-v3-turbo-mlx-q8<br/>~888MB]
     WH === MODEL
 
     subgraph TOOLS[CLI Suite]

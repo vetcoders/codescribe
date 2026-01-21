@@ -3,7 +3,7 @@ resolver = "2"
 members = [".", "codescribe-core"]
 
 [workspace.package]
-version = "0.7.2-dev"
+version = "0.7.3"
 edition = "2024"
 authors = ["VetCoders <hello@vetcoders.io>"]
 
@@ -16,7 +16,7 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.7.2-dev"
+version = "0.7.3"
 edition = "2024"
 description = "Speech-to-text tray app for macOS - Pure Rust"
 authors = ["VetCoders <hello@vetcoders.io>"]
@@ -135,7 +135,7 @@ coreml-rs = "0.5"
 core-foundation = "0.10"
 core-graphics = "0.25"
 # UI utilities (hold badge, caret tracking) - modern objc2-* crates
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSColor", "NSEvent", "NSBezierPath", "NSGraphics", "NSResponder"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSColor", "NSEvent", "NSBezierPath", "NSGraphics", "NSResponder", "NSVisualEffectView"] }
 # Legacy objc for runtime declarations (ClassDecl) and msg_send! macro
 objc = "0.2"
 # Grand Central Dispatch for main thread operations

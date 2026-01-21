@@ -41,6 +41,9 @@ pub mod ui;
 pub mod voice_chat_ui;
 
 #[cfg(target_os = "macos")]
+pub mod transcription_overlay;
+
+#[cfg(target_os = "macos")]
 pub mod tray;
 
 #[cfg(target_os = "macos")]
@@ -74,4 +77,12 @@ pub use voice_chat_ui::{
     show_voice_chat_overlay,
     show_voice_chat_overlay_with_config,
     update_voice_chat_status,
+};
+
+#[cfg(target_os = "macos")]
+pub use transcription_overlay::{
+    TranscriptionOverlayConfig, append_transcription_delta, clear_transcription_text,
+    get_transcription_text, hide_transcription_overlay, is_transcription_overlay_visible,
+    schedule_auto_hide, set_transcription_text, show_transcription_overlay,
+    update_transcription_status,
 };

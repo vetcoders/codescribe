@@ -1328,4 +1328,102 @@ mod tests {
         assert!(!state.messages.is_empty(), "Messages should persist");
         assert!(state.messages.iter().any(|m| m.text == "PersistMe"));
     }
+
+    #[test]
+    fn test_sidecar_collapsed_toggle() {
+        // Initial state
+        let initial = {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.sidecar_collapsed
+        };
+
+        // Toggle via mutex
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.sidecar_collapsed = !initial;
+        }
+
+        let toggled = {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.sidecar_collapsed
+        };
+        assert_ne!(toggled, initial, "Sidecar collapsed should toggle");
+
+        // Restore
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.sidecar_collapsed = initial;
+        }
+    }
+
+    #[test]
+    fn test_selected_tab_change() {
+        // Set to Drafts (0)
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.selected_tab = 0;
+        }
+
+        let tab = {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.selected_tab
+        };
+        assert_eq!(tab, 0, "Tab should be Drafts (0)");
+
+        // Switch to Settings (1)
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.selected_tab = 1;
+        }
+
+        let tab = {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.selected_tab
+        };
+        assert_eq!(tab, 1, "Tab should be Settings (1)");
+
+        // Restore
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.selected_tab = 0;
+        }
+    }
+
+    #[test]
+    fn test_attachments_list() {
+        // Clear first
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.attachments.clear();
+        }
+
+        // Add attachments
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .attachments
+                .push(std::path::PathBuf::from("/tmp/test1.txt"));
+            state
+                .attachments
+                .push(std::path::PathBuf::from("/tmp/test2.png"));
+        }
+
+        let count = {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.attachments.len()
+        };
+        assert_eq!(count, 2, "Should have 2 attachments");
+
+        // Clear
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.attachments.clear();
+        }
+
+        let count = {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.attachments.len()
+        };
+        assert_eq!(count, 0, "Attachments should be cleared");
+    }
 }

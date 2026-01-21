@@ -128,6 +128,30 @@ impl std::fmt::Display for State {
     }
 }
 
+/// Global flag for current session mode.
+/// true = assistive (chat UI), false = non-assistive (simple transcription overlay)
+/// This is set before recording starts and checked by the delta callback.
+static IS_ASSISTIVE_SESSION: AtomicBool = AtomicBool::new(false);
+
+/// Set the current session mode (called before recording starts)
+pub fn set_assistive_session(is_assistive: bool) {
+    IS_ASSISTIVE_SESSION.store(is_assistive, Ordering::SeqCst);
+}
+
+/// Check if current session is assistive mode
+pub fn is_assistive_session() -> bool {
+    IS_ASSISTIVE_SESSION.load(Ordering::SeqCst)
+}
+
+/// Route transcription delta to appropriate overlay based on session mode
+fn route_transcription_delta(delta: &str) {
+    if is_assistive_session() {
+        crate::append_voice_chat_delta(delta);
+    } else {
+        crate::append_transcription_delta(delta);
+    }
+}
+
 /// Hotkey event types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyType {
@@ -198,7 +222,7 @@ impl RecordingController {
         let mut recorder =
             StreamingRecorder::new().expect("Failed to initialize streaming recorder");
         recorder.set_delta_callback(Some(Arc::new(|delta| {
-            crate::append_voice_chat_delta(delta);
+            route_transcription_delta(delta);
         })));
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
@@ -244,7 +268,7 @@ impl RecordingController {
         let mut recorder =
             StreamingRecorder::new().expect("Failed to initialize streaming recorder");
         recorder.set_delta_callback(Some(Arc::new(|delta| {
-            crate::append_voice_chat_delta(delta);
+            route_transcription_delta(delta);
         })));
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
@@ -405,7 +429,7 @@ impl RecordingController {
 
         match current_state {
             State::Idle => {
-                self.start_toggle_recording().await?;
+                self.start_toggle_recording(event.assistive).await?;
             }
             State::RecToggle => {
                 info!("Toggle pressed again; finishing recording");
@@ -495,9 +519,17 @@ impl RecordingController {
             };
             show_badge_for_mode(badge_mode);
 
-            // Show live transcription overlay
-            crate::clear_voice_chat_text();
-            crate::show_voice_chat_overlay();
+            // Set session mode for delta routing
+            set_assistive_session(is_assistive);
+
+            // Show appropriate overlay based on mode
+            if is_assistive {
+                crate::clear_voice_chat_text();
+                crate::show_voice_chat_overlay();
+            } else {
+                crate::clear_transcription_text();
+                crate::show_transcription_overlay();
+            }
 
             // Transition to REC_HOLD
             *state.write().await = State::RecHold;
@@ -515,7 +547,7 @@ impl RecordingController {
     }
 
     /// Start recording in toggle mode (immediate, no delay)
-    async fn start_toggle_recording(&self) -> Result<()> {
+    async fn start_toggle_recording(&self, is_assistive: bool) -> Result<()> {
         // Check backend health before starting
         match crate::client::check_health().await {
             Ok(true) => {}
@@ -566,9 +598,9 @@ impl RecordingController {
             vad_flag.store(true, Ordering::SeqCst);
         });
 
-        // Set streaming callback for overlay updates
+        // Set streaming callback for overlay updates (routed by session mode)
         recorder.set_delta_callback(Some(Arc::new(|text: &str| {
-            crate::voice_chat_ui::append_voice_chat_delta(text);
+            route_transcription_delta(text);
         })));
 
         recorder.start(Some(language.as_str().to_string())).await?;
@@ -579,11 +611,25 @@ impl RecordingController {
             crate::audio::play_sound("Tink");
         }
 
-        // Show pulsing red badge for toggle mode (hands-off recording)
-        show_badge_for_mode(BadgeMode::Toggle);
+        // Show badge with appropriate mode
+        let badge_mode = if is_assistive {
+            BadgeMode::Assistive
+        } else {
+            BadgeMode::Toggle
+        };
+        show_badge_for_mode(badge_mode);
 
-        // Show live transcription overlay (do not clear history for persistence)
-        crate::show_voice_chat_overlay();
+        // Set session mode for delta routing
+        set_assistive_session(is_assistive);
+
+        // Show appropriate overlay based on mode
+        if is_assistive {
+            crate::clear_voice_chat_text();
+            crate::show_voice_chat_overlay();
+        } else {
+            crate::clear_transcription_text();
+            crate::show_transcription_overlay();
+        }
 
         // Transition to REC_TOGGLE
         *self.state.write().await = State::RecToggle;
@@ -659,10 +705,21 @@ impl RecordingController {
             Ok(_) => {
                 let _ = update_tray_status(TrayStatus::Success);
                 info!("Processing finished successfully. State reset to IDLE.");
+
+                // For non-assistive mode, schedule auto-hide of transcription overlay
+                // (assistive mode uses voice_chat_ui which has its own lifecycle)
+                if !assistive {
+                    crate::schedule_auto_hide();
+                }
             }
             Err(e) => {
                 error!("Processing failed: {}", e);
                 let _ = update_tray_status(TrayStatus::Idle);
+
+                // Hide overlay immediately on error
+                if !assistive {
+                    crate::hide_transcription_overlay();
+                }
             }
         }
 
