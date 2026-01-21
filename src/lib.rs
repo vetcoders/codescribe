@@ -38,6 +38,9 @@ pub mod ipc;
 pub mod ui;
 
 #[cfg(target_os = "macos")]
+pub mod ui_helpers;
+
+#[cfg(target_os = "macos")]
 pub mod voice_chat_ui;
 
 #[cfg(target_os = "macos")]

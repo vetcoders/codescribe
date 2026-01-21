@@ -18,6 +18,8 @@ use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSEvent, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use std::ptr;
+
+use crate::ui_helpers::{add_subview, window_close, window_show};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -393,7 +395,7 @@ unsafe fn create_badge_window(config: &HoldBadgeConfig) -> Id {
     // Create badge view (circular red indicator)
     // SAFETY: create_badge_view is unsafe, called from unsafe fn
     let badge_view = unsafe { create_badge_view(config) };
-    let _: () = msg_send![content_view, addSubview: badge_view];
+    add_subview(content_view, badge_view);
 
     // Force the view to display
     let _: () = msg_send![badge_view, setNeedsDisplay: true];
@@ -504,8 +506,7 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
 
         // Hide existing badge if any
         if let Some(window_ptr) = state.window {
-            let window = window_ptr as Id;
-            let _: () = msg_send![window, close];
+            window_close(window_ptr as Id);
             state.window = None;
         }
 
@@ -513,7 +514,7 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
         let window = create_badge_window(&config);
 
         // Make window visible - use orderFrontRegardless which works even when app is not active
-        let _: () = msg_send![window, orderFrontRegardless];
+        window_show(window);
 
         // Force content view to redraw
         let content_view: Id = msg_send![window, contentView];
@@ -611,11 +612,10 @@ pub fn hide_hold_badge() {
     }
 
     // Dispatch window close to main thread
-    Queue::main().exec_async(|| unsafe {
+    Queue::main().exec_async(|| {
         let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(window_ptr) = state.window {
-            let window = window_ptr as Id;
-            let _: () = msg_send![window, close];
+            window_close(window_ptr as Id);
             state.window = None;
         }
     });

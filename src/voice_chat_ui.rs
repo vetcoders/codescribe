@@ -20,6 +20,11 @@ use objc2_app_kit::{NSBackingStoreType, NSColor, NSWindowCollectionBehavior, NSW
 use std::sync::{Arc, Mutex, Once};
 use tracing::{debug, info};
 
+use crate::ui_helpers::{
+    add_subview, button_set_action, button_style, create_button, create_checkbox, ns_string,
+    set_hidden,
+};
+
 // Type alias for Objective-C object pointers
 type Id = *mut Object;
 
@@ -281,25 +286,19 @@ extern "C" fn on_toggle_collapse(_this: &Object, _cmd: Sel, sender: Id) {
         state.sidecar_collapsed = !state.sidecar_collapsed;
 
         // Update button title
-        let ns_string = Class::get("NSString").unwrap();
         let new_title = if state.sidecar_collapsed { "<|" } else { ">|" };
-        let mut c_str = new_title.as_bytes().to_vec();
-        c_str.push(0);
-        let title: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
+        let title = ns_string(new_title);
         let _: () = msg_send![sender, setTitle: title];
 
         // Hide/show right panel elements (tab_bar, voice_draft_view, etc.)
         if let Some(tab_ptr) = state.tab_bar {
-            let tab_bar = tab_ptr as Id;
-            let _: () = msg_send![tab_bar, setHidden: state.sidecar_collapsed];
+            set_hidden(tab_ptr as Id, state.sidecar_collapsed);
         }
         if let Some(view_ptr) = state.voice_draft_view {
-            let voice_draft_view = view_ptr as Id;
-            let _: () = msg_send![voice_draft_view, setHidden: state.sidecar_collapsed];
+            set_hidden(view_ptr as Id, state.sidecar_collapsed);
         }
         if let Some(header_ptr) = state.voice_draft_header {
-            let header = header_ptr as Id;
-            let _: () = msg_send![header, setHidden: state.sidecar_collapsed];
+            set_hidden(header_ptr as Id, state.sidecar_collapsed);
         }
 
         info!("Sidecar collapsed: {}", state.sidecar_collapsed);
@@ -409,7 +408,6 @@ fn show_voice_chat_overlay_impl() {
 
         let ns_window = Class::get("NSWindow").unwrap();
         let ns_text_field = Class::get("NSTextField").unwrap();
-        let ns_button = Class::get("NSButton").unwrap();
 
         // Get screen size to position the overlay
         let ns_screen = Class::get("NSScreen").unwrap();
@@ -538,12 +536,8 @@ fn show_voice_chat_overlay_impl() {
                 height: 24.0,
             },
         };
-        let collapse_btn: Id = msg_send![ns_button, alloc];
-        let collapse_btn: Id = msg_send![collapse_btn, initWithFrame: collapse_frame];
-        let collapse_title: Id = msg_send![ns_string, stringWithUTF8String: c">|".as_ptr()];
-        let _: () = msg_send![collapse_btn, setTitle: collapse_title];
-        let _: () = msg_send![collapse_btn, setBezelStyle: 1_isize]; // NSRoundedBezelStyle
-        let _: () = msg_send![content_view, addSubview: collapse_btn];
+        let collapse_btn = create_button(collapse_frame, ">|", button_style::ROUNDED);
+        add_subview(content_view, collapse_btn);
 
         // 2. Input Area (Below Header)
         // Input Field + Send Button + Auto-Send Checkbox
@@ -565,14 +559,8 @@ fn show_voice_chat_overlay_impl() {
                 height: 24.0,
             },
         };
-        let auto_send_cb: Id = msg_send![ns_button, alloc];
-        let auto_send_cb: Id = msg_send![auto_send_cb, initWithFrame: checkbox_frame];
-        let _: () = msg_send![auto_send_cb, setButtonType: 3]; // NSSwitchButton (Checkbox)
-        let cb_title: Id = msg_send![ns_string, stringWithUTF8String: c"Auto".as_ptr()];
-        let _: () = msg_send![auto_send_cb, setTitle: cb_title];
-        let state_val: isize = if state.auto_send_enabled { 1 } else { 0 };
-        let _: () = msg_send![auto_send_cb, setState: state_val];
-        let _: () = msg_send![content_view, addSubview: auto_send_cb];
+        let auto_send_cb = create_checkbox(checkbox_frame, "Auto", state.auto_send_enabled);
+        add_subview(content_view, auto_send_cb);
 
         // Attach button (after Auto checkbox)
         let attach_width = 30.0;
@@ -586,12 +574,8 @@ fn show_voice_chat_overlay_impl() {
                 height: 24.0,
             },
         };
-        let attach_btn: Id = msg_send![ns_button, alloc];
-        let attach_btn: Id = msg_send![attach_btn, initWithFrame: attach_frame];
-        let attach_title: Id = msg_send![ns_string, stringWithUTF8String: c"📎".as_ptr()];
-        let _: () = msg_send![attach_btn, setTitle: attach_title];
-        let _: () = msg_send![attach_btn, setBezelStyle: 1]; // NSRoundedBezelStyle
-        let _: () = msg_send![content_view, addSubview: attach_btn];
+        let attach_btn = create_button(attach_frame, "📎", button_style::ROUNDED);
+        add_subview(content_view, attach_btn);
 
         // Send Button (Right of left panel)
         let send_frame = CGRect {
@@ -604,12 +588,8 @@ fn show_voice_chat_overlay_impl() {
                 height: 24.0,
             },
         };
-        let send_button: Id = msg_send![ns_button, alloc];
-        let send_button: Id = msg_send![send_button, initWithFrame: send_frame];
-        let send_title: Id = msg_send![ns_string, stringWithUTF8String: c"Wyślij".as_ptr()];
-        let _: () = msg_send![send_button, setTitle: send_title];
-        let _: () = msg_send![send_button, setBezelStyle: 1]; // NSRoundedBezelStyle
-        let _: () = msg_send![content_view, addSubview: send_button];
+        let send_button = create_button(send_frame, "Wyślij", button_style::ROUNDED);
+        add_subview(content_view, send_button);
 
         // Input Field (Middle of left panel, after checkbox and attach button)
         let input_x = input_margin + checkbox_width + 4.0 + attach_width + input_margin;
@@ -639,20 +619,11 @@ fn show_voice_chat_overlay_impl() {
         let handler_class = action_handler_class();
         let handler: Id = msg_send![handler_class, new];
 
-        let _: () = msg_send![send_button, setTarget: handler];
-        let _: () = msg_send![send_button, setAction: sel!(onSend:)];
-
-        let _: () = msg_send![input_field, setTarget: handler];
-        let _: () = msg_send![input_field, setAction: sel!(onInputSubmit:)];
-
-        let _: () = msg_send![auto_send_cb, setTarget: handler];
-        let _: () = msg_send![auto_send_cb, setAction: sel!(onToggleAutoSend:)];
-
-        let _: () = msg_send![attach_btn, setTarget: handler];
-        let _: () = msg_send![attach_btn, setAction: sel!(onAttach:)];
-
-        let _: () = msg_send![collapse_btn, setTarget: handler];
-        let _: () = msg_send![collapse_btn, setAction: sel!(onToggleCollapse:)];
+        button_set_action(send_button, handler, sel!(onSend:));
+        button_set_action(input_field, handler, sel!(onInputSubmit:));
+        button_set_action(auto_send_cb, handler, sel!(onToggleAutoSend:));
+        button_set_action(attach_btn, handler, sel!(onAttach:));
+        button_set_action(collapse_btn, handler, sel!(onToggleCollapse:));
 
         // 3. Chat Log (Below Input Area) - constrained to left panel
         let log_y_top = window_height - header_height - input_area_height;

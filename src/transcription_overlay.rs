@@ -30,6 +30,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+use crate::ui_helpers::{
+    add_subview, animate_fade, color_white, set_text, window_close, window_set_alpha, window_show,
+};
+
 // Type alias for Objective-C object pointers
 type Id = *mut Object;
 
@@ -98,8 +102,7 @@ fn show_transcription_overlay_impl() {
 
         // Reuse existing window if any
         if let Some(window_ptr) = state.window {
-            let window = window_ptr as Id;
-            let _: () = msg_send![window, orderFrontRegardless];
+            window_show(window_ptr as Id);
             info!("Transcription overlay reused");
             return;
         }
@@ -255,7 +258,7 @@ fn show_transcription_overlay_impl() {
         }
 
         // Add blur view as background
-        let _: () = msg_send![content_view, addSubview: blur_view];
+        add_subview(content_view, blur_view);
 
         // === Status indicator (top) ===
         let status_height = 28.0;
@@ -292,7 +295,7 @@ fn show_transcription_overlay_impl() {
             msg_send![ns_string, stringWithUTF8String: c"🔴 Recording...".as_ptr()];
         let _: () = msg_send![status_field, setStringValue: initial_status];
 
-        let _: () = msg_send![content_view, addSubview: status_field];
+        add_subview(content_view, status_field);
 
         // === Text field for transcription (main area) ===
         let text_frame = CGRect {
@@ -314,7 +317,7 @@ fn show_transcription_overlay_impl() {
         let _: () = msg_send![text_field, setSelectable: true];
 
         // Semi-transparent white for text
-        let text_color: Id = msg_send![ns_color, colorWithWhite: 1.0f64 alpha: 0.9f64];
+        let text_color = color_white(0.9);
         let _: () = msg_send![text_field, setTextColor: text_color];
 
         // System font for content
@@ -333,20 +336,12 @@ fn show_transcription_overlay_impl() {
         let empty_str: Id = msg_send![ns_string, stringWithUTF8String: c"".as_ptr()];
         let _: () = msg_send![text_field, setStringValue: empty_str];
 
-        let _: () = msg_send![content_view, addSubview: text_field];
+        add_subview(content_view, text_field);
 
-        // Show the window with animation
-        let _: () = msg_send![window, setAlphaValue: 0.0f64];
-        let _: () = msg_send![window, orderFrontRegardless];
-
-        // Fade in animation
-        let ns_animation_context = Class::get("NSAnimationContext").unwrap();
-        let _: () = msg_send![ns_animation_context, beginGrouping];
-        let current_context: Id = msg_send![ns_animation_context, currentContext];
-        let _: () = msg_send![current_context, setDuration: 0.2f64];
-        let animator: Id = msg_send![window, animator];
-        let _: () = msg_send![animator, setAlphaValue: 1.0f64];
-        let _: () = msg_send![ns_animation_context, endGrouping];
+        // Show the window with fade-in animation
+        window_set_alpha(window, 0.0);
+        window_show(window);
+        animate_fade(window, 1.0, 0.2);
 
         state.window = Some(window as usize);
         state.text_field = Some(text_field as usize);
@@ -366,19 +361,9 @@ pub fn update_transcription_status(status: &str) {
 }
 
 fn update_transcription_status_impl(status: &str) {
-    unsafe {
-        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(status_field_ptr) = state.status_field {
-            let status_field = status_field_ptr as Id;
-            let ns_string = Class::get("NSString").unwrap();
-
-            // Create null-terminated C string
-            let mut c_str = status.as_bytes().to_vec();
-            c_str.push(0);
-
-            let ns_str: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
-            let _: () = msg_send![status_field, setStringValue: ns_str];
-        }
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(status_field_ptr) = state.status_field {
+        set_text(status_field_ptr as Id, status);
     }
 }
 
@@ -391,21 +376,11 @@ pub fn append_transcription_delta(delta: &str) {
 }
 
 fn append_transcription_delta_impl(delta: &str) {
-    unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.accumulated_text.push_str(delta);
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.accumulated_text.push_str(delta);
 
-        if let Some(text_field_ptr) = state.text_field {
-            let text_field = text_field_ptr as Id;
-            let ns_string = Class::get("NSString").unwrap();
-
-            // Create null-terminated C string
-            let mut c_str = state.accumulated_text.as_bytes().to_vec();
-            c_str.push(0);
-
-            let ns_str: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
-            let _: () = msg_send![text_field, setStringValue: ns_str];
-        }
+    if let Some(text_field_ptr) = state.text_field {
+        set_text(text_field_ptr as Id, &state.accumulated_text);
     }
 }
 
@@ -418,21 +393,11 @@ pub fn set_transcription_text(text: &str) {
 }
 
 fn set_transcription_text_impl(text: &str) {
-    unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.accumulated_text = text.to_string();
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.accumulated_text = text.to_string();
 
-        if let Some(text_field_ptr) = state.text_field {
-            let text_field = text_field_ptr as Id;
-            let ns_string = Class::get("NSString").unwrap();
-
-            // Create null-terminated C string
-            let mut c_str = text.as_bytes().to_vec();
-            c_str.push(0);
-
-            let ns_str: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
-            let _: () = msg_send![text_field, setStringValue: ns_str];
-        }
+    if let Some(text_field_ptr) = state.text_field {
+        set_text(text_field_ptr as Id, text);
     }
 }
 
@@ -450,16 +415,11 @@ pub fn clear_transcription_text() {
 }
 
 fn clear_transcription_text_impl() {
-    unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.accumulated_text.clear();
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.accumulated_text.clear();
 
-        if let Some(text_field_ptr) = state.text_field {
-            let text_field = text_field_ptr as Id;
-            let ns_string = Class::get("NSString").unwrap();
-            let empty: Id = msg_send![ns_string, stringWithUTF8String: c"".as_ptr()];
-            let _: () = msg_send![text_field, setStringValue: empty];
-        }
+    if let Some(text_field_ptr) = state.text_field {
+        set_text(text_field_ptr as Id, "");
     }
 }
 
@@ -502,46 +462,31 @@ pub fn hide_transcription_overlay() {
 
 /// Closes a window by raw pointer (used for delayed close after animation)
 fn close_window_by_ptr(window_ptr: usize) {
-    // Safety: caller guarantees window_ptr is valid
-    unsafe {
-        let window = window_ptr as Id;
-        let _: () = msg_send![window, close];
-    }
+    window_close(window_ptr as Id);
 }
 
 fn hide_transcription_overlay_impl() {
-    unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(window_ptr) = state.window.take() {
-            let window = window_ptr as Id;
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(window_ptr) = state.window.take() {
+        let window = window_ptr as Id;
 
-            // Fade out animation
-            let ns_animation_context = Class::get("NSAnimationContext").unwrap();
-            let _: () = msg_send![ns_animation_context, beginGrouping];
-            let current_context: Id = msg_send![ns_animation_context, currentContext];
-            let _: () = msg_send![current_context, setDuration: 0.15f64];
+        // Fade out animation (0.15s)
+        animate_fade(window, 0.0, 0.15);
 
-            // Set completion handler to close window after animation
-            // For simplicity, we'll just close immediately after setting alpha
-            let animator: Id = msg_send![window, animator];
-            let _: () = msg_send![animator, setAlphaValue: 0.0f64];
-            let _: () = msg_send![ns_animation_context, endGrouping];
-
-            // Close window after brief delay for animation
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(200));
-                Queue::main().exec_async(move || {
-                    close_window_by_ptr(window_ptr);
-                });
+        // Close window after brief delay for animation
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            Queue::main().exec_async(move || {
+                close_window_by_ptr(window_ptr);
             });
+        });
 
-            debug!("Transcription overlay hidden");
-        }
-        state.text_field = None;
-        state.status_field = None;
-        state.blur_view = None;
-        // Note: accumulated_text is NOT cleared here - it's needed for clipboard copy
+        debug!("Transcription overlay hidden");
     }
+    state.text_field = None;
+    state.status_field = None;
+    state.blur_view = None;
+    // Note: accumulated_text is NOT cleared here - it's needed for clipboard copy
 }
 
 #[cfg(test)]
