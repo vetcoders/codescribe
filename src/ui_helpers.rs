@@ -438,6 +438,32 @@ pub fn animate_fade(window: Id, to_alpha: f64, duration: f64) {
     }
 }
 
+/// Animate window width change (horizontal slide for drawer collapse)
+pub fn animate_window_width(window: Id, to_width: f64, duration: f64) {
+    unsafe {
+        let ns_animation_context = Class::get("NSAnimationContext").unwrap();
+
+        // Get current frame
+        let current_frame: CGRect = msg_send![window, frame];
+
+        // Calculate new frame with same origin and height but new width
+        let new_frame = CGRect::new(
+            &current_frame.origin,
+            &CGSize::new(to_width, current_frame.size.height),
+        );
+
+        let _: () = msg_send![ns_animation_context, beginGrouping];
+        let ctx: Id = msg_send![ns_animation_context, currentContext];
+        let _: () = msg_send![ctx, setDuration: duration];
+
+        // Animate frame change
+        let animator: Id = msg_send![window, animator];
+        let _: () = msg_send![animator, setFrame: new_frame display: true];
+
+        let _: () = msg_send![ns_animation_context, endGrouping];
+    }
+}
+
 // ============================================================================
 // View Visibility Helpers
 // ============================================================================
@@ -453,5 +479,322 @@ pub fn set_hidden(view: Id, hidden: bool) {
 pub fn set_enabled(view: Id, enabled: bool) {
     unsafe {
         let _: () = msg_send![view, setEnabled: enabled];
+    }
+}
+
+// ============================================================================
+// Chat Bubble Helpers (loct.io dark theme)
+// ============================================================================
+
+/// loct.io brand colors for dark theme
+pub mod bubble_colors {
+    /// User bubble background - muted violet/purple accent
+    pub const USER_BG: (f64, f64, f64, f64) = (0.35, 0.28, 0.55, 0.9);
+    /// Assistant bubble background - dark gray
+    pub const ASSISTANT_BG: (f64, f64, f64, f64) = (0.22, 0.22, 0.24, 0.9);
+    /// System/error bubble background - dark red tint
+    pub const ERROR_BG: (f64, f64, f64, f64) = (0.4, 0.2, 0.2, 0.9);
+    /// Text color - white
+    pub const TEXT: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 1.0);
+    /// Streaming indicator color - subtle pulse
+    pub const STREAMING: (f64, f64, f64, f64) = (0.6, 0.6, 0.6, 1.0);
+}
+
+/// Role for chat bubble styling
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BubbleRole {
+    User,
+    Assistant,
+    System,
+}
+
+/// Configuration for creating a chat bubble
+pub struct BubbleConfig {
+    pub text: String,
+    pub role: BubbleRole,
+    pub max_width: f64,
+    pub is_streaming: bool,
+    pub is_error: bool,
+    /// Optional message index for Copy button (None = no button)
+    pub message_index: Option<usize>,
+    /// Optional action target for Copy button
+    pub copy_action_target: Option<Id>,
+}
+
+/// Create a chat bubble view (NSView container with styled text)
+///
+/// Returns (container_view, text_label) tuple for later updates
+pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
+    unsafe {
+        let ns_view = Class::get("NSView").unwrap();
+        let ns_text_field = Class::get("NSTextField").unwrap();
+        let ns_color = Class::get("NSColor").unwrap();
+        let ns_font = Class::get("NSFont").unwrap();
+
+        // Calculate text dimensions (approximate)
+        let font_size = 13.0;
+        let padding = 12.0;
+        let copy_button_height = if config.message_index.is_some() {
+            20.0
+        } else {
+            0.0
+        };
+        let chars_per_line = (config.max_width - padding * 2.0) / (font_size * 0.6);
+        let text_len = config.text.len() as f64;
+        let estimated_lines = (text_len / chars_per_line).ceil().max(1.0);
+        let line_height = font_size * 1.4;
+        let text_height = estimated_lines * line_height;
+        let bubble_height = text_height + padding * 2.0 + copy_button_height;
+
+        // Bubble width: content-aware but capped
+        let content_width = (text_len * font_size * 0.6).min(config.max_width - padding * 2.0);
+        let bubble_width = content_width + padding * 2.0;
+
+        // Container view (for alignment)
+        let container: Id = msg_send![ns_view, alloc];
+        let container_frame = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(config.max_width, bubble_height),
+        );
+        let container: Id = msg_send![container, initWithFrame: container_frame];
+
+        // Bubble background view
+        let bubble: Id = msg_send![ns_view, alloc];
+        let bubble_x = match config.role {
+            BubbleRole::User => config.max_width - bubble_width - 8.0, // Right-aligned
+            BubbleRole::Assistant | BubbleRole::System => 8.0,         // Left-aligned
+        };
+        let bubble_frame = CGRect::new(
+            &CGPoint::new(bubble_x, 0.0),
+            &CGSize::new(bubble_width, bubble_height),
+        );
+        let bubble: Id = msg_send![bubble, initWithFrame: bubble_frame];
+
+        // Set bubble background color based on role
+        let (r, g, b, a) = if config.is_error {
+            bubble_colors::ERROR_BG
+        } else {
+            match config.role {
+                BubbleRole::User => bubble_colors::USER_BG,
+                BubbleRole::Assistant => bubble_colors::ASSISTANT_BG,
+                BubbleRole::System => bubble_colors::ERROR_BG,
+            }
+        };
+        let bg_color: Id = msg_send![ns_color, colorWithRed: r green: g blue: b alpha: a];
+
+        // Set background via layer (for rounded corners)
+        let _: () = msg_send![bubble, setWantsLayer: true];
+        let layer: Id = msg_send![bubble, layer];
+        if !layer.is_null() {
+            // CGColor from NSColor
+            let cg_color: Id = msg_send![bg_color, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg_color];
+            let _: () = msg_send![layer, setCornerRadius: 12.0f64];
+        }
+
+        // Text label inside bubble
+        let text_frame = CGRect::new(
+            &CGPoint::new(padding, padding / 2.0),
+            &CGSize::new(bubble_width - padding * 2.0, text_height),
+        );
+        let text_label: Id = msg_send![ns_text_field, alloc];
+        let text_label: Id = msg_send![text_label, initWithFrame: text_frame];
+
+        let _: () = msg_send![text_label, setBezeled: false];
+        let _: () = msg_send![text_label, setEditable: false];
+        let _: () = msg_send![text_label, setSelectable: true];
+        let _: () = msg_send![text_label, setDrawsBackground: false];
+
+        // Text color
+        let (tr, tg, tb, ta) = if config.is_streaming {
+            bubble_colors::STREAMING
+        } else {
+            bubble_colors::TEXT
+        };
+        let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
+        let _: () = msg_send![text_label, setTextColor: text_color];
+
+        // Font
+        let font: Id = msg_send![ns_font, systemFontOfSize: font_size];
+        let _: () = msg_send![text_label, setFont: font];
+
+        // Set text (with streaming indicator if needed)
+        let display_text = if config.is_streaming && config.text.is_empty() {
+            "• • •".to_string() // Pulsing dots placeholder
+        } else if config.is_streaming {
+            format!("{} …", config.text)
+        } else {
+            config.text.clone()
+        };
+        let text_str = ns_string(&display_text);
+        let _: () = msg_send![text_label, setStringValue: text_str];
+
+        // Word wrap
+        let _: () = msg_send![text_label, setLineBreakMode: 0_isize]; // NSLineBreakByWordWrapping
+
+        // Assemble hierarchy
+        let _: () = msg_send![bubble, addSubview: text_label];
+
+        // Add Copy button if message_index is provided
+        if let (Some(msg_index), Some(target)) = (config.message_index, config.copy_action_target) {
+            let ns_button = Class::get("NSButton").unwrap();
+
+            let button_width = 40.0;
+            let button_height = 16.0;
+            let button_x = bubble_width - button_width - padding / 2.0;
+            let button_y = 2.0; // Bottom of bubble
+
+            let button_frame = CGRect::new(
+                &CGPoint::new(button_x, button_y),
+                &CGSize::new(button_width, button_height),
+            );
+
+            let copy_button: Id = msg_send![ns_button, alloc];
+            let copy_button: Id = msg_send![copy_button, initWithFrame: button_frame];
+
+            // Style: small borderless button
+            let _: () = msg_send![copy_button, setBezelStyle: 0_isize]; // NSBezelStyleRounded
+            let _: () = msg_send![copy_button, setBordered: false];
+
+            // Title "Copy" in small font
+            let title = ns_string("Copy");
+            let _: () = msg_send![copy_button, setTitle: title];
+
+            let small_font: Id = msg_send![ns_font, systemFontOfSize: 10.0f64];
+            let _: () = msg_send![copy_button, setFont: small_font];
+
+            // Subtle text color
+            let button_color: Id =
+                msg_send![ns_color, colorWithRed: 0.7f64 green: 0.7f64 blue: 0.7f64 alpha: 1.0f64];
+            let _: () = msg_send![copy_button, setContentTintColor: button_color];
+
+            // Store message index in tag for retrieval on click
+            let _: () = msg_send![copy_button, setTag: msg_index as isize];
+
+            // Set action
+            let _: () = msg_send![copy_button, setTarget: target];
+            let _: () = msg_send![copy_button, setAction: sel!(onCopyMessage:)];
+
+            let _: () = msg_send![bubble, addSubview: copy_button];
+        }
+
+        let _: () = msg_send![container, addSubview: bubble];
+
+        (container, text_label)
+    }
+}
+
+/// Update bubble text (for streaming updates)
+pub fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool) {
+    unsafe {
+        let ns_color = Class::get("NSColor").unwrap();
+
+        let display_text = if is_streaming && text.is_empty() {
+            "• • •".to_string()
+        } else if is_streaming {
+            format!("{} …", text)
+        } else {
+            text.to_string()
+        };
+
+        let text_str = ns_string(&display_text);
+        let _: () = msg_send![text_label, setStringValue: text_str];
+
+        // Update text color based on streaming state
+        let (tr, tg, tb, ta) = if is_streaming {
+            bubble_colors::STREAMING
+        } else {
+            bubble_colors::TEXT
+        };
+        let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
+        let _: () = msg_send![text_label, setTextColor: text_color];
+    }
+}
+
+// ============================================================================
+// File Operations Helpers
+// ============================================================================
+
+/// Open a file in the default editor (TextEdit, etc.)
+pub fn open_file_in_editor(path: &std::path::Path) -> bool {
+    unsafe {
+        let ns_workspace = Class::get("NSWorkspace").unwrap();
+        let workspace: Id = msg_send![ns_workspace, sharedWorkspace];
+
+        let path_str = path.to_string_lossy();
+        let ns_path = ns_string(&path_str);
+
+        let result: bool = msg_send![workspace, openFile: ns_path];
+        result
+    }
+}
+
+/// List draft files from a directory, sorted by modification time (newest first)
+pub fn list_draft_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
+        .flatten()
+        .filter(|e| {
+            e.path().is_file()
+                && e.path()
+                    .extension()
+                    .is_some_and(|ext| ext == "txt" || ext == "md")
+        })
+        .filter_map(|e| {
+            let path = e.path();
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((path, modified))
+        })
+        .collect();
+
+    // Sort by modification time, newest first
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    files.into_iter().map(|(path, _)| path).collect()
+}
+
+// ============================================================================
+// NSStackView Helpers
+// ============================================================================
+
+/// Create a vertical NSStackView for stacking views
+pub fn create_vertical_stack_view(frame: CGRect) -> Id {
+    unsafe {
+        let ns_stack_view = Class::get("NSStackView").unwrap();
+
+        let stack: Id = msg_send![ns_stack_view, alloc];
+        let stack: Id = msg_send![stack, initWithFrame: frame];
+
+        // Vertical orientation (1 = NSUserInterfaceLayoutOrientationVertical)
+        let _: () = msg_send![stack, setOrientation: 1_isize];
+        // Top alignment
+        let _: () = msg_send![stack, setAlignment: 1_isize]; // NSLayoutAttributeLeft
+        // Spacing between views
+        let _: () = msg_send![stack, setSpacing: 8.0f64];
+
+        stack
+    }
+}
+
+/// Add a view to NSStackView
+pub fn stack_view_add(stack: Id, view: Id) {
+    unsafe {
+        let _: () = msg_send![stack, addArrangedSubview: view];
+    }
+}
+
+/// Remove all views from NSStackView
+pub fn stack_view_clear(stack: Id) {
+    unsafe {
+        let arranged: Id = msg_send![stack, arrangedSubviews];
+        let count: usize = msg_send![arranged, count];
+
+        for i in (0..count).rev() {
+            let view: Id = msg_send![arranged, objectAtIndex: i];
+            let _: () = msg_send![view, removeFromSuperview];
+        }
     }
 }

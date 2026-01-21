@@ -21,8 +21,10 @@ use std::sync::{Arc, Mutex, Once};
 use tracing::{debug, info};
 
 use crate::ui_helpers::{
-    add_subview, button_set_action, button_style, create_button, create_checkbox, ns_string,
-    set_hidden,
+    BubbleConfig, BubbleRole, add_subview, animate_window_width, button_set_action, button_style,
+    create_bubble_view, create_button, create_checkbox, create_vertical_stack_view,
+    list_draft_files, ns_string, open_file_in_editor, set_hidden, stack_view_add, stack_view_clear,
+    update_bubble_text,
 };
 
 // Type alias for Objective-C object pointers
@@ -64,7 +66,9 @@ struct VoiceChatOverlayState {
     // UI element handles
     window: Option<usize>,
     scroll_view: Option<usize>,
-    text_view: Option<usize>,
+    // Bubble-based chat rendering (replaces single text_view)
+    bubble_container: Option<usize>,   // NSStackView for bubbles
+    bubble_views: Vec<(usize, usize)>, // (container, text_label) per message
     status_field: Option<usize>,
     input_field: Option<usize>,
     send_button: Option<usize>,
@@ -82,6 +86,11 @@ struct VoiceChatOverlayState {
     // Right panel tab bar
     tab_bar: Option<usize>,
     selected_tab: usize, // 0 = Drafts, 1 = Settings
+    // Drafts list (right panel content)
+    drafts_scroll_view: Option<usize>,
+    drafts_container: Option<usize>, // NSStackView for draft rows
+    draft_files: Vec<std::path::PathBuf>, // Cached list of draft files
+    selected_draft_index: Option<usize>,
     // Chat state
     messages: Vec<ChatMessage>,
     // Separated buffers: manual input (left) vs voice streaming (right)
@@ -99,7 +108,8 @@ lazy_static::lazy_static! {
     static ref OVERLAY_STATE: Mutex<VoiceChatOverlayState> = Mutex::new(VoiceChatOverlayState {
         window: None,
         scroll_view: None,
-        text_view: None,
+        bubble_container: None,
+        bubble_views: Vec::new(),
         status_field: None,
         input_field: None,
         send_button: None,
@@ -114,6 +124,10 @@ lazy_static::lazy_static! {
         sidecar_collapsed: false,
         tab_bar: None,
         selected_tab: 0,
+        drafts_scroll_view: None,
+        drafts_container: None,
+        draft_files: Vec::new(),
+        selected_draft_index: None,
         messages: Vec::new(),
         manual_draft: String::new(),
         voice_draft: String::new(),
@@ -179,6 +193,18 @@ fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onToggleCollapse:),
                 on_toggle_collapse as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onDraftEdit:),
+                on_draft_edit as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onDraftCopy:),
+                on_draft_copy as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onCopyMessage:),
+                on_copy_message as extern "C" fn(&Object, Sel, Id),
             );
             let cls = decl.register();
             ACTION_HANDLER_CLASS = cls;
@@ -281,27 +307,125 @@ extern "C" fn on_copy_last_response(_this: &Object, _cmd: Sel, _sender: Id) {
 }
 
 extern "C" fn on_toggle_collapse(_this: &Object, _cmd: Sel, sender: Id) {
+    // Window dimensions for animation
+    const EXPANDED_WIDTH: f64 = 750.0;
+    const COLLAPSED_WIDTH: f64 = 460.0; // Left panel (450) + some padding
+    const ANIMATION_DURATION: f64 = 0.25;
+
     unsafe {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.sidecar_collapsed = !state.sidecar_collapsed;
+        let is_collapsed = state.sidecar_collapsed;
 
         // Update button title
-        let new_title = if state.sidecar_collapsed { "<|" } else { ">|" };
+        let new_title = if is_collapsed { "<|" } else { ">|" };
         let title = ns_string(new_title);
         let _: () = msg_send![sender, setTitle: title];
 
-        // Hide/show right panel elements (tab_bar, voice_draft_view, etc.)
-        if let Some(tab_ptr) = state.tab_bar {
-            set_hidden(tab_ptr as Id, state.sidecar_collapsed);
-        }
-        if let Some(view_ptr) = state.voice_draft_view {
-            set_hidden(view_ptr as Id, state.sidecar_collapsed);
-        }
-        if let Some(header_ptr) = state.voice_draft_header {
-            set_hidden(header_ptr as Id, state.sidecar_collapsed);
+        // Hide right panel elements BEFORE collapsing (so they're hidden during animation)
+        if is_collapsed {
+            if let Some(tab_ptr) = state.tab_bar {
+                set_hidden(tab_ptr as Id, true);
+            }
+            if let Some(scroll_ptr) = state.drafts_scroll_view {
+                set_hidden(scroll_ptr as Id, true);
+            }
+            if let Some(view_ptr) = state.voice_draft_view {
+                set_hidden(view_ptr as Id, true);
+            }
+            if let Some(header_ptr) = state.voice_draft_header {
+                set_hidden(header_ptr as Id, true);
+            }
         }
 
-        info!("Sidecar collapsed: {}", state.sidecar_collapsed);
+        // Animate window width change (drawer slide)
+        if let Some(window_ptr) = state.window {
+            let window = window_ptr as Id;
+            let target_width = if is_collapsed {
+                COLLAPSED_WIDTH
+            } else {
+                EXPANDED_WIDTH
+            };
+            animate_window_width(window, target_width, ANIMATION_DURATION);
+        }
+
+        // Show right panel elements AFTER expanding (schedule after animation)
+        if !is_collapsed {
+            // Dispatch after animation completes
+            let tab_ptr = state.tab_bar;
+            let scroll_ptr = state.drafts_scroll_view;
+            let voice_ptr = state.voice_draft_view;
+            let header_ptr = state.voice_draft_header;
+
+            dispatch::Queue::main().exec_after(
+                std::time::Duration::from_millis((ANIMATION_DURATION * 1000.0) as u64 + 50),
+                move || {
+                    if let Some(ptr) = tab_ptr {
+                        set_hidden(ptr as Id, false);
+                    }
+                    if let Some(ptr) = scroll_ptr {
+                        set_hidden(ptr as Id, false);
+                    }
+                    if let Some(ptr) = voice_ptr {
+                        set_hidden(ptr as Id, false);
+                    }
+                    if let Some(ptr) = header_ptr {
+                        set_hidden(ptr as Id, false);
+                    }
+                },
+            );
+        }
+
+        info!("Sidecar collapsed: {} (animated)", is_collapsed);
+    }
+}
+
+extern "C" fn on_draft_edit(_this: &Object, _cmd: Sel, _sender: Id) {
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(index) = state.selected_draft_index {
+        if let Some(path) = state.draft_files.get(index) {
+            let opened = open_file_in_editor(path);
+            if opened {
+                info!("Opened draft in editor: {}", path.display());
+            } else {
+                info!("Failed to open draft: {}", path.display());
+            }
+        }
+    } else {
+        info!("No draft selected for edit");
+    }
+}
+
+extern "C" fn on_draft_copy(_this: &Object, _cmd: Sel, _sender: Id) {
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(index) = state.selected_draft_index {
+        if let Some(path) = state.draft_files.get(index) {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                copy_to_clipboard(&content);
+                info!("Copied draft to clipboard: {}", path.display());
+            } else {
+                info!("Failed to read draft: {}", path.display());
+            }
+        }
+    } else {
+        info!("No draft selected for copy");
+    }
+}
+
+/// Copy a specific message by index (retrieved from button tag)
+extern "C" fn on_copy_message(_this: &Object, _cmd: Sel, sender: Id) {
+    unsafe {
+        // Get message index from button's tag
+        let tag: isize = msg_send![sender, tag];
+        let msg_index = tag as usize;
+
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(message) = state.messages.get(msg_index) {
+            copy_to_clipboard(&message.text);
+            debug!("Copied message {} to clipboard", msg_index);
+        } else {
+            debug!("Invalid message index: {}", msg_index);
+        }
     }
 }
 
@@ -635,6 +759,7 @@ fn show_voice_chat_overlay_impl() {
             },
         };
 
+        // Create scroll view for bubble container
         let ns_scroll_view = Class::get("NSScrollView").unwrap();
         let scroll_view: Id = msg_send![ns_scroll_view, alloc];
         let scroll_view: Id = msg_send![scroll_view, initWithFrame: scroll_frame];
@@ -642,35 +767,19 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![scroll_view, setBorderType: 0]; // NSNoBorder
         let _: () = msg_send![scroll_view, setDrawsBackground: false];
 
+        // Create NSStackView for chat bubbles (instead of NSTextView)
         let content_size: CGSize = msg_send![scroll_view, contentSize];
-        let text_frame = CGRect {
+        let stack_frame = CGRect {
             origin: CGPoint { x: 0.0, y: 0.0 },
             size: content_size,
         };
+        let bubble_container = create_vertical_stack_view(stack_frame);
 
-        let ns_text_view = Class::get("NSTextView").unwrap();
-        let text_view: Id = msg_send![ns_text_view, alloc];
-        let text_view: Id = msg_send![text_view, initWithFrame: text_frame];
-
-        let _: () =
-            msg_send![text_view, setMinSize: CGSize { width: 0.0, height: content_size.height }];
-        let _: () = msg_send![text_view, setMaxSize: CGSize { width: f64::MAX, height: f64::MAX }];
-        let _: () = msg_send![text_view, setVerticallyResizable: true];
-        let _: () = msg_send![text_view, setHorizontallyResizable: false];
-        let _: () = msg_send![text_view, setAutoresizingMask: 2]; // NSViewWidthSizable
-
-        let text_container: Id = msg_send![text_view, textContainer];
-        let _: () = msg_send![text_container, setWidthTracksTextView: true];
-
-        let _: () = msg_send![text_view, setEditable: false];
-        let _: () = msg_send![text_view, setSelectable: true];
-        let _: () = msg_send![text_view, setTextColor: white_color_ptr];
-        let _: () = msg_send![text_view, setDrawsBackground: false];
-
-        let _: () = msg_send![scroll_view, setDocumentView: text_view];
+        // Make stack view flipped (newest at top) and document view
+        let _: () = msg_send![scroll_view, setDocumentView: bubble_container];
         let _: () = msg_send![content_view, addSubview: scroll_view];
 
-        // Create context menu for text_view with "Copy Last Response" option
+        // Create context menu for scroll view with "Copy Last Response" option
         let ns_menu = Class::get("NSMenu").unwrap();
         let ns_menu_item = Class::get("NSMenuItem").unwrap();
 
@@ -688,8 +797,8 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![menu_item, setTarget: handler];
         let _: () = msg_send![context_menu, addItem: menu_item];
 
-        // Attach menu to text_view
-        let _: () = msg_send![text_view, setMenu: context_menu];
+        // Attach menu to scroll view
+        let _: () = msg_send![scroll_view, setMenu: context_menu];
 
         // --- RIGHT PANEL (Sidecar) ---
         // 4. Separator line between left and right panels
@@ -734,12 +843,78 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![tab_bar, setAction: sel!(onTabChanged:)];
         let _: () = msg_send![content_view, addSubview: tab_bar];
 
+        // 6. Drafts list (scroll view with stack view)
+        let drafts_buttons_height = 35.0;
+        let drafts_list_y = 10.0 + drafts_buttons_height;
+        let drafts_list_height = window_height - header_height - 45.0 - drafts_buttons_height;
+
+        let drafts_scroll_frame = CGRect {
+            origin: CGPoint {
+                x: separator_x + 10.0,
+                y: drafts_list_y,
+            },
+            size: CGSize {
+                width: 280.0,
+                height: drafts_list_height,
+            },
+        };
+
+        let drafts_scroll: Id = msg_send![ns_scroll_view, alloc];
+        let drafts_scroll: Id = msg_send![drafts_scroll, initWithFrame: drafts_scroll_frame];
+        let _: () = msg_send![drafts_scroll, setHasVerticalScroller: true];
+        let _: () = msg_send![drafts_scroll, setBorderType: 0]; // NSNoBorder
+        let _: () = msg_send![drafts_scroll, setDrawsBackground: false];
+
+        // Stack view for draft items
+        let drafts_content_size: CGSize = msg_send![drafts_scroll, contentSize];
+        let drafts_stack_frame = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: drafts_content_size,
+        };
+        let drafts_container = create_vertical_stack_view(drafts_stack_frame);
+        let _: () = msg_send![drafts_scroll, setDocumentView: drafts_container];
+        let _: () = msg_send![content_view, addSubview: drafts_scroll];
+
+        // 7. Edit and Copy buttons at bottom of drafts panel
+        let btn_width = 70.0;
+        let btn_spacing = 10.0;
+        let btn_y = 10.0;
+
+        let edit_btn_frame = CGRect {
+            origin: CGPoint {
+                x: separator_x + 10.0,
+                y: btn_y,
+            },
+            size: CGSize {
+                width: btn_width,
+                height: 24.0,
+            },
+        };
+        let edit_btn = create_button(edit_btn_frame, "Edit", button_style::ROUNDED);
+        button_set_action(edit_btn, handler, sel!(onDraftEdit:));
+        add_subview(content_view, edit_btn);
+
+        let copy_btn_frame = CGRect {
+            origin: CGPoint {
+                x: separator_x + 10.0 + btn_width + btn_spacing,
+                y: btn_y,
+            },
+            size: CGSize {
+                width: btn_width,
+                height: 24.0,
+            },
+        };
+        let copy_btn = create_button(copy_btn_frame, "Copy", button_style::ROUNDED);
+        button_set_action(copy_btn, handler, sel!(onDraftCopy:));
+        add_subview(content_view, copy_btn);
+
         // Show the window
         let _: () = msg_send![window, orderFrontRegardless];
 
         state.window = Some(window as usize);
         state.scroll_view = Some(scroll_view as usize);
-        state.text_view = Some(text_view as usize);
+        state.bubble_container = Some(bubble_container as usize);
+        state.bubble_views.clear(); // Will be populated by update_chat_view_with_state
         state.status_field = Some(status_field as usize);
         state.input_field = Some(input_field as usize);
         state.send_button = Some(send_button as usize);
@@ -748,10 +923,13 @@ fn show_voice_chat_overlay_impl() {
         state.action_handler = Some(handler as usize);
         state.tab_bar = Some(tab_bar as usize);
         state.collapse_button = Some(collapse_btn as usize);
+        state.drafts_scroll_view = Some(drafts_scroll as usize);
+        state.drafts_container = Some(drafts_container as usize);
 
         update_chat_view_with_state(&mut state, true);
         update_input_field_with_state(&mut state);
         update_send_button_with_state(&mut state);
+        populate_drafts_list(&mut state);
         info!("Voice chat overlay shown");
     }
 }
@@ -828,8 +1006,11 @@ fn finalize_voice_draft_impl() -> Option<std::path::PathBuf> {
     state.voice_draft.clear();
     state.is_voice_active = false;
 
-    // Update UI
+    // Update UI: clear voice draft view
     update_voice_draft_view_with_state(&mut state);
+
+    // Refresh drafts list to show the new file
+    populate_drafts_list(&mut state);
 
     info!("Voice draft finalized: {}", path.display());
     Some(path)
@@ -961,35 +1142,84 @@ pub fn is_auto_send_enabled() -> bool {
     state.auto_send_enabled
 }
 
-fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, force_scroll: bool) {
-    unsafe {
-        if let Some(text_view_ptr) = state.text_view {
-            let text_view = text_view_ptr as Id;
-            let ns_string = Class::get("NSString").unwrap();
-            let chat_text = render_chat_log(&state.messages);
+fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, force_rebuild: bool) {
+    let Some(container_ptr) = state.bubble_container else {
+        return;
+    };
+    let container = container_ptr as Id;
 
-            let mut c_str = chat_text.as_bytes().to_vec();
-            c_str.push(0);
-            let ns_str: Id = msg_send![ns_string, stringWithUTF8String: c_str.as_ptr()];
-            let _: () = msg_send![text_view, setString: ns_str];
+    // Check if we need to rebuild bubbles or just update the last one
+    let bubble_count = state.bubble_views.len();
+    let message_count = state.messages.len();
 
-            if let Some(scroll_view_ptr) = state.scroll_view {
-                let scroll_view = scroll_view_ptr as Id;
-                let _should_scroll = force_scroll || is_near_bottom(scroll_view); // Revisit is_near_bottom logic?
-                // Actually, since we prepend new messages (rendering reversed),
-                // we probably always want to scroll to top (0,0) when a new message appears?
-                // Or user might want to scroll down to history.
-                // Let's assume force_scroll (new message) means jump to top.
+    // If streaming update to last message (same count, last is streaming)
+    if !force_rebuild
+        && bubble_count == message_count
+        && message_count > 0
+        && let Some(last_msg) = state.messages.last()
+        && last_msg.is_streaming
+        && let Some((_, text_label_ptr)) = state.bubble_views.last()
+    {
+        // Just update the last bubble's text
+        let text_label = *text_label_ptr as Id;
+        update_bubble_text(text_label, &last_msg.text, true);
+        return;
+    }
 
-                if force_scroll {
-                    // Simplified logic: always jump to top on update if forced
-                    let range = NSRange {
-                        location: 0,
-                        length: 0,
-                    };
-                    let _: () = msg_send![text_view, scrollRangeToVisible: range];
-                }
-            }
+    // Full rebuild: clear existing bubbles
+    stack_view_clear(container);
+    state.bubble_views.clear();
+
+    // Get max width for bubbles (left panel width - padding)
+    let max_bubble_width = 420.0; // ~left_panel_width - 30
+
+    // Get action handler for Copy buttons
+    let action_handler = state.action_handler.map(|ptr| ptr as Id);
+
+    // Add bubbles in reverse order (newest first at top)
+    // Use enumerate to track original message indices for Copy buttons
+    let messages_count = state.messages.len();
+    for (rev_idx, message) in state.messages.iter().rev().enumerate() {
+        // Convert reversed index back to original index
+        let original_idx = messages_count - 1 - rev_idx;
+
+        let role = match message.role {
+            ChatRole::User => BubbleRole::User,
+            ChatRole::Assistant => BubbleRole::Assistant,
+            ChatRole::System => BubbleRole::System,
+        };
+
+        // Only show Copy button for completed messages (not streaming)
+        let (message_index, copy_target) = if !message.is_streaming {
+            (Some(original_idx), action_handler)
+        } else {
+            (None, None)
+        };
+
+        let config = BubbleConfig {
+            text: message.text.clone(),
+            role,
+            max_width: max_bubble_width,
+            is_streaming: message.is_streaming,
+            is_error: message.is_error,
+            message_index,
+            copy_action_target: copy_target,
+        };
+
+        let (bubble_view, text_label) = create_bubble_view(config);
+        stack_view_add(container, bubble_view);
+        state
+            .bubble_views
+            .push((bubble_view as usize, text_label as usize));
+    }
+
+    // Scroll to top if forced (newest messages are at top)
+    if force_rebuild && let Some(scroll_view_ptr) = state.scroll_view {
+        unsafe {
+            let scroll_view = scroll_view_ptr as Id;
+            let content_view: Id = msg_send![scroll_view, contentView];
+            let _: () = msg_send![content_view, scrollToPoint: CGPoint { x: 0.0, y: 0.0 }];
+            let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
         }
     }
 }
@@ -1016,6 +1246,87 @@ fn update_send_button_with_state(state: &mut VoiceChatOverlayState) {
             let enabled = !state.is_sending && !state.manual_draft.trim().is_empty();
             let _: () = msg_send![send_button, setEnabled: enabled];
         }
+    }
+}
+
+/// Populate the drafts list from ~/.codescribe/drafts/
+fn populate_drafts_list(state: &mut VoiceChatOverlayState) {
+    let Some(container_ptr) = state.drafts_container else {
+        return;
+    };
+    let container = container_ptr as Id;
+
+    // Clear existing items
+    stack_view_clear(container);
+    state.draft_files.clear();
+    state.selected_draft_index = None;
+
+    // Get drafts directory
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let drafts_dir = std::path::PathBuf::from(home).join(".codescribe/drafts");
+
+    // List and cache draft files
+    state.draft_files = list_draft_files(&drafts_dir);
+
+    // Create UI row for each draft file
+    for (index, path) in state.draft_files.iter().enumerate() {
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+
+        // Create a simple label for the draft
+        let row = create_draft_row(filename, index);
+        stack_view_add(container, row);
+    }
+
+    // Select first draft if available
+    if !state.draft_files.is_empty() {
+        state.selected_draft_index = Some(0);
+    }
+
+    info!("Populated {} drafts", state.draft_files.len());
+}
+
+/// Create a row for a draft file in the list
+fn create_draft_row(filename: &str, _index: usize) -> Id {
+    unsafe {
+        let ns_text_field = Class::get("NSTextField").unwrap();
+        let ns_color = Class::get("NSColor").unwrap();
+        let ns_font = Class::get("NSFont").unwrap();
+
+        // Simple text field showing filename with icon
+        let display_text = format!("📄 {}", filename);
+
+        let row_frame = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize {
+                width: 260.0,
+                height: 24.0,
+            },
+        };
+
+        let row: Id = msg_send![ns_text_field, alloc];
+        let row: Id = msg_send![row, initWithFrame: row_frame];
+
+        let _: () = msg_send![row, setBezeled: false];
+        let _: () = msg_send![row, setEditable: false];
+        let _: () = msg_send![row, setSelectable: true];
+        let _: () = msg_send![row, setDrawsBackground: false];
+
+        // White text
+        let white: Id = msg_send![ns_color, whiteColor];
+        let _: () = msg_send![row, setTextColor: white];
+
+        // Small font
+        let font: Id = msg_send![ns_font, systemFontOfSize: 11.0f64];
+        let _: () = msg_send![row, setFont: font];
+
+        // Set text
+        let text = ns_string(&display_text);
+        let _: () = msg_send![row, setStringValue: text];
+
+        row
     }
 }
 
@@ -1145,13 +1456,18 @@ fn hide_voice_chat_overlay_impl() {
             let _: () = msg_send![window, close];
             debug!("Voice chat overlay hidden");
         }
-        state.text_view = None;
+        state.bubble_container = None;
+        state.bubble_views.clear();
         state.status_field = None;
         state.voice_draft_view = None;
         state.voice_draft_header = None;
         state.voice_send_button = None;
         state.voice_use_button = None;
         state.tab_bar = None;
+        state.drafts_scroll_view = None;
+        state.drafts_container = None;
+        state.draft_files.clear();
+        state.selected_draft_index = None;
         state.messages.clear();
         // Clear both buffers
         state.manual_draft.clear();
