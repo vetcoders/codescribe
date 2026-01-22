@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
-const CHUNK_DURATION_SEC: f32 = 15.0;
+const DEFAULT_CHUNK_DURATION_SEC: f32 = 15.0;
 const OVERLAP_SEC: f32 = 2.0; // Overlap for context
 
 pub type StreamDeltaCallback = Arc<dyn Fn(&str) + Send + Sync>;
@@ -138,8 +138,10 @@ async fn transcription_worker(
     info!("Transcription worker started");
 
     let mut pending_samples: Vec<f32> = Vec::new();
-    let chunk_limit = (sample_rate as f32 * CHUNK_DURATION_SEC) as usize;
-    let overlap_size = (sample_rate as f32 * OVERLAP_SEC) as usize;
+    let chunk_duration_sec = stream_chunk_duration_sec();
+    let overlap_sec = stream_overlap_sec(chunk_duration_sec);
+    let chunk_limit = (sample_rate as f32 * chunk_duration_sec) as usize;
+    let overlap_size = (sample_rate as f32 * overlap_sec) as usize;
 
     // We keep track of how many samples we've processed to know when to overlap
     // Actually, we just keep the last samples in pending_samples?
@@ -312,6 +314,23 @@ fn env_bool(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn env_f32(key: &str, default: f32) -> f32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(default)
+}
+
+fn stream_chunk_duration_sec() -> f32 {
+    env_f32("CODESCRIBE_STREAM_CHUNK_SEC", DEFAULT_CHUNK_DURATION_SEC)
+        .max(0.5)
+        .min(30.0)
+}
+
+fn stream_overlap_sec(chunk_duration_sec: f32) -> f32 {
+    OVERLAP_SEC.min(chunk_duration_sec * 0.8)
+}
+
 pub fn transcribe_streaming_samples(
     samples: &[f32],
     sample_rate: u32,
@@ -322,8 +341,10 @@ pub fn transcribe_streaming_samples(
         return Ok(String::new());
     }
 
-    let chunk_limit = (sample_rate as f32 * CHUNK_DURATION_SEC) as usize;
-    let overlap_size = (sample_rate as f32 * OVERLAP_SEC) as usize;
+    let chunk_duration_sec = stream_chunk_duration_sec();
+    let overlap_sec = stream_overlap_sec(chunk_duration_sec);
+    let chunk_limit = (sample_rate as f32 * chunk_duration_sec) as usize;
+    let overlap_size = (sample_rate as f32 * overlap_sec) as usize;
     let step = chunk_limit.saturating_sub(overlap_size).max(1);
 
     let engine_mutex = get_engine()?;
