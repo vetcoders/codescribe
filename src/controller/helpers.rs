@@ -91,9 +91,9 @@ pub fn env_bool(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Check if raw transcript saving is enabled
+/// Raw transcript saving is always enabled to avoid data loss.
 pub fn raw_save_enabled() -> bool {
-    !env_bool("CODESCRIBE_QUALITY_DISABLE_RAW_SAVE")
+    true
 }
 
 /// Check if cloud STT is enabled

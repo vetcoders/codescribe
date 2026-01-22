@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 
 use crate::ui_helpers::{
     add_subview, animate_fade, button_set_action, button_style, color_white, create_button,
-    set_text, window_close, window_set_alpha, window_show,
+    set_hidden, set_text, window_close, window_set_alpha, window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -43,9 +43,13 @@ type Id = *mut Object;
 
 // Window level constants
 const NS_FLOATING_WINDOW_LEVEL: i64 = 3;
+const NS_PROGRESS_INDICATOR_STYLE_SPINNING: i64 = 1;
+const NSTrackingMouseEnteredAndExited: u64 = 1 << 0;
+const NSTrackingActiveAlways: u64 = 1 << 7;
+const NSTrackingInVisibleRect: u64 = 1 << 9;
 
 // Auto-hide delay after recording completes
-const AUTO_HIDE_DELAY_SECS: u64 = 5;
+const AUTO_HIDE_DELAY_SECS: u64 = 10;
 
 /// Configuration for the transcription overlay
 #[derive(Debug, Clone)]
@@ -71,7 +75,13 @@ struct TranscriptionOverlayState {
     text_field: Option<usize>,
     status_field: Option<usize>,
     blur_view: Option<usize>,
-    transfer_button: Option<usize>,
+    copy_button: Option<usize>,
+    augment_button: Option<usize>,
+    archive_button: Option<usize>,
+    progress_indicator: Option<usize>,
+    tracking_area: Option<usize>,
+    decision_mode: bool,
+    hover_active: bool,
     action_handler: Option<usize>,
     accumulated_text: String,
 }
@@ -82,7 +92,13 @@ lazy_static::lazy_static! {
         text_field: None,
         status_field: None,
         blur_view: None,
-        transfer_button: None,
+        copy_button: None,
+        augment_button: None,
+        archive_button: None,
+        progress_indicator: None,
+        tracking_area: None,
+        decision_mode: false,
+        hover_active: false,
         action_handler: None,
         accumulated_text: String::new(),
     });
@@ -106,8 +122,24 @@ fn action_handler_class() -> *const Class {
         let mut decl = ClassDecl::new("TranscriptionOverlayActionHandler", superclass).unwrap();
 
         decl.add_method(
-            sel!(onTransferToChat:),
-            on_transfer_to_chat as extern "C" fn(&Object, Sel, Id),
+            sel!(onCopyTranscript:),
+            on_copy_transcript as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(onAugmentTranscript:),
+            on_augment_transcript as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(onArchiveTranscript:),
+            on_archive_transcript as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(mouseEntered:),
+            on_mouse_entered as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(mouseExited:),
+            on_mouse_exited as extern "C" fn(&Object, Sel, Id),
         );
 
         ACTION_HANDLER_CLASS = decl.register();
@@ -115,23 +147,132 @@ fn action_handler_class() -> *const Class {
     unsafe { ACTION_HANDLER_CLASS }
 }
 
-/// Handler: Transfer transcription text to voice chat overlay
-extern "C" fn on_transfer_to_chat(_this: &Object, _cmd: Sel, _sender: Id) {
+/// Handler: Copy (AI format) to clipboard
+extern "C" fn on_copy_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     let text = get_transcription_text();
     if text.is_empty() {
         return;
     }
+    run_ai_copy(text, false);
+}
 
-    // Transfer text to voice chat draft
-    crate::set_voice_chat_draft_text(&text);
+/// Handler: Augment (AI assist) to clipboard
+extern "C" fn on_augment_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
+    let text = get_transcription_text();
+    if text.is_empty() {
+        return;
+    }
+    run_ai_copy(text, true);
+}
 
-    // Show the voice chat overlay
-    crate::show_voice_chat_overlay();
-
-    // Hide transcription overlay (user made their choice)
+/// Handler: Archive (no-op save already happened; just close overlay)
+extern "C" fn on_archive_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     hide_transcription_overlay();
+}
 
-    info!("Transcription transferred to chat: {} chars", text.len());
+extern "C" fn on_mouse_entered(_this: &Object, _cmd: Sel, _sender: Id) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.hover_active = true;
+    if state.decision_mode {
+        set_action_buttons_visible(&state, true);
+    }
+}
+
+extern "C" fn on_mouse_exited(_this: &Object, _cmd: Sel, _sender: Id) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.hover_active = false;
+    set_action_buttons_visible(&state, false);
+}
+
+fn set_action_buttons_visible(state: &TranscriptionOverlayState, visible: bool) {
+    if let Some(copy_ptr) = state.copy_button {
+        set_hidden(copy_ptr as Id, !visible);
+    }
+    if let Some(augment_ptr) = state.augment_button {
+        set_hidden(augment_ptr as Id, !visible);
+    }
+    if let Some(archive_ptr) = state.archive_button {
+        set_hidden(archive_ptr as Id, !visible);
+    }
+}
+
+fn set_buttons_enabled(state: &TranscriptionOverlayState, enabled: bool) {
+    if let Some(copy_ptr) = state.copy_button {
+        crate::ui_helpers::set_enabled(copy_ptr as Id, enabled);
+    }
+    if let Some(augment_ptr) = state.augment_button {
+        crate::ui_helpers::set_enabled(augment_ptr as Id, enabled);
+    }
+    if let Some(archive_ptr) = state.archive_button {
+        crate::ui_helpers::set_enabled(archive_ptr as Id, enabled);
+    }
+}
+
+fn set_status_message(state: &TranscriptionOverlayState, msg: &str, show: bool) {
+    if let Some(status_ptr) = state.status_field {
+        set_text(status_ptr as Id, msg);
+        set_hidden(status_ptr as Id, !show);
+    }
+    if let Some(spinner_ptr) = state.progress_indicator {
+        set_hidden(spinner_ptr as Id, !show);
+        if show {
+            unsafe {
+                let _: () =
+                    msg_send![spinner_ptr as Id, startAnimation: std::ptr::null::<Object>()];
+            }
+        } else {
+            unsafe {
+                let _: () = msg_send![spinner_ptr as Id, stopAnimation: std::ptr::null::<Object>()];
+            }
+        }
+    }
+}
+
+fn run_ai_copy(text: String, augment: bool) {
+    let label = if augment {
+        "Augmentowanie…"
+    } else {
+        "Formatowanie…"
+    };
+    {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        set_status_message(&state, label, true);
+        set_buttons_enabled(&state, false);
+    }
+    let lang = Config::load().whisper_language.to_string();
+    tokio::spawn(async move {
+        let result = crate::ai_formatting::format_text_with_status(
+            &text,
+            Some(lang.as_str()),
+            augment,
+            None,
+        )
+        .await;
+
+        Queue::main().exec_async(move || {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            match result.status {
+                crate::ai_formatting::AiFormatStatus::Applied => {
+                    if let Err(e) = crate::clipboard::set_clipboard(&result.text) {
+                        warn!("Failed to copy formatted text: {}", e);
+                        set_status_message(&state, "Błąd kopiowania", true);
+                        set_buttons_enabled(&state, true);
+                    } else {
+                        info!("Copied formatted transcript ({} chars)", result.text.len());
+                        hide_transcription_overlay();
+                    }
+                }
+                crate::ai_formatting::AiFormatStatus::Failed => {
+                    set_status_message(&state, "AI Failed", true);
+                    set_buttons_enabled(&state, true);
+                }
+                crate::ai_formatting::AiFormatStatus::Skipped => {
+                    set_status_message(&state, "AI Skipped", true);
+                    set_buttons_enabled(&state, true);
+                }
+            }
+        });
+    });
 }
 
 /// Show the transcription overlay window
@@ -165,6 +306,8 @@ fn show_transcription_overlay_impl() {
         let ns_string_class = Class::get("NSString");
         let ns_visual_effect_view_class = Class::get("NSVisualEffectView");
         let ns_color_class = Class::get("NSColor");
+        let ns_progress_class = Class::get("NSProgressIndicator");
+        let ns_tracking_area_class = Class::get("NSTrackingArea");
 
         // Defensive checks for Cocoa classes
         if ns_window_class.is_none()
@@ -173,6 +316,8 @@ fn show_transcription_overlay_impl() {
             || ns_string_class.is_none()
             || ns_visual_effect_view_class.is_none()
             || ns_color_class.is_none()
+            || ns_progress_class.is_none()
+            || ns_tracking_area_class.is_none()
         {
             warn!("Failed to get required Cocoa classes");
             return;
@@ -184,6 +329,8 @@ fn show_transcription_overlay_impl() {
         let ns_string = ns_string_class.unwrap();
         let ns_visual_effect_view = ns_visual_effect_view_class.unwrap();
         let ns_color = ns_color_class.unwrap();
+        let ns_progress = ns_progress_class.unwrap();
+        let ns_tracking_area = ns_tracking_area_class.unwrap();
 
         // Get screen size to position the overlay
         let main_screen: Id = msg_send![ns_screen, mainScreen];
@@ -309,7 +456,7 @@ fn show_transcription_overlay_impl() {
         // Add blur view as background
         add_subview(content_view, blur_view);
 
-        // === Status indicator (top) ===
+        // === Status indicator (top) === (hidden by default)
         let status_height = 28.0;
         let padding = 16.0;
         let status_frame = CGRect {
@@ -340,11 +487,31 @@ fn show_transcription_overlay_impl() {
         let _: () = msg_send![status_field, setFont: bold_font];
 
         // Recording indicator with emoji
-        let initial_status: Id =
-            msg_send![ns_string, stringWithUTF8String: c"🔴 Recording...".as_ptr()];
+        let initial_status: Id = msg_send![ns_string, stringWithUTF8String: c"".as_ptr()];
         let _: () = msg_send![status_field, setStringValue: initial_status];
 
         add_subview(content_view, status_field);
+        set_hidden(status_field, true);
+
+        // Spinner (hidden by default)
+        let spinner_size = 14.0;
+        let spinner_frame = CGRect {
+            origin: CGPoint {
+                x: window_width - padding - spinner_size,
+                y: window_height - status_height - padding + 7.0,
+            },
+            size: CGSize {
+                width: spinner_size,
+                height: spinner_size,
+            },
+        };
+        let spinner: Id = msg_send![ns_progress, alloc];
+        let spinner: Id = msg_send![spinner, initWithFrame: spinner_frame];
+        let _: () = msg_send![spinner, setStyle: NS_PROGRESS_INDICATOR_STYLE_SPINNING];
+        let _: () = msg_send![spinner, setIndeterminate: true];
+        let _: () = msg_send![spinner, setDisplayedWhenStopped: false];
+        add_subview(content_view, spinner);
+        set_hidden(spinner, true);
 
         // === Text field for transcription (main area) ===
         let button_height = 28.0;
@@ -356,11 +523,7 @@ fn show_transcription_overlay_impl() {
             },
             size: CGSize {
                 width: window_width - padding * 2.0,
-                height: window_height
-                    - status_height
-                    - padding * 3.0
-                    - button_height
-                    - button_margin,
+                height: window_height - padding * 3.0 - button_height - button_margin,
             },
         };
 
@@ -393,11 +556,53 @@ fn show_transcription_overlay_impl() {
 
         add_subview(content_view, text_field);
 
-        // === "Do chatu" button (bottom right) ===
-        let button_width = 90.0;
-        let button_frame = CGRect {
+        // Create action handler instance
+        let handler_class = action_handler_class();
+        let action_handler: Id = msg_send![handler_class, alloc];
+        let action_handler: Id = msg_send![action_handler, init];
+
+        // Track hover on the overlay (show actions only on hover in decision mode)
+        let tracking_opts =
+            NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect;
+        let tracking_area: Id = msg_send![ns_tracking_area, alloc];
+        let tracking_area: Id = msg_send![
+            tracking_area,
+            initWithRect: blur_frame
+            options: tracking_opts
+            owner: action_handler
+            userInfo: std::ptr::null::<Object>()
+        ];
+        let _: () = msg_send![content_view, addTrackingArea: tracking_area];
+
+        // === Decision buttons (hidden during recording; show on hover) ===
+        let button_width = 100.0;
+        let button_gap = 10.0;
+        let row_width = button_width * 3.0 + button_gap * 2.0;
+        let row_x = (window_width - row_width) / 2.0;
+
+        let archive_frame = CGRect {
             origin: CGPoint {
-                x: window_width - padding - button_width,
+                x: row_x,
+                y: padding,
+            },
+            size: CGSize {
+                width: button_width,
+                height: button_height,
+            },
+        };
+        let copy_frame = CGRect {
+            origin: CGPoint {
+                x: row_x + button_width + button_gap,
+                y: padding,
+            },
+            size: CGSize {
+                width: button_width,
+                height: button_height,
+            },
+        };
+        let augment_frame = CGRect {
+            origin: CGPoint {
+                x: row_x + (button_width + button_gap) * 2.0,
                 y: padding,
             },
             size: CGSize {
@@ -406,17 +611,21 @@ fn show_transcription_overlay_impl() {
             },
         };
 
-        let transfer_button = create_button(button_frame, "Do chatu", button_style::ROUNDED);
+        let archive_button = create_button(archive_frame, "Archiwizuj", button_style::ROUNDED);
+        let copy_button = create_button(copy_frame, "Kopiuj", button_style::ROUNDED);
+        let augment_button = create_button(augment_frame, "Augmentuj", button_style::ROUNDED);
 
-        // Create action handler instance
-        let handler_class = action_handler_class();
-        let action_handler: Id = msg_send![handler_class, alloc];
-        let action_handler: Id = msg_send![action_handler, init];
+        button_set_action(archive_button, action_handler, sel!(onArchiveTranscript:));
+        button_set_action(copy_button, action_handler, sel!(onCopyTranscript:));
+        button_set_action(augment_button, action_handler, sel!(onAugmentTranscript:));
 
-        // Wire up button action
-        button_set_action(transfer_button, action_handler, sel!(onTransferToChat:));
+        add_subview(content_view, archive_button);
+        add_subview(content_view, copy_button);
+        add_subview(content_view, augment_button);
 
-        add_subview(content_view, transfer_button);
+        set_hidden(archive_button, true);
+        set_hidden(copy_button, true);
+        set_hidden(augment_button, true);
 
         // Show the window with fade-in animation
         window_set_alpha(window, 0.0);
@@ -427,7 +636,13 @@ fn show_transcription_overlay_impl() {
         state.text_field = Some(text_field as usize);
         state.status_field = Some(status_field as usize);
         state.blur_view = Some(blur_view as usize);
-        state.transfer_button = Some(transfer_button as usize);
+        state.copy_button = Some(copy_button as usize);
+        state.augment_button = Some(augment_button as usize);
+        state.archive_button = Some(archive_button as usize);
+        state.progress_indicator = Some(spinner as usize);
+        state.tracking_area = Some(tracking_area as usize);
+        state.decision_mode = false;
+        state.hover_active = false;
         state.action_handler = Some(action_handler as usize);
 
         info!("Transcription overlay shown (Tahoe-style with HudWindow vibrancy)");
@@ -503,6 +718,23 @@ fn clear_transcription_text_impl() {
     if let Some(text_field_ptr) = state.text_field {
         set_text(text_field_ptr as Id, "");
     }
+    if let Some(copy_ptr) = state.copy_button {
+        set_hidden(copy_ptr as Id, true);
+    }
+    if let Some(augment_ptr) = state.augment_button {
+        set_hidden(augment_ptr as Id, true);
+    }
+    if let Some(archive_ptr) = state.archive_button {
+        set_hidden(archive_ptr as Id, true);
+    }
+    if let Some(status_ptr) = state.status_field {
+        set_hidden(status_ptr as Id, true);
+    }
+    if let Some(spinner_ptr) = state.progress_indicator {
+        set_hidden(spinner_ptr as Id, true);
+    }
+    state.decision_mode = false;
+    state.hover_active = false;
 }
 
 /// Check if the transcription overlay is currently visible
@@ -529,6 +761,27 @@ pub fn schedule_auto_hide() {
                 AUTO_HIDE_DELAY_SECS
             );
         }
+    });
+}
+
+/// Enter decision mode: show actions on hover for the current transcript
+pub fn enter_decision_mode() {
+    Queue::main().exec_async(|| {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.decision_mode = true;
+        let show = state.hover_active;
+        set_action_buttons_visible(&state, show);
+    });
+}
+
+/// Enter recording mode: hide actions and status
+pub fn enter_recording_mode() {
+    Queue::main().exec_async(|| {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.decision_mode = false;
+        state.hover_active = false;
+        set_action_buttons_visible(&state, false);
+        set_status_message(&state, "", false);
     });
 }
 
@@ -568,7 +821,13 @@ fn hide_transcription_overlay_impl() {
     state.text_field = None;
     state.status_field = None;
     state.blur_view = None;
-    state.transfer_button = None;
+    state.copy_button = None;
+    state.augment_button = None;
+    state.archive_button = None;
+    state.progress_indicator = None;
+    state.tracking_area = None;
+    state.decision_mode = false;
+    state.hover_active = false;
     state.action_handler = None;
     // Note: accumulated_text is NOT cleared here - it's needed for clipboard copy
 }

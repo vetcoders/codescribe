@@ -18,10 +18,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_copy_last();
     } else if event_id == &menu_ids.show_overlay {
         crate::show_voice_chat_overlay();
-    } else if event_id == &menu_ids.format_last {
-        handle_format_last();
-    } else if event_id == &menu_ids.format_last_five {
-        handle_format_last_five();
+    } else if event_id == &menu_ids.open_history {
+        handle_open_history_folder();
     } else if event_id == &menu_ids.help {
         handle_open_help();
     } else if event_id == &menu_ids.about {
@@ -48,16 +46,6 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_set_toggle_trigger(ToggleTrigger::DoubleRightOption);
     } else if event_id == &menu_ids.toggle_disabled {
         handle_set_toggle_trigger(ToggleTrigger::None);
-    }
-    // History submenu
-    else if event_id == &menu_ids.history_save {
-        handle_toggle_history();
-    } else if event_id == &menu_ids.keep_audio {
-        handle_toggle_keep_audio();
-    } else if event_id == &menu_ids.history_copy_latest {
-        handle_copy_latest_to_clipboard();
-    } else if event_id == &menu_ids.history_open_folder {
-        handle_open_history_folder();
     }
     // Quality - Open Report
     else if event_id == &menu_ids.quality_open_report {
@@ -147,54 +135,6 @@ fn handle_set_toggle_trigger(trigger: ToggleTrigger) {
     let _ = config.save_to_env("TOGGLE_TRIGGER", trigger.as_str());
 }
 
-// ============================================================================
-// History Handlers
-// ============================================================================
-
-/// Toggle history saving
-fn handle_toggle_history() {
-    send_menu_event(TrayMenuEvent::ToggleHistory);
-
-    let config = Config::load();
-    let new_state = !config.history_enabled;
-    let _ = config.save_to_env("HISTORY_ENABLED", if new_state { "1" } else { "0" });
-    info!(
-        "History saving toggled: {}",
-        if new_state { "ON" } else { "OFF" }
-    );
-}
-
-/// Toggle audio dump (keep audio files)
-fn handle_toggle_keep_audio() {
-    let config = Config::load();
-    let new_state = !config.dump_audio_logs;
-    let _ = config.save_to_env("DUMP_AUDIO_LOGS", if new_state { "1" } else { "0" });
-    info!(
-        "Keep Audio toggled: {}",
-        if new_state { "ON" } else { "OFF" }
-    );
-}
-
-/// Copy latest transcript to clipboard
-fn handle_copy_latest_to_clipboard() {
-    send_menu_event(TrayMenuEvent::CopyLatestToClipboard);
-
-    if let Some(last_entry) = crate::state::history::latest_entry() {
-        if let Ok(text) = std::fs::read_to_string(&last_entry.path) {
-            if let Err(e) = crate::clipboard::set_clipboard(&text) {
-                info!("Failed to copy to clipboard: {}", e);
-            } else {
-                info!(
-                    "Copied latest transcript to clipboard ({} chars)",
-                    text.len()
-                );
-            }
-        }
-    } else {
-        info!("No transcript history available");
-    }
-}
-
 /// Open history folder in Finder
 fn handle_open_history_folder() {
     send_menu_event(TrayMenuEvent::OpenHistoryFolder);
@@ -244,103 +184,6 @@ fn handle_show_about() {
         info!("Showing about dialog");
         let _ = Command::new("osascript").arg("-e").arg(&script).spawn();
     }
-}
-
-/// Format last transcript (async in new thread)
-fn handle_format_last() {
-    info!("Formatting last transcript...");
-
-    std::thread::spawn(|| {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        rt.block_on(async {
-            if let Some(last_entry) = crate::state::history::latest_entry() {
-                if let Ok(text) = std::fs::read_to_string(&last_entry.path) {
-                    let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
-                    let result =
-                        crate::ai_formatting::format_text_with_status(&text, None, false, None)
-                            .await;
-                    let kind = match result.status {
-                        crate::ai_formatting::AiFormatStatus::Applied => {
-                            crate::state::history::TranscriptKind::Ai
-                        }
-                        crate::ai_formatting::AiFormatStatus::Failed => {
-                            crate::state::history::TranscriptKind::AiFailed
-                        }
-                        crate::ai_formatting::AiFormatStatus::Skipped => {
-                            crate::state::history::TranscriptKind::Raw
-                        }
-                    };
-                    // Zapisujemy jako nowy wpis, pozostawiając oryginalny raw w historii
-                    crate::state::history::save_entry_with_kind(&result.text, kind);
-                    let _ = crate::clipboard::set_clipboard(&result.text);
-
-                    let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Success);
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
-                }
-            } else {
-                info!("No transcript to format");
-            }
-        });
-    });
-}
-
-/// Format last 5 transcripts (async batch)
-fn handle_format_last_five() {
-    info!("Formatting last 5 transcripts...");
-
-    std::thread::spawn(|| {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        rt.block_on(async {
-            let entries = crate::state::history::recent_entries(5);
-            if entries.is_empty() {
-                info!("No transcripts to format");
-                return;
-            }
-
-            let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thinking);
-
-            let mut last_formatted: Option<String> = None;
-
-            for entry in entries {
-                if let Ok(text) = std::fs::read_to_string(&entry.path) {
-                    let result =
-                        crate::ai_formatting::format_text_with_status(&text, None, false, None)
-                            .await;
-                    let kind = match result.status {
-                        crate::ai_formatting::AiFormatStatus::Applied => {
-                            crate::state::history::TranscriptKind::Ai
-                        }
-                        crate::ai_formatting::AiFormatStatus::Failed => {
-                            crate::state::history::TranscriptKind::AiFailed
-                        }
-                        crate::ai_formatting::AiFormatStatus::Skipped => {
-                            crate::state::history::TranscriptKind::Raw
-                        }
-                    };
-                    // Zapisujemy jako nowy wpis, raw pozostaje w historii
-                    crate::state::history::save_entry_with_kind(&result.text, kind);
-                    last_formatted = Some(result.text);
-                }
-            }
-
-            if let Some(formatted) = last_formatted {
-                let _ = crate::clipboard::set_clipboard(&formatted);
-            }
-
-            let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Success);
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
-        });
-    });
 }
 
 // ============================================================================

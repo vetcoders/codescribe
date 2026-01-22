@@ -80,11 +80,8 @@ pub enum TrayMenuEvent {
     ToggleHoldExclusive,
     SetToggleTrigger(ToggleTrigger),
 
-    // History submenu
-    ToggleHistory,
-    CopyLatestToClipboard,
+    // History (open folder)
     OpenHistoryFolder,
-    SelectHistoryEntry(usize),
 }
 
 // ============================================================================
@@ -118,8 +115,7 @@ pub struct MenuIds {
     // Top-level
     pub copy_last: MenuId,
     pub show_overlay: MenuId,
-    pub format_last: MenuId,
-    pub format_last_five: MenuId,
+    pub open_history: MenuId,
     pub help: MenuId,
     pub about: MenuId,
     pub quit: MenuId,
@@ -133,12 +129,6 @@ pub struct MenuIds {
     pub toggle_double_opt: MenuId,
     pub toggle_double_ralt: MenuId,
     pub toggle_disabled: MenuId,
-
-    // History submenu
-    pub history_save: MenuId,
-    pub keep_audio: MenuId,
-    pub history_copy_latest: MenuId,
-    pub history_open_folder: MenuId,
 
     // Quality
     pub quality_open_report: MenuId,

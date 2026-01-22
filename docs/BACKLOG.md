@@ -1,109 +1,106 @@
 # CodeScribe Backlog & Roadmap
 
-> Last updated: 2026-01-19
+> Last updated: 2026-01-22
 
 ---
 
-## 0. Currently Working (End-to-End)
+## ✅ Completed Features
 
-### 0.1. Hold Mode (Raw Transcript)
-- **Status**: ✅ Working
-- **Trigger**: Hold `Ctrl` / `Ctrl+Opt` / `Ctrl+Shift`
-- **Behavior**: Press and hold → live transcription → release → paste to active app
-- **Files**: `src/hotkeys.rs` (CGEventTap), `src/controller.rs`
+### Recording Modes
+| Feature | Status | Files |
+|---------|--------|-------|
+| Hold Mode (Ctrl = Raw) | ✅ | `controller/`, `hotkeys.rs` |
+| Assistive Mode (Ctrl+Shift = AI) | ✅ | `controller/`, `hotkeys.rs` |
+| Toggle Mode (Double Option) | ✅ | `controller/`, `hotkeys.rs` |
+| VAD Auto-Stop (5s silence) | ✅ | `audio/recorder.rs` |
 
-### 0.2. Hands-off Mode (Current Implementation)
-- **Status**: ✅ Working (basic)
-- **Trigger**: Double-press `Option` key
-- **Modes**:
-  - **Double Left Option** → `ToggleNormal` (formatting only) — same as user said, but AI-formatted
-  - **Double Right Option** → `ToggleAssistive` — augmented response depending on prompt
-- **Current Behavior**:
-  - Toggle starts recording
-  - Accumulates Whisper transcription tokens
-  - Returns full transcript instantly (no intermediate preview)
-- **Files**: `src/hotkeys.rs` (`ToggleNormal`, `ToggleAssistive`), `src/controller.rs`
+### Voice Chat UI (Mission Control)
+| Feature | Status | Files |
+|---------|--------|-------|
+| Split panel layout (60/40) | ✅ | `voice_chat_ui/mod.rs` |
+| Chat bubbles (user/assistant) | ✅ | `voice_chat_ui/mod.rs` |
+| Streaming AI responses | ✅ | `voice_chat_ui/api.rs` |
+| Transcriptions tab | ✅ | `voice_chat_ui/handlers.rs` |
+| Settings tab | ✅ | `voice_chat_ui/handlers.rs` |
+| Auto-send toggle | ✅ | `voice_chat_ui/state.rs` |
+| Collapsible right panel | ✅ | `voice_chat_ui/mod.rs` |
+
+### Infrastructure
+| Feature | Status | Files |
+|---------|--------|-------|
+| Embedded Whisper model (~888MB) | ✅ | `whisper/embedded.rs` |
+| Streaming transcription (Whisper Live) | ✅ | `audio/streaming_recorder.rs` |
+| IPC Server (Unix socket) | ✅ | `ipc/server.rs` |
+| Quality Loop (self-improvement) | ✅ | `quality_loop.rs` |
+| Quality Reports (batch analysis) | ✅ | `quality_report.rs` |
+| CodeScribe Core separation | ✅ | `codescribe-core/` |
+| Tray app with submenus | ✅ | `tray/` |
 
 ---
 
-## 1. Core / Backend (CodeScribe Daemon)
+## 📋 Planned Features
 
-### 1.1. Voice Activity Detection (VAD)
-- **Status**: ✅ Implemented & Active
-- **Implementation**: `codescribe-core/src/audio/recorder.rs` (RMS/silence logic) + `src/main.rs` (Watchdog task)
-- **Goal**: Enable "Hands-off" mode where recording stops automatically after silence
-- **Trigger**: Double-press Option to start → Listen → Silence (3-8s threshold) → Stop & Transcribe
-- **Behavior**: Auto-stop triggers `finish_recording()` via VAD watchdog
+### 1. Tauri GUI (Voice Lab)
+- **Status**: 📋 Not started
+- **Goal**: Standalone GUI app for voice training and settings
+- **Architecture**: Tauri + Leptos WASM, imports `codescribe-core`
+- **Features**:
+  - Voice Lab (record/playback/compare)
+  - Teacher mode (side-by-side correction)
+  - Visual settings editor
+- **Priority**: Low (current overlay covers most needs)
 
-### 1.2. Overlay Text Preview
-- **Status**: ✅ Integrated
-- **Implementation**: `src/voice_chat_ui.rs` + callbacks in `src/controller.rs`
-- **Current Goal**: Always-on-top overlay showing real-time transcription chunks
-- **Behavior**:
-  - Live Whisper chunks appear during recording (via `StreamingRecorder` delta callback)
-  - Live AI response chunks appear during formatting/assistive generation (via `ai_formatting` SSE callback)
-  - Auto-hides after interaction
-
-### 1.3. Hands-off Mode (Target Implementation)
-- **Status**: ✅ Implemented (Ready for testing)
-- **Description**: Enhanced interaction mode combining VAD + Overlay + streaming preview
-- **Flow**:
-  1. **Trigger**: Double-press `Option` key → starts listening
-  2. **Overlay appears**: Shows "Listening..." and then live Whisper chunks
-  3. **VAD detects silence**: Stops recording automatically
-  4. **Transcription/Response**: Streamed to overlay (AI formatted or Assistive response)
-  5. **Result**: Pasted to active app (and visible on overlay)
-
-### 1.4. TTS Integration (Future)
-- **Status**: 🔴 Not started
+### 2. TTS Integration
+- **Status**: 📋 Not started
 - **Goal**: Text-to-Speech for assistive mode responses
-- **Integration**: Via Libraxis Qube Protocol — `<tts>` tags in SSE stream routed to audio output
-- **Dependency**: Requires Libraxis Qube Protocol implementation (see 2.1)
+- **Integration**: Via Libraxis Qube Protocol — `<tts>` tags in SSE stream
+- **Dependency**: Requires Libraxis Qube Protocol implementation
 
----
-
-## 2. Architecture
-
-### 2.1. Libraxis Qube Protocol (Future)
-- **Status**: 📋 Conceptual (`docs/ARCHITECTURE_VISION.md`)
-- **Goal**: WebSocket-based "Single Stream" architecture with deployment neutrality
+### 3. Libraxis Qube Protocol
+- **Status**: 📋 Conceptual ([docs/future/ARCHITECTURE_VISION.md](future/ARCHITECTURE_VISION.md))
+- **Goal**: WebSocket-based "Single Stream" architecture
 - **Key Concepts**:
-  - Central orchestrator (runs on localhost or remote Dragon)
+  - Central orchestrator (localhost or remote Dragon)
   - Tag-based demuxing (`<speak>`, `<artifact>`, `<ui_message>`)
   - Audio streaming over WebSocket
-- **Next Steps**:
-  1. Implement WebSocket server skeleton in Core/Daemon
-  2. Implement Tag Demuxer for response stream
-  3. Integrate TTS module
-  4. Unify local/remote paths (always use WS, even on localhost)
+- **Priority**: Low (current REST + SSE sufficient)
 
-### 2.2. CodeScribe Core Separation
-- **Status**: ✅ Completed
-- **Details**:
-  - `codescribe-core` crate extracted (12,332 LOC)
-  - Contains: Whisper engine, audio, config, quality_loop, quality_report, streaming, IPC types
-  - `codescribe` (Daemon) depends on Core
-  - CLI tools: `codescribe-quality`, `codescribe-loop`
-
-### 2.3. Tauri App (Future)
+### 4. Attachments in Chat
 - **Status**: 📋 Planned
-- **Goal**: Tauri-based GUI app as separate product
-- **Architecture**: Imports only `codescribe-core` (Whisper inference + orchestration)
-- **Frontend**: Leptos WASM (Voice Lab, Teacher, Settings)
-- **Note**: Diagram in README shows planned structure
+- **Goal**: Attach files to voice commands
+- **UI**: [📎] button in chat overlay
+- **Backend**: Multipart upload to AI provider
 
 ---
 
-## 3. Quality & Self-Improvement
+## 🔧 Technical Debt
 
-### 3.1. CodeScribe Quality
-- **Status**: ✅ Implemented
-- **Location**: `codescribe-core/src/quality_report.rs` (1,520 LOC)
-- **CLI**: `codescribe-quality` (`src/bin/codescribe_quality.rs`)
-- **Purpose**: Batch quality reports for transcription accuracy
+| Item | Priority | Notes |
+|------|----------|-------|
+| ~~Split voice_chat_ui.rs (<1000 LOC)~~ | ✅ Done | 4 modules created |
+| ~~Split controller.rs (<1000 LOC)~~ | ✅ Done | 4 modules created |
+| ~~Move Settings to overlay~~ | ✅ Done | Removed from tray menu |
+| Update lexicon (Roost→Rust, etc.) | Low | `assets/programming.jsonl` |
 
-### 3.2. CodeScribe Loop (Self-Improvement)
-- **Status**: ✅ Implemented
-- **Location**: `codescribe-core/src/quality_loop.rs` (1,154 LOC)
-- **CLI**: `codescribe-loop` (`src/bin/codescribe_loop.rs`)
-- **Purpose**: Automated self-tuning system for increasing transcription precision
+---
+
+## 📊 Metrics
+
+| Metric | Value |
+|--------|-------|
+| Total Rust LOC | ~15,000 |
+| codescribe-core | ~8,000 LOC |
+| codescribe (daemon) | ~7,000 LOC |
+| Binary size (release) | ~900 MB (with model) |
+| Model size (embedded) | ~888 MB |
+
+---
+
+**Related Documentation:**
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — System architecture
+- [`WHISPER_LIVE.md`](WHISPER_LIVE.md) — Streaming transcription
+- [`guide/README.md`](guide/README.md) — User documentation
+
+---
+
+*Created by M&K (c)2026 VetCoders*

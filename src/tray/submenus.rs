@@ -19,7 +19,6 @@ pub type HoldMenuIds = (
     MenuId,
     MenuId,
 );
-pub type HistoryMenuIds = (MenuId, MenuId, MenuId, MenuId, MenuId, MenuId);
 
 /// Build the Hold Hotkeys submenu
 pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
@@ -138,57 +137,6 @@ pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
             toggle_double_opt_id,
             toggle_double_ralt_id,
             toggle_disabled_id,
-        ),
-    ))
-}
-
-/// Build the History submenu
-/// Returns: (Submenu, (format_last, format_last_5, save_history, keep_audio, copy_latest, open_folder))
-pub fn build_history_submenu() -> Result<(Submenu, HistoryMenuIds)> {
-    let history_menu = Submenu::new("History", true);
-
-    // Format actions at the top
-    let format_last = MenuItem::new("Format Last Transcript", true, None);
-    let format_last_id = format_last.id().clone();
-    history_menu.append(&format_last)?;
-
-    let format_last_5 = MenuItem::new("Format Last 5 Transcripts", true, None);
-    let format_last_5_id = format_last_5.id().clone();
-    history_menu.append(&format_last_5)?;
-
-    history_menu.append(&PredefinedMenuItem::separator())?;
-
-    // Save toggles (paired: history + audio)
-    let config = crate::config::Config::load();
-
-    let history_save = CheckMenuItem::new("Save to History", true, config.history_enabled, None);
-    let history_save_id = history_save.id().clone();
-    history_menu.append(&history_save)?;
-
-    let keep_audio = CheckMenuItem::new("Keep Audio", true, config.dump_audio_logs, None);
-    let keep_audio_id = keep_audio.id().clone();
-    history_menu.append(&keep_audio)?;
-
-    history_menu.append(&PredefinedMenuItem::separator())?;
-
-    // Copy and Open actions
-    let history_copy_latest = MenuItem::new("Copy Latest", true, None);
-    let history_copy_latest_id = history_copy_latest.id().clone();
-    history_menu.append(&history_copy_latest)?;
-
-    let history_open_folder = MenuItem::new("Open Folder", true, None);
-    let history_open_folder_id = history_open_folder.id().clone();
-    history_menu.append(&history_open_folder)?;
-
-    Ok((
-        history_menu,
-        (
-            format_last_id,
-            format_last_5_id,
-            history_save_id,
-            keep_audio_id,
-            history_copy_latest_id,
-            history_open_folder_id,
         ),
     ))
 }

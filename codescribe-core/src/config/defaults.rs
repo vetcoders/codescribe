@@ -88,7 +88,7 @@ pub fn default_silence_hang_sec() -> f32 {
 }
 
 pub fn default_dump_audio_logs() -> bool {
-    false
+    true
 }
 
 pub fn default_local_model() -> String {

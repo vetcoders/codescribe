@@ -85,7 +85,7 @@ pub use voice_chat_ui::{
 #[cfg(target_os = "macos")]
 pub use transcription_overlay::{
     TranscriptionOverlayConfig, append_transcription_delta, clear_transcription_text,
-    get_transcription_text, hide_transcription_overlay, is_transcription_overlay_visible,
-    schedule_auto_hide, set_transcription_text, show_transcription_overlay,
-    update_transcription_status,
+    enter_decision_mode, enter_recording_mode, get_transcription_text, hide_transcription_overlay,
+    is_transcription_overlay_visible, schedule_auto_hide, set_transcription_text,
+    show_transcription_overlay, update_transcription_status,
 };

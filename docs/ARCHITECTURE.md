@@ -8,25 +8,26 @@
 flowchart TB
     %% High-level packaging / layers
 
-    subgraph APP[codescribe crate (bin/daemon)]
+    subgraph APP[codescribe crate - bin/daemon]
         direction LR
-        HK[hotkeys/\n(macOS CGEventTap)]
-        CTRL[controller.rs]
+        HK[hotkeys.rs]
+        CTRL[controller/]
         IPC_SERVER[ipc/server.rs]
         TRAY[tray/]
+        OVERLAY[voice_chat_ui/]
 
         subgraph CORE[codescribe-core crate]
             direction LR
-            WH[whisper/\n(embedded + singleton)]
+            WH[whisper/]
             CO[config/]
-            AU[audio/\n(cpal + stream)]
+            AU[audio/]
             IPC_CORE[ipc types]
         end
 
         APP --> CORE
     end
 
-    WH --> MODEL[Whisper Model\nlarge-v3-turbo\nmlx-q8 (~888MB)\n(embedded in bin)]
+    WH --> MODEL[Whisper Model\nlarge-v3-turbo\nmlx-q8 ~888MB\nembedded in bin]
 
     subgraph TOOLS[Quality & CLI Tools]
         CLI[codescribe-quality]
@@ -36,130 +37,211 @@ flowchart TB
     APP -.-> TOOLS
 ```
 
-## Runtime & Quality Tools
+## Module Architecture
 
-- **IPC Server**: Unix socket server (`src/ipc/`) allowing external clients (or CLI tools) to control the
-  recording/transcription session and receive real-time events.
-- **Quality Loop**: Automated self-tuning system (`codescribe-core/src/quality_loop.rs`) that evaluates transcription accuracy.
-- **Quality Report**: Batch quality reports (`codescribe-core/src/quality_report.rs`) for transcription analysis.
-- **Stream Postprocess**: Pipeline stage (`codescribe-core/src/stream_postprocess.rs`) that applies semantic gating and cleanup to live
-  chunks.
-
-
-## Hotkey Integration
-
-### Current Flow (Standalone Tray App)
+### Recording Flow
 
 ```
-┌─────────────┐    ┌────────────┐    ┌───────────┐    ┌──────────┐
-│ CGEventTap  │───►│ hotkeys.rs │───►│controller │───►│whisper   │
-│ (macOS API) │    │ HotkeyEvent│    │   .rs     │    │   .rs    │
-└─────────────┘    └────────────┘    └───────────┘    └──────────┘
-       │                                    │
-       │                                    ▼
-       │                            ┌──────────────┐
-       │                            │ Paste to     │
-       │                            │ Active App   │
-       │                            └──────────────┘
+┌─────────────┐    ┌────────────┐    ┌───────────────┐    ┌──────────────┐
+│ CGEventTap  │───►│ hotkeys.rs │───►│ controller/   │───►│ whisper/     │
+│ (macOS API) │    │            │    │   mod.rs      │    │   engine.rs  │
+└─────────────┘    └────────────┘    └───────────────┘    └──────────────┘
+       │                                    │                     │
+       │                                    ▼                     ▼
+       │                            ┌──────────────┐      ┌──────────────┐
+       │                            │ voice_chat   │      │ transcription│
+       │                            │ _ui/         │      │ _overlay.rs  │
+       │                            └──────────────┘      └──────────────┘
        │
-  Hold Ctrl → Start recording
-  Release Ctrl → Stop + Transcribe + Paste
-  Double Option → Toggle recording
+  Ctrl hold → Raw mode (no AI)
+  Ctrl+Shift hold → Assistive mode (AI)
+  Double Option → Toggle mode (respects AI setting)
 ```
 
+### Voice Chat UI (Mission Control)
 
-### Model Location
-
-**Release Builds**: Model is embedded directly in the binary via `include_bytes!` (~888MB total).
-Zero disk I/O, zero file paths, model bytes loaded directly into GPU memory.
-
-**Development**: External model from:
-
-1. `CODESCRIBE_MODEL_PATH` environment variable
-2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
-3. `./models/whisper-large-v3-turbo-mlx-q8/` in repo
-
-**Build Options**:
-
-- `cargo build --release` → embedded model (default)
-- `CODESCRIBE_NO_EMBED=1 cargo build --release` → dev-only (not supported for distribution)
-
-Model files required:
-
-- `config.json`
-- `weights.safetensors` (~894MB)
-- `tokenizer.json`
-- `mel_filters.npz`
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Status Header                                        [Collapse] │
+├─────────────────────────────────────┬───────────────────────────┤
+│ LEFT PANEL (60%)                    │ RIGHT PANEL (40%)         │
+│                                     │                           │
+│ Chat bubbles (NSStackView)          │ [Transcriptions][Settings]│
+│ ┌─────────────────────────────┐     │                           │
+│ │ User message (blue, right)  │     │ Draft files list          │
+│ └─────────────────────────────┘     │ [Format] [Copy] [Augment] │
+│       ┌─────────────────────────┐   │                           │
+│       │ AI response (gray,left) │   │ Settings toggles          │
+│       └─────────────────────────┘   │ [Edit Config] [Edit Prompt]│
+│                                     │                           │
+│ [Auto] [📎] [Input...] [Send]       │                           │
+└─────────────────────────────────────┴───────────────────────────┘
+```
 
 ## File Structure
 
 ```
 CodeScribe/
-├── codescribe-core/          # Core library (Whisper, audio, config, quality)
-│   ├── src/
-│   │   ├── whisper/           # Embedded + singleton Whisper engine
-│   │   ├── audio/             # Recorder + StreamingRecorder
-│   │   ├── ipc/               # IPC types
-│   │   ├── stream_postprocess.rs # Semantic gating for live chunks
-│   │   ├── quality_loop.rs    # Automated quality loop
-│   │   ├── quality_report.rs  # Batch quality reports
-│   │   ├── config/            # Configuration management
-│   │   └── ...
-├── src/                      # codescribe crate (daemon/CLI)
-│   ├── ipc/                  # IPC server (Unix socket)
-│   ├── hotkeys.rs            # CGEventTap hotkey handler
-│   ├── tray/                 # Tray app setup + menu
-│   ├── controller.rs         # Recording/transcription orchestration
-│   └── ...
-├── src/bin/                  # CLI tools (codescribe-quality, codescribe-loop)
+├── codescribe-core/              # Core library (portable, no macOS deps)
+│   └── src/
+│       ├── whisper/              # Embedded + singleton Whisper engine
+│       │   ├── engine.rs         # Transcription logic
+│       │   ├── singleton.rs      # Global instance (lazy init)
+│       │   └── embedded.rs       # Model bytes (include_bytes!)
+│       ├── audio/                # Recorder + StreamingRecorder
+│       │   ├── recorder.rs       # cpal audio capture
+│       │   └── streaming_recorder.rs  # Live transcription
+│       ├── config/               # Configuration management
+│       ├── stream_postprocess.rs # Semantic gating for live chunks
+│       ├── quality_loop.rs       # Self-improvement loop
+│       ├── quality_report.rs     # Batch quality reports
+│       └── ipc/                  # IPC types
+│
+├── src/                          # codescribe crate (macOS-specific)
+│   ├── main.rs                   # CLI entry (daemon/transcribe)
+│   ├── lib.rs                    # Library exports
+│   │
+│   ├── controller/               # Recording state machine
+│   │   ├── mod.rs                # RecordingController impl
+│   │   ├── types.rs              # State, HotkeyInput, etc.
+│   │   ├── helpers.rs            # Session state, callbacks
+│   │   └── tests.rs              # Controller tests
+│   │
+│   ├── voice_chat_ui/            # Voice Chat Overlay (Mission Control)
+│   │   ├── mod.rs                # UI creation (AppKit)
+│   │   ├── state.rs              # VoiceChatOverlayState
+│   │   ├── handlers.rs           # Objective-C callbacks
+│   │   └── api.rs                # Public API functions
+│   │
+│   ├── tray/                     # System tray menu
+│   │   ├── mod.rs                # Tray setup
+│   │   ├── menu.rs               # Menu creation
+│   │   ├── handlers.rs           # Menu actions
+│   │   ├── icons.rs              # Icon generation
+│   │   └── types.rs              # MenuIds, TrayMenuEvent
+│   │
+│   ├── hotkeys.rs                # CGEventTap handler
+│   ├── transcription_overlay.rs  # Simple text overlay
+│   ├── ui.rs                     # Badge, Dock icon
+│   ├── ui_helpers.rs             # AppKit utilities
+│   ├── clipboard.rs              # Paste to active app
+│   ├── permissions.rs            # macOS permission checks
+│   └── ipc/                      # IPC server (Unix socket)
+│
+├── src/bin/                      # CLI tools
+│   ├── codescribe_quality.rs     # Batch quality reports
+│   └── codescribe_loop.rs        # Self-improving loop
+│
 ├── docs/
-│   ├── ARCHITECTURE.md       # This file
-│   ├── WHISPER_LIVE.md       # Embedded + streaming transcription (DONE)
-│   └── TEAM_SETUP.md         # Team setup guide
-└── tests/
+│   ├── guide/                    # User documentation
+│   │   ├── README.md             # Quick start
+│   │   ├── installation.md
+│   │   ├── modes.md
+│   │   ├── chat-overlay.md
+│   │   ├── settings.md
+│   │   ├── troubleshooting.md
+│   │   └── privacy.md
+│   ├── ARCHITECTURE.md           # This file
+│   ├── WHISPER_LIVE.md           # Streaming transcription
+│   ├── TEAM_SETUP.md             # Developer setup
+│   └── future/                   # Aspirational docs
+│       ├── ARCHITECTURE_VISION.md
+│       └── FEASIBILITY_ANALYSIS.md
+│
+└── tests/                        # Integration tests
 ```
+
+## Key Components
+
+### Controller State Machine
+
+```rust
+// src/controller/types.rs
+pub enum State {
+    Idle,      // Ready for input
+    RecHold,   // Recording (hold mode)
+    RecToggle, // Recording (toggle mode)
+    Busy,      // Processing transcription
+}
+```
+
+State transitions:
+- `Idle` + Ctrl down → (800ms delay) → `RecHold`
+- `Idle` + Double Option → `RecToggle`
+- `RecHold` + Ctrl up → `Busy` → `Idle`
+- `RecToggle` + Double Option → `Busy` → `Idle`
+- `RecToggle` + 5s silence (VAD) → `Busy` → `Idle`
+
+### Mode Determination
+
+```rust
+// src/controller/mod.rs - handle_hotkey_event()
+match (hotkey, flags) {
+    (Hold, no_shift)  => force_raw = true,   // Ctrl: always raw
+    (Hold, shift)     => assistive = true,   // Ctrl+Shift: always AI
+    (Toggle, force_ai)=> force_ai = true,    // Left Option x2: force AI
+    (Toggle, _)       => /* respects AI_FORMATTING_ENABLED */
+}
+```
+
+### Voice Chat UI Components
+
+| Module | LOC | Purpose |
+|--------|-----|---------|
+| `mod.rs` | 632 | UI creation with AppKit |
+| `api.rs` | 589 | Public API (update_status, etc.) |
+| `handlers.rs` | 450 | Objective-C action handlers |
+| `state.rs` | 148 | VoiceChatOverlayState struct |
+
+### Whisper Engine
+
+- **Singleton pattern**: One global instance, lazy initialized
+- **Metal acceleration**: Uses Apple GPU via candle-core
+- **Streaming**: Chunks processed during recording
+- **Embedded**: Model bytes in binary (~888MB)
 
 ## Implementation Status
 
-### ✅ Completed (current release)
+| Feature | Status |
+|---------|--------|
+| Local Whisper STT (Metal GPU) | ✅ |
+| Embedded model (~888MB binary) | ✅ |
+| Global hotkeys (CGEventTap) | ✅ |
+| Three recording modes (Raw/Assistive/Toggle) | ✅ |
+| Voice Chat UI (split panel) | ✅ |
+| Chat bubbles (NSStackView) | ✅ |
+| Drafts panel with tabs | ✅ |
+| Settings in overlay | ✅ |
+| AI formatting (Responses API) | ✅ |
+| Streaming AI responses | ✅ |
+| Tray app with submenus | ✅ |
+| History with slug filenames | ✅ |
+| IPC server (runtime interface) | ✅ |
+| Stream postprocess (semantic gating) | ✅ |
+| Quality loop + report | ✅ |
+| CodeScribe Core separation | ✅ |
+| VAD (auto-stop on silence) | ✅ |
+| Transcription overlay | ✅ |
+| Tauri GUI (future) | 📋 |
 
-- **Whisper Live (Streaming)** - transcription happens during recording (chunking + overlap + dedup)
-- **Hotkeys** - CGEventTap integration, hold Ctrl/Ctrl+Shift modes, double-Option toggle (left/right)
-- **Embedded Model** - Model baked into binary via `include_bytes!`, zero disk I/O
-- **CodeScribe Core** - Extracted as separate crate (`codescribe-core`)
+## Model Location
 
-### 🟡 In Progress (implemented but not fully integrated)
+**Release Builds**: Model embedded via `include_bytes!` (~888MB total).
+Zero disk I/O, model bytes loaded directly into GPU memory.
 
-- **VAD (Voice Activity Detection)** - `vad_triggered` flag exists in `controller.rs`, not used for auto-stop yet
-- **Overlay Text Preview** - Code exists in `voice_chat_ui.rs`, not fully integrated with recording flow
+**Development**: External model from:
+1. `CODESCRIBE_MODEL_PATH` environment variable
+2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
+3. `./models/whisper-large-v3-turbo-mlx-q8/` in repo
 
-### Current Capabilities
+## Related Documentation
 
-| Feature                                    | Status |
-|--------------------------------------------|--------|
-| Local Whisper STT (Metal GPU)              | ✅      |
-| Embedded model (~888MB binary)             | ✅      |
-| Global hotkeys (CGEventTap)                | ✅      |
-| AI formatting (Responses API)              | ✅      |
-| Provider separation (formatting/assistive) | ✅      |
-| Tray app with submenus                     | ✅      |
-| History with slug filenames                | ✅      |
-| IPC server (runtime interface)             | ✅      |
-| Stream postprocess (semantic gating)       | ✅      |
-| Quality loop + report                      | ✅      |
-| CodeScribe Core separation                 | ✅      |
-| VAD (auto-stop on silence)                 | 🟡      |
-| Overlay text preview                       | 🟡      |
-| Tauri GUI (Voice Lab, Settings)            | 📋      |
+- [`guide/README.md`](guide/README.md) — User documentation
+- [`WHISPER_LIVE.md`](WHISPER_LIVE.md) — Embedded + streaming transcription
+- [`TEAM_SETUP.md`](TEAM_SETUP.md) — Developer setup guide
+- [`BACKLOG.md`](BACKLOG.md) — Feature backlog
+- [`future/ARCHITECTURE_VISION.md`](future/ARCHITECTURE_VISION.md) — Libraxis Qube Protocol vision
 
 ---
 
-**Related Documentation:**
-- [`BACKLOG.md`](BACKLOG.md) — Detailed backlog with target implementations
-- [`ARCHITECTURE_VISION.md`](ARCHITECTURE_VISION.md) — Future Libraxis Qube Protocol architecture
-- [`WHISPER_LIVE.md`](WHISPER_LIVE.md) — Embedded + streaming transcription details
-
----
-
-**Made with (งಠ_ಠ)ง by the ⌜ CodeScribe ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026
-Maciej & Monika + Klaudiusz (AI) + Junie (AI)**
+**Made with ⌜ CodeScribe ⌟ by Maciej & Monika + Klaudiusz (AI) (c) 2024-2026**

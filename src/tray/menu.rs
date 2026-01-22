@@ -5,7 +5,7 @@
 //! - Copy Last to Clipboard
 //! - Show Chat Overlay
 //! - Hold Hotkeys submenu (root level)
-//! - History submenu (with Format Last, Format Last 5)
+//! - Open history folder
 //! - Quality status
 //! - Help/About
 //! - Quit
@@ -19,7 +19,7 @@ use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{Menu, MenuItem, PredefinedMenuItem};
 
 use crate::config::Config;
-use crate::tray::submenus::{build_history_submenu, build_hold_hotkeys_submenu};
+use crate::tray::submenus::build_hold_hotkeys_submenu;
 use crate::tray::types::MenuIds;
 
 // Thread-local storage for menu items that need dynamic updates
@@ -37,7 +37,7 @@ thread_local! {
 /// Show Chat Overlay
 /// ─────────────
 /// Hold Hotkeys ▸
-/// History ▸
+/// Open history...
 /// Quality: OK
 /// ─────────────
 /// Help
@@ -76,9 +76,10 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let (hold_hotkeys_menu, hold_ids) = build_hold_hotkeys_submenu()?;
     menu.append(&hold_hotkeys_menu)?;
 
-    // 6. History submenu (with Format Last actions)
-    let (history_menu, history_ids) = build_history_submenu()?;
-    menu.append(&history_menu)?;
+    // 6. Open history folder
+    let open_history_item = MenuItem::new("Open history...", true, None);
+    let open_history_id = open_history_item.id().clone();
+    menu.append(&open_history_item)?;
 
     // 6b. Quality menu item (shows pending mismatches from daemon)
     let pending = crate::quality_loop::get_pending_mismatches();
@@ -130,23 +131,12 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         toggle_disabled_id,
     ) = hold_ids;
 
-    // Destructure history_ids
-    let (
-        format_last_id,
-        format_last_five_id,
-        history_save_id,
-        keep_audio_id,
-        history_copy_latest_id,
-        history_open_folder_id,
-    ) = history_ids;
-
     Ok((
         menu,
         MenuIds {
             copy_last: copy_last_id,
             show_overlay: show_overlay_id,
-            format_last: format_last_id,
-            format_last_five: format_last_five_id,
+            open_history: open_history_id,
             help: help_id,
             about: about_id,
             quit: quit_id,
@@ -159,11 +149,6 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             toggle_double_opt: toggle_double_opt_id,
             toggle_double_ralt: toggle_double_ralt_id,
             toggle_disabled: toggle_disabled_id,
-            // History submenu
-            history_save: history_save_id,
-            keep_audio: keep_audio_id,
-            history_copy_latest: history_copy_latest_id,
-            history_open_folder: history_open_folder_id,
             // Quality
             quality_open_report: quality_open_report_id,
         },

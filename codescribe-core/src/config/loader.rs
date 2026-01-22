@@ -154,10 +154,11 @@ impl Config {
             self.audio_input_device = (!val.trim().is_empty()).then_some(val);
         }
 
-        // History
+        // History (always on to avoid data loss)
         if let Ok(val) = std::env::var("HISTORY_ENABLED") {
             self.history_enabled = val.parse().unwrap_or(true);
         }
+        self.history_enabled = true;
 
         // Backends - LLM
         // Priority: LLM_HOST (canonical) > OLLAMA_HOST (legacy)
@@ -223,10 +224,11 @@ impl Config {
             self.start_at_login = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
 
-        // Debugging
+        // Debugging (always on to keep paired .wav with transcripts)
         if let Ok(val) = std::env::var("DUMP_AUDIO_LOGS") {
             self.dump_audio_logs = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
+        self.dump_audio_logs = true;
     }
 
     /// Save a single configuration value to .env file.
