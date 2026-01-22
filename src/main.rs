@@ -6,9 +6,11 @@
 //! Created by M&K (c)2026 VetCoders
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use codescribe::{audio, whisper};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 mod lab_server;
 
@@ -29,25 +31,10 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[derive(clap::Subcommand)]
+#[derive(Subcommand)]
 enum Commands {
     /// Transcribe an audio file using local Whisper
-    Transcribe {
-        /// Path to audio file (wav, mp3, m4a)
-        file: PathBuf,
-
-        /// Language code (e.g., pl, en). Default: auto-detect
-        #[arg(short, long)]
-        language: Option<String>,
-
-        /// Format output using AI (Ollama)
-        #[arg(short, long)]
-        format: bool,
-
-        /// LLM model for formatting (defaults to config)
-        #[arg(long)]
-        llm: Option<String>,
-    },
+    Transcribe(TranscribeArgs),
 
     /// Run as daemon with tray icon (default when no args)
     Daemon,
@@ -62,6 +49,37 @@ enum Commands {
         #[arg(long, value_enum, default_value = "raw")]
         assume_kind: MigrateKind,
     },
+}
+
+#[derive(clap::Args)]
+struct TranscribeArgs {
+    /// Path to audio file (wav, mp3, m4a)
+    file: Option<PathBuf>,
+
+    /// Language code (e.g., pl, en). Default: auto-detect
+    #[arg(short, long, global = true)]
+    language: Option<String>,
+
+    /// Stream transcription to stdout (chunked, with flush)
+    #[arg(long)]
+    stream: bool,
+
+    /// Format output using AI (Ollama)
+    #[arg(short, long)]
+    format: bool,
+
+    /// LLM model for formatting (defaults to config)
+    #[arg(long)]
+    llm: Option<String>,
+
+    #[command(subcommand)]
+    mode: Option<TranscribeMode>,
+}
+
+#[derive(Subcommand)]
+enum TranscribeMode {
+    /// Live transcription from microphone to stdout
+    Live,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -84,12 +102,7 @@ async fn main() -> Result<()> {
 
     // Handle subcommands
     match cli.command {
-        Some(Commands::Transcribe {
-            file,
-            language,
-            format,
-            llm,
-        }) => handle_transcribe_command(file, language, format, llm).await,
+        Some(Commands::Transcribe(args)) => handle_transcribe_command(args).await,
         Some(Commands::MigrateHistory {
             dry_run,
             assume_kind,
@@ -172,11 +185,24 @@ fn handle_migrate_history_command(dry_run: bool, assume_kind: MigrateKind) -> Re
 }
 
 /// Handle `codescribe transcribe <file>` command
-async fn handle_transcribe_command(
+async fn handle_transcribe_command(args: TranscribeArgs) -> Result<()> {
+    match args.mode {
+        Some(TranscribeMode::Live) => handle_transcribe_live(args.language).await,
+        None => {
+            let file = args.file.ok_or_else(|| {
+                anyhow::anyhow!("Missing <FILE> (or use `codescribe transcribe live`)")
+            })?;
+            handle_transcribe_file(file, args.language, args.format, args.llm, args.stream).await
+        }
+    }
+}
+
+async fn handle_transcribe_file(
     file: PathBuf,
     language: Option<String>,
     format: bool,
     llm_model: Option<String>,
+    stream: bool,
 ) -> Result<()> {
     use std::time::Instant;
 
@@ -201,19 +227,52 @@ async fn handle_transcribe_command(
     eprintln!("Language: {}", language.as_deref().unwrap_or("auto-detect"));
     eprintln!("Model loaded in {:?}", start.elapsed());
 
+    // Load audio only if needed (language detection or streaming)
+    let audio_data = if stream || language.is_none() {
+        Some(audio::load_audio_file(&file)?)
+    } else {
+        None
+    };
+
     // Detect language if not specified
     let lang = if let Some(l) = language {
         l
     } else {
+        let (samples, sample_rate) = audio_data
+            .as_ref()
+            .expect("audio data required for language detection");
         eprintln!("Detecting language...");
         let start = Instant::now();
-        let (samples, sample_rate) = audio::load_audio_file(&file)?;
-        let detected = whisper::detect_language(&samples, sample_rate)?;
+        let detected = whisper::detect_language(samples, *sample_rate)?;
         eprintln!("Detected: {} ({:?})", detected, start.elapsed());
         detected
     };
 
-    // Transcribe
+    if stream {
+        if format || llm_model.is_some() {
+            eprintln!("Warning: --stream ignores --format/--llm (raw streaming only)");
+        }
+
+        eprintln!("Transcribing (streaming)...");
+        let start = Instant::now();
+        let emitter = StreamEmitter::new();
+        let callback = {
+            let emitter = Arc::clone(&emitter);
+            move |cumulative: &str| {
+                emitter.emit_cumulative(cumulative);
+            }
+        };
+        let (samples, sample_rate) = audio_data
+            .as_ref()
+            .expect("audio data required for streaming");
+        let _raw_text =
+            whisper::transcribe_streaming(samples, *sample_rate, Some(&lang), Some(&callback))?;
+        eprintln!("Transcription time: {:?}", start.elapsed());
+        emitter.finish();
+        return Ok(());
+    }
+
+    // Transcribe (non-streaming)
     eprintln!("Transcribing...");
     let start = Instant::now();
     let raw_text = whisper::transcribe_file(&file, Some(&lang))?;
@@ -242,7 +301,50 @@ async fn handle_transcribe_command(
     eprintln!();
 
     // Output transcription to stdout (pipeable)
-    println!("{}", final_text);
+    emit_stdout(&final_text)?;
+    emit_stdout("\n")?;
+
+    Ok(())
+}
+
+async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
+    use tokio::sync::mpsc;
+
+    eprintln!("CodeScribe Live Transcription");
+    eprintln!("Press Ctrl+C to stop.");
+
+    whisper::init()?;
+
+    let mut recorder = codescribe::audio::streaming_recorder::StreamingRecorder::new()?;
+    let (vad_tx, mut vad_rx) = mpsc::unbounded_channel::<()>();
+    recorder.recorder.set_on_vad_stop({
+        let vad_tx = vad_tx.clone();
+        move || {
+            let _ = vad_tx.send(());
+        }
+    });
+
+    let emitter = StreamEmitter::new();
+    recorder.set_delta_callback(Some(Arc::new({
+        let emitter = Arc::clone(&emitter);
+        move |delta: &str| {
+            emitter.emit_raw(delta);
+        }
+    })));
+
+    recorder.start(language).await?;
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("Stopping live transcription (Ctrl+C)...");
+        }
+        _ = vad_rx.recv() => {
+            eprintln!("Stopping live transcription (VAD)...");
+        }
+    }
+
+    let _ = recorder.stop().await?;
+    emitter.finish();
 
     Ok(())
 }
@@ -425,6 +527,55 @@ async fn run_daemon() -> Result<()> {
     tray::run_with_hotkeys(Some(hotkey_manager))?;
 
     Ok(())
+}
+
+fn emit_stdout(text: &str) -> Result<()> {
+    use std::io::Write;
+
+    let mut out = std::io::stdout();
+    out.write_all(text.as_bytes())?;
+    out.flush()?;
+    Ok(())
+}
+
+struct StreamEmitter {
+    last_len: Mutex<usize>,
+    had_output: AtomicBool,
+}
+
+impl StreamEmitter {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            last_len: Mutex::new(0),
+            had_output: AtomicBool::new(false),
+        })
+    }
+
+    fn emit_raw(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if emit_stdout(text).is_ok() {
+            self.had_output.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn emit_cumulative(&self, cumulative: &str) {
+        let mut last_len = self.last_len.lock().unwrap_or_else(|e| e.into_inner());
+        let total_len = cumulative.len();
+        if total_len <= *last_len {
+            return;
+        }
+        let delta = &cumulative[*last_len..];
+        *last_len = total_len;
+        self.emit_raw(delta);
+    }
+
+    fn finish(&self) {
+        if self.had_output.load(Ordering::SeqCst) {
+            let _ = emit_stdout("\n");
+        }
+    }
 }
 
 fn sync_hotkey_config(config: &codescribe::config::Config) {
