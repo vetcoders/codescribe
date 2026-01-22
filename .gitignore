@@ -67,3 +67,6 @@ nohup.out.backup
 *claude*
 *codex*
 /agents
+
+# CodeScribe
+.codescribe/state/

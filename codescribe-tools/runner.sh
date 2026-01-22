@@ -16,7 +16,7 @@ mkdir -p "$CODESCRIBE_DIR"/{tools,config,context,agent,logs,tasks,reports,roadma
 PROJECT="${PROJECT:-$(basename "$ROOT")}"
 AGENT="${AGENT:-claude}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
-MODEL="${MODEL:-sonnet}"
+MODEL="${MODEL:-claude-opus-4-5-20251101}"
 MAX_LINES="${MAX_LINES:-1200}"
 HORIZON="${HORIZON:-4800}"
 EXPORT_AGENTS="${EXPORT_AGENTS:-1}"

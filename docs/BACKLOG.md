@@ -7,40 +7,44 @@
 ## ✅ Completed Features
 
 ### Recording Modes
-| Feature | Status | Files |
-|---------|--------|-------|
-| Hold Mode (Ctrl = Raw) | ✅ | `controller/`, `hotkeys.rs` |
-| Assistive Mode (Ctrl+Shift = AI) | ✅ | `controller/`, `hotkeys.rs` |
-| Toggle Mode (Double Option) | ✅ | `controller/`, `hotkeys.rs` |
-| VAD Auto-Stop (5s silence) | ✅ | `audio/recorder.rs` |
+
+| Feature                          | Status | Files                       |
+|----------------------------------|--------|-----------------------------|
+| Hold Mode (Ctrl = Raw)           | ✅      | `controller/`, `hotkeys.rs` |
+| Assistive Mode (Ctrl+Shift = AI) | ✅      | `controller/`, `hotkeys.rs` |
+| Toggle Mode (Double Option)      | ✅      | `controller/`, `hotkeys.rs` |
+| VAD Auto-Stop (5s silence)       | ✅      | `audio/recorder.rs`         |
 
 ### Voice Chat UI (Mission Control)
-| Feature | Status | Files |
-|---------|--------|-------|
-| Split panel layout (60/40) | ✅ | `voice_chat_ui/mod.rs` |
-| Chat bubbles (user/assistant) | ✅ | `voice_chat_ui/mod.rs` |
-| Streaming AI responses | ✅ | `voice_chat_ui/api.rs` |
-| Transcriptions tab | ✅ | `voice_chat_ui/handlers.rs` |
-| Settings tab | ✅ | `voice_chat_ui/handlers.rs` |
-| Auto-send toggle | ✅ | `voice_chat_ui/state.rs` |
-| Collapsible right panel | ✅ | `voice_chat_ui/mod.rs` |
+
+| Feature                       | Status | Files                       |
+|-------------------------------|--------|-----------------------------|
+| Split panel layout (60/40)    | ✅      | `voice_chat_ui/mod.rs`      |
+| Chat bubbles (user/assistant) | ✅      | `voice_chat_ui/mod.rs`      |
+| Streaming AI responses        | ✅      | `voice_chat_ui/api.rs`      |
+| Transcriptions tab            | ✅      | `voice_chat_ui/handlers.rs` |
+| Settings tab                  | ✅      | `voice_chat_ui/handlers.rs` |
+| Auto-send toggle              | ✅      | `voice_chat_ui/state.rs`    |
+| Collapsible right panel       | ✅      | `voice_chat_ui/mod.rs`      |
 
 ### Infrastructure
-| Feature | Status | Files |
-|---------|--------|-------|
-| Embedded Whisper model (~888MB) | ✅ | `whisper/embedded.rs` |
-| Streaming transcription (Whisper Live) | ✅ | `audio/streaming_recorder.rs` |
-| IPC Server (Unix socket) | ✅ | `ipc/server.rs` |
-| Quality Loop (self-improvement) | ✅ | `quality_loop.rs` |
-| Quality Reports (batch analysis) | ✅ | `quality_report.rs` |
-| CodeScribe Core separation | ✅ | `codescribe-core/` |
-| Tray app with submenus | ✅ | `tray/` |
+
+| Feature                                | Status | Files                         |
+|----------------------------------------|--------|-------------------------------|
+| Embedded Whisper model (~888MB)        | ✅      | `whisper/embedded.rs`         |
+| Streaming transcription (Whisper Live) | ✅      | `audio/streaming_recorder.rs` |
+| IPC Server (Unix socket)               | ✅      | `ipc/server.rs`               |
+| Quality Loop (self-improvement)        | ✅      | `quality_loop.rs`             |
+| Quality Reports (batch analysis)       | ✅      | `quality_report.rs`           |
+| CodeScribe Core separation             | ✅      | `codescribe-core/`            |
+| Tray app with submenus                 | ✅      | `tray/`                       |
 
 ---
 
 ## 📋 Planned Features
 
 ### 1. Tauri GUI (Voice Lab)
+
 - **Status**: 📋 Not started
 - **Goal**: Standalone GUI app for voice training and settings
 - **Architecture**: Tauri + Leptos WASM, imports `codescribe-core`
@@ -51,12 +55,14 @@
 - **Priority**: Low (current overlay covers most needs)
 
 ### 2. TTS Integration
+
 - **Status**: 📋 Not started
 - **Goal**: Text-to-Speech for assistive mode responses
 - **Integration**: Via Libraxis Qube Protocol — `<tts>` tags in SSE stream
 - **Dependency**: Requires Libraxis Qube Protocol implementation
 
 ### 3. Libraxis Qube Protocol
+
 - **Status**: 📋 Conceptual ([docs/future/ARCHITECTURE_VISION.md](future/ARCHITECTURE_VISION.md))
 - **Goal**: WebSocket-based "Single Stream" architecture
 - **Key Concepts**:
@@ -66,6 +72,7 @@
 - **Priority**: Low (current REST + SSE sufficient)
 
 ### 4. Attachments in Chat
+
 - **Status**: 📋 Planned
 - **Goal**: Attach files to voice commands
 - **UI**: [📎] button in chat overlay
@@ -75,28 +82,29 @@
 
 ## 🔧 Technical Debt
 
-| Item | Priority | Notes |
-|------|----------|-------|
-| ~~Split voice_chat_ui.rs (<1000 LOC)~~ | ✅ Done | 4 modules created |
-| ~~Split controller.rs (<1000 LOC)~~ | ✅ Done | 4 modules created |
-| ~~Move Settings to overlay~~ | ✅ Done | Removed from tray menu |
-| Update lexicon (Roost→Rust, etc.) | Low | `assets/programming.jsonl` |
+| Item                                   | Priority | Notes                      |
+|----------------------------------------|----------|----------------------------|
+| ~~Split voice_chat_ui.rs (<1000 LOC)~~ | ✅ Done   | 4 modules created          |
+| ~~Split controller.rs (<1000 LOC)~~    | ✅ Done   | 4 modules created          |
+| ~~Move Settings to overlay~~           | ✅ Done   | Removed from tray menu     |
+| Update lexicon (Roost→Rust, etc.)      | CRITICAL | `assets/programming.jsonl` |
 
 ---
 
 ## 📊 Metrics
 
-| Metric | Value |
-|--------|-------|
-| Total Rust LOC | ~15,000 |
-| codescribe-core | ~8,000 LOC |
-| codescribe (daemon) | ~7,000 LOC |
+| Metric                | Value                |
+|-----------------------|----------------------|
+| Total Rust LOC        | ~15,000              |
+| codescribe-core       | ~8,000 LOC           |
+| codescribe (daemon)   | ~7,000 LOC           |
 | Binary size (release) | ~900 MB (with model) |
-| Model size (embedded) | ~888 MB |
+| Model size (embedded) | ~888 MB              |
 
 ---
 
 **Related Documentation:**
+
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — System architecture
 - [`WHISPER_LIVE.md`](WHISPER_LIVE.md) — Streaming transcription
 - [`guide/README.md`](guide/README.md) — User documentation
