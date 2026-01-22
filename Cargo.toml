@@ -3,7 +3,7 @@ resolver = "2"
 members = [".", "codescribe-core"]
 
 [workspace.package]
-version = "0.7.4-dev"
+version = "0.7.5"
 edition = "2024"
 authors = ["VetCoders <hello@vetcoders.io>"]
 
@@ -16,7 +16,7 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.7.4-dev"
+version = "0.7.5"
 edition = "2024"
 description = "Speech-to-text tray app for macOS - Pure Rust"
 authors = ["VetCoders <hello@vetcoders.io>"]
