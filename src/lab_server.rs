@@ -5,8 +5,6 @@
 //!
 //! NOTE: Currently unused - will be activated when Tauri frontend is integrated.
 
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -69,11 +67,6 @@ pub fn start_lab_server() {
             error!("Lab server error: {}", e);
         }
     });
-}
-
-/// Get lab URL
-pub fn lab_url() -> String {
-    format!("http://127.0.0.1:{}/", LAB_PORT)
 }
 
 async fn run_server() -> anyhow::Result<()> {

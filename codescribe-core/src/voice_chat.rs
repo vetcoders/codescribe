@@ -4,7 +4,6 @@
 //! enabling streaming audio transcription and LLM responses.
 
 // Allow unused API methods - they're part of the public interface for future use
-#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use base64::prelude::*;

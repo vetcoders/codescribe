@@ -9,9 +9,6 @@
 //!
 //! Created by M&K (c)2026 VetCoders
 
-#![allow(unexpected_cfgs)]
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
-
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
@@ -186,7 +183,9 @@ pub fn create_button(frame: CGRect, title: &str, style: isize) -> Id {
 }
 
 /// Set button target and action
-pub fn button_set_action(button: Id, target: Id, action: objc::runtime::Sel) {
+/// # Safety
+/// `button` and `target` must be valid Objective-C objects.
+pub unsafe fn button_set_action(button: Id, target: Id, action: objc::runtime::Sel) {
     unsafe {
         let _: () = msg_send![button, setTarget: target];
         let _: () = msg_send![button, setAction: action];
@@ -323,33 +322,43 @@ pub fn create_floating_window(frame: CGRect, title: &str, transparent_titlebar: 
 }
 
 /// Get window's content view
-pub fn window_content_view(window: Id) -> Id {
+/// # Safety
+/// `window` must be a valid `NSWindow` instance.
+pub unsafe fn window_content_view(window: Id) -> Id {
     unsafe { msg_send![window, contentView] }
 }
 
 /// Add subview to a view
-pub fn add_subview(parent: Id, child: Id) {
+/// # Safety
+/// `parent` and `child` must be valid Objective-C views.
+pub unsafe fn add_subview(parent: Id, child: Id) {
     unsafe {
         let _: () = msg_send![parent, addSubview: child];
     }
 }
 
 /// Show window (order front)
-pub fn window_show(window: Id) {
+/// # Safety
+/// `window` must be a valid `NSWindow` instance.
+pub unsafe fn window_show(window: Id) {
     unsafe {
         let _: () = msg_send![window, orderFrontRegardless];
     }
 }
 
 /// Close window
-pub fn window_close(window: Id) {
+/// # Safety
+/// `window` must be a valid `NSWindow` instance.
+pub unsafe fn window_close(window: Id) {
     unsafe {
         let _: () = msg_send![window, close];
     }
 }
 
 /// Set window alpha (for fade animations)
-pub fn window_set_alpha(window: Id, alpha: f64) {
+/// # Safety
+/// `window` must be a valid `NSWindow` instance.
+pub unsafe fn window_set_alpha(window: Id, alpha: f64) {
     unsafe {
         let _: () = msg_send![window, setAlphaValue: alpha];
     }
@@ -386,7 +395,9 @@ pub fn create_segmented_control(frame: CGRect, labels: &[&str]) -> Id {
 // ============================================================================
 
 /// Set text field string value
-pub fn set_text(field: Id, text: &str) {
+/// # Safety
+/// `field` must be a valid `NSTextField` (or compatible) instance.
+pub unsafe fn set_text(field: Id, text: &str) {
     unsafe {
         let text_str = ns_string(text);
         let _: () = msg_send![field, setStringValue: text_str];
@@ -394,7 +405,9 @@ pub fn set_text(field: Id, text: &str) {
 }
 
 /// Get text field string value
-pub fn get_text(field: Id) -> String {
+/// # Safety
+/// `field` must be a valid `NSTextField` (or compatible) instance.
+pub unsafe fn get_text(field: Id) -> String {
     unsafe {
         let ns_str: Id = msg_send![field, stringValue];
         if ns_str.is_null() {
@@ -411,7 +424,9 @@ pub fn get_text(field: Id) -> String {
 }
 
 /// Set text view string (for NSTextView, not NSTextField)
-pub fn set_text_view_string(text_view: Id, text: &str) {
+/// # Safety
+/// `text_view` must be a valid `NSTextView` instance.
+pub unsafe fn set_text_view_string(text_view: Id, text: &str) {
     unsafe {
         let text_str = ns_string(text);
         let _: () = msg_send![text_view, setString: text_str];
@@ -423,7 +438,9 @@ pub fn set_text_view_string(text_view: Id, text: &str) {
 // ============================================================================
 
 /// Run a simple fade animation
-pub fn animate_fade(window: Id, to_alpha: f64, duration: f64) {
+/// # Safety
+/// `window` must be a valid `NSWindow` instance.
+pub unsafe fn animate_fade(window: Id, to_alpha: f64, duration: f64) {
     unsafe {
         let ns_animation_context = Class::get("NSAnimationContext").unwrap();
 
@@ -439,7 +456,9 @@ pub fn animate_fade(window: Id, to_alpha: f64, duration: f64) {
 }
 
 /// Animate window width change (horizontal slide for drawer collapse)
-pub fn animate_window_width(window: Id, to_width: f64, duration: f64) {
+/// # Safety
+/// `window` must be a valid `NSWindow` instance.
+pub unsafe fn animate_window_width(window: Id, to_width: f64, duration: f64) {
     unsafe {
         let ns_animation_context = Class::get("NSAnimationContext").unwrap();
 
@@ -469,14 +488,18 @@ pub fn animate_window_width(window: Id, to_width: f64, duration: f64) {
 // ============================================================================
 
 /// Set view hidden state
-pub fn set_hidden(view: Id, hidden: bool) {
+/// # Safety
+/// `view` must be a valid `NSView` (or subclass) instance.
+pub unsafe fn set_hidden(view: Id, hidden: bool) {
     unsafe {
         let _: () = msg_send![view, setHidden: hidden];
     }
 }
 
 /// Set view enabled state (for buttons)
-pub fn set_enabled(view: Id, enabled: bool) {
+/// # Safety
+/// `view` must be a valid `NSView`/`NSControl` instance.
+pub unsafe fn set_enabled(view: Id, enabled: bool) {
     unsafe {
         let _: () = msg_send![view, setEnabled: enabled];
     }
@@ -685,7 +708,9 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
 }
 
 /// Update bubble text (for streaming updates)
-pub fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool) {
+/// # Safety
+/// `text_label` must be a valid `NSTextField` instance.
+pub unsafe fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool) {
     unsafe {
         let ns_color = Class::get("NSColor").unwrap();
 
@@ -780,14 +805,18 @@ pub fn create_vertical_stack_view(frame: CGRect) -> Id {
 }
 
 /// Add a view to NSStackView
-pub fn stack_view_add(stack: Id, view: Id) {
+/// # Safety
+/// `stack` must be a valid `NSStackView` and `view` a valid `NSView`.
+pub unsafe fn stack_view_add(stack: Id, view: Id) {
     unsafe {
         let _: () = msg_send![stack, addArrangedSubview: view];
     }
 }
 
 /// Remove all views from NSStackView
-pub fn stack_view_clear(stack: Id) {
+/// # Safety
+/// `stack` must be a valid `NSStackView` instance.
+pub unsafe fn stack_view_clear(stack: Id) {
     unsafe {
         let arranged: Id = msg_send![stack, arrangedSubviews];
         let count: usize = msg_send![arranged, count];

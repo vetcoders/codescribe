@@ -8,7 +8,6 @@
 //! Created by M&K (c)2026 VetCoders
 
 // This entire module is a public API for library consumers
-#![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};

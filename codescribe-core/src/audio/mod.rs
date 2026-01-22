@@ -15,7 +15,6 @@ pub mod streaming_recorder;
 
 // Re-export main types at module level
 pub use loader::load_audio_file;
-#[allow(unused_imports)] // Used by E2E tests
 pub use loader::resample_to_16k;
 pub use playback::play_sound;
 // pub use recorder::Recorder; // Internal use only now

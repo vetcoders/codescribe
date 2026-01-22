@@ -3,7 +3,6 @@
 // Purpose: Provides clipboard operations and paste simulation for macOS
 //
 // Note: Some functions are not yet wired up to main.rs (pending integration)
-#![allow(dead_code)]
 //
 // Dependencies: arboard (clipboard access), core-graphics (keyboard simulation)
 //

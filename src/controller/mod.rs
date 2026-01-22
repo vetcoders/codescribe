@@ -42,8 +42,8 @@ use crate::tray::{TrayStatus, update_tray_status};
 use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
 use helpers::{
-    cloud_credentials_available, cloud_stt_enabled, raw_save_enabled, route_transcription_delta,
-    setup_voice_chat_send_callback,
+    cloud_credentials_available, cloud_stt_enabled, env_bool, raw_save_enabled,
+    route_transcription_delta, setup_voice_chat_send_callback,
 };
 use types::ValidatedAudioPath;
 
@@ -335,6 +335,8 @@ impl RecordingController {
         let delay_ms = config.hold_start_delay_ms;
         let beep = config.beep_on_start;
         let language = config.whisper_language;
+        let silence_db = config.silence_db;
+        let silence_hang_sec = config.silence_hang_sec;
         drop(config); // Release read lock
 
         // Capture assistive mode for badge display
@@ -348,10 +350,14 @@ impl RecordingController {
         // Cancel any existing delayed start
         self.cancel_pending_hold_start().await;
 
+        // Reset VAD flag for new session
+        self.vad_triggered.store(false, Ordering::SeqCst);
+
         let state = Arc::clone(&self.state);
         let session_id = Arc::clone(&self.session_id);
         let recorder = Arc::clone(&self.recorder);
         let delay = Duration::from_millis(delay_ms);
+        let vad_flag = Arc::clone(&self.vad_triggered);
 
         let task = tokio::spawn(async move {
             // Wait for the configured delay
@@ -372,6 +378,12 @@ impl RecordingController {
 
             // Start the recorder
             let mut rec = recorder.lock().await;
+            rec.recorder.config.silence_db = silence_db;
+            rec.recorder.config.hang_sec = silence_hang_sec;
+            rec.recorder.set_on_vad_stop(move || {
+                info!("VAD callback: setting vad_triggered flag");
+                vad_flag.store(true, Ordering::SeqCst);
+            });
             if let Err(e) = rec.start(Some(language.as_str().to_string())).await {
                 error!("Failed to start recorder: {}", e);
                 return;
@@ -450,7 +462,11 @@ impl RecordingController {
 
         info!("Starting toggle recording (session={})", new_session_id);
 
-        let language = self.config.read().await.whisper_language;
+        let config = self.config.read().await;
+        let language = config.whisper_language;
+        let silence_db = config.silence_db;
+        let silence_hang_sec = config.silence_hang_sec;
+        drop(config);
 
         // Reset VAD flag and set callback
         self.vad_triggered.store(false, Ordering::SeqCst);
@@ -458,8 +474,8 @@ impl RecordingController {
 
         // Start the recorder with VAD callback
         let mut recorder = self.recorder.lock().await;
-        // Configure hands-off timeout (5s) for toggle mode
-        recorder.recorder.config.hang_sec = 5.0;
+        recorder.recorder.config.silence_db = silence_db;
+        recorder.recorder.config.hang_sec = silence_hang_sec;
 
         recorder.recorder.set_on_vad_stop(move || {
             info!("VAD callback: setting vad_triggered flag");

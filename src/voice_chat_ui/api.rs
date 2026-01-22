@@ -370,12 +370,16 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, force_rebu
     {
         // Just update the last bubble's text
         let text_label = *text_label_ptr as Id;
-        update_bubble_text(text_label, &last_msg.text, true);
+        unsafe {
+            update_bubble_text(text_label, &last_msg.text, true);
+        }
         return;
     }
 
     // Full rebuild: clear existing bubbles
-    stack_view_clear(container);
+    unsafe {
+        stack_view_clear(container);
+    }
     state.bubble_views.clear();
 
     // Get max width for bubbles (left panel width - padding)
@@ -415,7 +419,9 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, force_rebu
         };
 
         let (bubble_view, text_label) = create_bubble_view(config);
-        stack_view_add(container, bubble_view);
+        unsafe {
+            stack_view_add(container, bubble_view);
+        }
         state
             .bubble_views
             .push((bubble_view as usize, text_label as usize));
@@ -478,7 +484,9 @@ pub fn populate_drafts_list(state: &mut VoiceChatOverlayState) {
     let container = container_ptr as Id;
 
     // Clear existing items
-    stack_view_clear(container);
+    unsafe {
+        stack_view_clear(container);
+    }
     state.draft_files.clear();
     state.selected_draft_index = None;
 
@@ -498,7 +506,9 @@ pub fn populate_drafts_list(state: &mut VoiceChatOverlayState) {
 
         // Create a simple label for the draft
         let row = create_draft_row(filename, index);
-        stack_view_add(container, row);
+        unsafe {
+            stack_view_add(container, row);
+        }
     }
 
     // Select first draft if available

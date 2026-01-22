@@ -153,6 +153,16 @@ impl Config {
         if let Ok(val) = std::env::var("AUDIO_INPUT_DEVICE") {
             self.audio_input_device = (!val.trim().is_empty()).then_some(val);
         }
+        if let Ok(val) = std::env::var("SILENCE_DB")
+            && let Ok(db) = val.parse()
+        {
+            self.silence_db = db;
+        }
+        if let Ok(val) = std::env::var("SILENCE_HANG_SEC")
+            && let Ok(sec) = val.parse()
+        {
+            self.silence_hang_sec = sec;
+        }
 
         // History (always on to avoid data loss)
         if let Ok(val) = std::env::var("HISTORY_ENABLED") {

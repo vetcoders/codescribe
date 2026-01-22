@@ -5,8 +5,6 @@
 //!
 //! NOTE: Currently unused - will be connected to Tauri Settings panel.
 
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tracing::{error, info};

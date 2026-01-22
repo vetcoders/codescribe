@@ -11,12 +11,10 @@ pub mod conversation;
 pub mod history;
 
 // Re-export main types (public API for GUI apps)
-#[allow(unused_imports)] // Public API for external consumers
 pub use conversation::{
     AiMode, get_previous_response_id_for_mode, has_active_conversation, reset_conversation,
     reset_conversation_for_mode, set_response_id_for_mode,
 };
-#[allow(unused_imports)] // Public API for external consumers
 pub use history::{
     HistoryEntry,
     TranscriptKind,

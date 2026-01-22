@@ -26,11 +26,9 @@ pub use types::{
     AiProvider, Config, HoldMods, OverlayPositionMode, ToggleTrigger, TranscriptSendMode,
 };
 // Language re-exported for external consumers (GUI apps)
-#[allow(unused_imports)]
 pub use types::Language;
 
 // Re-export prompts API (public API for GUI apps)
-#[allow(unused_imports)] // Public API for external consumers
 pub use prompts::{
     DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, get_assistive_prompt,
     get_assistive_prompt_path, get_formatting_prompt, get_formatting_prompt_path, open_prompt_file,

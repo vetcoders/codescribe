@@ -12,9 +12,7 @@
 //! Design: macOS Tahoe-style with NSVisualEffectView (HudWindow material)
 
 // Allow unexpected cfgs from objc crate's msg_send! macro
-#![allow(unexpected_cfgs)]
 // Allow unused API methods - they're part of the public interface for future use
-#![allow(dead_code)]
 
 use codescribe_core::config::{Config, OverlayPositionMode};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -44,9 +42,9 @@ type Id = *mut Object;
 // Window level constants
 const NS_FLOATING_WINDOW_LEVEL: i64 = 3;
 const NS_PROGRESS_INDICATOR_STYLE_SPINNING: i64 = 1;
-const NSTrackingMouseEnteredAndExited: u64 = 1 << 0;
-const NSTrackingActiveAlways: u64 = 1 << 7;
-const NSTrackingInVisibleRect: u64 = 1 << 9;
+const NSTRACKING_MOUSE_ENTERED_AND_EXITED: u64 = 1 << 0;
+const NSTRACKING_ACTIVE_ALWAYS: u64 = 1 << 7;
+const NSTRACKING_IN_VISIBLE_RECT: u64 = 1 << 9;
 
 // Auto-hide delay after recording completes
 const AUTO_HIDE_DELAY_SECS: u64 = 10;
@@ -186,35 +184,51 @@ extern "C" fn on_mouse_exited(_this: &Object, _cmd: Sel, _sender: Id) {
 
 fn set_action_buttons_visible(state: &TranscriptionOverlayState, visible: bool) {
     if let Some(copy_ptr) = state.copy_button {
-        set_hidden(copy_ptr as Id, !visible);
+        unsafe {
+            set_hidden(copy_ptr as Id, !visible);
+        }
     }
     if let Some(augment_ptr) = state.augment_button {
-        set_hidden(augment_ptr as Id, !visible);
+        unsafe {
+            set_hidden(augment_ptr as Id, !visible);
+        }
     }
     if let Some(archive_ptr) = state.archive_button {
-        set_hidden(archive_ptr as Id, !visible);
+        unsafe {
+            set_hidden(archive_ptr as Id, !visible);
+        }
     }
 }
 
 fn set_buttons_enabled(state: &TranscriptionOverlayState, enabled: bool) {
     if let Some(copy_ptr) = state.copy_button {
-        crate::ui_helpers::set_enabled(copy_ptr as Id, enabled);
+        unsafe {
+            crate::ui_helpers::set_enabled(copy_ptr as Id, enabled);
+        }
     }
     if let Some(augment_ptr) = state.augment_button {
-        crate::ui_helpers::set_enabled(augment_ptr as Id, enabled);
+        unsafe {
+            crate::ui_helpers::set_enabled(augment_ptr as Id, enabled);
+        }
     }
     if let Some(archive_ptr) = state.archive_button {
-        crate::ui_helpers::set_enabled(archive_ptr as Id, enabled);
+        unsafe {
+            crate::ui_helpers::set_enabled(archive_ptr as Id, enabled);
+        }
     }
 }
 
 fn set_status_message(state: &TranscriptionOverlayState, msg: &str, show: bool) {
     if let Some(status_ptr) = state.status_field {
-        set_text(status_ptr as Id, msg);
-        set_hidden(status_ptr as Id, !show);
+        unsafe {
+            set_text(status_ptr as Id, msg);
+            set_hidden(status_ptr as Id, !show);
+        }
     }
     if let Some(spinner_ptr) = state.progress_indicator {
-        set_hidden(spinner_ptr as Id, !show);
+        unsafe {
+            set_hidden(spinner_ptr as Id, !show);
+        }
         if show {
             unsafe {
                 let _: () =
@@ -239,15 +253,10 @@ fn run_ai_copy(text: String, augment: bool) {
         set_status_message(&state, label, true);
         set_buttons_enabled(&state, false);
     }
-    let lang = Config::load().whisper_language.to_string();
+    let lang = Config::load().whisper_language.as_str();
     tokio::spawn(async move {
-        let result = crate::ai_formatting::format_text_with_status(
-            &text,
-            Some(lang.as_str()),
-            augment,
-            None,
-        )
-        .await;
+        let result =
+            crate::ai_formatting::format_text_with_status(&text, Some(lang), augment, None).await;
 
         Queue::main().exec_async(move || {
             let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -562,8 +571,9 @@ fn show_transcription_overlay_impl() {
         let action_handler: Id = msg_send![action_handler, init];
 
         // Track hover on the overlay (show actions only on hover in decision mode)
-        let tracking_opts =
-            NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect;
+        let tracking_opts = NSTRACKING_MOUSE_ENTERED_AND_EXITED
+            | NSTRACKING_ACTIVE_ALWAYS
+            | NSTRACKING_IN_VISIBLE_RECT;
         let tracking_area: Id = msg_send![ns_tracking_area, alloc];
         let tracking_area: Id = msg_send![
             tracking_area,
@@ -660,7 +670,9 @@ pub fn update_transcription_status(status: &str) {
 fn update_transcription_status_impl(status: &str) {
     let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(status_field_ptr) = state.status_field {
-        set_text(status_field_ptr as Id, status);
+        unsafe {
+            set_text(status_field_ptr as Id, status);
+        }
     }
 }
 
@@ -677,7 +689,9 @@ fn append_transcription_delta_impl(delta: &str) {
     state.accumulated_text.push_str(delta);
 
     if let Some(text_field_ptr) = state.text_field {
-        set_text(text_field_ptr as Id, &state.accumulated_text);
+        unsafe {
+            set_text(text_field_ptr as Id, &state.accumulated_text);
+        }
     }
 }
 
@@ -694,7 +708,9 @@ fn set_transcription_text_impl(text: &str) {
     state.accumulated_text = text.to_string();
 
     if let Some(text_field_ptr) = state.text_field {
-        set_text(text_field_ptr as Id, text);
+        unsafe {
+            set_text(text_field_ptr as Id, text);
+        }
     }
 }
 
@@ -716,22 +732,34 @@ fn clear_transcription_text_impl() {
     state.accumulated_text.clear();
 
     if let Some(text_field_ptr) = state.text_field {
-        set_text(text_field_ptr as Id, "");
+        unsafe {
+            set_text(text_field_ptr as Id, "");
+        }
     }
     if let Some(copy_ptr) = state.copy_button {
-        set_hidden(copy_ptr as Id, true);
+        unsafe {
+            set_hidden(copy_ptr as Id, true);
+        }
     }
     if let Some(augment_ptr) = state.augment_button {
-        set_hidden(augment_ptr as Id, true);
+        unsafe {
+            set_hidden(augment_ptr as Id, true);
+        }
     }
     if let Some(archive_ptr) = state.archive_button {
-        set_hidden(archive_ptr as Id, true);
+        unsafe {
+            set_hidden(archive_ptr as Id, true);
+        }
     }
     if let Some(status_ptr) = state.status_field {
-        set_hidden(status_ptr as Id, true);
+        unsafe {
+            set_hidden(status_ptr as Id, true);
+        }
     }
     if let Some(spinner_ptr) = state.progress_indicator {
-        set_hidden(spinner_ptr as Id, true);
+        unsafe {
+            set_hidden(spinner_ptr as Id, true);
+        }
     }
     state.decision_mode = false;
     state.hover_active = false;
@@ -797,7 +825,9 @@ pub fn hide_transcription_overlay() {
 
 /// Closes a window by raw pointer (used for delayed close after animation)
 fn close_window_by_ptr(window_ptr: usize) {
-    window_close(window_ptr as Id);
+    unsafe {
+        window_close(window_ptr as Id);
+    }
 }
 
 fn hide_transcription_overlay_impl() {
@@ -806,7 +836,9 @@ fn hide_transcription_overlay_impl() {
         let window = window_ptr as Id;
 
         // Fade out animation (0.15s)
-        animate_fade(window, 0.0, 0.15);
+        unsafe {
+            animate_fade(window, 0.0, 0.15);
+        }
 
         // Close window after brief delay for animation
         std::thread::spawn(move || {

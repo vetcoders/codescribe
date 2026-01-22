@@ -5,9 +5,6 @@
 //! - Tracking text caret position via Accessibility API
 //! - Falling back to cursor position when caret is unavailable
 
-// Allow Apple-style constant naming (kAX* prefixes) for Accessibility API
-#![allow(non_upper_case_globals)]
-
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -40,17 +37,17 @@ unsafe extern "C" {
 }
 
 // AX constants
-const kAXErrorSuccess: i32 = 0;
-const kAXFocusedUIElementAttribute: &str = "AXFocusedUIElement";
-const kAXRoleAttribute: &str = "AXRole";
-const kAXSelectedTextRangeAttribute: &str = "AXSelectedTextRange";
-const kAXPositionAttribute: &str = "AXPosition";
-const kAXSizeAttribute: &str = "AXSize";
+const AX_ERROR_SUCCESS: i32 = 0;
+const AX_FOCUSED_UIELEMENT_ATTRIBUTE: &str = "AXFocusedUIElement";
+const AX_ROLE_ATTRIBUTE: &str = "AXRole";
+const AX_SELECTED_TEXT_RANGE_ATTRIBUTE: &str = "AXSelectedTextRange";
+const AX_POSITION_ATTRIBUTE: &str = "AXPosition";
+const AX_SIZE_ATTRIBUTE: &str = "AXSize";
 
 // AXValue types
-const kAXValueCGPointType: i32 = 1;
-const kAXValueCGSizeType: i32 = 2;
-const kAXValueCFRangeType: i32 = 3;
+const AX_VALUE_CGPOINT_TYPE: i32 = 1;
+const AX_VALUE_CGSIZE_TYPE: i32 = 2;
+const AX_VALUE_CFRANGE_TYPE: i32 = 3;
 
 // Window level constants
 const NS_STATUS_WINDOW_LEVEL: i64 = 25;
@@ -162,7 +159,7 @@ pub fn focused_element_accepts_text() -> bool {
         }
 
         let mut focused_element: AXId = ptr::null_mut();
-        let attr_name = CFString::new(kAXFocusedUIElementAttribute);
+        let attr_name = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
         let result = AXUIElementCopyAttributeValue(
             system_wide,
             attr_name.as_concrete_TypeRef() as AXId,
@@ -171,13 +168,13 @@ pub fn focused_element_accepts_text() -> bool {
 
         CFRelease(system_wide);
 
-        if result != kAXErrorSuccess || focused_element.is_null() {
+        if result != AX_ERROR_SUCCESS || focused_element.is_null() {
             return false;
         }
 
         // Get role attribute
         let mut role_value: AXId = ptr::null_mut();
-        let role_attr = CFString::new(kAXRoleAttribute);
+        let role_attr = CFString::new(AX_ROLE_ATTRIBUTE);
         let role_result = AXUIElementCopyAttributeValue(
             focused_element,
             role_attr.as_concrete_TypeRef() as AXId,
@@ -186,7 +183,7 @@ pub fn focused_element_accepts_text() -> bool {
 
         CFRelease(focused_element);
 
-        if role_result != kAXErrorSuccess || role_value.is_null() {
+        if role_result != AX_ERROR_SUCCESS || role_value.is_null() {
             return false;
         }
 
@@ -212,7 +209,7 @@ pub fn get_caret_position() -> Option<(f64, f64)> {
         }
 
         let mut focused_element: AXId = ptr::null_mut();
-        let attr_name = CFString::new(kAXFocusedUIElementAttribute);
+        let attr_name = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
         let result = AXUIElementCopyAttributeValue(
             system_wide,
             attr_name.as_concrete_TypeRef() as AXId,
@@ -221,20 +218,20 @@ pub fn get_caret_position() -> Option<(f64, f64)> {
 
         CFRelease(system_wide);
 
-        if result != kAXErrorSuccess || focused_element.is_null() {
+        if result != AX_ERROR_SUCCESS || focused_element.is_null() {
             return None;
         }
 
         // Get selected text range
         let mut range_value: AXId = ptr::null_mut();
-        let range_attr = CFString::new(kAXSelectedTextRangeAttribute);
+        let range_attr = CFString::new(AX_SELECTED_TEXT_RANGE_ATTRIBUTE);
         let range_result = AXUIElementCopyAttributeValue(
             focused_element,
             range_attr.as_concrete_TypeRef() as AXId,
             &mut range_value,
         );
 
-        if range_result != kAXErrorSuccess || range_value.is_null() {
+        if range_result != AX_ERROR_SUCCESS || range_value.is_null() {
             CFRelease(focused_element);
             return None;
         }
@@ -253,7 +250,7 @@ pub fn get_caret_position() -> Option<(f64, f64)> {
 
         let range_ok = AXValueGetValue(
             range_value,
-            kAXValueCFRangeType,
+            AX_VALUE_CFRANGE_TYPE,
             &mut cf_range as *mut _ as *mut std::ffi::c_void,
         );
 
@@ -266,7 +263,7 @@ pub fn get_caret_position() -> Option<(f64, f64)> {
 
         // Try to get position and size of the focused element
         let mut position_value: AXId = ptr::null_mut();
-        let position_attr = CFString::new(kAXPositionAttribute);
+        let position_attr = CFString::new(AX_POSITION_ATTRIBUTE);
         let position_result = AXUIElementCopyAttributeValue(
             focused_element,
             position_attr.as_concrete_TypeRef() as AXId,
@@ -274,7 +271,7 @@ pub fn get_caret_position() -> Option<(f64, f64)> {
         );
 
         let mut size_value: AXId = ptr::null_mut();
-        let size_attr = CFString::new(kAXSizeAttribute);
+        let size_attr = CFString::new(AX_SIZE_ATTRIBUTE);
         let size_result = AXUIElementCopyAttributeValue(
             focused_element,
             size_attr.as_concrete_TypeRef() as AXId,
@@ -283,9 +280,9 @@ pub fn get_caret_position() -> Option<(f64, f64)> {
 
         CFRelease(focused_element);
 
-        if position_result != kAXErrorSuccess
+        if position_result != AX_ERROR_SUCCESS
             || position_value.is_null()
-            || size_result != kAXErrorSuccess
+            || size_result != AX_ERROR_SUCCESS
             || size_value.is_null()
         {
             if !position_value.is_null() {
@@ -301,7 +298,7 @@ pub fn get_caret_position() -> Option<(f64, f64)> {
         let mut position = CGPoint { x: 0.0, y: 0.0 };
         let position_ok = AXValueGetValue(
             position_value,
-            kAXValueCGPointType,
+            AX_VALUE_CGPOINT_TYPE,
             &mut position as *mut _ as *mut std::ffi::c_void,
         );
 
@@ -314,7 +311,7 @@ pub fn get_caret_position() -> Option<(f64, f64)> {
         };
         let size_ok = AXValueGetValue(
             size_value,
-            kAXValueCGSizeType,
+            AX_VALUE_CGSIZE_TYPE,
             &mut size as *mut _ as *mut std::ffi::c_void,
         );
 
@@ -395,7 +392,9 @@ unsafe fn create_badge_window(config: &HoldBadgeConfig) -> Id {
     // Create badge view (circular red indicator)
     // SAFETY: create_badge_view is unsafe, called from unsafe fn
     let badge_view = unsafe { create_badge_view(config) };
-    add_subview(content_view, badge_view);
+    unsafe {
+        add_subview(content_view, badge_view);
+    }
 
     // Force the view to display
     let _: () = msg_send![badge_view, setNeedsDisplay: true];
@@ -615,7 +614,9 @@ pub fn hide_hold_badge() {
     Queue::main().exec_async(|| {
         let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(window_ptr) = state.window {
-            window_close(window_ptr as Id);
+            unsafe {
+                window_close(window_ptr as Id);
+            }
             state.window = None;
         }
     });

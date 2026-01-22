@@ -11,9 +11,7 @@
 //! - `api` - Public API functions and internal helpers
 
 // Allow unexpected cfgs from objc crate's msg_send! macro
-#![allow(unexpected_cfgs)]
 // Allow unused API methods - they're part of the public interface for future use
-#![allow(dead_code)]
 
 mod api;
 mod handlers;

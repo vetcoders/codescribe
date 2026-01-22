@@ -29,14 +29,11 @@ mod params;
 pub mod singleton;
 
 // Public API exports
-#[allow(unused_imports)]
 pub use engine::LocalWhisperEngine; // Kept for advanced usage if needed
 pub use engine::append_with_overlap_dedup;
-#[allow(unused_imports)]
 pub use params::DecodingParams; // Kept for params config if needed
 
 // Re-export singleton functions at module level (main API)
-#[allow(unused_imports)] // Public API for external consumers
 pub use singleton::{
     detect_language, get_model_path, init, transcribe, transcribe_file, transcribe_streaming,
 };

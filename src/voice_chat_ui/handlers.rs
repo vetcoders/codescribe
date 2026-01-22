@@ -425,26 +425,3 @@ pub fn copy_to_clipboard(text: &str) {
         let _: () = msg_send![pasteboard, setString: ns_str forType: type_str];
     }
 }
-
-/// Render chat messages as plain text (legacy helper)
-pub fn render_chat_log(messages: &[super::state::ChatMessage]) -> String {
-    let mut output = String::new();
-    // Reverse order: Newest messages first (at the top)
-    for message in messages.iter().rev() {
-        let prefix = match message.role {
-            ChatRole::User => "Ty",
-            ChatRole::Assistant => "Asystent",
-            ChatRole::System => "System",
-        };
-        let status_suffix = if message.is_streaming { " …" } else { "" };
-        let error_prefix = if message.is_error { "Błąd: " } else { "" };
-
-        output.push_str(prefix);
-        output.push_str(": ");
-        output.push_str(error_prefix);
-        output.push_str(&message.text);
-        output.push_str(status_suffix);
-        output.push_str("\n\n---\n\n");
-    }
-    output
-}
