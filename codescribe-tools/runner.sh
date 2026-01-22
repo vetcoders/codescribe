@@ -208,10 +208,11 @@ echo "== Step 4/4: agent $AGENT -> $REPORT =="
 run_claude() {
   command_exists claude || { echo "[FATAL] claude not found in PATH"; exit 2; }
 
-  # strict-mcp-config requires explicit mcp.json
-  mkdir -p "$ROOT/.claude"
-  if [ ! -f "$ROOT/.claude/mcp.json" ]; then
-    cat > "$ROOT/.claude/mcp.json" <<'JSON'
+  # strict-mcp-config requires explicit mcp.json (store per-repo under .codescribe)
+  local mcp_config="$CODESCRIBE_DIR/config/mcp.json"
+  mkdir -p "$CODESCRIBE_DIR/config"
+  if [ ! -f "$mcp_config" ]; then
+    cat > "$mcp_config" <<'JSON'
 {
   "mcpServers": {}
 }
@@ -220,7 +221,7 @@ JSON
 
   claude -p \
     --no-session-persistence \
-    --mcp-config "$ROOT/.claude/mcp.json" \
+    --mcp-config "$mcp_config" \
     --strict-mcp-config \
     --tools "" \
     --output-format text \

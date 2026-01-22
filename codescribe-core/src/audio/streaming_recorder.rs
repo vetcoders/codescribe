@@ -322,9 +322,7 @@ fn env_f32(key: &str, default: f32) -> f32 {
 }
 
 fn stream_chunk_duration_sec() -> f32 {
-    env_f32("CODESCRIBE_STREAM_CHUNK_SEC", DEFAULT_CHUNK_DURATION_SEC)
-        .max(0.5)
-        .min(30.0)
+    env_f32("CODESCRIBE_STREAM_CHUNK_SEC", DEFAULT_CHUNK_DURATION_SEC).clamp(0.5, 30.0)
 }
 
 fn stream_overlap_sec(chunk_duration_sec: f32) -> f32 {
