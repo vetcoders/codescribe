@@ -52,29 +52,13 @@ tao = "0.34"   # Event loop for tray (required on macOS)
 # Now using CGEventTap via core-graphics for proper modifier-only detection
 
 # Audio recording
-cpal = "0.17"
-hound = "3.5"
-
-# Audio decoding
-symphonia = { version = "0.5", features = ["all", "mp3", "pcm", "isomp4", "alac"] }
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "multipart", "blocking", "stream"] }
 
-# Local STT
-candle-core = { version = "0.9", features = ["metal"] }
-candle-transformers = { version = "0.9", features = ["metal"] }
-candle-nn = "0.9"
-tokenizers = "0.22"
-indicatif = "0.18"
-zip = "0.6"
-ndarray = "0.16"
-ndarray-npy = "0.9"
-
 # WebSocket client for voice chat
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 futures-util = "0.3"
-base64 = "0.22"
 
 # Clipboard
 arboard = "3"
@@ -85,13 +69,9 @@ arboard = "3"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-regex = "1"
-fastembed = { version = "5.8.1", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries"] }
 
 # Config/paths
 directories = "6"
-shellexpand = "3"
-dotenvy = "0.15"
 
 # Logging
 tracing = "0.1"
@@ -99,10 +79,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow = "1"
-thiserror = "2"
-
-# OpenAI Harmony format for /v1/responses API
-openai-harmony = "0.0.8"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -115,18 +91,13 @@ chrono = "0.4"
 
 # UUID generation
 uuid = { version = "1", features = ["v4"] }
-rand = "0.8"
-flate2 = "1.0"
 
 # Lazy static for global state
 lazy_static = "1.4"
-deunicode = "1.6"
 libc = "0.2"
 
 # Image processing (for tray icon)
 image = { version = "0.25", default-features = false, features = ["png"] }
-walkdir = "2.5.0"
-cap-std = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # candle-coreml = "0.3"
@@ -145,9 +116,6 @@ dispatch = "0.2"
 tempfile = "3"
 mockito = "1"
 serial_test = "3"
-
-[build-dependencies]
-dirs = "6"
 
 [lints.rust]
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
