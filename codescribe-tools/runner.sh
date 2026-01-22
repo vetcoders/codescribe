@@ -14,6 +14,7 @@ CODESCRIBE_DIR="$ROOT/.codescribe"
 mkdir -p "$CODESCRIBE_DIR"/{tools,config,context,agent,logs,tasks,reports,roadmaps,state}
 
 PROJECT="${PROJECT:-$(basename "$ROOT")}"
+AGENT="${AGENT:-claude}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 MODEL="${MODEL:-sonnet}"
 MAX_LINES="${MAX_LINES:-1200}"
@@ -119,6 +120,7 @@ EOF_META
 echo "== codescribe runner =="
 echo "root:    $ROOT"
 echo "project: $PROJECT"
+echo "agent:   $AGENT"
 echo "run_id:  $RUN_ID"
 echo "model:   $MODEL"
 echo "log:     $LOG"
@@ -127,6 +129,11 @@ echo
 
 if ! command_exists loct; then
   echo "[FATAL] loct not found in PATH"
+  exit 2
+fi
+
+if [ "$AGENT" != "claude" ] && [ "$AGENT" != "codex" ]; then
+  echo "[FATAL] AGENT must be: claude|codex"
   exit 2
 fi
 
@@ -194,23 +201,53 @@ if [ "$PROMPT_BYTES" -gt 180000 ]; then
 fi
 
 echo
-echo "== Step 4/4: claude (clean/strict/no-session/no-tools) -> $REPORT =="
-if ! command_exists claude; then
-  echo "[FATAL] claude not found in PATH"
-  exit 2
-fi
+echo "== Step 4/4: agent $AGENT -> $REPORT =="
 
 : > "$REPORT"
 
-claude -p \
-  --no-session-persistence \
-  --mcp-config "$ROOT/.claude/mcp.json" \
-  --strict-mcp-config \
-  --tools "" \
-  --output-format text \
-  --model "$MODEL" \
-  "$(cat "$PROMPT_FILE")" \
-| tee -a "$REPORT"
+run_claude() {
+  command_exists claude || { echo "[FATAL] claude not found in PATH"; exit 2; }
+
+  # strict-mcp-config requires explicit mcp.json
+  mkdir -p "$ROOT/.claude"
+  if [ ! -f "$ROOT/.claude/mcp.json" ]; then
+    cat > "$ROOT/.claude/mcp.json" <<'JSON'
+{
+  "mcpServers": {}
+}
+JSON
+  fi
+
+  claude -p \
+    --no-session-persistence \
+    --mcp-config "$ROOT/.claude/mcp.json" \
+    --strict-mcp-config \
+    --tools "" \
+    --output-format text \
+    --model "$MODEL" \
+    "$(cat "$PROMPT_FILE")" \
+  | tee -a "$REPORT"
+}
+
+run_codex() {
+  command_exists codex || { echo "[FATAL] codex not found in PATH"; exit 2; }
+
+  codex exec \
+    -m "$MODEL" \
+    --sandbox read-only \
+    -C "$ROOT" \
+    --output-last-message "$REPORT" \
+    - < "$PROMPT_FILE" || true
+
+  if [ ! -s "$REPORT" ]; then
+    echo "[WARN] codex did not write report (see log: $LOG)" | tee -a "$REPORT"
+  fi
+}
+
+case "$AGENT" in
+  claude) run_claude ;;
+  codex)  run_codex ;;
+esac
 
 echo
 echo "== DONE =="
