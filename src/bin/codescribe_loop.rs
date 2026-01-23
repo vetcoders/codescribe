@@ -247,14 +247,7 @@ async fn run_daemon(args: Args) -> Result<()> {
         );
 
         // Run with today's date filter, comparing local vs cloud
-        let check_args = Args {
-            date: Some(date_filter),
-            skip_cloud: false,
-            skip_formatting: true, // Skip AI formatting in daemon mode for speed
-            limit: 0,              // No limit
-            apply: false,          // Don't apply updates automatically
-            ..args.clone()
-        };
+        let check_args = build_daemon_check_args(&args, date_filter);
 
         match run_single(&check_args).await {
             Ok(()) => {
@@ -447,5 +440,122 @@ fn resolve_report_path(path: &Path) -> PathBuf {
         path.join("report.json")
     } else {
         path.to_path_buf()
+    }
+}
+
+/// Build daemon check_args from parent args (extracted for testability)
+fn build_daemon_check_args(args: &Args, date_filter: String) -> Args {
+    Args {
+        date: Some(date_filter),
+        skip_cloud: false,
+        skip_formatting: true,
+        limit: 0,
+        apply: args.apply,
+        ..args.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_args() -> Args {
+        Args {
+            input: None,
+            out: None,
+            date: None,
+            limit: 3,
+            language: None,
+            skip_cloud: false,
+            cloud_concurrency: 0,
+            skip_formatting: false,
+            debug: false,
+            copy_audio: false,
+            no_embeddings: false,
+            baseline: None,
+            history: None,
+            apply: false,
+            regression_threshold: 0.02,
+            lexicon_max: 50,
+            lexicon_min_count: 2,
+            no_lexicon: false,
+            no_gate: false,
+            no_prompt: false,
+            no_embeddings_tuning: false,
+            metrics_reference: ReferenceSourceArg::Corpus,
+            lexicon_source: ReferenceSourceArg::Corpus,
+            daemon: false,
+            daemon_interval: 3600,
+            mismatch_threshold: 20,
+        }
+    }
+
+    #[test]
+    fn test_daemon_check_args_propagates_apply_true() {
+        let mut args = default_args();
+        args.apply = true;
+        args.daemon = true;
+
+        let check_args = build_daemon_check_args(&args, "2026-01-23".to_string());
+
+        assert!(
+            check_args.apply,
+            "check_args.apply must be true when parent args.apply=true"
+        );
+    }
+
+    #[test]
+    fn test_daemon_check_args_propagates_apply_false() {
+        let mut args = default_args();
+        args.apply = false;
+        args.daemon = true;
+
+        let check_args = build_daemon_check_args(&args, "2026-01-23".to_string());
+
+        assert!(
+            !check_args.apply,
+            "check_args.apply must be false when parent args.apply=false"
+        );
+    }
+
+    #[test]
+    fn test_daemon_check_args_overrides_date_and_limit() {
+        let mut args = default_args();
+        args.date = Some("2026-01-01".to_string());
+        args.limit = 5;
+        args.skip_formatting = false;
+
+        let check_args = build_daemon_check_args(&args, "2026-01-23".to_string());
+
+        assert_eq!(
+            check_args.date,
+            Some("2026-01-23".to_string()),
+            "daemon should override date to today"
+        );
+        assert_eq!(check_args.limit, 0, "daemon should set limit=0 (no limit)");
+        assert!(
+            check_args.skip_formatting,
+            "daemon should skip formatting for speed"
+        );
+        assert!(
+            !check_args.skip_cloud,
+            "daemon should NOT skip cloud (needs reference)"
+        );
+    }
+
+    #[test]
+    fn test_daemon_check_args_preserves_lexicon_settings() {
+        let mut args = default_args();
+        args.lexicon_max = 100;
+        args.lexicon_min_count = 3;
+        args.no_lexicon = true;
+        args.apply = true;
+
+        let check_args = build_daemon_check_args(&args, "2026-01-23".to_string());
+
+        assert_eq!(check_args.lexicon_max, 100);
+        assert_eq!(check_args.lexicon_min_count, 3);
+        assert!(check_args.no_lexicon);
+        assert!(check_args.apply);
     }
 }

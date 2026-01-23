@@ -43,8 +43,8 @@ use crate::tray::{TrayStatus, update_tray_status};
 use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
 use helpers::{
-    cloud_credentials_available, cloud_stt_enabled, env_bool, raw_save_enabled,
-    route_transcription_delta, setup_voice_chat_send_callback,
+    cloud_credentials_available, cloud_stt_enabled, raw_save_enabled, route_transcription_delta,
+    setup_voice_chat_send_callback,
 };
 use types::ValidatedAudioPath;
 
@@ -588,8 +588,8 @@ impl RecordingController {
                 let _ = update_tray_status(TrayStatus::Success);
                 info!("Processing finished successfully. State reset to IDLE.");
 
-                // After recording finishes, enter decision mode (buttons + auto-hide)
-                crate::enter_decision_mode();
+                // After recording finishes, schedule overlay auto-hide
+                crate::schedule_auto_hide();
             }
             Err(e) => {
                 error!("Processing failed: {}", e);
@@ -650,8 +650,7 @@ impl RecordingController {
         let language_opt = Some(language.as_str());
         let use_local_stt = self.config.read().await.use_local_stt;
         let cloud_enabled = cloud_stt_enabled();
-        let manual_actions_only = !env_bool("CODESCRIBE_AUTO_PASTE");
-        let raw_save_enabled = manual_actions_only || raw_save_enabled();
+        let raw_save_enabled = raw_save_enabled();
 
         let mut raw_text_opt = None;
         let mut cloud_text_opt = None;
@@ -738,14 +737,6 @@ impl RecordingController {
         let has_repetition = crate::ai_formatting::has_repetition_loop(&clean_text);
         if has_repetition {
             warn!("Detected repetition loop in transcription - will clean up");
-        }
-
-        if manual_actions_only {
-            // Manual actions only: keep overlay visible and let user choose (Copy/Augment/Archive).
-            // Ensure overlay shows the final transcript (post-processed).
-            crate::set_transcription_text(&clean_text);
-            info!("Manual action mode: skipping auto-format/paste");
-            return Ok(());
         }
 
         let chat_active = crate::voice_chat_ui::is_voice_chat_overlay_visible();

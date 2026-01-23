@@ -517,10 +517,10 @@ pub fn populate_drafts_list(state: &mut VoiceChatOverlayState) {
     }
 
     // Select first draft if available
-    if let Some(path) = selected_path {
-        if let Some(index) = state.draft_files.iter().position(|draft| draft == &path) {
-            state.selected_draft_index = Some(index);
-        }
+    if let Some(path) = selected_path
+        && let Some(index) = state.draft_files.iter().position(|draft| draft == &path)
+    {
+        state.selected_draft_index = Some(index);
     }
     if state.selected_draft_index.is_none() && !state.draft_files.is_empty() {
         state.selected_draft_index = Some(0);

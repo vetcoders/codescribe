@@ -345,10 +345,10 @@ extern "C" fn on_draft_edit(_this: &Object, _cmd: Sel, _sender: Id) {
         }
 
         if let Some(scroll_ptr) = state.drafts_scroll_view {
-            set_hidden(scroll_ptr as Id, false);
+            unsafe { set_hidden(scroll_ptr as Id, false) };
         }
         if let Some(editor_scroll_ptr) = state.draft_editor_scroll_view {
-            set_hidden(editor_scroll_ptr as Id, true);
+            unsafe { set_hidden(editor_scroll_ptr as Id, true) };
         }
         if let Some(button_ptr) = state.draft_edit_button {
             let title = ns_string("Edit");
@@ -359,17 +359,17 @@ extern "C" fn on_draft_edit(_this: &Object, _cmd: Sel, _sender: Id) {
     }
 
     if let Some(index) = state.selected_draft_index {
-        if let Some(path) = state.draft_files.get(index) {
-            match std::fs::read_to_string(path) {
+        if let Some(path) = state.draft_files.get(index).cloned() {
+            match std::fs::read_to_string(&path) {
                 Ok(content) => {
                     if let Some(editor_view_ptr) = state.draft_editor_view {
                         unsafe { set_text_view_string(editor_view_ptr as Id, &content) };
                     }
                     if let Some(scroll_ptr) = state.drafts_scroll_view {
-                        set_hidden(scroll_ptr as Id, true);
+                        unsafe { set_hidden(scroll_ptr as Id, true) };
                     }
                     if let Some(editor_scroll_ptr) = state.draft_editor_scroll_view {
-                        set_hidden(editor_scroll_ptr as Id, false);
+                        unsafe { set_hidden(editor_scroll_ptr as Id, false) };
                     }
                     if let Some(button_ptr) = state.draft_edit_button {
                         let title = ns_string("Save");

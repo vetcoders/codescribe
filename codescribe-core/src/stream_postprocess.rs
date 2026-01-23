@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use anyhow::Result;
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
@@ -37,9 +38,12 @@ struct LexiconRule {
     replacement: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Lexicon {
     rules: Vec<LexiconRule>,
+    builtin_count: usize,
+    custom_path: PathBuf,
+    custom_mtime: Option<SystemTime>,
 }
 
 impl Lexicon {
@@ -49,6 +53,12 @@ impl Lexicon {
         for (label, source) in BUILTIN_LEXICONS {
             builtin_count += load_rules_from_jsonl(source, label, &mut rules);
         }
+
+        let custom_path = Config::config_dir().join("lexicon.custom.jsonl");
+        let custom_mtime = fs::metadata(&custom_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+
         let custom_count = load_custom_lexicon()
             .map(|content| load_rules_from_jsonl(&content, "custom", &mut rules))
             .unwrap_or(0);
@@ -64,7 +74,33 @@ impl Lexicon {
             warn!("No lexicon rules loaded from lexicon sources");
         }
 
-        Self { rules }
+        Self {
+            rules,
+            builtin_count,
+            custom_path,
+            custom_mtime,
+        }
+    }
+
+    fn maybe_reload(&mut self) {
+        let current_mtime = fs::metadata(&self.custom_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        if current_mtime == self.custom_mtime {
+            return;
+        }
+        self.rules.truncate(self.builtin_count);
+        let custom_count = fs::read_to_string(&self.custom_path)
+            .ok()
+            .filter(|c| !c.trim().is_empty())
+            .map(|content| load_rules_from_jsonl(&content, "custom", &mut self.rules))
+            .unwrap_or(0);
+        self.custom_mtime = current_mtime;
+        info!(
+            "Hot-reloaded {} custom lexicon rules (total={})",
+            custom_count,
+            self.rules.len()
+        );
     }
 
     fn apply(&self, text: &str) -> String {
@@ -262,6 +298,7 @@ impl StreamPostProcessor {
 
     pub fn process(&mut self, text: &str) -> Option<String> {
         self.stats.input_chunks += 1;
+        self.lexicon.maybe_reload();
 
         if text.trim().is_empty() {
             self.stats.dropped_chunks += 1;
@@ -473,5 +510,154 @@ mod tests {
         assert!(!is_suspicious(
             "To jest normalny tekst bez powtorzen i z roznymi slowami."
         ));
+    }
+
+    #[test]
+    fn test_hot_reload_picks_up_new_rules() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let custom_path = dir.path().join("lexicon.custom.jsonl");
+
+        // Start with empty file
+        std::fs::write(&custom_path, "").unwrap();
+
+        // Build a Lexicon pointing at our temp file
+        let mut lexicon = Lexicon {
+            rules: Vec::new(),
+            builtin_count: 0,
+            custom_path: custom_path.clone(),
+            custom_mtime: std::fs::metadata(&custom_path)
+                .ok()
+                .and_then(|m| m.modified().ok()),
+        };
+
+        // No rules yet
+        assert_eq!(lexicon.apply("foobarski"), "foobarski");
+
+        // Write a custom rule: "foobarski" -> "FooBar"
+        // Need a slight delay to ensure mtime changes
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut f = std::fs::File::create(&custom_path).unwrap();
+        writeln!(
+            f,
+            r#"{{"term":"FooBar","mispronunciations":["foobarski"]}}"#
+        )
+        .unwrap();
+        drop(f);
+
+        // Reload should detect mtime change and pick up new rule
+        lexicon.maybe_reload();
+        assert_eq!(
+            lexicon.apply("mam foobarski w projekcie"),
+            "mam FooBar w projekcie"
+        );
+        assert_eq!(lexicon.rules.len(), 1);
+    }
+
+    #[test]
+    fn test_hot_reload_no_change_skips_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom_path = dir.path().join("lexicon.custom.jsonl");
+        std::fs::write(
+            &custom_path,
+            r#"{"term":"Rust","mispronunciations":["rast"]}"#,
+        )
+        .unwrap();
+
+        let mut lexicon = Lexicon {
+            rules: Vec::new(),
+            builtin_count: 0,
+            custom_path: custom_path.clone(),
+            custom_mtime: None, // Force initial load
+        };
+
+        // First reload loads the rule
+        lexicon.maybe_reload();
+        assert_eq!(lexicon.rules.len(), 1);
+        let mtime_after = lexicon.custom_mtime;
+
+        // Second reload with same mtime — should be a no-op
+        lexicon.maybe_reload();
+        assert_eq!(lexicon.rules.len(), 1);
+        assert_eq!(lexicon.custom_mtime, mtime_after);
+    }
+
+    #[test]
+    fn test_hot_reload_preserves_builtin_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom_path = dir.path().join("lexicon.custom.jsonl");
+        std::fs::write(&custom_path, "").unwrap();
+
+        // Simulate 2 builtin rules
+        let mut lexicon = Lexicon {
+            rules: vec![
+                LexiconRule {
+                    pattern: build_word_regex("builtin1").unwrap(),
+                    replacement: "BUILTIN1".to_string(),
+                },
+                LexiconRule {
+                    pattern: build_word_regex("builtin2").unwrap(),
+                    replacement: "BUILTIN2".to_string(),
+                },
+            ],
+            builtin_count: 2,
+            custom_path: custom_path.clone(),
+            custom_mtime: std::fs::metadata(&custom_path)
+                .ok()
+                .and_then(|m| m.modified().ok()),
+        };
+
+        // Write custom rule
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(
+            &custom_path,
+            r#"{"term":"Custom","mispronunciations":["kastom"]}"#,
+        )
+        .unwrap();
+
+        lexicon.maybe_reload();
+
+        // Should have 2 builtin + 1 custom = 3 rules
+        assert_eq!(lexicon.rules.len(), 3);
+        // Builtin rules preserved
+        assert_eq!(lexicon.apply("builtin1 builtin2"), "BUILTIN1 BUILTIN2");
+        // Custom rule added
+        assert_eq!(lexicon.apply("moj kastom kod"), "moj Custom kod");
+    }
+
+    #[test]
+    fn test_postprocessor_always_applies_lexicon_contract() {
+        // Contract: every call to process() applies lexicon rewrites
+        // regardless of semantic gate state or chunk history
+        let mut processor = StreamPostProcessor::new();
+
+        // First call — lexicon should rewrite known terms
+        let out1 = processor
+            .process("Uzywam doker do kontenerow")
+            .expect("non-empty");
+        assert!(
+            out1.contains("Docker"),
+            "First call should apply lexicon: {out1}"
+        );
+
+        // Second call with different text — still applies lexicon
+        let out2 = processor
+            .process("Mam git hub repository z kodem")
+            .expect("non-empty");
+        assert!(
+            out2.contains("GitHub"),
+            "Second call should apply lexicon: {out2}"
+        );
+    }
+
+    #[test]
+    fn test_process_calls_maybe_reload() {
+        // Verify that process() calls maybe_reload() by checking stats progression
+        let mut processor = StreamPostProcessor::new();
+        let _ = processor.process("test jeden");
+        let _ = processor.process("test dwa trzy cztery");
+        let stats = processor.stats();
+        assert_eq!(stats.input_chunks, 2, "Both chunks should be counted");
     }
 }

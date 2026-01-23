@@ -625,6 +625,10 @@ fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
     ));
 
     body.push_str("<div class=\"toolbar\">");
+    body.push_str("<div class=\"mode-toggle\">");
+    body.push_str("<button id=\"modeDailyBtn\" type=\"button\" class=\"mode-btn\">Daily</button>");
+    body.push_str("<button id=\"modeFullBtn\" type=\"button\" class=\"mode-btn\">Full</button>");
+    body.push_str("</div>");
     body.push_str("<div class=\"controls\">");
     body.push_str("<div class=\"control-group\">");
     body.push_str("<button id=\"playPauseBtn\" type=\"button\">Play/Pause</button>");
@@ -768,6 +772,9 @@ fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
 <style>
 body {{ font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 24px; color: #111; }}
 h1 {{ margin-bottom: 8px; }}
+.mode-toggle {{ display: flex; gap: 4px; margin-bottom: 6px; }}
+.mode-btn {{ padding: 6px 16px; border: 1px solid #ccc; border-radius: 6px; cursor: pointer; background: #fff; font-weight: 500; }}
+.mode-btn.active {{ background: #111; color: #fff; border-color: #111; }}
 .toolbar {{ border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin: 16px 0; display: flex; flex-direction: column; gap: 10px; }}
 .controls {{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }}
 .control-group {{ display: flex; flex-wrap: wrap; gap: 6px; }}
@@ -796,8 +803,9 @@ audio {{ width: 100%; margin: 8px 0; }}
 <body>
 {body}
 <script>
-const DEBUG = {debug_flag};
+const INITIAL_DEBUG = {debug_flag};
 const MIN_LEN = 40;
+const MODE_STORAGE_KEY = 'codescribe:mode';
 const TAG_STORAGE_KEY = 'codescribe:tags';
 const DEFAULT_TAGS = ['NIEWYRAZNE', 'NIESLYSZALNE', 'BELKOT', 'PRZERWA', 'SZUM'];
 const TAG_COLORS = ['#e3f2fd', '#e8f5e9', '#fff8e1', '#fce4ec', '#ede7f6', '#f3e5f5', '#e0f7fa'];
@@ -807,6 +815,29 @@ let activeEntryId = null;
 let activeTextarea = null;
 let activeAudio = null;
 let currentTags = [];
+let currentMode = localStorage.getItem(MODE_STORAGE_KEY) || (INITIAL_DEBUG ? 'daily' : 'full');
+
+function setMode(mode) {{
+  currentMode = mode;
+  localStorage.setItem(MODE_STORAGE_KEY, mode);
+  document.getElementById('modeDailyBtn')?.classList.toggle('active', mode === 'daily');
+  document.getElementById('modeFullBtn')?.classList.toggle('active', mode === 'full');
+  document.querySelectorAll('.entry').forEach(entry => {{
+    const refs = entry.querySelectorAll('.ref');
+    const revealBtn = entry.querySelector('button.reveal');
+    if (mode === 'daily') {{
+      refs.forEach(r => r.classList.remove('hidden'));
+      if (revealBtn) revealBtn.style.display = 'none';
+    }} else {{
+      refs.forEach(r => r.classList.add('hidden'));
+      if (revealBtn) {{
+        revealBtn.style.display = '';
+        const entryId = revealBtn.dataset.entry;
+        updateReveal(entryId);
+      }}
+    }}
+  }});
+}}
 
 function entryElements() {{
   return Array.from(document.querySelectorAll('.entry'));
@@ -960,11 +991,13 @@ function updateReveal(entryId) {{
   const area = document.querySelector('textarea[data-entry=\"' + entryId + '\"]');
   const button = document.querySelector('button.reveal[data-entry=\"' + entryId + '\"]');
   if (!area || !button) return;
-  if (DEBUG) {{
+  if (currentMode === 'daily') {{
     button.disabled = false;
+    button.style.display = 'none';
     reveal(entryId);
     return;
   }}
+  button.style.display = '';
   button.disabled = area.value.trim().length < MIN_LEN;
 }}
 
@@ -977,7 +1010,7 @@ function reveal(entryId) {{
 }}
 
 function canReveal(entryId) {{
-  if (DEBUG) return true;
+  if (currentMode === 'daily') return true;
   const button = document.querySelector('button.reveal[data-entry=\"' + entryId + '\"]');
   return button && !button.disabled;
 }}
@@ -985,10 +1018,6 @@ function canReveal(entryId) {{
 function attachRevealButtons() {{
   document.querySelectorAll('button.reveal').forEach(btn => {{
     btn.addEventListener('click', () => reveal(btn.dataset.entry));
-    if (DEBUG) {{
-      btn.disabled = false;
-      reveal(btn.dataset.entry);
-    }}
   }});
 }}
 
@@ -1084,6 +1113,8 @@ function handleHotkeys(event) {{
   }}
 }}
 
+document.getElementById('modeDailyBtn')?.addEventListener('click', () => setMode('daily'));
+document.getElementById('modeFullBtn')?.addEventListener('click', () => setMode('full'));
 document.getElementById('exportBtn')?.addEventListener('click', exportAnnotations);
 document.getElementById('playPauseBtn')?.addEventListener('click', togglePlayPause);
 document.getElementById('backBtn')?.addEventListener('click', () => seek(-2));
@@ -1114,8 +1145,8 @@ currentTags = loadTags();
 if (tagInput) tagInput.value = currentTags.join(', ');
 renderTags(currentTags);
 loadAnnotations();
-document.querySelectorAll('textarea[data-entry]').forEach(area => updateReveal(area.dataset.entry));
 attachRevealButtons();
+setMode(currentMode);
 bindAudio();
 document.addEventListener('keydown', handleHotkeys);
 </script>

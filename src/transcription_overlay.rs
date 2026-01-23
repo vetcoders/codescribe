@@ -359,10 +359,8 @@ fn resize_overlay_to_fit_text(state: &mut TranscriptionOverlayState) {
 
     let text_width = state.window_width - OVERLAY_PADDING * 2.0;
     let mut text_height = measure_text_height(text_field_ptr, text_width);
-    let mut required_window_height = text_height
-        + OVERLAY_PADDING * 3.0
-        + OVERLAY_BUTTON_HEIGHT
-        + OVERLAY_BUTTON_MARGIN;
+    let mut required_window_height =
+        text_height + OVERLAY_PADDING * 3.0 + OVERLAY_BUTTON_HEIGHT + OVERLAY_BUTTON_MARGIN;
 
     if required_window_height > state.max_height {
         trim_text_to_tail(&mut state.accumulated_text);
@@ -370,10 +368,8 @@ fn resize_overlay_to_fit_text(state: &mut TranscriptionOverlayState) {
             set_text(text_field_ptr, &state.accumulated_text);
         }
         text_height = measure_text_height(text_field_ptr, text_width);
-        required_window_height = text_height
-            + OVERLAY_PADDING * 3.0
-            + OVERLAY_BUTTON_HEIGHT
-            + OVERLAY_BUTTON_MARGIN;
+        required_window_height =
+            text_height + OVERLAY_PADDING * 3.0 + OVERLAY_BUTTON_HEIGHT + OVERLAY_BUTTON_MARGIN;
     }
 
     let target_height = required_window_height

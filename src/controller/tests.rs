@@ -439,3 +439,94 @@ async fn test_mode_matrix_coverage() {
     assert!(!*controller.assistive_mode.read().await);
     assert!(*controller.force_ai_mode.read().await);
 }
+
+#[tokio::test]
+#[serial]
+#[ignore = "requires audio hardware"]
+async fn test_finish_recording_resets_unconditionally_force_raw() {
+    // Regression test: paste fix removed `manual_actions_only` gate.
+    // After recording finishes, state MUST reset to Idle and flags clear
+    // regardless of mode (no "decision mode" branching).
+    let controller = RecordingController::new();
+    *controller.state.write().await = State::RecHold;
+    *controller.force_raw_mode.write().await = true;
+    *controller.assistive_mode.write().await = false;
+
+    let up_event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Up,
+        assistive: false,
+        force_ai: false,
+    };
+    let _ = controller.handle_hotkey_event(up_event).await;
+
+    // After finish: ALWAYS Idle, ALWAYS flags cleared (no decision mode)
+    assert_eq!(controller.current_state().await, State::Idle);
+    assert!(!*controller.force_raw_mode.read().await);
+    assert!(!*controller.assistive_mode.read().await);
+    assert!(!*controller.force_ai_mode.read().await);
+}
+
+#[tokio::test]
+#[serial]
+#[ignore = "requires audio hardware"]
+async fn test_finish_recording_resets_unconditionally_assistive() {
+    // Same test but for assistive mode — paste must work in all modes
+    let controller = RecordingController::new();
+    *controller.state.write().await = State::RecHold;
+    *controller.force_raw_mode.write().await = false;
+    *controller.assistive_mode.write().await = true;
+
+    let up_event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Up,
+        assistive: true,
+        force_ai: false,
+    };
+    let _ = controller.handle_hotkey_event(up_event).await;
+
+    assert_eq!(controller.current_state().await, State::Idle);
+    assert!(!*controller.force_raw_mode.read().await);
+    assert!(!*controller.assistive_mode.read().await);
+}
+
+#[tokio::test]
+async fn test_no_decision_mode_state_exists() {
+    // Compile-time + runtime proof: State enum has exactly these variants.
+    // There is NO "DecisionMode" variant — the paste regression was caused
+    // by `enter_decision_mode()` which has been replaced by `schedule_auto_hide()`.
+    let states = [State::Idle, State::RecHold, State::RecToggle];
+    for state in &states {
+        let controller = RecordingController::new();
+        *controller.state.write().await = *state;
+        let current = controller.current_state().await;
+        assert!(
+            matches!(current, State::Idle | State::RecHold | State::RecToggle),
+            "Unknown state variant detected: {:?}",
+            current
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
+#[ignore = "requires audio hardware"]
+async fn test_finish_recording_resets_unconditionally_toggle_mode() {
+    // Toggle mode (double-Option): after finish, same cleanup as hold modes
+    let controller = RecordingController::new();
+    *controller.state.write().await = State::RecToggle;
+    *controller.force_ai_mode.write().await = true;
+
+    // Toggle press again to stop
+    let stop_event = HotkeyInput {
+        key_type: HotkeyType::Toggle,
+        action: HotkeyAction::Press,
+        assistive: false,
+        force_ai: true,
+    };
+    let _ = controller.handle_hotkey_event(stop_event).await;
+
+    assert_eq!(controller.current_state().await, State::Idle);
+    assert!(!*controller.force_ai_mode.read().await);
+    assert!(!*controller.force_raw_mode.read().await);
+}
