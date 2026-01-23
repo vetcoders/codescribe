@@ -8,9 +8,11 @@ use objc::{msg_send, sel, sel_impl};
 use std::sync::Once;
 use tracing::{debug, info};
 
-use crate::ui_helpers::{animate_window_width, ns_string, open_file_in_editor, set_hidden};
+use crate::ui_helpers::{
+    animate_window_width, get_text_view_string, ns_string, set_hidden, set_text_view_string,
+};
 
-use super::api::{clear_overlay_state, send_draft_message_impl};
+use super::api::{clear_overlay_state, populate_drafts_list, send_draft_message_impl};
 use super::state::{ChatRole, OVERLAY_STATE};
 
 // Type alias for Objective-C object pointers
@@ -194,9 +196,13 @@ extern "C" fn on_tab_changed(_this: &Object, _cmd: Sel, sender: Id) {
 
         // Switch visible content between Drafts (0) and Settings (1)
         let show_drafts = selected == 0;
+        let is_editing = state.editing_draft_index.is_some();
 
         if let Some(drafts_ptr) = state.drafts_scroll_view {
-            set_hidden(drafts_ptr as Id, !show_drafts);
+            set_hidden(drafts_ptr as Id, !show_drafts || is_editing);
+        }
+        if let Some(editor_ptr) = state.draft_editor_scroll_view {
+            set_hidden(editor_ptr as Id, !show_drafts || !is_editing);
         }
         if let Some(settings_ptr) = state.settings_scroll_view {
             set_hidden(settings_ptr as Id, show_drafts);
@@ -235,6 +241,8 @@ extern "C" fn on_toggle_collapse(_this: &Object, _cmd: Sel, sender: Id) {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.sidecar_collapsed = !state.sidecar_collapsed;
         let is_collapsed = state.sidecar_collapsed;
+        let show_drafts = state.selected_tab == 0;
+        let is_editing = state.editing_draft_index.is_some();
 
         // Update button title
         let new_title = if is_collapsed { "<|" } else { ">|" };
@@ -249,11 +257,17 @@ extern "C" fn on_toggle_collapse(_this: &Object, _cmd: Sel, sender: Id) {
             if let Some(scroll_ptr) = state.drafts_scroll_view {
                 set_hidden(scroll_ptr as Id, true);
             }
+            if let Some(editor_ptr) = state.draft_editor_scroll_view {
+                set_hidden(editor_ptr as Id, true);
+            }
             if let Some(view_ptr) = state.voice_draft_view {
                 set_hidden(view_ptr as Id, true);
             }
             if let Some(header_ptr) = state.voice_draft_header {
                 set_hidden(header_ptr as Id, true);
+            }
+            if let Some(settings_ptr) = state.settings_scroll_view {
+                set_hidden(settings_ptr as Id, true);
             }
         }
 
@@ -273,8 +287,10 @@ extern "C" fn on_toggle_collapse(_this: &Object, _cmd: Sel, sender: Id) {
             // Dispatch after animation completes
             let tab_ptr = state.tab_bar;
             let scroll_ptr = state.drafts_scroll_view;
+            let editor_ptr = state.draft_editor_scroll_view;
             let voice_ptr = state.voice_draft_view;
             let header_ptr = state.voice_draft_header;
+            let settings_ptr = state.settings_scroll_view;
 
             dispatch::Queue::main().exec_after(
                 std::time::Duration::from_millis((ANIMATION_DURATION * 1000.0) as u64 + 50),
@@ -283,13 +299,19 @@ extern "C" fn on_toggle_collapse(_this: &Object, _cmd: Sel, sender: Id) {
                         set_hidden(ptr as Id, false);
                     }
                     if let Some(ptr) = scroll_ptr {
-                        set_hidden(ptr as Id, false);
+                        set_hidden(ptr as Id, !show_drafts || is_editing);
+                    }
+                    if let Some(ptr) = editor_ptr {
+                        set_hidden(ptr as Id, !show_drafts || !is_editing);
                     }
                     if let Some(ptr) = voice_ptr {
                         set_hidden(ptr as Id, false);
                     }
                     if let Some(ptr) = header_ptr {
                         set_hidden(ptr as Id, false);
+                    }
+                    if let Some(ptr) = settings_ptr {
+                        set_hidden(ptr as Id, show_drafts);
                     }
                 },
             );
@@ -300,14 +322,65 @@ extern "C" fn on_toggle_collapse(_this: &Object, _cmd: Sel, sender: Id) {
 }
 
 extern "C" fn on_draft_edit(_this: &Object, _cmd: Sel, _sender: Id) {
-    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(editing_index) = state.editing_draft_index {
+        let Some(path) = state.draft_files.get(editing_index) else {
+            info!("Editing draft index is invalid");
+            return;
+        };
+        let Some(editor_view_ptr) = state.draft_editor_view else {
+            info!("Draft editor view not available");
+            return;
+        };
+        let updated_text = unsafe { get_text_view_string(editor_view_ptr as Id) };
+        match std::fs::write(path, updated_text.as_bytes()) {
+            Ok(()) => {
+                info!("Saved draft: {}", path.display());
+                populate_drafts_list(&mut state);
+            }
+            Err(err) => {
+                info!("Failed to save draft {}: {}", path.display(), err);
+                return;
+            }
+        }
+
+        if let Some(scroll_ptr) = state.drafts_scroll_view {
+            set_hidden(scroll_ptr as Id, false);
+        }
+        if let Some(editor_scroll_ptr) = state.draft_editor_scroll_view {
+            set_hidden(editor_scroll_ptr as Id, true);
+        }
+        if let Some(button_ptr) = state.draft_edit_button {
+            let title = ns_string("Edit");
+            let _: () = unsafe { msg_send![button_ptr as Id, setTitle: title] };
+        }
+        state.editing_draft_index = None;
+        return;
+    }
+
     if let Some(index) = state.selected_draft_index {
         if let Some(path) = state.draft_files.get(index) {
-            let opened = open_file_in_editor(path);
-            if opened {
-                info!("Opened draft in editor: {}", path.display());
-            } else {
-                info!("Failed to open draft: {}", path.display());
+            match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    if let Some(editor_view_ptr) = state.draft_editor_view {
+                        unsafe { set_text_view_string(editor_view_ptr as Id, &content) };
+                    }
+                    if let Some(scroll_ptr) = state.drafts_scroll_view {
+                        set_hidden(scroll_ptr as Id, true);
+                    }
+                    if let Some(editor_scroll_ptr) = state.draft_editor_scroll_view {
+                        set_hidden(editor_scroll_ptr as Id, false);
+                    }
+                    if let Some(button_ptr) = state.draft_edit_button {
+                        let title = ns_string("Save");
+                        let _: () = unsafe { msg_send![button_ptr as Id, setTitle: title] };
+                    }
+                    state.editing_draft_index = Some(index);
+                    info!("Loaded draft for in-app edit: {}", path.display());
+                }
+                Err(err) => {
+                    info!("Failed to read draft {}: {}", path.display(), err);
+                }
             }
         }
     } else {

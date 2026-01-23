@@ -81,8 +81,13 @@ pub struct VoiceChatOverlayState {
     // Drafts list (right panel content, tab 0)
     pub drafts_scroll_view: Option<usize>,
     pub drafts_container: Option<usize>, // NSStackView for draft rows
+    pub draft_editor_scroll_view: Option<usize>,
+    pub draft_editor_view: Option<usize>,
+    pub draft_edit_button: Option<usize>,
+    pub draft_copy_button: Option<usize>,
     pub draft_files: Vec<std::path::PathBuf>, // Cached list of draft files
     pub selected_draft_index: Option<usize>,
+    pub editing_draft_index: Option<usize>,
     // Settings panel (right panel content, tab 1)
     pub settings_scroll_view: Option<usize>,
     pub settings_container: Option<usize>, // NSStackView for settings items
@@ -125,8 +130,13 @@ impl Default for VoiceChatOverlayState {
             selected_tab: 0,
             drafts_scroll_view: None,
             drafts_container: None,
+            draft_editor_scroll_view: None,
+            draft_editor_view: None,
+            draft_edit_button: None,
+            draft_copy_button: None,
             draft_files: Vec::new(),
             selected_draft_index: None,
+            editing_draft_index: None,
             settings_scroll_view: None,
             settings_container: None,
             ai_formatting_checkbox: None,

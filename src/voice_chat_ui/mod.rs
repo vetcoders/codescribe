@@ -38,7 +38,7 @@ use tracing::info;
 
 use crate::ui_helpers::{
     add_subview, button_set_action, button_style, create_button, create_checkbox,
-    create_vertical_stack_view, set_hidden, stack_view_add,
+    create_scrollable_text_view, create_vertical_stack_view, set_hidden, stack_view_add,
 };
 
 use api::{
@@ -431,6 +431,12 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![drafts_scroll, setDocumentView: drafts_container];
         let _: () = msg_send![content_view, addSubview: drafts_scroll];
 
+        // Draft editor (hidden until edit action)
+        let (draft_editor_scroll, draft_editor_view) =
+            create_scrollable_text_view(drafts_scroll_frame, true);
+        add_subview(content_view, draft_editor_scroll);
+        set_hidden(draft_editor_scroll, true);
+
         // 7. Edit and Copy buttons at bottom of drafts panel
         let btn_width = 70.0;
         let btn_spacing = 10.0;
@@ -586,6 +592,10 @@ fn show_voice_chat_overlay_impl() {
         state.collapse_button = Some(collapse_btn as usize);
         state.drafts_scroll_view = Some(drafts_scroll as usize);
         state.drafts_container = Some(drafts_container as usize);
+        state.draft_editor_scroll_view = Some(draft_editor_scroll as usize);
+        state.draft_editor_view = Some(draft_editor_view as usize);
+        state.draft_edit_button = Some(edit_btn as usize);
+        state.draft_copy_button = Some(copy_btn as usize);
         state.settings_scroll_view = Some(settings_scroll as usize);
         state.settings_container = Some(settings_container as usize);
         state.ai_formatting_checkbox = Some(ai_checkbox as usize);

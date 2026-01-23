@@ -483,6 +483,11 @@ pub fn populate_drafts_list(state: &mut VoiceChatOverlayState) {
     };
     let container = container_ptr as Id;
 
+    let selected_path = state
+        .selected_draft_index
+        .and_then(|index| state.draft_files.get(index))
+        .cloned();
+
     // Clear existing items
     unsafe {
         stack_view_clear(container);
@@ -512,7 +517,12 @@ pub fn populate_drafts_list(state: &mut VoiceChatOverlayState) {
     }
 
     // Select first draft if available
-    if !state.draft_files.is_empty() {
+    if let Some(path) = selected_path {
+        if let Some(index) = state.draft_files.iter().position(|draft| draft == &path) {
+            state.selected_draft_index = Some(index);
+        }
+    }
+    if state.selected_draft_index.is_none() && !state.draft_files.is_empty() {
         state.selected_draft_index = Some(0);
     }
 
@@ -584,8 +594,13 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.tab_bar = None;
     state.drafts_scroll_view = None;
     state.drafts_container = None;
+    state.draft_editor_scroll_view = None;
+    state.draft_editor_view = None;
+    state.draft_edit_button = None;
+    state.draft_copy_button = None;
     state.draft_files.clear();
     state.selected_draft_index = None;
+    state.editing_draft_index = None;
     state.settings_scroll_view = None;
     state.settings_container = None;
     state.ai_formatting_checkbox = None;

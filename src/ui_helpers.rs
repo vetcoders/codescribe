@@ -433,6 +433,25 @@ pub unsafe fn set_text_view_string(text_view: Id, text: &str) {
     }
 }
 
+/// Get text view string (for NSTextView)
+/// # Safety
+/// `text_view` must be a valid `NSTextView` instance.
+pub unsafe fn get_text_view_string(text_view: Id) -> String {
+    unsafe {
+        let ns_str: Id = msg_send![text_view, string];
+        if ns_str.is_null() {
+            return String::new();
+        }
+        let c_str: *const i8 = msg_send![ns_str, UTF8String];
+        if c_str.is_null() {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr(c_str)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 // ============================================================================
 // Animation Helpers
 // ============================================================================
