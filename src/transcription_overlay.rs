@@ -76,6 +76,7 @@ struct TranscriptionOverlayState {
     copy_button: Option<usize>,
     augment_button: Option<usize>,
     archive_button: Option<usize>,
+    commit_button: Option<usize>,
     progress_indicator: Option<usize>,
     tracking_area: Option<usize>,
     decision_mode: bool,
@@ -93,6 +94,7 @@ lazy_static::lazy_static! {
         copy_button: None,
         augment_button: None,
         archive_button: None,
+        commit_button: None,
         progress_indicator: None,
         tracking_area: None,
         decision_mode: false,
@@ -132,6 +134,10 @@ fn action_handler_class() -> *const Class {
             on_archive_transcript as extern "C" fn(&Object, Sel, Id),
         );
         decl.add_method(
+            sel!(onCommitRecording:),
+            on_commit_recording as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
             sel!(mouseEntered:),
             on_mouse_entered as extern "C" fn(&Object, Sel, Id),
         );
@@ -168,6 +174,11 @@ extern "C" fn on_archive_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     hide_transcription_overlay();
 }
 
+/// Handler: Commit recording (stop stream + enter decision mode)
+extern "C" fn on_commit_recording(_this: &Object, _cmd: Sel, _sender: Id) {
+    crate::controller::request_recording_commit();
+}
+
 extern "C" fn on_mouse_entered(_this: &Object, _cmd: Sel, _sender: Id) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.hover_active = true;
@@ -196,6 +207,14 @@ fn set_action_buttons_visible(state: &TranscriptionOverlayState, visible: bool) 
     if let Some(archive_ptr) = state.archive_button {
         unsafe {
             set_hidden(archive_ptr as Id, !visible);
+        }
+    }
+}
+
+fn set_recording_button_visible(state: &TranscriptionOverlayState, visible: bool) {
+    if let Some(commit_ptr) = state.commit_button {
+        unsafe {
+            set_hidden(commit_ptr as Id, !visible);
         }
     }
 }
@@ -589,6 +608,7 @@ fn show_transcription_overlay_impl() {
         let button_gap = 10.0;
         let row_width = button_width * 3.0 + button_gap * 2.0;
         let row_x = (window_width - row_width) / 2.0;
+        let commit_x = (window_width - button_width) / 2.0;
 
         let archive_frame = CGRect {
             origin: CGPoint {
@@ -620,22 +640,36 @@ fn show_transcription_overlay_impl() {
                 height: button_height,
             },
         };
+        let commit_frame = CGRect {
+            origin: CGPoint {
+                x: commit_x,
+                y: padding,
+            },
+            size: CGSize {
+                width: button_width,
+                height: button_height,
+            },
+        };
 
         let archive_button = create_button(archive_frame, "Archiwizuj", button_style::ROUNDED);
         let copy_button = create_button(copy_frame, "Kopiuj", button_style::ROUNDED);
         let augment_button = create_button(augment_frame, "Augmentuj", button_style::ROUNDED);
+        let commit_button = create_button(commit_frame, "Zakończ", button_style::ROUNDED);
 
         button_set_action(archive_button, action_handler, sel!(onArchiveTranscript:));
         button_set_action(copy_button, action_handler, sel!(onCopyTranscript:));
         button_set_action(augment_button, action_handler, sel!(onAugmentTranscript:));
+        button_set_action(commit_button, action_handler, sel!(onCommitRecording:));
 
         add_subview(content_view, archive_button);
         add_subview(content_view, copy_button);
         add_subview(content_view, augment_button);
+        add_subview(content_view, commit_button);
 
         set_hidden(archive_button, true);
         set_hidden(copy_button, true);
         set_hidden(augment_button, true);
+        set_hidden(commit_button, true);
 
         // Show the window with fade-in animation
         window_set_alpha(window, 0.0);
@@ -649,6 +683,7 @@ fn show_transcription_overlay_impl() {
         state.copy_button = Some(copy_button as usize);
         state.augment_button = Some(augment_button as usize);
         state.archive_button = Some(archive_button as usize);
+        state.commit_button = Some(commit_button as usize);
         state.progress_indicator = Some(spinner as usize);
         state.tracking_area = Some(tracking_area as usize);
         state.decision_mode = false;
@@ -751,6 +786,11 @@ fn clear_transcription_text_impl() {
             set_hidden(archive_ptr as Id, true);
         }
     }
+    if let Some(commit_ptr) = state.commit_button {
+        unsafe {
+            set_hidden(commit_ptr as Id, true);
+        }
+    }
     if let Some(status_ptr) = state.status_field {
         unsafe {
             set_hidden(status_ptr as Id, true);
@@ -799,6 +839,7 @@ pub fn enter_decision_mode() {
         state.decision_mode = true;
         let show = state.hover_active;
         set_action_buttons_visible(&state, show);
+        set_recording_button_visible(&state, false);
     });
 }
 
@@ -809,6 +850,7 @@ pub fn enter_recording_mode() {
         state.decision_mode = false;
         state.hover_active = false;
         set_action_buttons_visible(&state, false);
+        set_recording_button_visible(&state, true);
         set_status_message(&state, "", false);
     });
 }
@@ -856,6 +898,7 @@ fn hide_transcription_overlay_impl() {
     state.copy_button = None;
     state.augment_button = None;
     state.archive_button = None;
+    state.commit_button = None;
     state.progress_indicator = None;
     state.tracking_area = None;
     state.decision_mode = false;

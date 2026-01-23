@@ -459,6 +459,8 @@ async fn run_daemon() -> Result<()> {
 
     codescribe::whisper::init().context("Failed to initialize Whisper")?;
     let controller = Arc::new(RecordingController::new());
+    #[cfg(target_os = "macos")]
+    codescribe::controller::register_overlay_controller(Arc::clone(&controller));
 
     let config = Config::load();
     sync_hotkey_config(&config);
