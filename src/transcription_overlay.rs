@@ -46,6 +46,17 @@ const NSTRACKING_MOUSE_ENTERED_AND_EXITED: u64 = 1 << 0;
 const NSTRACKING_ACTIVE_ALWAYS: u64 = 1 << 7;
 const NSTRACKING_IN_VISIBLE_RECT: u64 = 1 << 9;
 
+const OVERLAY_WINDOW_WIDTH: f64 = 420.0;
+const OVERLAY_WINDOW_MIN_HEIGHT: f64 = 180.0;
+const OVERLAY_WINDOW_MAX_HEIGHT_RATIO: f64 = 0.5;
+const OVERLAY_PADDING: f64 = 16.0;
+const OVERLAY_STATUS_HEIGHT: f64 = 28.0;
+const OVERLAY_BUTTON_HEIGHT: f64 = 28.0;
+const OVERLAY_BUTTON_MARGIN: f64 = 8.0;
+const OVERLAY_CORNER_RADIUS: f64 = 16.0;
+const MAX_TAIL_LINES: usize = 16;
+const MAX_TAIL_CHARS: usize = 2000;
+
 // Auto-hide delay after recording completes
 const AUTO_HIDE_DELAY_SECS: u64 = 10;
 
@@ -82,6 +93,9 @@ struct TranscriptionOverlayState {
     hover_active: bool,
     action_handler: Option<usize>,
     accumulated_text: String,
+    window_width: f64,
+    min_height: f64,
+    max_height: f64,
 }
 
 lazy_static::lazy_static! {
@@ -99,6 +113,9 @@ lazy_static::lazy_static! {
         hover_active: false,
         action_handler: None,
         accumulated_text: String::new(),
+        window_width: OVERLAY_WINDOW_WIDTH,
+        min_height: OVERLAY_WINDOW_MIN_HEIGHT,
+        max_height: OVERLAY_WINDOW_MIN_HEIGHT,
     });
 }
 
@@ -284,6 +301,212 @@ fn run_ai_copy(text: String, augment: bool) {
     });
 }
 
+fn measure_text_height(text_field: Id, width: f64) -> f64 {
+    unsafe {
+        let cell: Id = msg_send![text_field, cell];
+        if cell.is_null() {
+            return 0.0;
+        }
+        let bounds = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize {
+                width,
+                height: f64::MAX,
+            },
+        };
+        let size: CGSize = msg_send![cell, cellSizeForBounds: bounds];
+        size.height
+    }
+}
+
+fn trim_text_to_tail(text: &mut String) {
+    if text.is_empty() {
+        return;
+    }
+
+    let mut trimmed = false;
+    let lines: Vec<&str> = text.lines().collect();
+    let mut tail_text = if lines.len() > MAX_TAIL_LINES {
+        trimmed = true;
+        lines[lines.len() - MAX_TAIL_LINES..].join("\n")
+    } else {
+        text.clone()
+    };
+
+    if tail_text.chars().count() > MAX_TAIL_CHARS {
+        trimmed = true;
+        let tail_chars: String = tail_text
+            .chars()
+            .rev()
+            .take(MAX_TAIL_CHARS)
+            .collect::<Vec<char>>()
+            .into_iter()
+            .rev()
+            .collect();
+        tail_text = tail_chars;
+    }
+
+    if trimmed {
+        *text = tail_text;
+    }
+}
+
+fn resize_overlay_to_fit_text(state: &mut TranscriptionOverlayState) {
+    let (window_ptr, text_field_ptr) = match (state.window, state.text_field) {
+        (Some(window_ptr), Some(text_field_ptr)) => (window_ptr as Id, text_field_ptr as Id),
+        _ => return,
+    };
+
+    let text_width = state.window_width - OVERLAY_PADDING * 2.0;
+    let mut text_height = measure_text_height(text_field_ptr, text_width);
+    let mut required_window_height = text_height
+        + OVERLAY_PADDING * 3.0
+        + OVERLAY_BUTTON_HEIGHT
+        + OVERLAY_BUTTON_MARGIN;
+
+    if required_window_height > state.max_height {
+        trim_text_to_tail(&mut state.accumulated_text);
+        unsafe {
+            set_text(text_field_ptr, &state.accumulated_text);
+        }
+        text_height = measure_text_height(text_field_ptr, text_width);
+        required_window_height = text_height
+            + OVERLAY_PADDING * 3.0
+            + OVERLAY_BUTTON_HEIGHT
+            + OVERLAY_BUTTON_MARGIN;
+    }
+
+    let target_height = required_window_height
+        .max(state.min_height)
+        .min(state.max_height);
+
+    unsafe {
+        let current_frame: CGRect = msg_send![window_ptr, frame];
+        let top_y = current_frame.origin.y + current_frame.size.height;
+        let new_frame = CGRect {
+            origin: CGPoint {
+                x: current_frame.origin.x,
+                y: top_y - target_height,
+            },
+            size: CGSize {
+                width: state.window_width,
+                height: target_height,
+            },
+        };
+        let _: () = msg_send![window_ptr, setFrame: new_frame display: true];
+        let _: () = msg_send![window_ptr, setLevel: NS_FLOATING_WINDOW_LEVEL];
+
+        let text_frame = CGRect {
+            origin: CGPoint {
+                x: OVERLAY_PADDING,
+                y: OVERLAY_PADDING + OVERLAY_BUTTON_HEIGHT + OVERLAY_BUTTON_MARGIN,
+            },
+            size: CGSize {
+                width: state.window_width - OVERLAY_PADDING * 2.0,
+                height: target_height
+                    - OVERLAY_PADDING * 3.0
+                    - OVERLAY_BUTTON_HEIGHT
+                    - OVERLAY_BUTTON_MARGIN,
+            },
+        };
+        let _: () = msg_send![text_field_ptr, setFrame: text_frame];
+
+        if let Some(status_ptr) = state.status_field {
+            let status_frame = CGRect {
+                origin: CGPoint {
+                    x: OVERLAY_PADDING,
+                    y: target_height - OVERLAY_STATUS_HEIGHT - OVERLAY_PADDING,
+                },
+                size: CGSize {
+                    width: state.window_width - OVERLAY_PADDING * 2.0,
+                    height: OVERLAY_STATUS_HEIGHT,
+                },
+            };
+            let _: () = msg_send![status_ptr as Id, setFrame: status_frame];
+        }
+
+        if let Some(spinner_ptr) = state.progress_indicator {
+            let spinner_size = 14.0;
+            let spinner_frame = CGRect {
+                origin: CGPoint {
+                    x: state.window_width - OVERLAY_PADDING - spinner_size,
+                    y: target_height - OVERLAY_STATUS_HEIGHT - OVERLAY_PADDING + 7.0,
+                },
+                size: CGSize {
+                    width: spinner_size,
+                    height: spinner_size,
+                },
+            };
+            let _: () = msg_send![spinner_ptr as Id, setFrame: spinner_frame];
+        }
+
+        if let Some(blur_ptr) = state.blur_view {
+            let blur_frame = CGRect {
+                origin: CGPoint { x: 0.0, y: 0.0 },
+                size: CGSize {
+                    width: state.window_width,
+                    height: target_height,
+                },
+            };
+            let _: () = msg_send![blur_ptr as Id, setFrame: blur_frame];
+        }
+
+        let button_width = 100.0;
+        let button_gap = 10.0;
+        let row_width = button_width * 3.0 + button_gap * 2.0;
+        let row_x = (state.window_width - row_width) / 2.0;
+        let archive_frame = CGRect {
+            origin: CGPoint {
+                x: row_x,
+                y: OVERLAY_PADDING,
+            },
+            size: CGSize {
+                width: button_width,
+                height: OVERLAY_BUTTON_HEIGHT,
+            },
+        };
+        let copy_frame = CGRect {
+            origin: CGPoint {
+                x: row_x + button_width + button_gap,
+                y: OVERLAY_PADDING,
+            },
+            size: CGSize {
+                width: button_width,
+                height: OVERLAY_BUTTON_HEIGHT,
+            },
+        };
+        let augment_frame = CGRect {
+            origin: CGPoint {
+                x: row_x + (button_width + button_gap) * 2.0,
+                y: OVERLAY_PADDING,
+            },
+            size: CGSize {
+                width: button_width,
+                height: OVERLAY_BUTTON_HEIGHT,
+            },
+        };
+
+        if let Some(archive_ptr) = state.archive_button {
+            let _: () = msg_send![archive_ptr as Id, setFrame: archive_frame];
+        }
+        if let Some(copy_ptr) = state.copy_button {
+            let _: () = msg_send![copy_ptr as Id, setFrame: copy_frame];
+        }
+        if let Some(augment_ptr) = state.augment_button {
+            let _: () = msg_send![augment_ptr as Id, setFrame: augment_frame];
+        }
+    }
+}
+
+fn update_overlay_text_and_layout(state: &mut TranscriptionOverlayState) {
+    if let Some(text_field_ptr) = state.text_field {
+        unsafe {
+            set_text(text_field_ptr as Id, &state.accumulated_text);
+        }
+        resize_overlay_to_fit_text(state);
+    }
+}
+
 /// Show the transcription overlay window
 pub fn show_transcription_overlay() {
     // Cancel any pending auto-hide
@@ -301,7 +524,10 @@ fn show_transcription_overlay_impl() {
 
         // Reuse existing window if any
         if let Some(window_ptr) = state.window {
-            window_show(window_ptr as Id);
+            let window = window_ptr as Id;
+            let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
+            window_show(window);
+            resize_overlay_to_fit_text(&mut state);
             info!("Transcription overlay reused");
             return;
         }
@@ -353,10 +579,12 @@ fn show_transcription_overlay_impl() {
         let config = Config::load();
 
         // Modern compact dimensions for Tahoe-style overlay
-        let window_width = 420.0;
-        let window_height = 180.0;
+        let window_width = OVERLAY_WINDOW_WIDTH;
+        let window_height = OVERLAY_WINDOW_MIN_HEIGHT;
         let margin = 20.0;
-        let corner_radius = 16.0;
+        let corner_radius = OVERLAY_CORNER_RADIUS;
+        let max_height =
+            (visible_frame.size.height * OVERLAY_WINDOW_MAX_HEIGHT_RATIO).max(window_height);
 
         let (x, y) = match config.overlay_position_mode {
             OverlayPositionMode::SnappedTopRight => {
@@ -466,8 +694,8 @@ fn show_transcription_overlay_impl() {
         add_subview(content_view, blur_view);
 
         // === Status indicator (top) === (hidden by default)
-        let status_height = 28.0;
-        let padding = 16.0;
+        let status_height = OVERLAY_STATUS_HEIGHT;
+        let padding = OVERLAY_PADDING;
         let status_frame = CGRect {
             origin: CGPoint {
                 x: padding,
@@ -523,8 +751,8 @@ fn show_transcription_overlay_impl() {
         set_hidden(spinner, true);
 
         // === Text field for transcription (main area) ===
-        let button_height = 28.0;
-        let button_margin = 8.0;
+        let button_height = OVERLAY_BUTTON_HEIGHT;
+        let button_margin = OVERLAY_BUTTON_MARGIN;
         let text_frame = CGRect {
             origin: CGPoint {
                 x: padding,
@@ -654,6 +882,9 @@ fn show_transcription_overlay_impl() {
         state.decision_mode = false;
         state.hover_active = false;
         state.action_handler = Some(action_handler as usize);
+        state.window_width = window_width;
+        state.min_height = window_height;
+        state.max_height = max_height;
 
         info!("Transcription overlay shown (Tahoe-style with HudWindow vibrancy)");
     }
@@ -687,12 +918,7 @@ pub fn append_transcription_delta(delta: &str) {
 fn append_transcription_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.accumulated_text.push_str(delta);
-
-    if let Some(text_field_ptr) = state.text_field {
-        unsafe {
-            set_text(text_field_ptr as Id, &state.accumulated_text);
-        }
-    }
+    update_overlay_text_and_layout(&mut state);
 }
 
 /// Set the full text in the overlay
@@ -706,12 +932,7 @@ pub fn set_transcription_text(text: &str) {
 fn set_transcription_text_impl(text: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.accumulated_text = text.to_string();
-
-    if let Some(text_field_ptr) = state.text_field {
-        unsafe {
-            set_text(text_field_ptr as Id, text);
-        }
-    }
+    update_overlay_text_and_layout(&mut state);
 }
 
 /// Get the accumulated text from the overlay
@@ -736,6 +957,7 @@ fn clear_transcription_text_impl() {
             set_text(text_field_ptr as Id, "");
         }
     }
+    resize_overlay_to_fit_text(&mut state);
     if let Some(copy_ptr) = state.copy_button {
         unsafe {
             set_hidden(copy_ptr as Id, true);
