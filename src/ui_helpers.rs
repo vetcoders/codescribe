@@ -198,6 +198,95 @@ pub fn button(frame: CGRect, title: &str) -> Id {
 }
 
 // ============================================================================
+// Segmented Control Helpers
+// ============================================================================
+
+/// Create a segmented control with provided labels.
+pub fn create_segmented_control(frame: CGRect, labels: &[&str]) -> Id {
+    unsafe {
+        let ns_segmented = Class::get("NSSegmentedControl").unwrap();
+        let control: Id = msg_send![ns_segmented, alloc];
+        let control: Id = msg_send![control, initWithFrame: frame];
+        let _: () = msg_send![control, setSegmentCount: labels.len() as isize];
+        for (index, label) in labels.iter().enumerate() {
+            let label_str = ns_string(label);
+            let _: () = msg_send![control, setLabel: label_str forSegment: index as isize];
+        }
+        control
+    }
+}
+
+// ============================================================================
+// Card View Helpers
+// ============================================================================
+
+/// Create a card-style view with title, subtitle, and preview.
+pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &str) -> Id {
+    unsafe {
+        let ns_view = Class::get("NSView").unwrap();
+        let ns_text_field = Class::get("NSTextField").unwrap();
+        let ns_color = Class::get("NSColor").unwrap();
+        let ns_font = Class::get("NSFont").unwrap();
+
+        let card: Id = msg_send![ns_view, alloc];
+        let card: Id = msg_send![card, initWithFrame: frame];
+        let _: () = msg_send![card, setWantsLayer: true];
+        let layer: Id = msg_send![card, layer];
+        if !layer.is_null() {
+            let bg: Id = msg_send![ns_color, colorWithRed: 0.2 green: 0.2 blue: 0.2 alpha: 0.4];
+            let cg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg];
+            let _: () = msg_send![layer, setCornerRadius: 12.0f64];
+        }
+
+        let title_frame = CGRect::new(&CGPoint::new(12.0, frame.size.height - 26.0), &CGSize::new(frame.size.width - 24.0, 16.0));
+        let title_label: Id = msg_send![ns_text_field, alloc];
+        let title_label: Id = msg_send![title_label, initWithFrame: title_frame];
+        let _: () = msg_send![title_label, setBezeled: false];
+        let _: () = msg_send![title_label, setDrawsBackground: false];
+        let _: () = msg_send![title_label, setEditable: false];
+        let _: () = msg_send![title_label, setSelectable: false];
+        let _: () = msg_send![title_label, setStringValue: ns_string(title)];
+        let title_font: Id = msg_send![ns_font, boldSystemFontOfSize: 12.0f64];
+        let _: () = msg_send![title_label, setFont: title_font];
+        let white: Id = msg_send![ns_color, colorWithWhite: 1.0 alpha: 0.9];
+        let _: () = msg_send![title_label, setTextColor: white];
+        let _: () = msg_send![card, addSubview: title_label];
+
+        let subtitle_frame = CGRect::new(&CGPoint::new(12.0, frame.size.height - 44.0), &CGSize::new(frame.size.width - 24.0, 14.0));
+        let subtitle_label: Id = msg_send![ns_text_field, alloc];
+        let subtitle_label: Id = msg_send![subtitle_label, initWithFrame: subtitle_frame];
+        let _: () = msg_send![subtitle_label, setBezeled: false];
+        let _: () = msg_send![subtitle_label, setDrawsBackground: false];
+        let _: () = msg_send![subtitle_label, setEditable: false];
+        let _: () = msg_send![subtitle_label, setSelectable: false];
+        let _: () = msg_send![subtitle_label, setStringValue: ns_string(subtitle)];
+        let subtitle_font: Id = msg_send![ns_font, systemFontOfSize: 10.0f64];
+        let _: () = msg_send![subtitle_label, setFont: subtitle_font];
+        let subtitle_color: Id = msg_send![ns_color, colorWithWhite: 1.0 alpha: 0.5];
+        let _: () = msg_send![subtitle_label, setTextColor: subtitle_color];
+        let _: () = msg_send![card, addSubview: subtitle_label];
+
+        let preview_frame = CGRect::new(&CGPoint::new(12.0, 36.0), &CGSize::new(frame.size.width - 24.0, 40.0));
+        let preview_label: Id = msg_send![ns_text_field, alloc];
+        let preview_label: Id = msg_send![preview_label, initWithFrame: preview_frame];
+        let _: () = msg_send![preview_label, setBezeled: false];
+        let _: () = msg_send![preview_label, setDrawsBackground: false];
+        let _: () = msg_send![preview_label, setEditable: false];
+        let _: () = msg_send![preview_label, setSelectable: false];
+        let _: () = msg_send![preview_label, setStringValue: ns_string(preview)];
+        let preview_font: Id = msg_send![ns_font, systemFontOfSize: 11.0f64];
+        let _: () = msg_send![preview_label, setFont: preview_font];
+        let preview_color: Id = msg_send![ns_color, colorWithWhite: 1.0 alpha: 0.8];
+        let _: () = msg_send![preview_label, setTextColor: preview_color];
+        let _: () = msg_send![preview_label, setLineBreakMode: 0_isize];
+        let _: () = msg_send![card, addSubview: preview_label];
+
+        card
+    }
+}
+
+// ============================================================================
 // Checkbox Helpers
 // ============================================================================
 

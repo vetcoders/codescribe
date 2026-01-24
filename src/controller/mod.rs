@@ -655,12 +655,6 @@ impl RecordingController {
             recorder.stop().await.context("Failed to stop recorder")?;
         drop(recorder); // Release lock
 
-        // Save voice draft to file (Mission Control)
-        // This saves the streaming transcription for later review/editing
-        if let Some(draft_path) = crate::voice_chat_ui::finalize_voice_draft() {
-            debug!("Voice draft saved: {}", draft_path.display());
-        }
-
         // Check audio path validity (if present)
         let audio_path = if let Some(path) = raw_audio_path_opt {
             match ValidatedAudioPath::new(&path) {
@@ -790,7 +784,7 @@ impl RecordingController {
 
             if chat_active {
                 crate::voice_chat_ui::add_voice_chat_user_message(&clean_text);
-                crate::voice_chat_ui::set_voice_chat_draft_text("");
+                crate::voice_chat_ui::show_agent_tab();
                 crate::voice_chat_ui::set_voice_chat_sending(true);
                 // Update overlay status to show AI is thinking
                 crate::voice_chat_ui::update_voice_chat_status("Thinking...");
@@ -872,9 +866,8 @@ impl RecordingController {
                 info!("Formatting mode (Left Option): correcting transcript via AI");
 
                 if chat_active {
-                    crate::voice_chat_ui::add_voice_chat_user_message(&clean_text);
-                    crate::voice_chat_ui::set_voice_chat_draft_text("");
-                    crate::voice_chat_ui::set_voice_chat_sending(true);
+                crate::voice_chat_ui::add_voice_chat_user_message(&clean_text);
+                crate::voice_chat_ui::set_voice_chat_sending(true);
                     // Update overlay status to show AI is formatting
                     crate::voice_chat_ui::update_voice_chat_status("Formatting...");
                 }
@@ -958,7 +951,6 @@ impl RecordingController {
 
                 if chat_active {
                     crate::voice_chat_ui::add_voice_chat_user_message(&clean_text);
-                    crate::voice_chat_ui::set_voice_chat_draft_text("");
                     crate::voice_chat_ui::set_voice_chat_sending(true);
                     // Update overlay status to show AI is formatting
                     crate::voice_chat_ui::update_voice_chat_status("Formatting...");
@@ -1109,6 +1101,8 @@ impl RecordingController {
                 }
             });
         }
+
+        crate::voice_chat_ui::refresh_drawer();
 
         Ok(())
     }
