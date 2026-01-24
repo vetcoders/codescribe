@@ -7,16 +7,21 @@ use core_graphics::geometry::CGPoint;
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
+use std::time::{Duration, SystemTime};
 use tracing::{debug, info};
 
 use crate::ui_helpers::{
-    BubbleConfig, BubbleRole, create_bubble_view, list_draft_files, ns_string, stack_view_add,
-    stack_view_clear, update_bubble_text,
+    BubbleConfig, BubbleRole, animate_fade, create_bubble_view, create_card_view, list_draft_files,
+    set_hidden, stack_view_add, stack_view_clear, update_bubble_text, window_close,
 };
 
-use super::state::{ChatMessage, ChatRole, OVERLAY_STATE, SEND_CALLBACK, VoiceChatOverlayState};
+use super::state::{
+    ChatMessage, ChatRole, DrawerEntry, OVERLAY_STATE, SEND_CALLBACK, Tab, TranscriptionMode,
+    VoiceChatOverlayState,
+};
 
 // Type alias for Objective-C object pointers
+// SAFETY: raw Objective-C pointers used in AppKit FFI.
 type Id = *mut Object;
 
 // ═══════════════════════════════════════════════════════════
@@ -28,40 +33,6 @@ pub fn update_voice_chat_status(status: &str) {
     let status_owned = status.to_string();
     Queue::main().exec_async(move || {
         update_voice_chat_status_impl(&status_owned);
-    });
-}
-
-/// Append a delta (streaming token) to the voice draft
-pub fn append_voice_chat_delta(delta: &str) {
-    let delta_owned = delta.to_string();
-    Queue::main().exec_async(move || {
-        append_voice_chat_draft_impl(&delta_owned);
-    });
-}
-
-/// Finalize voice draft: save to file and clear buffer
-/// Called when VAD stops or recording finishes
-pub fn finalize_voice_draft() -> Option<std::path::PathBuf> {
-    // Skip in unit tests: exec_sync deadlocks without a running main queue/run loop
-    if cfg!(test) {
-        return None;
-    }
-    Queue::main().exec_sync(finalize_voice_draft_impl)
-}
-
-/// Get the current voice draft text (for reading without clearing)
-pub fn get_voice_draft() -> String {
-    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.voice_draft.clone()
-}
-
-/// Clear voice draft without saving (e.g., on cancel)
-pub fn clear_voice_draft() {
-    Queue::main().exec_async(|| {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.voice_draft.clear();
-        state.is_voice_active = false;
-        update_voice_draft_view_with_state(&mut state);
     });
 }
 
@@ -98,17 +69,6 @@ pub fn add_voice_chat_error_message(text: &str) {
     });
 }
 
-/// Set the current voice draft text (streaming from Whisper)
-pub fn set_voice_chat_draft_text(text: &str) {
-    let text_owned = text.to_string();
-    Queue::main().exec_async(move || {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.voice_draft = text_owned;
-        state.is_voice_active = true;
-        update_voice_draft_view_with_state(&mut state);
-    });
-}
-
 /// Submit the current draft (manual send)
 pub fn send_voice_chat_draft() {
     Queue::main().exec_async(move || {
@@ -129,12 +89,6 @@ pub fn set_voice_chat_sending(is_sending: bool) {
         state.is_sending = is_sending;
         update_send_button_with_state(&mut state);
     });
-}
-
-/// Get the current voice draft text from the overlay (for auto-send)
-pub fn get_accumulated_text() -> String {
-    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.voice_draft.clone()
 }
 
 /// Clear the text content of the overlay
@@ -184,61 +138,45 @@ pub fn hide_voice_chat_overlay() {
     });
 }
 
+/// Switch the active tab in the overlay
+pub fn set_active_tab(tab: Tab) {
+    Queue::main().exec_async(move || {
+        set_active_tab_impl(tab);
+    });
+}
+
+/// Refresh drawer entries from disk
+pub fn refresh_drawer() {
+    Queue::main().exec_async(|| {
+        refresh_drawer_impl();
+    });
+}
+
+/// Filter drawer entries using a query
+pub fn filter_drawer(query: &str) {
+    let query_owned = query.to_string();
+    Queue::main().exec_async(move || {
+        filter_drawer_impl(&query_owned);
+    });
+}
+
 // ═══════════════════════════════════════════════════════════
 // Internal Implementation Functions
 // ═══════════════════════════════════════════════════════════
 
 fn update_voice_chat_status_impl(status: &str) {
     unsafe {
-        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(status_field_ptr) = state.status_field {
-            let status_field = status_field_ptr as Id;
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(title_ptr) = state.title_label {
+            let title_label = title_ptr as Id;
+            let display = format!("CodeScribe — {}", status);
             let ns_string_class = Class::get("NSString").unwrap();
-
-            // Create null-terminated C string
-            let mut c_str = status.as_bytes().to_vec();
+            let mut c_str = display.as_bytes().to_vec();
             c_str.push(0);
-
             let ns_str: Id = msg_send![ns_string_class, stringWithUTF8String: c_str.as_ptr()];
-            let _: () = msg_send![status_field, setStringValue: ns_str];
+            let _: () = msg_send![title_label, setStringValue: ns_str];
         }
     }
-}
-
-fn append_voice_chat_draft_impl(delta: &str) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    // Voice streaming goes to voice_draft (right panel / sidecar)
-    state.voice_draft.push_str(delta);
-    state.is_voice_active = true;
-    update_voice_draft_view_with_state(&mut state);
-    // Note: We don't update manual input field here - they are separate
-}
-
-fn finalize_voice_draft_impl() -> Option<std::path::PathBuf> {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-
-    // Don't save empty drafts
-    let draft_text = state.voice_draft.trim();
-    if draft_text.is_empty() {
-        state.is_voice_active = false;
-        return None;
-    }
-
-    // Save draft to file
-    let path = codescribe_core::state::save_draft(draft_text);
-
-    // Clear voice draft buffer
-    state.voice_draft.clear();
-    state.is_voice_active = false;
-
-    // Update UI: clear voice draft view
-    update_voice_draft_view_with_state(&mut state);
-
-    // Refresh drafts list to show the new file
-    populate_drafts_list(&mut state);
-
-    info!("Voice draft finalized: {}", path.display());
-    Some(path)
 }
 
 fn append_voice_chat_assistant_delta_impl(delta: &str) {
@@ -254,15 +192,10 @@ fn append_voice_chat_assistant_delta_impl(delta: &str) {
 fn clear_voice_chat_text_impl() {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.messages.clear();
-    // Clear both buffers
     state.manual_draft.clear();
-    state.voice_draft.clear();
-    state.attachments.clear();
     state.is_sending = false;
-    state.is_voice_active = false;
     update_chat_view_with_state(&mut state, true);
     update_input_field_with_state(&mut state);
-    update_voice_draft_view_with_state(&mut state);
     update_send_button_with_state(&mut state);
 }
 
@@ -271,7 +204,8 @@ fn hide_voice_chat_overlay_impl() {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(window_ptr) = state.window.take() {
             let window = window_ptr as Id;
-            let _: () = msg_send![window, close];
+            animate_fade(window, 0.0, 0.15);
+            window_close(window);
             debug!("Voice chat overlay hidden");
         }
         clear_overlay_state(&mut state);
@@ -319,7 +253,6 @@ pub fn finalize_assistant_message_impl(text: &str, is_error: bool) {
 
 /// Send the draft message (called from handlers)
 pub fn send_draft_message_impl() {
-    // This sends from manual_draft (left panel input field)
     let callback = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let draft = state.manual_draft.trim().to_string();
@@ -350,29 +283,255 @@ pub fn send_draft_message_impl() {
     }
 }
 
+pub(crate) fn set_active_tab_impl(tab: Tab) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.active_tab = tab;
+
+    if let Some(tab_control_ptr) = state.tab_control {
+        unsafe {
+            let control = tab_control_ptr as Id;
+            let selected = match tab {
+                Tab::Drawer => 0,
+                Tab::Agent => 1,
+            };
+            let _: () = msg_send![control, setSelectedSegment: selected];
+        }
+    }
+
+    if let Some(drawer_ptr) = state.drawer_scroll_view {
+        unsafe {
+            set_hidden(drawer_ptr as Id, !matches!(tab, Tab::Drawer));
+        }
+    }
+    if let Some(search_ptr) = state.search_field {
+        unsafe {
+            set_hidden(search_ptr as Id, !matches!(tab, Tab::Drawer));
+        }
+    }
+    if let Some(agent_ptr) = state.agent_scroll_view {
+        unsafe {
+            set_hidden(agent_ptr as Id, !matches!(tab, Tab::Agent));
+        }
+    }
+    if let Some(input_ptr) = state.agent_input_field {
+        unsafe {
+            set_hidden(input_ptr as Id, !matches!(tab, Tab::Agent));
+        }
+    }
+    if let Some(send_ptr) = state.agent_send_button {
+        unsafe {
+            set_hidden(send_ptr as Id, !matches!(tab, Tab::Agent));
+        }
+    }
+}
+
+pub(crate) fn refresh_drawer_impl() {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.drawer_entries = load_drawer_entries();
+    render_drawer_entries(&mut state, None);
+}
+
+fn filter_drawer_impl(query: &str) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let query = query.trim().to_lowercase();
+    let filter = if query.is_empty() { None } else { Some(query) };
+    render_drawer_entries(&mut state, filter.as_deref());
+}
+
+fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: Option<&str>) {
+    let Some(container_ptr) = state.drawer_container else {
+        return;
+    };
+    let container = container_ptr as Id;
+
+    unsafe {
+        stack_view_clear(container);
+    }
+
+    let action_handler = state.action_handler.map(|ptr| ptr as Id);
+
+    for (index, entry) in state.drawer_entries.iter().enumerate() {
+        if let Some(query) = query {
+            let haystack = format!(
+                "{} {}",
+                entry.preview.to_lowercase(),
+                entry.path.to_string_lossy().to_lowercase()
+            );
+            if !haystack.contains(query) {
+                continue;
+            }
+        }
+
+        let card = create_drawer_card(entry, index, action_handler);
+        unsafe {
+            stack_view_add(container, card);
+        }
+    }
+}
+
+pub fn load_drawer_entries() -> Vec<DrawerEntry> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let dir = std::path::PathBuf::from(home)
+        .join(".codescribe/transcriptions")
+        .join(today);
+
+    let mut entries = Vec::new();
+
+    let file_paths = list_draft_files(&dir);
+    for path in file_paths {
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let timestamp = metadata.modified().unwrap_or(SystemTime::now());
+        let preview = std::fs::read_to_string(&path)
+            .ok()
+            .map(|content| {
+                let trimmed = content.trim();
+                trimmed.chars().take(120).collect::<String>()
+            })
+            .unwrap_or_else(|| String::from("(empty)"));
+
+        entries.push(DrawerEntry {
+            path,
+            timestamp,
+            mode: TranscriptionMode::Toggle,
+            preview,
+            is_ai_formatted: false,
+            is_favorite: false,
+        });
+    }
+
+    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    entries
+}
+
+pub fn create_drawer_card(entry: &DrawerEntry, index: usize, target: Option<Id>) -> Id {
+    use core_graphics::geometry::{CGRect, CGSize};
+
+    let card_width = 420.0;
+    let card_height = 120.0;
+    let frame = CGRect::new(
+        &CGPoint::new(0.0, 0.0),
+        &CGSize::new(card_width, card_height),
+    );
+
+    let title = if entry.is_ai_formatted { "✨" } else { "Tt" };
+    let subtitle = format_time(entry.timestamp);
+    let preview = entry.preview.clone();
+
+    let card = create_card_view(frame, title, &subtitle, &preview);
+
+    unsafe {
+        let mode_label = match entry.mode {
+            TranscriptionMode::Hold => "Ctrl+Hold",
+            TranscriptionMode::Assistive => "Ctrl+Shift",
+            TranscriptionMode::Toggle => "Toggle",
+        };
+
+        let mode_frame = CGRect::new(&CGPoint::new(12.0, 6.0), &CGSize::new(120.0, 14.0));
+        let mode_view = crate::ui_helpers::label_sized(mode_frame, mode_label, 10.0, false);
+        let _: () = msg_send![mode_view, setTextColor: crate::ui_helpers::color_white(0.6)];
+        crate::ui_helpers::add_subview(card, mode_view);
+
+        let path_frame = CGRect::new(
+            &CGPoint::new(140.0, 6.0),
+            &CGSize::new(card_width - 220.0, 14.0),
+        );
+        let path_text = entry.path.to_string_lossy();
+        let path_view = crate::ui_helpers::label_sized(path_frame, &path_text, 9.0, false);
+        let _: () = msg_send![path_view, setTextColor: crate::ui_helpers::color_white(0.4)];
+        crate::ui_helpers::add_subview(card, path_view);
+
+        let button_y = 6.0;
+        let button_width = 50.0;
+        let spacing = 6.0;
+        let buttons = [
+            ("Copy", sel!(onCardCopy:)),
+            ("Edit", sel!(onCardEdit:)),
+            ("Delete", sel!(onCardDelete:)),
+        ];
+
+        for (i, (label, action)) in buttons.iter().enumerate() {
+            let x = card_width - (button_width + spacing) * (buttons.len() - i) as f64 - 8.0;
+            let btn_frame =
+                CGRect::new(&CGPoint::new(x, button_y), &CGSize::new(button_width, 18.0));
+            let btn = crate::ui_helpers::create_button(
+                btn_frame,
+                label,
+                crate::ui_helpers::button_style::INLINE,
+            );
+            let _: () = msg_send![btn, setTag: index as isize];
+            if let Some(target) = target {
+                let _: () = msg_send![btn, setTarget: target];
+                let _: () = msg_send![btn, setAction: *action];
+            }
+            crate::ui_helpers::add_subview(card, btn);
+        }
+
+        let fav_frame = CGRect::new(
+            &CGPoint::new(card_width - 28.0, card_height - 24.0),
+            &CGSize::new(18.0, 16.0),
+        );
+        let fav_title = if entry.is_favorite { "♥" } else { "♡" };
+        let fav_btn = crate::ui_helpers::create_button(
+            fav_frame,
+            fav_title,
+            crate::ui_helpers::button_style::INLINE,
+        );
+        let _: () = msg_send![fav_btn, setTag: index as isize];
+        if let Some(target) = target {
+            let _: () = msg_send![fav_btn, setTarget: target];
+            let _: () = msg_send![fav_btn, setAction: sel!(onCardFavorite:)];
+        }
+        crate::ui_helpers::add_subview(card, fav_btn);
+    }
+
+    card
+}
+
+fn format_time(timestamp: SystemTime) -> String {
+    let now = SystemTime::now();
+    let diff = now
+        .duration_since(timestamp)
+        .unwrap_or(Duration::from_secs(0));
+    if diff < Duration::from_secs(3600) {
+        let mins = diff.as_secs() / 60;
+        if mins == 0 {
+            "just now".to_string()
+        } else {
+            format!("{} min ago", mins)
+        }
+    } else if diff < Duration::from_secs(86400) {
+        let hours = diff.as_secs() / 3600;
+        format!("{} hr ago", hours)
+    } else {
+        let dt: chrono::DateTime<chrono::Local> = timestamp.into();
+        dt.format("%H:%M").to_string()
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // UI State Update Functions (used by handlers and mod.rs)
 // ═══════════════════════════════════════════════════════════
 
 pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, force_rebuild: bool) {
-    let Some(container_ptr) = state.bubble_container else {
+    let Some(container_ptr) = state.agent_container else {
         return;
     };
     let container = container_ptr as Id;
 
     // Check if we need to rebuild bubbles or just update the last one
-    let bubble_count = state.bubble_views.len();
+    let bubble_count = state.agent_bubble_views.len();
     let message_count = state.messages.len();
 
-    // If streaming update to last message (same count, last is streaming)
     if !force_rebuild
         && bubble_count == message_count
         && message_count > 0
         && let Some(last_msg) = state.messages.last()
         && last_msg.is_streaming
-        && let Some((_, text_label_ptr)) = state.bubble_views.last()
+        && let Some((_, text_label_ptr)) = state.agent_bubble_views.last()
     {
-        // Just update the last bubble's text
         let text_label = *text_label_ptr as Id;
         unsafe {
             update_bubble_text(text_label, &last_msg.text, true);
@@ -380,23 +539,16 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, force_rebu
         return;
     }
 
-    // Full rebuild: clear existing bubbles
     unsafe {
         stack_view_clear(container);
     }
-    state.bubble_views.clear();
+    state.agent_bubble_views.clear();
 
-    // Get max width for bubbles (left panel width - padding)
-    let max_bubble_width = 420.0; // ~left_panel_width - 30
-
-    // Get action handler for Copy buttons
+    let max_bubble_width = 360.0;
     let action_handler = state.action_handler.map(|ptr| ptr as Id);
 
-    // Add bubbles in reverse order (newest first at top)
-    // Use enumerate to track original message indices for Copy buttons
     let messages_count = state.messages.len();
     for (rev_idx, message) in state.messages.iter().rev().enumerate() {
-        // Convert reversed index back to original index
         let original_idx = messages_count - 1 - rev_idx;
 
         let role = match message.role {
@@ -405,7 +557,6 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, force_rebu
             ChatRole::System => BubbleRole::System,
         };
 
-        // Only show Copy button for completed messages (not streaming)
         let (message_index, copy_target) = if !message.is_streaming {
             (Some(original_idx), action_handler)
         } else {
@@ -427,12 +578,11 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, force_rebu
             stack_view_add(container, bubble_view);
         }
         state
-            .bubble_views
+            .agent_bubble_views
             .push((bubble_view as usize, text_label as usize));
     }
 
-    // Scroll to top if forced (newest messages are at top)
-    if force_rebuild && let Some(scroll_view_ptr) = state.scroll_view {
+    if force_rebuild && let Some(scroll_view_ptr) = state.agent_scroll_view {
         unsafe {
             let scroll_view = scroll_view_ptr as Id;
             let content_view: Id = msg_send![scroll_view, contentView];
@@ -444,10 +594,9 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, force_rebu
 
 pub fn update_input_field_with_state(state: &mut VoiceChatOverlayState) {
     unsafe {
-        if let Some(input_ptr) = state.input_field {
+        if let Some(input_ptr) = state.agent_input_field {
             let input_field = input_ptr as Id;
             let ns_string_class = Class::get("NSString").unwrap();
-            // Manual input field shows manual_draft (left panel)
             let mut c_str = state.manual_draft.as_bytes().to_vec();
             c_str.push(0);
             let ns_str: Id = msg_send![ns_string_class, stringWithUTF8String: c_str.as_ptr()];
@@ -458,122 +607,11 @@ pub fn update_input_field_with_state(state: &mut VoiceChatOverlayState) {
 
 pub fn update_send_button_with_state(state: &mut VoiceChatOverlayState) {
     unsafe {
-        if let Some(send_ptr) = state.send_button {
+        if let Some(send_ptr) = state.agent_send_button {
             let send_button = send_ptr as Id;
-            // Send button enabled when manual_draft has content
             let enabled = !state.is_sending && !state.manual_draft.trim().is_empty();
             let _: () = msg_send![send_button, setEnabled: enabled];
         }
-    }
-}
-
-pub fn update_voice_draft_view_with_state(state: &mut VoiceChatOverlayState) {
-    unsafe {
-        if let Some(view_ptr) = state.voice_draft_view {
-            let text_view = view_ptr as Id;
-            let ns_string_class = Class::get("NSString").unwrap();
-            let mut c_str = state.voice_draft.as_bytes().to_vec();
-            c_str.push(0);
-            let ns_str: Id = msg_send![ns_string_class, stringWithUTF8String: c_str.as_ptr()];
-            let _: () = msg_send![text_view, setString: ns_str];
-        }
-    }
-}
-
-/// Populate the drafts list from ~/.codescribe/drafts/
-pub fn populate_drafts_list(state: &mut VoiceChatOverlayState) {
-    let Some(container_ptr) = state.drafts_container else {
-        return;
-    };
-    let container = container_ptr as Id;
-
-    let selected_path = state
-        .selected_draft_index
-        .and_then(|index| state.draft_files.get(index))
-        .cloned();
-
-    // Clear existing items
-    unsafe {
-        stack_view_clear(container);
-    }
-    state.draft_files.clear();
-    state.selected_draft_index = None;
-
-    // Get drafts directory
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let drafts_dir = std::path::PathBuf::from(home).join(".codescribe/drafts");
-
-    // List and cache draft files
-    state.draft_files = list_draft_files(&drafts_dir);
-
-    // Create UI row for each draft file
-    for (index, path) in state.draft_files.iter().enumerate() {
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-
-        // Create a simple label for the draft
-        let row = create_draft_row(filename, index);
-        unsafe {
-            stack_view_add(container, row);
-        }
-    }
-
-    // Select first draft if available
-    if let Some(path) = selected_path
-        && let Some(index) = state.draft_files.iter().position(|draft| draft == &path)
-    {
-        state.selected_draft_index = Some(index);
-    }
-    if state.selected_draft_index.is_none() && !state.draft_files.is_empty() {
-        state.selected_draft_index = Some(0);
-    }
-
-    info!("Populated {} drafts", state.draft_files.len());
-}
-
-/// Create a row for a draft file in the list
-fn create_draft_row(filename: &str, _index: usize) -> Id {
-    use core_graphics::geometry::{CGRect, CGSize};
-
-    unsafe {
-        let ns_text_field = Class::get("NSTextField").unwrap();
-        let ns_color = Class::get("NSColor").unwrap();
-        let ns_font = Class::get("NSFont").unwrap();
-
-        // Simple text field showing filename with icon
-        let display_text = format!("📄 {}", filename);
-
-        let row_frame = CGRect {
-            origin: CGPoint { x: 0.0, y: 0.0 },
-            size: CGSize {
-                width: 260.0,
-                height: 24.0,
-            },
-        };
-
-        let row: Id = msg_send![ns_text_field, alloc];
-        let row: Id = msg_send![row, initWithFrame: row_frame];
-
-        let _: () = msg_send![row, setBezeled: false];
-        let _: () = msg_send![row, setEditable: false];
-        let _: () = msg_send![row, setSelectable: true];
-        let _: () = msg_send![row, setDrawsBackground: false];
-
-        // White text
-        let white: Id = msg_send![ns_color, whiteColor];
-        let _: () = msg_send![row, setTextColor: white];
-
-        // Small font
-        let font: Id = msg_send![ns_font, systemFontOfSize: 11.0f64];
-        let _: () = msg_send![row, setFont: font];
-
-        // Set text
-        let text = ns_string(&display_text);
-        let _: () = msg_send![row, setStringValue: text];
-
-        row
     }
 }
 
@@ -581,38 +619,21 @@ fn create_draft_row(filename: &str, _index: usize) -> Id {
 pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.window = None;
     state.window_delegate = None;
-    state.scroll_view = None;
-    state.bubble_container = None;
-    state.bubble_views.clear();
-    state.status_field = None;
-    state.input_field = None;
-    state.send_button = None;
-    state.attach_button = None;
-    state.auto_send_checkbox = None;
-    state.action_handler = None;
-    state.voice_draft_view = None;
-    state.voice_draft_header = None;
-    state.voice_send_button = None;
-    state.voice_use_button = None;
-    state.collapse_button = None;
-    state.tab_bar = None;
-    state.drafts_scroll_view = None;
-    state.drafts_container = None;
-    state.draft_editor_scroll_view = None;
-    state.draft_editor_view = None;
-    state.draft_edit_button = None;
-    state.draft_copy_button = None;
-    state.draft_files.clear();
-    state.selected_draft_index = None;
-    state.editing_draft_index = None;
-    state.settings_scroll_view = None;
-    state.settings_container = None;
-    state.ai_formatting_checkbox = None;
-    state.edit_buttons_container = None;
+    state.blur_view = None;
+    state.title_label = None;
+    state.tab_control = None;
+    state.close_button = None;
+    state.settings_button = None;
+    state.drawer_scroll_view = None;
+    state.drawer_container = None;
+    state.drawer_entries.clear();
+    state.search_field = None;
+    state.agent_scroll_view = None;
+    state.agent_container = None;
+    state.agent_bubble_views.clear();
+    state.agent_input_field = None;
+    state.agent_send_button = None;
     state.messages.clear();
     state.manual_draft.clear();
-    state.voice_draft.clear();
-    state.attachments.clear();
     state.is_sending = false;
-    state.is_voice_active = false;
 }

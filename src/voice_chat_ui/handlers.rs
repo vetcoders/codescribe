@@ -6,16 +6,17 @@ use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
 use objc::{msg_send, sel, sel_impl};
 use std::sync::Once;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::ui_helpers::{
-    animate_window_width, get_text_view_string, ns_string, set_hidden, set_text_view_string,
+use crate::ui_helpers::{animate_fade, get_text, window_close};
+
+use super::api::{
+    clear_overlay_state, refresh_drawer, send_draft_message_impl, set_active_tab_impl,
 };
-
-use super::api::{clear_overlay_state, populate_drafts_list, send_draft_message_impl};
-use super::state::{ChatRole, OVERLAY_STATE};
+use super::state::{ChatRole, OVERLAY_STATE, Tab};
 
 // Type alias for Objective-C object pointers
+// SAFETY: raw Objective-C pointers used in AppKit FFI.
 type Id = *mut Object;
 
 static ACTION_HANDLER_INIT: Once = Once::new();
@@ -36,57 +37,37 @@ pub fn action_handler_class() -> *const Class {
                 on_send as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onToggleAutoSend:),
-                on_toggle_auto_send as extern "C" fn(&Object, Sel, Id),
-            );
-            decl.add_method(
                 sel!(onTabChanged:),
                 on_tab_changed as extern "C" fn(&Object, Sel, Id),
             );
+            decl.add_method(sel!(onClose:), on_close as extern "C" fn(&Object, Sel, Id));
             decl.add_method(
                 sel!(onCopyLastResponse:),
                 on_copy_last_response as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onAttach:),
-                on_attach as extern "C" fn(&Object, Sel, Id),
+                sel!(onCardCopy:),
+                on_card_copy as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onToggleCollapse:),
-                on_toggle_collapse as extern "C" fn(&Object, Sel, Id),
+                sel!(onCardEdit:),
+                on_card_edit as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onDraftEdit:),
-                on_draft_edit as extern "C" fn(&Object, Sel, Id),
+                sel!(onCardDelete:),
+                on_card_delete as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onDraftCopy:),
-                on_draft_copy as extern "C" fn(&Object, Sel, Id),
+                sel!(onCardFavorite:),
+                on_card_favorite as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onSearchChanged:),
+                on_search_changed as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onCopyMessage:),
                 on_copy_message as extern "C" fn(&Object, Sel, Id),
-            );
-            // Settings tab handlers
-            decl.add_method(
-                sel!(onSettingsAiFormatting:),
-                on_settings_ai_formatting as extern "C" fn(&Object, Sel, Id),
-            );
-            decl.add_method(
-                sel!(onSettingsEditConfig:),
-                on_settings_edit_config as extern "C" fn(&Object, Sel, Id),
-            );
-            decl.add_method(
-                sel!(onSettingsEditPrompt:),
-                on_settings_edit_prompt as extern "C" fn(&Object, Sel, Id),
-            );
-            decl.add_method(
-                sel!(onSettingsOpenPromptsFolder:),
-                on_settings_open_prompts_folder as extern "C" fn(&Object, Sel, Id),
-            );
-            decl.add_method(
-                sel!(onSettingsResetContext:),
-                on_settings_reset_context as extern "C" fn(&Object, Sel, Id),
             );
             let cls = decl.register();
             ACTION_HANDLER_CLASS = cls;
@@ -121,6 +102,19 @@ extern "C" fn on_send(_this: &Object, _cmd: Sel, _sender: Id) {
     send_draft_message_impl();
 }
 
+extern "C" fn on_close(_this: &Object, _cmd: Sel, _sender: Id) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(window_ptr) = state.window {
+        unsafe {
+            let window = window_ptr as Id;
+            animate_fade(window, 0.0, 0.15);
+            window_close(window);
+        }
+    }
+    clear_overlay_state(&mut state);
+    debug!("Voice chat overlay closed by user");
+}
+
 extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id) {
     // Window is closing (user clicked close). Clear state to avoid use-after-free.
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -128,90 +122,15 @@ extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id)
     debug!("Voice chat overlay closed by user");
 }
 
-extern "C" fn on_toggle_auto_send(_this: &Object, _cmd: Sel, sender: Id) {
-    unsafe {
-        let state_val: isize = msg_send![sender, state];
-        let is_on = state_val == 1; // NSControlStateValueOn = 1
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.auto_send_enabled = is_on;
-        info!("Auto-send toggled: {}", is_on);
-    }
-}
-
-extern "C" fn on_attach(_this: &Object, _cmd: Sel, _sender: Id) {
-    unsafe {
-        let ns_open_panel = Class::get("NSOpenPanel").unwrap();
-        let panel: Id = msg_send![ns_open_panel, openPanel];
-
-        // Configure panel
-        let _: () = msg_send![panel, setCanChooseFiles: true];
-        let _: () = msg_send![panel, setCanChooseDirectories: false];
-        let _: () = msg_send![panel, setAllowsMultipleSelection: true];
-
-        let ns_string_class = Class::get("NSString").unwrap();
-        let title: Id =
-            msg_send![ns_string_class, stringWithUTF8String: c"Select files to attach".as_ptr()];
-        let _: () = msg_send![panel, setTitle: title];
-
-        // Run modal
-        let result: isize = msg_send![panel, runModal];
-
-        // NSModalResponseOK = 1
-        if result == 1 {
-            let urls: Id = msg_send![panel, URLs];
-            let count: usize = msg_send![urls, count];
-
-            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            for i in 0..count {
-                let url: Id = msg_send![urls, objectAtIndex: i];
-                let path: Id = msg_send![url, path];
-                let path_cstr: *const i8 = msg_send![path, UTF8String];
-                if !path_cstr.is_null() {
-                    let path_str = std::ffi::CStr::from_ptr(path_cstr).to_string_lossy();
-                    state
-                        .attachments
-                        .push(std::path::PathBuf::from(path_str.to_string()));
-                    info!("Attached: {}", path_str);
-                }
-            }
-
-            // Update button to show count
-            if let Some(btn_ptr) = state.attach_button {
-                let btn = btn_ptr as Id;
-                let title_str = format!("📎{}", state.attachments.len());
-                let mut c_str = title_str.as_bytes().to_vec();
-                c_str.push(0);
-                let title: Id = msg_send![ns_string_class, stringWithUTF8String: c_str.as_ptr()];
-                let _: () = msg_send![btn, setTitle: title];
-            }
-        }
-    }
-}
-
 extern "C" fn on_tab_changed(_this: &Object, _cmd: Sel, sender: Id) {
     unsafe {
         let selected: isize = msg_send![sender, selectedSegment];
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.selected_tab = selected as usize;
-
-        // Switch visible content between Drafts (0) and Settings (1)
-        let show_drafts = selected == 0;
-        let is_editing = state.editing_draft_index.is_some();
-
-        if let Some(drafts_ptr) = state.drafts_scroll_view {
-            set_hidden(drafts_ptr as Id, !show_drafts || is_editing);
-        }
-        if let Some(editor_ptr) = state.draft_editor_scroll_view {
-            set_hidden(editor_ptr as Id, !show_drafts || !is_editing);
-        }
-        if let Some(settings_ptr) = state.settings_scroll_view {
-            set_hidden(settings_ptr as Id, show_drafts);
-        }
-
-        info!(
-            "Tab changed to: {}",
-            if show_drafts { "Drafts" } else { "Settings" }
-        );
+        let tab = if selected == 0 {
+            Tab::Drawer
+        } else {
+            Tab::Agent
+        };
+        set_active_tab_impl(tab);
     }
 }
 
@@ -231,176 +150,83 @@ extern "C" fn on_copy_last_response(_this: &Object, _cmd: Sel, _sender: Id) {
     }
 }
 
-extern "C" fn on_toggle_collapse(_this: &Object, _cmd: Sel, sender: Id) {
-    // Window dimensions for animation
-    const EXPANDED_WIDTH: f64 = 750.0;
-    const COLLAPSED_WIDTH: f64 = 460.0; // Left panel (450) + some padding
-    const ANIMATION_DURATION: f64 = 0.25;
-
+extern "C" fn on_card_copy(_this: &Object, _cmd: Sel, sender: Id) {
     unsafe {
+        let tag: isize = msg_send![sender, tag];
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.sidecar_collapsed = !state.sidecar_collapsed;
-        let is_collapsed = state.sidecar_collapsed;
-        let show_drafts = state.selected_tab == 0;
-        let is_editing = state.editing_draft_index.is_some();
-
-        // Update button title
-        let new_title = if is_collapsed { "<|" } else { ">|" };
-        let title = ns_string(new_title);
-        let _: () = msg_send![sender, setTitle: title];
-
-        // Hide right panel elements BEFORE collapsing (so they're hidden during animation)
-        if is_collapsed {
-            if let Some(tab_ptr) = state.tab_bar {
-                set_hidden(tab_ptr as Id, true);
-            }
-            if let Some(scroll_ptr) = state.drafts_scroll_view {
-                set_hidden(scroll_ptr as Id, true);
-            }
-            if let Some(editor_ptr) = state.draft_editor_scroll_view {
-                set_hidden(editor_ptr as Id, true);
-            }
-            if let Some(view_ptr) = state.voice_draft_view {
-                set_hidden(view_ptr as Id, true);
-            }
-            if let Some(header_ptr) = state.voice_draft_header {
-                set_hidden(header_ptr as Id, true);
-            }
-            if let Some(settings_ptr) = state.settings_scroll_view {
-                set_hidden(settings_ptr as Id, true);
-            }
-        }
-
-        // Animate window width change (drawer slide)
-        if let Some(window_ptr) = state.window {
-            let window = window_ptr as Id;
-            let target_width = if is_collapsed {
-                COLLAPSED_WIDTH
-            } else {
-                EXPANDED_WIDTH
-            };
-            animate_window_width(window, target_width, ANIMATION_DURATION);
-        }
-
-        // Show right panel elements AFTER expanding (schedule after animation)
-        if !is_collapsed {
-            // Dispatch after animation completes
-            let tab_ptr = state.tab_bar;
-            let scroll_ptr = state.drafts_scroll_view;
-            let editor_ptr = state.draft_editor_scroll_view;
-            let voice_ptr = state.voice_draft_view;
-            let header_ptr = state.voice_draft_header;
-            let settings_ptr = state.settings_scroll_view;
-
-            dispatch::Queue::main().exec_after(
-                std::time::Duration::from_millis((ANIMATION_DURATION * 1000.0) as u64 + 50),
-                move || {
-                    if let Some(ptr) = tab_ptr {
-                        set_hidden(ptr as Id, false);
-                    }
-                    if let Some(ptr) = scroll_ptr {
-                        set_hidden(ptr as Id, !show_drafts || is_editing);
-                    }
-                    if let Some(ptr) = editor_ptr {
-                        set_hidden(ptr as Id, !show_drafts || !is_editing);
-                    }
-                    if let Some(ptr) = voice_ptr {
-                        set_hidden(ptr as Id, false);
-                    }
-                    if let Some(ptr) = header_ptr {
-                        set_hidden(ptr as Id, false);
-                    }
-                    if let Some(ptr) = settings_ptr {
-                        set_hidden(ptr as Id, show_drafts);
-                    }
-                },
-            );
-        }
-
-        info!("Sidecar collapsed: {} (animated)", is_collapsed);
-    }
-}
-
-extern "C" fn on_draft_edit(_this: &Object, _cmd: Sel, _sender: Id) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(editing_index) = state.editing_draft_index {
-        let Some(path) = state.draft_files.get(editing_index) else {
-            info!("Editing draft index is invalid");
+        let Some(entry) = state.drawer_entries.get(tag as usize) else {
+            warn!("Invalid drawer entry index for copy: {}", tag);
             return;
         };
-        let Some(editor_view_ptr) = state.draft_editor_view else {
-            info!("Draft editor view not available");
-            return;
-        };
-        let updated_text = unsafe { get_text_view_string(editor_view_ptr as Id) };
-        match std::fs::write(path, updated_text.as_bytes()) {
-            Ok(()) => {
-                info!("Saved draft: {}", path.display());
-                populate_drafts_list(&mut state);
+        match std::fs::read_to_string(&entry.path) {
+            Ok(content) => {
+                copy_to_clipboard(&content);
+                info!("Copied drawer entry to clipboard: {}", entry.path.display());
             }
             Err(err) => {
-                info!("Failed to save draft {}: {}", path.display(), err);
-                return;
+                warn!("Failed to read entry {}: {}", entry.path.display(), err);
             }
         }
-
-        if let Some(scroll_ptr) = state.drafts_scroll_view {
-            unsafe { set_hidden(scroll_ptr as Id, false) };
-        }
-        if let Some(editor_scroll_ptr) = state.draft_editor_scroll_view {
-            unsafe { set_hidden(editor_scroll_ptr as Id, true) };
-        }
-        if let Some(button_ptr) = state.draft_edit_button {
-            let title = ns_string("Edit");
-            let _: () = unsafe { msg_send![button_ptr as Id, setTitle: title] };
-        }
-        state.editing_draft_index = None;
-        return;
-    }
-
-    if let Some(index) = state.selected_draft_index {
-        if let Some(path) = state.draft_files.get(index).cloned() {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    if let Some(editor_view_ptr) = state.draft_editor_view {
-                        unsafe { set_text_view_string(editor_view_ptr as Id, &content) };
-                    }
-                    if let Some(scroll_ptr) = state.drafts_scroll_view {
-                        unsafe { set_hidden(scroll_ptr as Id, true) };
-                    }
-                    if let Some(editor_scroll_ptr) = state.draft_editor_scroll_view {
-                        unsafe { set_hidden(editor_scroll_ptr as Id, false) };
-                    }
-                    if let Some(button_ptr) = state.draft_edit_button {
-                        let title = ns_string("Save");
-                        let _: () = unsafe { msg_send![button_ptr as Id, setTitle: title] };
-                    }
-                    state.editing_draft_index = Some(index);
-                    info!("Loaded draft for in-app edit: {}", path.display());
-                }
-                Err(err) => {
-                    info!("Failed to read draft {}: {}", path.display(), err);
-                }
-            }
-        }
-    } else {
-        info!("No draft selected for edit");
     }
 }
 
-extern "C" fn on_draft_copy(_this: &Object, _cmd: Sel, _sender: Id) {
-    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(index) = state.selected_draft_index {
-        if let Some(path) = state.draft_files.get(index) {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                copy_to_clipboard(&content);
-                info!("Copied draft to clipboard: {}", path.display());
-            } else {
-                info!("Failed to read draft: {}", path.display());
+extern "C" fn on_card_edit(_this: &Object, _cmd: Sel, sender: Id) {
+    unsafe {
+        let tag: isize = msg_send![sender, tag];
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = state.drawer_entries.get(tag as usize) else {
+            warn!("Invalid drawer entry index for edit: {}", tag);
+            return;
+        };
+        let opened = crate::ui_helpers::open_file_in_editor(&entry.path);
+        info!(
+            "Opened drawer entry in editor: {} (ok={})",
+            entry.path.display(),
+            opened
+        );
+    }
+}
+
+extern "C" fn on_card_delete(_this: &Object, _cmd: Sel, sender: Id) {
+    unsafe {
+        let tag: isize = msg_send![sender, tag];
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = state.drawer_entries.get(tag as usize) else {
+            warn!("Invalid drawer entry index for delete: {}", tag);
+            return;
+        };
+        match std::fs::remove_file(&entry.path) {
+            Ok(()) => {
+                info!("Deleted drawer entry: {}", entry.path.display());
+            }
+            Err(err) => {
+                warn!("Failed to delete entry {}: {}", entry.path.display(), err);
             }
         }
-    } else {
-        info!("No draft selected for copy");
+    }
+    refresh_drawer();
+}
+
+extern "C" fn on_card_favorite(_this: &Object, _cmd: Sel, sender: Id) {
+    unsafe {
+        let tag: isize = msg_send![sender, tag];
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = state.drawer_entries.get_mut(tag as usize) {
+            entry.is_favorite = !entry.is_favorite;
+            info!(
+                "Toggled favorite for {}: {}",
+                entry.path.display(),
+                entry.is_favorite
+            );
+        }
+    }
+    refresh_drawer();
+}
+
+extern "C" fn on_search_changed(_this: &Object, _cmd: Sel, sender: Id) {
+    unsafe {
+        let query = get_text(sender);
+        super::api::filter_drawer(&query);
     }
 }
 
@@ -419,61 +245,6 @@ extern "C" fn on_copy_message(_this: &Object, _cmd: Sel, sender: Id) {
             debug!("Invalid message index: {}", msg_index);
         }
     }
-}
-
-// ═══════════════════════════════════════════════════════════
-// Settings Tab Handlers
-// ═══════════════════════════════════════════════════════════
-
-extern "C" fn on_settings_ai_formatting(_this: &Object, _cmd: Sel, sender: Id) {
-    unsafe {
-        let state_val: isize = msg_send![sender, state];
-        let enabled = state_val == 1;
-
-        // Save to config and sync tray menu
-        let new_state = crate::tray::toggle_ai_formatting();
-        // If state doesn't match what user clicked, toggle again
-        if new_state != enabled {
-            let _ = crate::tray::toggle_ai_formatting();
-        }
-
-        info!(
-            "AI Formatting toggled via Settings: {}",
-            if enabled { "ON" } else { "OFF" }
-        );
-    }
-}
-
-extern "C" fn on_settings_edit_config(_this: &Object, _cmd: Sel, _sender: Id) {
-    // Open .env config file in default editor
-    if let Some(base_dirs) = directories::BaseDirs::new() {
-        let config_path = base_dirs.home_dir().join(".codescribe").join(".env");
-        if config_path.exists() {
-            let _ = std::process::Command::new("open")
-                .arg("-t")
-                .arg(&config_path)
-                .spawn();
-            info!("Opened config file: {}", config_path.display());
-        } else {
-            info!("Config file not found: {}", config_path.display());
-        }
-    }
-}
-
-extern "C" fn on_settings_edit_prompt(_this: &Object, _cmd: Sel, _sender: Id) {
-    codescribe_core::config::prompts::open_prompt_file("formatting.txt");
-    info!("Opened formatting prompt for editing");
-}
-
-extern "C" fn on_settings_open_prompts_folder(_this: &Object, _cmd: Sel, _sender: Id) {
-    codescribe_core::config::prompts::open_prompts_folder();
-    info!("Opened prompts folder");
-}
-
-extern "C" fn on_settings_reset_context(_this: &Object, _cmd: Sel, _sender: Id) {
-    codescribe_core::state::conversation::reset_conversation();
-    codescribe_core::ai_formatting::reset_ollama_memory();
-    info!("AI context reset via Settings");
 }
 
 // ═══════════════════════════════════════════════════════════

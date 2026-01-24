@@ -391,6 +391,75 @@ pub fn create_segmented_control(frame: CGRect, labels: &[&str]) -> Id {
 }
 
 // ============================================================================
+// Card View Helpers
+// ============================================================================
+
+/// Create a card view with title, subtitle, and preview text.
+pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &str) -> Id {
+    unsafe {
+        let ns_view = Class::get("NSView").unwrap();
+        let ns_color = Class::get("NSColor").unwrap();
+
+        let view: Id = msg_send![ns_view, alloc];
+        let view: Id = msg_send![view, initWithFrame: frame];
+        let _: () = msg_send![view, setWantsLayer: true];
+
+        let layer: Id = msg_send![view, layer];
+        if !layer.is_null() {
+            let bg_color: Id =
+                msg_send![ns_color, colorWithRed: 0.2 green: 0.2 blue: 0.2 alpha: 0.4];
+            let _: () = msg_send![layer, setBackgroundColor: bg_color];
+            let _: () = msg_send![layer, setCornerRadius: 12.0f64];
+        }
+
+        let title_frame = CGRect::new(
+            &CGPoint::new(12.0, frame.size.height - 24.0),
+            &CGSize::new(120.0, 16.0),
+        );
+        let subtitle_frame = CGRect::new(
+            &CGPoint::new(frame.size.width - 140.0, frame.size.height - 24.0),
+            &CGSize::new(120.0, 16.0),
+        );
+        let preview_frame = CGRect::new(
+            &CGPoint::new(12.0, 18.0),
+            &CGSize::new(frame.size.width - 24.0, frame.size.height - 48.0),
+        );
+
+        let title_label = create_label(LabelConfig {
+            frame: title_frame,
+            text: title.to_string(),
+            font_size: 12.0,
+            bold: true,
+            ..Default::default()
+        });
+        let subtitle_label = create_label(LabelConfig {
+            frame: subtitle_frame,
+            text: subtitle.to_string(),
+            font_size: 11.0,
+            bold: false,
+            text_color: color_white(0.6),
+            ..Default::default()
+        });
+        let preview_label = create_label(LabelConfig {
+            frame: preview_frame,
+            text: preview.to_string(),
+            font_size: 12.0,
+            bold: false,
+            ..Default::default()
+        });
+
+        let _: () = msg_send![preview_label, setLineBreakMode: 0_isize]; // NSLineBreakByWordWrapping
+        let _: () = msg_send![preview_label, setUsesSingleLineMode: false];
+
+        add_subview(view, title_label);
+        add_subview(view, subtitle_label);
+        add_subview(view, preview_label);
+
+        view
+    }
+}
+
+// ============================================================================
 // Text Field Value Helpers
 // ============================================================================
 
