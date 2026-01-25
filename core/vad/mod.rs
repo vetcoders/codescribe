@@ -1,39 +1,41 @@
 //! Voice Activity Detection (VAD) module using Silero neural network.
 //!
-//! Replaces RMS-based silence detection with neural speech detection.
-//! Silero VAD is trained to distinguish speech from background noise,
-//! breathing, keyboard clicks, and other non-speech sounds.
+//! Custom wrapper that shares ort runtime with fastembed (no dependency conflicts).
+//! Uses worker thread to avoid blocking audio callbacks.
 //!
 //! ## Quick Start
 //!
 //! ```ignore
 //! use codescribe_core::vad;
 //!
-//! // Initialize VAD (downloads ~2MB ONNX model on first use)
-//! vad::init()?;
+//! // Initialize VAD with model path
+//! vad::init(&vad::default_model_path())?;
 //!
-//! // Check if audio contains speech (probability > threshold)
-//! let is_speech = vad::is_speech(&samples);
+//! // Check if audio contains speech (with sample rate)
+//! let is_speech = vad::is_speech(&samples, 48000);
 //!
 //! // Get raw probability (0.0 - 1.0)
-//! let prob = vad::speech_probability(&samples);
+//! let prob = vad::speech_probability(&samples, 48000);
 //! ```
 //!
-//! ## Requirements
+//! ## Resampling
 //!
-//! - Audio must be 16kHz mono f32 samples
-//! - Chunk size should be 512 samples (~32ms) for best accuracy
+//! Silero VAD requires 16kHz audio. The module automatically resamples
+//! from common rates (44.1kHz, 48kHz) when you pass the sample_rate parameter.
 //!
 //! Created by M&K (c)2026 VetCoders
 
 pub mod config;
-pub mod silero;
+pub mod silero_ort;
 
 pub use config::VadConfig;
-pub use silero::{SileroVad, init, is_initialized, is_speech, reset, speech_probability};
+pub use silero_ort::{
+    default_model_path, init, init_with_config, is_initialized, is_speech, reset,
+    speech_probability, Resampler, SileroVad, VAD_SAMPLE_RATE,
+};
 
-/// Expected sample rate for VAD (must match Silero's training)
-pub const SAMPLE_RATE: u32 = 16000;
+/// Expected sample rate for VAD (Silero requires 16kHz)
+pub const SAMPLE_RATE: u32 = VAD_SAMPLE_RATE;
 
 /// Recommended chunk size in samples (512 = 32ms at 16kHz)
 pub const CHUNK_SIZE: usize = 512;

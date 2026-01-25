@@ -16,7 +16,6 @@ use tracing::{debug, error, info};
 const DEFAULT_CHUNK_DURATION_SEC: f32 = 15.0;
 const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for context
 // Note: RMS-based VAD replaced with WebRTC VAD (see vad module)
-const DEFAULT_VAD_SPEECH_THRESHOLD: f32 = 0.5;
 const DEFAULT_VAD_SILENCE_SEC: f32 = 0.8;
 const DEFAULT_VAD_MAX_UTTERANCE_SEC: f32 = 30.0;
 const DEFAULT_VAD_PRE_ROLL_MS: u64 = 300;
@@ -264,7 +263,7 @@ impl VADSegmenter {
             .max(1.0) as usize;
 
         // Ensure VAD is initialized (auto-inits if not already)
-        let _ = vad::init();
+        let _ = vad::init(&vad::default_model_path());
 
         Self {
             pending_samples: Vec::new(),
@@ -285,8 +284,8 @@ impl VADSegmenter {
 
         self.pending_samples.extend_from_slice(audio);
 
-        // Use WebRTC VAD for speech detection (replaces RMS-based detection)
-        let speech_prob = vad::speech_probability(audio);
+        // Use Silero VAD for speech detection (with automatic resampling to 16kHz)
+        let speech_prob = vad::speech_probability(audio, self.sample_rate);
         let is_silence = speech_prob < self.speech_threshold;
 
         if is_silence {

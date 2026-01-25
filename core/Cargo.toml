@@ -31,7 +31,8 @@ candle-nn = "0.9"
 tokenizers = "0.22"
 indicatif = "0.18"
 zip = "0.6"
-ndarray = "0.16"
+# ndarray 0.17 required to match fastembed/ort dependency
+ndarray = "0.17"
 ndarray-npy = "0.9"
 
 # WebSocket client for voice chat
@@ -53,8 +54,12 @@ directories = "6"
 shellexpand = "3"
 dotenvy = "0.15"
 
-# Voice Activity Detection (WebRTC VAD)
-webrtc-vad = "0.4"
+# Voice Activity Detection - custom Silero wrapper (shares ort with fastembed)
+# Model: silero_vad.onnx from https://github.com/snakers4/silero-vad
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic"] }
+
+# Moshi - conversational voice AI (Kyutai Labs)
+moshi = { path = "../../moshi/rust/moshi-core", features = ["metal"] }
 
 # Time/utilities
 chrono = "0.4"
