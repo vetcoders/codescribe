@@ -3,6 +3,7 @@ use crate::stream_postprocess::StreamPostProcessor;
 use crate::stt::whisper;
 use crate::stt::whisper::append_with_overlap_dedup;
 use crate::stt::whisper::singleton::engine as get_engine;
+use crate::vad;
 use anyhow::{Context, Result, anyhow};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -14,7 +15,8 @@ use tracing::{debug, error, info};
 
 const DEFAULT_CHUNK_DURATION_SEC: f32 = 15.0;
 const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for context
-const DEFAULT_VAD_SILENCE_DB: f32 = -45.0;
+// Note: RMS-based VAD replaced with WebRTC VAD (see vad module)
+const DEFAULT_VAD_SPEECH_THRESHOLD: f32 = 0.5;
 const DEFAULT_VAD_SILENCE_SEC: f32 = 0.8;
 const DEFAULT_VAD_MAX_UTTERANCE_SEC: f32 = 30.0;
 const DEFAULT_VAD_PRE_ROLL_MS: u64 = 300;
@@ -215,7 +217,8 @@ async fn transcription_worker(
 }
 
 struct VADConfig {
-    silence_threshold_db: f32,
+    /// Speech probability threshold (0.0-1.0). Audio with probability >= this is speech.
+    speech_threshold: f32,
     silence_duration_sec: f32,
     max_utterance_sec: f32,
     pre_roll_ms: u64,
@@ -224,7 +227,8 @@ struct VADConfig {
 impl VADConfig {
     fn from_env() -> Self {
         Self {
-            silence_threshold_db: env_f32("CODESCRIBE_VAD_SILENCE_DB", DEFAULT_VAD_SILENCE_DB),
+            // Use the global VAD config threshold if set, otherwise default 0.5
+            speech_threshold: env_f32("CODESCRIBE_VAD_THRESHOLD", 0.5).clamp(0.1, 0.9),
             silence_duration_sec: env_f32("CODESCRIBE_VAD_SILENCE_SEC", DEFAULT_VAD_SILENCE_SEC)
                 .clamp(0.2, 5.0),
             max_utterance_sec: env_f32(
@@ -240,7 +244,8 @@ impl VADConfig {
 struct VADSegmenter {
     pending_samples: Vec<f32>,
     sample_rate: u32,
-    silence_threshold_db: f32,
+    /// Speech probability threshold (0.0-1.0)
+    speech_threshold: f32,
     silence_duration_sec: f32,
     max_utterance_sec: f32,
     pre_roll_samples: usize,
@@ -257,10 +262,14 @@ impl VADSegmenter {
         let pre_roll_samples = ((config.pre_roll_ms as f32 / 1000.0) * sample_rate as f32)
             .round()
             .max(1.0) as usize;
+
+        // Ensure VAD is initialized (auto-inits if not already)
+        let _ = vad::init();
+
         Self {
             pending_samples: Vec::new(),
             sample_rate,
-            silence_threshold_db: config.silence_threshold_db,
+            speech_threshold: config.speech_threshold,
             silence_duration_sec: config.silence_duration_sec,
             max_utterance_sec: config.max_utterance_sec,
             pre_roll_samples,
@@ -275,9 +284,12 @@ impl VADSegmenter {
         }
 
         self.pending_samples.extend_from_slice(audio);
-        let rms_db = calculate_rms_db(audio);
 
-        if rms_db < self.silence_threshold_db {
+        // Use WebRTC VAD for speech detection (replaces RMS-based detection)
+        let speech_prob = vad::speech_probability(audio);
+        let is_silence = speech_prob < self.speech_threshold;
+
+        if is_silence {
             if self.is_in_speech {
                 self.silence_frames = self.silence_frames.saturating_add(audio.len());
                 let silence_duration = self.silence_frames as f32 / self.sample_rate as f32;
@@ -795,21 +807,7 @@ pub fn transcribe_streaming_samples(
     Ok(out)
 }
 
-fn calculate_rms_db(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return -120.0;
-    }
-
-    let sum_squares: f64 = samples
-        .iter()
-        .map(|&s| {
-            let sample = s as f64;
-            sample * sample
-        })
-        .sum();
-    let rms = (sum_squares / samples.len() as f64).sqrt() as f32;
-    20.0 * (rms + 1e-9).log10()
-}
+// Note: calculate_rms_db removed - now using vad::speech_probability for voice detection
 
 #[cfg(test)]
 mod tests {
@@ -823,16 +821,18 @@ mod tests {
     #[test]
     fn test_vad_segmenter_flush_on_silence() {
         let config = VADConfig {
-            silence_threshold_db: -40.0,
+            speech_threshold: 0.5, // Probability threshold for speech detection
             silence_duration_sec: 0.3,
             max_utterance_sec: 2.0,
             pre_roll_ms: 100,
         };
         let mut segmenter = VADSegmenter::with_config(1000, config);
 
-        let speech = vec![1.0; 400];
+        // Feed speech (high amplitude triggers VAD)
+        let speech = vec![0.8; 400];
         assert!(segmenter.feed(&speech).is_none());
 
+        // Feed silence (VAD should detect no speech)
         let silence = vec![0.0; 300];
         let utterance = segmenter
             .feed(&silence)
@@ -843,13 +843,13 @@ mod tests {
     #[test]
     fn test_vad_segmenter_flush_on_max_duration() {
         let config = VADConfig {
-            silence_threshold_db: -40.0,
+            speech_threshold: 0.5, // Probability threshold for speech detection
             silence_duration_sec: 1.0,
             max_utterance_sec: 0.5,
             pre_roll_ms: 100,
         };
         let mut segmenter = VADSegmenter::with_config(1000, config);
-        let speech = vec![1.0; 600];
+        let speech = vec![0.8; 600];
         let utterance = segmenter
             .feed(&speech)
             .expect("Expected utterance after max duration");

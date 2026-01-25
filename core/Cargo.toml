@@ -53,6 +53,9 @@ directories = "6"
 shellexpand = "3"
 dotenvy = "0.15"
 
+# Voice Activity Detection (WebRTC VAD)
+webrtc-vad = "0.4"
+
 # Time/utilities
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
@@ -75,5 +78,6 @@ dirs = "6"
 
 [lints.rust]
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
-# embed_model is set by build.rs when model is available
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)'] }
+# embed_model is set by build.rs when Whisper model is available
+# embed_tts is set by build.rs when TTS model is available (CODESCRIBE_EMBED_TTS=1)
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)'] }
