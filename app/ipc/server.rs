@@ -14,11 +14,11 @@ use tracing::{info, warn};
 
 use super::{AppStatus, IpcCommand, IpcResponse};
 use crate::audio::load_audio_file;
+use crate::config::Config;
 use crate::config::prompts::{
     DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, get_assistive_prompt,
     get_assistive_prompt_path, get_formatting_prompt, get_formatting_prompt_path,
 };
-use crate::config::{AiProvider, Config};
 use crate::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
 use crate::stream_postprocess::StreamPostProcessor;
 use crate::whisper;
@@ -162,9 +162,14 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
             }
 
             let language = Config::load().whisper_language;
-            let response =
-                ai_formatting::format_text(&message, Some(language.as_str()), true).await;
-            IpcResponse::Message(response)
+            let response = ai_formatting::format_text_with_status(
+                &message,
+                Some(language.as_str()),
+                true,
+                None,
+            )
+            .await;
+            IpcResponse::Message(response.text)
         }
         IpcCommand::ResetContext => {
             ai_formatting::reset_ollama_memory();
@@ -181,12 +186,13 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
             }
 
             let lang = language.as_deref();
-            let formatted = ai_formatting::format_text(&text, lang, assistive).await;
+            let formatted =
+                ai_formatting::format_text_with_status(&text, lang, assistive, None).await;
 
-            if formatted.trim().is_empty() {
+            if formatted.text.trim().is_empty() {
                 IpcResponse::Error("Formatting returned empty result".to_string())
             } else {
-                IpcResponse::Message(formatted)
+                IpcResponse::Message(formatted.text)
             }
         }
         IpcCommand::TranscribeFile { path } => {
@@ -334,11 +340,6 @@ fn persist_config(config: &Config) -> Result<()> {
         &mut env_vars,
     );
     put(
-        "AI_PROVIDER",
-        ai_provider_to_env(config.ai_provider),
-        &mut env_vars,
-    );
-    put(
         "AI_MAX_TOKENS",
         config.ai_max_tokens.to_string(),
         &mut env_vars,
@@ -411,21 +412,6 @@ fn persist_config(config: &Config) -> Result<()> {
         &mut env_vars,
     );
     put(
-        "WHISPER_SERVER_URL",
-        config.whisper_server_url.clone(),
-        &mut env_vars,
-    );
-
-    put(
-        "LLM_SERVER_URL",
-        config.llm_server_url.clone(),
-        &mut env_vars,
-    );
-    put("LLM_HOST", config.ollama_host.clone(), &mut env_vars);
-    put("OLLAMA_HOST", config.ollama_host.clone(), &mut env_vars);
-    put("LLM_MODEL", config.ollama_model.clone(), &mut env_vars);
-    put("OLLAMA_MODEL", config.ollama_model.clone(), &mut env_vars);
-    put(
         "LLM_ENDPOINT",
         config.llm_endpoint.clone().unwrap_or_default(),
         &mut env_vars,
@@ -478,13 +464,6 @@ fn bool_to_env(value: bool) -> String {
         "1".to_string()
     } else {
         "0".to_string()
-    }
-}
-
-fn ai_provider_to_env(provider: AiProvider) -> String {
-    match provider {
-        AiProvider::Harmony => "harmony".to_string(),
-        AiProvider::Ollama => "ollama".to_string(),
     }
 }
 

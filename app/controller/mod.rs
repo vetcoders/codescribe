@@ -43,10 +43,7 @@ use crate::os::clipboard;
 use crate::tray::{TrayStatus, update_tray_status};
 use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
-use helpers::{
-    cloud_credentials_available, cloud_stt_enabled, raw_save_enabled, route_transcription_delta,
-    setup_voice_chat_send_callback,
-};
+use helpers::{raw_save_enabled, route_transcription_delta, setup_voice_chat_send_callback};
 use types::ValidatedAudioPath;
 
 static OVERLAY_CONTROLLER: OnceLock<Arc<RecordingController>> = OnceLock::new();
@@ -346,12 +343,12 @@ impl RecordingController {
             match crate::client::check_health().await {
                 Ok(true) => {}
                 Ok(false) => {
-                    warn!("Backend not ready (model loading)");
+                    warn!("Whisper engine not ready");
                     let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
                     return Ok(());
                 }
                 Err(e) => {
-                    error!("Backend unavailable: {}", e);
+                    error!("Whisper engine unavailable: {}", e);
                     let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
                     return Ok(());
                 }
@@ -465,12 +462,12 @@ impl RecordingController {
             match crate::client::check_health().await {
                 Ok(true) => {}
                 Ok(false) => {
-                    warn!("Backend not ready (model loading)");
+                    warn!("Whisper engine not ready");
                     let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
                     return Ok(());
                 }
                 Err(e) => {
-                    error!("Backend unavailable: {}", e);
+                    error!("Whisper engine unavailable: {}", e);
                     let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Error);
                     return Ok(());
                 }
@@ -627,13 +624,12 @@ impl RecordingController {
                 let _ = update_tray_status(TrayStatus::Success);
                 info!("Processing finished successfully. State reset to IDLE.");
 
-                // After recording finishes, enter decision mode for non-assistive overlays
+                // After recording finishes, enter decision mode + auto-hide ONLY for non‑assistive flows.
+                // Assistive/chat overlay must stay alive (bubbles persist; user may keep chatting).
                 if !assistive {
                     crate::enter_decision_mode();
+                    crate::schedule_auto_hide();
                 }
-
-                // After recording finishes, schedule overlay auto-hide
-                crate::schedule_auto_hide();
             }
             Err(e) => {
                 error!("Processing failed: {}", e);
@@ -683,32 +679,48 @@ impl RecordingController {
         // Capture timestamp NOW for pairing audio with transcript
         let recording_timestamp = chrono::Local::now();
 
-        // Get language from config
-        let language = self.config.read().await.whisper_language;
+        let config = self.config.read().await.clone();
+        let language = config.whisper_language;
         let language_opt = Some(language.as_str());
-        let use_local_stt = self.config.read().await.use_local_stt;
-        let cloud_enabled = cloud_stt_enabled();
+        let use_local_stt = config.use_local_stt;
         let raw_save_enabled = raw_save_enabled();
+
+        let cloud_config = if use_local_stt {
+            None
+        } else {
+            match (config.stt_endpoint.clone(), config.stt_api_key.clone()) {
+                (Some(endpoint), Some(api_key))
+                    if !endpoint.trim().is_empty() && !api_key.trim().is_empty() =>
+                {
+                    Some((endpoint, api_key))
+                }
+                _ => None,
+            }
+        };
 
         let mut raw_text_opt = None;
         let mut cloud_text_opt = None;
         let mut cloud_handle: Option<JoinHandle<Result<String>>> = None;
 
         // Start cloud transcription in parallel (for early mismatch detection)
-        if cloud_enabled {
+        if let Some((cloud_endpoint, cloud_api_key)) = cloud_config {
             if let Some(path) = &audio_path {
-                if cloud_credentials_available() {
-                    let cloud_path = path.as_path().to_path_buf();
-                    let cloud_language = language_opt.map(str::to_string);
-                    cloud_handle = Some(tokio::spawn(async move {
-                        crate::client::transcribe(&cloud_path, cloud_language.as_deref()).await
-                    }));
-                } else {
-                    warn!("Cloud STT disabled: STT_ENDPOINT/STT_API_KEY missing");
-                }
+                let cloud_path = path.as_path().to_path_buf();
+                let cloud_language = language_opt.map(str::to_string);
+                cloud_handle = Some(tokio::spawn(async move {
+                    crate::client::transcribe_cloud(
+                        &cloud_path,
+                        cloud_language.as_deref(),
+                        &cloud_endpoint,
+                        &cloud_api_key,
+                    )
+                    .await
+                }));
             } else {
                 warn!("Cloud STT disabled: no audio file available");
             }
+        } else if !use_local_stt {
+            warn!("Cloud STT disabled: STT_ENDPOINT/STT_API_KEY missing");
         }
 
         // 1. Try Streaming Result (Local)
@@ -736,7 +748,7 @@ impl RecordingController {
                     Ok(Err(e)) => error!("Cloud transcription failed: {}", e),
                     Err(e) => error!("Cloud transcription task failed: {}", e),
                 }
-            } else if cloud_enabled {
+            } else if !use_local_stt {
                 warn!("Cloud fallback unavailable (cloud disabled or missing credentials)");
             }
         }
@@ -805,7 +817,7 @@ impl RecordingController {
             let lang_str = language_opt.map(String::from);
 
             // Determine streaming mode from config
-            let transcript_mode = self.config.read().await.transcript_send_mode;
+            let transcript_mode = config.transcript_send_mode;
             let use_streaming = matches!(
                 transcript_mode,
                 crate::config::TranscriptSendMode::Streaming
@@ -886,7 +898,7 @@ impl RecordingController {
                 let lang_str = language_opt.map(String::from);
 
                 // Determine streaming mode from config
-                let transcript_mode = self.config.read().await.transcript_send_mode;
+                let transcript_mode = config.transcript_send_mode;
                 let use_streaming = matches!(
                     transcript_mode,
                     crate::config::TranscriptSendMode::Streaming
@@ -953,7 +965,7 @@ impl RecordingController {
             }
         } else {
             // Double Option: respects AI Formatting toggle setting
-            let ai_formatting_enabled = self.config.read().await.ai_formatting_enabled;
+            let ai_formatting_enabled = config.ai_formatting_enabled;
             let should_use_ai = ai_formatting_enabled && crate::ai_formatting::has_api_key();
 
             if should_use_ai {
@@ -969,7 +981,7 @@ impl RecordingController {
                 let lang_str = language_opt.map(String::from);
 
                 // Determine streaming mode from config
-                let transcript_mode = self.config.read().await.transcript_send_mode;
+                let transcript_mode = config.transcript_send_mode;
                 let use_streaming = matches!(
                     transcript_mode,
                     crate::config::TranscriptSendMode::Streaming
@@ -1052,7 +1064,7 @@ impl RecordingController {
         );
 
         // Save audio to transcriptions folder if enabled (pair with RAW for reports)
-        if self.config.read().await.dump_audio_logs
+        if config.dump_audio_logs
             && let Some(path) = &audio_path
         {
             crate::state::history::save_audio(

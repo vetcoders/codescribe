@@ -51,32 +51,12 @@ pub fn default_history_enabled() -> bool {
     true
 }
 
-pub fn default_whisper_server_url() -> String {
-    "http://localhost:8237".to_string()
-}
-
-pub fn default_llm_server_url() -> String {
-    "http://localhost:8237".to_string()
-}
-
-pub fn default_ollama_host() -> String {
-    "http://localhost:11434".to_string()
-}
-
-pub fn default_ollama_model() -> String {
-    "gpt-oss:120b-cloud".to_string()
-}
-
 pub fn default_restore_clipboard() -> bool {
     true
 }
 
 pub fn default_restore_clipboard_delay_ms() -> u64 {
     1000
-}
-
-pub fn default_backend_ports() -> Vec<u16> {
-    vec![8237, 7237, 6237, 5237]
 }
 
 pub fn default_silence_db() -> f32 {

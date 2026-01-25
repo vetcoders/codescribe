@@ -188,31 +188,10 @@ impl FromStr for OverlayPositionMode {
     }
 }
 
-/// AI provider options
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum AiProvider {
-    #[default]
-    Harmony,
-    Ollama,
-}
-
-impl FromStr for AiProvider {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "harmony" => Ok(Self::Harmony),
-            "ollama" => Ok(Self::Ollama),
-            _ => Err(format!("Unknown AiProvider: {}", s)),
-        }
-    }
-}
-
 /// CodeScribe configuration structure.
 ///
 /// This struct contains all configuration options for the app.
-/// Values are loaded from .env file (primary) or settings.json (fallback).
+/// Values are loaded from .env file (single source of truth).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     // ===== Hotkeys =====
@@ -244,10 +223,6 @@ pub struct Config {
     /// Whether AI formatting is enabled for transcriptions
     #[serde(default)]
     pub ai_formatting_enabled: bool,
-
-    /// AI provider for formatting
-    #[serde(default)]
-    pub ai_provider: AiProvider,
 
     /// Strategy for sending transcript (end-of-utterance vs streaming)
     #[serde(default)]
@@ -328,22 +303,6 @@ pub struct Config {
     /// Full STT endpoint URL (e.g., https://api.libraxis.cloud/stt/v1/transcribe)
     pub stt_endpoint: Option<String>,
 
-    /// Whisper server URL
-    #[serde(default = "default_whisper_server_url")]
-    pub whisper_server_url: String,
-
-    /// LLM server URL
-    #[serde(default = "default_llm_server_url")]
-    pub llm_server_url: String,
-
-    /// Ollama host URL
-    #[serde(default = "default_ollama_host")]
-    pub ollama_host: String,
-
-    /// Ollama model name
-    #[serde(default = "default_ollama_model")]
-    pub ollama_model: String,
-
     /// Full LLM endpoint URL (e.g., https://api.libraxis.cloud/v1/responses)
     pub llm_endpoint: Option<String>,
 
@@ -367,16 +326,12 @@ pub struct Config {
     #[serde(default)]
     pub start_at_login: bool,
 
-    // ===== Legacy =====
-    /// Backend ports to try connecting to (legacy, for backwards compatibility)
-    #[serde(default = "default_backend_ports")]
-    pub backend_ports: Vec<u16>,
-
-    /// Silence threshold in decibels (legacy)
+    // ===== Audio tuning =====
+    /// Silence threshold in decibels
     #[serde(default = "default_silence_db")]
     pub silence_db: f32,
 
-    /// Silence hang time in seconds (legacy)
+    /// Silence hang time in seconds
     #[serde(default = "default_silence_hang_sec")]
     pub silence_hang_sec: f32,
 
@@ -395,7 +350,6 @@ impl Default for Config {
             hold_start_delay_ms: default_hold_start_delay_ms(),
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
-            ai_provider: AiProvider::default(),
             transcript_send_mode: TranscriptSendMode::default(),
             ai_max_tokens: default_ai_max_tokens(),
             ai_assistive_max_tokens: default_ai_assistive_max_tokens(),
@@ -415,17 +369,12 @@ impl Default for Config {
             use_local_stt: false,
             local_model: default_local_model(),
             stt_endpoint: None,
-            whisper_server_url: default_whisper_server_url(),
-            llm_server_url: default_llm_server_url(),
-            ollama_host: default_ollama_host(),
-            ollama_model: default_ollama_model(),
             llm_endpoint: None,
             llm_api_key: None,
             stt_api_key: None,
             restore_clipboard: default_restore_clipboard(),
             restore_clipboard_delay_ms: default_restore_clipboard_delay_ms(),
             start_at_login: false,
-            backend_ports: default_backend_ports(),
             silence_db: default_silence_db(),
             silence_hang_sec: default_silence_hang_sec(),
             dump_audio_logs: default_dump_audio_logs(),
@@ -439,17 +388,12 @@ impl Config {
         // Token limits: 0 = no limit (API decides). Don't override.
         // Tokens are cheap, lost notes are not.
 
-        // Validate audio thresholds (legacy)
+        // Validate audio thresholds
         if self.silence_db > 0.0 || self.silence_db < -100.0 {
             self.silence_db = -45.0;
         }
         if self.silence_hang_sec <= 0.0 || self.silence_hang_sec > 10.0 {
             self.silence_hang_sec = 1.5;
-        }
-
-        // Ensure at least one backend port is configured (legacy)
-        if self.backend_ports.is_empty() {
-            self.backend_ports = default_backend_ports();
         }
 
         // Clamp sound volume
