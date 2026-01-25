@@ -2,6 +2,7 @@
 # install_backend.command
 #
 # Purpose: Install and start the CodeScribe backend (FastAPI) as a LaunchAgent.
+# NOTE: The Rust app uses local Whisper by default. This backend is legacy.
 # - Downloads/updates Whisper models into ~/.CodeScribe/models
 # - Seeds the shared settings store so the backend follows the same AI provider/toggle as the tray
 # - Writes ~/Library/LaunchAgents/com.CodeScribe.backend.plist and loads it via launchctl
@@ -9,9 +10,6 @@
 # Usage: double-click in Finder (Terminal will open) or run from shell.
 # Optional flags / env vars:
 #   --variant <medium|large-v3-turbo|...>   (WHISPER_VARIANT)
-#   --provider <harmony|ollama>             (AI_PROVIDER, default harmony)
-#   --formatting <1|0>                      (AI_FORMATTING, default 1)
-#   --language <auto|en|pl|...>             (LANGUAGE, default auto)
 #   --host <ip> --port <port>               (HOST/PORT for the backend service)
 
 set -euo pipefail
@@ -20,12 +18,8 @@ SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 APP_SUPPORT="$HOME/.CodeScribe"
 MODELS_DIR="$APP_SUPPORT/models"
-SETTINGS_PATH="$APP_SUPPORT/settings.json"
 
 WHISPER_VARIANT="${WHISPER_VARIANT:-medium}"
-AI_PROVIDER="${AI_PROVIDER:-harmony}"
-AI_FORMATTING="${AI_FORMATTING:-1}"
-LANGUAGE="${LANGUAGE:-auto}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8237}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
@@ -33,14 +27,11 @@ LOG_LEVEL="${LOG_LEVEL:-INFO}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --variant) WHISPER_VARIANT="$2"; shift 2;;
-    --provider) AI_PROVIDER="$2"; shift 2;;
-    --formatting) AI_FORMATTING="$2"; shift 2;;
-    --language) LANGUAGE="$2"; shift 2;;
     --host) HOST="$2"; shift 2;;
     --port) PORT="$2"; shift 2;;
     --log-level) LOG_LEVEL="$2"; shift 2;;
     -h|--help)
-      echo "Usage: install_backend.command [--variant medium] [--provider harmony|ollama] [--formatting 1|0] [--language auto] [--host 127.0.0.1 --port 8237]"
+      echo "Usage: install_backend.command [--variant medium] [--host 127.0.0.1 --port 8237]"
       exit 0
       ;;
     *)
@@ -82,29 +73,6 @@ if [[ ! -d "$WHISPER_DIR" ]]; then
 fi
 WHISPER_DIR="$(lower_users "$WHISPER_DIR")"
 
-export CODESCRIBE_SETTINGS_PATH="$SETTINGS_PATH"
-export VS_AI_PROVIDER="$AI_PROVIDER"
-export VS_AI_FORMATTING="$AI_FORMATTING"
-export VS_LANGUAGE="$LANGUAGE"
-
-(cd "$REPO_DIR" && uv run python - <<'PY')
-import os
-from codescribe.settings_store import update_settings
-
-def _as_bool(val: str) -> bool:
-    return val.strip().lower() not in {"0", "false", "no", "off"}
-
-update_settings(
-    {
-        "ai_provider": os.environ.get("VS_AI_PROVIDER", "harmony").strip().lower() or "harmony",
-        "ai_formatting_enabled": _as_bool(os.environ.get("VS_AI_FORMATTING", "1")),
-        "language": os.environ.get("VS_LANGUAGE", "auto").strip().lower() or "auto",
-    }
-)
-PY
-
-echo "[i] Settings stored at $SETTINGS_PATH"
-
 PLIST="$HOME/Library/LaunchAgents/com.CodeScribe.backend.plist"
 mkdir -p "$(dirname "$PLIST")"
 
@@ -120,7 +88,7 @@ cat >"$PLIST" <<PLIST
       <string>/usr/bin/env</string>
       <string>bash</string>
       <string>-lc</string>
-      <string>cd "$(lower_users "$REPO_DIR")" && CODESCRIBE_SETTINGS_PATH="$(lower_users "$SETTINGS_PATH")" uv run python -m codescribe.codescribe_server start --bind ${HOST} --port ${PORT} --log-level ${LOG_LEVEL}</string>
+      <string>cd "$(lower_users "$REPO_DIR")" && uv run python -m codescribe.codescribe_server start --bind ${HOST} --port ${PORT} --log-level ${LOG_LEVEL}</string>
     </array>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -130,7 +98,6 @@ cat >"$PLIST" <<PLIST
       <key>HOST</key><string>${HOST}</string>
       <key>PORT</key><string>${PORT}</string>
       <key>LOG_LEVEL</key><string>${LOG_LEVEL}</string>
-      <key>CODESCRIBE_SETTINGS_PATH</key><string>$(lower_users "$SETTINGS_PATH")</string>
     </dict>
     <key>StandardOutPath</key><string>/tmp/CodeScribe.backend.out.log</string>
     <key>StandardErrorPath</key><string>/tmp/CodeScribe.backend.err.log</string>

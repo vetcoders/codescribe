@@ -344,6 +344,7 @@ fn write_daemon_state(path: &Path, mismatches: usize) -> Result<()> {
         pending_mismatches: usize,
         last_check: String,
         latest_report: Option<String>,
+        available: bool,
     }
 
     let config_dir = Config::config_dir();
@@ -372,6 +373,7 @@ fn write_daemon_state(path: &Path, mismatches: usize) -> Result<()> {
         pending_mismatches: mismatches,
         last_check: chrono::Local::now().to_rfc3339(),
         latest_report,
+        available: true,
     };
 
     let json = serde_json::to_string_pretty(&state)?;

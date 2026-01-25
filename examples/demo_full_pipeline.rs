@@ -11,7 +11,7 @@
 //!
 //! Requires:
 //!   - Model at models/whisper-large-v3-mlx-q8 (or set --model)
-//!   - LLM_HOST and LLM_MODEL env vars for formatting
+//!   - LLM_ENDPOINT + LLM_MODEL (or LLM_FORMATTING_* overrides) for formatting
 
 use anyhow::Result;
 use codescribe::whisper::{DecodingParams, LocalWhisperEngine};
@@ -32,8 +32,9 @@ async fn main() -> Result<()> {
         println!("  --raw            Skip AI formatting, show raw transcription only");
         println!();
         println!("Environment:");
-        println!("  LLM_HOST         LLM endpoint URL (e.g., http://localhost:11434/v1/responses)");
-        println!("  LLM_MODEL        Model name (e.g., qwen3-coder:480b-cloud)");
+        println!("  LLM_ENDPOINT         LLM endpoint URL (e.g., http://localhost:11434/api/chat)");
+        println!("  LLM_MODEL            Model name (e.g., qwen3-coder:480b-cloud)");
+        println!("  LLM_FORMATTING_*     Optional overrides for formatting");
         return Ok(());
     }
 
@@ -132,16 +133,20 @@ async fn main() -> Result<()> {
     );
 
     // Check env vars
-    let llm_host = std::env::var("LLM_HOST").ok();
-    let llm_model = std::env::var("LLM_MODEL").ok();
+    let llm_endpoint = std::env::var("LLM_FORMATTING_ENDPOINT")
+        .ok()
+        .or_else(|| std::env::var("LLM_ENDPOINT").ok());
+    let llm_model = std::env::var("LLM_FORMATTING_MODEL")
+        .ok()
+        .or_else(|| std::env::var("LLM_MODEL").ok());
 
-    if llm_host.is_none() || llm_model.is_none() {
-        println!("      SKIPPED - LLM_HOST and/or LLM_MODEL not set");
+    if llm_endpoint.is_none() || llm_model.is_none() {
+        println!("      SKIPPED - LLM_ENDPOINT and/or LLM_MODEL not set");
         println!("\n═══════════════════════════════════════════════════════════");
         return Ok(());
     }
 
-    println!("      LLM_HOST: {}", llm_host.as_ref().unwrap());
+    println!("      LLM_ENDPOINT: {}", llm_endpoint.as_ref().unwrap());
     println!("      LLM_MODEL: {}", llm_model.as_ref().unwrap());
 
     let start = std::time::Instant::now();

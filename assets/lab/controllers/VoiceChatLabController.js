@@ -217,33 +217,9 @@ ${linesOut}` : summaryText,
     console.log("[Lab] Standalone mode - using LibraxisAI cloud endpoints");
   }
 
-  // Legacy fetchLabConfig - kept for reference but not used in standalone mode
   async fetchLabConfig() {
     // Skip in standalone mode - endpoints are hardcoded to LibraxisAI cloud
     return;
-    /* Legacy code for Python backend:
-    try {
-      const resp = await fetch("/lab/config");
-      const cfg = await resp.json();
-      this._setState((prev) => ({
-        ...prev,
-        endpoints: {
-          ...prev.endpoints,
-          transcribeUrl: cfg.stt_upload_url || prev.endpoints.transcribeUrl,
-          sttAndFormatUrl: cfg.stt_and_format_url || prev.endpoints.sttAndFormatUrl,
-          ndjsonUrl: cfg.stt_ndjson_url || prev.endpoints.ndjsonUrl,
-          wsUrl: cfg.stt_ws_url || prev.endpoints.wsUrl,
-          responsesUrl: cfg.responses_url || prev.endpoints.responsesUrl,
-          model: cfg.harmony_model || prev.endpoints.model,
-        },
-      }));
-      if (cfg.ai_provider) {
-        this._setState({ provider: cfg.ai_provider });
-      }
-    } catch (error) {
-      console.warn("lab-config", error);
-    }
-    */
   }
 
   async fetchHealth() {

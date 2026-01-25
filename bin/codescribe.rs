@@ -1,14 +1,14 @@
 //! CodeScribe CLI - Local speech-to-text transcription
 //!
 //! Lightweight CLI for direct audio file transcription.
-//! For tray app + GUI, use CodeScribe.app (Tauri bundle).
+//! For the tray app + overlay, use CodeScribe.app.
 //!
 //! Created by M&K (c)2026 VetCoders
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use codescribe::os::hotkeys;
-use codescribe::{audio, dev, whisper};
+use codescribe::{ai_formatting, audio, whisper};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -67,7 +67,7 @@ struct TranscribeArgs {
     #[arg(short, long)]
     format: bool,
 
-    /// LLM model for formatting (defaults to config)
+    /// LLM model for formatting (overrides LLM_FORMATTING_MODEL for this run)
     #[arg(long)]
     llm: Option<String>,
 
@@ -279,20 +279,40 @@ async fn handle_transcribe_file(
 
     // Format with AI if requested
     let final_text = if format {
-        let llm_model =
-            llm_model.unwrap_or_else(|| codescribe::config::Config::load().ollama_model);
-        eprintln!("Formatting with AI ({})...", llm_model);
+        let mut prev_model: Option<String> = None;
+        if let Some(model) = llm_model.as_ref() {
+            prev_model = std::env::var("LLM_FORMATTING_MODEL").ok();
+            // SAFETY: CLI is single-process; scoped override for this run only.
+            unsafe { std::env::set_var("LLM_FORMATTING_MODEL", model) };
+            eprintln!("Formatting with AI (model: {})...", model);
+        } else {
+            eprintln!("Formatting with AI...");
+        }
+
         let start = Instant::now();
-        match format_with_ollama(&raw_text, &llm_model, &lang).await {
-            Ok(formatted) => {
+        let result =
+            ai_formatting::format_text_with_status(&raw_text, Some(&lang), false, None).await;
+
+        let formatted = match result.status {
+            ai_formatting::AiFormatStatus::Applied => {
                 eprintln!("Formatted in {:?}", start.elapsed());
-                formatted
+                result.text
             }
-            Err(e) => {
-                eprintln!("Formatting failed: {} - using raw text", e);
+            ai_formatting::AiFormatStatus::Failed => {
+                eprintln!("Formatting failed - using raw text");
                 raw_text
             }
+            ai_formatting::AiFormatStatus::Skipped => raw_text,
+        };
+
+        if llm_model.is_some() {
+            match prev_model {
+                Some(prev) => unsafe { std::env::set_var("LLM_FORMATTING_MODEL", prev) },
+                None => unsafe { std::env::remove_var("LLM_FORMATTING_MODEL") },
+            }
         }
+
+        formatted
     } else {
         raw_text
     };
@@ -346,99 +366,6 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
     emitter.finish();
 
     Ok(())
-}
-
-/// Format transcription using Ollama LLM
-async fn format_with_ollama(text: &str, model: &str, lang: &str) -> Result<String> {
-    let host = std::env::var("LLM_HOST")
-        .or_else(|_| std::env::var("OLLAMA_HOST"))
-        .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
-
-    let endpoint = format!("{}/api/chat", host.trim_end_matches('/'));
-
-    let system_prompt = format!(
-        r#"You are a transcription formatter. Clean up and format the following speech-to-text transcription.
-
-Rules:
-- Fix punctuation, capitalization, and obvious speech recognition errors
-- Remove filler words (um, uh, like) and repetitions
-- Structure into clear paragraphs where appropriate
-- Keep the original meaning and language ({})
-- Use bullet points or numbered lists if the content is enumerating items
-- Do NOT add any commentary, just output the formatted text
-- Do NOT translate - keep the original language"#,
-        lang
-    );
-
-    #[derive(serde::Serialize)]
-    struct OllamaRequest {
-        model: String,
-        messages: Vec<OllamaMessage>,
-        stream: bool,
-        options: OllamaOptions,
-    }
-
-    #[derive(serde::Serialize)]
-    struct OllamaMessage {
-        role: &'static str,
-        content: String,
-    }
-
-    #[derive(serde::Serialize)]
-    struct OllamaOptions {
-        temperature: f32,
-        num_predict: u32,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct OllamaResponse {
-        message: Option<OllamaMessageResponse>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct OllamaMessageResponse {
-        content: String,
-    }
-
-    let request = OllamaRequest {
-        model: model.to_string(),
-        messages: vec![
-            OllamaMessage {
-                role: "system",
-                content: system_prompt,
-            },
-            OllamaMessage {
-                role: "user",
-                content: text.to_string(),
-            },
-        ],
-        stream: false,
-        options: OllamaOptions {
-            temperature: 0.1,
-            num_predict: 0,
-        },
-    };
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&endpoint)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Ollama HTTP {} - {}", status, body);
-    }
-
-    let ollama_response: OllamaResponse = response.json().await?;
-
-    ollama_response
-        .message
-        .map(|m| m.content.trim().to_string())
-        .ok_or_else(|| anyhow::anyhow!("Empty Ollama response"))
 }
 
 async fn run_daemon() -> Result<()> {
@@ -522,9 +449,6 @@ async fn run_daemon() -> Result<()> {
         }
     });
 
-    // Start Lab Server (Side-by-side comparison MVP)
-    dev::lab_server::start_lab_server();
-
     // Start Quality Loop daemon (always-on self-improvement)
     let quality_child = spawn_quality_daemon();
 
@@ -560,6 +484,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
                 PathBuf::from("codescribe-loop")
             } else {
                 eprintln!("[quality-daemon] codescribe-loop not found; skipping auto-start");
+                codescribe::quality_loop::mark_daemon_unavailable();
                 return None;
             }
         }
@@ -591,6 +516,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
         Ok(f) => f,
         Err(e) => {
             eprintln!("[quality-daemon] Failed to open log file: {}", e);
+            codescribe::quality_loop::mark_daemon_unavailable();
             return None;
         }
     };
@@ -621,6 +547,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
         }
         Err(e) => {
             eprintln!("[quality-daemon] Failed to spawn: {}", e);
+            codescribe::quality_loop::mark_daemon_unavailable();
             None
         }
     }

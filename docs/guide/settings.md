@@ -35,7 +35,7 @@ Example configuration:
 # ═══════════════════════════════════════════════════
 
 # API endpoint for AI formatting
-LLM_BASE_URL=https://api.openai.com/v1
+LLM_ENDPOINT=https://api.openai.com/v1
 LLM_API_KEY=sk-your-key-here
 LLM_MODEL=gpt-4o-mini
 
@@ -100,7 +100,7 @@ CODESCRIBE_QUALITY_DISABLE_RAW_SAVE=0
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `LLM_BASE_URL` | URL | (none) | AI API endpoint |
+| `LLM_ENDPOINT` | URL | (none) | AI API endpoint |
 | `LLM_API_KEY` | string | (none) | API key for authentication |
 | `LLM_MODEL` | string | gpt-4o-mini | Model to use |
 | `AI_FORMATTING_ENABLED` | 0/1 | 0 | Enable AI post-processing |
@@ -142,7 +142,7 @@ CODESCRIBE_QUALITY_DISABLE_RAW_SAVE=0
 ### OpenAI
 
 ```bash
-LLM_BASE_URL=https://api.openai.com/v1
+LLM_ENDPOINT=https://api.openai.com/v1
 LLM_API_KEY=sk-your-openai-key
 LLM_MODEL=gpt-4o-mini
 ```
@@ -150,7 +150,7 @@ LLM_MODEL=gpt-4o-mini
 ### Anthropic (Claude)
 
 ```bash
-LLM_BASE_URL=https://api.anthropic.com/v1
+LLM_ENDPOINT=https://api.anthropic.com/v1
 LLM_API_KEY=sk-ant-your-anthropic-key
 LLM_MODEL=claude-3-5-sonnet-20241022
 ```
@@ -158,7 +158,7 @@ LLM_MODEL=claude-3-5-sonnet-20241022
 ### Local Ollama
 
 ```bash
-LLM_BASE_URL=http://localhost:11434/v1
+LLM_ENDPOINT=http://localhost:11434/v1
 LLM_API_KEY=ollama
 LLM_MODEL=llama3.2
 ```
@@ -166,7 +166,7 @@ LLM_MODEL=llama3.2
 ### LibraxisAI (Custom)
 
 ```bash
-LLM_BASE_URL=https://your-instance.libraxis.ai/v1
+LLM_ENDPOINT=https://your-instance.libraxis.ai/v1
 LLM_API_KEY=your-key
 LLM_MODEL=qwen3-235b-a22b
 ```

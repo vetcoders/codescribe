@@ -1,10 +1,7 @@
-//! HTTP client for communicating with CodeScribe Python backend (FastAPI + MLX Whisper)
-//! or external WhisperX servers.
+//! HTTP client for cloud STT providers.
 //!
 //! Features:
-//! - Automatic server discovery across multiple ports
-//! - Support for external WhisperX servers (8443, 8444, 8445)
-//! - Health checks with caching
+//! - Explicit external endpoint (no backend discovery)
 //! - Multipart file upload for transcription
 //! - Retry logic with exponential backoff
 //! - Proper error handling and logging
@@ -35,20 +32,7 @@ const TRANSCRIPTION_MAX_RETRIES: u32 = 3;
 /// Base delay between retry attempts (multiplied by attempt number)
 const TRANSCRIPTION_RETRY_DELAY_MS: u64 = 500;
 
-/// Cached server URL after successful discovery
-static SERVER_URL: OnceLock<String> = OnceLock::new();
-
-/// Ports to probe for backend server (in order of preference)
-/// 8237 is the default Python backend port
-const PROBE_PORTS: &[u16] = &[8237, 8238, 7237, 6237, 5237];
-
 // Note: Retry constants and format_text moved to ai_formatting.rs module
-
-/// Health check response structure
-#[derive(Debug, Deserialize)]
-struct HealthResponse {
-    ok: bool,
-}
 
 /// Transcription response structure
 #[derive(Debug, Deserialize)]
@@ -189,135 +173,32 @@ fn get_client() -> &'static Client {
     })
 }
 
-/// Discover backend server by probing known ports
-///
-/// Tries ports in order: 8237, 8238, 7237, 6237, 5237
-/// Returns the first responding server URL or None
-///
-/// Retries each port up to 5 times with 500ms delay to handle race conditions
-/// where backend just started but isn't fully accepting connections yet.
-async fn discover_server() -> Option<String> {
-    let client = get_client();
-    const RETRIES_PER_PORT: u32 = 5;
-    const RETRY_DELAY_MS: u64 = 500;
-
-    for port in PROBE_PORTS {
-        for attempt in 1..=RETRIES_PER_PORT {
-            let url = format!("http://127.0.0.1:{}/healthz", port);
-            debug!(
-                "Probing server at {} (attempt {}/{})",
-                url, attempt, RETRIES_PER_PORT
-            );
-
-            match client.get(&url).send().await {
-                Ok(response) if response.status().is_success() => {
-                    // Server is responding - accept even if model not loaded yet
-                    // (ok=false means server running but model initializing)
-                    if let Ok(health) = response.json::<HealthResponse>().await {
-                        let base_url = format!("http://127.0.0.1:{}", port);
-                        if health.ok {
-                            info!(
-                                "Discovered backend server at {} (fully ready, attempt {})",
-                                base_url, attempt
-                            );
-                        } else {
-                            info!(
-                                "Discovered backend server at {} (model loading, attempt {})",
-                                base_url, attempt
-                            );
-                        }
-                        return Some(base_url);
-                    }
-                }
-                Ok(response) => {
-                    debug!(
-                        "Port {} responded with status {} (attempt {})",
-                        port,
-                        response.status(),
-                        attempt
-                    );
-                }
-                Err(e) => {
-                    debug!("Port {} not responding: {} (attempt {})", port, e, attempt);
-                }
-            }
-
-            // Retry with delay (except on last attempt)
-            if attempt < RETRIES_PER_PORT {
-                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
-            }
-        }
-    }
-
-    warn!(
-        "No backend server found on any probe port after {} retries per port",
-        RETRIES_PER_PORT
-    );
-    None
-}
-
-/// Get base server URL (cached or discovered)
-async fn get_server_url() -> Result<String> {
-    // Check cache first
-    if let Some(url) = SERVER_URL.get() {
-        return Ok(url.clone());
-    }
-
-    // Discover and cache
-    let url = discover_server()
-        .await
-        .context("Backend server not found - ensure Python backend is running")?;
-
-    // Try to cache (ignore if already set by another thread)
-    let _ = SERVER_URL.set(url.clone());
-
-    Ok(url)
-}
-
-/// Check if backend is healthy
+/// Check if local Whisper engine is ready.
 ///
 /// Returns:
-/// - `Ok(true)` if backend responds with {"ok": true} (model loaded)
-/// - `Ok(false)` if backend responds but model still loading
-/// - `Err(_)` if cannot connect or parse response
+/// - `Ok(true)` if the engine is initialized (or initializes successfully)
+/// - `Ok(false)` if initialization fails
 pub async fn check_health() -> Result<bool> {
-    // Cloud mode: skip local backend check
-    if std::env::var("STT_ENDPOINT").is_ok() {
+    if crate::stt::whisper::singleton::is_initialized() {
         return Ok(true);
     }
 
-    let base_url = get_server_url().await?;
-    let url = format!("{}/healthz", base_url);
-
-    // Use short timeout for health check to avoid stale connections
-    let response = get_client()
-        .get(&url)
-        .timeout(Duration::from_secs(2))
-        .send()
-        .await
-        .context("Failed to send health check request")?;
-
-    if !response.status().is_success() {
-        return Ok(false);
+    match crate::stt::whisper::init() {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            warn!("Whisper engine not ready: {}", e);
+            Ok(false)
+        }
     }
-
-    let health: HealthResponse = response
-        .json()
-        .await
-        .context("Failed to parse health check response")?;
-
-    if !health.ok {
-        info!("Backend responding but model still loading");
-    }
-
-    Ok(health.ok)
 }
 
-/// Transcribe audio file using backend STT service with retry logic
+/// Transcribe audio file using external STT with retry logic
 ///
 /// # Arguments
 /// * `path` - Path to audio file (WAV, MP3, M4A, etc.)
 /// * `language` - Optional language code (e.g., "pl", "en"). If None, auto-detect.
+/// * `endpoint_url` - Full STT endpoint URL
+/// * `api_key` - API key for authentication
 ///
 /// # Returns
 /// Transcribed text or error
@@ -334,129 +215,25 @@ pub async fn check_health() -> Result<bool> {
 ///
 /// # #[tokio::main]
 /// # async fn main() -> anyhow::Result<()> {
-/// let transcript = client::transcribe(Path::new("recording.wav"), Some("pl")).await?;
+/// let transcript = client::transcribe_cloud(
+///     Path::new("recording.wav"),
+///     Some("pl"),
+///     "https://api.example.com/v1/audio/transcriptions",
+///     "api-key",
+/// ).await?;
 /// println!("Transcript: {}", transcript);
 /// # Ok(())
 /// # }
 /// ```
-pub async fn transcribe(path: &Path, language: Option<&str>) -> Result<String> {
-    info!("transcribe() START for path: {:?}", path);
+pub async fn transcribe_cloud(
+    path: &Path,
+    language: Option<&str>,
+    endpoint_url: &str,
+    api_key: &str,
+) -> Result<String> {
+    info!("transcribe_cloud() START for path: {:?}", path);
 
-    // Note: Path validation is handled at the controller level via ValidatedAudioPath
-    // before this function is called. See controller.rs::process_recording()
-
-    // Check if external STT endpoint is configured via STT_ENDPOINT
-    // This should be a full URL (e.g., https://api.libraxis.cloud/stt/v1/transcribe)
-    if let Ok(endpoint_url) = std::env::var("STT_ENDPOINT") {
-        let api_key = std::env::var("STT_API_KEY")
-            .context("STT_API_KEY required when STT_ENDPOINT is set")?;
-        return transcribe_external(path, language, &endpoint_url, &api_key).await;
-    }
-
-    // Local Python backend uses /transcribe with "audio" field
-    info!("Getting server URL...");
-    let base_url = get_server_url().await?;
-    info!("Server URL: {}", base_url);
-    let url = format!("{}/transcribe", base_url);
-    let field_name = "audio";
-
-    // Read file into memory (canonicalize first for defense-in-depth)
-    info!("Opening file: {:?}", path);
-    let canonical_path = canonicalize_path(path)?;
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path (path canonicalized above)
-    let mut file = File::open(&canonical_path)
-        .await
-        .context("Failed to open audio file")?;
-    info!("File opened successfully");
-
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .await
-        .context("Failed to read audio file")?;
-    info!("File read: {} bytes", buffer.len());
-
-    // Pre-flight validation to catch issues before sending
-    if let Err(validation_error) = validate_audio(&buffer) {
-        error!("Audio validation failed: {}", validation_error);
-        // Update tray to show error state
-        crate::status::notify_status(crate::status::StatusSignal::Error);
-        anyhow::bail!("Audio validation failed: {}", validation_error);
-    }
-    info!("Audio validation passed");
-
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("recording.wav");
-
-    info!(
-        "Sending transcription request to {} for {} ({} bytes)",
-        url,
-        filename,
-        buffer.len()
-    );
-
-    // Retry loop - we recreate the Form for each attempt since it cannot be cloned
-    let mut last_error: Option<anyhow::Error> = None;
-
-    for attempt in 1..=TRANSCRIPTION_MAX_RETRIES {
-        // Build multipart form fresh for each attempt
-        let file_part = Part::bytes(buffer.clone())
-            .file_name(filename.to_string())
-            .mime_str("audio/wav")
-            .context("Failed to set MIME type")?;
-
-        let mut form = Form::new().part(field_name, file_part);
-
-        if let Some(lang) = language {
-            form = form.text("language", lang.to_string());
-        }
-
-        debug!(
-            "Transcription attempt {}/{} for {}",
-            attempt, TRANSCRIPTION_MAX_RETRIES, filename
-        );
-
-        match transcribe_request(&url, form).await {
-            Ok(text) => {
-                if attempt > 1 {
-                    info!(
-                        "Transcription succeeded on attempt {}/{}",
-                        attempt, TRANSCRIPTION_MAX_RETRIES
-                    );
-                }
-                return Ok(text);
-            }
-            Err(e) => {
-                let is_retryable = is_retryable_error(&e);
-                warn!(
-                    "Transcription attempt {}/{} failed: {} (retryable: {})",
-                    attempt, TRANSCRIPTION_MAX_RETRIES, e, is_retryable
-                );
-
-                if attempt < TRANSCRIPTION_MAX_RETRIES && is_retryable {
-                    // Update tray with retry status
-                    crate::status::notify_status(crate::status::StatusSignal::Thinking);
-
-                    // Exponential backoff delay
-                    let delay_ms = TRANSCRIPTION_RETRY_DELAY_MS * attempt as u64;
-                    info!(
-                        "Retrying transcription in {}ms (attempt {}/{})",
-                        delay_ms,
-                        attempt + 1,
-                        TRANSCRIPTION_MAX_RETRIES
-                    );
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                }
-
-                last_error = Some(e);
-            }
-        }
-    }
-
-    // All retries exhausted
-    crate::status::notify_status(crate::status::StatusSignal::Error);
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Transcription failed after all retries")))
+    transcribe_external(path, language, endpoint_url, api_key).await
 }
 
 /// Check if an error is retryable (network issues, timeouts, server errors)
@@ -485,41 +262,6 @@ fn is_retryable_error(error: &anyhow::Error) -> bool {
     // 413 (file too large) is NOT retryable - should have been caught by validation
     // 400/401/403/404 are NOT retryable - client errors
     false
-}
-
-/// Send a single transcription request (used by retry loop)
-async fn transcribe_request(url: &str, form: Form) -> Result<String> {
-    let response = match get_client().post(url).multipart(form).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            error!("HTTP request failed: {:?}", e);
-            anyhow::bail!("Failed to send transcription request: {}", e);
-        }
-    };
-
-    let status = response.status();
-    debug!("Transcription response status: {}", status);
-
-    if !status.is_success() {
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "(no body)".to_string());
-        error!("Transcription failed - status: {}, body: {}", status, body);
-        anyhow::bail!("Transcription failed with status {}: {}", status, body);
-    }
-
-    let transcribe_response: TranscribeResponse = response
-        .json()
-        .await
-        .context("Failed to parse transcription response")?;
-
-    info!(
-        "Transcription successful, length: {} chars",
-        transcribe_response.text.len()
-    );
-
-    Ok(transcribe_response.text)
 }
 
 /// Transcribe audio using external STT API
@@ -1019,52 +761,9 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
     Ok(transcribe_response.text)
 }
 
-// Note: format_text moved to ai_formatting.rs module for OpenAI/Libraxis support
-
-/// Get current Whisper model variant from backend
-pub async fn get_current_model() -> Result<String> {
-    let base_url = get_server_url().await?;
-    let url = format!("{}/model", base_url);
-
-    let response = get_client()
-        .get(&url)
-        .timeout(Duration::from_secs(2))
-        .send()
-        .await
-        .context("Failed to get current model")?;
-
-    #[derive(Deserialize)]
-    struct ModelInfo {
-        variant: String,
-    }
-
-    let info: ModelInfo = response
-        .json()
-        .await
-        .context("Failed to parse model info")?;
-    Ok(info.variant)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_health_check() {
-        // This test requires backend to be running
-        match check_health().await {
-            Ok(healthy) => println!("Backend health: {}", healthy),
-            Err(e) => println!("Backend not available: {}", e),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_server_discovery() {
-        match discover_server().await {
-            Some(url) => println!("Discovered server: {}", url),
-            None => println!("No server found"),
-        }
-    }
 
     #[test]
     fn test_validate_audio_empty() {

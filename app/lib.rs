@@ -11,7 +11,7 @@
 
 pub use codescribe_core::{
     Recorder, RecorderConfig, ai_formatting, audio, client, config, quality_loop, quality_report,
-    safe_path, state, status, stream_postprocess, stt, voice_chat, whisper,
+    safe_path, state, status, stream_postprocess, stt, whisper,
 };
 
 pub use codescribe_core::{

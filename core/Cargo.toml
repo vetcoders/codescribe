@@ -38,7 +38,6 @@ ndarray-npy = "0.9"
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 futures-util = "0.3"
 base64 = "0.22"
-crossbeam-channel = "0.5"
 
 # Audio
 cpal = "0.17"

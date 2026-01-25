@@ -13,9 +13,8 @@ Analiza kodu wykazała, że obecna architektura jest **monolityczna i zorientowa
 
 ### Co już mamy ("Nitki"):
 1.  **Protokół Strumieniowy (Client-Side)**:
-    -   Plik `src/voice_chat.rs` zawiera gotową (choć nieużywaną) implementację klienta WebSocket (`VoiceChatClient`).
-    -   Zdefiniowany protokół (`ClientMessage`, `ServerMessage`) obsługuje przesyłanie chunków audio (`Chunk`), zdarzeń końca wypowiedzi (`End`, `Flush`) oraz odbieranie transkrypcji i delty LLM.
-    -   To jest **kluczowy fundament** pod Libraxis Qube Protocol.
+    -   W bieżącym kodzie **nie ma** klienta WebSocket – moduł został usunięty podczas porządków.
+    -   Jeśli Qube wróci, trzeba zdefiniować protokół od zera (ClientMessage/ServerMessage) i dodać klienta.
 
 2.  **Streaming Audio & Whisper**:
     -   `src/audio/streaming_recorder.rs` i `src/whisper/` (Singleton/Engine) realizują bardzo wydajne, lokalne przetwarzanie audio (1x RT).

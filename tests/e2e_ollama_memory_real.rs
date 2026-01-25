@@ -24,8 +24,8 @@ fn get_required_env(keys: &[&str]) -> String {
 ///
 /// To run:
 /// - Ensure Ollama is running locally (e.g., `ollama serve`)
-/// - Export `LLM_ENDPOINT=http://localhost:11434` (or `OLLAMA_HOST=...`)
-/// - Export `LLM_MODEL=<your_model>` (or `OLLAMA_MODEL=...`)
+/// - Export `LLM_ENDPOINT=http://localhost:11434/api/chat`
+/// - Export `LLM_MODEL=<your_model>`
 ///
 /// This test uses a dedicated, deterministic system prompt written into the app prompts folder
 /// (under an overridden `CODESCRIBE_DATA_DIR`) so the expected behavior is stable.
@@ -43,12 +43,12 @@ async fn e2e_ollama_memory_real_response_chajnik_query() {
         return;
     }
 
-    let host = get_required_env(&["LLM_ENDPOINT", "OLLAMA_HOST"]);
-    let model = get_required_env(&["LLM_MODEL", "OLLAMA_MODEL"]);
+    let host = get_required_env(&["LLM_ENDPOINT"]);
+    let model = get_required_env(&["LLM_MODEL"]);
 
     if !(host.contains("localhost") || host.contains("127.0.0.1")) {
         panic!(
-            "This E2E test requires a local Ollama host. Got LLM_ENDPOINT/OLLAMA_HOST={}",
+            "This E2E test requires a local Ollama host. Got LLM_ENDPOINT={}",
             host
         );
     }

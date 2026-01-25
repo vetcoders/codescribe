@@ -13,15 +13,25 @@ async fn test_cloud_transcribe_e2e() {
         return;
     }
 
-    if std::env::var("STT_ENDPOINT").is_err() || std::env::var("STT_API_KEY").is_err() {
-        eprintln!("Skipping cloud E2E (STT_ENDPOINT/STT_API_KEY missing)");
-        return;
-    }
+    let endpoint = match std::env::var("STT_ENDPOINT") {
+        Ok(val) if !val.trim().is_empty() => val,
+        _ => {
+            eprintln!("Skipping cloud E2E (STT_ENDPOINT missing)");
+            return;
+        }
+    };
+    let api_key = match std::env::var("STT_API_KEY") {
+        Ok(val) if !val.trim().is_empty() => val,
+        _ => {
+            eprintln!("Skipping cloud E2E (STT_API_KEY missing)");
+            return;
+        }
+    };
 
     let audio = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/1.fretka-Ziggy.mp3");
     assert!(audio.exists(), "Missing test audio at {}", audio.display());
 
-    let text = codescribe::client::transcribe(&audio, None)
+    let text = codescribe::client::transcribe_cloud(&audio, None, &endpoint, &api_key)
         .await
         .expect("Cloud transcription failed");
     assert!(

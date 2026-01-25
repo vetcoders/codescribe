@@ -83,25 +83,7 @@ pub fn setup_voice_chat_send_callback(config: Arc<RwLock<Config>>) {
     })));
 }
 
-/// Check if environment variable is set to truthy value
-pub fn env_bool(key: &str) -> bool {
-    std::env::var(key)
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
 /// Raw transcript saving is always enabled to avoid data loss.
 pub fn raw_save_enabled() -> bool {
     true
-}
-
-/// Check if cloud STT is enabled
-pub fn cloud_stt_enabled() -> bool {
-    !env_bool("CODESCRIBE_QUALITY_DISABLE_CLOUD")
-}
-
-/// Check if cloud credentials are available
-pub fn cloud_credentials_available() -> bool {
-    std::env::var("STT_ENDPOINT").is_ok() && std::env::var("STT_API_KEY").is_ok()
 }

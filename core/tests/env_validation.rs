@@ -1,5 +1,6 @@
 use codescribe_core::config::Config;
 use serial_test::serial;
+use tempfile::TempDir;
 
 struct EnvGuard {
     key: &'static str,
@@ -38,10 +39,20 @@ fn missing_required_envs(config: &Config) -> Vec<&'static str> {
     let mut missing = Vec::new();
 
     if !config.use_local_stt {
-        if std::env::var("STT_ENDPOINT").is_err() {
+        if config
+            .stt_endpoint
+            .as_ref()
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true)
+        {
             missing.push("STT_ENDPOINT");
         }
-        if std::env::var("STT_API_KEY").is_err() {
+        if config
+            .stt_api_key
+            .as_ref()
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true)
+        {
             missing.push("STT_API_KEY");
         }
     }
@@ -78,14 +89,15 @@ fn env_precedence_stt_endpoint() {
 
 #[test]
 #[serial]
-fn env_precedence_llm_host() {
+fn env_ignores_legacy_llm_host() {
     let _g1 = EnvGuard::set("LLM_HOST", "http://llm-host");
     let _g2 = EnvGuard::set("OLLAMA_HOST", "http://ollama-host");
+    let _g3 = EnvGuard::unset("LLM_ENDPOINT");
 
     let mut cfg = Config::default();
     cfg.load_from_env();
 
-    assert_eq!(cfg.ollama_host, "http://llm-host");
+    assert!(cfg.llm_endpoint.is_none());
 }
 
 #[test]
@@ -129,4 +141,40 @@ fn required_model_path_when_no_embed() {
 
     let missing = missing_required_envs(&cfg);
     assert!(missing.contains(&"CODESCRIBE_MODEL_PATH"));
+}
+
+#[test]
+#[serial]
+fn migrate_env_legacy_keys_to_canonical() {
+    let dir = TempDir::new().expect("tempdir");
+    let env_path = dir.path().join(".env");
+    std::fs::write(
+        &env_path,
+        r#"
+LLM_HOST=http://localhost:11434
+OLLAMA_MODEL=llama3
+WHISPER_SERVER_URL=https://legacy.example.com/stt
+"#,
+    )
+    .expect("write env");
+
+    let _g1 = EnvGuard::set("CODESCRIBE_ENV_PATH", env_path.to_string_lossy().as_ref());
+
+    // Trigger migration
+    let _cfg = Config::load();
+
+    let vars = Config::parse_env_file(&env_path).expect("parse env");
+
+    assert_eq!(
+        vars.get("LLM_ENDPOINT").map(String::as_str),
+        Some("http://localhost:11434/api/chat")
+    );
+    assert_eq!(vars.get("LLM_MODEL").map(String::as_str), Some("llama3"));
+    assert_eq!(
+        vars.get("STT_ENDPOINT").map(String::as_str),
+        Some("https://legacy.example.com/stt")
+    );
+    assert!(!vars.contains_key("LLM_HOST"));
+    assert!(!vars.contains_key("OLLAMA_MODEL"));
+    assert!(!vars.contains_key("WHISPER_SERVER_URL"));
 }

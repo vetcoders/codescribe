@@ -1122,6 +1122,12 @@ pub struct QualityDaemonState {
     #[serde(default)]
     pub last_check: String,
     pub latest_report: Option<String>,
+    #[serde(default = "default_daemon_available")]
+    pub available: bool,
+}
+
+fn default_daemon_available() -> bool {
+    true
 }
 
 /// Get path to daemon state file
@@ -1143,6 +1149,14 @@ pub fn read_daemon_state() -> QualityDaemonState {
 /// Get pending mismatch count from daemon state
 pub fn get_pending_mismatches() -> usize {
     read_daemon_state().pending_mismatches
+}
+
+/// Mark daemon as unavailable (used when binary isn't found or daemon fails to start)
+pub fn mark_daemon_unavailable() {
+    let state = QualityDaemonState::default();
+    if let Ok(json) = serde_json::to_string_pretty(&state) {
+        let _ = std::fs::write(daemon_state_path(), json);
+    }
 }
 
 /// Get path to the latest HTML report

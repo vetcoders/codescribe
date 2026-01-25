@@ -1,11 +1,9 @@
 //! Configuration module for CodeScribe Rust app.
 //!
-//! Manages persistent settings with dual-layer storage:
-//! 1. .env file for all configuration (primary source)
-//! 2. settings.json for backwards compatibility
+//! Manages persistent settings with a single source of truth:
+//! 1. .env file for all configuration
 //!
 //! Settings are stored in `$HOME/.codescribe/` directory by default.
-//! .env file takes precedence over settings.json when both exist.
 //!
 //! ## Module Structure
 //!
@@ -22,9 +20,7 @@ pub mod prompts;
 mod types;
 
 // Re-export types
-pub use types::{
-    AiProvider, Config, HoldMods, OverlayPositionMode, ToggleTrigger, TranscriptSendMode,
-};
+pub use types::{Config, HoldMods, OverlayPositionMode, ToggleTrigger, TranscriptSendMode};
 // Language re-exported for external consumers (GUI apps)
 pub use types::Language;
 
@@ -39,18 +35,14 @@ pub use prompts::{
 mod tests {
     use super::models;
     use super::*;
-    use types::AiProvider;
-
     #[test]
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.hold_mods, HoldMods::Ctrl);
         assert_eq!(config.whisper_language, Language::Polish); // Polish is default
-        assert_eq!(config.ai_provider, AiProvider::Harmony);
         assert_eq!(config.ai_max_tokens, 0); // 0 = no limit (API decides)
         assert!(!config.ai_formatting_enabled);
         assert_eq!(config.local_model, models::DEFAULT_MODEL);
-        assert_eq!(config.backend_ports, vec![8237, 7237, 6237, 5237]);
     }
 
     #[test]

@@ -162,11 +162,11 @@ Common issues and solutions for CodeScribe.
    ```bash
    cat ~/.codescribe/.env | grep LLM
    ```
-   Verify `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` are set.
+   Verify `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL` are set.
 
 2. **Test API connectivity**:
    ```bash
-   curl $LLM_BASE_URL/models -H "Authorization: Bearer $LLM_API_KEY"
+   curl $LLM_ENDPOINT/models -H "Authorization: Bearer $LLM_API_KEY"
    ```
 
 3. **Check API key validity**:

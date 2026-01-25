@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
 use super::types::{
-    AiProvider, Config, HoldMods, Language, OverlayPositionMode, ToggleTrigger, TranscriptSendMode,
+    Config, HoldMods, Language, OverlayPositionMode, ToggleTrigger, TranscriptSendMode,
 };
 
 impl Config {
@@ -27,6 +27,9 @@ impl Config {
     pub fn load() -> Self {
         // Ensure we have a user .env (copy from template if present)
         Self::ensure_env_file();
+
+        // One-time migration from legacy keys inside .env
+        Self::migrate_env_legacy_keys();
 
         // Load .env file if it exists
         let env_path = Self::env_path();
@@ -75,11 +78,6 @@ impl Config {
         if let Ok(val) = std::env::var("AI_FORMATTING_ENABLED") {
             self.ai_formatting_enabled =
                 matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
-        }
-        if let Ok(val) = std::env::var("AI_PROVIDER")
-            && let Ok(provider) = val.parse::<AiProvider>()
-        {
-            self.ai_provider = provider;
         }
         if let Ok(val) = std::env::var("TRANSCRIPT_SEND_MODE")
             && let Ok(mode) = val.parse::<TranscriptSendMode>()
@@ -171,40 +169,17 @@ impl Config {
         self.history_enabled = true;
 
         // Backends - LLM
-        // Priority: LLM_HOST (canonical) > OLLAMA_HOST (legacy)
-        if let Ok(val) = std::env::var("LLM_HOST") {
-            self.ollama_host = val;
-        } else if let Ok(val) = std::env::var("OLLAMA_HOST") {
-            self.ollama_host = val;
-        }
-        // Priority: LLM_MODEL (canonical) > OLLAMA_MODEL (legacy)
-        if let Ok(val) = std::env::var("LLM_MODEL") {
-            self.ollama_model = val;
-        } else if let Ok(val) = std::env::var("OLLAMA_MODEL") {
-            self.ollama_model = val;
-        }
         // LLM_API_KEY for cloud providers
         if let Ok(val) = std::env::var("LLM_API_KEY") {
             self.llm_api_key = Some(val);
-        }
-        // Legacy LLM endpoints (still supported for backward compat)
-        if let Ok(val) = std::env::var("LLM_SERVER_URL") {
-            self.llm_server_url = val;
         }
         if let Ok(val) = std::env::var("LLM_ENDPOINT") {
             self.llm_endpoint = Some(val);
         }
 
         // Backends - STT
-        // Priority: STT_ENDPOINT (canonical) > WHISPER_SERVER_URL (legacy)
         if let Ok(val) = std::env::var("STT_ENDPOINT") {
             self.stt_endpoint = Some(val);
-        } else if let Ok(val) = std::env::var("WHISPER_SERVER_URL") {
-            self.whisper_server_url = val.clone();
-            // Also set stt_endpoint if it looks like a full URL
-            if val.starts_with("http") {
-                self.stt_endpoint = Some(val);
-            }
         }
         // STT_API_KEY for cloud STT
         if let Ok(val) = std::env::var("STT_API_KEY") {
@@ -330,6 +305,88 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Migrate legacy keys inside .env to the current contract.
+    fn migrate_env_legacy_keys() {
+        let env_path = Self::env_path();
+        if !env_path.exists() {
+            return;
+        }
+
+        let mut vars = match Self::parse_env_file(&env_path) {
+            Ok(vars) => vars,
+            Err(e) => {
+                warn!("Failed to parse .env for migration: {}", e);
+                return;
+            }
+        };
+
+        let mut changed = false;
+
+        let put_if_missing = |key: &str, value: String, vars: &mut HashMap<String, String>| {
+            if !vars.contains_key(key) {
+                vars.insert(key.to_string(), value);
+                true
+            } else {
+                false
+            }
+        };
+
+        // Legacy STT endpoint → canonical STT_ENDPOINT
+        if let Some(val) = vars.remove("WHISPER_SERVER_URL") {
+            changed = true;
+            if put_if_missing("STT_ENDPOINT", val, &mut vars) {
+                changed = true;
+            }
+        }
+
+        // Legacy LLM endpoint → canonical LLM_ENDPOINT
+        if let Some(val) = vars.remove("LLM_SERVER_URL") {
+            changed = true;
+            if put_if_missing("LLM_ENDPOINT", val, &mut vars) {
+                changed = true;
+            }
+        }
+
+        // Legacy LLM host → canonical LLM_ENDPOINT (/api/chat)
+        let legacy_host = vars
+            .remove("LLM_HOST")
+            .or_else(|| vars.remove("OLLAMA_HOST"));
+        if let Some(host) = legacy_host {
+            changed = true;
+            if !vars.contains_key("LLM_ENDPOINT") {
+                let trimmed = host.trim_end_matches('/');
+                let endpoint = if trimmed.ends_with("/api/chat") {
+                    trimmed.to_string()
+                } else {
+                    format!("{}/api/chat", trimmed)
+                };
+                vars.insert("LLM_ENDPOINT".to_string(), endpoint);
+                changed = true;
+            }
+        }
+
+        // Legacy model name → canonical LLM_MODEL (shared fallback)
+        if let Some(model) = vars.remove("OLLAMA_MODEL") {
+            changed = true;
+            if put_if_missing("LLM_MODEL", model, &mut vars) {
+                changed = true;
+            }
+        }
+
+        // Remove deprecated provider flag
+        if vars.remove("AI_PROVIDER").is_some() {
+            changed = true;
+        }
+
+        if changed {
+            if let Err(e) = Self::write_env_file(&env_path, &vars) {
+                warn!("Failed to write migrated .env: {}", e);
+            } else {
+                info!("Migrated legacy keys inside .env to the current contract");
+            }
+        }
     }
 
     /// Ensure the user .env exists by copying from the template if available.

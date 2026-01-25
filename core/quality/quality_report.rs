@@ -255,11 +255,26 @@ fn prepare_cloud_jobs(
         return CloudJobSet::Disabled;
     }
 
-    if std::env::var("STT_ENDPOINT").is_err() || std::env::var("STT_API_KEY").is_err() {
-        return CloudJobSet::Skipped(
-            "Cloud transcription skipped: STT_ENDPOINT/STT_API_KEY missing".into(),
-        );
+    let app_config = Config::load();
+    if app_config.use_local_stt {
+        return CloudJobSet::Skipped("Cloud transcription skipped: USE_LOCAL_STT=1".into());
     }
+
+    let (endpoint, api_key) = match (
+        app_config.stt_endpoint.clone(),
+        app_config.stt_api_key.clone(),
+    ) {
+        (Some(endpoint), Some(api_key))
+            if !endpoint.trim().is_empty() && !api_key.trim().is_empty() =>
+        {
+            (endpoint, api_key)
+        }
+        _ => {
+            return CloudJobSet::Skipped(
+                "Cloud transcription skipped: STT_ENDPOINT/STT_API_KEY missing".into(),
+            );
+        }
+    };
 
     let total = pairs.len().max(1);
     let max_concurrency = if config.cloud_concurrency == 0 {
@@ -277,6 +292,8 @@ fn prepare_cloud_jobs(
         let language = config.language.clone();
         let permitter = semaphore.clone();
 
+        let endpoint = endpoint.clone();
+        let api_key = api_key.clone();
         let handle = tokio::spawn(async move {
             let _permit = permitter
                 .acquire_owned()
@@ -286,7 +303,7 @@ fn prepare_cloud_jobs(
                 safe_canonicalize_bounded(&audio_path, &input_root).with_context(|| {
                     format!("Audio path escapes input root: {}", audio_path.display())
                 })?;
-            client::transcribe(&audio_canon, language.as_deref()).await
+            client::transcribe_cloud(&audio_canon, language.as_deref(), &endpoint, &api_key).await
         });
 
         jobs.insert(id, handle);
@@ -1253,8 +1270,12 @@ fn render_ingest_jsonl(report: &QualityReport, artifacts_dir: &Path) -> Result<S
 fn snapshot_environment(metrics_reference: MetricsReference) -> ReportEnvironment {
     let config = Config::load();
     ReportEnvironment {
-        stt_endpoint: std::env::var("STT_ENDPOINT").ok(),
-        stt_api_key_present: std::env::var("STT_API_KEY").is_ok(),
+        stt_endpoint: config.stt_endpoint.clone(),
+        stt_api_key_present: config
+            .stt_api_key
+            .as_ref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
         llm_formatting_endpoint: std::env::var("LLM_FORMATTING_ENDPOINT").ok(),
         llm_formatting_model: std::env::var("LLM_FORMATTING_MODEL").ok(),
         llm_formatting_key_present: std::env::var("LLM_FORMATTING_API_KEY").is_ok()

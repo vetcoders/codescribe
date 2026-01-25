@@ -12,7 +12,6 @@ fn main() -> anyhow::Result<()> {
     println!("Loaded config:");
     println!("  Hold mods: {:?}", config.hold_mods);
     println!("  Language: {:?}", config.whisper_language);
-    println!("  AI provider: {:?}", config.ai_provider);
     println!("  Beep on start: {}", config.beep_on_start);
     println!("  Sound name: {}", config.sound_name);
     println!("  Sound volume: {}", config.sound_volume);
