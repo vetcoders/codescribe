@@ -18,8 +18,8 @@ use crate::ui_helpers::{
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
 use super::state::{
-    ChatMessage, ChatRole, DrawerEntry, OVERLAY_STATE, SEND_CALLBACK, Tab, TranscriptionMode,
-    VoiceChatOverlayState,
+    ChatMessage, ChatRole, ConversationModeState, DrawerEntry, OVERLAY_STATE, SEND_CALLBACK, Tab,
+    TranscriptionMode, VoiceChatOverlayState,
 };
 
 // Type alias for Objective-C object pointers
@@ -172,6 +172,31 @@ pub fn show_drawer_tab() {
     Queue::main().exec_async(|| {
         update_active_tab_impl(Tab::Drawer);
     });
+}
+
+/// Update the conversation mode state (Moshi full-duplex indicators)
+pub fn update_conversation_state(new_state: ConversationModeState) {
+    Queue::main().exec_async(move || {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.conversation_state = new_state;
+        // Update status text based on conversation state
+        let status = match new_state {
+            ConversationModeState::Inactive => "Ready",
+            ConversationModeState::Listening => "🎤 Listening...",
+            ConversationModeState::UserSpeaking => "🎤 You're speaking...",
+            ConversationModeState::Processing => "⏳ Processing...",
+            ConversationModeState::AssistantSpeaking => "🔊 Moshi speaking...",
+            ConversationModeState::Interrupted => "⚡ Interrupted",
+        };
+        drop(state);
+        update_voice_chat_status_impl(status);
+    });
+}
+
+/// Check if conversation mode is active
+pub fn is_conversation_active() -> bool {
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    !matches!(state.conversation_state, ConversationModeState::Inactive)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -503,6 +528,7 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.active_tab = Tab::Drawer;
     state.is_sending = false;
     state.manual_draft.clear();
+    state.conversation_state = ConversationModeState::Inactive;
 }
 
 fn refresh_drawer_impl() {
@@ -641,6 +667,7 @@ fn mode_label(mode: TranscriptionMode) -> &'static str {
         TranscriptionMode::Hold => "Ctrl+Hold",
         TranscriptionMode::Assistive => "Ctrl+Shift",
         TranscriptionMode::Toggle => "Toggle",
+        TranscriptionMode::Conversation => "Moshi",
     }
 }
 

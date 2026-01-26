@@ -13,6 +13,10 @@ use crate::config::Config;
 /// This is set before recording starts and checked by the delta callback.
 static IS_ASSISTIVE_SESSION: AtomicBool = AtomicBool::new(false);
 
+/// Global flag for conversation mode (full-duplex Moshi).
+/// When true, audio is routed to ConversationEngine instead of Whisper.
+static IS_CONVERSATION_SESSION: AtomicBool = AtomicBool::new(false);
+
 /// Set the current session mode (called before recording starts)
 pub fn set_assistive_session(is_assistive: bool) {
     IS_ASSISTIVE_SESSION.store(is_assistive, Ordering::SeqCst);
@@ -21,6 +25,16 @@ pub fn set_assistive_session(is_assistive: bool) {
 /// Check if current session is assistive mode
 pub fn is_assistive_session() -> bool {
     IS_ASSISTIVE_SESSION.load(Ordering::SeqCst)
+}
+
+/// Set conversation mode flag (Moshi full-duplex)
+pub fn set_conversation_session(is_conversation: bool) {
+    IS_CONVERSATION_SESSION.store(is_conversation, Ordering::SeqCst);
+}
+
+/// Check if current session is conversation mode (Moshi)
+pub fn is_conversation_session() -> bool {
+    IS_CONVERSATION_SESSION.load(Ordering::SeqCst)
 }
 
 /// Route transcription delta to transcription overlay (ALWAYS)

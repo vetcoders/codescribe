@@ -58,6 +58,26 @@ pub enum TranscriptionMode {
     Hold,
     Assistive,
     Toggle,
+    /// Full-duplex conversation mode (Moshi)
+    Conversation,
+}
+
+/// State of the conversation mode (Moshi full-duplex)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConversationModeState {
+    /// Not in conversation mode
+    #[default]
+    Inactive,
+    /// Listening for user speech
+    Listening,
+    /// User is speaking
+    UserSpeaking,
+    /// Processing user input
+    Processing,
+    /// Assistant is responding (audio playing)
+    AssistantSpeaking,
+    /// User interrupted assistant
+    Interrupted,
 }
 
 pub struct DrawerEntry {
@@ -104,6 +124,9 @@ pub struct VoiceChatOverlayState {
     pub is_sending: bool,
     pub auto_send_enabled: bool,
 
+    // Conversation mode (Moshi)
+    pub conversation_state: ConversationModeState,
+
     // Handler
     pub action_handler: Option<usize>,
 }
@@ -132,6 +155,7 @@ impl Default for VoiceChatOverlayState {
             manual_draft: String::new(),
             is_sending: false,
             auto_send_enabled: true,
+            conversation_state: ConversationModeState::default(),
             action_handler: None,
         }
     }

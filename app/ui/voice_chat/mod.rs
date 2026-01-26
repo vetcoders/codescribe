@@ -12,12 +12,12 @@ mod state;
 pub use api::{
     add_voice_chat_error_message, add_voice_chat_user_message, append_voice_chat_assistant_delta,
     clear_voice_chat_text, filter_drawer, hide_voice_chat_overlay, is_auto_send_enabled,
-    is_voice_chat_overlay_visible, refresh_drawer, reset_voice_chat_activity,
-    send_voice_chat_draft, set_voice_chat_send_callback, set_voice_chat_sending,
-    set_voice_chat_text, show_agent_tab, show_drawer_tab, update_drawer_after_save,
-    update_voice_chat_status,
+    is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,
+    reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_send_callback,
+    set_voice_chat_sending, set_voice_chat_text, show_agent_tab, show_drawer_tab,
+    update_conversation_state, update_drawer_after_save, update_voice_chat_status,
 };
-pub use state::VoiceChatOverlayConfig;
+pub use state::{ConversationModeState, VoiceChatOverlayConfig};
 
 use codescribe_core::config::{Config, OverlayPositionMode};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};

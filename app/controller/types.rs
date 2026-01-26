@@ -82,6 +82,14 @@ pub enum State {
     RecToggle,
     /// Processing transcription and formatting
     Busy,
+    /// Full-duplex conversation mode (Moshi)
+    ///
+    /// In this mode, the app simultaneously:
+    /// - Records audio from microphone
+    /// - Processes through VAD + Moshi LM
+    /// - Plays AI response through speaker
+    /// - Supports interruption (user can speak while AI responds)
+    Conversation,
 }
 
 impl std::fmt::Display for State {
@@ -91,6 +99,7 @@ impl std::fmt::Display for State {
             State::RecHold => write!(f, "REC_HOLD"),
             State::RecToggle => write!(f, "REC_TOGGLE"),
             State::Busy => write!(f, "BUSY"),
+            State::Conversation => write!(f, "CONVERSATION"),
         }
     }
 }
@@ -100,6 +109,8 @@ impl std::fmt::Display for State {
 pub enum HotkeyType {
     Hold,
     Toggle,
+    /// Full-duplex conversation mode (Ctrl+Option)
+    Conversation,
 }
 
 /// Hotkey action types

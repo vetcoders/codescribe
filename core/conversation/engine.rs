@@ -21,6 +21,71 @@ use super::context::{ConversationContext, ConversationState, Turn};
 use super::turns::{TurnConfig, TurnManager};
 use super::{FRAME_SAMPLES, NUM_CODEBOOKS, SAMPLE_RATE};
 
+// ═══════════════════════════════════════════════════════════
+// Resampler24k - converts any input rate to 24kHz for Moshi
+// ═══════════════════════════════════════════════════════════
+
+/// Resampler for converting audio to 24kHz (Moshi/Mimi codec rate)
+///
+/// Uses linear interpolation for efficiency. For production use with
+/// critical quality needs, consider rubato or similar library.
+pub struct Resampler24k {
+    buffer: Vec<f32>,
+    ratio: f32,
+    input_rate: u32,
+}
+
+impl Resampler24k {
+    /// Create resampler for given input sample rate
+    pub fn new(input_rate: u32) -> Self {
+        let ratio = SAMPLE_RATE as f32 / input_rate as f32;
+        debug!(
+            "Resampler24k created: {}Hz → {}Hz (ratio: {:.4})",
+            input_rate, SAMPLE_RATE, ratio
+        );
+        Self {
+            buffer: Vec::with_capacity(FRAME_SAMPLES * 2),
+            ratio,
+            input_rate,
+        }
+    }
+
+    /// Resample audio to 24kHz (linear interpolation)
+    ///
+    /// Returns owned Vec to avoid lifetime complexity in callbacks.
+    pub fn resample(&mut self, samples: &[f32]) -> Vec<f32> {
+        // No resampling needed if already at target rate
+        if (self.ratio - 1.0).abs() < 0.001 {
+            return samples.to_vec();
+        }
+
+        let output_len = (samples.len() as f32 * self.ratio) as usize;
+        self.buffer.clear();
+        self.buffer.reserve(output_len);
+
+        for i in 0..output_len {
+            let src_idx = i as f32 / self.ratio;
+            let idx0 = src_idx.floor() as usize;
+            let idx1 = (idx0 + 1).min(samples.len().saturating_sub(1));
+            let frac = src_idx - idx0 as f32;
+
+            let sample = if idx0 < samples.len() {
+                samples[idx0] * (1.0 - frac) + samples.get(idx1).copied().unwrap_or(0.0) * frac
+            } else {
+                0.0
+            };
+            self.buffer.push(sample);
+        }
+
+        self.buffer.clone()
+    }
+
+    /// Get the input sample rate this resampler was created for
+    pub fn input_rate(&self) -> u32 {
+        self.input_rate
+    }
+}
+
 /// Main conversation engine using Moshi
 pub struct ConversationEngine {
     /// Moshi configuration
@@ -68,6 +133,9 @@ pub struct ConversationEngine {
 
     /// Number of generated audio codebooks
     generated_audio_codebooks: usize,
+
+    /// Resampler for input audio (any rate → 24kHz)
+    resampler: Option<Resampler24k>,
 }
 
 impl ConversationEngine {
@@ -108,6 +176,7 @@ impl ConversationEngine {
             lm_config: None,
             prev_text_token: 0,
             generated_audio_codebooks: NUM_CODEBOOKS,
+            resampler: None,
         })
     }
 
@@ -303,6 +372,42 @@ impl ConversationEngine {
         Ok(true)
     }
 
+    /// Process incoming audio samples from any sample rate
+    ///
+    /// Automatically resamples to 24kHz before processing.
+    /// This is the preferred method when receiving audio from CoreAudio (48kHz).
+    ///
+    /// Returns true if a complete frame was processed.
+    pub fn process_audio_any_rate(&mut self, samples: &[f32], sample_rate: u32) -> Result<bool> {
+        // Fast path: already at 24kHz
+        if sample_rate == SAMPLE_RATE {
+            return self.process_audio(samples);
+        }
+
+        // Lazy init resampler (or recreate if rate changed)
+        let needs_new_resampler = self
+            .resampler
+            .as_ref()
+            .is_none_or(|r| r.input_rate() != sample_rate);
+
+        if needs_new_resampler {
+            info!(
+                "Initializing Resampler24k for {}Hz → {}Hz",
+                sample_rate, SAMPLE_RATE
+            );
+            self.resampler = Some(Resampler24k::new(sample_rate));
+        }
+
+        // Resample and process
+        let resampled = self
+            .resampler
+            .as_mut()
+            .expect("resampler just initialized")
+            .resample(samples);
+
+        self.process_audio(&resampled)
+    }
+
     /// Generate response to user input
     fn generate_response(&mut self) -> Result<()> {
         if self.pending_user_codes.is_empty() {
@@ -437,6 +542,9 @@ impl ConversationEngine {
             self.prev_text_token = config.text_out_vocab_size as u32;
         }
 
+        // Clear resampler (will be recreated on next process_audio_any_rate call)
+        self.resampler = None;
+
         info!("Conversation reset");
     }
 
@@ -481,5 +589,29 @@ mod tests {
         engine.set_system_prompt("Test prompt");
         engine.reset();
         assert!(engine.context().system_prompt().is_none());
+    }
+
+    #[test]
+    fn test_resampler_48k_to_24k() {
+        let mut resampler = Resampler24k::new(48000);
+        assert_eq!(resampler.input_rate(), 48000);
+
+        // 48kHz input: 480 samples = 10ms
+        let input: Vec<f32> = (0..480).map(|i| (i as f32 * 0.01).sin()).collect();
+
+        // Should become ~240 samples at 24kHz (ratio 0.5)
+        let output = resampler.resample(&input);
+        assert!((output.len() as i32 - 240).abs() <= 1);
+    }
+
+    #[test]
+    fn test_resampler_24k_passthrough() {
+        let mut resampler = Resampler24k::new(24000);
+
+        let input: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
+        let output = resampler.resample(&input);
+
+        // Should be same length (passthrough)
+        assert_eq!(output.len(), input.len());
     }
 }

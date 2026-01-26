@@ -270,6 +270,7 @@ fn state_to_string(state: State) -> String {
         State::Idle => "idle".to_string(),
         State::RecHold | State::RecToggle => "recording".to_string(),
         State::Busy => "busy".to_string(),
+        State::Conversation => "conversation".to_string(),
     }
 }
 
