@@ -240,7 +240,14 @@ impl Recorder {
 
         // Initialize VAD (lazy init - only loads model on first use)
         if !vad::is_initialized() {
-            let _ = vad::init(&vad::default_model_path());
+            let model_path = vad::default_model_path();
+            if let Err(e) = vad::init(&model_path) {
+                warn!(
+                    "VAD init failed ({}): {} - auto-stop disabled, speech_probability will return 1.0",
+                    model_path.display(),
+                    e
+                );
+            }
         }
 
         // Clear buffer and reset diagnostics
