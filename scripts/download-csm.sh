@@ -24,13 +24,15 @@ if command -v hf &> /dev/null; then
     echo ""
     echo "📦 Downloading CSM-1B model (~1GB)..."
     hf download sesame/csm-1b \
-        --include "*.safetensors" "*.json"
+        --include "*.safetensors" \
+        --include "*.json"
 
     # Download Mimi codec
     echo ""
     echo "📦 Downloading Mimi codec (~90MB)..."
     hf download kyutai/mimi \
-        --include "model.safetensors" "config.json"
+        --include "model.safetensors" \
+        --include "config.json"
 
 else
     echo "⚠️  hf CLI not found. Installing..."

@@ -16,6 +16,33 @@ pub fn find_snapshot(repo: &str, required: &[&str]) -> Option<PathBuf> {
     let base = cache_base()?;
     let repo_dir = base.join(format!("models--{}", repo.replace('/', "--")));
     let snapshots_dir = repo_dir.join("snapshots");
+
+    let snapshots_dir = if snapshots_dir.exists() {
+        snapshots_dir
+    } else {
+        // Case-insensitive repo match fallback (HF cache uses original casing)
+        let target = repo.to_ascii_lowercase();
+        let mut matched: Option<PathBuf> = None;
+        if let Ok(entries) = fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("models--") {
+                    continue;
+                }
+                let repo_id = name
+                    .strip_prefix("models--")
+                    .unwrap_or("")
+                    .replace("--", "/");
+                if repo_id.to_ascii_lowercase() == target {
+                    matched = Some(entry.path().join("snapshots"));
+                    break;
+                }
+            }
+        }
+        matched?
+    };
+
     let entries = fs::read_dir(&snapshots_dir).ok()?;
 
     let mut best: Option<(SystemTime, PathBuf)> = None;
