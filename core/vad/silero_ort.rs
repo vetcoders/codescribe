@@ -13,8 +13,8 @@ use std::thread;
 use anyhow::{Context, Result};
 use ndarray::{Array1, Array2, Array3};
 use ort::session::Session;
-use ort::value::Value;
-use tracing::{debug, info, warn};
+use ort::value::Tensor;
+use tracing::{debug, info};
 
 use super::config::VadConfig;
 
@@ -159,11 +159,11 @@ impl SileroVad {
         // Sample rate as i64
         let sr_array = Array1::from_vec(vec![VAD_SAMPLE_RATE as i64]);
 
-        // Create input values
-        let input = Value::from_array(input_array)?;
-        let sr = Value::from_array(sr_array)?;
-        let h = Value::from_array(self.state_h.clone())?;
-        let c = Value::from_array(self.state_c.clone())?;
+        // Create input tensors (Tensor::from_array in ort rc.11)
+        let input = Tensor::from_array(input_array)?;
+        let sr = Tensor::from_array(sr_array)?;
+        let h = Tensor::from_array(self.state_h.clone())?;
+        let c = Tensor::from_array(self.state_c.clone())?;
 
         // Run inference with named inputs
         // Silero VAD v5 expects: input, sr, h, c
@@ -240,6 +240,14 @@ struct VadWorker {
 
 impl VadWorker {
     fn new(model_path: &Path, config: VadConfig) -> Result<Self> {
+        // Validate model exists before spawning worker thread
+        if !model_path.exists() {
+            anyhow::bail!(
+                "Silero VAD model not found at: {} - download with scripts/download-silero.sh",
+                model_path.display()
+            );
+        }
+
         // Bounded channel - if full, oldest messages dropped (backpressure)
         let (tx, rx) = mpsc::sync_channel::<VadMessage>(4);
         let path = model_path.to_path_buf();
@@ -321,15 +329,25 @@ pub fn init(model_path: &Path) -> Result<()> {
 }
 
 /// Initialize VAD with model path and config
+///
+/// Returns Ok if initialized successfully, Err if model not found.
+/// When VAD is not initialized, `speech_probability()` returns 1.0 (assume speech).
 pub fn init_with_config(model_path: &Path, config: VadConfig) -> Result<()> {
     let _ = MODEL_PATH.set(model_path.to_path_buf());
     let _ = VAD_CONFIG.set(config.clone());
 
-    let _ = VAD_WORKER.get_or_init(|| {
-        VadWorker::new(model_path, config).expect("Failed to initialize VAD worker")
-    });
-
-    Ok(())
+    // Try to create worker - if it fails, VAD stays uninitialized
+    // (speech_probability will return 1.0, disabling auto-stop)
+    match VadWorker::new(model_path, config) {
+        Ok(worker) => {
+            let _ = VAD_WORKER.set(worker);
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("VAD init failed: {} - auto-stop disabled", e);
+            Err(e)
+        }
+    }
 }
 
 /// Check if VAD is initialized

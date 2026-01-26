@@ -15,10 +15,7 @@ use tracing::{debug, error, info};
 
 const DEFAULT_CHUNK_DURATION_SEC: f32 = 15.0;
 const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for context
-// Note: RMS-based VAD replaced with WebRTC VAD (see vad module)
-const DEFAULT_VAD_SILENCE_SEC: f32 = 0.8;
-const DEFAULT_VAD_MAX_UTTERANCE_SEC: f32 = 30.0;
-const DEFAULT_VAD_PRE_ROLL_MS: u64 = 300;
+// VAD config now centralized in core/vad/config.rs (CODESCRIBE_VAD_* env vars)
 const DEFAULT_BUFFER_DELAY_MS: u64 = 3000;
 const DEFAULT_TYPING_CPS: f32 = 30.0;
 
@@ -215,30 +212,7 @@ async fn transcription_worker(
     info!("Transcription worker finished");
 }
 
-struct VADConfig {
-    /// Speech probability threshold (0.0-1.0). Audio with probability >= this is speech.
-    speech_threshold: f32,
-    silence_duration_sec: f32,
-    max_utterance_sec: f32,
-    pre_roll_ms: u64,
-}
-
-impl VADConfig {
-    fn from_env() -> Self {
-        Self {
-            // Use the global VAD config threshold if set, otherwise default 0.5
-            speech_threshold: env_f32("CODESCRIBE_VAD_THRESHOLD", 0.5).clamp(0.1, 0.9),
-            silence_duration_sec: env_f32("CODESCRIBE_VAD_SILENCE_SEC", DEFAULT_VAD_SILENCE_SEC)
-                .clamp(0.2, 5.0),
-            max_utterance_sec: env_f32(
-                "CODESCRIBE_VAD_MAX_UTTERANCE_SEC",
-                DEFAULT_VAD_MAX_UTTERANCE_SEC,
-            )
-            .clamp(5.0, 120.0),
-            pre_roll_ms: env_u64("CODESCRIBE_VAD_PRE_ROLL_MS", DEFAULT_VAD_PRE_ROLL_MS),
-        }
-    }
-}
+// VADConfig removed - now using centralized vad::VadConfig from core/vad/config.rs
 
 struct VADSegmenter {
     pending_samples: Vec<f32>,
@@ -254,11 +228,11 @@ struct VADSegmenter {
 
 impl VADSegmenter {
     fn new(sample_rate: u32) -> Self {
-        Self::with_config(sample_rate, VADConfig::from_env())
+        Self::with_config(sample_rate, vad::VadConfig::default())
     }
 
-    fn with_config(sample_rate: u32, config: VADConfig) -> Self {
-        let pre_roll_samples = ((config.pre_roll_ms as f32 / 1000.0) * sample_rate as f32)
+    fn with_config(sample_rate: u32, config: vad::VadConfig) -> Self {
+        let pre_roll_samples = (config.pre_roll_sec * sample_rate as f32)
             .round()
             .max(1.0) as usize;
 
@@ -268,8 +242,8 @@ impl VADSegmenter {
         Self {
             pending_samples: Vec::new(),
             sample_rate,
-            speech_threshold: config.speech_threshold,
-            silence_duration_sec: config.silence_duration_sec,
+            speech_threshold: config.threshold,
+            silence_duration_sec: config.max_silence_duration_sec,
             max_utterance_sec: config.max_utterance_sec,
             pre_roll_samples,
             silence_frames: 0,
@@ -818,12 +792,25 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
+    #[ignore] // Requires Silero VAD model (run with: cargo test -- --ignored)
     fn test_vad_segmenter_flush_on_silence() {
-        let config = VADConfig {
-            speech_threshold: 0.5, // Probability threshold for speech detection
-            silence_duration_sec: 0.3,
+        // Initialize VAD - skip if model unavailable
+        let model_path = vad::default_model_path();
+        if !model_path.exists() {
+            eprintln!(
+                "Skipping: Silero VAD model not found at {}",
+                model_path.display()
+            );
+            return;
+        }
+        vad::init(&model_path).expect("Failed to init VAD");
+
+        let config = vad::VadConfig {
+            threshold: 0.5, // Probability threshold for speech detection
+            min_speech_duration_sec: 0.1,
+            max_silence_duration_sec: 0.3,
             max_utterance_sec: 2.0,
-            pre_roll_ms: 100,
+            pre_roll_sec: 0.1, // 100ms
         };
         let mut segmenter = VADSegmenter::with_config(1000, config);
 
@@ -840,12 +827,25 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Requires Silero VAD model (run with: cargo test -- --ignored)
     fn test_vad_segmenter_flush_on_max_duration() {
-        let config = VADConfig {
-            speech_threshold: 0.5, // Probability threshold for speech detection
-            silence_duration_sec: 1.0,
+        // Initialize VAD - skip if model unavailable
+        let model_path = vad::default_model_path();
+        if !model_path.exists() {
+            eprintln!(
+                "Skipping: Silero VAD model not found at {}",
+                model_path.display()
+            );
+            return;
+        }
+        vad::init(&model_path).expect("Failed to init VAD");
+
+        let config = vad::VadConfig {
+            threshold: 0.5, // Probability threshold for speech detection
+            min_speech_duration_sec: 0.1,
+            max_silence_duration_sec: 1.0,
             max_utterance_sec: 0.5,
-            pre_roll_ms: 100,
+            pre_roll_sec: 0.1, // 100ms
         };
         let mut segmenter = VADSegmenter::with_config(1000, config);
         let speech = vec![0.8; 600];
