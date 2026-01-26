@@ -6,7 +6,7 @@
 #   ./scripts/download-moshi.sh moshiko   # Download only male voice
 #   ./scripts/download-moshi.sh moshika   # Download only female voice
 #
-# Downloads to: models/moshiko-q8/ and models/moshika-q8/
+# Downloads to: ~/.codescribe/models/moshiko-q8/ and ~/.codescribe/models/moshika-q8/
 #
 # Note: Mimi codec is shared with CSM - run download-csm.sh if not present.
 #

@@ -27,9 +27,7 @@ async fn main() -> Result<()> {
         println!("Usage: cargo run --release --example demo_full_pipeline -- [OPTIONS] <audio>");
         println!();
         println!("Options:");
-        println!(
-            "  --model PATH     Model directory (default: ~/.codescribe/models/whisper-large-v3-turbo-mlx-q8)"
-        );
+        println!("  --model PATH     Model directory (default: ~/.codescribe/models/whisper-large-v3-turbo-mlx-q8)");
         println!("  --assistive      Use assistive mode (kurier/enhancer) instead of formatting");
         println!("  --raw            Skip AI formatting, show raw transcription only");
         println!();

@@ -38,10 +38,11 @@ pub struct MoshiConfig {
 impl Default for MoshiConfig {
     fn default() -> Self {
         // Default to moshiko (male voice), paths can be overridden
+        // All models in ~/.codescribe/models/ (unified path)
         let models_dir = directories::BaseDirs::new()
-            .map(|d| d.data_local_dir().to_path_buf())
+            .map(|d| d.home_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("codescribe")
+            .join(".codescribe")
             .join("models");
 
         Self {
@@ -66,10 +67,11 @@ impl MoshiConfig {
 
     /// Create config for Moshika (female voice)
     pub fn moshika() -> Self {
+        // All models in ~/.codescribe/models/ (unified path)
         let models_dir = directories::BaseDirs::new()
-            .map(|d| d.data_local_dir().to_path_buf())
+            .map(|d| d.home_dir().to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("codescribe")
+            .join(".codescribe")
             .join("models");
 
         Self {

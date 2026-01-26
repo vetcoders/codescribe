@@ -3,7 +3,7 @@
 #
 # Usage: ./scripts/download-silero.sh
 #
-# Downloads to: ~/.local/share/codescribe/models/silero_vad.onnx
+# Downloads to: ~/.codescribe/models/silero_vad.onnx
 #
 # Model: Silero VAD v5 (ONNX) from https://github.com/snakers4/silero-vad
 #

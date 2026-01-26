@@ -26,8 +26,9 @@ fn main() -> anyhow::Result<()> {
 
     // Find model: ~/.codescribe/models/ (unified standard)
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let model_candidates =
-        [PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8")];
+    let model_candidates = [
+        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8"),
+    ];
 
     let model_path = model_candidates
         .iter()

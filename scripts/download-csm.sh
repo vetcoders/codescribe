@@ -3,7 +3,7 @@
 #
 # Usage: ./scripts/download-csm.sh
 #
-# Downloads to: models/csm-1b/
+# Downloads to: ~/.codescribe/models/csm-1b/
 #
 # Created by M&K (c)2026 VetCoders
 
