@@ -54,27 +54,19 @@ fn resolve_model_path_fallback() -> Result<PathBuf> {
     let configured_model = config.local_model;
     if !configured_model.trim().is_empty() {
         if configured_model.contains('/') {
-            if let Some(snapshot) = hf_cache::find_snapshot(
+            if let Some(snapshot) = hf_cache::find_snapshot_with_any(
                 configured_model.trim(),
-                &[
-                    "config.json",
-                    "tokenizer.json",
-                    "weights.safetensors",
-                    "mel_filters.npz",
-                ],
+                &["config.json", "tokenizer.json", "mel_filters.npz"],
+                &["weights.safetensors", "model.safetensors"],
             ) {
                 info!("Using HF cache model: {}", snapshot.display());
                 return Ok(snapshot);
             }
         } else if configured_model == DEFAULT_MODEL
-            && let Some(snapshot) = hf_cache::find_snapshot(
+            && let Some(snapshot) = hf_cache::find_snapshot_with_any(
                 DEFAULT_WHISPER_REPO,
-                &[
-                    "config.json",
-                    "tokenizer.json",
-                    "weights.safetensors",
-                    "mel_filters.npz",
-                ],
+                &["config.json", "tokenizer.json", "mel_filters.npz"],
+                &["weights.safetensors", "model.safetensors"],
             )
         {
             info!("Using HF cache model: {}", snapshot.display());
