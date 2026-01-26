@@ -445,12 +445,12 @@ pub fn reset() {
     }
 }
 
-/// Get default model path
+/// Get default model path (~/.codescribe/models/silero_vad.onnx)
 pub fn default_model_path() -> std::path::PathBuf {
     directories::BaseDirs::new()
-        .map(|d| d.data_local_dir().to_path_buf())
+        .map(|d| d.home_dir().to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("codescribe")
+        .join(".codescribe")
         .join("models")
         .join("silero_vad.onnx")
 }

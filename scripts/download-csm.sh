@@ -10,8 +10,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-MODEL_DIR="$PROJECT_DIR/models/csm-1b"
+# All models go to ~/.codescribe/models/
+MODEL_DIR="${HOME}/.codescribe/models/csm-1b"
 
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║  Downloading CSM-1B Text-to-Speech Model                 ║"
