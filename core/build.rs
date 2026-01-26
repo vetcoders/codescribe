@@ -54,7 +54,8 @@ fn main() {
 
         let embed_model = env::var("CODESCRIBE_EMBED_MODEL")
             .ok()
-            .filter(|value| !value.trim().is_empty())
+            .map(|v| v.trim().to_string())
+            .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
         let model_path =
             resolve_whisper_embed_model_path(&manifest_dir, &embed_model, DEFAULT_WHISPER_REPO);
