@@ -62,7 +62,15 @@ fn main() {
         println!("cargo:rerun-if-changed={}", model_path.display());
         let out_dir = env::var("OUT_DIR").unwrap();
         let dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
-        let model_exists = model_path.join("tokenizer.json").exists();
+        let weights_path = if model_path.join("weights.safetensors").exists() {
+            model_path.join("weights.safetensors")
+        } else {
+            model_path.join("model.safetensors")
+        };
+        let model_exists = model_path.join("config.json").exists()
+            && model_path.join("tokenizer.json").exists()
+            && model_path.join("mel_filters.npz").exists()
+            && weights_path.exists();
 
         // TTS model embedding (optional, via CODESCRIBE_EMBED_TTS=1)
         let embed_tts = env::var("CODESCRIBE_EMBED_TTS").is_ok();
@@ -186,7 +194,7 @@ fn main() {
                 model_path.join("config.json").display(),
                 model_path.join("tokenizer.json").display(),
                 model_path.join("mel_filters.npz").display(),
-                model_path.join("weights.safetensors").display()
+                weights_path.display()
             );
             fs::write(&dest_path, content).expect("Failed to write embedded_model_data.rs");
             println!("cargo:rustc-cfg=embed_model");

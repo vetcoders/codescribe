@@ -13,6 +13,14 @@ use std::time::SystemTime;
 use directories::BaseDirs;
 
 pub fn find_snapshot(repo: &str, required: &[&str]) -> Option<PathBuf> {
+    find_snapshot_with_any(repo, required, &[])
+}
+
+pub fn find_snapshot_with_any(
+    repo: &str,
+    required_all: &[&str],
+    required_any: &[&str],
+) -> Option<PathBuf> {
     let base = cache_base()?;
     let repo_dir = base.join(format!("models--{}", repo.replace('/', "--")));
     let snapshots_dir = repo_dir.join("snapshots");
@@ -52,7 +60,10 @@ pub fn find_snapshot(repo: &str, required: &[&str]) -> Option<PathBuf> {
         if !path.is_dir() {
             continue;
         }
-        if !required.iter().all(|f| path.join(f).exists()) {
+        if !required_all.iter().all(|f| path.join(f).exists()) {
+            continue;
+        }
+        if !required_any.is_empty() && !required_any.iter().any(|f| path.join(f).exists()) {
             continue;
         }
         let modified = entry
