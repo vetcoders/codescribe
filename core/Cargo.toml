@@ -60,7 +60,7 @@ dotenvy = "0.15"
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "download-binaries", "tls-native"] }
 
 # Moshi - conversational voice AI (Kyutai Labs)
-moshi = { git = "https://github.com/kyutai-labs/moshi", branch = "main", features = ["metal"] }
+moshi = { version = "0.6.4", features = ["metal"] }
 
 # Time/utilities
 chrono = "0.4"
