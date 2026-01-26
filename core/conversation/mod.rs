@@ -50,7 +50,7 @@ pub mod turns;
 
 pub use config::MoshiConfig;
 pub use context::ConversationContext;
-pub use engine::ConversationEngine;
+pub use engine::{ConversationEngine, Resampler24k};
 pub use turns::TurnManager;
 
 /// Sample rate for Moshi (24kHz like Mimi codec)

@@ -23,7 +23,9 @@
 mod helpers;
 mod types;
 
-pub use helpers::{is_assistive_session, set_assistive_session};
+pub use helpers::{
+    is_assistive_session, is_conversation_session, set_assistive_session, set_conversation_session,
+};
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 
 use crate::stream_postprocess::StreamPostProcessor;
@@ -42,6 +44,10 @@ use crate::config::models::ModelManager;
 use crate::os::clipboard;
 use crate::tray::{TrayStatus, update_tray_status};
 use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
+
+// Moshi conversation engine and audio output
+use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
+use codescribe_core::tts::AudioPlayer;
 
 use helpers::{raw_save_enabled, route_transcription_delta, setup_voice_chat_send_callback};
 use types::ValidatedAudioPath;
@@ -100,6 +106,22 @@ pub struct RecordingController {
 
     /// Flag set by VAD (silence detection) when recording should auto-stop
     vad_triggered: Arc<AtomicBool>,
+
+    // ═══════════════════════════════════════════════════════════
+    // Conversation mode (Moshi full-duplex)
+    // ═══════════════════════════════════════════════════════════
+
+    /// Moshi conversation engine (lazy-initialized on first use)
+    conversation_engine: Arc<Mutex<Option<ConversationEngine>>>,
+
+    /// Audio player for conversation responses (lazy-initialized)
+    audio_player: Arc<Mutex<Option<AudioPlayer>>>,
+
+    /// Flag to signal conversation mode should stop
+    conversation_stop_flag: Arc<AtomicBool>,
+
+    /// Task handle for conversation audio processing loop
+    conversation_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl RecordingController {
@@ -144,6 +166,11 @@ impl RecordingController {
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
             vad_triggered: Arc::new(AtomicBool::new(false)),
+            // Conversation mode (lazy init)
+            conversation_engine: Arc::new(Mutex::new(None)),
+            audio_player: Arc::new(Mutex::new(None)),
+            conversation_stop_flag: Arc::new(AtomicBool::new(false)),
+            conversation_task: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -189,6 +216,11 @@ impl RecordingController {
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
             vad_triggered: Arc::new(AtomicBool::new(false)),
+            // Conversation mode (lazy init)
+            conversation_engine: Arc::new(Mutex::new(None)),
+            audio_player: Arc::new(Mutex::new(None)),
+            conversation_stop_flag: Arc::new(AtomicBool::new(false)),
+            conversation_task: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -270,6 +302,11 @@ impl RecordingController {
                     *self.force_raw_mode.write().await = false;
                     *self.force_ai_mode.write().await = event.force_ai;
                 }
+                HotkeyType::Conversation => {
+                    // Conversation mode - full-duplex (no raw/ai flags)
+                    *self.force_raw_mode.write().await = false;
+                    *self.force_ai_mode.write().await = false;
+                }
             }
         }
 
@@ -283,6 +320,7 @@ impl RecordingController {
         match event.key_type {
             HotkeyType::Hold => self.handle_hold_event(event).await,
             HotkeyType::Toggle => self.handle_toggle_event(event).await,
+            HotkeyType::Conversation => self.handle_conversation_event(event).await,
         }
     }
 
@@ -332,6 +370,285 @@ impl RecordingController {
                 debug!("Toggle event ignored in state {}", current_state);
             }
         }
+
+        Ok(())
+    }
+
+    /// Handle conversation-mode hotkey events (Ctrl+Option)
+    ///
+    /// Conversation mode is full-duplex: simultaneous mic → Moshi → speaker.
+    async fn handle_conversation_event(&self, event: HotkeyInput) -> Result<()> {
+        match event.action {
+            HotkeyAction::Down => {
+                let current_state = self.current_state().await;
+                if current_state == State::Idle {
+                    self.start_conversation_mode().await?;
+                }
+            }
+            HotkeyAction::Up => {
+                let current_state = self.current_state().await;
+                if current_state == State::Conversation {
+                    info!("Conversation mode key released; stopping");
+                    self.stop_conversation_mode().await?;
+                }
+            }
+            HotkeyAction::Press => {
+                // Conversation keys don't use press events
+            }
+        }
+        Ok(())
+    }
+
+    /// Start conversation mode (full-duplex Moshi)
+    ///
+    /// Initializes ConversationEngine and AudioPlayer, then starts the audio
+    /// processing loop that feeds mic input to Moshi and plays responses.
+    async fn start_conversation_mode(&self) -> Result<()> {
+        info!("Starting conversation mode (Moshi full-duplex)");
+
+        // 1. Initialize ConversationEngine if needed (lazy init)
+        {
+            let mut engine_guard = self.conversation_engine.lock().await;
+            if engine_guard.is_none() {
+                info!("Lazy-initializing ConversationEngine...");
+                let config = MoshiConfig::default();
+                match ConversationEngine::new(config) {
+                    Ok(mut engine) => {
+                        // Pre-initialize to load models now (rather than on first audio)
+                        if let Err(e) = engine.init() {
+                            error!("ConversationEngine init failed: {}", e);
+                            crate::voice_chat_ui::add_voice_chat_error_message(
+                                &format!("Moshi init failed: {}", e),
+                            );
+                            return Err(e.into());
+                        }
+                        *engine_guard = Some(engine);
+                        info!("ConversationEngine initialized successfully");
+                    }
+                    Err(e) => {
+                        error!("Failed to create ConversationEngine: {}", e);
+                        crate::voice_chat_ui::add_voice_chat_error_message(
+                            &format!("Moshi unavailable: {}", e),
+                        );
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+
+        // 2. Initialize AudioPlayer if needed (lazy init)
+        {
+            let mut player_guard = self.audio_player.lock().await;
+            if player_guard.is_none() {
+                info!("Lazy-initializing AudioPlayer...");
+                match AudioPlayer::new() {
+                    Ok(player) => {
+                        *player_guard = Some(player);
+                        info!("AudioPlayer initialized");
+                    }
+                    Err(e) => {
+                        warn!("AudioPlayer init failed, using dummy: {}", e);
+                        *player_guard = Some(AudioPlayer::dummy());
+                    }
+                }
+            }
+        }
+
+        // 3. Reset stop flag
+        self.conversation_stop_flag.store(false, Ordering::SeqCst);
+
+        // 4. Transition to CONVERSATION state
+        *self.state.write().await = State::Conversation;
+        info!("STATE TRANSITION: IDLE → CONVERSATION");
+
+        // 5. Update UI
+        show_badge_for_mode(BadgeMode::Assistive);
+        crate::show_voice_chat_overlay();
+        crate::voice_chat_ui::show_agent_tab();
+        crate::voice_chat_ui::update_voice_chat_status("🎤 Listening...");
+        let _ = update_tray_status(TrayStatus::Listening);
+
+        // 6. Start the conversation audio processing task
+        let engine = Arc::clone(&self.conversation_engine);
+        let player = Arc::clone(&self.audio_player);
+        let stop_flag = Arc::clone(&self.conversation_stop_flag);
+        let state = Arc::clone(&self.state);
+        let recorder = Arc::clone(&self.recorder);
+
+        let task = tokio::spawn(async move {
+            Self::conversation_audio_loop(engine, player, recorder, stop_flag, state).await;
+        });
+
+        *self.conversation_task.lock().await = Some(task);
+
+        Ok(())
+    }
+
+    /// The main conversation audio processing loop
+    ///
+    /// Runs in a background task: captures audio → ConversationEngine → speaker
+    async fn conversation_audio_loop(
+        engine: Arc<Mutex<Option<ConversationEngine>>>,
+        player: Arc<Mutex<Option<AudioPlayer>>>,
+        recorder: Arc<Mutex<StreamingRecorder>>,
+        stop_flag: Arc<AtomicBool>,
+        state: Arc<RwLock<State>>,
+    ) {
+        info!("Conversation audio loop started");
+
+        // Create audio channel for conversation mode
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<f32>>(100);
+
+        // Start recorder with callback that sends to our channel
+        let tx_clone = tx.clone();
+        {
+            let mut rec = recorder.lock().await;
+            rec.recorder.set_callback(Box::new(move |data| {
+                let _ = tx_clone.try_send(data.to_vec());
+            }));
+
+            if let Err(e) = rec.recorder.start().await {
+                error!("Failed to start recorder for conversation: {}", e);
+                return;
+            }
+        }
+
+        // Get actual sample rate from recorder
+        let sample_rate = {
+            let rec = recorder.lock().await;
+            rec.recorder.actual_sample_rate()
+        };
+        info!("Conversation mode: recording at {}Hz", sample_rate);
+
+        // Processing loop
+        let mut last_response_check = std::time::Instant::now();
+        let response_check_interval = Duration::from_millis(100);
+
+        while !stop_flag.load(Ordering::SeqCst) {
+            // Process incoming audio chunks
+            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                Ok(Some(samples)) => {
+                    // Feed audio to ConversationEngine
+                    let mut engine_guard = engine.lock().await;
+                    if let Some(ref mut eng) = *engine_guard {
+                        if let Err(e) = eng.process_audio_any_rate(&samples, sample_rate) {
+                            warn!("ConversationEngine.process_audio error: {}", e);
+                        }
+
+                        // Update UI based on conversation state
+                        let conv_state = eng.state();
+                        let status = match conv_state {
+                            codescribe_core::conversation::context::ConversationState::UserSpeaking => {
+                                "🎤 You're speaking..."
+                            }
+                            codescribe_core::conversation::context::ConversationState::AssistantSpeaking => {
+                                "🔊 Moshi responding..."
+                            }
+                            codescribe_core::conversation::context::ConversationState::Processing => {
+                                "⏳ Processing..."
+                            }
+                            _ => "🎤 Listening...",
+                        };
+                        crate::voice_chat_ui::update_voice_chat_status(status);
+                    }
+                }
+                Ok(None) => {
+                    // Channel closed
+                    break;
+                }
+                Err(_) => {
+                    // Timeout - check for responses
+                }
+            }
+
+            // Periodically check for and play responses
+            if last_response_check.elapsed() >= response_check_interval {
+                last_response_check = std::time::Instant::now();
+
+                let mut engine_guard = engine.lock().await;
+                if let Some(ref mut eng) = *engine_guard {
+                    if let Some(response_samples) = eng.get_response() {
+                        let response_len = response_samples.len();
+                        let response_rate = eng.sample_rate();
+                        drop(engine_guard); // Release lock before blocking playback
+
+                        info!(
+                            "Playing response: {} samples ({:.2}s @ {}Hz)",
+                            response_len,
+                            response_len as f32 / response_rate as f32,
+                            response_rate
+                        );
+
+                        crate::voice_chat_ui::update_voice_chat_status("🔊 Speaking...");
+
+                        // Play response audio
+                        let player_guard = player.lock().await;
+                        if let Some(ref p) = *player_guard {
+                            if let Err(e) = p.play(&response_samples, response_rate) {
+                                warn!("AudioPlayer.play error: {}", e);
+                            }
+                        }
+                        drop(player_guard);
+
+                        crate::voice_chat_ui::update_voice_chat_status("🎤 Listening...");
+                    }
+                }
+            }
+        }
+
+        // Cleanup: stop recorder
+        {
+            let mut rec = recorder.lock().await;
+            let _ = rec.recorder.stop().await;
+        }
+
+        // Reset state if still in conversation mode
+        let current = *state.read().await;
+        if current == State::Conversation {
+            *state.write().await = State::Idle;
+        }
+
+        info!("Conversation audio loop ended");
+    }
+
+    /// Stop conversation mode
+    ///
+    /// Signals the audio loop to stop and waits for cleanup.
+    async fn stop_conversation_mode(&self) -> Result<()> {
+        info!("Stopping conversation mode");
+
+        // 1. Signal stop
+        self.conversation_stop_flag.store(true, Ordering::SeqCst);
+
+        // 2. Wait for conversation task to finish (with timeout)
+        let task = self.conversation_task.lock().await.take();
+        if let Some(handle) = task {
+            match tokio::time::timeout(Duration::from_secs(3), handle).await {
+                Ok(Ok(())) => info!("Conversation task finished cleanly"),
+                Ok(Err(e)) => warn!("Conversation task panicked: {}", e),
+                Err(_) => {
+                    warn!("Conversation task timeout - aborting");
+                    // Task will be dropped (aborted) when we exit this scope
+                }
+            }
+        }
+
+        // 3. Reset ConversationEngine state
+        {
+            let mut engine_guard = self.conversation_engine.lock().await;
+            if let Some(ref mut eng) = *engine_guard {
+                eng.reset();
+            }
+        }
+
+        // 4. Transition back to IDLE
+        *self.state.write().await = State::Idle;
+        info!("STATE TRANSITION: CONVERSATION → IDLE");
+
+        // 5. Update UI
+        hide_hold_badge();
+        crate::voice_chat_ui::update_voice_chat_status("Conversation ended");
+        let _ = update_tray_status(TrayStatus::Idle);
 
         Ok(())
     }

@@ -88,7 +88,7 @@ pub struct ConversationContext {
     /// Current conversation state
     state: ConversationState,
 
-    /// Total conversation duration
+    /// Total conversation duration (sum of all turns)
     total_duration: Duration,
 
     /// When conversation started
@@ -137,7 +137,14 @@ impl ConversationContext {
 
     /// Add a turn to history
     pub fn add_turn(&mut self, turn: Turn) {
+        // Track total speaking time
+        self.total_duration += turn.duration;
+
         if self.history.len() >= MAX_HISTORY_TURNS {
+            // Subtract duration of removed turn
+            if let Some(old) = self.history.front() {
+                self.total_duration = self.total_duration.saturating_sub(old.duration);
+            }
             self.history.pop_front();
         }
         self.history.push_back(turn);
@@ -183,9 +190,14 @@ impl ConversationContext {
         self.state == ConversationState::AssistantSpeaking
     }
 
-    /// Get conversation duration
+    /// Get elapsed time since conversation started
     pub fn duration(&self) -> Duration {
         self.started_at.elapsed()
+    }
+
+    /// Get total speaking duration (sum of all turn durations)
+    pub fn total_speaking_duration(&self) -> Duration {
+        self.total_duration
     }
 
     /// Get number of turns

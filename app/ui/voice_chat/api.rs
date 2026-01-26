@@ -182,11 +182,11 @@ pub fn update_conversation_state(new_state: ConversationModeState) {
         // Update status text based on conversation state
         let status = match new_state {
             ConversationModeState::Inactive => "Ready",
-            ConversationModeState::Listening => "Listening...",
-            ConversationModeState::UserSpeaking => "You're speaking...",
-            ConversationModeState::Processing => "Processing...",
-            ConversationModeState::AssistantSpeaking => "Moshi responding...",
-            ConversationModeState::Interrupted => "Interrupted",
+            ConversationModeState::Listening => "🎤 Listening...",
+            ConversationModeState::UserSpeaking => "🎤 You're speaking...",
+            ConversationModeState::Processing => "⏳ Processing...",
+            ConversationModeState::AssistantSpeaking => "🔊 Moshi speaking...",
+            ConversationModeState::Interrupted => "⚡ Interrupted",
         };
         drop(state);
         update_voice_chat_status_impl(status);
@@ -709,9 +709,7 @@ pub fn load_drawer_entries() -> Vec<DrawerEntry> {
                 .unwrap_or_else(SystemTime::now);
             let content = std::fs::read_to_string(&path).unwrap_or_default();
             let preview = content.chars().take(120).collect::<String>();
-            let mode = if name.contains("conversation") || name.contains("moshi") {
-                TranscriptionMode::Conversation
-            } else if name.contains("assistive") {
+            let mode = if name.contains("assistive") {
                 TranscriptionMode::Assistive
             } else if name.contains("_raw") || name.contains("raw") {
                 TranscriptionMode::Hold
