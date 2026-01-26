@@ -31,6 +31,7 @@
 pub mod audio;
 pub mod config;
 pub mod conversation;
+pub mod demux;
 pub mod embedder;
 pub mod ipc;
 pub mod llm;
