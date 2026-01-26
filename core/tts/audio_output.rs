@@ -68,7 +68,10 @@ impl AudioPlayer {
     /// Resamples if necessary to match device sample rate.
     pub fn play(&self, samples: &[f32], sample_rate: u32) -> Result<()> {
         if self.is_dummy {
-            warn!("Dummy player: skipping playback of {} samples", samples.len());
+            warn!(
+                "Dummy player: skipping playback of {} samples",
+                samples.len()
+            );
             return Ok(());
         }
 
@@ -78,10 +81,7 @@ impl AudioPlayer {
 
         let device_rate = self.config.sample_rate();
         let samples = if sample_rate != device_rate {
-            debug!(
-                "Resampling from {}Hz to {}Hz",
-                sample_rate, device_rate
-            );
+            debug!("Resampling from {}Hz to {}Hz", sample_rate, device_rate);
             resample(samples, sample_rate, device_rate)
         } else {
             samples.to_vec()
@@ -98,24 +98,15 @@ impl AudioPlayer {
         let channels = self.config.channels() as usize;
 
         let stream = match self.config.sample_format() {
-            cpal::SampleFormat::F32 => self.build_stream::<f32>(
-                samples_clone,
-                position_clone,
-                finished_clone,
-                channels,
-            )?,
-            cpal::SampleFormat::I16 => self.build_stream::<i16>(
-                samples_clone,
-                position_clone,
-                finished_clone,
-                channels,
-            )?,
-            cpal::SampleFormat::U16 => self.build_stream::<u16>(
-                samples_clone,
-                position_clone,
-                finished_clone,
-                channels,
-            )?,
+            cpal::SampleFormat::F32 => {
+                self.build_stream::<f32>(samples_clone, position_clone, finished_clone, channels)?
+            }
+            cpal::SampleFormat::I16 => {
+                self.build_stream::<i16>(samples_clone, position_clone, finished_clone, channels)?
+            }
+            cpal::SampleFormat::U16 => {
+                self.build_stream::<u16>(samples_clone, position_clone, finished_clone, channels)?
+            }
             _ => return Err(anyhow!("Unsupported sample format")),
         };
 

@@ -57,7 +57,8 @@ dotenvy = "0.15"
 
 # Voice Activity Detection - custom Silero wrapper (shares ort with fastembed)
 # Model: silero_vad.onnx from https://github.com/snakers4/silero-vad
-ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic"] }
+# NOTE: fastembed enables ort-download-binaries - we just need to match version
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["download-binaries"] }
 
 # Moshi - conversational voice AI (Kyutai Labs)
 moshi = { path = "../../moshi/rust/moshi-core", features = ["metal"] }

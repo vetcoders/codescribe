@@ -37,9 +37,7 @@ pub use audio_output::AudioPlayer;
 pub use engine::TtsEngine;
 
 // Re-export singleton functions at module level (main API)
-pub use singleton::{
-    get_model_path, init, is_initialized, play, synthesize, synthesize_to_file,
-};
+pub use singleton::{get_model_path, init, is_initialized, play, synthesize, synthesize_to_file};
 
 /// Default sample rate for CSM output (24kHz)
 pub const SAMPLE_RATE: u32 = 24000;

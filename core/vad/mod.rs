@@ -30,8 +30,8 @@ pub mod silero_ort;
 
 pub use config::VadConfig;
 pub use silero_ort::{
-    default_model_path, init, init_with_config, is_initialized, is_speech, reset,
-    speech_probability, Resampler, SileroVad, VAD_SAMPLE_RATE,
+    Resampler, SileroVad, VAD_SAMPLE_RATE, default_model_path, init, init_with_config,
+    is_initialized, is_speech, reset, speech_probability,
 };
 
 /// Expected sample rate for VAD (Silero requires 16kHz)

@@ -9,8 +9,8 @@
 //!
 //! Created by M&K (c)2026 VetCoders
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use candle_core::{Device, IndexOp, Tensor};
@@ -203,7 +203,10 @@ impl ConversationEngine {
         info!("Using dtype: {:?}, device: {:?}", dtype, self.device);
 
         // 1. Load Mimi codec
-        info!("Loading Mimi codec from: {}", self.config.mimi_path.display());
+        info!(
+            "Loading Mimi codec from: {}",
+            self.config.mimi_path.display()
+        );
         let mimi_path_str = self.config.mimi_path.to_string_lossy();
         let mimi = moshi::mimi::load(&mimi_path_str, Some(NUM_CODEBOOKS), &self.device)
             .context("Failed to load Mimi codec")?;
@@ -217,10 +220,17 @@ impl ConversationEngine {
             .map_or(NUM_CODEBOOKS, |v| v.num_slices);
 
         // 3. Load LM model
-        info!("Loading LM model from: {}", self.config.model_path.display());
-        let lm_model =
-            moshi::lm::load_lm_model(lm_config.clone(), &self.config.model_path, dtype, &self.device)
-                .context("Failed to load Moshi LM model")?;
+        info!(
+            "Loading LM model from: {}",
+            self.config.model_path.display()
+        );
+        let lm_model = moshi::lm::load_lm_model(
+            lm_config.clone(),
+            &self.config.model_path,
+            dtype,
+            &self.device,
+        )
+        .context("Failed to load Moshi LM model")?;
         info!("LM model loaded");
 
         // 4. Create generation state
@@ -313,10 +323,9 @@ impl ConversationEngine {
             .ok_or_else(|| anyhow::anyhow!("Mimi not initialized"))?;
 
         // Convert to tensor: (codebooks, 1, 1) then transpose
-        let audio_tokens =
-            Tensor::new(&codes[..self.generated_audio_codebooks], &self.device)?
-                .reshape((1, 1, self.generated_audio_codebooks))?
-                .t()?;
+        let audio_tokens = Tensor::new(&codes[..self.generated_audio_codebooks], &self.device)?
+            .reshape((1, 1, self.generated_audio_codebooks))?
+            .t()?;
 
         let out_pcm = mimi.decode_step(&audio_tokens.into(), &().into())?;
 

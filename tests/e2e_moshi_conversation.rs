@@ -9,8 +9,8 @@
 
 use std::path::PathBuf;
 
-use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
 use codescribe_core::conversation::context::ConversationState;
+use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
 
 /// Check if Moshi models are available
 fn moshi_available() -> bool {
@@ -47,7 +47,10 @@ fn test_engine_creation_no_init() {
     assert!(engine.is_ok(), "Engine creation should succeed");
 
     let engine = engine.unwrap();
-    assert!(!engine.is_initialized(), "Engine should not be initialized yet");
+    assert!(
+        !engine.is_initialized(),
+        "Engine should not be initialized yet"
+    );
     assert_eq!(engine.state(), ConversationState::Idle);
 }
 
@@ -59,8 +62,7 @@ fn test_moshiko_config() {
 
     // Check paths point to expected locations
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let expected_model = PathBuf::from(&home)
-        .join(".codescribe/models/moshiko-q8/model.q8.gguf");
+    let expected_model = PathBuf::from(&home).join(".codescribe/models/moshiko-q8/model.q8.gguf");
     assert_eq!(config.model_path, expected_model);
 }
 
@@ -71,8 +73,7 @@ fn test_moshika_config() {
     assert_eq!(config.voice, "moshika");
 
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let expected_model = PathBuf::from(&home)
-        .join(".codescribe/models/moshika-q8/model.q8.gguf");
+    let expected_model = PathBuf::from(&home).join(".codescribe/models/moshika-q8/model.q8.gguf");
     assert_eq!(config.model_path, expected_model);
 }
 
@@ -115,7 +116,11 @@ fn test_full_conversation() {
 
     // Generate test audio (2 seconds of tone)
     let test_audio = generate_test_audio(2.0);
-    println!("Test audio: {} samples ({:.1}s)", test_audio.len(), test_audio.len() as f32 / 24000.0);
+    println!(
+        "Test audio: {} samples ({:.1}s)",
+        test_audio.len(),
+        test_audio.len() as f32 / 24000.0
+    );
 
     // Process audio in chunks
     println!("Processing audio...");
@@ -180,7 +185,10 @@ fn test_init_loads_models() {
     let second_time = start.elapsed();
 
     println!("Second init time: {:?}", second_time);
-    assert!(second_time < std::time::Duration::from_millis(10), "Second init should be instant");
+    assert!(
+        second_time < std::time::Duration::from_millis(10),
+        "Second init should be instant"
+    );
 }
 
 /// Test reset clears state properly

@@ -232,9 +232,7 @@ impl VADSegmenter {
     }
 
     fn with_config(sample_rate: u32, config: vad::VadConfig) -> Self {
-        let pre_roll_samples = (config.pre_roll_sec * sample_rate as f32)
-            .round()
-            .max(1.0) as usize;
+        let pre_roll_samples = (config.pre_roll_sec * sample_rate as f32).round().max(1.0) as usize;
 
         // Ensure VAD is initialized with the passed config (not default!)
         // Note: if VAD already initialized, this is a no-op (early exit)

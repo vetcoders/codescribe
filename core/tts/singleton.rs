@@ -96,7 +96,10 @@ pub fn init() -> Result<()> {
     // Initialize audio player first
     let _ = PLAYER.get_or_init(|| {
         AudioPlayer::new().unwrap_or_else(|e| {
-            warn!("Failed to initialize audio player: {}. Playback will fail.", e);
+            warn!(
+                "Failed to initialize audio player: {}. Playback will fail.",
+                e
+            );
             AudioPlayer::dummy()
         })
     });
@@ -117,8 +120,7 @@ pub fn init() -> Result<()> {
 
     // 2. Fallback to path-based loading (dev mode, bundled .app)
     let path = get_model_path()?;
-    let engine =
-        TtsEngine::new(path).context("Failed to initialize TTS engine from path")?;
+    let engine = TtsEngine::new(path).context("Failed to initialize TTS engine from path")?;
 
     ENGINE
         .set(Mutex::new(engine))

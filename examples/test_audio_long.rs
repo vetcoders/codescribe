@@ -14,7 +14,8 @@ fn main() -> Result<()> {
 
     // Model path: ~/.codescribe/models/ (unified standard)
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let default_model = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8");
+    let default_model =
+        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8");
 
     let (model, files): (PathBuf, Vec<PathBuf>) = if args[0] == "--model" {
         (
@@ -22,10 +23,7 @@ fn main() -> Result<()> {
             args[2..].iter().map(PathBuf::from).collect(),
         )
     } else {
-        (
-            default_model,
-            args.iter().map(PathBuf::from).collect(),
-        )
+        (default_model, args.iter().map(PathBuf::from).collect())
     };
 
     println!("Loading model: {:?}", model);

@@ -113,7 +113,6 @@ pub struct RecordingController {
     // ═══════════════════════════════════════════════════════════
     // Conversation mode (Moshi full-duplex)
     // ═══════════════════════════════════════════════════════════
-
     /// Moshi conversation engine (lazy-initialized on first use)
     conversation_engine: Arc<Mutex<Option<ConversationEngine>>>,
 
@@ -427,9 +426,10 @@ impl RecordingController {
                         // Pre-initialize to load models now (rather than on first audio)
                         if let Err(e) = engine.init() {
                             error!("ConversationEngine init failed: {}", e);
-                            crate::voice_chat_ui::add_voice_chat_error_message(
-                                &format!("Moshi init failed: {}", e),
-                            );
+                            crate::voice_chat_ui::add_voice_chat_error_message(&format!(
+                                "Moshi init failed: {}",
+                                e
+                            ));
                             return Err(e);
                         }
                         *engine_guard = Some(engine);
@@ -437,9 +437,10 @@ impl RecordingController {
                     }
                     Err(e) => {
                         error!("Failed to create ConversationEngine: {}", e);
-                        crate::voice_chat_ui::add_voice_chat_error_message(
-                            &format!("Moshi unavailable: {}", e),
-                        );
+                        crate::voice_chat_ui::add_voice_chat_error_message(&format!(
+                            "Moshi unavailable: {}",
+                            e
+                        ));
                         return Err(e);
                     }
                 }
@@ -493,7 +494,16 @@ impl RecordingController {
         let recorder = Arc::clone(&self.recorder);
 
         let task = tokio::spawn(async move {
-            Self::conversation_audio_loop(engine, player, recorder, stop_flag, generation_arc, generation, state).await;
+            Self::conversation_audio_loop(
+                engine,
+                player,
+                recorder,
+                stop_flag,
+                generation_arc,
+                generation,
+                state,
+            )
+            .await;
         });
 
         *self.conversation_task.lock().await = Some(task);
@@ -513,7 +523,10 @@ impl RecordingController {
         my_generation: u64,
         state: Arc<RwLock<State>>,
     ) {
-        info!("Conversation audio loop started (generation {})", my_generation);
+        info!(
+            "Conversation audio loop started (generation {})",
+            my_generation
+        );
 
         // Create audio channel for conversation mode
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<f32>>(100);
@@ -607,32 +620,35 @@ impl RecordingController {
                     let response_rate = eng.sample_rate();
                     drop(engine_guard); // Release lock before blocking playback
 
-                        info!(
-                            "Playing response: {} samples ({:.2}s @ {}Hz)",
-                            response_len,
-                            response_len as f32 / response_rate as f32,
-                            response_rate
-                        );
+                    info!(
+                        "Playing response: {} samples ({:.2}s @ {}Hz)",
+                        response_len,
+                        response_len as f32 / response_rate as f32,
+                        response_rate
+                    );
 
-                        // Guard: skip if playback already in progress
-                        if playback_active.swap(true, Ordering::SeqCst) {
-                            info!("Skipping response - playback already active");
-                            continue;
-                        }
+                    // Guard: skip if playback already in progress
+                    if playback_active.swap(true, Ordering::SeqCst) {
+                        info!("Skipping response - playback already active");
+                        continue;
+                    }
 
-                        crate::voice_chat_ui::update_voice_chat_status("Moshi speaking...");
-                        crate::voice_chat_ui::update_conversation_state(ConversationModeState::AssistantSpeaking);
+                    crate::voice_chat_ui::update_voice_chat_status("Moshi speaking...");
+                    crate::voice_chat_ui::update_conversation_state(
+                        ConversationModeState::AssistantSpeaking,
+                    );
 
-                        // Play response audio in separate blocking task (non-blocking for loop)
-                        // This preserves full-duplex: we can still process mic while playing
-                        let player_clone = Arc::clone(&player);
-                        let stop_flag_clone = Arc::clone(&stop_flag);
-                        let generation_clone = Arc::clone(&generation_counter);
-                        let playback_active_clone = Arc::clone(&playback_active);
-                        let playback_active_reset = Arc::clone(&playback_active);
+                    // Play response audio in separate blocking task (non-blocking for loop)
+                    // This preserves full-duplex: we can still process mic while playing
+                    let player_clone = Arc::clone(&player);
+                    let stop_flag_clone = Arc::clone(&stop_flag);
+                    let generation_clone = Arc::clone(&generation_counter);
+                    let playback_active_clone = Arc::clone(&playback_active);
+                    let playback_active_reset = Arc::clone(&playback_active);
 
-                        // Wrap spawn in catch_unwind to reset playback_active if spawn itself fails
-                        let spawn_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // Wrap spawn in catch_unwind to reset playback_active if spawn itself fails
+                    let spawn_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             let handle = tokio::runtime::Handle::current();
                             tokio::task::spawn_blocking(move || {
                                 // Drop guard ensures playback_active is reset even on panic
@@ -656,18 +672,22 @@ impl RecordingController {
                                 // 2. This is still the current session (generation matches)
                                 // This prevents cross-session UI races
                                 let current_gen = generation_clone.load(Ordering::SeqCst);
-                                if !stop_flag_clone.load(Ordering::SeqCst) && current_gen == my_generation {
+                                if !stop_flag_clone.load(Ordering::SeqCst)
+                                    && current_gen == my_generation
+                                {
                                     crate::voice_chat_ui::update_voice_chat_status("Listening...");
-                                    crate::voice_chat_ui::update_conversation_state(ConversationModeState::Listening);
+                                    crate::voice_chat_ui::update_conversation_state(
+                                        ConversationModeState::Listening,
+                                    );
                                 }
                                 // _guard dropped here, resets playback_active even on panic
                             })
                         }));
 
-                        if spawn_result.is_err() {
-                            warn!("spawn_blocking panicked - resetting playback_active");
-                            playback_active_reset.store(false, Ordering::SeqCst);
-                        }
+                    if spawn_result.is_err() {
+                        warn!("spawn_blocking panicked - resetting playback_active");
+                        playback_active_reset.store(false, Ordering::SeqCst);
+                    }
                 }
             }
         }
@@ -695,10 +715,16 @@ impl RecordingController {
             crate::voice_chat_ui::update_voice_chat_status("Conversation ended");
             crate::voice_chat_ui::update_conversation_state(ConversationModeState::Inactive);
             let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
-            info!("Loop cleanup: conversation ended unexpectedly (gen {})", my_generation);
+            info!(
+                "Loop cleanup: conversation ended unexpectedly (gen {})",
+                my_generation
+            );
         } else if current_gen != my_generation {
             // New session started - don't touch anything
-            info!("Loop cleanup skipped: new session started (my_gen={}, current_gen={})", my_generation, current_gen);
+            info!(
+                "Loop cleanup skipped: new session started (my_gen={}, current_gen={})",
+                my_generation, current_gen
+            );
         }
 
         info!("Conversation audio loop ended (gen {})", my_generation);

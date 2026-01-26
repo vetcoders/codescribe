@@ -210,9 +210,9 @@ impl TtsEngine {
         for frame_idx in 0..MAX_FRAMES {
             // Generate one frame of audio codes
             // API: generate_frame(&tokens, &mask, pos, &mut logits_processor) -> Result<Vec<u32>>
-            let frame: Vec<u32> = self
-                .csm
-                .generate_frame(&tokens, &mask, frame_idx, &mut logits_processor)?;
+            let frame: Vec<u32> =
+                self.csm
+                    .generate_frame(&tokens, &mask, frame_idx, &mut logits_processor)?;
 
             // Check for end of generation (all zeros)
             if frame.iter().all(|&x| x == 0) {

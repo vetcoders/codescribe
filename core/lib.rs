@@ -65,8 +65,8 @@ pub mod stt_api {
 pub mod tts_api {
     pub use crate::tts::embedded::{EmbeddedTts, get_embedded_data, is_embedded_available};
     pub use crate::tts::{
-        get_model_path, init, is_initialized, play, synthesize, synthesize_to_file, AudioPlayer,
-        SAMPLE_RATE,
+        AudioPlayer, SAMPLE_RATE, get_model_path, init, is_initialized, play, synthesize,
+        synthesize_to_file,
     };
 }
 
@@ -77,9 +77,8 @@ pub mod tts_api {
 /// Voice activity detection using Silero VAD (neural network)
 pub mod vad_api {
     pub use crate::vad::{
-        VadConfig, default_model_path, init, init_with_config, is_initialized,
-        is_speech, reset, speech_probability, Resampler, SileroVad,
-        CHUNK_SIZE, SAMPLE_RATE,
+        CHUNK_SIZE, Resampler, SAMPLE_RATE, SileroVad, VadConfig, default_model_path, init,
+        init_with_config, is_initialized, is_speech, reset, speech_probability,
     };
 }
 
@@ -90,8 +89,8 @@ pub mod vad_api {
 /// Text embeddings using E5 model via fastembed
 pub mod embedder_api {
     pub use crate::embedder::{
-        EmbedderConfig, EmbedderEngine, embed, embed_batch, init, is_initialized, similarity,
-        EMBEDDING_DIM, DEFAULT_MODEL,
+        DEFAULT_MODEL, EMBEDDING_DIM, EmbedderConfig, EmbedderEngine, embed, embed_batch, init,
+        is_initialized, similarity,
     };
 }
 
@@ -102,8 +101,8 @@ pub mod embedder_api {
 /// Full-duplex conversational AI using Moshi
 pub mod conversation_api {
     pub use crate::conversation::{
-        ConversationContext, ConversationEngine, MoshiConfig, TurnManager,
-        FRAME_SAMPLES, NUM_CODEBOOKS, SAMPLE_RATE,
+        ConversationContext, ConversationEngine, FRAME_SAMPLES, MoshiConfig, NUM_CODEBOOKS,
+        SAMPLE_RATE, TurnManager,
     };
 }
 

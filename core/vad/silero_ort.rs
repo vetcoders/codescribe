@@ -7,7 +7,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, OnceLock};
+use std::sync::{OnceLock, mpsc};
 use std::thread;
 
 use anyhow::{Context, Result};
@@ -185,14 +185,16 @@ impl SileroVad {
         if outputs.len() > 2 {
             // Extract new h state (let chains - Rust 2024)
             if let Ok((_shape, h_data)) = outputs[1].try_extract_tensor::<f32>()
-                && let Ok(arr) = Array3::from_shape_vec((STATE_LAYERS, 1, STATE_DIM), h_data.to_vec())
+                && let Ok(arr) =
+                    Array3::from_shape_vec((STATE_LAYERS, 1, STATE_DIM), h_data.to_vec())
             {
                 self.state_h = arr;
             }
 
             // Extract new c state
             if let Ok((_shape, c_data)) = outputs[2].try_extract_tensor::<f32>()
-                && let Ok(arr) = Array3::from_shape_vec((STATE_LAYERS, 1, STATE_DIM), c_data.to_vec())
+                && let Ok(arr) =
+                    Array3::from_shape_vec((STATE_LAYERS, 1, STATE_DIM), c_data.to_vec())
             {
                 self.state_c = arr;
             }
@@ -217,11 +219,14 @@ impl SileroVad {
 // Worker-based singleton (no mutex in hot path)
 // ═══════════════════════════════════════════════════════════
 
-use std::sync::{atomic::AtomicU32, Arc};
+use std::sync::{Arc, atomic::AtomicU32};
 
 /// Message to VAD worker (fire-and-forget, no response channel)
 enum VadMessage {
-    Predict { samples: Vec<f32>, sample_rate: u32 },
+    Predict {
+        samples: Vec<f32>,
+        sample_rate: u32,
+    },
     Reset,
     #[allow(dead_code)]
     Shutdown,

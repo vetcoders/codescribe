@@ -24,13 +24,9 @@ async fn e2e_retry_on_failure_responses_api() {
         // Ensure AI formatting is enabled (other tests may have disabled it)
         std::env::set_var("AI_FORMATTING_ENABLED", "1");
 
-        // Set BOTH generic and formatting-specific vars (user config may have LLM_FORMATTING_*)
         std::env::set_var("LLM_ENDPOINT", &endpoint);
-        std::env::set_var("LLM_FORMATTING_ENDPOINT", &endpoint);
         std::env::set_var("LLM_MODEL", "test-model");
-        std::env::set_var("LLM_FORMATTING_MODEL", "test-model");
         std::env::set_var("LLM_API_KEY", "test-key");
-        std::env::set_var("LLM_FORMATTING_API_KEY", "test-key");
         // Mock returns plain JSON, not SSE — use sync mode
         std::env::set_var("LLM_USE_STREAMING", "0");
     }
