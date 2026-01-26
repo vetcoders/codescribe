@@ -1,14 +1,14 @@
-//! Text Embedder module - semantic embeddings using E5 via fastembed.
+//! Text Embedder module - semantic embeddings using E5 (offline).
 //!
 //! Provides semantic text embeddings for RAG, similarity search, and context matching.
-//! Uses fastembed with the multilingual-e5-large model for high-quality embeddings.
+//! Uses a local/embedded multilingual-e5-large model (no runtime downloads).
 //!
 //! ## Quick Start
 //!
 //! ```ignore
 //! use codescribe_core::embedder;
 //!
-//! // Initialize embedder (downloads model on first use)
+//! // Initialize embedder (embedded or local model)
 //! embedder::init()?;
 //!
 //! // Embed text
@@ -23,6 +23,7 @@
 //!
 //! Created by M&K (c)2026 VetCoders
 
+pub mod embedded;
 pub mod engine;
 pub mod singleton;
 
@@ -32,5 +33,5 @@ pub use singleton::{embed, embed_batch, init, is_initialized, similarity};
 /// Default embedding dimension for E5 models
 pub const EMBEDDING_DIM: usize = 1024;
 
-/// Model identifier for HuggingFace
-pub const DEFAULT_MODEL: &str = "intfloat/multilingual-e5-large";
+/// Default model directory name (for local/embedded builds)
+pub const DEFAULT_MODEL: &str = "e5-large";

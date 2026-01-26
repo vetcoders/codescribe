@@ -122,8 +122,8 @@ serial_test = "3"
 
 [lints.rust]
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
-# embed_model is set by build.rs when model is available
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)'] }
+# embed_model/embed_tts/embed_e5 are set by build.rs when models are available
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)', 'cfg(embed_e5)'] }
 
 [profile.release]
 opt-level = "z"

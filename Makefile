@@ -6,7 +6,7 @@
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-formatting test-all \
         demo demo-raw demo-assistive check fix clean help \
-        dmg dmg-signed dmg-full notarize download-model \
+        dmg dmg-signed dmg-full notarize download-model download-e5 \
         hooks
 
 SHELL := /bin/bash
@@ -267,6 +267,7 @@ help:
 	@echo "  make dmg-full        Build DMG with embedded model (~888MB)"
 	@echo "  make notarize        Notarize DMG with Apple"
 	@echo "  make download-model  Download Whisper model from HF"
+	@echo "  make download-e5     Download E5 embedder model from HF"
 	@echo ""
 	@echo "Run:"
 	@echo "  make start           Start CodeScribe"
@@ -319,3 +320,6 @@ notarize:
 
 download-model:
 	@./scripts/download-model.sh
+
+download-e5:
+	@./scripts/download-e5.sh
