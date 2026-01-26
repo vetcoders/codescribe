@@ -16,9 +16,11 @@ use tracing::{info, warn};
 
 use super::audio_output::AudioPlayer;
 use super::engine::TtsEngine;
+use crate::hf_cache;
 
 /// Default TTS model name (for dev/fallback mode)
 pub const DEFAULT_MODEL: &str = "csm-1b";
+const DEFAULT_TTS_REPO: &str = "sesame/csm-1b";
 
 /// Global singleton engine
 static ENGINE: OnceLock<Mutex<TtsEngine>> = OnceLock::new();
@@ -46,7 +48,16 @@ fn resolve_model_path_fallback() -> Result<PathBuf> {
         warn!("CODESCRIBE_TTS_PATH set but model incomplete: {}", path);
     }
 
-    // 2. Default models directory
+    // 2. HuggingFace cache (hf download sesame/csm-1b)
+    if let Some(snapshot) = hf_cache::find_snapshot(
+        DEFAULT_TTS_REPO,
+        &["config.json", "tokenizer.json", "model.safetensors"],
+    ) {
+        info!("Using HF cache TTS model: {}", snapshot.display());
+        return Ok(snapshot);
+    }
+
+    // 3. Default models directory
     let base_dirs = BaseDirs::new().ok_or_else(|| anyhow!("Cannot determine home directory"))?;
     let home = base_dirs.home_dir();
     let models_dir = home.join(".codescribe").join("models").join(DEFAULT_MODEL);
@@ -55,7 +66,7 @@ fn resolve_model_path_fallback() -> Result<PathBuf> {
         return Ok(models_dir);
     }
 
-    // 3. Bundled .app fallback (Tauri builds without embedding)
+    // 4. Bundled .app fallback (Tauri builds without embedding)
     let exe = std::env::current_exe().context("Failed to get executable path")?;
     let exe_dir = exe.parent().context("Failed to get executable directory")?;
 
@@ -71,7 +82,8 @@ fn resolve_model_path_fallback() -> Result<PathBuf> {
         "TTS model not available.\n\
          Debug builds: Set CODESCRIBE_TTS_PATH\n\
          Release builds: Model should be embedded\n\n\
-         Download with: ./scripts/download-csm.sh"
+         Download with: hf download {}",
+        DEFAULT_TTS_REPO
     ))
 }
 

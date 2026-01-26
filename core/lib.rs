@@ -33,6 +33,7 @@ pub mod config;
 pub mod conversation;
 pub mod demux;
 pub mod embedder;
+mod hf_cache;
 pub mod ipc;
 pub mod llm;
 pub mod pipeline;

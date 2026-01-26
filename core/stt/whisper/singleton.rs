@@ -17,12 +17,14 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::config::models::ModelManager;
+use crate::hf_cache;
 
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
 
 /// Default model name (for dev/fallback mode)
 pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
+const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 
 /// Global singleton engine
 static ENGINE: OnceLock<Mutex<LocalWhisperEngine>> = OnceLock::new();
@@ -50,6 +52,35 @@ fn resolve_model_path_fallback() -> Result<PathBuf> {
     // 2. Configured model (LOCAL_MODEL)
     let config = Config::load();
     let configured_model = config.local_model;
+    if !configured_model.trim().is_empty() {
+        if configured_model.contains('/') {
+            if let Some(snapshot) = hf_cache::find_snapshot(
+                configured_model.trim(),
+                &[
+                    "config.json",
+                    "tokenizer.json",
+                    "weights.safetensors",
+                    "mel_filters.npz",
+                ],
+            ) {
+                info!("Using HF cache model: {}", snapshot.display());
+                return Ok(snapshot);
+            }
+        } else if configured_model == DEFAULT_MODEL
+            && let Some(snapshot) = hf_cache::find_snapshot(
+                DEFAULT_WHISPER_REPO,
+                &[
+                    "config.json",
+                    "tokenizer.json",
+                    "weights.safetensors",
+                    "mel_filters.npz",
+                ],
+            )
+        {
+            info!("Using HF cache model: {}", snapshot.display());
+            return Ok(snapshot);
+        }
+    }
     if !configured_model.trim().is_empty()
         && let Ok(manager) = ModelManager::new()
     {
@@ -76,7 +107,8 @@ fn resolve_model_path_fallback() -> Result<PathBuf> {
         "Whisper model not available.\n\
          Debug builds: Set CODESCRIBE_MODEL_PATH\n\
          Release builds: Model should be embedded\n\n\
-         Download with: ./scripts/download-model.sh"
+         Download with: hf download {}",
+        DEFAULT_WHISPER_REPO
     ))
 }
 

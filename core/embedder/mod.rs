@@ -2,6 +2,7 @@
 //!
 //! Provides semantic text embeddings for RAG, similarity search, and context matching.
 //! Uses a local/embedded multilingual-e5-large model (no runtime downloads).
+//! Override with `CODESCRIBE_EMBEDDER_REPO=intfloat/multilingual-e5-small` (HF cache).
 //!
 //! ## Quick Start
 //!

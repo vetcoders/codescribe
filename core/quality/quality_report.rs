@@ -1315,7 +1315,7 @@ fn ensure_model_path() -> Result<()> {
     }
 
     Err(anyhow!(
-        "Missing local model. Set CODESCRIBE_MODEL_PATH or download via ./scripts/download-model.sh"
+        "Missing local model. Set CODESCRIBE_MODEL_PATH or run: hf download LibraxisAI/whisper-large-v3-turbo-mlx-q8"
     ))
 }
 
