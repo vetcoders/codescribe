@@ -110,6 +110,9 @@ pub struct RecordingController {
     /// Flag set by VAD (silence detection) when recording should auto-stop
     vad_triggered: Arc<AtomicBool>,
 
+    /// Assistive hands-off loop active (Right Option toggle)
+    assistive_loop_active: Arc<AtomicBool>,
+
     // ═══════════════════════════════════════════════════════════
     // Conversation mode (Moshi full-duplex)
     // ═══════════════════════════════════════════════════════════
@@ -173,6 +176,7 @@ impl RecordingController {
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
             vad_triggered: Arc::new(AtomicBool::new(false)),
+            assistive_loop_active: Arc::new(AtomicBool::new(false)),
             // Conversation mode (lazy init)
             conversation_engine: Arc::new(Mutex::new(None)),
             audio_player: Arc::new(Mutex::new(None)),
@@ -224,6 +228,7 @@ impl RecordingController {
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
             vad_triggered: Arc::new(AtomicBool::new(false)),
+            assistive_loop_active: Arc::new(AtomicBool::new(false)),
             // Conversation mode (lazy init)
             conversation_engine: Arc::new(Mutex::new(None)),
             audio_player: Arc::new(Mutex::new(None)),
@@ -373,6 +378,7 @@ impl RecordingController {
             }
             State::RecToggle => {
                 info!("Toggle pressed again; finishing recording");
+                self.assistive_loop_active.store(false, Ordering::SeqCst);
                 self.finish_recording().await?;
             }
             _ => {
@@ -785,6 +791,8 @@ impl RecordingController {
 
     /// Schedule delayed recording start for hold mode
     async fn schedule_hold_start(&self) -> Result<()> {
+        // Hold mode never runs the assistive loop
+        self.assistive_loop_active.store(false, Ordering::SeqCst);
         // Check backend health before starting (skip in tests: no backend available)
         if !cfg!(test) {
             match crate::client::check_health().await {
@@ -875,14 +883,17 @@ impl RecordingController {
             // Set session mode for delta routing
             set_assistive_session(is_assistive);
 
-            // ALWAYS show transcription overlay for live preview
-            crate::clear_transcription_text();
-            crate::show_transcription_overlay();
             if is_assistive {
+                crate::hide_transcription_overlay();
                 crate::show_voice_chat_overlay();
                 crate::show_agent_tab();
+                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+            } else {
+                // Non-assistive: transcription overlay preview
+                crate::clear_transcription_text();
+                crate::show_transcription_overlay();
+                crate::enter_recording_mode();
             }
-            crate::enter_recording_mode();
 
             // Transition to REC_HOLD
             *state.write().await = State::RecHold;
@@ -935,6 +946,14 @@ impl RecordingController {
         let new_session_id = Uuid::new_v4().to_string();
         *self.session_id.write().await = Some(new_session_id.clone());
 
+        if is_assistive {
+            *self.assistive_mode.write().await = true;
+            *self.force_raw_mode.write().await = false;
+            *self.force_ai_mode.write().await = false;
+        }
+        self.assistive_loop_active
+            .store(is_assistive, Ordering::SeqCst);
+
         info!("Starting toggle recording (session={})", new_session_id);
 
         let config = self.config.read().await;
@@ -981,14 +1000,17 @@ impl RecordingController {
         // Set session mode for delta routing
         set_assistive_session(is_assistive);
 
-        // ALWAYS show transcription overlay for live preview
-        crate::clear_transcription_text();
-        crate::show_transcription_overlay();
         if is_assistive {
+            crate::hide_transcription_overlay();
             crate::show_voice_chat_overlay();
             crate::show_agent_tab();
+            crate::voice_chat_ui::update_voice_chat_status("Listening...");
+        } else {
+            // Non-assistive: transcription overlay preview
+            crate::clear_transcription_text();
+            crate::show_transcription_overlay();
+            crate::enter_recording_mode();
         }
-        crate::enter_recording_mode();
 
         // Transition to REC_TOGGLE
         *self.state.write().await = State::RecToggle;
@@ -997,7 +1019,50 @@ impl RecordingController {
         // Update tray status to Listening
         let _ = update_tray_status(TrayStatus::Listening);
 
+        if is_assistive {
+            self.spawn_assistive_vad_watch(new_session_id);
+        }
+
         Ok(())
+    }
+
+    fn spawn_assistive_vad_watch(&self, expected_session: String) {
+        let vad_flag = Arc::clone(&self.vad_triggered);
+        let state = Arc::clone(&self.state);
+        let session_id = Arc::clone(&self.session_id);
+        let loop_active = Arc::clone(&self.assistive_loop_active);
+
+        tokio::spawn(async move {
+            loop {
+                if !loop_active.load(Ordering::SeqCst) {
+                    break;
+                }
+                if *state.read().await != State::RecToggle {
+                    break;
+                }
+                if vad_flag.load(Ordering::SeqCst) {
+                    let current = session_id.read().await.clone();
+                    if current.as_deref() != Some(expected_session.as_str()) {
+                        break;
+                    }
+                    vad_flag.store(false, Ordering::SeqCst);
+                    if let Some(controller) = OVERLAY_CONTROLLER.get().cloned() {
+                        if let Err(e) = controller.finish_recording().await {
+                            warn!("Assistive VAD auto-stop failed: {}", e);
+                            break;
+                        }
+                        if controller.assistive_loop_active.load(Ordering::SeqCst) {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            if let Err(e) = controller.start_toggle_recording(true).await {
+                                warn!("Assistive loop restart failed: {}", e);
+                            }
+                        }
+                    }
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
     }
 
     /// Stop recording, transcribe, format, and paste the result
@@ -1055,6 +1120,7 @@ impl RecordingController {
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
+        self.assistive_loop_active.store(false, Ordering::SeqCst);
 
         // Hide red dot indicator
         hide_hold_badge();
@@ -1139,6 +1205,9 @@ impl RecordingController {
             }
         };
 
+        let chat_active = crate::voice_chat_ui::is_voice_chat_overlay_visible();
+        let assistive_loop = assistive && self.assistive_loop_active.load(Ordering::SeqCst);
+
         let mut raw_text_opt = None;
         let mut cloud_text_opt = None;
         let mut cloud_handle: Option<JoinHandle<Result<String>>> = None;
@@ -1194,7 +1263,20 @@ impl RecordingController {
             }
         }
 
-        let raw_text = raw_text_opt.ok_or_else(|| anyhow::anyhow!("Empty transcript"))?;
+        let raw_text = match raw_text_opt {
+            Some(text) if !text.trim().is_empty() => text,
+            Some(_) | None => {
+                if assistive_loop {
+                    if chat_active {
+                        crate::voice_chat_ui::set_voice_chat_sending(false);
+                        crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                    }
+                    warn!("Empty transcript in assistive loop; skipping");
+                    return Ok(());
+                }
+                return Err(anyhow::anyhow!("Empty transcript"));
+            }
+        };
 
         info!("Raw transcript captured ({} chars)", raw_text.len());
 
@@ -1231,7 +1313,7 @@ impl RecordingController {
             warn!("Detected repetition loop in transcription - will clean up");
         }
 
-        let chat_active = crate::voice_chat_ui::is_voice_chat_overlay_visible();
+        // chat_active already captured above
 
         // Determine final text based on mode (NEW architecture):
         //
@@ -1249,7 +1331,8 @@ impl RecordingController {
             info!("Assistive mode (Ctrl+Shift): augmenting transcript via AI");
 
             if chat_active {
-                crate::voice_chat_ui::add_voice_chat_user_message(&clean_text);
+                // Finalize the streaming user draft into a bubble
+                crate::voice_chat_ui::set_voice_chat_user_text(&clean_text);
                 crate::voice_chat_ui::show_agent_tab();
                 crate::voice_chat_ui::set_voice_chat_sending(true);
                 crate::voice_chat_ui::update_voice_chat_status("Thinking...");

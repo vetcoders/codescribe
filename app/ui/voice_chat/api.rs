@@ -37,6 +37,22 @@ pub fn update_voice_chat_status(status: &str) {
     });
 }
 
+/// Append a delta to the user draft message (streaming transcription)
+pub fn append_voice_chat_user_delta(delta: &str) {
+    let delta_owned = delta.to_string();
+    Queue::main().exec_async(move || {
+        append_voice_chat_user_delta_impl(&delta_owned);
+    });
+}
+
+/// Finalize the user message text (stop streaming)
+pub fn set_voice_chat_user_text(text: &str) {
+    let text_owned = text.to_string();
+    Queue::main().exec_async(move || {
+        finalize_user_message_impl(&text_owned);
+    });
+}
+
 /// Append a delta to the assistant response (streaming)
 pub fn append_voice_chat_assistant_delta(delta: &str) {
     let delta_owned = delta.to_string();
@@ -247,6 +263,16 @@ fn update_voice_chat_status_impl(status: &str) {
     }
 }
 
+fn append_voice_chat_user_delta_impl(delta: &str) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_streaming_user_message(&mut state);
+    if let Some(last) = state.messages.last_mut() {
+        apply_delta_with_backspace(&mut last.text, delta);
+        last.is_streaming = true;
+    }
+    update_chat_view_with_state(&mut state, false);
+}
+
 fn append_voice_chat_assistant_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_streaming_assistant_message(&mut state);
@@ -265,6 +291,17 @@ fn apply_delta_with_backspace(target: &mut String, delta: &str) {
             target.push(ch);
         }
     }
+}
+
+fn finalize_user_message_impl(text: &str) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_streaming_user_message(&mut state);
+    if let Some(last) = state.messages.last_mut() {
+        last.text = text.to_string();
+        last.is_streaming = false;
+        last.is_error = false;
+    }
+    update_chat_view_with_state(&mut state, true);
 }
 
 fn finalize_assistant_message_impl(text: &str, is_error: bool) {
@@ -382,6 +419,21 @@ fn ensure_streaming_assistant_message(state: &mut VoiceChatOverlayState) {
     }
 }
 
+fn ensure_streaming_user_message(state: &mut VoiceChatOverlayState) {
+    let needs_new = state
+        .messages
+        .last()
+        .is_none_or(|msg| msg.role != ChatRole::User || !msg.is_streaming);
+    if needs_new {
+        state.messages.push(ChatMessage {
+            role: ChatRole::User,
+            text: String::new(),
+            is_streaming: true,
+            is_error: false,
+        });
+    }
+}
+
 pub(super) fn update_chat_view_with_state(
     state: &mut VoiceChatOverlayState,
     scroll_to_bottom: bool,
@@ -406,11 +458,7 @@ pub(super) fn update_chat_view_with_state(
                 max_width: 390.0,
                 is_streaming: message.is_streaming,
                 is_error: message.is_error,
-                message_index: if message.role == ChatRole::Assistant {
-                    Some(index)
-                } else {
-                    None
-                },
+                message_index: Some(index),
                 copy_action_target: state.action_handler.map(|p| p as Id),
             });
             stack_view_add(container, bubble);

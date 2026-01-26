@@ -682,21 +682,32 @@ pub unsafe fn set_enabled(view: Id, enabled: bool) {
 }
 
 // ============================================================================
-// Chat Bubble Helpers (loct.io dark theme)
+// Chat Bubble Helpers (GlyphPulse / Quantum style)
 // ============================================================================
 
-/// loct.io brand colors for dark theme
+/// GlyphPulse/Quantum palette adapted for native bubbles
 pub mod bubble_colors {
-    /// User bubble background - muted violet/purple accent
-    pub const USER_BG: (f64, f64, f64, f64) = (0.35, 0.28, 0.55, 0.9);
-    /// Assistant bubble background - dark gray
-    pub const ASSISTANT_BG: (f64, f64, f64, f64) = (0.22, 0.22, 0.24, 0.9);
-    /// System/error bubble background - dark red tint
-    pub const ERROR_BG: (f64, f64, f64, f64) = (0.4, 0.2, 0.2, 0.9);
-    /// Text color - white
-    pub const TEXT: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 1.0);
-    /// Streaming indicator color - subtle pulse
-    pub const STREAMING: (f64, f64, f64, f64) = (0.6, 0.6, 0.6, 1.0);
+    /// User bubble background - quantum cyan
+    pub const USER_BG: (f64, f64, f64, f64) = (0.0, 1.0, 1.0, 1.0);
+    /// User bubble text - CRT black
+    pub const USER_TEXT: (f64, f64, f64, f64) = (0.039, 0.039, 0.039, 1.0);
+    /// Assistant bubble background - deep navy glass
+    pub const ASSISTANT_BG: (f64, f64, f64, f64) = (0.086, 0.129, 0.243, 0.5);
+    /// Assistant bubble border - subtle white
+    pub const ASSISTANT_BORDER: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 0.08);
+    /// Assistant/system text - primary light
+    pub const ASSISTANT_TEXT: (f64, f64, f64, f64) = (0.886, 0.91, 0.941, 1.0);
+    /// Streaming text tint - muted
+    pub const STREAMING_TEXT: (f64, f64, f64, f64) = (0.58, 0.639, 0.722, 1.0);
+    /// System bubble background - slightly denser navy
+    pub const SYSTEM_BG: (f64, f64, f64, f64) = (0.086, 0.129, 0.243, 0.65);
+    /// System bubble border - subtle white
+    pub const SYSTEM_BORDER: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 0.08);
+    /// Error bubble background - soft red tint
+    pub const ERROR_BG: (f64, f64, f64, f64) = (1.0, 0.42, 0.42, 0.1);
+    /// Error bubble border/text - error red
+    pub const ERROR_BORDER: (f64, f64, f64, f64) = (1.0, 0.373, 0.341, 1.0);
+    pub const ERROR_TEXT: (f64, f64, f64, f64) = (1.0, 0.373, 0.341, 1.0);
 }
 
 /// Role for chat bubble styling
@@ -776,7 +787,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             match config.role {
                 BubbleRole::User => bubble_colors::USER_BG,
                 BubbleRole::Assistant => bubble_colors::ASSISTANT_BG,
-                BubbleRole::System => bubble_colors::ERROR_BG,
+                BubbleRole::System => bubble_colors::SYSTEM_BG,
             }
         };
         let bg_color: Id = msg_send![ns_color, colorWithRed: r green: g blue: b alpha: a];
@@ -789,6 +800,42 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let cg_color: Id = msg_send![bg_color, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg_color];
             let _: () = msg_send![layer, setCornerRadius: 12.0f64];
+            let _: () = msg_send![layer, setMasksToBounds: false];
+            // Border styling
+            let (br, bg, bb, ba, bw) = if config.is_error {
+                (
+                    bubble_colors::ERROR_BORDER.0,
+                    bubble_colors::ERROR_BORDER.1,
+                    bubble_colors::ERROR_BORDER.2,
+                    bubble_colors::ERROR_BORDER.3,
+                    1.0f64,
+                )
+            } else {
+                match config.role {
+                    BubbleRole::Assistant => (
+                        bubble_colors::ASSISTANT_BORDER.0,
+                        bubble_colors::ASSISTANT_BORDER.1,
+                        bubble_colors::ASSISTANT_BORDER.2,
+                        bubble_colors::ASSISTANT_BORDER.3,
+                        1.0f64,
+                    ),
+                    BubbleRole::System => (
+                        bubble_colors::SYSTEM_BORDER.0,
+                        bubble_colors::SYSTEM_BORDER.1,
+                        bubble_colors::SYSTEM_BORDER.2,
+                        bubble_colors::SYSTEM_BORDER.3,
+                        1.0f64,
+                    ),
+                    BubbleRole::User => (0.0, 0.0, 0.0, 0.0, 0.0f64),
+                }
+            };
+            if bw > 0.0 {
+                let border_color: Id =
+                    msg_send![ns_color, colorWithRed: br green: bg blue: bb alpha: ba];
+                let cg_border: Id = msg_send![border_color, CGColor];
+                let _: () = msg_send![layer, setBorderColor: cg_border];
+                let _: () = msg_send![layer, setBorderWidth: bw];
+            }
         }
 
         // Text label inside bubble
@@ -804,17 +851,33 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let _: () = msg_send![text_label, setSelectable: true];
         let _: () = msg_send![text_label, setDrawsBackground: false];
 
-        // Text color
-        let (tr, tg, tb, ta) = if config.is_streaming {
-            bubble_colors::STREAMING
+        // Text color (role-aware)
+        let (tr, tg, tb, ta) = if config.is_error {
+            bubble_colors::ERROR_TEXT
         } else {
-            bubble_colors::TEXT
+            match config.role {
+                BubbleRole::User => bubble_colors::USER_TEXT,
+                BubbleRole::Assistant => {
+                    if config.is_streaming {
+                        bubble_colors::STREAMING_TEXT
+                    } else {
+                        bubble_colors::ASSISTANT_TEXT
+                    }
+                }
+                BubbleRole::System => bubble_colors::ASSISTANT_TEXT,
+            }
         };
         let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
         let _: () = msg_send![text_label, setTextColor: text_color];
 
-        // Font
-        let font: Id = msg_send![ns_font, systemFontOfSize: font_size];
+        // Font (prefer JetBrains Mono if installed)
+        let jb_name = ns_string("JetBrainsMono-Regular");
+        let jb_font: Id = msg_send![ns_font, fontWithName: jb_name size: font_size];
+        let font: Id = if jb_font.is_null() {
+            msg_send![ns_font, monospacedSystemFontOfSize: font_size weight: 0.0f64]
+        } else {
+            jb_font
+        };
         let _: () = msg_send![text_label, setFont: font];
 
         // Set text (with streaming indicator if needed)
@@ -859,12 +922,16 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let title = ns_string("Copy");
             let _: () = msg_send![copy_button, setTitle: title];
 
-            let small_font: Id = msg_send![ns_font, systemFontOfSize: 10.0f64];
+            let small_font: Id = if jb_font.is_null() {
+                msg_send![ns_font, monospacedSystemFontOfSize: 10.0f64 weight: 0.0f64]
+            } else {
+                msg_send![ns_font, fontWithName: jb_name size: 10.0f64]
+            };
             let _: () = msg_send![copy_button, setFont: small_font];
 
-            // Subtle text color
+            // Match bubble text tint
             let button_color: Id =
-                msg_send![ns_color, colorWithRed: 0.7f64 green: 0.7f64 blue: 0.7f64 alpha: 1.0f64];
+                msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
             let _: () = msg_send![copy_button, setContentTintColor: button_color];
 
             // Store message index in tag for retrieval on click
@@ -901,11 +968,11 @@ pub unsafe fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool)
         let text_str = ns_string(&display_text);
         let _: () = msg_send![text_label, setStringValue: text_str];
 
-        // Update text color based on streaming state
+        // Update text color based on streaming state (assistant defaults)
         let (tr, tg, tb, ta) = if is_streaming {
-            bubble_colors::STREAMING
+            bubble_colors::STREAMING_TEXT
         } else {
-            bubble_colors::TEXT
+            bubble_colors::ASSISTANT_TEXT
         };
         let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
         let _: () = msg_send![text_label, setTextColor: text_color];
