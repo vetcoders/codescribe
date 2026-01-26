@@ -237,8 +237,15 @@ impl VADSegmenter {
             .max(1.0) as usize;
 
         // Ensure VAD is initialized with the passed config (not default!)
-        // Note: if VAD already initialized, this is a no-op (OnceLock)
-        let _ = vad::init_with_config(&vad::default_model_path(), config.clone());
+        // Note: if VAD already initialized, this is a no-op (early exit)
+        if let Err(e) = vad::init_with_config(&vad::default_model_path(), config.clone()) {
+            tracing::warn!(
+                "VAD init failed in VADSegmenter: {} - silence detection disabled, \
+                 will rely on max_utterance_sec ({:.1}s) for flush",
+                e,
+                config.max_utterance_sec
+            );
+        }
 
         Self {
             pending_samples: Vec::new(),

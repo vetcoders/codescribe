@@ -151,15 +151,22 @@ impl Config {
         if let Ok(val) = std::env::var("AUDIO_INPUT_DEVICE") {
             self.audio_input_device = (!val.trim().is_empty()).then_some(val);
         }
+        // SILENCE_DB deprecated - Silero VAD uses probability threshold (CODESCRIBE_VAD_THRESHOLD)
+        // Kept for backward compatibility but not used
         if let Ok(val) = std::env::var("SILENCE_DB")
             && let Ok(db) = val.parse()
         {
             self.silence_db = db;
         }
-        if let Ok(val) = std::env::var("SILENCE_HANG_SEC")
-            && let Ok(sec) = val.parse()
+        // Prefer new VAD naming, fallback to legacy SILENCE_HANG_SEC
+        if let Ok(val) = std::env::var("CODESCRIBE_VAD_MAX_SILENCE_SEC")
+            && let Ok(sec) = val.parse::<f32>()
         {
-            self.silence_hang_sec = sec;
+            self.silence_hang_sec = sec.clamp(0.1, 10.0);
+        } else if let Ok(val) = std::env::var("SILENCE_HANG_SEC")
+            && let Ok(sec) = val.parse::<f32>()
+        {
+            self.silence_hang_sec = sec.clamp(0.1, 10.0);
         }
 
         // History (always on to avoid data loss)

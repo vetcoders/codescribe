@@ -15,8 +15,8 @@ Celem jest spójny przepływ „hands‑off”, w którym użytkownik:
 
 ## Główne komponenty (warstwy)
 
-- **Audio + VAD**: `codescribe-core/src/audio/recorder.rs`
-  - RMS + próg `silence_db` + histereza `hang_sec`, auto‑stop przez `on_vad_stop`.
+- **Audio + VAD**: `codescribe-core/src/audio/recorder.rs` + `core/vad/silero_ort.rs`
+  - Silero VAD (neural network) + próg `CODESCRIBE_VAD_THRESHOLD` + `CODESCRIBE_VAD_MAX_SILENCE_SEC`, auto‑stop przez `on_vad_stop`.
 - **Live STT (Whisper)**: `codescribe-core/src/audio/streaming_recorder.rs`
   - chunking (~15s) + overlap dedup, `StreamDeltaCallback` dla live transcript.
 - **Orkiestracja**: `src/controller.rs`
@@ -82,20 +82,23 @@ sequenceDiagram
     CTRL-->>UI: auto_hide (timeout)
 ```
 
-## VAD – stabilny auto‑stop
+## VAD – stabilny auto‑stop (Silero VAD)
 
-VAD jest wbudowany w `Recorder` i działa na podstawie RMS (dBFS). Zasada jest prosta:
+VAD jest wbudowany w `Recorder` i używa **Silero VAD** (neural network ONNX). Zasada:
 
-- Próbki `f32` są liczone w pętli audio.
-- Jeśli `rms_db < silence_db`, rośnie licznik ciszy.
-- Po przekroczeniu `hang_sec` ustawiany jest stan `is_recording=false`.
+- Próbki `f32` są wysyłane do worker thread (fire-and-forget, non-blocking).
+- Silero zwraca probability (0.0-1.0) czy to mowa.
+- Jeśli `speech_prob < CODESCRIBE_VAD_THRESHOLD`, rośnie licznik ciszy.
+- Po przekroczeniu `CODESCRIBE_VAD_MAX_SILENCE_SEC` ustawiany jest stan `is_recording=false`.
 - `Recorder` odpala `on_vad_stop` i sygnalizuje auto‑stop.
 
 Kluczowe elementy:
 
-- **Histereza**: `hang_sec` zapobiega natychmiastowym fluktuacjom.
-- **Natywna częstotliwość**: VAD działa na realnym `sample_rate` urządzenia.
-- **Asynchroniczny watchdog**: task w `main.rs` obserwuje flagę i woła `finish_recording()`.
+- **Neural network**: Silero VAD rozpoznaje mowę lepiej niż RMS-based detection.
+- **Non-blocking**: Worker thread przetwarza audio, callback nie jest blokowany.
+- **Histereza**: `max_silence_sec` zapobiega natychmiastowym fluktuacjom.
+- **Automatic resampling**: VAD wymaga 16kHz, resampling jest automatyczny.
+- **Asynchroniczny watchdog**: task obserwuje flagę i woła `finish_recording()`.
 
 ## Live transcript (Whisper) → Overlay
 
