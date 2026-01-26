@@ -33,7 +33,8 @@ indicatif = "0.18"
 zip = "0.6"
 # ndarray 0.17 required to match fastembed/ort dependency
 ndarray = "0.17"
-ndarray-npy = "0.9"
+# Disable default features to avoid zip dep (we only need .npy, not .npz archives)
+ndarray-npy = { version = "0.10", default-features = false }
 
 # WebSocket client for voice chat
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }

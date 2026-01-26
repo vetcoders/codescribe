@@ -17,6 +17,9 @@ pub struct VadConfig {
     /// Maximum silence duration in seconds before ending speech segment
     pub max_silence_duration_sec: f32,
 
+    /// Maximum utterance duration in seconds (force flush after this)
+    pub max_utterance_sec: f32,
+
     /// Pre-roll duration in seconds to keep before speech onset
     pub pre_roll_sec: f32,
 }
@@ -27,6 +30,7 @@ impl Default for VadConfig {
             threshold: env_f32("CODESCRIBE_VAD_THRESHOLD", 0.5),
             min_speech_duration_sec: env_f32("CODESCRIBE_VAD_MIN_SPEECH_SEC", 0.1),
             max_silence_duration_sec: env_f32("CODESCRIBE_VAD_MAX_SILENCE_SEC", 0.8),
+            max_utterance_sec: env_f32("CODESCRIBE_VAD_MAX_UTTERANCE_SEC", 30.0),
             pre_roll_sec: env_f32("CODESCRIBE_VAD_PRE_ROLL_SEC", 0.3),
         }
     }

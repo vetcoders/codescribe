@@ -11,7 +11,8 @@ use std::sync::{mpsc, OnceLock};
 use std::thread;
 
 use anyhow::{Context, Result};
-use ort::session::{builder::GraphOptimizationLevel, Session};
+use ndarray::{Array1, Array2, Array3};
+use ort::session::Session;
 use ort::value::Value;
 use tracing::{debug, info, warn};
 
@@ -23,8 +24,9 @@ pub const VAD_SAMPLE_RATE: u32 = 16000;
 /// Chunk size for Silero (512 samples = 32ms at 16kHz)
 const CHUNK_SIZE: usize = 512;
 
-/// State size for Silero v5 model (2, 1, 64)
-const STATE_SIZE: usize = 2 * 1 * 64;
+/// State dimensions for Silero v5 model
+const STATE_DIM: usize = 64;
+const STATE_LAYERS: usize = 2;
 
 /// Global VAD worker
 static VAD_WORKER: OnceLock<VadWorker> = OnceLock::new();
@@ -46,11 +48,11 @@ impl Resampler {
     }
 
     /// Resample audio to 16kHz (linear interpolation)
-    /// Returns slice of resampled data (reuses internal buffer)
-    pub fn resample(&mut self, samples: &[f32]) -> &[f32] {
+    /// Returns owned Vec (avoids lifetime complexity)
+    pub fn resample(&mut self, samples: &[f32]) -> Vec<f32> {
         if (self.ratio - 1.0).abs() < 0.001 {
-            // No resampling needed
-            return samples;
+            // No resampling needed - return copy
+            return samples.to_vec();
         }
 
         let output_len = (samples.len() as f32 * self.ratio) as usize;
@@ -60,22 +62,26 @@ impl Resampler {
         for i in 0..output_len {
             let src_idx = i as f32 / self.ratio;
             let idx0 = src_idx.floor() as usize;
-            let idx1 = (idx0 + 1).min(samples.len() - 1);
+            let idx1 = (idx0 + 1).min(samples.len().saturating_sub(1));
             let frac = src_idx - idx0 as f32;
 
-            let sample = samples[idx0] * (1.0 - frac) + samples[idx1] * frac;
+            let sample = if idx0 < samples.len() {
+                samples[idx0] * (1.0 - frac) + samples.get(idx1).copied().unwrap_or(0.0) * frac
+            } else {
+                0.0
+            };
             self.buffer.push(sample);
         }
 
-        &self.buffer
+        self.buffer.clone()
     }
 }
 
 /// Silero VAD model wrapper
 pub struct SileroVad {
     session: Session,
-    state_h: Vec<f32>,
-    state_c: Vec<f32>,
+    state_h: Array3<f32>,
+    state_c: Array3<f32>,
     config: VadConfig,
     resampler: Option<Resampler>,
 }
@@ -86,7 +92,7 @@ impl SileroVad {
         info!("Loading Silero VAD model from: {}", model_path.display());
 
         let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(1)?
             .commit_from_file(model_path)
             .context("Failed to load Silero VAD ONNX model")?;
 
@@ -94,8 +100,8 @@ impl SileroVad {
 
         Ok(Self {
             session,
-            state_h: vec![0.0; STATE_SIZE],
-            state_c: vec![0.0; STATE_SIZE],
+            state_h: Array3::zeros((STATE_LAYERS, 1, STATE_DIM)),
+            state_c: Array3::zeros((STATE_LAYERS, 1, STATE_DIM)),
             config,
             resampler: None,
         })
@@ -118,11 +124,11 @@ impl SileroVad {
             return Ok(0.0);
         }
 
-        // Resample if needed
-        let samples_16k = if let Some(ref mut resampler) = self.resampler {
+        // Resample if needed (get owned Vec to avoid borrow issues)
+        let samples_16k: Vec<f32> = if let Some(ref mut resampler) = self.resampler {
             resampler.resample(samples)
         } else {
-            samples
+            samples.to_vec()
         };
 
         // Process in chunks and return max probability
@@ -147,34 +153,49 @@ impl SileroVad {
 
     /// Predict on a single 512-sample chunk
     fn predict_chunk(&mut self, chunk: &[f32]) -> Result<f32> {
-        // Prepare inputs
-        // Input shape: (batch=1, samples=512)
-        let input = Value::from_array(([1, chunk.len()], chunk.to_vec()))?;
+        // Input: (batch=1, samples)
+        let input_array = Array2::from_shape_vec((1, chunk.len()), chunk.to_vec())?;
 
-        // State shapes: (2, 1, 64)
-        let h = Value::from_array(([2usize, 1, 64], self.state_h.clone()))?;
-        let c = Value::from_array(([2usize, 1, 64], self.state_c.clone()))?;
+        // Sample rate as i64
+        let sr_array = Array1::from_vec(vec![VAD_SAMPLE_RATE as i64]);
 
-        // Sample rate
-        let sr = Value::from_array(([], vec![VAD_SAMPLE_RATE as i64]))?;
+        // Create input values
+        let input = Value::from_array(input_array)?;
+        let sr = Value::from_array(sr_array)?;
+        let h = Value::from_array(self.state_h.clone())?;
+        let c = Value::from_array(self.state_c.clone())?;
 
-        // Run inference
-        let outputs = self.session.run(ort::inputs![input, sr, h, c]?)?;
+        // Run inference with named inputs
+        // Silero VAD v5 expects: input, sr, h, c
+        let outputs = self.session.run(ort::inputs![
+            "input" => input,
+            "sr" => sr,
+            "h" => h,
+            "c" => c
+        ])?;
 
-        // Extract probability (first output)
-        let prob_tensor = outputs[0].try_extract_tensor::<f32>()?;
-        let prob = prob_tensor.view().iter().next().copied().unwrap_or(0.0);
+        // Extract probability from first output
+        let prob = {
+            let output_value = &outputs[0];
+            let (_shape, data) = output_value.try_extract_tensor::<f32>()?;
+            data.first().copied().unwrap_or(0.0)
+        };
 
-        // Update states (outputs 1 and 2)
+        // Update states if model returns them (outputs 1 and 2)
         if outputs.len() > 2 {
-            let h_out = outputs[1].try_extract_tensor::<f32>()?;
-            let c_out = outputs[2].try_extract_tensor::<f32>()?;
+            // Extract new h state (let chains - Rust 2024)
+            if let Ok((_shape, h_data)) = outputs[1].try_extract_tensor::<f32>()
+                && let Ok(arr) = Array3::from_shape_vec((STATE_LAYERS, 1, STATE_DIM), h_data.to_vec())
+            {
+                self.state_h = arr;
+            }
 
-            self.state_h.clear();
-            self.state_h.extend(h_out.view().iter().copied());
-
-            self.state_c.clear();
-            self.state_c.extend(c_out.view().iter().copied());
+            // Extract new c state
+            if let Ok((_shape, c_data)) = outputs[2].try_extract_tensor::<f32>()
+                && let Ok(arr) = Array3::from_shape_vec((STATE_LAYERS, 1, STATE_DIM), c_data.to_vec())
+            {
+                self.state_c = arr;
+            }
         }
 
         Ok(prob)
@@ -196,27 +217,36 @@ impl SileroVad {
 // Worker-based singleton (no mutex in hot path)
 // ═══════════════════════════════════════════════════════════
 
-/// Message to VAD worker
+use std::sync::{atomic::AtomicU32, Arc};
+
+/// Message to VAD worker (fire-and-forget, no response channel)
 enum VadMessage {
-    Predict {
-        samples: Vec<f32>,
-        sample_rate: u32,
-        response: mpsc::Sender<f32>,
-    },
+    Predict { samples: Vec<f32>, sample_rate: u32 },
     Reset,
+    #[allow(dead_code)]
     Shutdown,
 }
 
-/// VAD worker that processes requests off the audio thread
+/// VAD worker that processes requests off the audio thread.
+///
+/// Non-blocking design: callback submits audio via try_send,
+/// worker updates atomic last_prob. No waiting in hot path.
 struct VadWorker {
-    sender: mpsc::Sender<VadMessage>,
+    sender: mpsc::SyncSender<VadMessage>,
     initialized: AtomicBool,
+    /// Last computed probability (f32 as bits for atomic access)
+    last_prob: Arc<AtomicU32>,
 }
 
 impl VadWorker {
     fn new(model_path: &Path, config: VadConfig) -> Result<Self> {
-        let (tx, rx) = mpsc::channel::<VadMessage>();
+        // Bounded channel - if full, oldest messages dropped (backpressure)
+        let (tx, rx) = mpsc::sync_channel::<VadMessage>(4);
         let path = model_path.to_path_buf();
+
+        // Shared atomic for worker to update
+        let last_prob = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+        let last_prob_writer = Arc::clone(&last_prob);
 
         thread::spawn(move || {
             let mut vad = match SileroVad::new(&path, config) {
@@ -232,14 +262,15 @@ impl VadWorker {
                     VadMessage::Predict {
                         samples,
                         sample_rate,
-                        response,
                     } => {
                         vad.set_input_sample_rate(sample_rate);
                         let prob = vad.predict(&samples).unwrap_or(0.0);
-                        let _ = response.send(prob);
+                        // Update atomic (Relaxed - just caching value, no sync needed)
+                        last_prob_writer.store(prob.to_bits(), Ordering::Relaxed);
                     }
                     VadMessage::Reset => {
                         vad.reset();
+                        last_prob_writer.store(0.0_f32.to_bits(), Ordering::Relaxed);
                     }
                     VadMessage::Shutdown => {
                         break;
@@ -251,28 +282,27 @@ impl VadWorker {
         Ok(Self {
             sender: tx,
             initialized: AtomicBool::new(true),
+            last_prob,
         })
     }
 
-    fn predict(&self, samples: &[f32], sample_rate: u32) -> f32 {
-        let (tx, rx) = mpsc::channel();
-        if self
-            .sender
-            .send(VadMessage::Predict {
-                samples: samples.to_vec(),
-                sample_rate,
-                response: tx,
-            })
-            .is_ok()
-        {
-            rx.recv().unwrap_or(0.0)
-        } else {
-            0.0
-        }
+    /// Submit audio for VAD processing (non-blocking, fire-and-forget).
+    /// Returns immediately, does NOT wait for result.
+    fn submit(&self, samples: &[f32], sample_rate: u32) {
+        // try_send: if channel full, drop oldest (backpressure)
+        let _ = self.sender.try_send(VadMessage::Predict {
+            samples: samples.to_vec(),
+            sample_rate,
+        });
+    }
+
+    /// Get the last computed probability (non-blocking atomic read).
+    fn last_probability(&self) -> f32 {
+        f32::from_bits(self.last_prob.load(Ordering::Relaxed))
     }
 
     fn reset(&self) {
-        let _ = self.sender.send(VadMessage::Reset);
+        let _ = self.sender.try_send(VadMessage::Reset);
     }
 }
 
@@ -281,6 +311,7 @@ impl VadWorker {
 // ═══════════════════════════════════════════════════════════
 
 /// Model path storage
+#[allow(dead_code)]
 static MODEL_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 static VAD_CONFIG: OnceLock<VadConfig> = OnceLock::new();
 
@@ -303,18 +334,32 @@ pub fn init_with_config(model_path: &Path, config: VadConfig) -> Result<()> {
 
 /// Check if VAD is initialized
 pub fn is_initialized() -> bool {
-    VAD_WORKER.get().map(|w| w.initialized.load(Ordering::SeqCst)).unwrap_or(false)
+    VAD_WORKER
+        .get()
+        .map(|w| w.initialized.load(Ordering::SeqCst))
+        .unwrap_or(false)
 }
 
-/// Get speech probability for audio chunk
+/// Get speech probability for audio chunk (NON-BLOCKING).
 ///
-/// This is safe to call from audio callbacks - it sends to worker thread.
+/// Safe to call from audio callbacks:
+/// 1. Submits audio to worker thread (fire-and-forget)
+/// 2. Returns the LAST computed probability (may be from previous chunk)
+///
+/// This "eventual consistency" approach avoids blocking the audio thread.
+/// After a few calls, the returned value will reflect recent audio.
+///
+/// **Important:** Returns 1.0 when VAD not initialized (assume speech)
+/// to prevent immediate auto-stop in recorders.
 pub fn speech_probability(samples: &[f32], sample_rate: u32) -> f32 {
     if let Some(worker) = VAD_WORKER.get() {
-        worker.predict(samples, sample_rate)
+        // Submit new audio (non-blocking)
+        worker.submit(samples, sample_rate);
+        // Return last computed probability (instant, atomic read)
+        worker.last_probability()
     } else {
-        warn!("VAD not initialized, returning 0.0");
-        0.0
+        // VAD not initialized - assume speech to prevent premature auto-stop
+        1.0
     }
 }
 
@@ -364,7 +409,7 @@ mod tests {
         let input: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
         let output = resampler.resample(&input);
 
-        // Should be same pointer (no copy)
+        // Should be same length
         assert_eq!(output.len(), input.len());
     }
 }

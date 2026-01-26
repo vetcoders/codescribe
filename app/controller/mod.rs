@@ -359,7 +359,6 @@ impl RecordingController {
         let delay_ms = config.hold_start_delay_ms;
         let beep = config.beep_on_start;
         let language = config.whisper_language;
-        let silence_db = config.silence_db;
         let silence_hang_sec = config.silence_hang_sec;
         drop(config); // Release read lock
 
@@ -402,7 +401,6 @@ impl RecordingController {
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
             let mut rec = recorder.lock().await;
-            rec.recorder.config.silence_db = silence_db;
             rec.recorder.config.hang_sec = silence_hang_sec;
             rec.recorder.set_on_vad_stop(move || {
                 info!("VAD callback: setting vad_triggered flag");
@@ -495,7 +493,6 @@ impl RecordingController {
 
         let config = self.config.read().await;
         let language = config.whisper_language;
-        let silence_db = config.silence_db;
         let silence_hang_sec = config.silence_hang_sec;
         drop(config);
 
@@ -505,7 +502,6 @@ impl RecordingController {
 
         // Start the recorder with VAD callback
         let mut recorder = self.recorder.lock().await;
-        recorder.recorder.config.silence_db = silence_db;
         recorder.recorder.config.hang_sec = silence_hang_sec;
 
         recorder.recorder.set_on_vad_stop(move || {

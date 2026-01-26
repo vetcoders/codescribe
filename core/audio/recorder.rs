@@ -238,6 +238,11 @@ impl Recorder {
 
         info!("Starting recording...");
 
+        // Initialize VAD (lazy init - only loads model on first use)
+        if !vad::is_initialized() {
+            let _ = vad::init(&vad::default_model_path());
+        }
+
         // Clear buffer and reset diagnostics
         self.buffer
             .lock()
