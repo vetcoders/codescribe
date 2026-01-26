@@ -36,8 +36,6 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `SOUND_VOLUME` – domyślnie `1.0` (RESTART NEEDED)
 
 **Audio / silence**
-- `SILENCE_DB` – DEPRECATED, use `CODESCRIBE_VAD_THRESHOLD` instead
-- `SILENCE_HANG_SEC` – DEPRECATED, use `CODESCRIBE_VAD_MAX_SILENCE_SEC` instead
 - `AUTO_SILENCE` – domyślnie `0` (RESTART NEEDED)
 
 **Historia / storage**
@@ -122,7 +120,7 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 
 ### Audio
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)
-- `CODESCRIBE_VAD_THRESHOLD`, `CODESCRIBE_VAD_MAX_SILENCE_SEC`, `AUTO_SILENCE` (HOT RELOADED)
+- `CODESCRIBE_VAD_THRESHOLD`, `CODESCRIBE_VAD_MAX_SILENCE_SEC`, `AUTO_SILENCE` (RESTART NEEDED)
 
 ### Transkrypcja (local/cloud)
 - `USE_LOCAL_STT` (RESTART NEEDED)

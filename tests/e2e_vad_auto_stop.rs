@@ -177,14 +177,16 @@ fn test_recorder_vad_config_defaults() {
         "auto_silence should be true by default"
     );
 
-    // Silence threshold should be reasonable (-45dB typical)
+    // Speech threshold should be probability (0.0-1.0)
+    // Default is 0.5 from CODESCRIBE_VAD_THRESHOLD env var
     assert!(
-        config.silence_db <= -30.0 && config.silence_db >= -60.0,
-        "silence_db should be between -60 and -30 dB, got: {}",
-        config.silence_db
+        config.speech_threshold >= 0.1 && config.speech_threshold <= 0.9,
+        "speech_threshold should be between 0.1 and 0.9, got: {}",
+        config.speech_threshold
     );
 
-    // Hang time should be reasonable (0.5-2.0 seconds)
+    // Hang time should be reasonable (0.3-3.0 seconds)
+    // Default is 1.2s from CODESCRIBE_VAD_MAX_SILENCE_SEC env var
     assert!(
         config.hang_sec >= 0.3 && config.hang_sec <= 3.0,
         "hang_sec should be between 0.3 and 3.0s, got: {}",
@@ -198,14 +200,14 @@ fn test_recorder_vad_config_custom() {
     use codescribe::RecorderConfig;
 
     let config = RecorderConfig {
-        silence_db: -35.0,
+        speech_threshold: 0.6,
         hang_sec: 1.5,
         auto_silence: false,
         ..Default::default()
     };
 
     assert!(!config.auto_silence, "auto_silence should be overridable");
-    assert!((config.silence_db - (-35.0)).abs() < 0.01);
+    assert!((config.speech_threshold - 0.6).abs() < 0.01);
     assert!((config.hang_sec - 1.5).abs() < 0.01);
 }
 
@@ -232,7 +234,7 @@ fn test_recorder_vad_callback_api() {
 /// Documentation test for VAD flow
 #[test]
 fn test_vad_flow_documentation() {
-    // VAD (Voice Activity Detection) auto-stop flow:
+    // VAD (Voice Activity Detection) auto-stop flow using Silero neural network:
     //
     // 1. User starts toggle recording (Ctrl+Ctrl double-tap)
     //    - Controller enters REC_TOGGLE state
@@ -240,13 +242,13 @@ fn test_vad_flow_documentation() {
     //    - VAD callback is registered: on_vad_stop = || { vad_triggered.store(true) }
     //
     // 2. User speaks into microphone
-    //    - Audio chunks are processed
-    //    - RMS level is above silence_db threshold
+    //    - Audio chunks are processed by Silero VAD
+    //    - Speech probability is above threshold (CODESCRIBE_VAD_THRESHOLD, default 0.5)
     //    - VAD does not trigger
     //
     // 3. User stops speaking (silence for hang_sec seconds)
-    //    - RMS drops below silence_db
-    //    - After hang_sec (default 0.8s), VAD triggers
+    //    - Speech probability drops below threshold
+    //    - After hang_sec (CODESCRIBE_VAD_MAX_SILENCE_SEC, default 1.2s), VAD triggers
     //    - on_vad_stop callback is invoked
     //    - vad_triggered atomic flag set to true
     //
@@ -266,47 +268,43 @@ fn test_vad_flow_documentation() {
     let _doc = "VAD flow documentation";
 }
 
-/// Test silence detection RMS calculation concept
+/// Test Silero VAD probability threshold concept
 #[test]
-fn test_silence_rms_calculation() {
-    // RMS (Root Mean Square) is used to measure audio "loudness"
+fn test_vad_probability_threshold() {
+    // Silero VAD outputs speech probability (0.0 - 1.0)
     //
-    // silence_db threshold converts to linear amplitude:
-    // amplitude = 10^(db/20)
-    //
-    // For -45dB: amplitude = 10^(-45/20) ≈ 0.0056
-    // For -35dB: amplitude = 10^(-35/20) ≈ 0.0178
+    // CODESCRIBE_VAD_THRESHOLD controls sensitivity:
+    // - 0.3 = sensitive (catches quiet speech, more false positives)
+    // - 0.5 = balanced (default)
+    // - 0.7 = conservative (fewer false positives, may miss quiet speech)
 
-    let silence_db = -45.0f32;
-    let threshold_amplitude = 10.0f32.powf(silence_db / 20.0);
+    let threshold = 0.5f32;
+
+    // Simulate VAD probability outputs
+    let silence_prob = 0.1f32; // Low probability = silence
+    let speech_prob = 0.8f32;  // High probability = speech
 
     assert!(
-        (threshold_amplitude - 0.00562).abs() < 0.001,
-        "Expected ~0.0056, got {}",
-        threshold_amplitude
+        silence_prob < threshold,
+        "Silence probability {} should be below threshold {}",
+        silence_prob,
+        threshold
     );
 
-    // Audio samples with RMS below this threshold are "silence"
-    let silent_samples: Vec<f32> = vec![0.001, -0.002, 0.0015, -0.001, 0.0008];
-    let rms: f32 =
-        (silent_samples.iter().map(|s| s * s).sum::<f32>() / silent_samples.len() as f32).sqrt();
-
     assert!(
-        rms < threshold_amplitude,
-        "Sample RMS {} should be below threshold {}",
-        rms,
-        threshold_amplitude
+        speech_prob > threshold,
+        "Speech probability {} should be above threshold {}",
+        speech_prob,
+        threshold
     );
 
-    // Audio with speech would have higher RMS
-    let speech_samples: Vec<f32> = vec![0.1, -0.15, 0.2, -0.12, 0.18];
-    let speech_rms: f32 =
-        (speech_samples.iter().map(|s| s * s).sum::<f32>() / speech_samples.len() as f32).sqrt();
-
+    // Edge case: probability at threshold
+    let edge_prob = 0.5f32;
+    // Convention: >= threshold is speech, < threshold is silence
     assert!(
-        speech_rms > threshold_amplitude,
-        "Speech RMS {} should be above threshold {}",
-        speech_rms,
-        threshold_amplitude
+        edge_prob >= threshold,
+        "Edge probability {} should be considered speech at threshold {}",
+        edge_prob,
+        threshold
     );
 }

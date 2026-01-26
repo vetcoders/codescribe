@@ -326,16 +326,6 @@ pub struct Config {
     #[serde(default)]
     pub start_at_login: bool,
 
-    // ===== Audio tuning =====
-    /// DEPRECATED: Silero VAD uses probability threshold (CODESCRIBE_VAD_THRESHOLD)
-    /// Kept for backward compatibility with old configs
-    #[serde(default = "default_silence_db")]
-    pub silence_db: f32,
-
-    /// Silence duration before auto-stop (synced with CODESCRIBE_VAD_MAX_SILENCE_SEC)
-    #[serde(default = "default_silence_hang_sec")]
-    pub silence_hang_sec: f32,
-
     // ===== Debugging =====
     /// Whether to dump raw audio files to logs/audio directory
     #[serde(default = "default_dump_audio_logs")]
@@ -376,8 +366,6 @@ impl Default for Config {
             restore_clipboard: default_restore_clipboard(),
             restore_clipboard_delay_ms: default_restore_clipboard_delay_ms(),
             start_at_login: false,
-            silence_db: default_silence_db(),
-            silence_hang_sec: default_silence_hang_sec(),
             dump_audio_logs: default_dump_audio_logs(),
         }
     }
@@ -388,16 +376,6 @@ impl Config {
     pub fn sanitize(&mut self) {
         // Token limits: 0 = no limit (API decides). Don't override.
         // Tokens are cheap, lost notes are not.
-
-        // Validate audio thresholds
-        // silence_db is deprecated but kept for backward compat
-        if self.silence_db > 0.0 || self.silence_db < -100.0 {
-            self.silence_db = -45.0;
-        }
-        // silence_hang_sec synced with VadConfig::max_silence_duration_sec (1.2s)
-        if self.silence_hang_sec <= 0.0 || self.silence_hang_sec > 10.0 {
-            self.silence_hang_sec = 1.2;
-        }
 
         // Clamp sound volume
         self.sound_volume = self.sound_volume.clamp(0.0, 1.0);

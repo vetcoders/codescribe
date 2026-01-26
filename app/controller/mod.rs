@@ -359,7 +359,6 @@ impl RecordingController {
         let delay_ms = config.hold_start_delay_ms;
         let beep = config.beep_on_start;
         let language = config.whisper_language;
-        let silence_hang_sec = config.silence_hang_sec;
         drop(config); // Release read lock
 
         // Capture assistive mode for badge display
@@ -400,8 +399,8 @@ impl RecordingController {
             info!("Starting hold recording (session={})", new_session_id);
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
+            // hang_sec is configured via CODESCRIBE_VAD_MAX_SILENCE_SEC env var (single source of truth)
             let mut rec = recorder.lock().await;
-            rec.recorder.config.hang_sec = silence_hang_sec;
             rec.recorder.set_on_vad_stop(move || {
                 info!("VAD callback: setting vad_triggered flag");
                 vad_flag.store(true, Ordering::SeqCst);
@@ -493,7 +492,6 @@ impl RecordingController {
 
         let config = self.config.read().await;
         let language = config.whisper_language;
-        let silence_hang_sec = config.silence_hang_sec;
         drop(config);
 
         // Reset VAD flag and set callback
@@ -501,8 +499,8 @@ impl RecordingController {
         let vad_flag = Arc::clone(&self.vad_triggered);
 
         // Start the recorder with VAD callback
+        // hang_sec is configured via CODESCRIBE_VAD_MAX_SILENCE_SEC env var (single source of truth)
         let mut recorder = self.recorder.lock().await;
-        recorder.recorder.config.hang_sec = silence_hang_sec;
 
         recorder.recorder.set_on_vad_stop(move || {
             info!("VAD callback: setting vad_triggered flag");
