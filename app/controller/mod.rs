@@ -30,7 +30,7 @@ pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 
 use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -123,6 +123,11 @@ pub struct RecordingController {
     /// Flag to signal conversation mode should stop
     conversation_stop_flag: Arc<AtomicBool>,
 
+    /// Session generation counter - increments on each conversation start.
+    /// Spawn tasks capture this value and compare before UI updates to prevent
+    /// cross-session race conditions (old tasks updating new session's UI).
+    conversation_generation: Arc<AtomicU64>,
+
     /// Task handle for conversation audio processing loop
     conversation_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
@@ -173,6 +178,7 @@ impl RecordingController {
             conversation_engine: Arc::new(Mutex::new(None)),
             audio_player: Arc::new(Mutex::new(None)),
             conversation_stop_flag: Arc::new(AtomicBool::new(false)),
+            conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
         }
     }
@@ -223,6 +229,7 @@ impl RecordingController {
             conversation_engine: Arc::new(Mutex::new(None)),
             audio_player: Arc::new(Mutex::new(None)),
             conversation_stop_flag: Arc::new(AtomicBool::new(false)),
+            conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
         }
     }
@@ -457,8 +464,10 @@ impl RecordingController {
             }
         }
 
-        // 3. Reset stop flag
+        // 3. Reset stop flag and increment session generation
         self.conversation_stop_flag.store(false, Ordering::SeqCst);
+        let generation = self.conversation_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        info!("Starting conversation session generation {}", generation);
 
         // 4. Set conversation session flag
         helpers::set_conversation_session(true);
@@ -479,11 +488,12 @@ impl RecordingController {
         let engine = Arc::clone(&self.conversation_engine);
         let player = Arc::clone(&self.audio_player);
         let stop_flag = Arc::clone(&self.conversation_stop_flag);
+        let generation_arc = Arc::clone(&self.conversation_generation);
         let state = Arc::clone(&self.state);
         let recorder = Arc::clone(&self.recorder);
 
         let task = tokio::spawn(async move {
-            Self::conversation_audio_loop(engine, player, recorder, stop_flag, state).await;
+            Self::conversation_audio_loop(engine, player, recorder, stop_flag, generation_arc, generation, state).await;
         });
 
         *self.conversation_task.lock().await = Some(task);
@@ -499,9 +509,11 @@ impl RecordingController {
         player: Arc<Mutex<Option<AudioPlayer>>>,
         recorder: Arc<Mutex<StreamingRecorder>>,
         stop_flag: Arc<AtomicBool>,
+        generation_counter: Arc<AtomicU64>,
+        my_generation: u64,
         state: Arc<RwLock<State>>,
     ) {
-        info!("Conversation audio loop started");
+        info!("Conversation audio loop started (generation {})", my_generation);
 
         // Create audio channel for conversation mode
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<f32>>(100);
@@ -553,22 +565,25 @@ impl RecordingController {
                             warn!("ConversationEngine.process_audio error: {}", e);
                         }
 
-                        // Update UI based on conversation state
-                        let conv_state = eng.state();
-                        let (status, ui_state) = match conv_state {
-                            codescribe_core::conversation::context::ConversationState::UserSpeaking => {
-                                ("You're speaking...", ConversationModeState::UserSpeaking)
-                            }
-                            codescribe_core::conversation::context::ConversationState::AssistantSpeaking => {
-                                ("Moshi responding...", ConversationModeState::AssistantSpeaking)
-                            }
-                            codescribe_core::conversation::context::ConversationState::Processing => {
-                                ("Processing...", ConversationModeState::Processing)
-                            }
-                            _ => ("Listening...", ConversationModeState::Listening),
-                        };
-                        crate::voice_chat_ui::update_voice_chat_status(status);
-                        crate::voice_chat_ui::update_conversation_state(ui_state);
+                        // Update UI based on conversation state (only if still current session)
+                        let current_gen = generation_counter.load(Ordering::SeqCst);
+                        if current_gen == my_generation {
+                            let conv_state = eng.state();
+                            let (status, ui_state) = match conv_state {
+                                codescribe_core::conversation::context::ConversationState::UserSpeaking => {
+                                    ("You're speaking...", ConversationModeState::UserSpeaking)
+                                }
+                                codescribe_core::conversation::context::ConversationState::AssistantSpeaking => {
+                                    ("Moshi responding...", ConversationModeState::AssistantSpeaking)
+                                }
+                                codescribe_core::conversation::context::ConversationState::Processing => {
+                                    ("Processing...", ConversationModeState::Processing)
+                                }
+                                _ => ("Listening...", ConversationModeState::Listening),
+                            };
+                            crate::voice_chat_ui::update_voice_chat_status(status);
+                            crate::voice_chat_ui::update_conversation_state(ui_state);
+                        }
                     }
                 }
                 Ok(None) => {
@@ -611,32 +626,47 @@ impl RecordingController {
                         // This preserves full-duplex: we can still process mic while playing
                         let player_clone = Arc::clone(&player);
                         let stop_flag_clone = Arc::clone(&stop_flag);
+                        let generation_clone = Arc::clone(&generation_counter);
                         let playback_active_clone = Arc::clone(&playback_active);
-                        let handle = tokio::runtime::Handle::current();
-                        tokio::task::spawn_blocking(move || {
-                            // Drop guard ensures playback_active is reset even on panic
-                            struct PlaybackGuard(Arc<AtomicBool>);
-                            impl Drop for PlaybackGuard {
-                                fn drop(&mut self) {
-                                    self.0.store(false, Ordering::SeqCst);
-                                }
-                            }
-                            let _guard = PlaybackGuard(Arc::clone(&playback_active_clone));
+                        let playback_active_reset = Arc::clone(&playback_active);
 
-                            // Block this thread for playback, but don't block the async loop
-                            let player_guard = handle.block_on(player_clone.lock());
-                            if let Some(ref p) = *player_guard {
-                                if let Err(e) = p.play(&response_samples, response_rate) {
-                                    warn!("AudioPlayer.play error: {}", e);
+                        // Wrap spawn in catch_unwind to reset playback_active if spawn itself fails
+                        let spawn_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let handle = tokio::runtime::Handle::current();
+                            tokio::task::spawn_blocking(move || {
+                                // Drop guard ensures playback_active is reset even on panic
+                                struct PlaybackGuard(Arc<AtomicBool>);
+                                impl Drop for PlaybackGuard {
+                                    fn drop(&mut self) {
+                                        self.0.store(false, Ordering::SeqCst);
+                                    }
                                 }
-                            }
-                            // Only update UI if conversation wasn't stopped (race guard)
-                            if !stop_flag_clone.load(Ordering::SeqCst) {
-                                crate::voice_chat_ui::update_voice_chat_status("Listening...");
-                                crate::voice_chat_ui::update_conversation_state(ConversationModeState::Listening);
-                            }
-                            // _guard dropped here, resets playback_active even on panic
-                        });
+                                let _guard = PlaybackGuard(Arc::clone(&playback_active_clone));
+
+                                // Block this thread for playback, but don't block the async loop
+                                let player_guard = handle.block_on(player_clone.lock());
+                                if let Some(ref p) = *player_guard {
+                                    if let Err(e) = p.play(&response_samples, response_rate) {
+                                        warn!("AudioPlayer.play error: {}", e);
+                                    }
+                                }
+                                // Only update UI if:
+                                // 1. Conversation wasn't stopped (stop_flag)
+                                // 2. This is still the current session (generation matches)
+                                // This prevents cross-session UI races
+                                let current_gen = generation_clone.load(Ordering::SeqCst);
+                                if !stop_flag_clone.load(Ordering::SeqCst) && current_gen == my_generation {
+                                    crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                                    crate::voice_chat_ui::update_conversation_state(ConversationModeState::Listening);
+                                }
+                                // _guard dropped here, resets playback_active even on panic
+                            })
+                        }));
+
+                        if spawn_result.is_err() {
+                            warn!("spawn_blocking panicked - resetting playback_active");
+                            playback_active_reset.store(false, Ordering::SeqCst);
+                        }
                     }
                 }
             }
@@ -650,10 +680,13 @@ impl RecordingController {
 
         // Full cleanup if loop exits unexpectedly (e.g., channel closed)
         // This ensures state/UI consistency even without stop_conversation_mode()
-        let current = *state.read().await;
-        if current == State::Conversation {
-            // CRITICAL: Set stop_flag FIRST to prevent in-flight spawn_blocking
-            // tasks from overwriting UI state back to "Listening..."
+        // CRITICAL: Only cleanup if THIS is still the current session (generation check)
+        // This prevents "old loop kills new session" race when stop_conversation_mode() times out
+        let current_gen = generation_counter.load(Ordering::SeqCst);
+        let current_state = *state.read().await;
+
+        if current_state == State::Conversation && current_gen == my_generation {
+            // This loop owns the current session - safe to cleanup
             stop_flag.store(true, Ordering::SeqCst);
 
             *state.write().await = State::Idle;
@@ -662,10 +695,13 @@ impl RecordingController {
             crate::voice_chat_ui::update_voice_chat_status("Conversation ended");
             crate::voice_chat_ui::update_conversation_state(ConversationModeState::Inactive);
             let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
-            info!("Loop cleanup: conversation ended unexpectedly");
+            info!("Loop cleanup: conversation ended unexpectedly (gen {})", my_generation);
+        } else if current_gen != my_generation {
+            // New session started - don't touch anything
+            info!("Loop cleanup skipped: new session started (my_gen={}, current_gen={})", my_generation, current_gen);
         }
 
-        info!("Conversation audio loop ended");
+        info!("Conversation audio loop ended (gen {})", my_generation);
     }
 
     /// Stop conversation mode
