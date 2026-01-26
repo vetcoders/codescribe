@@ -151,13 +151,29 @@ impl Config {
         if let Ok(val) = std::env::var("AUDIO_INPUT_DEVICE") {
             self.audio_input_device = (!val.trim().is_empty()).then_some(val);
         }
-        // VAD config is managed by core/vad/config.rs (CODESCRIBE_VAD_* env vars)
-        // No legacy SILENCE_* variables - single source of truth
+        // SILENCE_DB deprecated - Silero VAD uses probability threshold (CODESCRIBE_VAD_THRESHOLD)
+        // Kept for backward compatibility but not used
+        if let Ok(val) = std::env::var("SILENCE_DB")
+            && let Ok(db) = val.parse()
+        {
+            self.silence_db = db;
+        }
+        // Prefer new VAD naming, fallback to legacy SILENCE_HANG_SEC
+        if let Ok(val) = std::env::var("CODESCRIBE_VAD_MAX_SILENCE_SEC")
+            && let Ok(sec) = val.parse::<f32>()
+        {
+            self.silence_hang_sec = sec.clamp(0.1, 10.0);
+        } else if let Ok(val) = std::env::var("SILENCE_HANG_SEC")
+            && let Ok(sec) = val.parse::<f32>()
+        {
+            self.silence_hang_sec = sec.clamp(0.1, 10.0);
+        }
 
-        // History (default: on to avoid data loss)
+        // History (always on to avoid data loss)
         if let Ok(val) = std::env::var("HISTORY_ENABLED") {
             self.history_enabled = val.parse().unwrap_or(true);
         }
+        self.history_enabled = true;
 
         // Backends - LLM
         // LLM_API_KEY for cloud providers
@@ -200,10 +216,11 @@ impl Config {
             self.start_at_login = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
 
-        // Debugging (default: on to keep paired .wav with transcripts)
+        // Debugging (always on to keep paired .wav with transcripts)
         if let Ok(val) = std::env::var("DUMP_AUDIO_LOGS") {
             self.dump_audio_logs = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
+        self.dump_audio_logs = true;
     }
 
     /// Save a single configuration value to .env file.

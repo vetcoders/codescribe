@@ -344,8 +344,12 @@ impl VadWorker {
 // Public singleton API
 // ═══════════════════════════════════════════════════════════
 
-/// Model path storage
-#[allow(dead_code)]
+use std::sync::Mutex;
+
+/// Initialization lock to prevent concurrent init attempts
+static INIT_LOCK: Mutex<()> = Mutex::new(());
+
+/// Model path storage (set only after successful init)
 static MODEL_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 static VAD_CONFIG: OnceLock<VadConfig> = OnceLock::new();
 
@@ -358,15 +362,36 @@ pub fn init(model_path: &Path) -> Result<()> {
 ///
 /// Returns Ok if initialized successfully, Err if model not found.
 /// When VAD is not initialized, `speech_probability()` returns 1.0 (assume speech).
+///
+/// **Important:** This is a no-op if VAD is already initialized.
+/// Repeated calls are safe and cheap (early-exit with mutex).
+///
+/// **Warning:** First call may block up to 30s waiting for model load.
+/// Call early in app startup, not on UI thread.
 pub fn init_with_config(model_path: &Path, config: VadConfig) -> Result<()> {
-    let _ = MODEL_PATH.set(model_path.to_path_buf());
-    let _ = VAD_CONFIG.set(config.clone());
+    // Fast path: already initialized (no lock needed)
+    if is_initialized() {
+        return Ok(());
+    }
+
+    // Slow path: acquire lock to prevent concurrent init
+    let _guard = INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Double-check after acquiring lock (another thread may have initialized)
+    if is_initialized() {
+        debug!("VAD initialized by another thread, skipping");
+        return Ok(());
+    }
 
     // Try to create worker - if it fails, VAD stays uninitialized
     // (speech_probability will return 1.0, disabling auto-stop)
-    match VadWorker::new(model_path, config) {
+    match VadWorker::new(model_path, config.clone()) {
         Ok(worker) => {
+            // Only set config/path AFTER successful init
+            let _ = MODEL_PATH.set(model_path.to_path_buf());
+            let _ = VAD_CONFIG.set(config);
             let _ = VAD_WORKER.set(worker);
+            info!("VAD initialized successfully");
             Ok(())
         }
         Err(e) => {

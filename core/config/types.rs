@@ -327,11 +327,12 @@ pub struct Config {
     pub start_at_login: bool,
 
     // ===== Audio tuning =====
-    /// Silence threshold in decibels
+    /// DEPRECATED: Silero VAD uses probability threshold (CODESCRIBE_VAD_THRESHOLD)
+    /// Kept for backward compatibility with old configs
     #[serde(default = "default_silence_db")]
     pub silence_db: f32,
 
-    /// Silence hang time in seconds
+    /// Silence duration before auto-stop (synced with CODESCRIBE_VAD_MAX_SILENCE_SEC)
     #[serde(default = "default_silence_hang_sec")]
     pub silence_hang_sec: f32,
 
@@ -389,11 +390,13 @@ impl Config {
         // Tokens are cheap, lost notes are not.
 
         // Validate audio thresholds
+        // silence_db is deprecated but kept for backward compat
         if self.silence_db > 0.0 || self.silence_db < -100.0 {
             self.silence_db = -45.0;
         }
+        // silence_hang_sec synced with VadConfig::max_silence_duration_sec (1.2s)
         if self.silence_hang_sec <= 0.0 || self.silence_hang_sec > 10.0 {
-            self.silence_hang_sec = 1.5;
+            self.silence_hang_sec = 1.2;
         }
 
         // Clamp sound volume
