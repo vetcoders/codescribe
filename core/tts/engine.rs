@@ -22,7 +22,7 @@ use tokenizers::Tokenizer;
 use tracing::{debug, info};
 
 use super::embedded::EmbeddedTts;
-use crate::safe_path;
+use crate::{hf_cache, safe_path};
 
 /// Default CSM model output sample rate
 const SAMPLE_RATE: u32 = 24000;
@@ -95,11 +95,20 @@ impl TtsEngine {
                     .context("Failed to load Mimi weights")?
             };
             MimiModel::new(mimi_config, mimi_vb).context("Failed to create Mimi model")?
+        } else if let Some(snapshot) =
+            hf_cache::find_snapshot("kyutai/mimi", &["model.safetensors"])
+        {
+            let cached_path = snapshot.join("model.safetensors");
+            let mimi_vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(&[&cached_path], dtype, &device)
+                    .context("Failed to load Mimi weights")?
+            };
+            MimiModel::new(mimi_config, mimi_vb).context("Failed to create Mimi model")?
         } else {
-            // Try to load from HuggingFace cache or bundled location
             return Err(anyhow!(
-                "Mimi codec weights not found at {}. Download with: ./scripts/download-csm.sh",
-                mimi_weights_path.display()
+                "Mimi codec weights not found. Run:\n\
+                 - hf download kyutai/mimi\n\
+                 - hf download sesame/csm-1b"
             ));
         };
 

@@ -47,6 +47,8 @@ CODESCRIBE_VAD_MAX_UTTERANCE_SEC=60
 CODESCRIBE_VAD_PRE_ROLL_SEC=0.3
 CODESCRIBE_STREAM_SIMILARITY=0.90
 CODESCRIBE_STREAM_NOVELTY=0.20
+# Embedder model override (HuggingFace cache repo id)
+# CODESCRIBE_EMBEDDER_REPO=intfloat/multilingual-e5-small
 
 # ➡️ fewer cuts, more natural phrases, stable overlay.
 # ---------------------------------------------------------------------------

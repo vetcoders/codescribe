@@ -14,31 +14,15 @@
 
 set -euo pipefail
 
-# All models go to ~/.codescribe/models/ (unified path)
-MODELS_BASE="${HOME}/.codescribe/models"
-
 # Configuration
 MODEL_REPO="intfloat/multilingual-e5-large"
-MODEL_NAME="e5-large"
-MODEL_DIR="${MODELS_BASE}/${MODEL_NAME}"
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  CodeScribe E5 Embedder Download"
 echo "═══════════════════════════════════════════════════════════"
-echo "  Model:  ${MODEL_NAME}"
+echo "  Model:  ${MODEL_REPO}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
 echo "───────────────────────────────────────────────────────────"
-
-# Check if model already exists
-if [ -d "$MODEL_DIR" ] && [ -f "${MODEL_DIR}/model.safetensors" ]; then
-    MODEL_SIZE=$(du -sh "$MODEL_DIR" | cut -f1)
-    echo ""
-    echo "  ✓ Model already downloaded: ${MODEL_DIR} (${MODEL_SIZE})"
-    echo ""
-    echo "  To re-download, remove the directory first:"
-    echo "    rm -rf ${MODEL_DIR}"
-    exit 0
-fi
 
 # Check for HuggingFace CLI
 if ! command -v hf &> /dev/null; then
@@ -69,49 +53,20 @@ else
     fi
 fi
 
-# Create models directory
-mkdir -p "$MODELS_BASE"
-
 # Download model
 echo ""
-echo "▶ Downloading model (~1.2GB)..."
+echo "▶ Downloading model (HF cache)..."
 echo "  This may take a few minutes..."
 echo ""
 
-hf download "$MODEL_REPO" --local-dir "$MODEL_DIR"
-
-# Verify download
-echo ""
-echo "▶ Verifying model files..."
-
-REQUIRED_FILES=("config.json" "tokenizer.json" "model.safetensors")
-MISSING=()
-
-for file in "${REQUIRED_FILES[@]}"; do
-    if [ ! -f "${MODEL_DIR}/${file}" ]; then
-        MISSING+=("$file")
-    fi
-done
-
-if [ ${#MISSING[@]} -gt 0 ]; then
-    echo "✗ Missing required files: ${MISSING[*]}"
-    exit 1
-fi
-
-MODEL_SIZE=$(du -sh "$MODEL_DIR" | cut -f1)
+hf download "$MODEL_REPO" \
+  --include "config.json" "tokenizer.json" "model.safetensors"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
-echo "  Location: ${MODEL_DIR}"
-echo "  Size:     ${MODEL_SIZE}"
-echo ""
-echo "  Files:"
-for file in "${REQUIRED_FILES[@]}"; do
-    SIZE=$(du -h "${MODEL_DIR}/${file}" | cut -f1)
-    echo "    ✓ ${file} (${SIZE})"
-done
+echo "  Location: HF cache (use: hf cache ls)"
 echo ""
 echo "  Model ready for use with CodeScribe."
 echo "───────────────────────────────────────────────────────────"

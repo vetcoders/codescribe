@@ -14,12 +14,12 @@ use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
 use tracing::{debug, info};
 
-use super::DEFAULT_MODEL;
 use super::embedded;
-use crate::config::Config;
-use crate::safe_path;
+use crate::{hf_cache, safe_path};
 
 const DEFAULT_MAX_LENGTH: usize = 512;
+const DEFAULT_E5_REPO: &str = "intfloat/multilingual-e5-large";
+const ENV_EMBEDDER_REPO: &str = "CODESCRIBE_EMBEDDER_REPO";
 
 /// Configuration for the embedder
 #[derive(Debug, Clone)]
@@ -79,9 +79,22 @@ impl EmbedderEngine {
     }
 
     /// Create with custom configuration
-    pub fn with_config(config: EmbedderConfig) -> Result<Self> {
+    pub fn with_config(mut config: EmbedderConfig) -> Result<Self> {
         let device = Device::new_metal(0).unwrap_or(Device::Cpu);
         debug!("Embedder using device: {:?}", device);
+
+        // Explicit overrides disable embedded usage.
+        let repo_override = std::env::var(ENV_EMBEDDER_REPO)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let path_override = std::env::var("CODESCRIBE_EMBEDDER_PATH")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        if config.model_path.is_some() || repo_override.is_some() || path_override.is_some() {
+            config.use_embedded = false;
+        }
 
         if config.use_embedded
             && let Some(embedded) = embedded::get_embedded_data()
@@ -89,7 +102,7 @@ impl EmbedderEngine {
             return Self::from_embedded(&embedded, device, config.max_length);
         }
 
-        let model_path = resolve_model_path(config.model_path.as_ref())?;
+        let model_path = resolve_model_path(config.model_path.as_ref(), repo_override.as_deref())?;
         Self::from_path(&model_path, device, config.max_length)
     }
 
@@ -243,7 +256,7 @@ impl EmbedderEngine {
     }
 }
 
-fn resolve_model_path(explicit: Option<&PathBuf>) -> Result<PathBuf> {
+fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path.clone());
     }
@@ -255,20 +268,24 @@ fn resolve_model_path(explicit: Option<&PathBuf>) -> Result<PathBuf> {
         }
     }
 
-    let config_dir = Config::config_dir();
-    let candidates = [
-        config_dir.join("models").join(DEFAULT_MODEL),
-        PathBuf::from("models").join(DEFAULT_MODEL),
-    ];
-
-    for candidate in candidates {
-        if model_files_present(&candidate) {
-            return Ok(candidate);
+    if let Some(repo) = repo_override {
+        if let Some(snapshot) = hf_cache::find_snapshot(
+            repo,
+            &["config.json", "tokenizer.json", "model.safetensors"],
+        ) {
+            return Ok(snapshot);
         }
+    } else if let Some(snapshot) = hf_cache::find_snapshot(
+        DEFAULT_E5_REPO,
+        &["config.json", "tokenizer.json", "model.safetensors"],
+    ) {
+        return Ok(snapshot);
     }
 
     Err(anyhow!(
-        "E5 model not found. Set CODESCRIBE_EMBEDDER_PATH or download with: ./scripts/download-e5.sh"
+        "E5 model not found. Run: hf download {} (uses cache) or set CODESCRIBE_EMBEDDER_PATH / {}",
+        repo_override.unwrap_or(DEFAULT_E5_REPO),
+        ENV_EMBEDDER_REPO
     ))
 }
 
