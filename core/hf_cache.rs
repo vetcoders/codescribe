@@ -31,6 +31,9 @@ pub fn find_snapshot_with_any(
 
 fn cache_bases() -> Vec<PathBuf> {
     let mut out = Vec::new();
+    if let Ok(path) = env::var("CODESCRIBE_HF_CACHE") {
+        out.push(PathBuf::from(path));
+    }
     if let Ok(path) = env::var("HUGGINGFACE_HUB_CACHE") {
         out.push(PathBuf::from(path));
     }
@@ -40,10 +43,21 @@ fn cache_bases() -> Vec<PathBuf> {
     if let Ok(path) = env::var("HF_HOME") {
         out.push(PathBuf::from(path).join("hub"));
     }
-    if let Some(home) =
-        BaseDirs::new().map(|d| d.home_dir().join(".cache").join("huggingface").join("hub"))
-    {
-        out.push(home);
+    if let Some(dirs) = BaseDirs::new() {
+        out.push(
+            dirs.home_dir()
+                .join(".cache")
+                .join("huggingface")
+                .join("hub"),
+        );
+        // Support local cache used by CodeScribe tools (hf download into ~/.codescribe/embeddings)
+        out.push(dirs.home_dir().join(".codescribe").join("embeddings"));
+        out.push(
+            dirs.home_dir()
+                .join(".codescribe")
+                .join("embeddings")
+                .join("hub"),
+        );
     }
     out.sort();
     out.dedup();

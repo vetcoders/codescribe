@@ -26,9 +26,17 @@ pub struct VadConfig {
 
 impl Default for VadConfig {
     fn default() -> Self {
+        let sensitivity = env_f32_clamped("CODESCRIBE_VAD_SENSITIVITY", -1.0, 0.0, 1.0);
+        let simple_silence = env_f32_clamped("CODESCRIBE_VAD_SILENCE_SEC", -1.0, 0.1, 10.0);
         Self {
-            // Clamp threshold to valid probability range [0.1, 0.95]
-            threshold: env_f32_clamped("CODESCRIBE_VAD_THRESHOLD", 0.5, 0.1, 0.95),
+            // Simple overrides (preferred): sensitivity + silence
+            threshold: if sensitivity >= 0.0 {
+                // Map sensitivity [0..1] to threshold [0.85..0.2] (lower = more sensitive)
+                (0.85 - (0.65 * sensitivity)).clamp(0.2, 0.85)
+            } else {
+                // Clamp threshold to valid probability range [0.1, 0.95]
+                env_f32_clamped("CODESCRIBE_VAD_THRESHOLD", 0.5, 0.1, 0.95)
+            },
             // Clamp durations to reasonable ranges
             min_speech_duration_sec: env_f32_clamped(
                 "CODESCRIBE_VAD_MIN_SPEECH_SEC",
@@ -37,12 +45,11 @@ impl Default for VadConfig {
                 1.0,
             ),
             // Sync with default_env.txt: 1.2s (was 0.8s)
-            max_silence_duration_sec: env_f32_clamped(
-                "CODESCRIBE_VAD_MAX_SILENCE_SEC",
-                1.2,
-                0.1,
-                10.0,
-            ),
+            max_silence_duration_sec: if simple_silence >= 0.0 {
+                simple_silence
+            } else {
+                env_f32_clamped("CODESCRIBE_VAD_MAX_SILENCE_SEC", 1.2, 0.1, 10.0)
+            },
             // Sync with default_env.txt: 60s (was 30s)
             max_utterance_sec: env_f32_clamped(
                 "CODESCRIBE_VAD_MAX_UTTERANCE_SEC",

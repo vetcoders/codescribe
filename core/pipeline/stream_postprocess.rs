@@ -361,7 +361,10 @@ fn env_f32(key: &str, default: f32) -> f32 {
 fn env_bool(key: &str) -> bool {
     std::env::var(key)
         .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .map(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true")
+        })
         .unwrap_or(false)
 }
 

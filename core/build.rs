@@ -41,7 +41,7 @@ fn main() {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .is_some();
-    let no_embed = env::var("CODESCRIBE_NO_EMBED").is_ok() || !embed_model_set;
+    let no_embed = env::var("CODESCRIBE_NO_EMBED").is_ok();
 
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
         let codescribe_dir = dirs::home_dir()
@@ -54,6 +54,8 @@ fn main() {
             let _ = fs::write(&repo_path_file, &manifest_dir);
         }
 
+        let out_dir = env::var("OUT_DIR").unwrap();
+        let dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
         let embed_model = env::var("CODESCRIBE_EMBED_MODEL")
             .ok()
             .map(|v| v.trim().to_string())
@@ -61,9 +63,6 @@ fn main() {
             .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
         let model_path =
             resolve_whisper_embed_model_path(&manifest_dir, &embed_model, DEFAULT_WHISPER_REPO);
-        println!("cargo:rerun-if-changed={}", model_path.display());
-        let out_dir = env::var("OUT_DIR").unwrap();
-        let dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
         let weights_path = if model_path.join("weights.safetensors").exists() {
             model_path.join("weights.safetensors")
         } else {
@@ -73,6 +72,9 @@ fn main() {
             && model_path.join("tokenizer.json").exists()
             && model_path.join("mel_filters.npz").exists()
             && weights_path.exists();
+        if model_exists {
+            println!("cargo:rerun-if-changed={}", model_path.display());
+        }
 
         // TTS model embedding (optional, via CODESCRIBE_EMBED_TTS=1)
         let embed_tts = env::var("CODESCRIBE_EMBED_TTS").is_ok() && !no_embed;
@@ -165,7 +167,7 @@ fn main() {
             println!("cargo:warning=E5 embedding disabled (set CODESCRIBE_EMBED_E5=1 to embed)");
         }
 
-        if is_release && model_exists && !no_embed {
+        if is_release && embed_model_set && model_exists && !no_embed {
             // Release + model found → embed it
             println!(
                 "cargo:warning=Embedding model from: {}",
@@ -261,6 +263,9 @@ fn resolve_e5_embed_model_path(manifest_dir: &str, embed_model: &str, repo: &str
 
 fn hf_cache_bases() -> Vec<PathBuf> {
     let mut out = Vec::new();
+    if let Ok(path) = env::var("CODESCRIBE_HF_CACHE") {
+        out.push(PathBuf::from(path));
+    }
     if let Ok(path) = env::var("HUGGINGFACE_HUB_CACHE") {
         out.push(PathBuf::from(path));
     }
@@ -272,6 +277,10 @@ fn hf_cache_bases() -> Vec<PathBuf> {
     }
     if let Some(home) = dirs::home_dir().map(|h| h.join(".cache").join("huggingface").join("hub")) {
         out.push(home);
+    }
+    if let Some(home) = dirs::home_dir().map(|h| h.join(".codescribe").join("embeddings")) {
+        out.push(home.clone());
+        out.push(home.join("hub"));
     }
     out.sort();
     out.dedup();

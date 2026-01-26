@@ -142,6 +142,14 @@ impl EmbedderEngine {
         let config_path = model_path.join("config.json");
         let tokenizer_path = model_path.join("tokenizer.json");
         let weights_path = model_path.join("model.safetensors");
+        if !weights_path.exists() {
+            let onnx_path = model_path.join("model_optimized.onnx");
+            return Err(anyhow!(
+                "Unsupported embedder format. Expected model.safetensors at {} or ONNX at {}",
+                weights_path.display(),
+                onnx_path.display()
+            ));
+        }
 
         let config_str = safe_path::safe_read_to_string(&config_path)
             .with_context(|| format!("Failed to read {}", config_path.display()))?;
@@ -269,15 +277,17 @@ fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -
     }
 
     if let Some(repo) = repo_override {
-        if let Some(snapshot) = hf_cache::find_snapshot(
+        if let Some(snapshot) = hf_cache::find_snapshot_with_any(
             repo,
-            &["config.json", "tokenizer.json", "model.safetensors"],
+            &["config.json", "tokenizer.json"],
+            &["model.safetensors", "model_optimized.onnx"],
         ) {
             return Ok(snapshot);
         }
-    } else if let Some(snapshot) = hf_cache::find_snapshot(
+    } else if let Some(snapshot) = hf_cache::find_snapshot_with_any(
         DEFAULT_E5_REPO,
-        &["config.json", "tokenizer.json", "model.safetensors"],
+        &["config.json", "tokenizer.json"],
+        &["model.safetensors", "model_optimized.onnx"],
     ) {
         return Ok(snapshot);
     }
@@ -290,9 +300,10 @@ fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -
 }
 
 fn model_files_present(path: &Path) -> bool {
-    path.join("config.json").exists()
-        && path.join("tokenizer.json").exists()
-        && path.join("model.safetensors").exists()
+    let has_config = path.join("config.json").exists() && path.join("tokenizer.json").exists();
+    let has_weights = path.join("model.safetensors").exists();
+    let has_onnx = path.join("model_optimized.onnx").exists();
+    has_config && (has_weights || has_onnx)
 }
 
 fn prepare_tokenizer(
