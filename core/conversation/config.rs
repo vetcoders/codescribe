@@ -46,10 +46,15 @@ impl Default for MoshiConfig {
             .join("models");
 
         Self {
-            model_path: models_dir.join("moshiko-q8"),
-            mimi_path: models_dir.join("mimi"),
-            tokenizer_path: models_dir.join("moshiko-q8").join("tokenizer.json"),
-            temperature: 0.7,
+            // Moshiko LM weights (.gguf quantized)
+            model_path: models_dir.join("moshiko-q8").join("model.q8.gguf"),
+            // Mimi codec (shared with CSM TTS)
+            mimi_path: models_dir.join("csm-1b").join("mimi.safetensors"),
+            // SentencePiece tokenizer
+            tokenizer_path: models_dir
+                .join("moshiko-q8")
+                .join("tokenizer_spm_32k_3.model"),
+            temperature: 0.8,
             top_p: 0.9,
             max_response_frames: 500, // ~40 seconds at 80ms/frame
             streaming: true,
@@ -75,8 +80,10 @@ impl MoshiConfig {
             .join("models");
 
         Self {
-            model_path: models_dir.join("moshika-q8"),
-            tokenizer_path: models_dir.join("moshika-q8").join("tokenizer.json"),
+            model_path: models_dir.join("moshika-q8").join("model.q8.gguf"),
+            tokenizer_path: models_dir
+                .join("moshika-q8")
+                .join("tokenizer_spm_32k_3.model"),
             voice: "moshika".to_string(),
             ..Self::default()
         }
