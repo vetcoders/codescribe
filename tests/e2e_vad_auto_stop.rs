@@ -282,7 +282,7 @@ fn test_vad_probability_threshold() {
 
     // Simulate VAD probability outputs
     let silence_prob = 0.1f32; // Low probability = silence
-    let speech_prob = 0.8f32; // High probability = speech
+    let speech_prob = 0.8f32;  // High probability = speech
 
     assert!(
         silence_prob < threshold,

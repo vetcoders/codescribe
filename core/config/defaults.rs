@@ -59,17 +59,6 @@ pub fn default_restore_clipboard_delay_ms() -> u64 {
     1000
 }
 
-/// DEPRECATED: Silero VAD uses probability threshold (CODESCRIBE_VAD_THRESHOLD)
-/// Kept for backward compatibility with old configs
-pub fn default_silence_db() -> f32 {
-    -45.0
-}
-
-/// Silence duration before auto-stop (synced with VadConfig::max_silence_duration_sec)
-pub fn default_silence_hang_sec() -> f32 {
-    1.2 // Synced with VadConfig default
-}
-
 pub fn default_dump_audio_logs() -> bool {
     true
 }

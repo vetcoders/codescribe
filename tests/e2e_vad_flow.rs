@@ -9,8 +9,8 @@
 //! Created by M&K (c)2026 VetCoders
 
 use codescribe_core::vad::{self, VadConfig};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -483,7 +483,7 @@ fn test_empty_samples_returns_valid_probability() {
     // - If VAD not initialized: returns 1.0 (assume speech - safe default)
     // - If VAD initialized: returns last computed probability (may be stale)
     assert!(
-        (0.0..=1.0).contains(&prob),
+        prob >= 0.0 && prob <= 1.0,
         "Empty samples should return valid probability in [0.0, 1.0], got {}",
         prob
     );
@@ -497,7 +497,7 @@ fn test_very_short_samples() {
 
     // Should not panic, return some value
     assert!(
-        (0.0..=1.0).contains(&prob),
+        prob >= 0.0 && prob <= 1.0,
         "Probability should be in [0,1], got {}",
         prob
     );
@@ -527,7 +527,7 @@ fn test_sustained_load() {
 
     while start.elapsed() < Duration::from_secs(10) {
         // Alternate between speech and silence
-        if (start.elapsed().as_millis() / 500).is_multiple_of(2) {
+        if (start.elapsed().as_millis() / 500) % 2 == 0 {
             vad::speech_probability(&speech, 48000);
             speech_count += 1;
         } else {
