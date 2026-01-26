@@ -253,14 +253,26 @@ impl VadWorker {
         let path = model_path.to_path_buf();
 
         // Shared atomic for worker to update
-        let last_prob = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+        // Initialize to 1.0 (assume speech) - safe default if worker fails
+        let last_prob = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
         let last_prob_writer = Arc::clone(&last_prob);
+
+        // Oneshot channel to confirm model loaded successfully
+        let (init_tx, init_rx) = mpsc::sync_channel::<Result<()>>(1);
 
         thread::spawn(move || {
             let mut vad = match SileroVad::new(&path, config) {
-                Ok(v) => v,
+                Ok(v) => {
+                    // Signal success to main thread
+                    let _ = init_tx.send(Ok(()));
+                    v
+                }
                 Err(e) => {
-                    tracing::error!("Failed to initialize Silero VAD: {}", e);
+                    // Signal failure to main thread
+                    let _ = init_tx.send(Err(anyhow::anyhow!(
+                        "Failed to load Silero VAD model: {}",
+                        e
+                    )));
                     return;
                 }
             };
@@ -287,11 +299,25 @@ impl VadWorker {
             }
         });
 
-        Ok(Self {
-            sender: tx,
-            initialized: AtomicBool::new(true),
-            last_prob,
-        })
+        // Wait for worker to confirm model loaded (with timeout)
+        match init_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(Ok(())) => {
+                debug!("VAD worker initialized successfully");
+                Ok(Self {
+                    sender: tx,
+                    initialized: AtomicBool::new(true),
+                    last_prob,
+                })
+            }
+            Ok(Err(e)) => {
+                // Model failed to load - propagate error
+                Err(e)
+            }
+            Err(_) => {
+                // Timeout waiting for worker
+                anyhow::bail!("Timeout waiting for VAD worker to initialize (30s)")
+            }
+        }
     }
 
     /// Submit audio for VAD processing (non-blocking, fire-and-forget).

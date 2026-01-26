@@ -236,8 +236,9 @@ impl VADSegmenter {
             .round()
             .max(1.0) as usize;
 
-        // Ensure VAD is initialized (auto-inits if not already)
-        let _ = vad::init(&vad::default_model_path());
+        // Ensure VAD is initialized with the passed config (not default!)
+        // Note: if VAD already initialized, this is a no-op (OnceLock)
+        let _ = vad::init_with_config(&vad::default_model_path(), config.clone());
 
         Self {
             pending_samples: Vec::new(),

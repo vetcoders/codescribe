@@ -51,11 +51,12 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `CODESCRIBE_BUFFER_DELAY_MS` – domyślnie `3000` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` – domyślnie `30` (HOT RELOADED)
 
-**VAD (tylko gdy buffered)**
-- `CODESCRIBE_VAD_SILENCE_DB` – domyślnie `-45` (HOT RELOADED)
-- `CODESCRIBE_VAD_SILENCE_SEC` – domyślnie `0.8` (HOT RELOADED)
-- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` – domyślnie `30` (HOT RELOADED)
-- `CODESCRIBE_VAD_PRE_ROLL_MS` – domyślnie `300` (HOT RELOADED)
+**VAD (Silero neural network)**
+- `CODESCRIBE_VAD_THRESHOLD` – próg detekcji mowy 0.0-1.0, domyślnie `0.5` (HOT RELOADED)
+- `CODESCRIBE_VAD_MIN_SPEECH_SEC` – min. czas mowy przed detekcją, domyślnie `0.1` (HOT RELOADED)
+- `CODESCRIBE_VAD_MAX_SILENCE_SEC` – max. cisza przed końcem, domyślnie `1.2` (HOT RELOADED)
+- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` – max. czas wypowiedzi, domyślnie `60` (HOT RELOADED)
+- `CODESCRIBE_VAD_PRE_ROLL_SEC` – pre-roll w sekundach, domyślnie `0.3` (HOT RELOADED)
 
 **Post‑process (gating)**
 - `CODESCRIBE_STREAM_SIMILARITY` – domyślnie z kodu (HOT RELOADED)
@@ -133,10 +134,11 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `CODESCRIBE_BUFFERED_STREAM` (HOT RELOADED)
 - `CODESCRIBE_BUFFER_DELAY_MS` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
-- `CODESCRIBE_VAD_SILENCE_DB` (HOT RELOADED)
-- `CODESCRIBE_VAD_SILENCE_SEC` (HOT RELOADED)
+- `CODESCRIBE_VAD_THRESHOLD` (HOT RELOADED)
+- `CODESCRIBE_VAD_MIN_SPEECH_SEC` (HOT RELOADED)
+- `CODESCRIBE_VAD_MAX_SILENCE_SEC` (HOT RELOADED)
 - `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` (HOT RELOADED)
-- `CODESCRIBE_VAD_PRE_ROLL_MS` (HOT RELOADED)
+- `CODESCRIBE_VAD_PRE_ROLL_SEC` (HOT RELOADED)
 
 ### Post‑process (gating / embeddings)
 - `CODESCRIBE_STREAM_SIMILARITY` (HOT RELOADED)
