@@ -6,6 +6,8 @@
 //! Release builds REQUIRE the Whisper model by default.
 //! Set CODESCRIBE_NO_EMBED=1 to build without embedding (for dev/CI).
 //! TTS model embedding is optional via CODESCRIBE_EMBED_TTS=1.
+//! E5 embedder embedding is ON by default in release builds.
+//! Set CODESCRIBE_EMBED_E5=0 to disable E5 embedding.
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -19,12 +21,16 @@ const DEFAULT_MODEL_NAME: &str = "whisper-large-v3-turbo-mlx-q8";
 /// Default TTS model to embed
 const DEFAULT_TTS_MODEL_NAME: &str = "csm-1b";
 
+/// Default E5 embedder model to embed
+const DEFAULT_E5_MODEL_NAME: &str = "e5-large";
+
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_TTS");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_E5");
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let is_release = profile == "release";
@@ -84,6 +90,56 @@ fn main() {
                 tts_model_path.display()
             );
             println!("cargo:warning=Download with: ./scripts/download-csm.sh");
+        }
+
+        // E5 embedder embedding (default ON in release; disable with CODESCRIBE_EMBED_E5=0)
+        let embed_e5 = env_flag("CODESCRIBE_EMBED_E5", is_release);
+        let e5_model_path = resolve_embed_model_path(&manifest_dir, DEFAULT_E5_MODEL_NAME);
+        let e5_dest_path = Path::new(&out_dir).join("embedded_e5_data.rs");
+        let e5_model_exists = e5_model_path.join("config.json").exists()
+            && e5_model_path.join("tokenizer.json").exists()
+            && e5_model_path.join("model.safetensors").exists();
+
+        if embed_e5 && e5_model_exists {
+            println!(
+                "cargo:warning=Embedding E5 model from: {}",
+                e5_model_path.display()
+            );
+            let e5_content = format!(
+                r#"
+                pub static CONFIG: &[u8] = include_bytes!(r"{}");
+                pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
+                pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
+                "#,
+                e5_model_path.join("config.json").display(),
+                e5_model_path.join("tokenizer.json").display(),
+                e5_model_path.join("model.safetensors").display(),
+            );
+            fs::write(&e5_dest_path, e5_content).expect("Failed to write embedded_e5_data.rs");
+            println!("cargo:rustc-cfg=embed_e5");
+        } else if embed_e5 && !e5_model_exists {
+            if is_release {
+                eprintln!();
+                eprintln!("═══════════════════════════════════════════════════════════════");
+                eprintln!("  ERROR: E5 model not found for embedding!");
+                eprintln!("═══════════════════════════════════════════════════════════════");
+                eprintln!("  Expected: {}", e5_model_path.display());
+                eprintln!();
+                eprintln!("  Solutions:");
+                eprintln!("    1. Download model:  ./scripts/download-e5.sh");
+                eprintln!("    2. Skip embedding:  CODESCRIBE_EMBED_E5=0 cargo build --release");
+                eprintln!("═══════════════════════════════════════════════════════════════");
+                eprintln!();
+                std::process::exit(1);
+            } else {
+                println!(
+                    "cargo:warning=E5 model not found at: {}",
+                    e5_model_path.display()
+                );
+                println!("cargo:warning=Download with: ./scripts/download-e5.sh");
+            }
+        } else if !embed_e5 && is_release {
+            println!("cargo:warning=CODESCRIBE_EMBED_E5=0 - skipping E5 embedding");
         }
 
         if is_release && model_exists {
@@ -148,4 +204,18 @@ fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
     }
 
     Path::new(manifest_dir).join("models").join(embed_model)
+}
+
+fn env_flag(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return default;
+            }
+            let v = trimmed.to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off" || v == "no")
+        }
+        Err(_) => default,
+    }
 }

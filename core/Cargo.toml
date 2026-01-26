@@ -31,7 +31,7 @@ candle-nn = "0.9"
 tokenizers = "0.22"
 indicatif = "0.18"
 zip = "0.6"
-# ndarray 0.17 required to match fastembed/ort dependency
+# ndarray 0.17 required by ndarray-npy 0.10
 ndarray = "0.17"
 # Disable default features to avoid zip dep (we only need .npy, not .npz archives)
 ndarray-npy = { version = "0.10", default-features = false }
@@ -48,17 +48,16 @@ symphonia = { version = "0.5", features = ["all", "mp3", "pcm", "isomp4", "alac"
 
 # Text/embeddings
 regex = "1"
-fastembed = { version = "5.8.1", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries"] }
 
 # Config/paths
 directories = "6"
 shellexpand = "3"
 dotenvy = "0.15"
 
-# Voice Activity Detection - custom Silero wrapper (shares ort with fastembed)
+# Voice Activity Detection - custom Silero wrapper
 # Model: silero_vad.onnx from https://github.com/snakers4/silero-vad
-# NOTE: fastembed enables ort-download-binaries - we just need to match version
-ort = { version = "=2.0.0-rc.11", default-features = false, features = ["download-binaries"] }
+# NOTE: ort-download-binaries ensures runtime is available without manual install
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "download-binaries", "tls-native"] }
 
 # Moshi - conversational voice AI (Kyutai Labs)
 moshi = { git = "https://github.com/kyutai-labs/moshi", branch = "main", features = ["metal"] }
@@ -87,4 +86,4 @@ dirs = "6"
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
 # embed_model is set by build.rs when Whisper model is available
 # embed_tts is set by build.rs when TTS model is available (CODESCRIBE_EMBED_TTS=1)
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)'] }
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)', 'cfg(embed_e5)'] }

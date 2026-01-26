@@ -124,7 +124,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 | HTTP Client      | reqwest                           | LLM API calls              |
 | API Format       | openai-harmony                    | Responses API support      |
 | Security         | cap-std                           | Path safety hardening      |
-| Embeddings       | fastembed                         | Local vector utilities     |
+| Embeddings       | candle-transformers (E5)          | Local vector utilities     |
 
 ## Installation
 

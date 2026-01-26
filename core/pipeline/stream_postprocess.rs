@@ -1,11 +1,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-use anyhow::Result;
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -23,8 +20,6 @@ const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.93;
 const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
 const MAX_EMBED_CHARS: usize = 512;
 const MAX_DROPS_IN_ROW: u8 = 2;
-
-static EMBEDDER: OnceLock<Mutex<Option<TextEmbedding>>> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct LexiconEntry {
@@ -243,25 +238,14 @@ impl SemanticGate {
             return None;
         }
 
-        let embedder = EMBEDDER.get_or_init(|| Mutex::new(None));
-        let mut guard = embedder.lock().ok()?;
-
-        if guard.is_none() {
-            match init_embedder() {
-                Ok(model) => {
-                    *guard = Some(model);
-                }
-                Err(e) => {
-                    warn!("Failed to initialize ParaphraseMLMiniLM embedder: {}", e);
-                    return None;
-                }
+        let input = truncate_for_embedding(text);
+        match crate::embedder::embed(&input) {
+            Ok(vec) => Some(vec),
+            Err(e) => {
+                warn!("Failed to embed text for semantic gate: {}", e);
+                None
             }
         }
-
-        let model = guard.as_mut()?;
-        let input = truncate_for_embedding(text);
-        let embeddings = model.embed(vec![input.as_str()], None).ok()?;
-        embeddings.into_iter().next()
     }
 }
 
@@ -466,23 +450,6 @@ fn is_suspicious(text: &str) -> bool {
     let unique = tokens.iter().collect::<HashSet<_>>();
     let ratio = unique.len() as f32 / tokens.len() as f32;
     ratio < 0.5 || crate::ai_formatting::has_repetition_loop(text)
-}
-
-fn init_embedder() -> Result<TextEmbedding> {
-    let cache_dir = embedding_cache_dir();
-    std::fs::create_dir_all(&cache_dir)?;
-
-    info!("Initializing ParaphraseMLMiniLM embedder (this can take a while on first run)");
-    let options = TextInitOptions::new(EmbeddingModel::ParaphraseMLMiniLML12V2Q)
-        .with_max_length(256)
-        .with_cache_dir(cache_dir)
-        .with_show_download_progress(true);
-
-    TextEmbedding::try_new(options)
-}
-
-fn embedding_cache_dir() -> PathBuf {
-    Config::config_dir().join("embeddings")
 }
 
 fn truncate_for_embedding(text: &str) -> String {
