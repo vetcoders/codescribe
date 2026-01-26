@@ -430,7 +430,7 @@ impl RecordingController {
                             crate::voice_chat_ui::add_voice_chat_error_message(
                                 &format!("Moshi init failed: {}", e),
                             );
-                            return Err(e.into());
+                            return Err(e);
                         }
                         *engine_guard = Some(engine);
                         info!("ConversationEngine initialized successfully");
@@ -440,7 +440,7 @@ impl RecordingController {
                         crate::voice_chat_ui::add_voice_chat_error_message(
                             &format!("Moshi unavailable: {}", e),
                         );
-                        return Err(e.into());
+                        return Err(e);
                     }
                 }
             }
@@ -600,11 +600,12 @@ impl RecordingController {
                 last_response_check = std::time::Instant::now();
 
                 let mut engine_guard = engine.lock().await;
-                if let Some(ref mut eng) = *engine_guard {
-                    if let Some(response_samples) = eng.get_response() {
-                        let response_len = response_samples.len();
-                        let response_rate = eng.sample_rate();
-                        drop(engine_guard); // Release lock before blocking playback
+                if let Some(ref mut eng) = *engine_guard
+                    && let Some(response_samples) = eng.get_response()
+                {
+                    let response_len = response_samples.len();
+                    let response_rate = eng.sample_rate();
+                    drop(engine_guard); // Release lock before blocking playback
 
                         info!(
                             "Playing response: {} samples ({:.2}s @ {}Hz)",
@@ -645,10 +646,10 @@ impl RecordingController {
 
                                 // Block this thread for playback, but don't block the async loop
                                 let player_guard = handle.block_on(player_clone.lock());
-                                if let Some(ref p) = *player_guard {
-                                    if let Err(e) = p.play(&response_samples, response_rate) {
-                                        warn!("AudioPlayer.play error: {}", e);
-                                    }
+                                if let Some(ref p) = *player_guard
+                                    && let Err(e) = p.play(&response_samples, response_rate)
+                                {
+                                    warn!("AudioPlayer.play error: {}", e);
                                 }
                                 // Only update UI if:
                                 // 1. Conversation wasn't stopped (stop_flag)
@@ -667,7 +668,6 @@ impl RecordingController {
                             warn!("spawn_blocking panicked - resetting playback_active");
                             playback_active_reset.store(false, Ordering::SeqCst);
                         }
-                    }
                 }
             }
         }
