@@ -358,10 +358,11 @@ impl ConversationEngine {
         }
 
         // If user is speaking, encode audio
-        if state == ConversationState::UserSpeaking && is_speech {
-            if let Some(codes) = self.encode_audio(&frame)? {
-                self.pending_user_codes.push(codes);
-            }
+        if state == ConversationState::UserSpeaking
+            && is_speech
+            && let Some(codes) = self.encode_audio(&frame)?
+        {
+            self.pending_user_codes.push(codes);
         }
 
         // If turn ended, start generating response
