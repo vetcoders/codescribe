@@ -3,11 +3,9 @@
 //! Exports embedded model data and configuration.
 //! Generates embedded_model_data.rs and embedded_tts_data.rs in OUT_DIR for release builds.
 //!
-//! Release builds REQUIRE the Whisper model by default.
-//! Set CODESCRIBE_NO_EMBED=1 to build without embedding (for dev/CI).
-//! TTS model embedding is optional via CODESCRIBE_EMBED_TTS=1.
-//! E5 embedder embedding is ON by default in release builds.
-//! Set CODESCRIBE_EMBED_E5=0 to disable E5 embedding.
+//! Release builds DO NOT embed models by default (keeps binary <3GB).
+//! Opt-in with CODESCRIBE_EMBED_MODEL / CODESCRIBE_EMBED_E5 / CODESCRIBE_EMBED_TTS.
+//! Use CODESCRIBE_NO_EMBED=1 to force skipping even if opt-ins are set.
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -39,7 +37,11 @@ fn main() {
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let is_release = profile == "release";
-    let no_embed = env::var("CODESCRIBE_NO_EMBED").is_ok();
+    let embed_model_set = env::var("CODESCRIBE_EMBED_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_some();
+    let no_embed = env::var("CODESCRIBE_NO_EMBED").is_ok() || !embed_model_set;
 
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
         let codescribe_dir = dirs::home_dir()
@@ -73,7 +75,7 @@ fn main() {
             && weights_path.exists();
 
         // TTS model embedding (optional, via CODESCRIBE_EMBED_TTS=1)
-        let embed_tts = env::var("CODESCRIBE_EMBED_TTS").is_ok();
+        let embed_tts = env::var("CODESCRIBE_EMBED_TTS").is_ok() && !no_embed;
         let tts_model_path =
             resolve_tts_embed_model_path(&manifest_dir, DEFAULT_TTS_MODEL_NAME, DEFAULT_TTS_REPO);
         let tts_dest_path = Path::new(&out_dir).join("embedded_tts_data.rs");
@@ -122,8 +124,8 @@ fn main() {
             );
         }
 
-        // E5 embedder embedding (default ON in release; disable with CODESCRIBE_EMBED_E5=0)
-        let embed_e5 = env_flag("CODESCRIBE_EMBED_E5", is_release);
+        // E5 embedder embedding (opt-in only)
+        let embed_e5 = env_flag("CODESCRIBE_EMBED_E5", false) && !no_embed;
         let e5_repo = env::var("CODESCRIBE_EMBEDDER_REPO")
             .ok()
             .map(|v| v.trim().to_string())
@@ -154,31 +156,16 @@ fn main() {
             fs::write(&e5_dest_path, e5_content).expect("Failed to write embedded_e5_data.rs");
             println!("cargo:rustc-cfg=embed_e5");
         } else if embed_e5 && !e5_model_exists {
-            if is_release {
-                eprintln!();
-                eprintln!("═══════════════════════════════════════════════════════════════");
-                eprintln!("  ERROR: E5 model not found for embedding!");
-                eprintln!("═══════════════════════════════════════════════════════════════");
-                eprintln!("  Expected: {}", e5_model_path.display());
-                eprintln!();
-                eprintln!("  Solutions:");
-                eprintln!("    1. Download model:  hf download {}", e5_repo);
-                eprintln!("    2. Skip embedding:  CODESCRIBE_EMBED_E5=0 cargo build --release");
-                eprintln!("═══════════════════════════════════════════════════════════════");
-                eprintln!();
-                std::process::exit(1);
-            } else {
-                println!(
-                    "cargo:warning=E5 model not found at: {}",
-                    e5_model_path.display()
-                );
-                println!("cargo:warning=Download with: hf download {}", e5_repo);
-            }
-        } else if !embed_e5 && is_release {
-            println!("cargo:warning=CODESCRIBE_EMBED_E5=0 - skipping E5 embedding");
+            println!(
+                "cargo:warning=E5 model not found at: {}",
+                e5_model_path.display()
+            );
+            println!("cargo:warning=Download with: hf download {}", e5_repo);
+        } else if !embed_e5 {
+            println!("cargo:warning=E5 embedding disabled (set CODESCRIBE_EMBED_E5=1 to embed)");
         }
 
-        if is_release && model_exists {
+        if is_release && model_exists && !no_embed {
             // Release + model found → embed it
             println!(
                 "cargo:warning=Embedding model from: {}",
@@ -202,25 +189,11 @@ fn main() {
                 "cargo:rustc-env=CODESCRIBE_MODEL_DIR={}",
                 model_path.display()
             );
-        } else if is_release && !model_exists && !no_embed {
-            // Release + no model + no opt-out → HARD FAIL
-            eprintln!();
-            eprintln!("═══════════════════════════════════════════════════════════════");
-            eprintln!("  ERROR: Whisper model not found for embedding!");
-            eprintln!("═══════════════════════════════════════════════════════════════");
-            eprintln!("  Expected: {}", model_path.display());
-            eprintln!();
-            eprintln!("  Solutions:");
-            eprintln!(
-                "    1. Download model:  hf download {}",
-                DEFAULT_WHISPER_REPO
+        } else if is_release {
+            println!(
+                "cargo:warning=Whisper embedding disabled (set CODESCRIBE_EMBED_MODEL=1 to embed)"
             );
-            eprintln!("    2. Skip embedding:  CODESCRIBE_NO_EMBED=1 cargo build --release");
-            eprintln!();
-            eprintln!("  Note: Without embedded model, set CODESCRIBE_MODEL_PATH at runtime.");
-            eprintln!("═══════════════════════════════════════════════════════════════");
-            eprintln!();
-            std::process::exit(1);
+            println!("cargo:warning=Runtime requires CODESCRIBE_MODEL_PATH or HF cache");
         } else {
             // Debug build OR explicit no-embed → skip embedding
             if is_release && no_embed {
@@ -286,21 +259,35 @@ fn resolve_e5_embed_model_path(manifest_dir: &str, embed_model: &str, repo: &str
     resolve_embed_model_path(manifest_dir, embed_model)
 }
 
-fn hf_cache_base() -> Option<PathBuf> {
+fn hf_cache_bases() -> Vec<PathBuf> {
+    let mut out = Vec::new();
     if let Ok(path) = env::var("HUGGINGFACE_HUB_CACHE") {
-        return Some(PathBuf::from(path));
+        out.push(PathBuf::from(path));
     }
     if let Ok(path) = env::var("HF_HUB_CACHE") {
-        return Some(PathBuf::from(path));
+        out.push(PathBuf::from(path));
     }
     if let Ok(path) = env::var("HF_HOME") {
-        return Some(PathBuf::from(path).join("hub"));
+        out.push(PathBuf::from(path).join("hub"));
     }
-    dirs::home_dir().map(|h| h.join(".cache").join("huggingface").join("hub"))
+    if let Some(home) = dirs::home_dir().map(|h| h.join(".cache").join("huggingface").join("hub")) {
+        out.push(home);
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn find_hf_snapshot(repo: &str) -> Option<PathBuf> {
-    let base = hf_cache_base()?;
+    for base in hf_cache_bases() {
+        if let Some(snapshot) = find_hf_snapshot_in_base(&base, repo) {
+            return Some(snapshot);
+        }
+    }
+    None
+}
+
+fn find_hf_snapshot_in_base(base: &PathBuf, repo: &str) -> Option<PathBuf> {
     let repo_dir = base.join(format!("models--{}", repo.replace('/', "--")));
     let snapshots_dir = repo_dir.join("snapshots");
 
@@ -309,7 +296,7 @@ fn find_hf_snapshot(repo: &str) -> Option<PathBuf> {
     } else {
         let target = repo.to_ascii_lowercase();
         let mut matched: Option<PathBuf> = None;
-        if let Ok(entries) = fs::read_dir(&base) {
+        if let Ok(entries) = fs::read_dir(base) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
@@ -336,12 +323,6 @@ fn find_hf_snapshot(repo: &str) -> Option<PathBuf> {
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
-            continue;
-        }
-        let has_files = path.join("config.json").exists()
-            && path.join("tokenizer.json").exists()
-            && path.join("model.safetensors").exists();
-        if !has_files {
             continue;
         }
         let modified = entry

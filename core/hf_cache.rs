@@ -21,7 +21,41 @@ pub fn find_snapshot_with_any(
     required_all: &[&str],
     required_any: &[&str],
 ) -> Option<PathBuf> {
-    let base = cache_base()?;
+    for base in cache_bases() {
+        if let Some(snapshot) = find_snapshot_in_base(&base, repo, required_all, required_any) {
+            return Some(snapshot);
+        }
+    }
+    None
+}
+
+fn cache_bases() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(path) = env::var("HUGGINGFACE_HUB_CACHE") {
+        out.push(PathBuf::from(path));
+    }
+    if let Ok(path) = env::var("HF_HUB_CACHE") {
+        out.push(PathBuf::from(path));
+    }
+    if let Ok(path) = env::var("HF_HOME") {
+        out.push(PathBuf::from(path).join("hub"));
+    }
+    if let Some(home) =
+        BaseDirs::new().map(|d| d.home_dir().join(".cache").join("huggingface").join("hub"))
+    {
+        out.push(home);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn find_snapshot_in_base(
+    base: &PathBuf,
+    repo: &str,
+    required_all: &[&str],
+    required_any: &[&str],
+) -> Option<PathBuf> {
     let repo_dir = base.join(format!("models--{}", repo.replace('/', "--")));
     let snapshots_dir = repo_dir.join("snapshots");
 
@@ -31,7 +65,7 @@ pub fn find_snapshot_with_any(
         // Case-insensitive repo match fallback (HF cache uses original casing)
         let target = repo.to_ascii_lowercase();
         let mut matched: Option<PathBuf> = None;
-        if let Ok(entries) = fs::read_dir(&base) {
+        if let Ok(entries) = fs::read_dir(base) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
@@ -77,17 +111,4 @@ pub fn find_snapshot_with_any(
     }
 
     best.map(|(_, p)| p)
-}
-
-fn cache_base() -> Option<PathBuf> {
-    if let Ok(path) = env::var("HUGGINGFACE_HUB_CACHE") {
-        return Some(PathBuf::from(path));
-    }
-    if let Ok(path) = env::var("HF_HUB_CACHE") {
-        return Some(PathBuf::from(path));
-    }
-    if let Ok(path) = env::var("HF_HOME") {
-        return Some(PathBuf::from(path).join("hub"));
-    }
-    BaseDirs::new().map(|d| d.home_dir().join(".cache").join("huggingface").join("hub"))
 }
