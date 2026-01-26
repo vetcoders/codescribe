@@ -70,7 +70,9 @@ nohup.out.backup
 
 # CodeScribe
 .codescribe/state/
-*ode*cribe_memory_*
+codescribe_memory_*.md
+codescribe_memory_*.json
 docs/runtime-diagnosis.md
-*.log
+/logs/*.log
+*.debug.log
 /core/models

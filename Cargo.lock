@@ -3279,6 +3279,7 @@ dependencies = [
 [[package]]
 name = "moshi"
 version = "0.6.4"
+source = "git+https://github.com/kyutai-labs/moshi?branch=main#fa205be69cf69b1a7e8cd9f815dbb9c130f605ef"
 dependencies = [
  "candle-core",
  "candle-nn",

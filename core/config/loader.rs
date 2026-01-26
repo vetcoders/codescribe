@@ -154,11 +154,10 @@ impl Config {
         // VAD config is managed by core/vad/config.rs (CODESCRIBE_VAD_* env vars)
         // No legacy SILENCE_* variables - single source of truth
 
-        // History (always on to avoid data loss)
+        // History (default: on to avoid data loss)
         if let Ok(val) = std::env::var("HISTORY_ENABLED") {
             self.history_enabled = val.parse().unwrap_or(true);
         }
-        self.history_enabled = true;
 
         // Backends - LLM
         // LLM_API_KEY for cloud providers
@@ -201,11 +200,10 @@ impl Config {
             self.start_at_login = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
 
-        // Debugging (always on to keep paired .wav with transcripts)
+        // Debugging (default: on to keep paired .wav with transcripts)
         if let Ok(val) = std::env::var("DUMP_AUDIO_LOGS") {
             self.dump_audio_logs = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
-        self.dump_audio_logs = true;
     }
 
     /// Save a single configuration value to .env file.

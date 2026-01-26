@@ -40,8 +40,8 @@ pub fn is_conversation_session() -> bool {
 /// Route transcription delta to transcription overlay (ALWAYS)
 /// Chat is a CONSUMER of transcription, not the display target.
 pub fn route_transcription_delta(delta: &str) {
-    // Transkrypcja ZAWSZE idzie do transcription_overlay
-    // Voice chat jest KONSUMENTEM - user decyduje kiedy wysłać do AI
+    // Transcription ALWAYS goes to transcription_overlay
+    // Voice chat is a CONSUMER - user decides when to send to AI
     crate::append_transcription_delta(delta);
 }
 
