@@ -36,6 +36,8 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `SOUND_VOLUME` – domyślnie `1.0` (RESTART NEEDED)
 
 **Audio / silence**
+- `SILENCE_DB` – domyślnie `-45` (RESTART NEEDED)
+- `SILENCE_HANG_SEC` – domyślnie `1.5` (RESTART NEEDED)
 - `AUTO_SILENCE` – domyślnie `0` (RESTART NEEDED)
 
 **Historia / storage**
@@ -50,13 +52,11 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `CODESCRIBE_TYPING_CPS` – domyślnie `30` (HOT RELOADED)
 
 **VAD (Silero neural network)**
-- `CODESCRIBE_VAD_THRESHOLD` – próg detekcji mowy 0.0-1.0, domyślnie `0.5` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MIN_SPEECH_SEC` – min. czas mowy przed detekcją, domyślnie `0.1` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_SILENCE_SEC` – max. cisza przed końcem, domyślnie `1.2` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` – max. czas wypowiedzi, domyślnie `60` (RESTART NEEDED)
-- `CODESCRIBE_VAD_PRE_ROLL_SEC` – pre-roll w sekundach, domyślnie `0.3` (RESTART NEEDED)
-
-> **Uwaga:** VAD config jest read-only po inicjalizacji (OnceLock). Zmiana wymaga restartu aplikacji.
+- `CODESCRIBE_VAD_THRESHOLD` – próg detekcji mowy 0.0-1.0, domyślnie `0.5` (HOT RELOADED)
+- `CODESCRIBE_VAD_MIN_SPEECH_SEC` – min. czas mowy przed detekcją, domyślnie `0.1` (HOT RELOADED)
+- `CODESCRIBE_VAD_MAX_SILENCE_SEC` – max. cisza przed końcem, domyślnie `1.2` (HOT RELOADED)
+- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` – max. czas wypowiedzi, domyślnie `60` (HOT RELOADED)
+- `CODESCRIBE_VAD_PRE_ROLL_SEC` – pre-roll w sekundach, domyślnie `0.3` (HOT RELOADED)
 
 **Post‑process (gating)**
 - `CODESCRIBE_STREAM_SIMILARITY` – domyślnie z kodu (HOT RELOADED)
@@ -120,7 +120,7 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 
 ### Audio
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)
-- `CODESCRIBE_VAD_THRESHOLD`, `CODESCRIBE_VAD_MAX_SILENCE_SEC`, `AUTO_SILENCE` (RESTART NEEDED)
+- `SILENCE_DB`, `SILENCE_HANG_SEC`, `AUTO_SILENCE` (RESTART NEEDED)
 
 ### Transkrypcja (local/cloud)
 - `USE_LOCAL_STT` (RESTART NEEDED)
@@ -134,11 +134,11 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `CODESCRIBE_BUFFERED_STREAM` (HOT RELOADED)
 - `CODESCRIBE_BUFFER_DELAY_MS` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
-- `CODESCRIBE_VAD_THRESHOLD` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MIN_SPEECH_SEC` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_SILENCE_SEC` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` (RESTART NEEDED)
-- `CODESCRIBE_VAD_PRE_ROLL_SEC` (RESTART NEEDED)
+- `CODESCRIBE_VAD_THRESHOLD` (HOT RELOADED)
+- `CODESCRIBE_VAD_MIN_SPEECH_SEC` (HOT RELOADED)
+- `CODESCRIBE_VAD_MAX_SILENCE_SEC` (HOT RELOADED)
+- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` (HOT RELOADED)
+- `CODESCRIBE_VAD_PRE_ROLL_SEC` (HOT RELOADED)
 
 ### Post‑process (gating / embeddings)
 - `CODESCRIBE_STREAM_SIMILARITY` (HOT RELOADED)
