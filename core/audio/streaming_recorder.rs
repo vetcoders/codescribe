@@ -5,6 +5,8 @@ use crate::stt::whisper::append_with_overlap_dedup;
 use crate::stt::whisper::singleton::engine as get_engine;
 use crate::vad;
 use anyhow::{Context, Result, anyhow};
+use lazy_static::lazy_static;
+use regex::Regex;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::{fs::OpenOptions, io::Write, path::Path};
@@ -18,6 +20,11 @@ const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for context
 // VAD config now centralized in core/vad/config.rs (CODESCRIBE_VAD_* env vars)
 const DEFAULT_BUFFER_DELAY_MS: u64 = 3000;
 const DEFAULT_TYPING_CPS: f32 = 30.0;
+const DEFAULT_EMIT_WORDS_MAX: usize = 3;
+
+lazy_static! {
+    static ref TOKEN_RE: Regex = Regex::new(r"\s+|\S+\s*").expect("token regex");
+}
 
 pub type StreamDeltaCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -348,10 +355,11 @@ struct BufferedEmitter {
     queue: VecDeque<String>,
     initial_delay_ms: u64,
     typing_speed_cps: f32,
+    emit_words_max: usize,
     first_output_at: Option<Instant>,
     current_segment: Option<String>,
-    current_index: usize,
-    current_len: usize,
+    current_tokens: Vec<String>,
+    current_token_index: usize,
     delta_callback: Option<StreamDeltaCallback>,
     transcript_buffer: Arc<Mutex<String>>,
     stream_log_path: Option<std::path::PathBuf>,
@@ -368,11 +376,15 @@ impl BufferedEmitter {
         Self {
             queue: VecDeque::new(),
             initial_delay_ms: env_u64("CODESCRIBE_BUFFER_DELAY_MS", DEFAULT_BUFFER_DELAY_MS),
+            // In buffered mode we emit "tokens" (word-level) instead of chars.
+            // CODESCRIBE_TYPING_CPS is interpreted as tokens-per-second.
             typing_speed_cps: env_f32("CODESCRIBE_TYPING_CPS", DEFAULT_TYPING_CPS).max(5.0),
+            emit_words_max: env_usize("CODESCRIBE_EMIT_WORDS_MAX", DEFAULT_EMIT_WORDS_MAX)
+                .clamp(1, 10),
             first_output_at: None,
             current_segment: None,
-            current_index: 0,
-            current_len: 0,
+            current_tokens: Vec::new(),
+            current_token_index: 0,
             delta_callback,
             transcript_buffer,
             stream_log_path,
@@ -408,30 +420,19 @@ impl BufferedEmitter {
 
         if self.current_segment.is_none() {
             self.current_segment = self.queue.pop_front();
-            self.current_index = 0;
-            self.current_len = self
+            self.current_tokens = self
                 .current_segment
-                .as_ref()
-                .map(|segment| segment.chars().count())
-                .unwrap_or(0);
+                .as_deref()
+                .map(tokenize_for_emit)
+                .unwrap_or_default();
+            self.current_token_index = 0;
         }
 
-        if let Some(segment) = self.current_segment.as_ref()
-            && let Some(ch) = segment.chars().nth(self.current_index)
-        {
-            let delta = ch.to_string();
-            self.current_index += 1;
+        if let Some(delta) = self.next_emit_chunk() {
             self.has_output = true;
-
-            if self.current_index >= self.current_len {
-                self.current_segment = None;
-                self.current_index = 0;
-                self.current_len = 0;
-            }
-
             {
                 let mut buffer = self.transcript_buffer.lock().await;
-                buffer.push_str(&delta);
+                apply_delta_to_string(&mut buffer, &delta);
             }
 
             if let Some(callback) = &self.delta_callback {
@@ -455,6 +456,47 @@ impl BufferedEmitter {
 
     fn finish(&mut self) {
         self.finished = true;
+    }
+
+    fn next_emit_chunk(&mut self) -> Option<String> {
+        let _ = self.current_segment.as_ref()?;
+        if self.current_token_index >= self.current_tokens.len() {
+            self.current_segment = None;
+            self.current_tokens.clear();
+            self.current_token_index = 0;
+            return None;
+        }
+
+        let mut chunk = String::new();
+        let mut words = 0usize;
+
+        while self.current_token_index < self.current_tokens.len() {
+            let token = &self.current_tokens[self.current_token_index];
+            chunk.push_str(token);
+            if token.chars().any(|c| !c.is_whitespace()) {
+                words += 1;
+            }
+            self.current_token_index += 1;
+
+            if words >= self.emit_words_max {
+                if self.current_token_index < self.current_tokens.len() {
+                    let next = &self.current_tokens[self.current_token_index];
+                    if next.chars().all(|c| c.is_whitespace()) {
+                        chunk.push_str(next);
+                        self.current_token_index += 1;
+                    }
+                }
+                break;
+            }
+        }
+
+        if self.current_token_index >= self.current_tokens.len() {
+            self.current_segment = None;
+            self.current_tokens.clear();
+            self.current_token_index = 0;
+        }
+
+        if chunk.is_empty() { None } else { Some(chunk) }
     }
 }
 
@@ -608,18 +650,20 @@ async fn process_chunk(
                 debug!("Chunk transcribed: '{}'", text.trim());
                 if let Some(cleaned) = postprocessor.process(&text) {
                     let mut buffer = transcript_buffer.lock().await;
-                    let before_len = buffer.len();
+                    let before = buffer.clone();
                     append_with_overlap_dedup(&mut buffer, &cleaned);
-                    if let Some(delta) = buffer.get(before_len..)
-                        && !delta.trim().is_empty()
-                    {
-                        if let Some(callback) = delta_callback {
-                            callback(delta);
-                        }
+                    if let Some(delta) = build_redacted_delta(&before, &buffer) {
+                        let has_effect =
+                            delta.chars().any(|c| c == '\u{0008}' || !c.is_whitespace());
+                        if has_effect {
+                            if let Some(callback) = delta_callback {
+                                callback(&delta);
+                            }
 
-                        // Log to file if enabled
-                        if let Some(path) = stream_log_path {
-                            let _ = append_to_stream_log(path, delta);
+                            // Log to file if enabled
+                            if let Some(path) = stream_log_path {
+                                let _ = append_to_stream_log(path, &delta);
+                            }
                         }
                     }
                 } else {
@@ -650,6 +694,57 @@ fn stream_log_path() -> Option<std::path::PathBuf> {
     }
 
     None
+}
+
+fn build_redacted_delta(before: &str, after: &str) -> Option<String> {
+    if before == after {
+        return None;
+    }
+
+    let mut prefix_len = 0usize;
+    for (a, b) in before.chars().zip(after.chars()) {
+        if a == b {
+            prefix_len += a.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    let removed = before[prefix_len..].chars().count();
+    let mut delta = String::new();
+    for _ in 0..removed {
+        delta.push('\u{0008}');
+    }
+    delta.push_str(&after[prefix_len..]);
+    Some(delta)
+}
+
+fn apply_delta_to_string(target: &mut String, delta: &str) {
+    for ch in delta.chars() {
+        if ch == '\u{0008}' {
+            target.pop();
+        } else {
+            target.push(ch);
+        }
+    }
+}
+
+fn tokenize_for_emit(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for m in TOKEN_RE.find_iter(text) {
+        tokens.push(m.as_str().to_string());
+    }
+    if tokens.is_empty() && !text.is_empty() {
+        tokens.push(text.to_string());
+    }
+    tokens
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
 }
 
 fn append_to_stream_log(path: &Path, text: &str) -> std::io::Result<()> {

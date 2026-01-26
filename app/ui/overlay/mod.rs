@@ -961,8 +961,18 @@ pub fn append_transcription_delta(delta: &str) {
 
 fn append_transcription_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.accumulated_text.push_str(delta);
+    apply_delta_with_backspace(&mut state.accumulated_text, delta);
     update_overlay_text_and_layout(&mut state);
+}
+
+fn apply_delta_with_backspace(target: &mut String, delta: &str) {
+    for ch in delta.chars() {
+        if ch == '\u{0008}' {
+            target.pop();
+        } else {
+            target.push(ch);
+        }
+    }
 }
 
 /// Set the full text in the overlay

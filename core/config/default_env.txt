@@ -37,6 +37,8 @@ CODESCRIBE_STREAM_CHUNK_SEC=3.0
 CODESCRIBE_STREAM_OVERLAP_RATIO=0.2
 CODESCRIBE_BUFFER_DELAY_MS=1800
 CODESCRIBE_TYPING_CPS=35
+# Number of words emitted per tick (buffered mode)
+CODESCRIBE_EMIT_WORDS_MAX=3
 # VAD config (centralized in core/vad/config.rs)
 CODESCRIBE_VAD_THRESHOLD=0.5
 CODESCRIBE_VAD_MIN_SPEECH_SEC=0.1
@@ -47,7 +49,7 @@ CODESCRIBE_STREAM_SIMILARITY=0.90
 CODESCRIBE_STREAM_NOVELTY=0.20
 
 # ➡️ fewer cuts, more natural phrases, stable overlay.
-———
+# ---------------------------------------------------------------------------
 
 ## ✅ B) "Almost live" (streaming without VAD)
 
