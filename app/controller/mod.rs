@@ -328,6 +328,20 @@ impl RecordingController {
                     *self.hold_mode.write().await = event.hold_mode;
                     match event.hold_mode {
                         HoldMode::Raw => {
+                            // If we're already in an assistive session (Chat/Selection) and the user
+                            // releases Shift/Cmd while still holding Ctrl, the event tap will emit a
+                            // HoldUpdate back to Raw. We *do not* want to flip the UI back to the
+                            // transcription overlay mid-session (it looks like the chat "blinks"
+                            // and then disappears).
+                            //
+                            // We treat assistive mode as "latched" for the duration of a recording.
+                            if matches!(current_state, State::RecHold | State::RecToggle)
+                                && *self.assistive_mode.read().await
+                            {
+                                debug!("Ignoring Raw hold-mode update during assistive session");
+                                return Ok(());
+                            }
+
                             *self.assistive_mode.write().await = false;
                             *self.assistive_context.write().await = None;
                             *self.force_raw_mode.write().await = true;
