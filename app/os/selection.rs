@@ -95,6 +95,32 @@ pub fn capture_assistive_context() -> AssistiveContext {
     }
 }
 
+/// Capture only the frontmost app name (no selection, no clipboard).
+///
+/// This is used to make paste actions (⇲) target the right app even when we're not in Assistive
+/// selection mode.
+pub fn capture_frontmost_app_only() -> AssistiveContext {
+    if cfg!(test) {
+        return AssistiveContext::default();
+    }
+
+    if !env_flag("ASSISTIVE_CONTEXT_ENABLED", true) {
+        return AssistiveContext::default();
+    }
+
+    let include_app = env_flag("ASSISTIVE_CONTEXT_INCLUDE_APP", true);
+    let frontmost_app = if include_app {
+        frontmost_app_name()
+    } else {
+        None
+    };
+
+    AssistiveContext {
+        frontmost_app,
+        selected_text: None,
+    }
+}
+
 /// Build the LLM input for assistive mode, including optional selection context.
 pub fn build_assistive_input(user_voice_text: &str, ctx: &AssistiveContext) -> String {
     let instruction = user_voice_text.trim();

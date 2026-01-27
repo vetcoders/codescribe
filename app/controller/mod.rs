@@ -42,7 +42,9 @@ use crate::audio::streaming_recorder::StreamingRecorder;
 use crate::config::Config;
 use crate::config::models::ModelManager;
 use crate::os::clipboard;
-use crate::os::selection::{AssistiveContext, build_assistive_input, capture_assistive_context};
+use crate::os::selection::{
+    AssistiveContext, build_assistive_input, capture_assistive_context, capture_frontmost_app_only,
+};
 use crate::tray::{TrayStatus, update_tray_status};
 use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
@@ -314,8 +316,14 @@ impl RecordingController {
 
             // Best-effort: if we upgrade mid-recording, switch UI and capture context once.
             if matches!(current_state, State::RecHold | State::RecToggle) {
-                let has_ctx = self.assistive_context.read().await.is_some();
-                if !has_ctx {
+                let has_selection = self
+                    .assistive_context
+                    .read()
+                    .await
+                    .as_ref()
+                    .and_then(|c| c.selected_text.as_ref())
+                    .is_some();
+                if !has_selection {
                     let ctx = tokio::task::spawn_blocking(|| capture_assistive_context())
                         .await
                         .unwrap_or_default();
@@ -933,7 +941,19 @@ impl RecordingController {
                 crate::show_agent_tab();
                 crate::voice_chat_ui::update_voice_chat_status("Listening...");
             } else {
-                *assistive_context.write().await = None;
+                // Capture frontmost app for paste actions (no selection/clipboard).
+                let ctx = tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                    .await
+                    .unwrap_or_default();
+                *assistive_context.write().await = Some(ctx);
+                crate::voice_chat_ui::set_voice_chat_target_app(
+                    assistive_context
+                        .read()
+                        .await
+                        .clone()
+                        .unwrap_or_default()
+                        .frontmost_app,
+                );
                 // Non-assistive: transcription overlay preview
                 crate::clear_transcription_text();
                 crate::show_transcription_overlay();
@@ -1065,7 +1085,19 @@ impl RecordingController {
             crate::show_agent_tab();
             crate::voice_chat_ui::update_voice_chat_status("Listening...");
         } else {
-            *self.assistive_context.write().await = None;
+            // Capture frontmost app for paste actions (no selection/clipboard).
+            let ctx = tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                .await
+                .unwrap_or_default();
+            *self.assistive_context.write().await = Some(ctx);
+            crate::voice_chat_ui::set_voice_chat_target_app(
+                self.assistive_context
+                    .read()
+                    .await
+                    .clone()
+                    .unwrap_or_default()
+                    .frontmost_app,
+            );
             // Non-assistive: transcription overlay preview
             crate::clear_transcription_text();
             crate::show_transcription_overlay();
@@ -1523,11 +1555,12 @@ impl RecordingController {
             if should_use_ai {
                 info!("Formatting mode (Left Option): correcting transcript via AI");
 
-                if chat_active {
-                    crate::voice_chat_ui::add_voice_chat_user_message(&clean_text);
-                    crate::voice_chat_ui::set_voice_chat_sending(true);
-                    crate::voice_chat_ui::update_voice_chat_status("Formatting...");
-                }
+                crate::hide_transcription_overlay();
+                crate::show_voice_chat_overlay();
+                crate::show_agent_tab();
+                crate::voice_chat_ui::add_voice_chat_user_message(&clean_text);
+                crate::voice_chat_ui::set_voice_chat_sending(true);
+                crate::voice_chat_ui::update_voice_chat_status("Formatting...");
 
                 let lang_str = language_opt.map(String::from);
 
@@ -1539,7 +1572,7 @@ impl RecordingController {
                 );
 
                 // Callback for streaming AI response to overlay
-                let delta_callback = if use_streaming && chat_active {
+                let delta_callback = if use_streaming {
                     Some(Arc::new(|text: &str| {
                         crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
                     }) as Arc<dyn Fn(&str) + Send + Sync>)
@@ -1556,28 +1589,22 @@ impl RecordingController {
                 .await;
                 let kind = match result.status {
                     crate::ai_formatting::AiFormatStatus::Applied => {
-                        if chat_active {
-                            // Display formatted text in overlay
-                            crate::voice_chat_ui::update_voice_chat_status("Formatted:");
-                            crate::voice_chat_ui::set_voice_chat_text(&result.text);
-                            info!(
-                                "Formatted response displayed in overlay ({} chars)",
-                                result.text.len()
-                            );
-                        }
+                        // Display formatted text in overlay
+                        crate::voice_chat_ui::update_voice_chat_status("Formatted:");
+                        crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                        info!(
+                            "Formatted response displayed in overlay ({} chars)",
+                            result.text.len()
+                        );
                         crate::state::history::TranscriptKind::Ai
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
-                        if chat_active {
-                            crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
-                            crate::voice_chat_ui::add_voice_chat_error_message("Formatting Failed");
-                        }
+                        crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
+                        crate::voice_chat_ui::add_voice_chat_error_message("Formatting Failed");
                         crate::state::history::TranscriptKind::AiFailed
                     }
                     crate::ai_formatting::AiFormatStatus::Skipped => {
-                        if chat_active {
-                            crate::voice_chat_ui::set_voice_chat_sending(false);
-                        }
+                        crate::voice_chat_ui::set_voice_chat_sending(false);
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
@@ -1608,11 +1635,12 @@ impl RecordingController {
                 // Toggle ON: formatting only (no augmentation)
                 info!("Formatting mode (Toggle): correcting transcript via AI");
 
-                if chat_active {
-                    crate::voice_chat_ui::add_voice_chat_user_message(&clean_text);
-                    crate::voice_chat_ui::set_voice_chat_sending(true);
-                    crate::voice_chat_ui::update_voice_chat_status("Formatting...");
-                }
+                crate::hide_transcription_overlay();
+                crate::show_voice_chat_overlay();
+                crate::show_agent_tab();
+                crate::voice_chat_ui::add_voice_chat_user_message(&clean_text);
+                crate::voice_chat_ui::set_voice_chat_sending(true);
+                crate::voice_chat_ui::update_voice_chat_status("Formatting...");
 
                 let lang_str = language_opt.map(String::from);
 
@@ -1624,7 +1652,7 @@ impl RecordingController {
                 );
 
                 // Callback for streaming AI response to overlay
-                let delta_callback = if use_streaming && chat_active {
+                let delta_callback = if use_streaming {
                     Some(Arc::new(|text: &str| {
                         crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
                     }) as Arc<dyn Fn(&str) + Send + Sync>)
@@ -1641,28 +1669,22 @@ impl RecordingController {
                 .await;
                 let kind = match result.status {
                     crate::ai_formatting::AiFormatStatus::Applied => {
-                        if chat_active {
-                            // Display formatted text in overlay
-                            crate::voice_chat_ui::update_voice_chat_status("Formatted:");
-                            crate::voice_chat_ui::set_voice_chat_text(&result.text);
-                            info!(
-                                "Formatted response displayed in overlay ({} chars)",
-                                result.text.len()
-                            );
-                        }
+                        // Display formatted text in overlay
+                        crate::voice_chat_ui::update_voice_chat_status("Formatted:");
+                        crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                        info!(
+                            "Formatted response displayed in overlay ({} chars)",
+                            result.text.len()
+                        );
                         crate::state::history::TranscriptKind::Ai
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
-                        if chat_active {
-                            crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
-                            crate::voice_chat_ui::add_voice_chat_error_message("Formatting Failed");
-                        }
+                        crate::voice_chat_ui::update_voice_chat_status("Formatting Failed");
+                        crate::voice_chat_ui::add_voice_chat_error_message("Formatting Failed");
                         crate::state::history::TranscriptKind::AiFailed
                     }
                     crate::ai_formatting::AiFormatStatus::Skipped => {
-                        if chat_active {
-                            crate::voice_chat_ui::set_voice_chat_sending(false);
-                        }
+                        crate::voice_chat_ui::set_voice_chat_sending(false);
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
