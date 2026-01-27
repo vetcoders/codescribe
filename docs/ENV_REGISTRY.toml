@@ -69,19 +69,6 @@ category = "vad"
 description = "Pre-roll buffer (seconds) before speech onset"
 range = "0.0-2.0"
 
-# DEPRECATED - use new names
-[vars.AUTO_SILENCE]
-deprecated = "CODESCRIBE_VAD_ENABLED"
-description = "DEPRECATED: Use CODESCRIBE_VAD_ENABLED instead"
-
-[vars.CODESCRIBE_VAD_MAX_SILENCE_SEC]
-deprecated = "CODESCRIBE_VAD_SILENCE_SEC"
-description = "DEPRECATED: Use CODESCRIBE_VAD_SILENCE_SEC instead"
-
-[vars.CODESCRIBE_VAD_SENSITIVITY]
-deprecated = "CODESCRIBE_VAD_THRESHOLD"
-description = "DEPRECATED: Use CODESCRIBE_VAD_THRESHOLD instead"
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Audio / Recording
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -184,6 +171,13 @@ reload = "hot"
 category = "streaming"
 description = "Disable embedding-based deduplication"
 
+[vars.CODESCRIBE_STREAM_FORCE_EMBEDDINGS]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "streaming"
+description = "Force embeddings in tests (override test bypass)"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -194,6 +188,20 @@ type = "bool"
 reload = "restart"
 category = "stt"
 description = "Use local Whisper model (vs cloud)"
+
+[vars.LOCAL_MODEL]
+default = "whisper-large-v3-turbo-mlx-q8"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Local Whisper model id (HF cache / embedded lookup)"
+
+[vars.WHISPER_MODEL]
+default = "mlx-community/whisper-large-v3-mlx"
+type = "string"
+reload = "hot"
+category = "stt"
+description = "Whisper model id for cloud/multipart STT"
 
 [vars.WHISPER_LANGUAGE]
 default = "pl"
@@ -230,6 +238,60 @@ reload = "restart"
 category = "stt"
 description = "Cloud STT API key"
 
+[vars.CODESCRIBE_HF_CACHE]
+default = ""
+type = "string"
+reload = "restart"
+category = "models"
+description = "Override HuggingFace cache root for model lookup"
+
+[vars.HF_HOME]
+default = ""
+type = "string"
+reload = "restart"
+category = "models"
+description = "HuggingFace home directory (affects cache)"
+
+[vars.HF_HUB_CACHE]
+default = ""
+type = "string"
+reload = "restart"
+category = "models"
+description = "HuggingFace hub cache directory"
+
+[vars.HUGGINGFACE_HUB_CACHE]
+default = ""
+type = "string"
+reload = "restart"
+category = "models"
+description = "Alternate HF hub cache directory"
+
+[vars.BACKEND_MAX_UPLOAD_MB]
+default = "20"
+type = "u64"
+reload = "hot"
+category = "stt"
+description = "Max audio upload size (MB) for cloud STT"
+range = "1-200"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Embedder / E5
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_EMBEDDER_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "embedder"
+description = "Override path to E5 embedder model directory"
+
+[vars.CODESCRIBE_EMBEDDER_REPO]
+default = "intfloat/multilingual-e5-large"
+type = "string"
+reload = "rebuild"
+category = "embedder"
+description = "HF repo for E5 embedder (used for embedding at build/runtime)"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LLM / AI Formatting
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -240,6 +302,20 @@ type = "bool"
 reload = "restart"
 category = "llm"
 description = "Enable AI formatting of transcripts"
+
+[vars.AI_MAX_TOKENS]
+default = "0"
+type = "u64"
+reload = "restart"
+category = "llm"
+description = "Max tokens for formatting LLM (0 = no limit)"
+
+[vars.AI_ASSISTIVE_MAX_TOKENS]
+default = "0"
+type = "u64"
+reload = "restart"
+category = "llm"
+description = "Max tokens for assistive LLM (0 = no limit)"
 
 [vars.LLM_ENDPOINT]
 default = ""
@@ -325,6 +401,38 @@ reload = "restart"
 category = "llm"
 description = "How to send transcripts (streaming|end_of_utterance)"
 
+[vars.CODESCRIBE_AI_MAX_RETRIES]
+default = "1"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Max retries for AI formatting attempts"
+
+[vars.CODESCRIBE_AI_RETRY_DELAY_MS]
+default = "5000"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Delay between AI retries (ms)"
+
+[vars.CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS]
+default = "2500"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Per-attempt timeout for AI formatting (ms)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TTS / Voice
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_TTS_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "tts"
+description = "Override path to TTS model directory"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Hotkeys
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -367,6 +475,13 @@ type = "bool"
 reload = "restart"
 category = "ui"
 description = "Show tray icon glyph"
+
+[vars.START_AT_LOGIN]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "ui"
+description = "Start CodeScribe at login"
 
 [vars.HOLD_INDICATOR]
 default = "1"
@@ -474,9 +589,66 @@ reload = "restart"
 category = "storage"
 description = "Override .env file path"
 
+[vars.CODESCRIBE_ENV_TEMPLATE]
+default = ""
+type = "string"
+reload = "restart"
+category = "storage"
+description = "Override template .env used to seed config"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Quality / Daemon
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_QUALITY_DAEMON]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "quality"
+description = "Enable background quality daemon (codescribe-loop)"
+
+[vars.QUALITY_DEBUG_MODE]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "quality"
+description = "Verbose quality loop logging"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# System / Shell
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.EDITOR]
+default = ""
+type = "string"
+reload = "restart"
+category = "system"
+description = "Preferred editor (used by --config)"
+
+[vars.VISUAL]
+default = ""
+type = "string"
+reload = "restart"
+category = "system"
+description = "Preferred visual editor (fallback for EDITOR)"
+
+[vars.HOME]
+default = ""
+type = "string"
+reload = "restart"
+category = "system"
+description = "Home directory (shell-provided)"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Build-time
 # ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_EMBED_MODEL]
+default = ""
+type = "string"
+reload = "rebuild"
+category = "build"
+description = "Whisper model to embed (HF repo or local path)"
 
 [vars.CODESCRIBE_NO_EMBED]
 default = "0"
@@ -530,10 +702,3 @@ type = "string"
 reload = "restart"
 category = "debug"
 description = "Rust logging filter"
-
-[vars.CODESCRIBE_LOG_STDOUT]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "debug"
-description = "Log to stdout instead of file"

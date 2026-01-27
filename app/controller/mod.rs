@@ -884,6 +884,7 @@ impl RecordingController {
             // If user wants to hold in silence for 45 minutes - that's their choice.
             // VAD is ONLY active in toggle (handsoff) mode.
             let mut rec = recorder.lock().await;
+            rec.recorder.config.auto_silence = false;
             // Set streaming callback for overlay updates (routed by session mode)
             rec.set_delta_callback(Some(Arc::new(|text: &str| {
                 route_transcription_delta(text);
@@ -992,6 +993,10 @@ impl RecordingController {
         // Start the recorder with VAD callback
         // hang_sec is configured via CODESCRIBE_VAD_SILENCE_SEC env var (single source of truth)
         let mut recorder = self.recorder.lock().await;
+        recorder.recorder.config.auto_silence = std::env::var("CODESCRIBE_VAD_ENABLED")
+            .ok()
+            .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+            .unwrap_or(true);
 
         recorder.recorder.set_on_vad_stop(move || {
             info!("VAD callback: setting vad_triggered flag");

@@ -27,7 +27,7 @@ pub struct VadConfig {
 impl Default for VadConfig {
     fn default() -> Self {
         // CLEAN API: One env var per parameter, no competing aliases
-        // See docs/ENV_VARS.md for full documentation
+        // See docs/ENV_REGISTRY.toml for full documentation
         Self {
             // Speech probability threshold (0.0-1.0)
             // Lower = more sensitive (catches quiet speech), Higher = more conservative

@@ -15,6 +15,8 @@ set -euo pipefail
 
 REGISTRY="docs/ENV_REGISTRY.toml"
 ERRORS=0
+GREP_EXCLUDES=(--exclude-dir=.git --exclude-dir=target --exclude-dir=models --exclude-dir=dist)
+IGNORE_VARS="CARGO_MANIFEST_DIR OUT_DIR PROFILE"
 
 # Colors
 RED='\033[0;31m'
@@ -35,17 +37,17 @@ REGISTERED=$(grep -E '^\[vars\.' "$REGISTRY" | sed 's/\[vars\.\(.*\)\]/\1/' | so
 
 # Find all env vars used in Rust code (std::env::var patterns)
 echo "Scanning Rust code for env var usage..."
-CODE_VARS=$(grep -rhoE 'std::env::var\("([A-Z_]+)"' core/ app/ bin/ 2>/dev/null | \
-    sed 's/std::env::var("\([^"]*\)"/\1/' | \
+CODE_VARS=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'env::var\("([A-Z_]+)"' core/ app/ bin/ 2>/dev/null | \
+    sed 's/.*env::var("\([^"]*\)".*/\1/' | \
     sort -u || true)
 
-# Find env vars in env_f32/env_bool patterns
-CODE_VARS2=$(grep -rhoE 'env_f32\("([A-Z_]+)"' core/ app/ 2>/dev/null | \
-    sed 's/env_f32("\([^"]*\)"/\1/' | \
+# Find env vars in helper patterns
+CODE_VARS2=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'env_(bool|bool_default|u64|usize|f32|f32_clamped)\("([A-Z_]+)"' core/ app/ bin/ 2>/dev/null | \
+    sed 's/.*("\([^"]*\)"/\1/' | \
     sort -u || true)
 
-CODE_VARS3=$(grep -rhoE 'env_f32_clamped\("([A-Z_]+)"' core/ 2>/dev/null | \
-    sed 's/env_f32_clamped("\([^"]*\)"/\1/' | \
+CODE_VARS3=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'env_flag\("([A-Z_]+)"' core/ 2>/dev/null | \
+    sed 's/env_flag("\([^"]*\)"/\1/' | \
     sort -u || true)
 
 # Combine all found vars
@@ -54,6 +56,9 @@ ALL_CODE_VARS=$(echo -e "$CODE_VARS\n$CODE_VARS2\n$CODE_VARS3" | sort -u | grep 
 # Check each code var against registry
 UNREGISTERED=""
 for var in $ALL_CODE_VARS; do
+    if echo "$IGNORE_VARS" | grep -qw "$var"; then
+        continue
+    fi
     if ! echo "$REGISTERED" | grep -qx "$var"; then
         UNREGISTERED="$UNREGISTERED$var\n"
         ERRORS=$((ERRORS + 1))

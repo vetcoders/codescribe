@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// CodeScribe CLI - Local speech-to-text transcription
 ///
@@ -126,25 +125,11 @@ fn init_tracing() {
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
     let _ = LOG_GUARD.set(guard);
 
-    let log_stdout = std::env::var("CODESCRIBE_LOG_STDOUT")
-        .ok()
-        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
-        .unwrap_or(false);
-
-    if log_stdout {
-        let stdout = std::io::stdout;
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(file_writer.and(stdout))
-            .with_target(false)
-            .try_init();
-    } else {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(file_writer)
-            .with_target(false)
-            .try_init();
-    }
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(file_writer)
+        .with_target(false)
+        .try_init();
 }
 
 /// Handle --config flag: create default config and open in editor
