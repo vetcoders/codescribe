@@ -85,6 +85,11 @@ pub enum TrayMenuEvent {
 
     // Diagnostics
     CopyDiagnostics,
+
+    // Prompts
+    OpenAssistivePrompt,
+    OpenFormattingPrompt,
+    OpenPromptsFolder,
 }
 
 // ============================================================================
@@ -120,6 +125,9 @@ pub struct MenuIds {
     pub show_overlay: MenuId,
     pub open_history: MenuId,
     pub copy_diagnostics: MenuId,
+    pub open_assistive_prompt: MenuId,
+    pub open_formatting_prompt: MenuId,
+    pub open_prompts_folder: MenuId,
     pub help: MenuId,
     pub about: MenuId,
     pub quit: MenuId,

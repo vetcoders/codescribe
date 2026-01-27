@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
 
 fn init_tracing() {
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
 
     // Prefer `RUST_LOG`, fall back to legacy `LOG_LEVEL`.
     let filter = match env::var("RUST_LOG") {
@@ -136,8 +136,7 @@ fn init_tracing() {
         .with_target(true)
         .with_thread_ids(true);
 
-    let filter_layer =
-        EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter_layer = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
 
     let file = std::fs::OpenOptions::new()
         .create(true)

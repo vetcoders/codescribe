@@ -24,6 +24,12 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_open_history_folder();
     } else if event_id == &menu_ids.copy_diagnostics {
         handle_copy_diagnostics();
+    } else if event_id == &menu_ids.open_assistive_prompt {
+        handle_open_assistive_prompt();
+    } else if event_id == &menu_ids.open_formatting_prompt {
+        handle_open_formatting_prompt();
+    } else if event_id == &menu_ids.open_prompts_folder {
+        handle_open_prompts_folder();
     } else if event_id == &menu_ids.help {
         handle_open_help();
     } else if event_id == &menu_ids.about {
@@ -95,6 +101,21 @@ fn handle_copy_diagnostics() {
             )
             .spawn();
     }
+}
+
+fn handle_open_assistive_prompt() {
+    send_menu_event(TrayMenuEvent::OpenAssistivePrompt);
+    crate::config::open_prompt_file("assistive.txt");
+}
+
+fn handle_open_formatting_prompt() {
+    send_menu_event(TrayMenuEvent::OpenFormattingPrompt);
+    crate::config::open_prompt_file("formatting.txt");
+}
+
+fn handle_open_prompts_folder() {
+    send_menu_event(TrayMenuEvent::OpenPromptsFolder);
+    crate::config::open_prompts_folder();
 }
 
 // ============================================================================

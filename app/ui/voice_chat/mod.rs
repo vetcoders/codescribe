@@ -14,9 +14,9 @@ pub use api::{
     append_voice_chat_user_delta, clear_voice_chat_text, filter_drawer, hide_voice_chat_overlay,
     is_auto_send_enabled, is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,
     reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_send_callback,
-    set_voice_chat_sending, set_voice_chat_target_app, set_voice_chat_text, set_voice_chat_user_text,
-    show_agent_tab, show_drawer_tab, update_conversation_state, update_drawer_after_save,
-    update_voice_chat_status,
+    set_voice_chat_sending, set_voice_chat_target_app, set_voice_chat_text,
+    set_voice_chat_user_text, show_agent_tab, show_drawer_tab, update_conversation_state,
+    update_drawer_after_save, update_voice_chat_status,
 };
 pub use state::{ConversationModeState, VoiceChatOverlayConfig};
 
@@ -160,8 +160,8 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![window, setBackgroundColor: color_clear()];
         let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
         // Make sure the overlay shows up even when the user is in a fullscreen Space.
-        let collection_behavior =
-            NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary;
+        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary;
         let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
 
         let delegate_class = window_delegate_class();
@@ -244,7 +244,11 @@ fn show_voice_chat_overlay_impl() {
             "⇲",
             button_style::SMALL_SQUARE,
         );
-        button_set_action(paste_last_button, action_handler, sel!(onPasteLastResponse:));
+        button_set_action(
+            paste_last_button,
+            action_handler,
+            sel!(onPasteLastResponse:),
+        );
         add_subview(blur_view, paste_last_button);
 
         let copy_last_button = create_button(

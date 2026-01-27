@@ -1496,7 +1496,11 @@ impl RecordingController {
                 )
             } else {
                 info!("Raw mode (Ctrl): using post-processed transcript");
-                (clean_text.clone(), crate::state::history::TranscriptKind::Raw, true)
+                (
+                    clean_text.clone(),
+                    crate::state::history::TranscriptKind::Raw,
+                    true,
+                )
             }
         } else if force_ai {
             // Left double Option: ALWAYS formatting (no augmentation)
@@ -1574,7 +1578,11 @@ impl RecordingController {
                 info!(
                     "Formatting mode (Left Option): AI unavailable, using post-processed transcript"
                 );
-                (clean_text.clone(), crate::state::history::TranscriptKind::Raw, false)
+                (
+                    clean_text.clone(),
+                    crate::state::history::TranscriptKind::Raw,
+                    false,
+                )
             }
         } else {
             // Double Option: respects AI Formatting toggle setting
@@ -1655,7 +1663,11 @@ impl RecordingController {
             } else {
                 // Toggle OFF: using post-processed transcript
                 info!("Raw mode (Toggle OFF): using post-processed transcript");
-                (clean_text.clone(), crate::state::history::TranscriptKind::Raw, true)
+                (
+                    clean_text.clone(),
+                    crate::state::history::TranscriptKind::Raw,
+                    true,
+                )
             }
         };
 

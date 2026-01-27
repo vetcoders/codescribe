@@ -85,8 +85,8 @@ pub fn request_accessibility() -> bool {
         fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
     }
 
-    use core_foundation::dictionary::CFDictionary;
     use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::CFDictionary;
 
     // Create options dictionary with kAXTrustedCheckOptionPrompt = true
     let key = CFString::new("AXTrustedCheckOptionPrompt");
@@ -231,11 +231,7 @@ pub fn diagnostics_report() -> String {
 
     let mut out = String::new();
     let _ = writeln!(&mut out, "CodeScribe diagnostics");
-    let _ = writeln!(
-        &mut out,
-        "pid: {}",
-        std::process::id()
-    );
+    let _ = writeln!(&mut out, "pid: {}", std::process::id());
     let _ = writeln!(
         &mut out,
         "exe: {}",

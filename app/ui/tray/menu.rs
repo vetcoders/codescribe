@@ -2,12 +2,10 @@
 //!
 //! Menu structure:
 //! - Status line (dynamic)
-//! - Copy Last to Clipboard
 //! - Show Chat Overlay
-//! - Hold Hotkeys submenu (root level)
 //! - Open history folder
-//! - Copy diagnostics (permissions/config)
-//! - Quality status
+//! - Hotkeys submenu
+//! - Tools submenu (prompts/diagnostics/quality)
 //! - Help/About
 //! - Quit
 //!
@@ -17,7 +15,7 @@ use std::cell::RefCell;
 
 use anyhow::Result;
 use muda::accelerator::{Accelerator, Code, Modifiers};
-use muda::{Menu, MenuItem, PredefinedMenuItem};
+use muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::config::Config;
 use crate::tray::submenus::build_hold_hotkeys_submenu;
@@ -34,12 +32,11 @@ thread_local! {
 /// Menu structure:
 /// ```text
 /// Status: Idle
-/// Copy Last to Clipboard
 /// Show Chat Overlay
-/// ─────────────
-/// Hold Hotkeys ▸
 /// Open history...
-/// Quality: OK
+/// ─────────────
+/// Hotkeys ▸
+/// Tools ▸
 /// ─────────────
 /// Help
 /// About
@@ -60,34 +57,56 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         *cell.borrow_mut() = Some(status_item);
     });
 
-    // 2. Copy last to clipboard (quick action)
-    let copy_last_item = MenuItem::new("Copy Last to Clipboard", true, None);
-    let copy_last_id = copy_last_item.id().clone();
-    menu.append(&copy_last_item)?;
-
-    // 2a. Show Chat Overlay
+    // 2. Show Chat Overlay
     let show_overlay_item = MenuItem::new("Show Chat Overlay", true, None);
     let show_overlay_id = show_overlay_item.id().clone();
     menu.append(&show_overlay_item)?;
 
-    // 4. Separator
-    menu.append(&PredefinedMenuItem::separator())?;
-
-    // 5. Hold Hotkeys submenu (root level)
-    let (hold_hotkeys_menu, hold_ids) = build_hold_hotkeys_submenu()?;
-    menu.append(&hold_hotkeys_menu)?;
-
-    // 6. Open history folder
+    // 3. Open history folder
     let open_history_item = MenuItem::new("Open history...", true, None);
     let open_history_id = open_history_item.id().clone();
     menu.append(&open_history_item)?;
 
-    // 6a. Copy diagnostics
+    // 4. Separator
+    menu.append(&PredefinedMenuItem::separator())?;
+
+    // 5. Hotkeys submenu
+    let (hold_hotkeys_menu, hold_ids) = build_hold_hotkeys_submenu()?;
+    menu.append(&hold_hotkeys_menu)?;
+
+    // 6. Tools submenu
+    let tools_menu = Submenu::new("Tools", true);
+
+    // 6a. Edit prompts submenu
+    let prompts_menu = Submenu::new("Edit prompts", true);
+    let open_assistive_prompt_item = MenuItem::new("Assistive…", true, None);
+    let open_assistive_prompt_id = open_assistive_prompt_item.id().clone();
+    prompts_menu.append(&open_assistive_prompt_item)?;
+
+    let open_formatting_prompt_item = MenuItem::new("Formatting…", true, None);
+    let open_formatting_prompt_id = open_formatting_prompt_item.id().clone();
+    prompts_menu.append(&open_formatting_prompt_item)?;
+
+    prompts_menu.append(&PredefinedMenuItem::separator())?;
+
+    let open_prompts_folder_item = MenuItem::new("Open prompts folder", true, None);
+    let open_prompts_folder_id = open_prompts_folder_item.id().clone();
+    prompts_menu.append(&open_prompts_folder_item)?;
+
+    tools_menu.append(&prompts_menu)?;
+    tools_menu.append(&PredefinedMenuItem::separator())?;
+
+    // 6b. Copy diagnostics
     let copy_diag_item = MenuItem::new("Copy diagnostics", true, None);
     let copy_diag_id = copy_diag_item.id().clone();
-    menu.append(&copy_diag_item)?;
+    tools_menu.append(&copy_diag_item)?;
 
-    // 6b. Quality menu item (shows pending mismatches from daemon)
+    // 6c. Copy last transcript
+    let copy_last_item = MenuItem::new("Copy Last to Clipboard", true, None);
+    let copy_last_id = copy_last_item.id().clone();
+    tools_menu.append(&copy_last_item)?;
+
+    // 6d. Quality menu item (shows pending mismatches from daemon)
     let state = crate::quality_loop::read_daemon_state();
     let quality_label = if !state.available {
         "Quality: unavailable".to_string()
@@ -98,30 +117,32 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     };
     let quality_item = MenuItem::new(&quality_label, true, None);
     let quality_open_report_id = quality_item.id().clone();
-    menu.append(&quality_item)?;
+    tools_menu.append(&quality_item)?;
 
     // Store for dynamic updates
     QUALITY_MENU_ITEM.with(|cell| {
         *cell.borrow_mut() = Some(quality_item);
     });
 
+    menu.append(&tools_menu)?;
+
     // 7. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 10. Help
+    // 8. Help
     let help_item = MenuItem::new("Help", true, None);
     let help_id = help_item.id().clone();
     menu.append(&help_item)?;
 
-    // 11. About
+    // 9. About
     let about_item = MenuItem::new("About", true, None);
     let about_id = about_item.id().clone();
     menu.append(&about_item)?;
 
-    // 12. Separator
+    // 10. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 13. Quit (Cmd+Q)
+    // 11. Quit (Cmd+Q)
     let quit_accel = Accelerator::new(Some(Modifiers::SUPER), Code::KeyQ);
     let quit_item = MenuItem::new("Quit", true, Some(quit_accel));
     let quit_id = quit_item.id().clone();
@@ -146,6 +167,9 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             show_overlay: show_overlay_id,
             open_history: open_history_id,
             copy_diagnostics: copy_diag_id,
+            open_assistive_prompt: open_assistive_prompt_id,
+            open_formatting_prompt: open_formatting_prompt_id,
+            open_prompts_folder: open_prompts_folder_id,
             help: help_id,
             about: about_id,
             quit: quit_id,
@@ -210,22 +234,12 @@ pub fn update_quality_label() {
 #[cfg(test)]
 mod tests {
     fn menu_labels_for_test() -> Vec<String> {
-        let state = crate::quality_loop::read_daemon_state();
-        let quality_label = if !state.available {
-            "Quality: unavailable".to_string()
-        } else if state.pending_mismatches > 0 {
-            format!("Quality: {} pending", state.pending_mismatches)
-        } else {
-            "Quality: OK".to_string()
-        };
-
         vec![
             "Status: Idle".to_string(),
-            "Copy Last to Clipboard".to_string(),
             "Show Chat Overlay".to_string(),
-            "Hold Hotkeys".to_string(),
             "Open history...".to_string(),
-            quality_label,
+            "Hotkeys".to_string(),
+            "Tools".to_string(),
             "Help".to_string(),
             "About".to_string(),
             "Quit".to_string(),

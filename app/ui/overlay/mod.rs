@@ -671,8 +671,8 @@ fn show_transcription_overlay_impl() {
 
         // Join all spaces (follow focus)
         // Make sure the overlay shows up even when the user is in a fullscreen Space.
-        let collection_behavior =
-            NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary;
+        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary;
         let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
 
         // Get content view

@@ -22,7 +22,7 @@ pub type HoldMenuIds = (
 
 /// Build the Hold Hotkeys submenu
 pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
-    let hold_menu = Submenu::new("Hold Hotkeys", true);
+    let hold_menu = Submenu::new("Hotkeys", true);
 
     // Read from Config (source of truth for initial state)
     let config = crate::config::Config::load();

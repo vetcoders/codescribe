@@ -65,10 +65,13 @@ pub fn capture_assistive_context() -> AssistiveContext {
         Some("CodeScribe") | Some("codescribe")
     ) {
         debug!("Assistive context: frontmost is CodeScribe, skipping selection capture");
-        return AssistiveContext { frontmost_app, selected_text: None };
+        return AssistiveContext {
+            frontmost_app,
+            selected_text: None,
+        };
     }
 
-    let selected_text = copy_selected_text_from_frontmost(max_chars);
+    let selected_text = selected_text_from_frontmost(max_chars);
 
     debug!(
         "Assistive context captured (app_present={}, selected_chars={})",
@@ -84,29 +87,25 @@ pub fn capture_assistive_context() -> AssistiveContext {
 
 /// Build the LLM input for assistive mode, including optional selection context.
 pub fn build_assistive_input(user_voice_text: &str, ctx: &AssistiveContext) -> String {
+    let instruction = user_voice_text.trim();
+    let selected_text = ctx.selected_text.as_deref().unwrap_or("").trim();
+    let frontmost_app = ctx.frontmost_app.as_deref().unwrap_or("").trim();
+
     let mut out = String::new();
 
-    if let Some(app) = ctx.frontmost_app.as_deref()
-        && !app.trim().is_empty()
-    {
-        out.push_str("Frontmost app: ");
-        out.push_str(app.trim());
+    out.push_str("INSTRUKCJA_UŻYTKOWNIKA:\n<<<\n");
+    out.push_str(instruction);
+    out.push_str("\n>\n\n");
+
+    out.push_str("ZAZNACZONY_TEKST:\n<<<\n");
+    out.push_str(selected_text);
+    out.push_str("\n>\n");
+
+    if !frontmost_app.is_empty() {
+        out.push_str("\nKONTEKST:\n- frontmost_app: ");
+        out.push_str(frontmost_app);
         out.push('\n');
     }
-
-    if let Some(sel) = ctx.selected_text.as_deref() {
-        let sel = sel.trim();
-        if !sel.is_empty() {
-            out.push_str("Selected text (context):\n");
-            out.push_str("----\n");
-            out.push_str(sel);
-            out.push_str("\n----\n\n");
-        }
-    }
-
-    out.push_str("User (voice): ");
-    out.push_str(user_voice_text.trim());
-    out.push('\n');
 
     out
 }
@@ -138,18 +137,21 @@ fn frontmost_app_name() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn copy_selected_text_from_frontmost(max_chars: usize) -> Option<String> {
-    // Snapshot current clipboard
-    let snapshot = ClipboardSnapshot::capture().ok();
-    let prev_text = snapshot.as_ref().and_then(|s| s.text.clone());
+fn selected_text_from_frontmost(max_chars: usize) -> Option<String> {
+    // Prefer Accessibility selection if available (doesn't depend on clipboard).
+    if let Some(selected) = crate::ui::get_selected_text(max_chars) {
+        return Some(selected);
+    }
 
-    // Trigger copy (Cmd+C) in the frontmost app.
+    // Fallback: snapshot clipboard + Cmd+C + restore.
+    // This can fail in some apps and can mis-detect "no selection" when clipboard doesn't change.
+    let snapshot = ClipboardSnapshot::capture().ok();
+
     if let Err(e) = clipboard::simulate_cmd_c() {
         warn!("Assistive context: failed to simulate Cmd+C: {}", e);
         return None;
     }
 
-    // Give the app a moment to update the pasteboard.
     std::thread::sleep(Duration::from_millis(80));
 
     let mut copied = match clipboard::get_clipboard() {
@@ -160,7 +162,6 @@ fn copy_selected_text_from_frontmost(max_chars: usize) -> Option<String> {
         }
     };
 
-    // Always restore clipboard snapshot (best-effort), regardless of user restore settings.
     if let Some(snapshot) = snapshot {
         if let Err(e) = snapshot.restore() {
             debug!("Assistive context: clipboard restore failed: {}", e);
@@ -172,14 +173,6 @@ fn copy_selected_text_from_frontmost(max_chars: usize) -> Option<String> {
         return None;
     }
 
-    // Avoid sending stale clipboard as "selection context".
-    if let Some(prev) = prev_text {
-        if copied == prev.trim() {
-            debug!("Assistive context: clipboard unchanged; treating as no selection");
-            return None;
-        }
-    }
-
     if copied.len() > max_chars {
         copied.truncate(max_chars);
         copied.push('…');
@@ -189,6 +182,6 @@ fn copy_selected_text_from_frontmost(max_chars: usize) -> Option<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn copy_selected_text_from_frontmost(_max_chars: usize) -> Option<String> {
+fn selected_text_from_frontmost(_max_chars: usize) -> Option<String> {
     None
 }
