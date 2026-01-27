@@ -151,6 +151,23 @@ impl StreamingRecorder {
         let transcript = self.transcript_buffer.lock().await.clone();
         Ok((transcript, audio_path))
     }
+
+    pub async fn stop_without_saving(&mut self) -> Result<String> {
+        info!("Stopping streaming recorder (no WAV)...");
+
+        // 1. Stop recording without writing a WAV file
+        let _ = self.recorder.stop_without_saving().await?;
+
+        // 2. Wait for worker to finish processing remaining chunks
+        if let Some(handle) = self.transcription_handle.take() {
+            debug!("Waiting for transcription worker to finish...");
+            handle.await.context("Transcription worker failed")?;
+        }
+
+        // 3. Return collected transcript
+        let transcript = self.transcript_buffer.lock().await.clone();
+        Ok(transcript)
+    }
 }
 
 async fn transcription_worker(

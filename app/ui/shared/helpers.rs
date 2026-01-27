@@ -11,10 +11,12 @@
 
 use crate::os::clipboard;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
-use objc::runtime::{Class, Object};
+use objc::declare::ClassDecl;
+use objc::runtime::{Class, Object, Sel};
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{NSBackingStoreType, NSWindowCollectionBehavior, NSWindowStyleMask};
 use std::ffi::CString;
+use std::sync::Once;
 
 /// Type alias for Objective-C object pointers
 pub type Id = *mut Object;
@@ -22,6 +24,35 @@ pub type Id = *mut Object;
 /// Window level constants
 pub const NS_FLOATING_WINDOW_LEVEL: i64 = 3;
 pub const NS_STATUS_WINDOW_LEVEL: i64 = 25;
+
+// Custom overlay window class so borderless windows can receive input.
+static OVERLAY_WINDOW_INIT: Once = Once::new();
+static mut OVERLAY_WINDOW_CLASS: *const Class = std::ptr::null();
+
+extern "C" fn can_become_key(_this: &Object, _cmd: Sel) -> bool {
+    true
+}
+
+/// Get a custom NSWindow subclass that can become key/main (for borderless overlays).
+pub fn overlay_window_class() -> *const Class {
+    unsafe {
+        OVERLAY_WINDOW_INIT.call_once(|| {
+            let superclass = Class::get("NSWindow").expect("NSWindow not found");
+            let mut decl = ClassDecl::new("CodeScribeOverlayWindow", superclass)
+                .expect("Failed to declare overlay window class");
+            decl.add_method(
+                sel!(canBecomeKeyWindow),
+                can_become_key as extern "C" fn(&Object, Sel) -> bool,
+            );
+            decl.add_method(
+                sel!(canBecomeMainWindow),
+                can_become_key as extern "C" fn(&Object, Sel) -> bool,
+            );
+            OVERLAY_WINDOW_CLASS = decl.register();
+        });
+        OVERLAY_WINDOW_CLASS
+    }
+}
 
 // ============================================================================
 // Color Helpers

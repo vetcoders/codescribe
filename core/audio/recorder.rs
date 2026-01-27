@@ -439,6 +439,17 @@ impl Recorder {
     /// Returns the absolute path to the saved .wav file, or None if no audio
     /// was recorded or an error occurred.
     pub async fn stop(&mut self) -> Result<Option<PathBuf>> {
+        self.stop_internal(true).await
+    }
+
+    /// Stops the audio recording without saving a WAV file.
+    ///
+    /// Returns None if no audio was recorded or an error occurred.
+    pub async fn stop_without_saving(&mut self) -> Result<Option<PathBuf>> {
+        self.stop_internal(false).await
+    }
+
+    async fn stop_internal(&mut self, save_wav: bool) -> Result<Option<PathBuf>> {
         if !self.is_recording.load(Ordering::SeqCst) && self.stream.is_none() {
             warn!("Stop called but no active stream");
             self.last_duration = 0.0;
@@ -462,17 +473,14 @@ impl Recorder {
         self.is_recording.store(false, Ordering::SeqCst);
 
         // Get buffer data
-        let wav_data = {
-            let buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if buf.is_empty() {
-                warn!("No audio data captured");
-                self.last_duration = 0.0;
-                return Ok(None);
-            }
-            buf.clone()
-        };
+        let mut buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+        if buf.is_empty() {
+            warn!("No audio data captured");
+            self.last_duration = 0.0;
+            return Ok(None);
+        }
 
-        let num_frames = wav_data.len();
+        let num_frames = buf.len();
         self.last_duration = num_frames as f32 / self.actual_sample_rate as f32;
         self.diagnostics.frames = num_frames;
         self.diagnostics.bytes = num_frames * std::mem::size_of::<i16>();
@@ -482,6 +490,13 @@ impl Recorder {
             "Captured audio: {} frames ({:.2}s) at {}Hz",
             num_frames, self.last_duration, self.actual_sample_rate
         );
+
+        if !save_wav {
+            buf.clear();
+            return Ok(None);
+        }
+
+        let wav_data = buf.clone();
 
         // Create temp file
         let temp_path = std::env::temp_dir().join(format!(
@@ -502,10 +517,7 @@ impl Recorder {
         info!("Audio successfully saved to WAV file");
 
         // Clear buffer
-        self.buffer
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+        buf.clear();
 
         Ok(Some(temp_path))
     }

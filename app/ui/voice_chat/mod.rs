@@ -32,8 +32,8 @@ use tracing::{info, warn};
 
 use crate::ui_helpers::{
     NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style, color_clear,
-    create_button, create_segmented_control, create_vertical_stack_view, ns_string, set_hidden,
-    window_set_alpha, window_show,
+    create_button, create_segmented_control, create_vertical_stack_view, ns_string,
+    overlay_window_class, set_hidden, window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -131,7 +131,8 @@ fn show_voice_chat_overlay_impl() {
             },
         };
 
-        let window: Id = msg_send![ns_window, alloc];
+        let window_class = overlay_window_class();
+        let window: Id = msg_send![window_class, alloc];
         let style_mask = NSWindowStyleMask::Borderless | NSWindowStyleMask::FullSizeContentView;
         let backing = NSBackingStoreType::Buffered;
         let window: Id = msg_send![

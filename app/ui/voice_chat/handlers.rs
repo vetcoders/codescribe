@@ -124,9 +124,15 @@ extern "C" fn on_close(_this: &Object, _cmd: Sel, _sender: Id) {
 }
 
 extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    clear_overlay_state(&mut state);
-    debug!("Voice chat overlay closed by user");
+    match OVERLAY_STATE.try_lock() {
+        Ok(mut state) => {
+            clear_overlay_state(&mut state);
+            debug!("Voice chat overlay closed by user");
+        }
+        Err(_) => {
+            debug!("Voice chat overlay close: state lock busy, skipping clear");
+        }
+    }
 }
 
 extern "C" fn on_tab_changed(_this: &Object, _cmd: Sel, sender: Id) {

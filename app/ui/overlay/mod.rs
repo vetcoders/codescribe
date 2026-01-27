@@ -31,7 +31,8 @@ use tracing::{debug, info, warn};
 
 use crate::ui_helpers::{
     add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position,
-    color_white, create_button, set_hidden, set_text, window_close, window_set_alpha, window_show,
+    color_white, create_button, overlay_window_class, set_hidden, set_text, window_close,
+    window_set_alpha, window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -578,7 +579,6 @@ fn show_transcription_overlay_impl() {
             return;
         }
 
-        let ns_window = ns_window_class.unwrap();
         let ns_text_field = ns_text_field_class.unwrap();
         let ns_screen = ns_screen_class.unwrap();
         let ns_string = ns_string_class.unwrap();
@@ -644,7 +644,8 @@ fn show_transcription_overlay_impl() {
         };
 
         // Create borderless window for modern look
-        let window: Id = msg_send![ns_window, alloc];
+        let window_class = overlay_window_class();
+        let window: Id = msg_send![window_class, alloc];
         if window.is_null() {
             warn!("Failed to alloc NSWindow");
             return;

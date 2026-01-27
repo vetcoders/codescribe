@@ -126,12 +126,25 @@ fn init_tracing() {
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
     let _ = LOG_GUARD.set(guard);
 
-    let stdout = std::io::stdout;
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(file_writer.and(stdout))
-        .with_target(false)
-        .try_init();
+    let log_stdout = std::env::var("CODESCRIBE_LOG_STDOUT")
+        .ok()
+        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(false);
+
+    if log_stdout {
+        let stdout = std::io::stdout;
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(file_writer.and(stdout))
+            .with_target(false)
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(file_writer)
+            .with_target(false)
+            .try_init();
+    }
 }
 
 /// Handle --config flag: create default config and open in editor
@@ -351,21 +364,18 @@ async fn handle_transcribe_file(
 }
 
 async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
-    use tokio::sync::mpsc;
-
     eprintln!("CodeScribe Live Transcription");
     eprintln!("Press Ctrl+C to stop.");
 
     whisper::init()?;
 
-    let mut recorder = codescribe::audio::streaming_recorder::StreamingRecorder::new()?;
-    let (vad_tx, mut vad_rx) = mpsc::unbounded_channel::<()>();
-    recorder.recorder.set_on_vad_stop({
-        let vad_tx = vad_tx.clone();
-        move || {
-            let _ = vad_tx.send(());
-        }
-    });
+    // Live mode should not auto-stop on silence; let user control Ctrl+C.
+    let config = codescribe::audio::recorder::RecorderConfig {
+        auto_silence: false,
+        ..Default::default()
+    };
+    let mut recorder =
+        codescribe::audio::streaming_recorder::StreamingRecorder::with_config(config)?;
 
     let emitter = StreamEmitter::new();
     recorder.set_delta_callback(Some(Arc::new({
@@ -381,12 +391,9 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
         _ = tokio::signal::ctrl_c() => {
             eprintln!("Stopping live transcription (Ctrl+C)...");
         }
-        _ = vad_rx.recv() => {
-            eprintln!("Stopping live transcription (VAD)...");
-        }
     }
 
-    let _ = recorder.stop().await?;
+    let _ = recorder.stop_without_saving().await?;
     emitter.finish();
 
     Ok(())
