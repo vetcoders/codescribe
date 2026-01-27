@@ -1549,6 +1549,7 @@ impl RecordingController {
 
             if chat_active {
                 // Finalize the streaming user draft into a bubble
+                crate::show_voice_chat_overlay();
                 crate::voice_chat_ui::set_voice_chat_user_text(&clean_text);
                 crate::voice_chat_ui::show_agent_tab();
                 crate::voice_chat_ui::set_voice_chat_sending(true);
@@ -1630,6 +1631,7 @@ impl RecordingController {
                 crate::ai_formatting::AiFormatStatus::Applied => {
                     if chat_active {
                         // Display AI response in overlay
+                        crate::show_voice_chat_overlay();
                         crate::voice_chat_ui::update_voice_chat_status("AI Response:");
                         crate::voice_chat_ui::set_voice_chat_text(&result.text);
                         info!(
@@ -1641,6 +1643,7 @@ impl RecordingController {
                 }
                 crate::ai_formatting::AiFormatStatus::Failed => {
                     if chat_active {
+                        crate::show_voice_chat_overlay();
                         crate::voice_chat_ui::update_voice_chat_status("AI Failed");
                         crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
                     }
@@ -1714,6 +1717,7 @@ impl RecordingController {
                 let kind = match result.status {
                     crate::ai_formatting::AiFormatStatus::Applied => {
                         // Display formatted text in overlay
+                        crate::show_voice_chat_overlay();
                         crate::voice_chat_ui::update_voice_chat_status("Formatted:");
                         crate::voice_chat_ui::set_voice_chat_text(&result.text);
                         info!(
