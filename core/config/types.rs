@@ -31,9 +31,9 @@ impl HoldMods {
     /// Human-readable label for menu display
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Ctrl => "Ctrl only (Raw)",
+            Self::Ctrl => "Ctrl",
             Self::CtrlAlt => "Ctrl+Option",
-            Self::CtrlShift => "Ctrl+Shift (AI)",
+            Self::CtrlShift => "Ctrl+Shift",
             Self::CtrlCmd => "Ctrl+Command",
         }
     }
@@ -336,7 +336,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hold_mods: HoldMods::default(),
-            hold_exclusive: true, // Ignore extra modifiers by default (Ctrl+K won't trigger)
+            hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
             toggle_trigger: ToggleTrigger::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),
             whisper_language: Language::default(),

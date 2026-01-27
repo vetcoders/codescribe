@@ -83,9 +83,8 @@ pub fn get_toggle_trigger() -> ToggleTrigger {
 }
 
 // --- Global Exclusive Mode Setting ---
-// Note: Exclusive mode is now implicitly handled by HoldMods configuration.
-// When HoldMods::Ctrl is set, Option key is excluded from hold combo.
-// This function is kept for API compatibility with existing code.
+// Exclusive mode controls whether the hold combo must match exactly, or can be a superset.
+// For our UX split, we generally want non-exclusive matching so Shift/Cmd can act as mode modifiers.
 
 use std::sync::atomic::AtomicBool;
 
@@ -114,12 +113,27 @@ pub enum HoldAction {
     Up,
 }
 
+/// High-level hold intent derived from modifier state.
+///
+/// UX split:
+/// - `Raw`: dictation → auto-paste (fast)
+/// - `Chat`: voice chat to AI → response in overlay (no auto-paste)
+/// - `Selection`: apply instruction to selected text → response in overlay (no auto-paste)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HoldMode {
+    #[default]
+    Raw,
+    Chat,
+    Selection,
+}
+
 /// Hotkey event emitted by the listener
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyEvent {
     /// Hold gesture detected (press/release configured modifier combo)
-    /// The boolean indicates "assistive mode" (Shift was held during the gesture)
-    Hold { action: HoldAction, assistive: bool },
+    Hold { action: HoldAction, mode: HoldMode },
+    /// Modifier change while hold is active (e.g., add/remove Shift/Cmd).
+    HoldUpdate { mode: HoldMode },
     /// Normal toggle gesture (double-tap left Option)
     ToggleNormal,
     /// Assistive toggle gesture (double-tap right Option)
@@ -269,8 +283,8 @@ mod macos {
         hold_active: bool,
         /// When hold combo was activated (for hold duration check)
         hold_active_ts: Option<Instant>,
-        /// Assistive mode detected during this hold
-        assistive_mode: bool,
+        /// Current hold mode derived from Shift/Cmd state
+        hold_mode: HoldMode,
         /// Hold event already sent (prevent duplicates)
         hold_event_sent: bool,
         /// Last left Option tap timestamp
@@ -292,7 +306,7 @@ mod macos {
             Self {
                 hold_active: false,
                 hold_active_ts: None,
-                assistive_mode: false,
+                hold_mode: HoldMode::Raw,
                 hold_event_sent: false,
                 last_left_tap_ts: None,
                 last_right_tap_ts: None,
@@ -322,31 +336,65 @@ mod macos {
     }
 
     /// Check if the configured hold combo is currently pressed
-    /// Returns (combo_active, is_assistive)
+    /// Returns combo_active
     fn check_hold_combo(
         ctrl: bool,
         shift: bool,
         option: bool,
         cmd: bool,
         hold_mods: HoldMods,
-    ) -> (bool, bool) {
-        let combo_active = match hold_mods {
-            // Ctrl alone triggers (Option must NOT be pressed for exclusivity with toggle)
-            HoldMods::Ctrl => ctrl && !option && !cmd,
-            // Ctrl+Alt (Option) together trigger
-            HoldMods::CtrlAlt => ctrl && option && !cmd,
-            // Ctrl+Shift together trigger (AI mode)
-            HoldMods::CtrlShift => ctrl && shift && !option && !cmd,
-            // Ctrl+Command together trigger
-            HoldMods::CtrlCmd => ctrl && cmd && !option,
+    ) -> bool {
+        // If Option is pressed but it's not part of the configured hold combo,
+        // treat it as "not a hold" to avoid conflicts with Option double-tap toggles.
+        if option && !matches!(hold_mods, HoldMods::CtrlAlt) {
+            return false;
+        }
+
+        let exclusive = EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst);
+        let current = ModifierFlags {
+            ctrl,
+            alt: option,
+            shift,
+            cmd,
+        };
+        let required = match hold_mods {
+            HoldMods::Ctrl => ModifierFlags {
+                ctrl: true,
+                alt: false,
+                shift: false,
+                cmd: false,
+            },
+            HoldMods::CtrlAlt => ModifierFlags {
+                ctrl: true,
+                alt: true,
+                shift: false,
+                cmd: false,
+            },
+            HoldMods::CtrlShift => ModifierFlags {
+                ctrl: true,
+                alt: false,
+                shift: true,
+                cmd: false,
+            },
+            HoldMods::CtrlCmd => ModifierFlags {
+                ctrl: true,
+                alt: false,
+                shift: false,
+                cmd: true,
+            },
         };
 
-        // Assistive (AI augmentation) is determined by configured HoldMods:
-        // - CtrlShift => assistive=true (AI)
-        // - other combos => assistive=false (raw/formatting controlled elsewhere)
-        let is_assistive = matches!(hold_mods, HoldMods::CtrlShift);
+        current.matches(&required, exclusive)
+    }
 
-        (combo_active, is_assistive)
+    fn compute_hold_mode(shift: bool, cmd: bool) -> HoldMode {
+        if cmd {
+            HoldMode::Selection
+        } else if shift {
+            HoldMode::Chat
+        } else {
+            HoldMode::Raw
+        }
     }
 
     // Global state pointer for callback (must be static for C callback)
@@ -396,7 +444,7 @@ mod macos {
                     // Send Hold Up to cancel the pending hold in controller
                     let _ = state.tx.send(HotkeyEvent::Hold {
                         action: HoldAction::Up,
-                        assistive: state.assistive_mode,
+                        mode: state.hold_mode,
                     });
                     state.hold_active = false;
                     state.hold_active_ts = None;
@@ -459,31 +507,30 @@ mod macos {
         let toggle_trigger = get_toggle_trigger();
 
         // Check if hold combo is active
-        let (combo_active, is_assistive) =
-            check_hold_combo(ctrl_now, shift_now, option_now, cmd_now, hold_mods);
+        let combo_active = check_hold_combo(ctrl_now, shift_now, option_now, cmd_now, hold_mods);
+        let mode_now = compute_hold_mode(shift_now, cmd_now);
 
         // Detect hold combo activation/deactivation
         if combo_active && !state.hold_active {
             // Hold combo just activated
             state.hold_active = true;
             state.hold_active_ts = Some(Instant::now());
-            state.assistive_mode = is_assistive;
+            state.hold_mode = mode_now;
             state.hold_event_sent = false;
 
             tracing::debug!(
-                "Hold combo activated ({:?}, assistive={}) - sending Hold Down event",
-                hold_mods,
-                is_assistive
+                "Hold combo activated ({:?}, mode={:?}) - sending Hold Down event",
+                hold_mods, state.hold_mode
             );
             // Send Hold Down immediately for responsiveness
             let _ = state.tx.send(HotkeyEvent::Hold {
                 action: HoldAction::Down,
-                assistive: state.assistive_mode,
+                mode: state.hold_mode,
             });
             state.hold_event_sent = true;
-        } else if combo_active && state.hold_active && is_assistive && !state.assistive_mode {
-            // Configuration changed mid-hold (rare). Sync state for the eventual Hold Up event.
-            state.assistive_mode = true;
+        } else if combo_active && state.hold_active && mode_now != state.hold_mode {
+            state.hold_mode = mode_now;
+            let _ = state.tx.send(HotkeyEvent::HoldUpdate { mode: state.hold_mode });
         } else if !combo_active && state.hold_active {
             // Hold combo just deactivated
             state.hold_active = false;
@@ -497,7 +544,7 @@ mod macos {
                 }
                 let _ = state.tx.send(HotkeyEvent::Hold {
                     action: HoldAction::Up,
-                    assistive: state.assistive_mode,
+                    mode: state.hold_mode,
                 });
             }
             state.hold_active_ts = None;

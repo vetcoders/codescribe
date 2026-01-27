@@ -7,7 +7,7 @@
 //! - Auto-hides after recording completion
 //!
 //! Use this for: Ctrl hold (raw), Left ⌥⌥ toggle (normal)
-//! For assistive modes (Ctrl+Shift, Right ⌥⌥), use voice_chat_ui instead.
+//! For AI modes (Chat/Selection, Option toggles), use voice_chat_ui instead.
 //!
 //! Design: macOS Tahoe-style with NSVisualEffectView (HudWindow material)
 

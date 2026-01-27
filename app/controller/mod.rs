@@ -41,6 +41,7 @@ use uuid::Uuid;
 use crate::audio::streaming_recorder::StreamingRecorder;
 use crate::config::Config;
 use crate::config::models::ModelManager;
+use crate::os::hotkeys::HoldMode;
 use crate::os::clipboard;
 use crate::os::selection::{
     AssistiveContext, build_assistive_input, capture_assistive_context, capture_frontmost_app_only,
@@ -92,8 +93,14 @@ pub struct RecordingController {
     /// Audio recorder instance
     recorder: Arc<Mutex<StreamingRecorder>>,
 
-    /// Whether assistive formatting mode is enabled (Ctrl+Shift = always AI augmentation)
+    /// Whether AI assistive mode is enabled for the current session.
+    ///
+    /// This is true for:
+    /// - Hold modes: Chat (Shift) / Selection (Cmd)
+    /// - Assistive toggle (right Option double-tap, if enabled)
     assistive_mode: Arc<RwLock<bool>>,
+    /// Current hold intent (Raw/Chat/Selection) for the active session.
+    hold_mode: Arc<RwLock<HoldMode>>,
 
     /// Whether to force RAW mode (Ctrl Hold without Shift = always raw, ignores AI toggle)
     /// Toggle mode (Double Option) keeps this false and respects AI_FORMATTING_ENABLED setting.
@@ -179,6 +186,7 @@ impl RecordingController {
             state: Arc::new(RwLock::new(State::Idle)),
             recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
+            hold_mode: Arc::new(RwLock::new(HoldMode::Raw)),
             force_raw_mode: Arc::new(RwLock::new(false)),
             force_ai_mode: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(None)),
@@ -232,6 +240,7 @@ impl RecordingController {
             state: Arc::new(RwLock::new(State::Idle)),
             recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
+            hold_mode: Arc::new(RwLock::new(HoldMode::Raw)),
             force_raw_mode: Arc::new(RwLock::new(false)),
             force_ai_mode: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(None)),
@@ -303,58 +312,106 @@ impl RecordingController {
         let current_state = self.current_state().await;
 
         debug!(
-            "Hotkey event: type={:?} action={:?} assistive={} force_ai={} state={}",
-            event.key_type, event.action, event.assistive, event.force_ai, current_state
+            "Hotkey event: type={:?} action={:?} assistive={} hold_mode={:?} force_ai={} state={}",
+            event.key_type,
+            event.action,
+            event.assistive,
+            event.hold_mode,
+            event.force_ai,
+            current_state
         );
 
-        // Update assistive mode from event (can be upgraded mid-hold if Shift added)
-        if event.assistive {
-            *self.assistive_mode.write().await = true;
-            // Shift pressed = NOT force_raw (Assistive takes precedence)
-            *self.force_raw_mode.write().await = false;
-            *self.force_ai_mode.write().await = false;
-
-            // Best-effort: if we upgrade mid-recording, switch UI and capture context once.
-            if matches!(current_state, State::RecHold | State::RecToggle) {
-                let has_selection = self
-                    .assistive_context
-                    .read()
-                    .await
-                    .as_ref()
-                    .and_then(|c| c.selected_text.as_ref())
-                    .is_some();
-                if !has_selection {
-                    let ctx = tokio::task::spawn_blocking(|| capture_assistive_context())
-                        .await
-                        .unwrap_or_default();
-                    *self.assistive_context.write().await = Some(ctx);
-                }
-                if let Some(ctx) = self.assistive_context.read().await.clone() {
-                    crate::voice_chat_ui::set_voice_chat_target_app(ctx.frontmost_app.clone());
-                }
-
-                crate::hide_transcription_overlay();
-                crate::show_voice_chat_overlay();
-                crate::show_agent_tab();
-                crate::voice_chat_ui::update_voice_chat_status("Listening...");
-            }
-        } else if matches!(event.action, HotkeyAction::Down | HotkeyAction::Press) {
-            // Only reset on Down/Press, not Up (preserves upgrade during hold)
-            *self.assistive_mode.write().await = false;
-            *self.assistive_context.write().await = None;
-
+        // Update mode flags from event (supports mid-hold mode changes via Press events).
+        if matches!(event.action, HotkeyAction::Down | HotkeyAction::Press) {
             match event.key_type {
                 HotkeyType::Hold => {
-                    // Hold without Shift = force RAW mode
-                    *self.force_raw_mode.write().await = true;
-                    *self.force_ai_mode.write().await = false;
+                    *self.hold_mode.write().await = event.hold_mode;
+                    match event.hold_mode {
+                        HoldMode::Raw => {
+                            *self.assistive_mode.write().await = false;
+                            *self.assistive_context.write().await = None;
+                            *self.force_raw_mode.write().await = true;
+                            *self.force_ai_mode.write().await = false;
+
+                            if matches!(current_state, State::RecHold | State::RecToggle) {
+                                set_assistive_session(false);
+                                crate::hide_voice_chat_overlay();
+                                crate::clear_transcription_text();
+                                crate::show_transcription_overlay();
+                                crate::enter_recording_mode();
+                            }
+                        }
+                        HoldMode::Chat => {
+                            *self.assistive_mode.write().await = true;
+                            *self.force_raw_mode.write().await = false;
+                            *self.force_ai_mode.write().await = false;
+                            *self.assistive_context.write().await = None;
+
+                            // If we switch modes while already recording, update UI immediately.
+                            if matches!(current_state, State::RecHold | State::RecToggle) {
+                                let ctx =
+                                    tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                                        .await
+                                        .unwrap_or_default();
+                                *self.assistive_context.write().await = Some(ctx);
+                                crate::voice_chat_ui::set_voice_chat_target_app(
+                                    self.assistive_context
+                                        .read()
+                                        .await
+                                        .clone()
+                                        .unwrap_or_default()
+                                        .frontmost_app,
+                                );
+                                set_assistive_session(true);
+                                crate::hide_transcription_overlay();
+                                crate::show_voice_chat_overlay();
+                                crate::show_agent_tab();
+                                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                            }
+                        }
+                        HoldMode::Selection => {
+                            *self.assistive_mode.write().await = true;
+                            *self.force_raw_mode.write().await = false;
+                            *self.force_ai_mode.write().await = false;
+                            *self.assistive_context.write().await = None;
+
+                            // If we switch modes while already recording, update UI immediately.
+                            if matches!(current_state, State::RecHold | State::RecToggle) {
+                                let ctx =
+                                    tokio::task::spawn_blocking(|| capture_assistive_context())
+                                        .await
+                                        .unwrap_or_default();
+                                *self.assistive_context.write().await = Some(ctx);
+                                crate::voice_chat_ui::set_voice_chat_target_app(
+                                    self.assistive_context
+                                        .read()
+                                        .await
+                                        .clone()
+                                        .unwrap_or_default()
+                                        .frontmost_app,
+                                );
+                                set_assistive_session(true);
+                                crate::hide_transcription_overlay();
+                                crate::show_voice_chat_overlay();
+                                crate::show_agent_tab();
+                                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                            }
+                        }
+                    }
                 }
                 HotkeyType::Toggle => {
+                    *self.hold_mode.write().await = HoldMode::Raw;
+                    *self.assistive_context.write().await = None;
+
+                    *self.assistive_mode.write().await = event.assistive;
                     *self.force_raw_mode.write().await = false;
                     *self.force_ai_mode.write().await = event.force_ai;
                 }
                 HotkeyType::Conversation => {
+                    *self.hold_mode.write().await = HoldMode::Raw;
+                    *self.assistive_context.write().await = None;
                     // Conversation mode - full-duplex (no raw/ai flags)
+                    *self.assistive_mode.write().await = false;
                     *self.force_raw_mode.write().await = false;
                     *self.force_ai_mode.write().await = false;
                 }
@@ -853,12 +910,12 @@ impl RecordingController {
         let language = config.whisper_language;
         drop(config); // Release read lock
 
-        // Capture assistive mode for badge display
-        let is_assistive = *self.assistive_mode.read().await;
+        let hold_mode = Arc::clone(&self.hold_mode);
 
         debug!(
-            "Scheduling hold-start after {}ms delay (assistive={})",
-            delay_ms, is_assistive
+            "Scheduling hold-start after {}ms delay (hold_mode={:?})",
+            delay_ms,
+            *hold_mode.read().await
         );
 
         // Cancel any existing delayed start
@@ -890,6 +947,9 @@ impl RecordingController {
             *session_id.write().await = Some(new_session_id.clone());
 
             info!("Starting hold recording (session={})", new_session_id);
+
+            let hold_mode = *hold_mode.read().await;
+            let is_assistive = matches!(hold_mode, HoldMode::Chat | HoldMode::Selection);
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is configured via CODESCRIBE_VAD_MAX_SILENCE_SEC env var (single source of truth)
@@ -923,9 +983,19 @@ impl RecordingController {
 
             if is_assistive {
                 // Capture context BEFORE showing any overlay (overlays can steal focus).
-                let ctx = tokio::task::spawn_blocking(|| capture_assistive_context())
-                    .await
-                    .unwrap_or_default();
+                let ctx = match hold_mode {
+                    HoldMode::Selection => {
+                        tokio::task::spawn_blocking(|| capture_assistive_context())
+                            .await
+                            .unwrap_or_default()
+                    }
+                    HoldMode::Chat => tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                        .await
+                        .unwrap_or_default(),
+                    HoldMode::Raw => tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                        .await
+                        .unwrap_or_default(),
+                };
                 *assistive_context.write().await = Some(ctx);
                 crate::voice_chat_ui::set_voice_chat_target_app(
                     assistive_context
@@ -1066,8 +1136,9 @@ impl RecordingController {
         set_assistive_session(is_assistive);
 
         if is_assistive {
-            // Capture context BEFORE showing any overlay (overlays can steal focus).
-            let ctx = tokio::task::spawn_blocking(|| capture_assistive_context())
+            // Toggle-assistive is a hands-off chat loop (no selection).
+            // Capture only target app (no clipboard).
+            let ctx = tokio::task::spawn_blocking(|| capture_frontmost_app_only())
                 .await
                 .unwrap_or_default();
             *self.assistive_context.write().await = Some(ctx);
@@ -1196,6 +1267,7 @@ impl RecordingController {
         // Get session ID and mode flags before we reset them
         let session_id = self.session_id.read().await.clone();
         let assistive = *self.assistive_mode.read().await;
+        let hold_mode = *self.hold_mode.read().await;
         let force_raw = *self.force_raw_mode.read().await;
         let force_ai = *self.force_ai_mode.read().await;
 
@@ -1203,12 +1275,13 @@ impl RecordingController {
         show_badge_for_mode(BadgeMode::Processing);
 
         let result = self
-            .process_recording(session_id, assistive, force_raw, force_ai)
+            .process_recording(session_id, assistive, hold_mode, force_raw, force_ai)
             .await;
 
         // Always reset to IDLE, even on error
         *self.state.write().await = State::Idle;
         *self.assistive_mode.write().await = false;
+        *self.hold_mode.write().await = HoldMode::Raw;
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
@@ -1262,21 +1335,22 @@ impl RecordingController {
     /// Process the recording: stop, transcribe, format, paste
     ///
     /// ## Mode Logic:
-    /// - `assistive=true`: ALWAYS AI augmentation (Ctrl+Shift held)
-    /// - `force_raw=true`: ALWAYS raw transcript (Ctrl held without Shift)
+    /// - `assistive=true`: ALWAYS AI augmentation (HoldMode::Chat / HoldMode::Selection)
+    /// - `force_raw=true`: ALWAYS raw transcript (HoldMode::Raw)
     /// - `force_ai=true`: ALWAYS AI formatting (left double Option)
     /// - Neither: Toggle mode - respects AI_FORMATTING_ENABLED setting
     async fn process_recording(
         &self,
         _session_id: Option<String>,
         assistive: bool,
+        hold_mode: HoldMode,
         force_raw: bool,
         force_ai: bool,
     ) -> Result<()> {
         if cfg!(test) {
             info!(
-                "process_recording: skipped in tests (assistive={}, force_raw={}, force_ai={})",
-                assistive, force_raw, force_ai
+                "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",
+                assistive, hold_mode, force_raw, force_ai
             );
             return Ok(());
         }
@@ -1434,9 +1508,16 @@ impl RecordingController {
 
         // chat_active already captured above
 
+        let effective_hold_mode = if assistive && matches!(hold_mode, HoldMode::Raw) {
+            // Toggle-assistive path doesn't have a meaningful hold-mode; treat as Chat (no selection).
+            HoldMode::Chat
+        } else {
+            hold_mode
+        };
+
         // Determine final text based on mode (NEW architecture):
         //
-        // 1. Ctrl+Shift (assistive=true): ALWAYS AI augmentation (expands, creates plans)
+        // 1. HoldMode::Chat / HoldMode::Selection (assistive=true): ALWAYS AI augmentation
         // 2. Ctrl Hold (force_raw=true): ALWAYS raw transcript (ignores AI toggle)
         // 3. Left double Option (force_ai=true): ALWAYS AI formatting
         // 4. Toggle (neither): respects AI_FORMATTING_ENABLED toggle
@@ -1444,10 +1525,13 @@ impl RecordingController {
         // This allows users to choose mode via hotkey:
         // - Quick dictation? → Ctrl (fast, raw)
         // - Need formatting? → Double Option (respects setting)
-        // - Need AI help? → Ctrl+Shift (always AI)
+        // - AI chat? → Hold + Shift (Chat)
+        // - AI on selection? → Hold + Cmd (Selection)
         let (formatted_text, output_kind, should_auto_paste) = if assistive {
-            // Ctrl+Shift: ALWAYS augmentation mode (AI expands content)
-            info!("Assistive mode (Ctrl+Shift): augmenting transcript via AI");
+            info!(
+                "Assistive mode ({:?}): augmenting transcript via AI",
+                effective_hold_mode
+            );
 
             if chat_active {
                 // Finalize the streaming user draft into a bubble
@@ -1457,12 +1541,21 @@ impl RecordingController {
                 crate::voice_chat_ui::update_voice_chat_status("Thinking...");
             }
 
-            let ctx = self
+            let mut ctx = self
                 .assistive_context
                 .read()
                 .await
                 .clone()
                 .unwrap_or_default();
+
+            // Ensure we have a target app label (best-effort, no selection, no clipboard).
+            if ctx.frontmost_app.is_none() {
+                ctx.frontmost_app = tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                    .await
+                    .ok()
+                    .and_then(|c| c.frontmost_app);
+            }
+
             {
                 let app = ctx
                     .frontmost_app
@@ -1476,6 +1569,22 @@ impl RecordingController {
                     app, sel_len
                 ));
             }
+
+            // Split behavior:
+            // - Chat: ignore selection.
+            // - Selection: require selection; never fallback to clipboard by default.
+            if matches!(effective_hold_mode, HoldMode::Selection)
+                && ctx.selected_text.as_deref().unwrap_or("").trim().is_empty()
+            {
+                if chat_active {
+                    crate::voice_chat_ui::set_voice_chat_sending(false);
+                    crate::voice_chat_ui::update_voice_chat_status("No selection");
+                    crate::voice_chat_ui::add_voice_chat_error_message(
+                        "No selected text. Select text first or use Chat mode (Shift).",
+                    );
+                }
+                (clean_text.clone(), crate::state::history::TranscriptKind::Raw, false)
+            } else {
             let assistive_input = build_assistive_input(&clean_text, &ctx);
 
             let lang_str = language_opt.map(String::from);
@@ -1531,6 +1640,7 @@ impl RecordingController {
                 }
             };
             (result.text, kind, false)
+            }
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
             // Post-processed clean_text is used (lexicon + cleanup already applied)
@@ -1709,7 +1819,11 @@ impl RecordingController {
         };
 
         let mode_label = if assistive {
-            "assistive"
+            match effective_hold_mode {
+                HoldMode::Chat => "chat",
+                HoldMode::Selection => "selection",
+                HoldMode::Raw => "assistive",
+            }
         } else if force_raw {
             "raw"
         } else if force_ai {
@@ -1806,6 +1920,7 @@ impl RecordingController {
     async fn reset_state(&self) {
         *self.state.write().await = State::Idle;
         *self.assistive_mode.write().await = false;
+        *self.hold_mode.write().await = HoldMode::Raw;
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;

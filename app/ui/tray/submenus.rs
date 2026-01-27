@@ -32,6 +32,12 @@ pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
     let hold_current_label =
         MenuItem::new(format!("Current: {}", current_mods.label()), false, None);
     hold_menu.append(&hold_current_label)?;
+    let hold_modes_hint = MenuItem::new(
+        "Modes: +Shift = Chat, +Command = Selection".to_string(),
+        false,
+        None,
+    );
+    hold_menu.append(&hold_modes_hint)?;
     hold_menu.append(&PredefinedMenuItem::separator())?;
 
     let hold_ctrl = CheckMenuItem::new(
@@ -70,7 +76,7 @@ pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
     hold_menu.append(&PredefinedMenuItem::separator())?;
 
     let hold_exclusive = CheckMenuItem::new(
-        "Exclusive (ignore extra modifiers)",
+        "Exact match only (disable Shift/Cmd modes)",
         true,
         config.hold_exclusive,
         None,

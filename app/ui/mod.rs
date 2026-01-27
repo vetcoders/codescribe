@@ -64,7 +64,7 @@ pub enum BadgeMode {
     Toggle,
     /// Processing: Orange - "transkrybuję/formatuję"
     Processing,
-    /// Assistive mode (Ctrl+Shift): Purple with glow - "AI słucha"
+    /// AI mode (Chat/Selection): Purple with glow - "AI słucha"
     Assistive,
 }
 

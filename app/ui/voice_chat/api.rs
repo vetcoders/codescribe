@@ -776,7 +776,7 @@ fn entry_type_label(entry: &DrawerEntry) -> &'static str {
 fn mode_label(mode: TranscriptionMode) -> &'static str {
     match mode {
         TranscriptionMode::Hold => "Ctrl+Hold",
-        TranscriptionMode::Assistive => "Ctrl+Shift",
+        TranscriptionMode::Assistive => "Shift/Cmd",
         TranscriptionMode::Toggle => "Toggle",
         TranscriptionMode::Conversation => "Moshi",
     }

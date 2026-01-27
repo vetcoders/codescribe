@@ -21,6 +21,7 @@ async fn test_hold_down_schedules_delayed_start() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Down,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
 
@@ -48,6 +49,7 @@ async fn test_hold_up_before_delay_cancels() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Down,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
     controller.handle_hotkey_event(down_event).await.unwrap();
@@ -58,6 +60,7 @@ async fn test_hold_up_before_delay_cancels() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Up,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
     controller.handle_hotkey_event(up_event).await.unwrap();
@@ -78,6 +81,7 @@ async fn test_toggle_starts_immediately() {
         key_type: HotkeyType::Toggle,
         action: HotkeyAction::Press,
         assistive: true,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
 
@@ -98,6 +102,7 @@ async fn test_busy_state_ignores_hotkeys() {
         key_type: HotkeyType::Toggle,
         action: HotkeyAction::Press,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
 
@@ -172,6 +177,7 @@ async fn test_hold_down_sets_force_raw_mode() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Down,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
     controller.handle_hotkey_event(event).await.unwrap();
@@ -196,6 +202,7 @@ async fn test_toggle_press_does_not_set_force_raw_mode() {
         key_type: HotkeyType::Toggle,
         action: HotkeyAction::Press,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
     controller.handle_hotkey_event(event).await.unwrap();
@@ -219,6 +226,7 @@ async fn test_toggle_press_sets_force_ai_mode() {
         key_type: HotkeyType::Toggle,
         action: HotkeyAction::Press,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: true,
     };
     controller.handle_hotkey_event(event).await.unwrap();
@@ -238,6 +246,7 @@ async fn test_hold_with_shift_sets_assistive_not_force_raw() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Down,
         assistive: true,
+        hold_mode: HoldMode::Chat,
         force_ai: false, // Shift was held from the start (Ctrl+Shift)
     };
     controller.handle_hotkey_event(event).await.unwrap();
@@ -262,6 +271,7 @@ async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Down,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
     controller.handle_hotkey_event(down_event).await.unwrap();
@@ -274,8 +284,9 @@ async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
     // This comes as another event with assistive=true
     let upgrade_event = HotkeyInput {
         key_type: HotkeyType::Hold,
-        action: HotkeyAction::Down, // Still "down" - modifier flags changed
+        action: HotkeyAction::Press, // Modifier flags changed while holding
         assistive: true,
+        hold_mode: HoldMode::Chat,
         force_ai: false,
     };
     controller.handle_hotkey_event(upgrade_event).await.unwrap();
@@ -305,6 +316,7 @@ async fn test_hold_up_preserves_mode_flags_when_idle() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Up,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
     controller.handle_hotkey_event(up_event).await.unwrap();
@@ -330,6 +342,7 @@ async fn test_hold_up_triggers_finish_recording() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Up,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
     let result = controller.handle_hotkey_event(up_event).await;
@@ -395,6 +408,7 @@ async fn test_mode_matrix_coverage() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Down,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
     controller.handle_hotkey_event(ctrl_hold).await.unwrap();
@@ -410,6 +424,7 @@ async fn test_mode_matrix_coverage() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Down,
         assistive: true,
+        hold_mode: HoldMode::Chat,
         force_ai: false,
     };
     controller
@@ -428,6 +443,7 @@ async fn test_mode_matrix_coverage() {
         key_type: HotkeyType::Toggle,
         action: HotkeyAction::Press,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: true,
     };
     controller.handle_hotkey_event(double_option).await.unwrap();
@@ -451,6 +467,7 @@ async fn test_finish_recording_resets_unconditionally_force_raw() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Up,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: false,
     };
     let _ = controller.handle_hotkey_event(up_event).await;
@@ -475,6 +492,7 @@ async fn test_finish_recording_resets_unconditionally_assistive() {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Up,
         assistive: true,
+        hold_mode: HoldMode::Chat,
         force_ai: false,
     };
     let _ = controller.handle_hotkey_event(up_event).await;
@@ -515,6 +533,7 @@ async fn test_finish_recording_resets_unconditionally_toggle_mode() {
         key_type: HotkeyType::Toggle,
         action: HotkeyAction::Press,
         assistive: false,
+        hold_mode: HoldMode::Raw,
         force_ai: true,
     };
     let _ = controller.handle_hotkey_event(stop_event).await;

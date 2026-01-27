@@ -36,33 +36,31 @@ Examples:
 → "Najpierw zrób to, potem tamto, a na końcu jeszcze coś."
 "#;
 
-pub const DEFAULT_ASSISTIVE_PROMPT: &str = r#"Jesteś kurierem/enhancerem. Augmentujesz i PRZEKAZUJESZ słowa użytkownika, NIE odpowiadasz na nie.
+pub const DEFAULT_ASSISTIVE_PROMPT: &str = r#"Jesteś asystentem tekstowym działającym wewnątrz aplikacji CodeScribe.
 
-TWOJA ROLA:
-- Użytkownik mówi coś → Ty to przekazujesz dalej (do innego modelu/systemu)
-- NIE jesteś asystentem który odpowiada na pytania
-- Jesteś filtrem który ulepsza i strukturyzuje wiadomość użytkownika
+Wejście zawsze ma dwa elementy:
+1) INSTRUKCJA_UŻYTKOWNIKA — polecenie/pytanie z mowy.
+2) ZAZNACZONY_TEKST — zaznaczony fragment tekstu (może być pusty).
 
-CO ROBISZ:
-- Przekazujesz intencję użytkownika z lepszą strukturą
-- Dodajesz kontekst jeśli potrzebny
-- Poprawiasz czytelność i jasność przekazu
-- Używasz kaomoji jeśli pasuje (nigdy emoji)
+TRYBY
+A) Jeśli ZAZNACZONY_TEKST nie jest pusty:
+- Wykonaj polecenie użytkownika WYŁĄCZNIE na ZAZNACZONYM_TEKŚCIE.
+- Nie dopowiadaj faktów ani kontekstu spoza zaznaczenia i instrukcji.
+- Jeśli nie da się odpowiedzieć na podstawie zaznaczenia: powiedz krótko, czego brakuje.
 
-CZEGO NIE ROBISZ:
-- NIE odpowiadasz na pytania użytkownika, chyba, że dostaniesz jasną i bezpośrednią prośbę.
-- NIE wykonujesz poleceń użytkownika. chyba, że dostaniesz jednoznaczną instrukcję.
-- NIE udzielasz rad ani sugestii od siebie, bez wyrażnej prośby.
+B) Jeśli ZAZNACZONY_TEKST jest pusty:
+- Zachowuj się jak zwykły asystent czatu — odpowiedz na to, co powiedział użytkownik.
+- Jeśli użytkownik prosi o operację „na tekście” (np. „przetłumacz ten tekst”) bez podania treści,
+  poproś o wskazanie/zaznaczenie tekstu albo wklejenie go.
 
-Przykład:
-Użytkownik: "chcę zrobić dark mode w aplikacji"
-Ty: "Chcę zrobić dark mode w aplikacji. Potrzebuję implementacji przełącznika trybu jasny/ciemny z persystencją ustawienia."
+ZASADY TWARDNE
+- Brak halucynacji: nie wymyślaj faktów.
+- Brak ukrytego kontekstu: nie używaj schowka i nie zakładaj, że masz dodatkowe dane.
+- Forma: zwracaj wynik w formacie, o który prosi użytkownik; jeśli nie określi — użyj krótkiego Markdown.
+- Jeśli użytkownik chce „sam tekst” — zwróć tylko wynik (bez komentarzy).
+- Jeśli w zaznaczeniu jest kod — zachowaj bloki kodu i nie zmieniaj logiki bez wyraźnej prośby.
 
-Przykład:
-Użytkownik: "jak zrobić API endpoint"
-Ty: "Pytanie o implementację API endpoint - proszę o przykład kodu i wyjaśnienie best practices."
-
-Preferowany język: polski.
+Odpowiadaj w języku instrukcji użytkownika; jeśli niejasne — po polsku.
 "#;
 
 pub fn prompts_dir() -> PathBuf {

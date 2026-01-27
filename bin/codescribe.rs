@@ -730,10 +730,10 @@ async fn dispatch_hotkey_event(
     controller: std::sync::Arc<codescribe::controller::RecordingController>,
 ) -> Result<()> {
     use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType};
-    use codescribe::os::hotkeys::{HoldAction, HotkeyEvent};
+    use codescribe::os::hotkeys::{HoldAction, HoldMode, HotkeyEvent};
 
     match event {
-        HotkeyEvent::Hold { action, assistive } => {
+        HotkeyEvent::Hold { action, mode } => {
             let mapped_action = match action {
                 HoldAction::Down => HotkeyAction::Down,
                 HoldAction::Up => HotkeyAction::Up,
@@ -741,7 +741,18 @@ async fn dispatch_hotkey_event(
             let input = HotkeyInput {
                 key_type: HotkeyType::Hold,
                 action: mapped_action,
-                assistive,
+                assistive: !matches!(mode, HoldMode::Raw),
+                hold_mode: mode,
+                force_ai: false,
+            };
+            controller.handle_hotkey_event(input).await?;
+        }
+        HotkeyEvent::HoldUpdate { mode } => {
+            let input = HotkeyInput {
+                key_type: HotkeyType::Hold,
+                action: HotkeyAction::Press,
+                assistive: !matches!(mode, HoldMode::Raw),
+                hold_mode: mode,
                 force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
@@ -751,6 +762,7 @@ async fn dispatch_hotkey_event(
                 key_type: HotkeyType::Toggle,
                 action: HotkeyAction::Press,
                 assistive: false,
+                hold_mode: HoldMode::Raw,
                 force_ai: true,
             };
             controller.handle_hotkey_event(input).await?;
@@ -760,6 +772,7 @@ async fn dispatch_hotkey_event(
                 key_type: HotkeyType::Toggle,
                 action: HotkeyAction::Press,
                 assistive: true,
+                hold_mode: HoldMode::Raw,
                 force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
