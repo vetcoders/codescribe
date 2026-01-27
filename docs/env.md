@@ -110,8 +110,13 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `LLM_ASSISTIVE_*` **nadpisuje** `LLM_*` dla assistive (HOT RELOADED)
 
 **Streaming vs buffered**
+- `LLM_USE_STREAMING` – streaming odpowiedzi z LLM, domyślnie `1` (HOT RELOADED)
+  - `1` lub `true` = SSE streaming (domyślne, pokazuje tekst w czasie rzeczywistym)
+  - `0` lub `false` = buffered (czeka na pełną odpowiedź)
+- `TRANSCRIPT_SEND_MODE` – tryb wysyłania transkrypcji do UI (RESTART NEEDED)
+  - `streaming` = delty w czasie rzeczywistym
+  - `buffered` = pełna transkrypcja na końcu
 - `CODESCRIBE_BUFFERED_STREAM=1` → **ignoruje** chunking (`CODESCRIBE_STREAM_CHUNK_SEC`) (HOT RELOADED)
-- `TRANSCRIPT_SEND_MODE=streaming` wysyła delty do overlayu (RESTART NEEDED)
 
 **Overlay pozycja**
 - `OVERLAY_POSITION_MODE=custom` aktywuje `OVERLAY_CUSTOM_X/Y` (RESTART NEEDED)
