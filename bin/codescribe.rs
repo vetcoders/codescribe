@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use codescribe::os::hotkeys;
 use codescribe::{ai_formatting, audio, whisper};
+use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -415,6 +416,9 @@ async fn run_daemon() -> Result<()> {
     #[cfg(target_os = "macos")]
     codescribe::install_basic_edit_menu();
 
+    #[cfg(target_os = "macos")]
+    codescribe::os::permissions::request_all_permissions();
+
     codescribe::whisper::init().context("Failed to initialize Whisper")?;
     let controller = Arc::new(RecordingController::new());
     #[cfg(target_os = "macos")]
@@ -472,26 +476,37 @@ async fn run_daemon() -> Result<()> {
     });
 
     let (tx, rx) = unbounded::<HotkeyEvent>();
-    let hotkey_manager = hotkeys::HotkeyManager::new(tx).map_err(|e| anyhow::anyhow!(e))?;
-
-    let hotkey_controller = Arc::clone(&controller);
-    let hotkey_handle = Handle::current();
-    std::thread::spawn(move || {
-        for event in rx {
-            let controller = Arc::clone(&hotkey_controller);
-            let handle = hotkey_handle.clone();
-            handle.spawn(async move {
-                if let Err(e) = dispatch_hotkey_event(event, controller).await {
-                    eprintln!("Hotkey event error: {}", e);
-                }
-            });
+    let hotkey_manager = match hotkeys::HotkeyManager::new(tx) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            eprintln!(
+                "Hotkeys disabled ({}). If this is macOS, check: System Settings > Privacy & Security > Accessibility.",
+                e
+            );
+            None
         }
-    });
+    };
+
+    if hotkey_manager.is_some() {
+        let hotkey_controller = Arc::clone(&controller);
+        let hotkey_handle = Handle::current();
+        std::thread::spawn(move || {
+            for event in rx {
+                let controller = Arc::clone(&hotkey_controller);
+                let handle = hotkey_handle.clone();
+                handle.spawn(async move {
+                    if let Err(e) = dispatch_hotkey_event(event, controller).await {
+                        eprintln!("Hotkey event error: {}", e);
+                    }
+                });
+            }
+        });
+    }
 
     // Start Quality Loop daemon (always-on self-improvement)
     let quality_child = spawn_quality_daemon();
 
-    tray::run_with_hotkeys(Some(hotkey_manager))?;
+    tray::run_with_hotkeys(hotkey_manager)?;
 
     // Cleanup: kill quality daemon when tray exits
     if let Some(mut handle) = quality_child {

@@ -81,17 +81,37 @@ bundle: release
 	@echo "Creating macOS app bundle..."
 	@mkdir -p bundle/CodeScribe.app/Contents/{MacOS,Resources}
 	@cp target/release/codescribe bundle/CodeScribe.app/Contents/MacOS/
+	@cp target/release/codescribe-loop bundle/CodeScribe.app/Contents/MacOS/ 2>/dev/null || true
+	@cp target/release/codescribe-quality bundle/CodeScribe.app/Contents/MacOS/ 2>/dev/null || true
 	@cp assets/AppIcon.icns bundle/CodeScribe.app/Contents/Resources/ 2>/dev/null || true
 	@VERSION=$$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	if [ -f bundle/CodeScribe.app/Contents/Info.plist ]; then \
-		sed -i '' "s/<string>0\.[0-9]*\.[0-9]*</<string>$$VERSION</g" bundle/CodeScribe.app/Contents/Info.plist; \
-	fi
+	printf '%s\n' \
+		'<?xml version="1.0" encoding="UTF-8"?>' \
+		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+		'<plist version="1.0">' \
+		'<dict>' \
+		'  <key>CFBundleName</key><string>CodeScribe</string>' \
+		'  <key>CFBundleDisplayName</key><string>CodeScribe</string>' \
+		'  <key>CFBundleIdentifier</key><string>com.codescribe.app</string>' \
+		"  <key>CFBundleVersion</key><string>$$VERSION</string>" \
+		"  <key>CFBundleShortVersionString</key><string>$$VERSION</string>" \
+		'  <key>CFBundlePackageType</key><string>APPL</string>' \
+		'  <key>CFBundleExecutable</key><string>codescribe</string>' \
+		'  <key>CFBundleIconFile</key><string>AppIcon</string>' \
+		'  <key>LSUIElement</key><true/>' \
+		'  <key>NSMicrophoneUsageDescription</key><string>Needed to transcribe speech.</string>' \
+		'  <key>NSAccessibilityUsageDescription</key><string>Needed to monitor hotkeys and paste results.</string>' \
+		'  <key>NSInputMonitoringUsageDescription</key><string>Needed to detect global hotkeys.</string>' \
+		'</dict>' \
+		'</plist>' \
+		> bundle/CodeScribe.app/Contents/Info.plist
 	@echo "Bundle ready: bundle/CodeScribe.app"
 
 install-app: bundle
 	@echo "Installing to /Applications..."
-	@rm -rf /Applications/CodeScribe.app
-	@cp -R bundle/CodeScribe.app /Applications/
+	@mkdir -p /Applications
+	@rsync -a --delete bundle/CodeScribe.app/ /Applications/CodeScribe.app/
+	@codesign --force --deep --sign - --identifier com.codescribe.app /Applications/CodeScribe.app >/dev/null 2>&1 || true
 	@echo "Installed: /Applications/CodeScribe.app"
 
 # ============================================================================

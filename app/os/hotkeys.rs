@@ -159,7 +159,10 @@ impl ModifierFlags {
     /// Check if the current flags match the required flags
     pub fn matches(&self, required: &ModifierFlags, exclusive: bool) -> bool {
         if exclusive {
-            self.ctrl == required.ctrl && self.alt == required.alt && self.cmd == required.cmd
+            self.ctrl == required.ctrl
+                && self.alt == required.alt
+                && self.shift == required.shift
+                && self.cmd == required.cmd
         } else {
             (!required.ctrl || self.ctrl)
                 && (!required.alt || self.alt)
@@ -184,6 +187,7 @@ impl Default for ModifierFlags {
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
+    use std::sync::mpsc;
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
@@ -333,17 +337,16 @@ mod macos {
             HoldMods::Ctrl => ctrl && !option && !cmd,
             // Ctrl+Alt (Option) together trigger
             HoldMods::CtrlAlt => ctrl && option && !cmd,
-            // Ctrl+Shift together trigger (shift is part of combo, not assistive)
+            // Ctrl+Shift together trigger (AI mode)
             HoldMods::CtrlShift => ctrl && shift && !option && !cmd,
             // Ctrl+Command together trigger
             HoldMods::CtrlCmd => ctrl && cmd && !option,
         };
 
-        // Assistive mode: Shift held DURING the gesture (except for CtrlShift mode where shift is required)
-        let is_assistive = match hold_mods {
-            HoldMods::CtrlShift => false, // Shift is part of the combo, not assistive
-            _ => shift,
-        };
+        // Assistive (AI augmentation) is determined by configured HoldMods:
+        // - CtrlShift => assistive=true (AI)
+        // - other combos => assistive=false (raw/formatting controlled elsewhere)
+        let is_assistive = matches!(hold_mods, HoldMods::CtrlShift);
 
         (combo_active, is_assistive)
     }
@@ -488,9 +491,8 @@ mod macos {
             }
             state.hold_event_sent = true;
         } else if combo_active && state.hold_active && is_assistive && !state.assistive_mode {
-            // Shift was added while combo active - upgrade to assistive mode
+            // Configuration changed mid-hold (rare). Sync state for the eventual Hold Up event.
             state.assistive_mode = true;
-            tracing::info!("Upgraded to assistive mode (Shift added during hold)");
         } else if !combo_active && state.hold_active {
             // Hold combo just deactivated
             state.hold_active = false;
@@ -604,17 +606,25 @@ mod macos {
             return Err("Hotkey listener already running".to_string());
         }
 
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+
         thread::spawn(move || {
-            if let Err(e) = run_event_tap(tx) {
+            if let Err(e) = run_event_tap(tx, ready_tx) {
                 tracing::error!("CGEventTap error: {}", e);
             }
             RUNNING.store(false, Ordering::SeqCst);
         });
 
-        // Give the thread a moment to start
-        thread::sleep(Duration::from_millis(100));
-
-        Ok(())
+        // Wait for startup confirmation so we can surface permission errors.
+        match ready_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(
+                "Timed out while starting CGEventTap (hotkeys). Check Accessibility permission."
+                    .to_string(),
+            ),
+            Err(e) => Err(format!("Failed to start hotkeys: {}", e)),
+        }
     }
 
     /// Enable hotkey processing (thread-safe)
@@ -635,7 +645,10 @@ mod macos {
     }
 
     /// Run the CGEventTap on the current thread (blocking)
-    fn run_event_tap(tx: Sender<HotkeyEvent>) -> Result<(), String> {
+    fn run_event_tap(
+        tx: Sender<HotkeyEvent>,
+        ready_tx: mpsc::Sender<Result<(), String>>,
+    ) -> Result<(), String> {
         // Create state on heap and store global pointer
         let state = Box::new(HotkeyState::new(tx));
         let state_ptr = Box::into_raw(state);
@@ -665,7 +678,9 @@ mod macos {
                 let _ = Box::from_raw(state_ptr);
                 GLOBAL_STATE = None;
             }
-            return Err("Failed to create CGEventTap - check Accessibility permission".to_string());
+            let msg = "Failed to create CGEventTap - check Accessibility permission".to_string();
+            let _ = ready_tx.send(Err(msg.clone()));
+            return Err(msg);
         }
 
         // Enable the tap
@@ -681,7 +696,9 @@ mod macos {
                 let _ = Box::from_raw(state_ptr);
                 GLOBAL_STATE = None;
             }
-            return Err("CGEventTap not enabled - macOS denied access".to_string());
+            let msg = "CGEventTap not enabled - macOS denied access".to_string();
+            let _ = ready_tx.send(Err(msg.clone()));
+            return Err(msg);
         }
         tracing::debug!("CGEventTap verified as enabled");
 
@@ -693,7 +710,9 @@ mod macos {
                 let _ = Box::from_raw(state_ptr);
                 GLOBAL_STATE = None;
             }
-            return Err("Failed to create run loop source".to_string());
+            let msg = "Failed to create run loop source".to_string();
+            let _ = ready_tx.send(Err(msg.clone()));
+            return Err(msg);
         }
 
         // Add to run loop
@@ -709,6 +728,7 @@ mod macos {
             hold_mods,
             toggle_trigger
         );
+        let _ = ready_tx.send(Ok(()));
 
         // Run the loop (blocking - should never return)
         tracing::debug!("Entering CFRunLoopRun (should block forever)...");
@@ -842,14 +862,14 @@ mod tests {
         };
         assert!(current.matches(&required, true));
 
-        // With Shift (assistive mode) - should still match in exclusive mode
+        // With Shift - should NOT match in exclusive mode
         let current_with_shift = ModifierFlags {
             ctrl: true,
             alt: false,
             shift: true,
             cmd: false,
         };
-        assert!(current_with_shift.matches(&required, true));
+        assert!(!current_with_shift.matches(&required, true));
 
         // Extra modifier (Alt) - should NOT match in exclusive mode
         let current_with_extra = ModifierFlags {

@@ -8,6 +8,7 @@ use tracing::{debug, info};
 
 use crate::config::{Config, HoldMods, ToggleTrigger};
 use crate::os::clipboard;
+use crate::os::permissions;
 use crate::tray::state::{HOLD_MENU_ITEMS, TOGGLE_MENU_ITEMS, send_menu_event};
 use crate::tray::types::{MenuIds, TrayMenuEvent};
 
@@ -23,6 +24,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         crate::show_bootstrap_overlay();
     } else if event_id == &menu_ids.open_history {
         handle_open_history_folder();
+    } else if event_id == &menu_ids.copy_diagnostics {
+        handle_copy_diagnostics();
     } else if event_id == &menu_ids.help {
         handle_open_help();
     } else if event_id == &menu_ids.about {
@@ -73,6 +76,26 @@ fn handle_copy_last() {
         }
     } else {
         info!("No transcript history available");
+    }
+}
+
+fn handle_copy_diagnostics() {
+    send_menu_event(TrayMenuEvent::CopyDiagnostics);
+
+    let report = permissions::diagnostics_report();
+    if let Err(e) = clipboard::set_clipboard(&report) {
+        info!("Failed to copy diagnostics to clipboard: {}", e);
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("osascript")
+            .arg("-e")
+            .arg(
+                r#"display notification "Copied diagnostics to clipboard" with title "CodeScribe""#,
+            )
+            .spawn();
     }
 }
 

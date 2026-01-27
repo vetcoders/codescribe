@@ -51,6 +51,29 @@ pub fn check_accessibility() -> PermissionStatus {
     PermissionStatus::Granted // Not needed on other platforms
 }
 
+/// Check if Input Monitoring permission is granted (macOS)
+///
+/// This permission gates global key event listening (including CGEventTap in listen-only mode).
+#[cfg(target_os = "macos")]
+pub fn check_input_monitoring() -> PermissionStatus {
+    unsafe extern "C" {
+        fn CGPreflightListenEventAccess() -> bool;
+    }
+
+    unsafe {
+        if CGPreflightListenEventAccess() {
+            PermissionStatus::Granted
+        } else {
+            PermissionStatus::Denied
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn check_input_monitoring() -> PermissionStatus {
+    PermissionStatus::Granted
+}
+
 /// Prompt user to grant Accessibility permission
 ///
 /// Opens System Settings > Privacy & Security > Accessibility
@@ -63,11 +86,11 @@ pub fn request_accessibility() -> bool {
     }
 
     use core_foundation::dictionary::CFDictionary;
-    use core_foundation::number::CFNumber;
+    use core_foundation::boolean::CFBoolean;
 
     // Create options dictionary with kAXTrustedCheckOptionPrompt = true
     let key = CFString::new("AXTrustedCheckOptionPrompt");
-    let value = CFNumber::from(1i32); // true
+    let value = CFBoolean::true_value();
 
     let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), value.as_CFType())]);
 
@@ -77,6 +100,23 @@ pub fn request_accessibility() -> bool {
 #[cfg(not(target_os = "macos"))]
 pub fn request_accessibility() -> bool {
     true // Not needed on other platforms
+}
+
+/// Request Input Monitoring permission (macOS)
+///
+/// Shows system prompt asking to allow key event listening.
+#[cfg(target_os = "macos")]
+pub fn request_input_monitoring() -> bool {
+    unsafe extern "C" {
+        fn CGRequestListenEventAccess() -> bool;
+    }
+
+    unsafe { CGRequestListenEventAccess() }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn request_input_monitoring() -> bool {
+    true
 }
 
 /// Check if Microphone permission is granted
@@ -134,6 +174,20 @@ pub fn check_all_permissions() {
         }
     }
 
+    // Check Input Monitoring
+    match check_input_monitoring() {
+        PermissionStatus::Granted => {
+            info!("Input Monitoring permission: Granted");
+        }
+        PermissionStatus::Denied => {
+            warn!("Input Monitoring permission: DENIED - Hotkeys may not work!");
+            warn!("Grant access in: System Settings > Privacy & Security > Input Monitoring");
+        }
+        _ => {
+            warn!("Input Monitoring permission: Unknown status");
+        }
+    }
+
     // Check Microphone
     match check_microphone() {
         PermissionStatus::Granted => {
@@ -161,9 +215,62 @@ pub fn request_all_permissions() {
         request_accessibility();
     }
 
+    // Request Input Monitoring (shows system prompt if not granted)
+    if check_input_monitoring() != PermissionStatus::Granted {
+        info!("Requesting Input Monitoring permission...");
+        request_input_monitoring();
+    }
+
     // Microphone permission is requested automatically when we first access the mic
     // through cpal, so we just log the status
     check_all_permissions();
+}
+
+pub fn diagnostics_report() -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let _ = writeln!(&mut out, "CodeScribe diagnostics");
+    let _ = writeln!(
+        &mut out,
+        "pid: {}",
+        std::process::id()
+    );
+    let _ = writeln!(
+        &mut out,
+        "exe: {}",
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".to_string())
+    );
+
+    if let Some(bundle_id) = current_bundle_identifier() {
+        let _ = writeln!(&mut out, "bundle_id: {}", bundle_id);
+    }
+
+    let _ = writeln!(&mut out, "accessibility: {:?}", check_accessibility());
+    let _ = writeln!(&mut out, "input_monitoring: {:?}", check_input_monitoring());
+
+    out
+}
+
+fn current_bundle_identifier() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    // If running from an .app bundle, Info.plist is usually at ../Info.plist.
+    // Example: .../CodeScribe.app/Contents/MacOS/codescribe
+    let info_plist = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("Info.plist"))?;
+    let content = std::fs::read_to_string(info_plist).ok()?;
+
+    // Extremely small parser: find the first string after CFBundleIdentifier key.
+    let key_idx = content.find("CFBundleIdentifier")?;
+    let after_key = &content[key_idx..];
+    let string_open = after_key.find("<string>")?;
+    let after_open = &after_key[string_open + "<string>".len()..];
+    let string_close = after_open.find("</string>")?;
+    Some(after_open[..string_close].trim().to_string())
 }
 
 #[cfg(test)]
