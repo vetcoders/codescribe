@@ -579,6 +579,7 @@ pub(super) fn update_chat_view_with_state(
         stack_view_clear(container);
         state.agent_bubble_views.clear();
 
+        let mut last_bubble: Option<Id> = None;
         for (index, message) in state.messages.iter().enumerate() {
             let role = match message.role {
                 ChatRole::User => BubbleRole::User,
@@ -595,6 +596,7 @@ pub(super) fn update_chat_view_with_state(
                 copy_action_target: state.action_handler.map(|p| p as Id),
             });
             stack_view_add(container, bubble);
+            last_bubble = Some(bubble);
             state
                 .agent_bubble_views
                 .push((bubble as usize, text_label as usize));
@@ -615,18 +617,22 @@ pub(super) fn update_chat_view_with_state(
         if let Some(scroll_view_ptr) = state.agent_scroll_view {
             let scroll_view = scroll_view_ptr as Id;
 
+            let _: () = msg_send![container, layoutSubtreeIfNeeded];
             let fitting: CGSize = msg_send![container, fittingSize];
             let frame: CGRect = msg_send![container, frame];
             let new_size = CGSize::new(frame.size.width, fitting.height.max(frame.size.height));
             let _: () = msg_send![container, setFrameSize: new_size];
 
             if scroll_to_bottom {
-                let content_view: Id = msg_send![scroll_view, contentView];
-                let bounds: CGRect = msg_send![content_view, bounds];
-                let doc_frame: CGRect = msg_send![container, frame];
-                let max_y = (doc_frame.size.height - bounds.size.height).max(0.0);
-                let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, max_y)];
-                let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
+                // Prefer scrollRectToVisible over scrollToPoint (less sensitive to flipped coords).
+                if let Some(bubble) = last_bubble {
+                    let bounds: CGRect = msg_send![bubble, bounds];
+                    let _: () = msg_send![bubble, scrollRectToVisible: bounds];
+                } else {
+                    let content_view: Id = msg_send![scroll_view, contentView];
+                    let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, 0.0)];
+                    let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
+                }
             }
         }
     }
