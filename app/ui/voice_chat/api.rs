@@ -37,6 +37,18 @@ pub fn update_voice_chat_status(status: &str) {
     });
 }
 
+/// Update the context summary shown in the overlay header (best-effort debug aid).
+///
+/// Examples:
+/// - `ctx: Visual Studio Code | sel: 123`
+/// - `ctx: Finder | sel: 0`
+pub fn update_voice_chat_context_summary(summary: &str) {
+    let summary_owned = summary.to_string();
+    Queue::main().exec_async(move || {
+        update_voice_chat_context_summary_impl(&summary_owned);
+    });
+}
+
 /// Append a delta to the user draft message (streaming transcription)
 pub fn append_voice_chat_user_delta(delta: &str) {
     let delta_owned = delta.to_string();
@@ -265,9 +277,39 @@ pub fn update_active_tab_impl(tab: Tab) {
 
 fn update_voice_chat_status_impl(status: &str) {
     unsafe {
-        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.status_text = status.to_string();
         if let Some(title_label) = state.title_label {
-            let title = format!("CodeScribe — {}", status);
+            let title = if state.context_text.trim().is_empty() {
+                format!("CodeScribe — {}", state.status_text)
+            } else {
+                format!(
+                    "CodeScribe — {} [{}]",
+                    state.status_text,
+                    state.context_text.trim()
+                )
+            };
+            let ns_str = ns_string(&title);
+            let _: () = msg_send![title_label as Id, setStringValue: ns_str];
+        }
+    }
+}
+
+fn update_voice_chat_context_summary_impl(summary: &str) {
+    unsafe {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.context_text = summary.to_string();
+
+        if let Some(title_label) = state.title_label {
+            let title = if state.context_text.trim().is_empty() {
+                format!("CodeScribe — {}", state.status_text)
+            } else {
+                format!(
+                    "CodeScribe — {} [{}]",
+                    state.status_text,
+                    state.context_text.trim()
+                )
+            };
             let ns_str = ns_string(&title);
             let _: () = msg_send![title_label as Id, setStringValue: ns_str];
         }

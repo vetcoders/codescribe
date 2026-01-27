@@ -123,6 +123,8 @@ pub struct VoiceChatOverlayState {
     pub manual_draft: String,
     pub is_sending: bool,
     pub auto_send_enabled: bool,
+    pub status_text: String,
+    pub context_text: String,
     /// Best-effort app name to reactivate when performing paste actions.
     pub last_target_app: Option<String>,
 
@@ -157,6 +159,8 @@ impl Default for VoiceChatOverlayState {
             manual_draft: String::new(),
             is_sending: false,
             auto_send_enabled: true,
+            status_text: "Ready".to_string(),
+            context_text: String::new(),
             last_target_app: None,
             conversation_state: ConversationModeState::default(),
             action_handler: None,

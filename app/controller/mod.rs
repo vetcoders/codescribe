@@ -1290,7 +1290,9 @@ impl RecordingController {
             }
         };
 
-        let chat_active = crate::voice_chat_ui::is_voice_chat_overlay_visible();
+        // In assistive mode, we want to update overlay state even if the window hasn't been
+        // realized on the main thread yet. This avoids "dead" overlays due to timing.
+        let chat_active = assistive || crate::voice_chat_ui::is_voice_chat_overlay_visible();
         let assistive_loop = assistive && self.assistive_loop_active.load(Ordering::SeqCst);
 
         let mut raw_text_opt = None;
@@ -1429,6 +1431,19 @@ impl RecordingController {
                 .await
                 .clone()
                 .unwrap_or_default();
+            {
+                let app = ctx
+                    .frontmost_app
+                    .as_deref()
+                    .unwrap_or("?")
+                    .trim()
+                    .to_string();
+                let sel_len = ctx.selected_text.as_deref().unwrap_or("").len();
+                crate::voice_chat_ui::update_voice_chat_context_summary(&format!(
+                    "ctx: {} | sel: {}",
+                    app, sel_len
+                ));
+            }
             let assistive_input = build_assistive_input(&clean_text, &ctx);
 
             let lang_str = language_opt.map(String::from);

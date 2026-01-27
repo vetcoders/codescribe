@@ -34,12 +34,20 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
 /// Capture best-effort context for assistive mode.
 ///
 /// Env knobs (POC):
 /// - `ASSISTIVE_CONTEXT_ENABLED` (default: 1)
 /// - `ASSISTIVE_CONTEXT_MAX_CHARS` (default: 5000)
 /// - `ASSISTIVE_CONTEXT_INCLUDE_APP` (default: 1)
+/// - `ASSISTIVE_CONTEXT_COPY_DELAY_MS` (default: 150)
 pub fn capture_assistive_context() -> AssistiveContext {
     // Unit tests should not trigger osascript / clipboard / event simulation.
     if cfg!(test) {
@@ -52,6 +60,7 @@ pub fn capture_assistive_context() -> AssistiveContext {
 
     let max_chars = env_usize("ASSISTIVE_CONTEXT_MAX_CHARS", 5000);
     let include_app = env_flag("ASSISTIVE_CONTEXT_INCLUDE_APP", true);
+    let copy_delay_ms = env_u64("ASSISTIVE_CONTEXT_COPY_DELAY_MS", 150);
 
     let frontmost_app = if include_app {
         frontmost_app_name()
@@ -71,7 +80,7 @@ pub fn capture_assistive_context() -> AssistiveContext {
         };
     }
 
-    let selected_text = selected_text_from_frontmost(max_chars);
+    let selected_text = selected_text_from_frontmost(max_chars, copy_delay_ms);
 
     debug!(
         "Assistive context captured (app_present={}, selected_chars={})",
@@ -137,7 +146,7 @@ fn frontmost_app_name() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn selected_text_from_frontmost(max_chars: usize) -> Option<String> {
+fn selected_text_from_frontmost(max_chars: usize, copy_delay_ms: u64) -> Option<String> {
     // Prefer Accessibility selection if available (doesn't depend on clipboard).
     if let Some(selected) = crate::ui::get_selected_text(max_chars) {
         return Some(selected);
@@ -152,7 +161,7 @@ fn selected_text_from_frontmost(max_chars: usize) -> Option<String> {
         return None;
     }
 
-    std::thread::sleep(Duration::from_millis(80));
+    std::thread::sleep(Duration::from_millis(copy_delay_ms));
 
     let mut copied = match clipboard::get_clipboard() {
         Ok(t) => t,
@@ -182,6 +191,6 @@ fn selected_text_from_frontmost(max_chars: usize) -> Option<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn selected_text_from_frontmost(_max_chars: usize) -> Option<String> {
+fn selected_text_from_frontmost(_max_chars: usize, _copy_delay_ms: u64) -> Option<String> {
     None
 }

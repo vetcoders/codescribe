@@ -16,7 +16,7 @@ pub use api::{
     reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_send_callback,
     set_voice_chat_sending, set_voice_chat_target_app, set_voice_chat_text,
     set_voice_chat_user_text, show_agent_tab, show_drawer_tab, update_conversation_state,
-    update_drawer_after_save, update_voice_chat_status,
+    update_drawer_after_save, update_voice_chat_context_summary, update_voice_chat_status,
 };
 pub use state::{ConversationModeState, VoiceChatOverlayConfig};
 
