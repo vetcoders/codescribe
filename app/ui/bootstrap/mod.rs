@@ -141,8 +141,12 @@ fn show_bootstrap_overlay_impl() {
             return;
         }
 
+        let blur_frame = core_graphics::geometry::CGRect::new(
+            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(BOOTSTRAP_WIDTH, BOOTSTRAP_HEIGHT),
+        );
         let blur_view: Id = msg_send![ns_visual, alloc];
-        let blur_view: Id = msg_send![blur_view, initWithFrame: frame];
+        let blur_view: Id = msg_send![blur_view, initWithFrame: blur_frame];
         let _: () = msg_send![blur_view, setMaterial: NSVisualEffectMaterial::HUDWindow];
         let _: () = msg_send![blur_view, setBlendingMode: NSVisualEffectBlendingMode::BehindWindow];
         let _: () = msg_send![blur_view, setState: NSVisualEffectState::Active];

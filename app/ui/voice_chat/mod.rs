@@ -158,8 +158,12 @@ fn show_voice_chat_overlay_impl() {
         let content_view: Id = msg_send![window, contentView];
 
         let ns_visual = Class::get("NSVisualEffectView").unwrap();
+        let blur_frame = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(window_width, window_height),
+        );
         let blur_view: Id = msg_send![ns_visual, alloc];
-        let blur_view: Id = msg_send![blur_view, initWithFrame: frame];
+        let blur_view: Id = msg_send![blur_view, initWithFrame: blur_frame];
         let _: () = msg_send![blur_view, setMaterial: NSVisualEffectMaterial::HUDWindow];
         let _: () = msg_send![blur_view, setBlendingMode: NSVisualEffectBlendingMode::BehindWindow];
         let _: () = msg_send![blur_view, setState: NSVisualEffectState::Active];

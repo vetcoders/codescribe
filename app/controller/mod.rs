@@ -853,6 +853,9 @@ impl RecordingController {
 
             info!("Starting hold recording (session={})", new_session_id);
 
+            // Set session mode for delta routing BEFORE starting recorder
+            set_assistive_session(is_assistive);
+
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is configured via CODESCRIBE_VAD_MAX_SILENCE_SEC env var (single source of truth)
             let mut rec = recorder.lock().await;
@@ -860,6 +863,10 @@ impl RecordingController {
                 info!("VAD callback: setting vad_triggered flag");
                 vad_flag.store(true, Ordering::SeqCst);
             });
+            // Set streaming callback for overlay updates (routed by session mode)
+            rec.set_delta_callback(Some(Arc::new(|text: &str| {
+                route_transcription_delta(text);
+            })));
             if !cfg!(test)
                 && let Err(e) = rec.start(Some(language.as_str().to_string())).await
             {
@@ -879,9 +886,6 @@ impl RecordingController {
                 BadgeMode::Hold
             };
             show_badge_for_mode(badge_mode);
-
-            // Set session mode for delta routing
-            set_assistive_session(is_assistive);
 
             if is_assistive {
                 crate::hide_transcription_overlay();
@@ -1106,6 +1110,7 @@ impl RecordingController {
         let assistive = *self.assistive_mode.read().await;
         let force_raw = *self.force_raw_mode.read().await;
         let force_ai = *self.force_ai_mode.read().await;
+        let keep_assistive_loop = assistive && self.assistive_loop_active.load(Ordering::SeqCst);
 
         // Switch badge to processing mode (orange, pulsing)
         show_badge_for_mode(BadgeMode::Processing);
@@ -1120,7 +1125,12 @@ impl RecordingController {
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
-        self.assistive_loop_active.store(false, Ordering::SeqCst);
+        // Keep assistive loop alive only when explicitly enabled and no manual stop was requested
+        if result.is_ok() && keep_assistive_loop {
+            self.assistive_loop_active.store(true, Ordering::SeqCst);
+        } else {
+            self.assistive_loop_active.store(false, Ordering::SeqCst);
+        }
 
         // Hide red dot indicator
         hide_hold_badge();
