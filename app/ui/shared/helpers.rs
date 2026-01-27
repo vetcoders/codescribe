@@ -99,6 +99,16 @@ pub unsafe fn set_text_field_string(field: Id, text: &str) {
     }
 }
 
+/// Set tooltip for a control/view.
+/// # Safety
+/// `view` must be a valid Objective-C object that supports `setToolTip:`.
+pub unsafe fn set_tooltip(view: Id, text: &str) {
+    unsafe {
+        let tip = ns_string(text);
+        let _: () = msg_send![view, setToolTip: tip];
+    }
+}
+
 // ============================================================================
 // Label / TextField Helpers
 // ============================================================================

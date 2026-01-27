@@ -34,7 +34,7 @@ use tracing::{info, warn};
 use crate::ui_helpers::{
     NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style, color_clear,
     create_button, create_segmented_control, create_vertical_stack_view, ns_string, set_hidden,
-    window_set_alpha, window_show,
+    set_tooltip, window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -235,6 +235,10 @@ fn show_voice_chat_overlay_impl() {
             &["Drawer", "Agent"],
         );
         button_set_action(tab_control, action_handler, sel!(onTabChanged:));
+        set_tooltip(
+            tab_control,
+            "Przełącz widok: Drawer (historia) / Agent (czat)",
+        );
         add_subview(blur_view, tab_control);
 
         let paste_last_button = create_button(
@@ -250,6 +254,7 @@ fn show_voice_chat_overlay_impl() {
             action_handler,
             sel!(onPasteLastResponse:),
         );
+        set_tooltip(paste_last_button, "Wklej ostatnią odpowiedź AI");
         add_subview(blur_view, paste_last_button);
 
         let copy_last_button = create_button(
@@ -261,6 +266,7 @@ fn show_voice_chat_overlay_impl() {
             button_style::SMALL_SQUARE,
         );
         button_set_action(copy_last_button, action_handler, sel!(onCopyLastResponse:));
+        set_tooltip(copy_last_button, "Skopiuj ostatnią odpowiedź AI");
         add_subview(blur_view, copy_last_button);
 
         let new_thread_button = create_button(
@@ -272,6 +278,7 @@ fn show_voice_chat_overlay_impl() {
             button_style::SMALL_SQUARE,
         );
         button_set_action(new_thread_button, action_handler, sel!(onNewThread:));
+        set_tooltip(new_thread_button, "Nowy wątek (wyczyść czat)");
         add_subview(blur_view, new_thread_button);
 
         let close_button = create_button(
@@ -283,6 +290,7 @@ fn show_voice_chat_overlay_impl() {
             button_style::SMALL_SQUARE,
         );
         button_set_action(close_button, action_handler, sel!(onClose:));
+        set_tooltip(close_button, "Zamknij okno");
         add_subview(blur_view, close_button);
 
         // Drawer scroll view + stack
