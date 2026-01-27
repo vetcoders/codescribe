@@ -52,10 +52,11 @@
 //   ```
 //
 // configuration via environment variables:
-//   - SILENCE_DB: silence threshold in dB (default: -45.0)
-//   - SILENCE_HANG_SEC: silence duration before auto-stop (default: 0.8)
+//   - CODESCRIBE_VAD_THRESHOLD: speech probability threshold 0.0-1.0 (default: 0.5)
+//   - CODESCRIBE_VAD_MAX_SILENCE_SEC: silence duration before auto-stop (default: 1.2)
 //   - AUTO_SILENCE: enable/disable silence detection (default: true)
 
+use crate::vad;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig};
@@ -75,14 +76,14 @@ const SAMPLE_RATE: u32 = 16000;
 /// Number of channels (1 for mono)
 const CHANNELS: u16 = 1;
 
-/// Silence threshold in dB (runtime override: SILENCE_DB env var)
-/// RMS values below this are considered silence.
-/// Adjust this based on microphone sensitivity and background noise.
-const DEFAULT_SILENCE_DB: f32 = -45.0;
+/// Speech probability threshold (0.0-1.0) for VAD
+/// Below this is considered silence. Default: 0.5
+const DEFAULT_SPEECH_THRESHOLD: f32 = 0.5;
 
-/// Silence duration threshold (seconds) (runtime override: SILENCE_HANG_SEC env var)
+/// Silence duration threshold (seconds)
 /// Recording stops automatically after this duration of continuous silence.
-const DEFAULT_HANG_SEC: f32 = 1.5;
+/// Synced with VadConfig::max_silence_duration_sec default (1.2s)
+const DEFAULT_HANG_SEC: f32 = 1.2;
 
 /// Size of audio chunks to read from stream (samples)
 const BLOCK_SIZE: usize = 1024;
@@ -95,8 +96,9 @@ pub struct RecorderConfig {
     pub sample_rate: u32,
     /// Number of audio channels
     pub channels: u16,
-    /// Silence threshold in dB
-    pub silence_db: f32,
+    /// Speech probability threshold (0.0-1.0) for VAD
+    /// Below this is considered silence
+    pub speech_threshold: f32,
     /// Hang time - silence duration before auto-stop (seconds)
     pub hang_sec: f32,
     /// Enable automatic silence detection
@@ -110,14 +112,16 @@ impl Default for RecorderConfig {
         Self {
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,
-            silence_db: std::env::var("SILENCE_DB")
+            speech_threshold: std::env::var("CODESCRIBE_VAD_THRESHOLD")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(DEFAULT_SILENCE_DB),
-            hang_sec: std::env::var("SILENCE_HANG_SEC")
+                .unwrap_or(DEFAULT_SPEECH_THRESHOLD)
+                .clamp(0.1, 0.9),
+            hang_sec: std::env::var("CODESCRIBE_VAD_MAX_SILENCE_SEC")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(DEFAULT_HANG_SEC),
+                .unwrap_or(DEFAULT_HANG_SEC)
+                .clamp(0.1, 10.0),
             auto_silence: std::env::var("AUTO_SILENCE")
                 .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
                 .unwrap_or(true),
@@ -232,6 +236,18 @@ impl Recorder {
 
         info!("Starting recording...");
 
+        // Initialize VAD (lazy init - only loads model on first use)
+        if !vad::is_initialized() {
+            let model_path = vad::default_model_path();
+            if let Err(e) = vad::init(&model_path) {
+                warn!(
+                    "VAD init failed ({}): {} - auto-stop disabled, speech_probability will return 1.0",
+                    model_path.display(),
+                    e
+                );
+            }
+        }
+
         // Clear buffer and reset diagnostics
         self.buffer
             .lock()
@@ -313,7 +329,7 @@ impl Recorder {
         let buffer = Arc::clone(&self.buffer);
         let is_recording_data = Arc::clone(&self.is_recording);
         let is_recording_error = Arc::clone(&self.is_recording);
-        let silence_db = self.config.silence_db;
+        let speech_threshold = self.config.speech_threshold;
         let hang_sec = self.config.hang_sec;
         let auto_silence = self.config.auto_silence;
         // sample_rate is already set above to native_sample_rate
@@ -341,14 +357,14 @@ impl Recorder {
                         }
                     }
 
-                    // Calculate RMS in dBFS (f32 samples are already normalized)
-                    let rms_amplitude = calculate_rms_f32(data);
-                    let rms_db = 20.0 * (rms_amplitude + 1e-9).log10();
+                    // Use Silero VAD for speech detection (with automatic resampling to 16kHz)
+                    let speech_prob = vad::speech_probability(data, sample_rate);
+                    let is_silence = speech_prob < speech_threshold;
 
                     // Only check silence if still recording (avoid spam after stop)
                     if auto_silence && is_recording_data.load(Ordering::SeqCst) {
-                        // Check for silence
-                        if rms_db < silence_db {
+                        // Check for silence using VAD
+                        if is_silence {
                             silent_frames_clone.fetch_add(data.len(), Ordering::SeqCst);
                         } else {
                             silent_frames_clone.store(0, Ordering::SeqCst);
@@ -514,23 +530,8 @@ impl Drop for Recorder {
 
 // --- helper functions ---
 
-/// Calculate RMS (Root Mean Square) amplitude of f32 audio samples.
-/// F32 samples are already normalized to [-1.0, 1.0].
-fn calculate_rms_f32(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
+// Note: RMS-based silence detection replaced with WebRTC VAD (see vad module)
 
-    let sum_squares: f64 = samples
-        .iter()
-        .map(|&s| {
-            let sample = s as f64;
-            sample * sample
-        })
-        .sum();
-
-    (sum_squares / samples.len() as f64).sqrt() as f32
-}
 /// Write audio samples to a WAV file.
 fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u16) -> Result<()> {
     let spec = WavSpec {
@@ -558,21 +559,7 @@ fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_calculate_rms_f32() {
-        // Normalized f32 samples in range [-1.0, 1.0]
-        let samples = vec![0.0f32, 0.5, -0.5, 0.25, -0.25];
-        let rms = calculate_rms_f32(&samples);
-        assert!(rms > 0.0);
-        assert!(rms < 1.0);
-    }
-
-    #[test]
-    fn test_calculate_rms_f32_empty() {
-        let samples: Vec<f32> = vec![];
-        let rms = calculate_rms_f32(&samples);
-        assert_eq!(rms, 0.0);
-    }
+    // Note: RMS tests removed - now using WebRTC VAD (see vad module tests)
 
     #[test]
     fn test_recorder_config_default() {

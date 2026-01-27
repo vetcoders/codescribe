@@ -14,14 +14,13 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-cd "$PROJECT_DIR"
+# All models go to ~/.codescribe/models/ (unified path)
+MODELS_BASE="${HOME}/.codescribe/models"
 
 # Configuration
 MODEL_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
 MODEL_NAME="whisper-large-v3-turbo-mlx-q8"
-MODEL_DIR="models/${MODEL_NAME}"
+MODEL_DIR="${MODELS_BASE}/${MODEL_NAME}"
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  CodeScribe Model Download"
@@ -71,7 +70,7 @@ else
 fi
 
 # Create models directory
-mkdir -p models
+mkdir -p "$MODELS_BASE"
 
 # Download model
 echo ""

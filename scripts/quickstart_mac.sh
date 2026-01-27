@@ -326,7 +326,7 @@ lower_users() {
 
 # Optional fresh cleanup (run before building/updating the venv)
 if [[ "$FRESH" -eq 1 ]]; then
-  APP_SUPP_DIR="$HOME/.CodeScribe"
+  APP_SUPP_DIR="$HOME/.codescribe"
   LA_PLIST="$HOME/Library/LaunchAgents/com.codescribe.tray.plist"
   APP_LOG="$HOME/Library/Logs/CodeScribe.app.log"
   echo "==> Fresh cleanup plan (keeps .env & models):"

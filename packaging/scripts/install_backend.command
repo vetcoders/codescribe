@@ -3,7 +3,7 @@
 #
 # Purpose: Install and start the CodeScribe backend (FastAPI) as a LaunchAgent.
 # NOTE: The Rust app uses local Whisper by default. This backend is legacy.
-# - Downloads/updates Whisper models into ~/.CodeScribe/models
+# - Downloads/updates Whisper models into ~/.codescribe/models
 # - Seeds the shared settings store so the backend follows the same AI provider/toggle as the tray
 # - Writes ~/Library/LaunchAgents/com.CodeScribe.backend.plist and loads it via launchctl
 #
@@ -16,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
-APP_SUPPORT="$HOME/.CodeScribe"
+APP_SUPPORT="$HOME/.codescribe"
 MODELS_DIR="$APP_SUPPORT/models"
 
 WHISPER_VARIANT="${WHISPER_VARIANT:-medium}"

@@ -3,7 +3,9 @@ use codescribe::whisper::LocalWhisperEngine;
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
-    let model = PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8");
+    // Model path: ~/.codescribe/models/ (unified standard)
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let model = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8");
     println!("Loading model...");
     let mut engine = LocalWhisperEngine::new(&model)?;
     println!("Model loaded.\n");

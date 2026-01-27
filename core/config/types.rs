@@ -326,15 +326,6 @@ pub struct Config {
     #[serde(default)]
     pub start_at_login: bool,
 
-    // ===== Audio tuning =====
-    /// Silence threshold in decibels
-    #[serde(default = "default_silence_db")]
-    pub silence_db: f32,
-
-    /// Silence hang time in seconds
-    #[serde(default = "default_silence_hang_sec")]
-    pub silence_hang_sec: f32,
-
     // ===== Debugging =====
     /// Whether to dump raw audio files to logs/audio directory
     #[serde(default = "default_dump_audio_logs")]
@@ -375,8 +366,6 @@ impl Default for Config {
             restore_clipboard: default_restore_clipboard(),
             restore_clipboard_delay_ms: default_restore_clipboard_delay_ms(),
             start_at_login: false,
-            silence_db: default_silence_db(),
-            silence_hang_sec: default_silence_hang_sec(),
             dump_audio_logs: default_dump_audio_logs(),
         }
     }
@@ -387,14 +376,6 @@ impl Config {
     pub fn sanitize(&mut self) {
         // Token limits: 0 = no limit (API decides). Don't override.
         // Tokens are cheap, lost notes are not.
-
-        // Validate audio thresholds
-        if self.silence_db > 0.0 || self.silence_db < -100.0 {
-            self.silence_db = -45.0;
-        }
-        if self.silence_hang_sec <= 0.0 || self.silence_hang_sec > 10.0 {
-            self.silence_hang_sec = 1.5;
-        }
 
         // Clamp sound volume
         self.sound_volume = self.sound_volume.clamp(0.0, 1.0);

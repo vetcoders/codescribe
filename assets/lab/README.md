@@ -67,7 +67,7 @@ Kliknij:
 
 ## Gdzie trafiają poprawki?
 
-Różnice zapisują się do pliku lexicon w `~/.CodeScribe/lexicon/{topic}.jsonl`:
+Różnice zapisują się do pliku lexicon w `~/.codescribe/lexicon/{topic}.jsonl`:
 
 ```json
 {"term": "ketoprofen", "mispronunciations": ["keto profen", "ketoprafen"]}
@@ -109,7 +109,7 @@ Po każdym Learn widzisz:
 |---------|-------------|
 | Brak transkryptu | Upewnij się że kliknąłeś Start Stream w Voice Lab |
 | "Generate failed" | Sprawdź czy backend ma dostęp do AI (Harmony/OpenAI) |
-| Słownik pusty | Kliknij Reload lub sprawdź `~/.CodeScribe/lexicon/` |
+| Słownik pusty | Kliknij Reload lub sprawdź `~/.codescribe/lexicon/` |
 
 ---
 

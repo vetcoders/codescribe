@@ -18,15 +18,13 @@ fn test_audio_path() -> PathBuf {
 
 /// Find available Whisper model
 fn find_model_path() -> Option<PathBuf> {
+    // All models in ~/.codescribe/models/ (unified standard)
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let model_candidates = [
-        // Turbo model (faster)
-        PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("../codescribe-core/models/whisper-large-v3-turbo-mlx-q8"),
-        // Standard large-v3 model
-        PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-mlx-q8"),
-        PathBuf::from("../codescribe-core/models/whisper-large-v3-mlx-q8"),
+        // Turbo model (faster, preferred)
+        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8"),
+        // Standard large-v3 model (fallback)
+        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-mlx-q8"),
     ];
 
     model_candidates
@@ -54,7 +52,7 @@ fn e2e_stt_transcribe_test_audio() {
         Some(p) => p,
         None => {
             eprintln!("No Whisper model found, skipping test");
-            eprintln!("Expected model at ~/.CodeScribe/models/whisper-large-v3-turbo-mlx-q8");
+            eprintln!("Expected model at ~/.codescribe/models/whisper-large-v3-turbo-mlx-q8");
             return;
         }
     };

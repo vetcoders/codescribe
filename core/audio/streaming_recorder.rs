@@ -3,6 +3,7 @@ use crate::stream_postprocess::StreamPostProcessor;
 use crate::stt::whisper;
 use crate::stt::whisper::append_with_overlap_dedup;
 use crate::stt::whisper::singleton::engine as get_engine;
+use crate::vad;
 use anyhow::{Context, Result, anyhow};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -14,10 +15,7 @@ use tracing::{debug, error, info};
 
 const DEFAULT_CHUNK_DURATION_SEC: f32 = 15.0;
 const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for context
-const DEFAULT_VAD_SILENCE_DB: f32 = -45.0;
-const DEFAULT_VAD_SILENCE_SEC: f32 = 0.8;
-const DEFAULT_VAD_MAX_UTTERANCE_SEC: f32 = 30.0;
-const DEFAULT_VAD_PRE_ROLL_MS: u64 = 300;
+// VAD config now centralized in core/vad/config.rs (CODESCRIBE_VAD_* env vars)
 const DEFAULT_BUFFER_DELAY_MS: u64 = 3000;
 const DEFAULT_TYPING_CPS: f32 = 30.0;
 
@@ -214,33 +212,13 @@ async fn transcription_worker(
     info!("Transcription worker finished");
 }
 
-struct VADConfig {
-    silence_threshold_db: f32,
-    silence_duration_sec: f32,
-    max_utterance_sec: f32,
-    pre_roll_ms: u64,
-}
-
-impl VADConfig {
-    fn from_env() -> Self {
-        Self {
-            silence_threshold_db: env_f32("CODESCRIBE_VAD_SILENCE_DB", DEFAULT_VAD_SILENCE_DB),
-            silence_duration_sec: env_f32("CODESCRIBE_VAD_SILENCE_SEC", DEFAULT_VAD_SILENCE_SEC)
-                .clamp(0.2, 5.0),
-            max_utterance_sec: env_f32(
-                "CODESCRIBE_VAD_MAX_UTTERANCE_SEC",
-                DEFAULT_VAD_MAX_UTTERANCE_SEC,
-            )
-            .clamp(5.0, 120.0),
-            pre_roll_ms: env_u64("CODESCRIBE_VAD_PRE_ROLL_MS", DEFAULT_VAD_PRE_ROLL_MS),
-        }
-    }
-}
+// VADConfig removed - now using centralized vad::VadConfig from core/vad/config.rs
 
 struct VADSegmenter {
     pending_samples: Vec<f32>,
     sample_rate: u32,
-    silence_threshold_db: f32,
+    /// Speech probability threshold (0.0-1.0)
+    speech_threshold: f32,
     silence_duration_sec: f32,
     max_utterance_sec: f32,
     pre_roll_samples: usize,
@@ -250,18 +228,28 @@ struct VADSegmenter {
 
 impl VADSegmenter {
     fn new(sample_rate: u32) -> Self {
-        Self::with_config(sample_rate, VADConfig::from_env())
+        Self::with_config(sample_rate, vad::VadConfig::default())
     }
 
-    fn with_config(sample_rate: u32, config: VADConfig) -> Self {
-        let pre_roll_samples = ((config.pre_roll_ms as f32 / 1000.0) * sample_rate as f32)
-            .round()
-            .max(1.0) as usize;
+    fn with_config(sample_rate: u32, config: vad::VadConfig) -> Self {
+        let pre_roll_samples = (config.pre_roll_sec * sample_rate as f32).round().max(1.0) as usize;
+
+        // Ensure VAD is initialized with the passed config (not default!)
+        // Note: if VAD already initialized, this is a no-op (early exit)
+        if let Err(e) = vad::init_with_config(&vad::default_model_path(), config.clone()) {
+            tracing::warn!(
+                "VAD init failed in VADSegmenter: {} - silence detection disabled, \
+                 will rely on max_utterance_sec ({:.1}s) for flush",
+                e,
+                config.max_utterance_sec
+            );
+        }
+
         Self {
             pending_samples: Vec::new(),
             sample_rate,
-            silence_threshold_db: config.silence_threshold_db,
-            silence_duration_sec: config.silence_duration_sec,
+            speech_threshold: config.threshold,
+            silence_duration_sec: config.max_silence_duration_sec,
             max_utterance_sec: config.max_utterance_sec,
             pre_roll_samples,
             silence_frames: 0,
@@ -275,9 +263,12 @@ impl VADSegmenter {
         }
 
         self.pending_samples.extend_from_slice(audio);
-        let rms_db = calculate_rms_db(audio);
 
-        if rms_db < self.silence_threshold_db {
+        // Use Silero VAD for speech detection (with automatic resampling to 16kHz)
+        let speech_prob = vad::speech_probability(audio, self.sample_rate);
+        let is_silence = speech_prob < self.speech_threshold;
+
+        if is_silence {
             if self.is_in_speech {
                 self.silence_frames = self.silence_frames.saturating_add(audio.len());
                 let silence_duration = self.silence_frames as f32 / self.sample_rate as f32;
@@ -795,21 +786,7 @@ pub fn transcribe_streaming_samples(
     Ok(out)
 }
 
-fn calculate_rms_db(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return -120.0;
-    }
-
-    let sum_squares: f64 = samples
-        .iter()
-        .map(|&s| {
-            let sample = s as f64;
-            sample * sample
-        })
-        .sum();
-    let rms = (sum_squares / samples.len() as f64).sqrt() as f32;
-    20.0 * (rms + 1e-9).log10()
-}
+// Note: calculate_rms_db removed - now using vad::speech_probability for voice detection
 
 #[cfg(test)]
 mod tests {
@@ -821,18 +798,33 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
+    #[ignore] // Requires Silero VAD model (run with: cargo test -- --ignored)
     fn test_vad_segmenter_flush_on_silence() {
-        let config = VADConfig {
-            silence_threshold_db: -40.0,
-            silence_duration_sec: 0.3,
+        // Initialize VAD - skip if model unavailable
+        let model_path = vad::default_model_path();
+        if !model_path.exists() {
+            eprintln!(
+                "Skipping: Silero VAD model not found at {}",
+                model_path.display()
+            );
+            return;
+        }
+        vad::init(&model_path).expect("Failed to init VAD");
+
+        let config = vad::VadConfig {
+            threshold: 0.5, // Probability threshold for speech detection
+            min_speech_duration_sec: 0.1,
+            max_silence_duration_sec: 0.3,
             max_utterance_sec: 2.0,
-            pre_roll_ms: 100,
+            pre_roll_sec: 0.1, // 100ms
         };
         let mut segmenter = VADSegmenter::with_config(1000, config);
 
-        let speech = vec![1.0; 400];
+        // Feed speech (high amplitude triggers VAD)
+        let speech = vec![0.8; 400];
         assert!(segmenter.feed(&speech).is_none());
 
+        // Feed silence (VAD should detect no speech)
         let silence = vec![0.0; 300];
         let utterance = segmenter
             .feed(&silence)
@@ -841,15 +833,28 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Requires Silero VAD model (run with: cargo test -- --ignored)
     fn test_vad_segmenter_flush_on_max_duration() {
-        let config = VADConfig {
-            silence_threshold_db: -40.0,
-            silence_duration_sec: 1.0,
+        // Initialize VAD - skip if model unavailable
+        let model_path = vad::default_model_path();
+        if !model_path.exists() {
+            eprintln!(
+                "Skipping: Silero VAD model not found at {}",
+                model_path.display()
+            );
+            return;
+        }
+        vad::init(&model_path).expect("Failed to init VAD");
+
+        let config = vad::VadConfig {
+            threshold: 0.5, // Probability threshold for speech detection
+            min_speech_duration_sec: 0.1,
+            max_silence_duration_sec: 1.0,
             max_utterance_sec: 0.5,
-            pre_roll_ms: 100,
+            pre_roll_sec: 0.1, // 100ms
         };
         let mut segmenter = VADSegmenter::with_config(1000, config);
-        let speech = vec![1.0; 600];
+        let speech = vec![0.8; 600];
         let utterance = segmenter
             .feed(&speech)
             .expect("Expected utterance after max duration");

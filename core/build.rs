@@ -1,10 +1,11 @@
 //!
 //! Build script for CodeScribe
 //! Exports embedded model data and configuration.
-//! Generates embedded_model_data.rs in OUT_DIR for release builds.
+//! Generates embedded_model_data.rs and embedded_tts_data.rs in OUT_DIR for release builds.
 //!
-//! Release builds REQUIRE the model by default.
+//! Release builds REQUIRE the Whisper model by default.
 //! Set CODESCRIBE_NO_EMBED=1 to build without embedding (for dev/CI).
+//! TTS model embedding is optional via CODESCRIBE_EMBED_TTS=1.
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -12,13 +13,18 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Default model to embed
+/// Default Whisper model to embed
 const DEFAULT_MODEL_NAME: &str = "whisper-large-v3-turbo-mlx-q8";
+
+/// Default TTS model to embed
+const DEFAULT_TTS_MODEL_NAME: &str = "csm-1b";
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_TTS");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let is_release = profile == "release";
@@ -44,6 +50,41 @@ fn main() {
         let out_dir = env::var("OUT_DIR").unwrap();
         let dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
         let model_exists = model_path.join("tokenizer.json").exists();
+
+        // TTS model embedding (optional, via CODESCRIBE_EMBED_TTS=1)
+        let embed_tts = env::var("CODESCRIBE_EMBED_TTS").is_ok();
+        let tts_model_path = resolve_embed_model_path(&manifest_dir, DEFAULT_TTS_MODEL_NAME);
+        let tts_dest_path = Path::new(&out_dir).join("embedded_tts_data.rs");
+        let tts_model_exists = tts_model_path.join("config.json").exists();
+
+        if embed_tts && tts_model_exists {
+            println!(
+                "cargo:warning=Embedding TTS model from: {}",
+                tts_model_path.display()
+            );
+            let tts_content = format!(
+                r#"
+                pub static CONFIG: &[u8] = include_bytes!(r"{}");
+                pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
+                pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
+                pub static MIMI_CONFIG: &[u8] = &[]; // Mimi uses factory config
+                pub static MIMI_WEIGHTS: &[u8] = include_bytes!(r"{}");
+                pub static VOICE_TOKENS: &[u8] = &[]; // Optional voice tokens
+                "#,
+                tts_model_path.join("config.json").display(),
+                tts_model_path.join("tokenizer.json").display(),
+                tts_model_path.join("model.safetensors").display(),
+                tts_model_path.join("mimi.safetensors").display(),
+            );
+            fs::write(&tts_dest_path, tts_content).expect("Failed to write embedded_tts_data.rs");
+            println!("cargo:rustc-cfg=embed_tts");
+        } else if embed_tts && !tts_model_exists {
+            println!(
+                "cargo:warning=CODESCRIBE_EMBED_TTS set but TTS model not found at: {}",
+                tts_model_path.display()
+            );
+            println!("cargo:warning=Download with: ./scripts/download-csm.sh");
+        }
 
         if is_release && model_exists {
             // Release + model found → embed it
