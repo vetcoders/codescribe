@@ -1076,6 +1076,10 @@ pub unsafe fn stack_view_clear(stack: Id) {
 
         for i in (0..count).rev() {
             let view: Id = msg_send![arranged, objectAtIndex: i];
+            // For NSStackView, removing an arranged subview requires two steps:
+            // 1) removeArrangedSubview (removes constraints/arrangement bookkeeping)
+            // 2) removeFromSuperview (removes it from the view hierarchy)
+            let _: () = msg_send![stack, removeArrangedSubview: view];
             let _: () = msg_send![view, removeFromSuperview];
         }
     }

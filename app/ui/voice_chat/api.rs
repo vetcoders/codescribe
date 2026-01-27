@@ -324,7 +324,11 @@ fn append_voice_chat_user_delta_impl(delta: &str) {
         apply_delta_with_backspace(&mut last.text, delta);
         last.is_streaming = true;
     }
-    update_chat_view_with_state(&mut state, false);
+    // Streaming deltas can arrive very frequently; avoid rebuilding the entire chat view
+    // (AppKit object churn can spike CPU/RAM and even hard-freeze).
+    if !try_update_last_message_view_in_place(&mut state) {
+        update_chat_view_with_state(&mut state, false);
+    }
 }
 
 fn append_voice_chat_assistant_delta_impl(delta: &str) {
@@ -335,7 +339,40 @@ fn append_voice_chat_assistant_delta_impl(delta: &str) {
         apply_delta_with_backspace(&mut last.text, delta);
         last.is_streaming = true;
     }
-    update_chat_view_with_state(&mut state, false);
+    if !try_update_last_message_view_in_place(&mut state) {
+        update_chat_view_with_state(&mut state, false);
+    }
+}
+
+fn display_text_for_message(message: &ChatMessage) -> String {
+    if message.is_streaming && message.text.is_empty() {
+        "• • •".to_string()
+    } else if message.is_streaming {
+        format!("{} …", message.text)
+    } else {
+        message.text.clone()
+    }
+}
+
+fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> bool {
+    unsafe {
+        // If the view list doesn't match messages, a full rebuild is safer.
+        if state.agent_bubble_views.len() != state.messages.len() {
+            return false;
+        }
+
+        let Some(last_message) = state.messages.last() else {
+            return false;
+        };
+        let Some((_bubble_ptr, label_ptr)) = state.agent_bubble_views.last().copied() else {
+            return false;
+        };
+
+        let label = label_ptr as Id;
+        let display_text = display_text_for_message(last_message);
+        set_text_field_string(label, &display_text);
+        true
+    }
 }
 
 fn apply_delta_with_backspace(target: &mut String, delta: &str) {
