@@ -146,7 +146,9 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![window, setOpaque: false];
         let _: () = msg_send![window, setBackgroundColor: color_clear()];
         let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
-        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces;
+        // Make sure the overlay shows up even when the user is in a fullscreen Space.
+        let collection_behavior =
+            NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary;
         let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
 
         let delegate_class = window_delegate_class();

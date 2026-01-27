@@ -384,7 +384,9 @@ unsafe fn create_badge_window(config: &HoldBadgeConfig) -> Id {
     let _: () = msg_send![window, setBackgroundColor: clear_color_ptr];
     let _: () = msg_send![window, setIgnoresMouseEvents: true];
     let _: () = msg_send![window, setLevel: NS_STATUS_WINDOW_LEVEL];
-    let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces;
+    // Ensure any helper windows show up over fullscreen Spaces.
+    let collection_behavior =
+        NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary;
     let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
 
     // Enable layer-backed views for better transparency/compositing
