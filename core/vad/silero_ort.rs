@@ -5,7 +5,7 @@
 //!
 //! Created by M&K (c)2026 VetCoders
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, mpsc};
 use std::thread;
@@ -17,6 +17,7 @@ use ort::value::Tensor;
 use tracing::{debug, info};
 
 use super::config::VadConfig;
+use crate::hf_cache;
 
 /// Silero VAD sample rate (always 16kHz)
 pub const VAD_SAMPLE_RATE: u32 = 16000;
@@ -448,14 +449,28 @@ pub fn reset() {
     }
 }
 
-/// Get default model path (~/.codescribe/models/silero_vad.onnx)
-pub fn default_model_path() -> std::path::PathBuf {
+/// HuggingFace repo for Silero VAD model
+const SILERO_VAD_REPO: &str = "snakers4/silero-vad";
+const SILERO_VAD_FILE: &str = "silero_vad.onnx";
+
+/// Get default model path (HF cache first, then ~/.codescribe/models/)
+pub fn default_model_path() -> PathBuf {
+    // Try HF cache first (from `hf download snakers4/silero-vad`)
+    if let Some(snapshot) = hf_cache::find_snapshot(SILERO_VAD_REPO, &[SILERO_VAD_FILE]) {
+        let model_path = snapshot.join(SILERO_VAD_FILE);
+        if model_path.exists() {
+            debug!("Using Silero VAD from HF cache: {}", model_path.display());
+            return model_path;
+        }
+    }
+
+    // Fallback to legacy path
     directories::BaseDirs::new()
         .map(|d| d.home_dir().to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .unwrap_or_else(|| PathBuf::from("."))
         .join(".codescribe")
         .join("models")
-        .join("silero_vad.onnx")
+        .join(SILERO_VAD_FILE)
 }
 
 #[cfg(test)]

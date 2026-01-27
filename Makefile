@@ -196,9 +196,18 @@ test-all:
 	@$(MAKE) test
 	@echo "Done."
 
+test-roundtrip:
+	@echo "=== Round-Trip Tests (TTS→STT→Embeddings) ==="
+	@echo "Tests actual embedded models pipeline integrity"
+	@$(ENV_LOAD); CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip --release -- --nocapture
+
 demo:
 	@echo "=== Full Pipeline Demo ==="
 	@cargo run --release --example demo_full_pipeline -- $(AUDIO)
+
+demo-roundtrip:
+	@echo "=== Round-Trip Interactive Demo ==="
+	@cargo run --release --example roundtrip_live -- --interactive
 
 demo-raw:
 	@echo "=== Raw Transcription Demo ==="
@@ -274,6 +283,7 @@ help:
 	@echo "  BUNDLE_FALLBACK_GIT=1     allow fallback git clone if no local model"
 	@echo "  make download-model  Download Whisper model from HF"
 	@echo "  make download-e5     Download E5 embedder model from HF"
+	@echo "  make download-silero-vad  Download Silero VAD model from HF"
 	@echo ""
 	@echo "Run:"
 	@echo "  make start           Start CodeScribe"
@@ -333,3 +343,6 @@ download-model:
 
 download-e5:
 	@./scripts/download-e5.sh
+
+download-silero-vad:
+	@./scripts/download-silero-vad.sh

@@ -22,9 +22,10 @@ const DEFAULT_TTS_MODEL_NAME: &str = "csm-1b";
 const DEFAULT_TTS_REPO: &str = "sesame/csm-1b";
 const DEFAULT_MIMI_REPO: &str = "kyutai/mimi";
 
-/// Default E5 embedder model to embed
-const DEFAULT_E5_MODEL_NAME: &str = "e5-large";
-const DEFAULT_E5_REPO: &str = "intfloat/multilingual-e5-large";
+/// Default E5 embedder model to embed (base = ~1.1GB, good balance)
+/// Override with CODESCRIBE_EMBEDDER_REPO for e5-large (~2.3GB) or e5-small (~470MB)
+const DEFAULT_E5_MODEL_NAME: &str = "e5-base";
+const DEFAULT_E5_REPO: &str = "intfloat/multilingual-e5-base";
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
@@ -126,7 +127,8 @@ fn main() {
             );
         }
 
-        // E5 embedder embedding (opt-in only)
+        // E5 embedder embedding (opt-in only, runtime loading from HF cache is default)
+        // Enable with CODESCRIBE_EMBED_E5=1 (warning: large models may cause dyld issues)
         let embed_e5 = env_flag("CODESCRIBE_EMBED_E5", false) && !no_embed;
         let e5_repo = env::var("CODESCRIBE_EMBEDDER_REPO")
             .ok()

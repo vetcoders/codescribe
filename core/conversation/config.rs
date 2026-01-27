@@ -4,6 +4,17 @@
 
 use std::path::PathBuf;
 
+use crate::hf_cache;
+
+/// HuggingFace repos for Moshi models
+const MOSHIKO_REPO: &str = "kyutai/moshiko-candle-q8";
+const MOSHIKA_REPO: &str = "kyutai/moshika-candle-q8";
+
+/// Required files for Moshi
+const MOSHI_MODEL_FILE: &str = "model.q8.gguf";
+const MOSHI_MIMI_FILE: &str = "tokenizer-e351c8d8-checkpoint125.safetensors";
+const MOSHI_TOKENIZER_FILE: &str = "tokenizer_spm_32k_3.model";
+
 /// Configuration for the Moshi conversation engine
 #[derive(Debug, Clone)]
 pub struct MoshiConfig {
@@ -48,8 +59,11 @@ impl Default for MoshiConfig {
         Self {
             // Moshiko LM weights (.gguf quantized)
             model_path: models_dir.join("moshiko-q8").join("model.q8.gguf"),
-            // Mimi codec (shared with CSM TTS)
-            mimi_path: models_dir.join("csm-1b").join("mimi.safetensors"),
+            // Mimi codec for moshi crate (NOT the same as candle-transformers mimi!)
+            // This is "tokenizer-e351c8d8-checkpoint125.safetensors" from moshiko repo
+            mimi_path: models_dir
+                .join("moshiko-q8")
+                .join("tokenizer-e351c8d8-checkpoint125.safetensors"),
             // SentencePiece tokenizer
             tokenizer_path: models_dir
                 .join("moshiko-q8")
@@ -70,6 +84,36 @@ impl MoshiConfig {
         Self::default()
     }
 
+    /// Create config from HuggingFace cache for Moshiko (male voice)
+    ///
+    /// Looks for models in ~/.cache/huggingface/hub/
+    pub fn moshiko_from_hf_cache() -> Option<Self> {
+        let snapshot = hf_cache::find_snapshot(MOSHIKO_REPO, &[MOSHI_MODEL_FILE, MOSHI_MIMI_FILE])?;
+
+        Some(Self {
+            model_path: snapshot.join(MOSHI_MODEL_FILE),
+            mimi_path: snapshot.join(MOSHI_MIMI_FILE),
+            tokenizer_path: snapshot.join(MOSHI_TOKENIZER_FILE),
+            voice: "moshiko".to_string(),
+            ..Self::default()
+        })
+    }
+
+    /// Create config from HuggingFace cache for Moshika (female voice)
+    ///
+    /// Looks for models in ~/.cache/huggingface/hub/
+    pub fn moshika_from_hf_cache() -> Option<Self> {
+        let snapshot = hf_cache::find_snapshot(MOSHIKA_REPO, &[MOSHI_MODEL_FILE, MOSHI_MIMI_FILE])?;
+
+        Some(Self {
+            model_path: snapshot.join(MOSHI_MODEL_FILE),
+            mimi_path: snapshot.join(MOSHI_MIMI_FILE),
+            tokenizer_path: snapshot.join(MOSHI_TOKENIZER_FILE),
+            voice: "moshika".to_string(),
+            ..Self::default()
+        })
+    }
+
     /// Create config for Moshika (female voice)
     pub fn moshika() -> Self {
         // All models in ~/.codescribe/models/ (unified path)
@@ -81,6 +125,10 @@ impl MoshiConfig {
 
         Self {
             model_path: models_dir.join("moshika-q8").join("model.q8.gguf"),
+            // Mimi codec (same weights shared between moshiko/moshika)
+            mimi_path: models_dir
+                .join("moshika-q8")
+                .join("tokenizer-e351c8d8-checkpoint125.safetensors"),
             tokenizer_path: models_dir
                 .join("moshika-q8")
                 .join("tokenizer_spm_32k_3.model"),

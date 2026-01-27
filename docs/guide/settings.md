@@ -98,13 +98,30 @@ CODESCRIBE_QUALITY_DISABLE_RAW_SAVE=0
 
 ### AI Provider
 
+CodeScribe uses **Responses API** (`/v1/responses`) with SSE streaming. You can configure separate providers for Formatting vs Assistive modes.
+
+#### Shared Settings (fallback for both modes)
+
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `LLM_ENDPOINT` | URL | (none) | AI API endpoint |
+| `LLM_ENDPOINT` | URL | (none) | API endpoint (must be `/v1/responses`) |
 | `LLM_API_KEY` | string | (none) | API key for authentication |
-| `LLM_MODEL` | string | gpt-4o-mini | Model to use |
+| `LLM_MODEL` | string | gpt-4.1-mini | Model to use |
 | `AI_FORMATTING_ENABLED` | 0/1 | 0 | Enable AI post-processing |
 | `LLM_USE_STREAMING` | 0/1 | 1 | Stream AI responses |
+
+#### Mode-Specific Settings (override shared)
+
+| Variable | Mode | Description |
+|----------|------|-------------|
+| `LLM_FORMATTING_ENDPOINT` | Formatting | Endpoint for text cleanup (cheap model) |
+| `LLM_FORMATTING_MODEL` | Formatting | Model for formatting |
+| `LLM_FORMATTING_API_KEY` | Formatting | API key for formatting provider |
+| `LLM_ASSISTIVE_ENDPOINT` | Assistive | Endpoint for AI assistant (smart model) |
+| `LLM_ASSISTIVE_MODEL` | Assistive | Model for assistive mode |
+| `LLM_ASSISTIVE_API_KEY` | Assistive | API key for assistive provider |
+
+> **Important**: Use `/v1/responses` endpoint, NOT `/v1/chat/completions`. CodeScribe uses OpenAI Responses API with `previous_response_id` for conversation chaining.
 
 ### Transcription
 
@@ -135,41 +152,81 @@ CODESCRIBE_QUALITY_DISABLE_RAW_SAVE=0
 |----------|--------|---------|-------------|
 | `HISTORY_ENABLED` | 0/1 | 1 | Save transcripts |
 
+### Voice Activity Detection (VAD)
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `CODESCRIBE_VAD_SILENCE_DB` | -60 to -20 | -45 | Silence threshold in dB |
+| `CODESCRIBE_VAD_SILENCE_SEC` | 0.5-5.0 | 1.5 | Silence duration before auto-stop |
+| `CODESCRIBE_VAD_PRE_ROLL_MS` | 0-1000 | 300 | Audio to keep before speech detected |
+
+### Streaming Transcription
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `CODESCRIBE_BUFFERED_STREAM` | 0/1 | 0 | Buffer before sending (reduces churn) |
+| `CODESCRIBE_STREAM_CHUNK_SEC` | 1-10 | 4 | Chunk size for streaming |
+| `CODESCRIBE_STREAM_OVERLAP_RATIO` | 0-0.5 | 0.2 | Overlap between chunks |
+| `CODESCRIBE_BUFFER_DELAY_MS` | 0-3000 | 1500 | Delay before sending buffer |
+| `CODESCRIBE_TYPING_CPS` | 10-100 | 35 | Typing speed (chars per second) |
+| `CODESCRIBE_STREAM_SIMILARITY` | 0.8-1.0 | 0.92 | Embedding similarity threshold |
+| `CODESCRIBE_STREAM_NOVELTY` | 0-0.5 | 0.18 | Minimum novelty for update |
+| `CODESCRIBE_STREAM_DISABLE_EMBEDDINGS` | 0/1 | 0 | Disable embedding dedup |
+
+### Overlay / UI
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `OVERLAY_POSITION_MODE` | snapped_* | snapped_top_right | Overlay position |
+| `SHOW_TRAY_GLYPH` | 0/1 | 1 | Show status dot on tray icon |
+| `HOLD_INDICATOR` | 0/1 | 1 | Show hold badge |
+| `HOLD_BADGE_SIZE` | 4-16 | 8 | Badge size in pixels |
+
 ---
 
 ## AI Provider Setup
 
-### OpenAI
+### OpenAI (Recommended)
 
 ```bash
-LLM_ENDPOINT=https://api.openai.com/v1
-LLM_API_KEY=sk-your-openai-key
-LLM_MODEL=gpt-4o-mini
+# Single provider for both modes
+LLM_ENDPOINT=https://api.openai.com/v1/responses
+LLM_API_KEY=sk-proj-your-key
+LLM_MODEL=gpt-4.1-mini
 ```
 
-### Anthropic (Claude)
+### Separate Providers (Cost Optimization)
 
 ```bash
-LLM_ENDPOINT=https://api.anthropic.com/v1
-LLM_API_KEY=sk-ant-your-anthropic-key
-LLM_MODEL=claude-3-5-sonnet-20241022
+# Formatting mode: cheap/fast model
+LLM_FORMATTING_ENDPOINT=http://localhost:8088/v1/responses
+LLM_FORMATTING_MODEL=llama3.2
+LLM_FORMATTING_API_KEY=local
+
+# Assistive mode: smart model
+LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
+LLM_ASSISTIVE_MODEL=gpt-5.2
+LLM_ASSISTIVE_API_KEY=sk-proj-your-key
 ```
 
-### Local Ollama
+### Local Ollama (via OpenAI-compatible proxy)
 
 ```bash
-LLM_ENDPOINT=http://localhost:11434/v1
+# Requires Responses API proxy (e.g., openai-harmony)
+LLM_ENDPOINT=http://localhost:8088/v1/responses
 LLM_API_KEY=ollama
 LLM_MODEL=llama3.2
 ```
 
-### LibraxisAI (Custom)
+### LibraxisAI Cloud
 
 ```bash
-LLM_ENDPOINT=https://your-instance.libraxis.ai/v1
-LLM_API_KEY=your-key
-LLM_MODEL=qwen3-235b-a22b
+LLM_ENDPOINT=https://api.libraxis.cloud/v1/responses
+LLM_API_KEY=your-libraxis-key
+LLM_MODEL=qwen3-235b
 ```
+
+> **Note**: Anthropic's API uses a different format. Use [openai-harmony](https://github.com/VetCoders/openai-harmony) proxy to convert to Responses API format.
 
 ---
 

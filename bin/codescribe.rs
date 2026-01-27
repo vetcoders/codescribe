@@ -688,6 +688,19 @@ async fn dispatch_hotkey_event(
             };
             controller.handle_hotkey_event(input).await?;
         }
+        HotkeyEvent::Conversation { action } => {
+            let mapped_action = match action {
+                HoldAction::Down => HotkeyAction::Down,
+                HoldAction::Up => HotkeyAction::Up,
+            };
+            let input = HotkeyInput {
+                key_type: HotkeyType::Conversation,
+                action: mapped_action,
+                assistive: false,
+                force_ai: false,
+            };
+            controller.handle_hotkey_event(input).await?;
+        }
     }
 
     Ok(())

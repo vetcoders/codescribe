@@ -85,13 +85,21 @@ impl TtsEngine {
         };
         let csm = CsmModel::new(&config, vb).context("Failed to create CSM model")?;
 
-        // Load Mimi codec with default v0.1 config
+        // Load Mimi codec with config matching CSM's audio_num_codebooks
+        // NOTE: Mimi MUST use F32 - Metal conv1d doesn't support BF16
+        // NOTE: num_codebooks MUST match CSM config (32 for csm-1b)
         let mimi_weights_path = model_path.join("mimi.safetensors");
-        let mimi_config = MimiConfig::v0_1(None);
+        let mimi_num_codebooks = config.audio_num_codebooks;
+        let mimi_config = MimiConfig::v0_1(Some(mimi_num_codebooks));
+        let mimi_dtype = DType::F32; // Mimi codec requires F32 for Metal conv1d
+        debug!(
+            "Mimi config: num_codebooks={} (from CSM audio_num_codebooks)",
+            mimi_num_codebooks
+        );
 
         let mimi = if mimi_weights_path.exists() {
             let mimi_vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(&[&mimi_weights_path], dtype, &device)
+                VarBuilder::from_mmaped_safetensors(&[&mimi_weights_path], mimi_dtype, &device)
                     .context("Failed to load Mimi weights")?
             };
             MimiModel::new(mimi_config, mimi_vb).context("Failed to create Mimi model")?
@@ -100,7 +108,7 @@ impl TtsEngine {
         {
             let cached_path = snapshot.join("model.safetensors");
             let mimi_vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(&[&cached_path], dtype, &device)
+                VarBuilder::from_mmaped_safetensors(&[&cached_path], mimi_dtype, &device)
                     .context("Failed to load Mimi weights")?
             };
             MimiModel::new(mimi_config, mimi_vb).context("Failed to create Mimi model")?
@@ -155,14 +163,22 @@ impl TtsEngine {
         let vb = VarBuilder::from_tensors(csm_tensors, dtype, &device);
         let csm = CsmModel::new(&config, vb).context("Failed to create CSM model from embedded")?;
 
-        // Load Mimi codec from bytes with default v0.1 config
-        let mimi_config = MimiConfig::v0_1(None);
+        // Load Mimi codec from bytes with config matching CSM's audio_num_codebooks
+        // NOTE: Mimi MUST use F32 - Metal conv1d doesn't support BF16
+        // NOTE: num_codebooks MUST match CSM config (32 for csm-1b)
+        let mimi_num_codebooks = config.audio_num_codebooks;
+        let mimi_config = MimiConfig::v0_1(Some(mimi_num_codebooks));
+        let mimi_dtype = DType::F32;
+        debug!(
+            "Mimi (embedded) config: num_codebooks={} (from CSM audio_num_codebooks)",
+            mimi_num_codebooks
+        );
         let mimi_tensors: HashMap<String, Tensor> =
             candle_core::safetensors::load_buffer(embedded.mimi_weights, &Device::Cpu)
                 .context("Failed to deserialize Mimi weights")?;
 
-        let mimi_tensors = move_tensors_to_device(mimi_tensors, &device, dtype)?;
-        let mimi_vb = VarBuilder::from_tensors(mimi_tensors, dtype, &device);
+        let mimi_tensors = move_tensors_to_device(mimi_tensors, &device, mimi_dtype)?;
+        let mimi_vb = VarBuilder::from_tensors(mimi_tensors, mimi_dtype, &device);
         let mimi =
             MimiModel::new(mimi_config, mimi_vb).context("Failed to create Mimi from embedded")?;
 
@@ -190,46 +206,63 @@ impl TtsEngine {
     }
 
     /// Synthesize text with specific speaker index
+    ///
+    /// Uses CSM's iterative generation:
+    /// 1. Convert text to tokens via `text_tokens_and_mask()` → 3D tensor [1, seq, cb+1]
+    /// 2. Generate first audio frame
+    /// 3. Convert frame to tokens via `audio_tokens_and_mask()` → next input
+    /// 4. Repeat until end-of-generation (all zeros)
     pub fn synthesize_with_speaker(&mut self, text: &str, speaker_idx: usize) -> Result<Vec<f32>> {
         // Clear KV cache for fresh generation
         self.csm.clear_kv_cache();
 
-        // Format text with speaker index
+        // Format text with speaker index (CSM format: [speaker_idx]text<|end_of_text|>)
         let prompt = format!("[{}]{}{}", speaker_idx, text, EOT_TOKEN);
         debug!("TTS prompt: {}", prompt);
 
         // Tokenize text
         let encoding = self
             .tokenizer
-            .encode(prompt.as_str(), false)
+            .encode(prompt.as_str(), true) // add_special_tokens=true like candle example
             .map_err(|e| anyhow!("Tokenization failed: {}", e))?;
         let text_tokens: Vec<u32> = encoding.get_ids().to_vec();
         debug!("Text tokens: {} tokens", text_tokens.len());
 
-        // Convert to tensors - shape [batch, seq_len]
-        let tokens = Tensor::new(text_tokens.as_slice(), &self.device)?
-            .unsqueeze(0)?
-            .to_dtype(DType::I64)?;
-        let mask = Tensor::ones(tokens.dims(), DType::F32, &self.device)?;
+        // Convert to 3D tensors via CSM helper - shape [1, seq_len, codebooks+1]
+        // This creates proper format: [0,0,...,0,text_id] for each token
+        let (mut tokens, mut mask) = self.csm.text_tokens_and_mask(&text_tokens)?;
 
-        // Generate audio codes
+        // Position counter for KV cache
+        let mut pos: usize = 0;
+
+        // Generate audio codes iteratively
         let mut logits_processor = LogitsProcessor::new(42, None, None);
         let mut all_codes: Vec<Vec<u32>> = Vec::new();
 
-        for frame_idx in 0..MAX_FRAMES {
+        for _frame_idx in 0..MAX_FRAMES {
             // Generate one frame of audio codes
-            // API: generate_frame(&tokens, &mask, pos, &mut logits_processor) -> Result<Vec<u32>>
             let frame: Vec<u32> =
                 self.csm
-                    .generate_frame(&tokens, &mask, frame_idx, &mut logits_processor)?;
+                    .generate_frame(&tokens, &mask, pos, &mut logits_processor)?;
 
-            // Check for end of generation (all zeros)
+            // Advance position by sequence length
+            pos += tokens.dim(1)?;
+
+            // Check for end of generation (all zeros = silence marker)
             if frame.iter().all(|&x| x == 0) {
-                debug!("Generation complete at frame {}", frame_idx);
+                debug!("Generation complete after {} frames", all_codes.len());
+                // Generate one more frame after EOS for clean ending (like candle example)
+                let _ = self
+                    .csm
+                    .generate_frame(&tokens, &mask, pos, &mut logits_processor);
                 break;
             }
 
-            all_codes.push(frame);
+            all_codes.push(frame.clone());
+
+            // Convert audio frame to next input tokens
+            // This creates: [code0,code1,...,codeN,0] format
+            (tokens, mask) = self.csm.audio_tokens_and_mask(frame)?;
         }
 
         if all_codes.is_empty() {
@@ -245,6 +278,9 @@ impl TtsEngine {
     }
 
     /// Decode RVQ audio codes (Vec format) to PCM samples using Mimi codec
+    ///
+    /// Input: codes[frame_idx][codebook_idx] - list of frames, each with codebook values
+    /// Output: f32 PCM samples at 24kHz
     fn decode_audio_codes_vec(&mut self, codes: &[Vec<u32>]) -> Result<Vec<f32>> {
         if codes.is_empty() {
             return Ok(Vec::new());
@@ -253,8 +289,13 @@ impl TtsEngine {
         let num_frames = codes.len();
         let num_codebooks = codes[0].len();
 
+        debug!(
+            "decode_audio_codes_vec: {} frames × {} codebooks",
+            num_frames, num_codebooks
+        );
+
         // Create tensor [num_codebooks, num_frames] by transposing the data
-        // codes is [frames, codebooks], we need [codebooks, frames]
+        // Input: codes[frame][codebook], Output: tensor[codebook][frame]
         let mut flat_codes: Vec<u32> = Vec::with_capacity(num_codebooks * num_frames);
         for cb_idx in 0..num_codebooks {
             for frame in codes {
@@ -267,7 +308,15 @@ impl TtsEngine {
             .to_dtype(DType::I64)?;
 
         // Add batch dimension: [codebooks, frames] -> [batch, codebooks, frames]
+        // Mimi expects [B, K, T] where K=codebooks, T=frames
         let codes_tensor = codes_tensor.unsqueeze(0)?;
+
+        debug!(
+            "Mimi decode input shape: {:?} (expected [1, {}, {}])",
+            codes_tensor.shape(),
+            num_codebooks,
+            num_frames
+        );
 
         // Decode with Mimi
         let audio = self.mimi.decode(&codes_tensor)?;

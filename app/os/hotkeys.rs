@@ -124,6 +124,8 @@ pub enum HotkeyEvent {
     ToggleNormal,
     /// Assistive toggle gesture (double-tap right Option)
     ToggleAssistive,
+    /// Conversation mode gesture (Ctrl+Option hold) - full-duplex Moshi
+    Conversation { action: HoldAction },
 }
 
 /// Modifier flags for hold gesture detection
@@ -468,15 +470,22 @@ mod macos {
             state.hold_event_sent = false;
 
             tracing::debug!(
-                "Hold combo activated ({:?}, assistive={}) - sending Hold Down event",
+                "Hold combo activated ({:?}, assistive={}) - sending event",
                 hold_mods,
                 is_assistive
             );
-            // Send Hold Down immediately for responsiveness
-            let _ = state.tx.send(HotkeyEvent::Hold {
-                action: HoldAction::Down,
-                assistive: state.assistive_mode,
-            });
+            // Send appropriate event based on hold mode
+            // CtrlAlt (Ctrl+Option) = Conversation mode (Moshi full-duplex)
+            if hold_mods == HoldMods::CtrlAlt {
+                let _ = state.tx.send(HotkeyEvent::Conversation {
+                    action: HoldAction::Down,
+                });
+            } else {
+                let _ = state.tx.send(HotkeyEvent::Hold {
+                    action: HoldAction::Down,
+                    assistive: state.assistive_mode,
+                });
+            }
             state.hold_event_sent = true;
         } else if combo_active && state.hold_active && is_assistive && !state.assistive_mode {
             // Shift was added while combo active - upgrade to assistive mode
@@ -493,10 +502,17 @@ mod macos {
                     let elapsed = ts.elapsed();
                     tracing::debug!("Hold combo released after {:?}", elapsed);
                 }
-                let _ = state.tx.send(HotkeyEvent::Hold {
-                    action: HoldAction::Up,
-                    assistive: state.assistive_mode,
-                });
+                // Send appropriate event based on hold mode
+                if hold_mods == HoldMods::CtrlAlt {
+                    let _ = state.tx.send(HotkeyEvent::Conversation {
+                        action: HoldAction::Up,
+                    });
+                } else {
+                    let _ = state.tx.send(HotkeyEvent::Hold {
+                        action: HoldAction::Up,
+                        assistive: state.assistive_mode,
+                    });
+                }
             }
             state.hold_active_ts = None;
         }
