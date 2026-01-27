@@ -110,7 +110,12 @@ install-app: bundle
 	@echo "Installing to /Applications..."
 	@mkdir -p /Applications
 	@rsync -a --delete bundle/CodeScribe.app/ /Applications/CodeScribe.app/
-	@codesign --force --deep --sign "$(CODESCRIBE_CODESIGN_IDENTITY)" --identifier com.codescribe.app /Applications/CodeScribe.app >/dev/null 2>&1 || true
+	@if [ "$(CODESCRIBE_CODESIGN_IDENTITY)" = "-" ]; then \
+		echo "Skipping codesign (CODESCRIBE_CODESIGN_IDENTITY='-')"; \
+	else \
+		echo "Codesigning with identity: $(CODESCRIBE_CODESIGN_IDENTITY)"; \
+		codesign --force --deep --sign "$(CODESCRIBE_CODESIGN_IDENTITY)" --identifier com.codescribe.app /Applications/CodeScribe.app; \
+	fi
 	@echo "Installed: /Applications/CodeScribe.app"
 
 # ============================================================================
