@@ -810,6 +810,21 @@ fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: &str) {
             let card = create_drawer_card(entry, index, state.action_handler);
             stack_view_add(container, card);
         }
+
+        // Keep the scroll document height in sync with its arranged subviews; otherwise the
+        // scroll view can end up showing an empty area (looks like the drawer "does nothing").
+        if let Some(scroll_view_ptr) = state.drawer_scroll_view {
+            let fitting: CGSize = msg_send![container, fittingSize];
+            let frame: CGRect = msg_send![container, frame];
+            let new_size = CGSize::new(frame.size.width, fitting.height.max(frame.size.height));
+            let _: () = msg_send![container, setFrameSize: new_size];
+
+            // Scroll to top on refresh/filter.
+            let scroll_view = scroll_view_ptr as Id;
+            let content_view: Id = msg_send![scroll_view, contentView];
+            let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, 0.0)];
+            let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
+        }
     }
 }
 

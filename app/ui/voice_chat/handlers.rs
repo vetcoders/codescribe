@@ -24,6 +24,8 @@ static ACTION_HANDLER_INIT: Once = Once::new();
 static mut ACTION_HANDLER_CLASS: *const Class = std::ptr::null();
 static WINDOW_DELEGATE_INIT: Once = Once::new();
 static mut WINDOW_DELEGATE_CLASS: *const Class = std::ptr::null();
+static OVERLAY_WINDOW_INIT: Once = Once::new();
+static mut OVERLAY_WINDOW_CLASS: *const Class = std::ptr::null();
 
 /// Get or create the action handler class for UI controls
 pub fn action_handler_class() -> *const Class {
@@ -109,6 +111,41 @@ pub fn window_delegate_class() -> *const Class {
         });
         WINDOW_DELEGATE_CLASS
     }
+}
+
+/// Get or create the overlay window subclass.
+///
+/// We use a borderless floating window for the overlay. On macOS, borderless NSWindow
+/// instances are often not keyable by default, which prevents typing into NSTextField
+/// controls. This subclass opts into key/main status so the Agent input field works
+/// when the user clicks the overlay.
+pub fn overlay_window_class() -> *const Class {
+    unsafe {
+        OVERLAY_WINDOW_INIT.call_once(|| {
+            let superclass = Class::get("NSWindow").expect("NSWindow not found");
+            let mut decl = ClassDecl::new("VoiceChatOverlayWindow", superclass)
+                .expect("Failed to declare overlay window class");
+            decl.add_method(
+                sel!(canBecomeKeyWindow),
+                can_become_key_window as extern "C" fn(&Object, Sel) -> bool,
+            );
+            decl.add_method(
+                sel!(canBecomeMainWindow),
+                can_become_main_window as extern "C" fn(&Object, Sel) -> bool,
+            );
+            let cls = decl.register();
+            OVERLAY_WINDOW_CLASS = cls;
+        });
+        OVERLAY_WINDOW_CLASS
+    }
+}
+
+extern "C" fn can_become_key_window(_this: &Object, _cmd: Sel) -> bool {
+    true
+}
+
+extern "C" fn can_become_main_window(_this: &Object, _cmd: Sel) -> bool {
+    true
 }
 
 // ═══════════════════════════════════════════════════════════

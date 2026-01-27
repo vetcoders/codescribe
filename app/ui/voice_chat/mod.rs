@@ -38,7 +38,7 @@ use crate::ui_helpers::{
 };
 
 use api::update_active_tab_impl;
-use handlers::{action_handler_class, window_delegate_class};
+use handlers::{action_handler_class, overlay_window_class, window_delegate_class};
 use state::{OVERLAY_STATE, Tab};
 
 // Type alias for Objective-C object pointers
@@ -142,7 +142,8 @@ fn show_voice_chat_overlay_impl() {
             },
         };
 
-        let window: Id = msg_send![ns_window, alloc];
+        let overlay_window_class = overlay_window_class();
+        let window: Id = msg_send![overlay_window_class, alloc];
         let style_mask = NSWindowStyleMask::Borderless | NSWindowStyleMask::FullSizeContentView;
         let backing = NSBackingStoreType::Buffered;
         let window: Id = msg_send![
@@ -424,7 +425,11 @@ fn show_voice_chat_overlay_impl() {
         crate::ui_helpers::animate_fade(window, 1.0, 0.2);
 
         let has_messages = !state.messages.is_empty();
-        let desired_tab = if has_messages { Tab::Agent } else { state.active_tab };
+        let desired_tab = if has_messages {
+            Tab::Agent
+        } else {
+            state.active_tab
+        };
         drop(state);
         api::refresh_drawer();
         update_active_tab_impl(desired_tab);
