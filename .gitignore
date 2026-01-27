@@ -64,6 +64,7 @@ nohup.out.backup
 /.ai-archive
 /.ai-context
 /.aiassistant
+/.tools
 *claude*
 *codex*
 /agents
