@@ -13,6 +13,10 @@ SHELL := /bin/bash
 VERSION_FILE := Cargo.toml
 EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo nano)
 ENV_LOAD := set -a; [ -f $$HOME/.codescribe/.env ] && source $$HOME/.codescribe/.env; set +a
+# macOS: use a stable codesign identity to avoid TCC (Accessibility/Input Monitoring) resets after rebuilds.
+# Example:
+#   CODESCRIBE_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" make install-app
+CODESCRIBE_CODESIGN_IDENTITY ?= -
 
 # Test defaults (reference/cloud unless forced local)
 TEST_USE_LOCAL_LLM ?= 0
@@ -106,7 +110,7 @@ install-app: bundle
 	@echo "Installing to /Applications..."
 	@mkdir -p /Applications
 	@rsync -a --delete bundle/CodeScribe.app/ /Applications/CodeScribe.app/
-	@codesign --force --deep --sign - --identifier com.codescribe.app /Applications/CodeScribe.app >/dev/null 2>&1 || true
+	@codesign --force --deep --sign "$(CODESCRIBE_CODESIGN_IDENTITY)" --identifier com.codescribe.app /Applications/CodeScribe.app >/dev/null 2>&1 || true
 	@echo "Installed: /Applications/CodeScribe.app"
 
 # ============================================================================

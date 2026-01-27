@@ -461,10 +461,24 @@ async fn run_daemon() -> Result<()> {
     let menu_handle = Handle::current();
     std::thread::spawn(move || {
         for event in menu_rx {
+            let event_for_async = event.clone();
             let controller = Arc::clone(&menu_controller);
             let handle = menu_handle.clone();
             handle.spawn(async move {
-                let config = Config::load();
+                // Apply menu-driven config changes deterministically.
+                // The tray handler writes to `~/.codescribe/.env`, but reading it back immediately
+                // can race on some systems. So we use the event payload as the source of truth
+                // for hotkey-related fields and only reload the rest from disk.
+                let mut config = Config::load();
+                match &event_for_async {
+                    tray::TrayMenuEvent::SetHoldMods(mods) => {
+                        config.hold_mods = *mods;
+                    }
+                    tray::TrayMenuEvent::SetToggleTrigger(trigger) => {
+                        config.toggle_trigger = *trigger;
+                    }
+                    _ => {}
+                }
                 sync_hotkey_config(&config);
                 controller.set_config(config).await;
             });
