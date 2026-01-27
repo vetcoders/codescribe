@@ -28,7 +28,7 @@ mod data {
 /// If weights exist (len > 0), the model is available.
 pub fn is_embedded_available() -> bool {
     let weights_size = data::WEIGHTS.len();
-    eprintln!("[DEBUG] Embedded check: weights_size={}", weights_size);
+    tracing::debug!(weights_size, "Embedded model check");
     weights_size > 0
 }
 

@@ -16,7 +16,7 @@ Celem jest spójny przepływ „hands‑off”, w którym użytkownik:
 ## Główne komponenty (warstwy)
 
 - **Audio + VAD**: `codescribe-core/src/audio/recorder.rs` + `core/vad/silero_ort.rs`
-  - Silero VAD (neural network) + próg `CODESCRIBE_VAD_THRESHOLD` + `CODESCRIBE_VAD_MAX_SILENCE_SEC`, auto‑stop przez `on_vad_stop`.
+  - Silero VAD (neural network) + próg `CODESCRIBE_VAD_THRESHOLD` + `CODESCRIBE_VAD_SILENCE_SEC`, auto‑stop przez `on_vad_stop`.
 - **Live STT (Whisper)**: `codescribe-core/src/audio/streaming_recorder.rs`
   - chunking (~15s) + overlap dedup, `StreamDeltaCallback` dla live transcript.
 - **Orkiestracja**: `src/controller.rs`
@@ -89,7 +89,7 @@ VAD jest wbudowany w `Recorder` i używa **Silero VAD** (neural network ONNX). Z
 - Próbki `f32` są wysyłane do worker thread (fire-and-forget, non-blocking).
 - Silero zwraca probability (0.0-1.0) czy to mowa.
 - Jeśli `speech_prob < CODESCRIBE_VAD_THRESHOLD`, rośnie licznik ciszy.
-- Po przekroczeniu `CODESCRIBE_VAD_MAX_SILENCE_SEC` ustawiany jest stan `is_recording=false`.
+- Po przekroczeniu `CODESCRIBE_VAD_SILENCE_SEC` ustawiany jest stan `is_recording=false`.
 - `Recorder` odpala `on_vad_stop` i sygnalizuje auto‑stop.
 
 Kluczowe elementy:
