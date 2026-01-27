@@ -3,15 +3,15 @@
 # Usage:
 #   packaging/scripts/sign_and_notarize.sh \
 #     --app "packaging/dist/CodeScribe.app" \
-#     --cert "Developer ID Application: Maciej Gad (MW223P3NPX)" \
-#     --profile "Vista Notary" \
+#     --cert "Developer ID Application: …" \
+#     --profile "NotaryProfile" \
 #     [--dmg packaging/dist/CodeScribe-0.5.0.dmg]
 
 set -euo pipefail
 
 APP=""
-CERT="Developer ID Application: Maciej Gad (MW223P3NPX)"
-PROFILE="Vista Notary"
+CERT="${SIGN_IDENTITY:-}"
+PROFILE="${NOTARY_PROFILE:-}"
 DMG=""
 ENT="$(cd -- "$(dirname "$0")/.." && pwd)/entitlements.plist"
 
@@ -32,6 +32,14 @@ fi
 
 if [[ ! -d "$APP" ]]; then
   echo "[!] App not found: $APP" >&2
+  exit 1
+fi
+
+if [[ -z "$CERT" ]]; then
+  CERT="$(security find-identity -v -p codesigning | awk -F'\"' '/Developer ID Application/{print $2; exit}')"
+fi
+if [[ -z "$CERT" ]]; then
+  echo "[!] No signing identity found. Set SIGN_IDENTITY or pass --cert." >&2
   exit 1
 fi
 

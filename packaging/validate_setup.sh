@@ -99,15 +99,19 @@ echo ""
 # Check signing certificate
 echo "🔐 Code Signing"
 echo "───────────────"
-CERT_NAME="Developer ID Application: Maciej Gad (MW223P3NPX)"
-if security find-identity -v -p codesigning | grep -q "$CERT_NAME"; then
+CERT_NAME="${CERT_NAME:-${SIGN_IDENTITY:-}}"
+if [[ -z "$CERT_NAME" ]]; then
+  CERT_NAME="$(security find-identity -v -p codesigning | awk -F'\"' '/Developer ID Application/{print $2; exit}')"
+fi
+if [[ -n "$CERT_NAME" ]] && security find-identity -v -p codesigning | grep -q "$CERT_NAME"; then
   echo "✓ Certificate found: $CERT_NAME"
   CERT_INFO=$(security find-identity -v -p codesigning | grep "$CERT_NAME" | head -n1)
   echo "  $CERT_INFO"
 else
-  echo "⚠ Certificate not found: $CERT_NAME"
+  echo "⚠ Certificate not found."
   echo "  Available certificates:"
   security find-identity -v -p codesigning | grep "Developer ID" || echo "  (none)"
+  echo "  Set SIGN_IDENTITY to your certificate name if needed."
   ((WARNINGS++))
 fi
 echo ""
@@ -115,16 +119,16 @@ echo ""
 # Check notarization profile
 echo "📨 Notarization"
 echo "───────────────"
-PROFILE_NAME="Vista Notary"
-if xcrun notarytool history --keychain-profile "$PROFILE_NAME" >/dev/null 2>&1; then
+PROFILE_NAME="${PROFILE_NAME:-${NOTARY_PROFILE:-${PROFILE:-}}}"
+if [[ -n "$PROFILE_NAME" ]] && xcrun notarytool history --keychain-profile "$PROFILE_NAME" >/dev/null 2>&1; then
   echo "✓ Notarization profile found: $PROFILE_NAME"
 else
-  echo "⚠ Notarization profile not found: $PROFILE_NAME"
-  echo "  Run this to create it:"
-  echo "  xcrun notarytool store-credentials \"$PROFILE_NAME\" \\"
+  echo "⚠ Notarization profile not found."
+  echo "  Set NOTARY_PROFILE to your profile name, or create one:"
+  echo "  xcrun notarytool store-credentials \"<profile>\" \\"
   echo "    --apple-id your@email.com \\"
-  echo "    --team-id MW223P3NPX \\"
-  echo "    --password app-specific-password"
+  echo "    --team-id <TEAM_ID> \\"
+  echo "    --password <app-specific-password>"
   ((WARNINGS++))
 fi
 echo ""

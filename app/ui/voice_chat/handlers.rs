@@ -8,6 +8,7 @@ use objc::{msg_send, sel, sel_impl};
 use std::sync::Once;
 use tracing::{debug, info};
 
+use crate::ui::bootstrap;
 use crate::ui_helpers::{get_text_field_string, ns_string, set_hidden, set_text_field_string};
 
 use super::api::{
@@ -117,6 +118,9 @@ extern "C" fn on_send(_this: &Object, _cmd: Sel, _sender: Id) {
 
 extern "C" fn on_close(_this: &Object, _cmd: Sel, _sender: Id) {
     super::api::hide_voice_chat_overlay();
+    if bootstrap::should_show_bootstrap() {
+        bootstrap::handle_hotkey_done();
+    }
 }
 
 extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id) {

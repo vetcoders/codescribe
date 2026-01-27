@@ -387,6 +387,12 @@ async fn run_daemon() -> Result<()> {
     let controller = Arc::new(RecordingController::new());
     #[cfg(target_os = "macos")]
     codescribe::controller::register_overlay_controller(Arc::clone(&controller));
+    #[cfg(target_os = "macos")]
+    {
+        if codescribe::should_show_bootstrap() {
+            codescribe::schedule_bootstrap();
+        }
+    }
 
     let config = Config::load();
     sync_hotkey_config(&config);

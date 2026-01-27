@@ -23,7 +23,7 @@ echo "🏗️  Building wrapper app…"
 "$ROOT_DIR/packaging/appwrap/build_wrapper_app.sh"
 
 echo "📦 Building DMG…"
-"$ROOT_DIR/packaging/dmg/build_dmg.sh"
+"$ROOT_DIR/packaging/create_dmg.sh"
 
 DMG_PATH=$(ls -1t "$ROOT_DIR/packaging/dist"/CodeScribe-*.dmg | head -n1)
 APP_PATH="$ROOT_DIR/packaging/dist/CodeScribe.app"

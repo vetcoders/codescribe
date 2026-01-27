@@ -69,6 +69,11 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let show_overlay_id = show_overlay_item.id().clone();
     menu.append(&show_overlay_item)?;
 
+    // 2b. Run onboarding
+    let run_onboarding_item = MenuItem::new("Run Onboarding", true, None);
+    let run_onboarding_id = run_onboarding_item.id().clone();
+    menu.append(&run_onboarding_item)?;
+
     // 4. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
@@ -138,6 +143,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         MenuIds {
             copy_last: copy_last_id,
             show_overlay: show_overlay_id,
+            run_onboarding: run_onboarding_id,
             open_history: open_history_id,
             help: help_id,
             about: about_id,

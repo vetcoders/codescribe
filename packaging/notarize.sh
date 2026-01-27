@@ -16,7 +16,7 @@ cd "$ROOT_DIR"
 # Config
 APP_NAME="CodeScribe"
 NOTARY_PROFILE="Vista-Notary"
-SIGN_ID="Developer ID Application: Maciej Gad (MW223P3NPX)"
+SIGN_ID="${SIGN_IDENTITY:-}"
 ENTITLEMENTS="$SCRIPT_DIR/appwrap/entitlements.plist"
 DIST_DIR="$SCRIPT_DIR/dist"
 
@@ -35,6 +35,15 @@ APP_PATH="$DIST_DIR/$APP_NAME.app"
 # Get version for DMG naming
 VERSION=$(grep '^version' "$ROOT_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
 DMG_PATH="$DIST_DIR/${APP_NAME}-${VERSION}.dmg"
+
+# Resolve signing identity if not provided
+if [[ -z "$SIGN_ID" ]]; then
+  SIGN_ID="$(security find-identity -v -p codesigning | awk -F'\"' '/Developer ID Application/{print $2; exit}')"
+fi
+if [[ -z "$SIGN_ID" ]]; then
+  echo "❌ No signing identity found. Set SIGN_IDENTITY." >&2
+  exit 1
+fi
 
 # Sign nested binaries first
 info "Codesigning nested binaries (hardened runtime)..."

@@ -19,6 +19,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_copy_last();
     } else if event_id == &menu_ids.show_overlay {
         crate::show_voice_chat_overlay();
+    } else if event_id == &menu_ids.run_onboarding {
+        crate::show_bootstrap_overlay();
     } else if event_id == &menu_ids.open_history {
         handle_open_history_folder();
     } else if event_id == &menu_ids.help {

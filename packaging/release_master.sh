@@ -14,8 +14,8 @@
 #   packaging/release_master.sh --sign --no-notary # Build and sign (skip notarization)
 #
 # Environment variables:
-#   CERT           - Override default certificate (default: "Developer ID Application: Maciej Gad (MW223P3NPX)")
-#   PROFILE        - Override default notarization profile (default: "Vista Notary")
+#   CERT           - Override certificate (or use SIGN_IDENTITY)
+#   PROFILE        - Override notarization profile (or use NOTARY_PROFILE)
 #   SKIP_BUILD     - Set to 1 to skip Rust build step (useful for re-packaging)
 #   SKIP_APP       - Set to 1 to skip app bundle creation
 #   SKIP_DMG       - Set to 1 to skip DMG creation
@@ -30,8 +30,8 @@ ROOT_DIR="$(cd -- "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/packaging/dist"
 
 # Default settings
-CERT="${CERT:-Developer ID Application: Maciej Gad (MW223P3NPX)}"
-PROFILE="${PROFILE:-Vista Notary}"
+CERT="${CERT:-${SIGN_IDENTITY:-}}"
+PROFILE="${PROFILE:-${NOTARY_PROFILE:-}}"
 DO_SIGN=0
 NO_NOTARY=0
 SKIP_BUILD="${SKIP_BUILD:-0}"
@@ -81,11 +81,18 @@ APP_PATH="$DIST_DIR/CodeScribe.app"
 
 # Step 3: Sign .app bundle
 if [[ "$DO_SIGN" -eq 1 ]]; then
+  if [[ -z "$CERT" ]]; then
+    CERT="$(security find-identity -v -p codesigning | awk -F'\"' '/Developer ID Application/{print $2; exit}')"
+  fi
+  if [[ -z "$CERT" ]]; then
+    echo "❌ No code signing identity found. Set CERT or SIGN_IDENTITY."
+    exit 1
+  fi
   echo "✍️  [3/5] Signing .app bundle..."
   SIGN_ARGS=(--app "$APP_PATH" --cert "$CERT")
 
   # Only add profile if notarization is requested
-  if [[ "$NO_NOTARY" -eq 0 ]]; then
+  if [[ "$NO_NOTARY" -eq 0 && -n "$PROFILE" ]]; then
     SIGN_ARGS+=(--profile "$PROFILE")
   fi
 
@@ -114,7 +121,7 @@ if [[ "$DO_SIGN" -eq 1 && -n "$DMG_PATH" && -f "$DMG_PATH" ]]; then
   echo "✍️  [5/5] Signing DMG..."
   SIGN_ARGS=(--app "$APP_PATH" --dmg "$DMG_PATH" --cert "$CERT")
 
-  if [[ "$NO_NOTARY" -eq 0 ]]; then
+  if [[ "$NO_NOTARY" -eq 0 && -n "$PROFILE" ]]; then
     SIGN_ARGS+=(--profile "$PROFILE")
   fi
 
@@ -147,10 +154,10 @@ echo ""
 
 if [[ "$DO_SIGN" -eq 1 ]]; then
   echo "Signed with:     $CERT"
-  if [[ "$NO_NOTARY" -eq 0 ]]; then
+  if [[ "$NO_NOTARY" -eq 0 && -n "$PROFILE" ]]; then
     echo "Notarized with:  $PROFILE"
   else
-    echo "Notarization:    Skipped (--no-notary)"
+    echo "Notarization:    Skipped (--no-notary or PROFILE not set)"
   fi
 else
   echo "⚠️  Not signed. Use --sign to enable signing and notarization."

@@ -50,7 +50,7 @@ release:
 	@cargo build --release
 
 install:
-	@echo "Installing CodeScribe (with embedded model)..."
+	@echo "Installing CodeScribe (embedding optional via CODESCRIBE_EMBED_*)..."
 	@cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
@@ -254,18 +254,24 @@ help:
 	@echo ""
 	@echo "Build & Install:"
 	@echo "  make build           Build debug binary"
-	@echo "  make release         Build release binary (with embedded model)"
-	@echo "  make install         Install CLI (~888MB with embedded model)"
+	@echo "  make release         Build release binary (embedding optional via env)"
+	@echo "  make install         Install CLI (embedding optional via env)"
 	@echo "  make install-no-embed Install without model (needs CODESCRIBE_MODEL_PATH)"
 	@echo "  make config          Edit ~/.codescribe/.env"
 	@echo "  make bundle          Create CodeScribe.app bundle"
 	@echo "  make install-app     Install to /Applications"
 	@echo ""
 	@echo "Release & Distribution:"
-	@echo "  make dmg             Build DMG (ad-hoc signed)"
-	@echo "  make dmg-signed      Build DMG (Developer ID signed)"
-	@echo "  make dmg-full        Build DMG with embedded model (~888MB)"
-	@echo "  make notarize        Notarize DMG with Apple"
+	@echo "  make dmg             Create DMG from existing .app (unsigned)"
+	@echo "  make dmg-signed      Build .app + DMG + sign (NO notarize)"
+	@echo "  make dmg-full        Build .app + DMG + sign + notarize"
+	@echo "  make notarize        Notarize existing DMG (NOTARY_PROFILE required)"
+	@echo ""
+	@echo "Release env vars:"
+	@echo "  SIGN_IDENTITY=...        Codesign identity (Developer ID Application: ...)"
+	@echo "  NOTARY_PROFILE=...       notarytool profile name"
+	@echo "  BUNDLE_WHISPER=1          bundle local Whisper into .app"
+	@echo "  BUNDLE_FALLBACK_GIT=1     allow fallback git clone if no local model"
 	@echo "  make download-model  Download Whisper model from HF"
 	@echo "  make download-e5     Download E5 embedder model from HF"
 	@echo ""
@@ -302,18 +308,22 @@ help:
 # ============================================================================
 
 dmg:
-	@./scripts/build-release.sh
+	@./packaging/create_dmg.sh
 
 dmg-signed:
-	@./scripts/build-release.sh --sign
+	@SIGN_IDENTITY="$(SIGN_IDENTITY)" NOTARY_PROFILE="$(NOTARY_PROFILE)" \
+		BUNDLE_WHISPER="$(BUNDLE_WHISPER)" BUNDLE_FALLBACK_GIT="$(BUNDLE_FALLBACK_GIT)" \
+		./packaging/release.sh --no-notary
 
 dmg-full:
-	@./scripts/build-release.sh --sign
+	@SIGN_IDENTITY="$(SIGN_IDENTITY)" NOTARY_PROFILE="$(NOTARY_PROFILE)" \
+		BUNDLE_WHISPER="$(BUNDLE_WHISPER)" BUNDLE_FALLBACK_GIT="$(BUNDLE_FALLBACK_GIT)" \
+		./packaging/release.sh
 
 notarize:
 	@if ls CodeScribe_*.dmg 1> /dev/null 2>&1; then \
 		DMG=$$(ls -t CodeScribe_*.dmg | head -1); \
-		./scripts/notarize.sh "$$DMG"; \
+		NOTARY_PROFILE="$(NOTARY_PROFILE)" ./scripts/notarize.sh "$$DMG"; \
 	else \
 		echo "No DMG found. Run 'make dmg-signed' first."; \
 	fi

@@ -75,6 +75,9 @@ pub enum TrayMenuEvent {
     /// User clicked Quit - clean shutdown
     Quit,
 
+    /// Run onboarding (bootstrap) flow
+    RunOnboarding,
+
     // Hold Hotkeys submenu
     SetHoldMods(HoldMods),
     ToggleHoldExclusive,
@@ -115,6 +118,7 @@ pub struct MenuIds {
     // Top-level
     pub copy_last: MenuId,
     pub show_overlay: MenuId,
+    pub run_onboarding: MenuId,
     pub open_history: MenuId,
     pub help: MenuId,
     pub about: MenuId,

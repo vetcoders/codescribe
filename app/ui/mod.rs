@@ -1,3 +1,4 @@
+pub mod bootstrap;
 pub mod overlay;
 pub mod shared;
 pub mod tray;

@@ -53,6 +53,11 @@ pub use ui::{
 };
 
 #[cfg(target_os = "macos")]
+pub use ui::bootstrap::{
+    hide_bootstrap_overlay, schedule_bootstrap, should_show_bootstrap, show_bootstrap_overlay,
+};
+
+#[cfg(target_os = "macos")]
 pub use ui::tray;
 
 #[cfg(target_os = "macos")]

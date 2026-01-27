@@ -1,10 +1,9 @@
 #!/bin/zsh
-# Build CodeScribe.app bundle with Rust frontend + Python backend
+# Build CodeScribe.app bundle (Rust frontend).
 #
 # Architecture:
 #   - Rust binary (codescribe) as the main executable
-#   - Rust binary starts Python backend (whisper_server.py) via uv
-#   - Python backend uses FastAPI + MLX Whisper for transcription
+#   - Optional: bundled Whisper model(s) for offline start
 #
 # Bundle structure:
 #   CodeScribe.app/
@@ -16,8 +15,7 @@
 #   │   └── Resources/
 #   │       ├── AppIcon.icns
 #   │       ├── assets/ (vocabulary JSONL files)
-#   │       ├── python/ (whisper_server.py + codescribe package + pyproject.toml)
-#   │       └── Models/ (optional bundled Whisper models)
+#   │       └── models/ (optional bundled Whisper models)
 
 set -euo pipefail
 
@@ -34,18 +32,19 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 # Create bundle subdirectories
 ASSETS_DST="$APP_DIR/Contents/Resources/assets"
-PYTHON_DST="$APP_DIR/Contents/Resources/python"
-MODELS_DST="$APP_DIR/Contents/Resources/Models"
-mkdir -p "$ASSETS_DST" "$PYTHON_DST" "$MODELS_DST"
+MODELS_DST="$APP_DIR/Contents/Resources/models"
+mkdir -p "$ASSETS_DST" "$MODELS_DST"
 
 bundle_whisper_model() {
   local variant="$1"
-  local server=""
+  local src=""
   for candidate in \
+    "$ROOT_DIR/core/models/whisper-${variant}" \
+    "$ROOT_DIR/core/models/${variant}" \
     "$ROOT_DIR/models/whisper-${variant}" \
     "$ROOT_DIR/models/${variant}"; do
     if [[ -d "$candidate" ]]; then
-      server="$candidate"
+      src="$candidate"
       break
     fi
   done
@@ -60,6 +59,8 @@ bundle_whisper_model() {
 
 # Priority: Q8 quantized models first (smaller, same quality)
 BUNDLE_VARIANTS=(${BUNDLE_VARIANTS:-medium-mlx-q8 large-v3-turbo-mlx-q8 small-mlx-q8 medium large-v3-turbo small})
+BUNDLE_WHISPER="${BUNDLE_WHISPER:-0}"
+BUNDLE_FALLBACK_GIT="${BUNDLE_FALLBACK_GIT:-0}"
 
 # Info.plist
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -115,16 +116,14 @@ APP_DIR="$(cd -- "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$HOME/Library/Logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/CodeScribe.app.log"
-MODELS_DIR="$APP_DIR/Resources/Models"
+MODELS_DIR="$APP_DIR/Resources/models"
 ASSETS_DIR="$APP_DIR/Resources/assets"
-PYTHON_DIR="$APP_DIR/Resources/python"
 
 # Ensure uv and brew binaries are on PATH when launched from Finder
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # Set paths for bundled resources
 export CODESCRIBE_ASSETS_PATH="$ASSETS_DIR"
-export CODESCRIBE_PYTHON_DIR="$PYTHON_DIR"
 
 # Prefer bundled Whisper models when present
 if [[ -z "${WHISPER_DIR:-}" ]]; then
@@ -175,53 +174,38 @@ else
   echo "[!] Warning: Assets directory not found"
 fi
 
-# Copy Python backend files (whisper_server + codescribe package)
-echo "[i] Copying Python backend files..."
-cp "$ROOT_DIR/whisper_server.py" "$PYTHON_DST/" || echo "[!] Warning: whisper_server.py not found"
-
-# Copy the entire codescribe package
-if [[ -d "$ROOT_DIR/src/codescribe" ]]; then
-  echo "[i] Copying codescribe package..."
-  mkdir -p "$PYTHON_DST/src"
-  rsync -a "$ROOT_DIR/src/codescribe" "$PYTHON_DST/src/" --exclude '__pycache__' --exclude '*.pyc'
-else
-  echo "[!] Warning: codescribe package not found at $ROOT_DIR/src/codescribe"
-fi
-
-# Copy Python project files for dependency management
-echo "[i] Copying Python project configuration..."
-cp "$ROOT_DIR/pyproject.toml" "$PYTHON_DST/" 2>/dev/null || echo "[!] Warning: pyproject.toml not found"
-cp "$ROOT_DIR/uv.lock" "$PYTHON_DST/" 2>/dev/null || true
-cp "$ROOT_DIR/README.md" "$PYTHON_DST/" 2>/dev/null || true
-
 echo "[i] Bundling Whisper model(s) for offline start"
-BUNDLED_MODEL_OK=0
-for variant in "${BUNDLE_VARIANTS[@]}"; do
-  if bundle_whisper_model "$variant"; then
-    BUNDLED_MODEL_OK=1
-    break
-  fi
-done
-
-if [[ $BUNDLED_MODEL_OK -eq 0 && "${BUNDLE_FALLBACK_GIT:-1}" == "1" ]]; then
-  if command -v git >/dev/null 2>&1 && command -v git-lfs >/dev/null 2>&1; then
-    TMP_M="$(mktemp -d)"/whisper-small-mlx
-    echo "[i] No local models found; cloning mlx-community/whisper-small-mlx (shallow)…"
-    if git clone --depth 1 https://huggingface.co/mlx-community/whisper-small-mlx "$TMP_M"; then
-      (cd "$TMP_M" && git lfs install --local && git lfs pull || true)
-      rsync -a "$TMP_M/" "$MODELS_DST/whisper-small-mlx/"
-      echo "$MODELS_DST/whisper-small-mlx" >"$MODELS_DST/.last_whisper_variant"
+if [[ "$BUNDLE_WHISPER" == "1" ]]; then
+  BUNDLED_MODEL_OK=0
+  for variant in "${BUNDLE_VARIANTS[@]}"; do
+    if bundle_whisper_model "$variant"; then
       BUNDLED_MODEL_OK=1
-    else
-      echo "[!] Failed to clone fallback Whisper model."
+      break
     fi
-  else
-    echo "[!] No bundled model and git/git-lfs not available for fallback."
-  fi
-fi
+  done
 
-if [[ $BUNDLED_MODEL_OK -eq 0 ]]; then
-  echo "[!] Shipping without a bundled Whisper model. First launch will prompt to download one."
+  if [[ $BUNDLED_MODEL_OK -eq 0 && "$BUNDLE_FALLBACK_GIT" == "1" ]]; then
+    if command -v git >/dev/null 2>&1 && command -v git-lfs >/dev/null 2>&1; then
+      TMP_M="$(mktemp -d)"/whisper-small-mlx
+      echo "[i] No local models found; cloning mlx-community/whisper-small-mlx (shallow)…"
+      if git clone --depth 1 https://huggingface.co/mlx-community/whisper-small-mlx "$TMP_M"; then
+        (cd "$TMP_M" && git lfs install --local && git lfs pull || true)
+        rsync -a "$TMP_M/" "$MODELS_DST/whisper-small-mlx/"
+        echo "$MODELS_DST/whisper-small-mlx" >"$MODELS_DST/.last_whisper_variant"
+        BUNDLED_MODEL_OK=1
+      else
+        echo "[!] Failed to clone fallback Whisper model."
+      fi
+    else
+      echo "[!] No bundled model and git/git-lfs not available for fallback."
+    fi
+  fi
+
+  if [[ $BUNDLED_MODEL_OK -eq 0 ]]; then
+    echo "[!] No local Whisper model found to bundle."
+  fi
+else
+  echo "[i] Skipping Whisper model bundling (BUNDLE_WHISPER=0)."
 fi
 
 echo "[✓] Wrapper app built: $APP_DIR"
