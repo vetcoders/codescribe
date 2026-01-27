@@ -497,6 +497,16 @@ pub unsafe fn window_show(window: Id) {
     }
 }
 
+/// Hide window (order out)
+/// # Safety
+/// `window` must be a valid `NSWindow` instance.
+pub unsafe fn window_hide(window: Id) {
+    unsafe {
+        let nil: *mut Object = std::ptr::null_mut();
+        let _: () = msg_send![window, orderOut: nil];
+    }
+}
+
 /// Close window
 /// # Safety
 /// `window` must be a valid `NSWindow` instance.

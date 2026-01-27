@@ -48,7 +48,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
 /// - `ASSISTIVE_CONTEXT_MAX_CHARS` (default: 5000)
 /// - `ASSISTIVE_CONTEXT_INCLUDE_APP` (default: 1)
 /// - `ASSISTIVE_CONTEXT_COPY_DELAY_MS` (default: 150)
-/// - `ASSISTIVE_CONTEXT_COPY_FALLBACK` (default: 0) - enable Cmd+C fallback when AX selection is unavailable
+/// - `ASSISTIVE_CONTEXT_COPY_FALLBACK` (default: 1) - enable Cmd+C fallback when AX selection is unavailable
 pub fn capture_assistive_context() -> AssistiveContext {
     // Unit tests should not trigger osascript / clipboard / event simulation.
     if cfg!(test) {
@@ -189,8 +189,9 @@ fn selected_text_from_frontmost(max_chars: usize, copy_delay_ms: u64) -> Option<
         return Some(selected);
     }
 
-    // Cmd+C fallback is opt-in (off by default). Some apps don't expose AX selection APIs.
-    if !env_flag("ASSISTIVE_CONTEXT_COPY_FALLBACK", false) {
+    // Cmd+C fallback is enabled by default for Selection mode. Some apps don't expose AX APIs.
+    // We snapshot+restore to avoid clipboard pollution and treat "unchanged clipboard" as no selection.
+    if !env_flag("ASSISTIVE_CONTEXT_COPY_FALLBACK", true) {
         return None;
     }
 

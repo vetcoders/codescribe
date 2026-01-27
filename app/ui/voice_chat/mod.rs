@@ -424,14 +424,13 @@ fn show_voice_chat_overlay_impl() {
         crate::ui_helpers::animate_fade(window, 1.0, 0.2);
 
         let has_messages = !state.messages.is_empty();
+        let desired_tab = if has_messages { Tab::Agent } else { state.active_tab };
         drop(state);
         api::refresh_drawer();
-        if has_messages {
-            update_active_tab_impl(Tab::Agent);
+        update_active_tab_impl(desired_tab);
+        if has_messages || matches!(desired_tab, Tab::Agent) {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             api::update_chat_view_with_state(&mut state, true);
-        } else {
-            update_active_tab_impl(Tab::Drawer);
         }
     }
 }
