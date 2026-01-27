@@ -614,6 +614,13 @@ reload = "restart"
 category = "quality"
 description = "Enable background quality daemon (codescribe-loop)"
 
+[vars.CODESCRIBE_LOOP_USE_CLOUD_STT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "quality"
+description = "Force cloud STT for quality loop without changing app USE_LOCAL_STT"
+
 [vars.QUALITY_DEBUG_MODE]
 default = "0"
 type = "bool"

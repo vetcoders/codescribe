@@ -45,7 +45,7 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 **Streaming (chunky)**
 - `CODESCRIBE_STREAM_CHUNK_SEC` – domyślnie `15.0` (HOT RELOADED)
 - `CODESCRIBE_STREAM_OVERLAP_RATIO` – domyślnie `0.25` (HOT RELOADED)
-- `CODESCRIBE_BUFFERED_STREAM` – domyślnie `0` (HOT RELOADED)
+- `CODESCRIBE_BUFFERED_STREAM` – domyślnie `1` (HOT RELOADED)
 - `CODESCRIBE_BUFFER_DELAY_MS` – domyślnie `3000` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` – domyślnie `30` (HOT RELOADED)
 - `CODESCRIBE_EMIT_WORDS_MAX` – max słów na tick (buffered), domyślnie `3` (HOT RELOADED)
@@ -77,6 +77,10 @@ Poniżej — kiedy coś staje się wymagane.
 Wymagane **tylko jeśli** `USE_LOCAL_STT=0` (RESTART NEEDED):
 - `STT_ENDPOINT` (RESTART NEEDED)
 - `STT_API_KEY` (RESTART NEEDED)
+
+**Loop-only override (quality reports)**
+Jeśli chcesz wymusić cloud STT **tylko** dla quality loop bez zmiany appki:
+- `CODESCRIBE_LOOP_USE_CLOUD_STT=1` (RESTART NEEDED)
 
 **2) AI Formatting / Assistive (gdy włączasz AI)**
 Wymagane **tylko jeśli** `AI_FORMATTING_ENABLED=1` i chcesz LLM:

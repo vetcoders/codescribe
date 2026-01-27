@@ -142,6 +142,13 @@ enum ReferenceSourceArg {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    if env_bool("CODESCRIBE_LOOP_USE_CLOUD_STT") {
+        // Loop-only override: force cloud STT without changing app defaults.
+        unsafe {
+            std::env::set_var("USE_LOCAL_STT", "0");
+        }
+    }
+
     if args.no_embeddings {
         // SAFETY: this is a single-process CLI before any threads start.
         unsafe {
