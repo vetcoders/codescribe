@@ -608,15 +608,25 @@ fn create_commit_action_bar(action_handler: Option<usize>) -> Id {
 }
 
 fn hide_voice_chat_overlay_impl() {
-    unsafe {
+    // IMPORTANT: do not hold OVERLAY_STATE while calling `window_close`.
+    // `window_close` triggers AppKit notifications/delegate callbacks (windowWillClose),
+    // and those callbacks also lock OVERLAY_STATE. Holding the lock here can deadlock
+    // the main thread (observed as a hard freeze/hang).
+    let window_ptr = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(window_ptr) = state.window {
+        let window_ptr = state.window.take();
+        clear_overlay_state(&mut state);
+        window_ptr
+    };
+
+    if let Some(window_ptr) = window_ptr {
+        unsafe {
             let window = window_ptr as Id;
             crate::ui_helpers::animate_fade(window, 0.0, 0.15);
             crate::ui_helpers::window_close(window);
-            clear_overlay_state(&mut state);
         }
     }
+
     clear_search_field();
 }
 
