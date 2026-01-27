@@ -631,12 +631,15 @@ pub fn show_badge_for_mode(mode: BadgeMode) {
 fn show_hold_badge_impl(config: HoldBadgeConfig) {
     debug!("Showing hold badge (diameter={})", config.diameter);
     unsafe {
-        let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Hide existing badge if any
-        if let Some(window_ptr) = state.window {
+        // IMPORTANT: do not hold BADGE_STATE while calling `window_close`.
+        // Closing a window can trigger AppKit callbacks/notifications which may
+        // re-enter our code and attempt to lock BADGE_STATE again → deadlock.
+        let old_window_ptr = {
+            let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.window.take()
+        };
+        if let Some(window_ptr) = old_window_ptr {
             window_close(window_ptr as Id);
-            state.window = None;
         }
 
         // Create new badge window (MUST be on main thread)
@@ -649,31 +652,41 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
         let content_view: Id = msg_send![window, contentView];
         let _: () = msg_send![content_view, setNeedsDisplay: true];
 
-        state.window = Some(window as usize);
-        state.config = config.clone();
-        state.timer_running = true;
+        // Update shared state and determine whether we need to start the updater thread.
+        let (update_interval, start_updater) = {
+            let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let was_running = state.timer_running;
+            state.window = Some(window as usize);
+            state.config = config.clone();
+            state.timer_running = true;
+            (config.update_interval_ms, !was_running)
+        };
 
-        // Start position update timer (and pulse animation if needed)
-        let update_interval = config.update_interval_ms;
-        let should_pulse = config.mode.should_pulse();
+        // Start a SINGLE position updater thread. Subsequent calls to `show_*` just update state.
+        if start_updater {
+            thread::spawn(move || {
+                let mut pulse_phase: f64 = 0.0;
+                let pulse_speed = 0.15; // Radians per update cycle
 
-        thread::spawn(move || {
-            let mut pulse_phase: f64 = 0.0;
-            let pulse_speed = 0.15; // Radians per update cycle
+                loop {
+                    thread::sleep(Duration::from_millis(update_interval));
 
-            while BADGE_STATE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .timer_running
-            {
-                thread::sleep(Duration::from_millis(update_interval));
+                    let (window_ptr, config, should_pulse) = {
+                        let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                        if !state.timer_running {
+                            break;
+                        }
+                        (
+                            state.window,
+                            state.config.clone(),
+                            state.config.mode.should_pulse(),
+                        )
+                    };
 
-                let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
-                if !state.timer_running {
-                    break;
-                }
+                    let Some(window_ptr) = window_ptr else {
+                        continue;
+                    };
 
-                if let Some(window_ptr) = state.window {
                     // Calculate pulse opacity (sine wave from 0.4 to 1.0)
                     let pulse_opacity = if should_pulse {
                         pulse_phase += pulse_speed;
@@ -685,10 +698,8 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
                     // Position and opacity updates need main thread
                     Queue::main().exec_async(move || {
                         let window = window_ptr as Id;
-                        let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
-                        update_badge_position(window, &state.config);
+                        update_badge_position(window, &config);
 
-                        // Update opacity for pulsing effect
                         if should_pulse {
                             let content_view: Id = msg_send![window, contentView];
                             if !content_view.is_null() {
@@ -706,8 +717,8 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
                         }
                     });
                 }
-            }
-        });
+            });
+        }
     }
 }
 
@@ -735,19 +746,18 @@ pub fn hide_hold_badge() {
     debug!("Hiding hold badge");
 
     // Stop the timer first (can be done on any thread)
-    {
+    let window_ptr = {
         let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.timer_running = false;
-    }
+        state.window.take()
+    };
 
-    // Dispatch window close to main thread
-    Queue::main().exec_async(|| {
-        let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(window_ptr) = state.window {
+    // Dispatch window close to main thread. Do NOT hold BADGE_STATE while closing.
+    Queue::main().exec_async(move || {
+        if let Some(window_ptr) = window_ptr {
             unsafe {
                 window_close(window_ptr as Id);
             }
-            state.window = None;
         }
     });
 }
