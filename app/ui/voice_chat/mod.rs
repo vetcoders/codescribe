@@ -386,7 +386,14 @@ fn show_voice_chat_overlay_impl() {
         let ns_text_field = Class::get("NSTextField").unwrap();
         let agent_input: Id = msg_send![ns_text_field, alloc];
         let agent_input: Id = msg_send![agent_input, initWithFrame: CGRect::new(&CGPoint::new(12.0, 12.0), &CGSize::new(window_width - 90.0, 28.0))];
-        let _: () = msg_send![agent_input, setBezeled: true];
+        // Make this a real input field (NSTextField defaults can be non-editable).
+        // We style it via the surrounding `input_bar` layer instead of the default bezel.
+        let _: () = msg_send![agent_input, setBezeled: false];
+        let _: () = msg_send![agent_input, setBordered: false];
+        let _: () = msg_send![agent_input, setDrawsBackground: false];
+        let _: () = msg_send![agent_input, setEditable: true];
+        let _: () = msg_send![agent_input, setSelectable: true];
+        let _: () = msg_send![agent_input, setEnabled: true];
         let _: () = msg_send![agent_input, setPlaceholderString: ns_string("Napisz polecenie...")];
         let _: () = msg_send![agent_input, setTarget: action_handler];
         let _: () = msg_send![agent_input, setAction: sel!(onInputSubmit:)];

@@ -279,6 +279,19 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         if let Some(agent_send) = state.agent_send_button {
             crate::ui_helpers::set_hidden(agent_send as Id, show_drawer);
         }
+
+        // When switching to Agent, make sure the input field can actually receive text.
+        // We do NOT force activation (to avoid stealing focus), but if the window is already
+        // key, we nudge first responder to the input field for better UX.
+        if tab == Tab::Agent {
+            if let (Some(window_ptr), Some(input_ptr)) = (state.window, state.agent_input_field) {
+                let window = window_ptr as Id;
+                let is_key: bool = msg_send![window, isKeyWindow];
+                if is_key {
+                    let _: bool = msg_send![window, makeFirstResponder: input_ptr as Id];
+                }
+            }
+        }
     }
 }
 
