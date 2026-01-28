@@ -790,25 +790,42 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         };
 
         // Measure text height/width using NSString boundingRectWithSize (handles newlines/wrapping).
-        // This is much more reliable than a char-count heuristic and prevents clipped bubbles.
-        let text_max_width = (config.max_width - padding * 2.0).max(40.0);
+        //
+        // NOTE: `NSFontAttributeName` (key) has the string value "NSFont". AppKit expects that
+        // key, not the literal "NSFontAttributeName" string.
         let text_str = ns_string(&display_text);
-        let font_key = ns_string("NSFontAttributeName");
+        let font_key = ns_string("NSFont");
         let attrs: Id = msg_send![ns_dict, dictionaryWithObject: font forKey: font_key];
         let opts: u64 = 1 | 2; // NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-        let text_rect: CGRect = msg_send![
+
+        let text_max_width = (config.max_width - padding * 2.0).max(40.0);
+        let rect_max: CGRect = msg_send![
             text_str,
             boundingRectWithSize: CGSize::new(text_max_width, 10_000.0)
             options: opts
             attributes: attrs
         ];
-        let text_height = text_rect.size.height.ceil().max(line_height);
-        let bubble_height = text_height + padding * 2.0 + copy_button_height;
 
         // Bubble width: content-aware but capped.
-        // Use measured width where possible (but don't exceed max width).
-        let content_width = text_rect.size.width.min(text_max_width).max(1.0);
-        let bubble_width = (content_width + padding * 2.0).min(config.max_width);
+        // If it wraps at max width, keep the bubble full width for readability.
+        let wraps_at_max = rect_max.size.height > line_height * 1.6 || display_text.contains('\n');
+        let bubble_width = if wraps_at_max {
+            config.max_width
+        } else {
+            let content_width = rect_max.size.width.min(text_max_width).max(1.0);
+            (content_width + padding * 2.0).min(config.max_width)
+        };
+
+        // Re-measure height for the final layout width (important when bubble_width < max).
+        let text_layout_width = (bubble_width - padding * 2.0).max(40.0);
+        let text_rect: CGRect = msg_send![
+            text_str,
+            boundingRectWithSize: CGSize::new(text_layout_width, 10_000.0)
+            options: opts
+            attributes: attrs
+        ];
+        let text_height = text_rect.size.height.ceil().max(line_height);
+        let bubble_height = text_height + padding * 2.0 + copy_button_height;
 
         // Container view (for alignment)
         let container: Id = msg_send![ns_view, alloc];
@@ -821,8 +838,8 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         // Bubble background view
         let bubble: Id = msg_send![ns_view, alloc];
         let bubble_x = match config.role {
-            BubbleRole::User => config.max_width - bubble_width - 8.0, // Right-aligned
-            BubbleRole::Assistant | BubbleRole::System => 8.0,         // Left-aligned
+            BubbleRole::User => (config.max_width - bubble_width - 8.0).max(8.0), // Right-aligned
+            BubbleRole::Assistant | BubbleRole::System => 8.0,                    // Left-aligned
         };
         let bubble_frame = CGRect::new(
             &CGPoint::new(bubble_x, 0.0),
