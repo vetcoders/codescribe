@@ -233,7 +233,9 @@ fn show_voice_chat_overlay_impl() {
         // The overlay window is typically ~450px wide; fixed coordinates can overlap.
         let right_cluster_start_x = window_width - 192.0;
         let tab_x = title_x + title_w + 10.0;
-        let tab_w = (right_cluster_start_x - 8.0 - tab_x).max(80.0);
+        // Don't enforce a minimum width here; on narrower windows, forcing a min can make the
+        // segmented control overlap the right-side icon cluster.
+        let tab_w = (right_cluster_start_x - 8.0 - tab_x).max(0.0);
         let tab_control = create_segmented_control(
             CGRect::new(
                 &CGPoint::new(tab_x, window_height - 34.0),
