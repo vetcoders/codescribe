@@ -77,7 +77,6 @@ pub enum TrayMenuEvent {
 
     // Hold Hotkeys submenu
     SetHoldMods(HoldMods),
-    ToggleHoldExclusive,
     SetToggleTrigger(ToggleTrigger),
 
     // History (open folder)
@@ -90,6 +89,9 @@ pub enum TrayMenuEvent {
     OpenAssistivePrompt,
     OpenFormattingPrompt,
     OpenPromptsFolder,
+
+    // Shortcuts
+    ResetShortcuts,
 }
 
 // ============================================================================
@@ -100,8 +102,6 @@ pub enum TrayMenuEvent {
 pub struct HoldMenuItems {
     pub ctrl: CheckMenuItem,
     pub ctrl_opt: CheckMenuItem,
-    pub ctrl_shift: CheckMenuItem,
-    pub ctrl_cmd: CheckMenuItem,
     pub label: MenuItem,
 }
 
@@ -135,12 +135,10 @@ pub struct MenuIds {
     // Hold Hotkeys submenu
     pub hold_ctrl: MenuId,
     pub hold_ctrl_opt: MenuId,
-    pub hold_ctrl_shift: MenuId,
-    pub hold_ctrl_cmd: MenuId,
-    pub hold_exclusive: MenuId,
     pub toggle_double_opt: MenuId,
     pub toggle_double_ralt: MenuId,
     pub toggle_disabled: MenuId,
+    pub shortcuts_reset: MenuId,
 
     // Quality
     pub quality_open_report: MenuId,

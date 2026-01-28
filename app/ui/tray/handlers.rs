@@ -42,12 +42,6 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_set_hold_mods(HoldMods::Ctrl);
     } else if event_id == &menu_ids.hold_ctrl_opt {
         handle_set_hold_mods(HoldMods::CtrlAlt);
-    } else if event_id == &menu_ids.hold_ctrl_shift {
-        handle_set_hold_mods(HoldMods::CtrlShift);
-    } else if event_id == &menu_ids.hold_ctrl_cmd {
-        handle_set_hold_mods(HoldMods::CtrlCmd);
-    } else if event_id == &menu_ids.hold_exclusive {
-        handle_toggle_hold_exclusive();
     }
     // Toggle trigger submenu
     else if event_id == &menu_ids.toggle_double_opt {
@@ -56,6 +50,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_set_toggle_trigger(ToggleTrigger::DoubleRightOption);
     } else if event_id == &menu_ids.toggle_disabled {
         handle_set_toggle_trigger(ToggleTrigger::None);
+    } else if event_id == &menu_ids.shortcuts_reset {
+        handle_reset_shortcuts();
     }
     // Quality - Open Report
     else if event_id == &menu_ids.quality_open_report {
@@ -132,8 +128,6 @@ fn handle_set_hold_mods(mods: HoldMods) {
         if let Some(ref items) = *items_cell.borrow() {
             items.ctrl.set_checked(mods == HoldMods::Ctrl);
             items.ctrl_opt.set_checked(mods == HoldMods::CtrlAlt);
-            items.ctrl_shift.set_checked(mods == HoldMods::CtrlShift);
-            items.ctrl_cmd.set_checked(mods == HoldMods::CtrlCmd);
             items.label.set_text(format!("Current: {}", mods.label()));
         }
     });
@@ -141,19 +135,6 @@ fn handle_set_hold_mods(mods: HoldMods) {
     // Persist to config
     let config = Config::load();
     let _ = config.save_to_env("HOLD_MODS", mods.as_str());
-}
-
-/// Toggle hold exclusive mode
-fn handle_toggle_hold_exclusive() {
-    send_menu_event(TrayMenuEvent::ToggleHoldExclusive);
-
-    let config = Config::load();
-    let new_state = !config.hold_exclusive;
-    let _ = config.save_to_env("HOLD_EXCLUSIVE", if new_state { "1" } else { "0" });
-    info!(
-        "Hold exclusive toggled: {}",
-        if new_state { "ON" } else { "OFF" }
-    );
 }
 
 /// Set toggle trigger and update menu checkmarks
@@ -178,6 +159,20 @@ fn handle_set_toggle_trigger(trigger: ToggleTrigger) {
     // Persist to config
     let config = Config::load();
     let _ = config.save_to_env("TOGGLE_TRIGGER", trigger.as_str());
+}
+
+/// Reset shortcuts to a safe, recommended default.
+fn handle_reset_shortcuts() {
+    info!("Resetting shortcuts to recommended defaults");
+    // Ensure Shift/Cmd mode layer is enabled.
+    let config = Config::load();
+    let _ = config.save_to_env("HOLD_EXCLUSIVE", "0");
+
+    // Apply defaults via existing handlers (also updates checkmarks + sends events).
+    handle_set_hold_mods(HoldMods::Ctrl);
+    handle_set_toggle_trigger(ToggleTrigger::DoubleRightOption);
+
+    send_menu_event(TrayMenuEvent::ResetShortcuts);
 }
 
 /// Open history folder in Finder

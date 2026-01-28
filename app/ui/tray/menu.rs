@@ -4,7 +4,7 @@
 //! - Status line (dynamic)
 //! - Show Chat Overlay
 //! - Open history folder
-//! - Hotkeys submenu
+//! - Shortcuts submenu
 //! - Tools submenu (prompts/diagnostics/quality)
 //! - Help/About
 //! - Quit
@@ -70,7 +70,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     // 4. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 5. Hotkeys submenu
+    // 5. Shortcuts submenu
     let (hold_hotkeys_menu, hold_ids) = build_hold_hotkeys_submenu()?;
     menu.append(&hold_hotkeys_menu)?;
 
@@ -152,12 +152,10 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let (
         hold_ctrl_id,
         hold_ctrl_opt_id,
-        hold_ctrl_shift_id,
-        hold_ctrl_cmd_id,
-        hold_exclusive_id,
         toggle_double_opt_id,
         toggle_double_ralt_id,
         toggle_disabled_id,
+        shortcuts_reset_id,
     ) = hold_ids;
 
     Ok((
@@ -176,12 +174,10 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             // Hold Hotkeys submenu
             hold_ctrl: hold_ctrl_id,
             hold_ctrl_opt: hold_ctrl_opt_id,
-            hold_ctrl_shift: hold_ctrl_shift_id,
-            hold_ctrl_cmd: hold_ctrl_cmd_id,
-            hold_exclusive: hold_exclusive_id,
             toggle_double_opt: toggle_double_opt_id,
             toggle_double_ralt: toggle_double_ralt_id,
             toggle_disabled: toggle_disabled_id,
+            shortcuts_reset: shortcuts_reset_id,
             // Quality
             quality_open_report: quality_open_report_id,
         },
@@ -238,7 +234,7 @@ mod tests {
             "Status: Idle".to_string(),
             "Show Chat Overlay".to_string(),
             "Open history...".to_string(),
-            "Hotkeys".to_string(),
+            "Shortcuts".to_string(),
             "Tools".to_string(),
             "Help".to_string(),
             "About".to_string(),

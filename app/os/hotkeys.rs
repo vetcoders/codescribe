@@ -503,7 +503,8 @@ mod macos {
 
             tracing::debug!(
                 "Hold combo activated ({:?}, mode={:?}) - sending Hold Down event",
-                hold_mods, state.hold_mode
+                hold_mods,
+                state.hold_mode
             );
             // Send Hold Down immediately for responsiveness
             let _ = state.tx.send(HotkeyEvent::Hold {
@@ -513,7 +514,9 @@ mod macos {
             state.hold_event_sent = true;
         } else if combo_active && state.hold_active && mode_now != state.hold_mode {
             state.hold_mode = mode_now;
-            let _ = state.tx.send(HotkeyEvent::HoldUpdate { mode: state.hold_mode });
+            let _ = state.tx.send(HotkeyEvent::HoldUpdate {
+                mode: state.hold_mode,
+            });
         } else if !combo_active && state.hold_active {
             // Hold combo just deactivated
             state.hold_active = false;

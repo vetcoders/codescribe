@@ -9,80 +9,72 @@ use crate::tray::state::{HOLD_MENU_ITEMS, TOGGLE_MENU_ITEMS};
 use crate::tray::types::{HoldMenuItems, HoldMods, ToggleMenuItems};
 
 // Type aliases
-pub type HoldMenuIds = (
-    MenuId,
-    MenuId,
-    MenuId,
-    MenuId,
-    MenuId,
-    MenuId,
-    MenuId,
-    MenuId,
-);
+pub type HoldMenuIds = (MenuId, MenuId, MenuId, MenuId, MenuId, MenuId);
 
 /// Build the Hold Hotkeys submenu
 pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
-    let hold_menu = Submenu::new("Hotkeys", true);
+    let hold_menu = Submenu::new("Shortcuts", true);
 
     // Read from Config (source of truth for initial state)
     let config = crate::config::Config::load();
     let current_mods = config.hold_mods;
     let current_trigger = config.toggle_trigger;
 
-    let hold_current_label =
-        MenuItem::new(format!("Current: {}", current_mods.label()), false, None);
-    hold_menu.append(&hold_current_label)?;
-    let hold_modes_hint = MenuItem::new(
-        "Modes: +Shift = Chat, +Command = Selection".to_string(),
+    let (base_for_summary, show_deprecated_hold_note) = match current_mods {
+        HoldMods::Ctrl => ("Ctrl", false),
+        HoldMods::CtrlAlt => ("Ctrl+Option", false),
+        _ => ("Ctrl", true),
+    };
+
+    let hold_summary = MenuItem::new(
+        format!(
+            "Hold: {base} → RAW, {base}+Shift → Chat, {base}+Cmd → Selection{}",
+            if config.hold_exclusive {
+                " (Shift/Cmd modes OFF)"
+            } else {
+                ""
+            },
+            base = base_for_summary
+        ),
         false,
         None,
     );
-    hold_menu.append(&hold_modes_hint)?;
+    hold_menu.append(&hold_summary)?;
+
+    let reset_item = MenuItem::new("Reset shortcuts (recommended)", true, None);
+    let reset_id = reset_item.id().clone();
+    hold_menu.append(&reset_item)?;
     hold_menu.append(&PredefinedMenuItem::separator())?;
 
+    let hold_current_label =
+        MenuItem::new(format!("Current: {}", current_mods.label()), false, None);
+    hold_menu.append(&hold_current_label)?;
+    if show_deprecated_hold_note {
+        let note = MenuItem::new(
+            "Note: custom hold mods are deprecated; use Reset shortcuts",
+            false,
+            None,
+        );
+        hold_menu.append(&note)?;
+    }
+
     let hold_ctrl = CheckMenuItem::new(
-        format!("Hold: {}", HoldMods::Ctrl.label()),
+        "Hold: Ctrl (recommended)",
         true,
         current_mods == HoldMods::Ctrl,
         None,
     );
     let hold_ctrl_id = hold_ctrl.id().clone();
     let hold_ctrl_opt = CheckMenuItem::new(
-        format!("Hold: {}", HoldMods::CtrlAlt.label()),
+        "Hold: Ctrl+Option (legacy)",
         true,
         current_mods == HoldMods::CtrlAlt,
         None,
     );
     let hold_ctrl_opt_id = hold_ctrl_opt.id().clone();
-    let hold_ctrl_shift = CheckMenuItem::new(
-        format!("Hold: {}", HoldMods::CtrlShift.label()),
-        true,
-        current_mods == HoldMods::CtrlShift,
-        None,
-    );
-    let hold_ctrl_shift_id = hold_ctrl_shift.id().clone();
-    let hold_ctrl_cmd = CheckMenuItem::new(
-        format!("Hold: {}", HoldMods::CtrlCmd.label()),
-        true,
-        current_mods == HoldMods::CtrlCmd,
-        None,
-    );
-    let hold_ctrl_cmd_id = hold_ctrl_cmd.id().clone();
 
     hold_menu.append(&hold_ctrl)?;
     hold_menu.append(&hold_ctrl_opt)?;
-    hold_menu.append(&hold_ctrl_shift)?;
-    hold_menu.append(&hold_ctrl_cmd)?;
-    hold_menu.append(&PredefinedMenuItem::separator())?;
-
-    let hold_exclusive = CheckMenuItem::new(
-        "Exact match only (disable Shift/Cmd modes)",
-        true,
-        config.hold_exclusive,
-        None,
-    );
-    let hold_exclusive_id = hold_exclusive.id().clone();
-    hold_menu.append(&hold_exclusive)?;
     hold_menu.append(&PredefinedMenuItem::separator())?;
 
     let toggle_label = MenuItem::new(format!("Toggle: {}", current_trigger.label()), false, None);
@@ -117,8 +109,6 @@ pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
         *items_cell.borrow_mut() = Some(HoldMenuItems {
             ctrl: hold_ctrl,
             ctrl_opt: hold_ctrl_opt,
-            ctrl_shift: hold_ctrl_shift,
-            ctrl_cmd: hold_ctrl_cmd,
             label: hold_current_label,
         });
     });
@@ -137,12 +127,10 @@ pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
         (
             hold_ctrl_id,
             hold_ctrl_opt_id,
-            hold_ctrl_shift_id,
-            hold_ctrl_cmd_id,
-            hold_exclusive_id,
             toggle_double_opt_id,
             toggle_double_ralt_id,
             toggle_disabled_id,
+            reset_id,
         ),
     ))
 }
