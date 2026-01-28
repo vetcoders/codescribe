@@ -165,6 +165,32 @@ fn main() {
             println!("cargo:warning=E5 embedding disabled (set CODESCRIBE_EMBED_E5=1 to embed)");
         }
 
+        // Silero VAD embedding (small, default in release when available)
+        let silero_path = codescribe_dir.join("models").join("silero_vad.onnx");
+        let silero_dest_path = Path::new(&out_dir).join("embedded_vad_data.rs");
+        let silero_exists = silero_path.exists();
+        if is_release && silero_exists && !no_embed {
+            println!(
+                "cargo:warning=Embedding Silero VAD model from: {}",
+                silero_path.display()
+            );
+            let silero_content = format!(
+                r#"
+                pub static MODEL: &[u8] = include_bytes!(r"{}");
+                "#,
+                silero_path.display(),
+            );
+            fs::write(&silero_dest_path, silero_content)
+                .expect("Failed to write embedded_vad_data.rs");
+            println!("cargo:rustc-cfg=embed_vad");
+        } else if is_release && !silero_exists {
+            println!(
+                "cargo:warning=Silero VAD model not found at: {}",
+                silero_path.display()
+            );
+            println!("cargo:warning=Download with: scripts/download-silero.sh");
+        }
+
         // Release builds embed Whisper by default (zero-dependency distribution)
         // Skip with CODESCRIBE_NO_EMBED=1 or if model not found
         let should_embed_whisper = is_release && model_exists && !no_embed;

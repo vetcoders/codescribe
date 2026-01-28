@@ -26,6 +26,7 @@
 //! Created by M&K (c)2026 VetCoders
 
 pub mod config;
+pub mod embedded;
 pub mod silero_ort;
 
 pub use config::VadConfig;

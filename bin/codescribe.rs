@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// CodeScribe CLI - Local speech-to-text transcription
 ///
@@ -117,6 +118,9 @@ static LOG_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuar
     std::sync::OnceLock::new();
 
 fn init_tracing() {
+    // Ensure ~/.codescribe/.env is loaded before we read RUST_LOG.
+    let _ = codescribe::config::Config::load();
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let log_dir = codescribe::config::Config::config_dir().join("logs");
@@ -125,11 +129,22 @@ fn init_tracing() {
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
     let _ = LOG_GUARD.set(guard);
 
-    let _ = tracing_subscriber::fmt()
+    let log_to_stdout = std::env::var("CODESCRIBE_LOG_STDOUT")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    let subscriber = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(file_writer)
-        .with_target(false)
-        .try_init();
+        .with_target(false);
+
+    let _ = if log_to_stdout {
+        subscriber
+            .with_writer(file_writer.and(std::io::stdout))
+            .try_init()
+    } else {
+        subscriber.with_writer(file_writer).try_init()
+    };
 }
 
 /// Handle --config flag: create default config and open in editor
@@ -366,7 +381,8 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
         }
     })));
 
-    recorder.start(language).await?;
+    // Live CLI should stream continuously (no VAD-gated buffering).
+    recorder.start_with_buffered(language, false).await?;
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {

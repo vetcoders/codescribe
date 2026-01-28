@@ -17,6 +17,7 @@ use ort::value::Tensor;
 use tracing::{debug, info};
 
 use super::config::VadConfig;
+use super::embedded;
 use crate::hf_cache;
 
 /// Silero VAD sample rate (always 16kHz)
@@ -88,8 +89,27 @@ pub struct SileroVad {
 }
 
 impl SileroVad {
-    /// Load Silero VAD model from path
+    /// Load Silero VAD model from embedded bytes (if available) or path
     pub fn new(model_path: &Path, config: VadConfig) -> Result<Self> {
+        if let Some(model_bytes) = embedded::get_embedded_data() {
+            info!(
+                "Loading Silero VAD model from embedded bytes ({:.2} MB)",
+                model_bytes.len() as f64 / 1_000_000.0
+            );
+            let session = Session::builder()?
+                .with_intra_threads(1)?
+                .commit_from_memory(model_bytes)
+                .context("Failed to load embedded Silero VAD ONNX model")?;
+            debug!("Silero VAD embedded model loaded successfully");
+            return Ok(Self {
+                session,
+                state_h: Array3::zeros((STATE_LAYERS, 1, STATE_DIM)),
+                state_c: Array3::zeros((STATE_LAYERS, 1, STATE_DIM)),
+                config,
+                resampler: None,
+            });
+        }
+
         info!("Loading Silero VAD model from: {}", model_path.display());
 
         let session = Session::builder()?
@@ -453,8 +473,17 @@ pub fn reset() {
 const SILERO_VAD_REPO: &str = "snakers4/silero-vad";
 const SILERO_VAD_FILE: &str = "silero_vad.onnx";
 
-/// Get default model path (HF cache first, then ~/.codescribe/models/)
+/// Get default model path (bundled/models dir -> HF cache -> ~/.codescribe/models/)
 pub fn default_model_path() -> PathBuf {
+    // 1) Bundled / models dir (app Resources/models or ./models)
+    if let Ok(manager) = crate::config::models::ModelManager::new() {
+        let candidate = manager.models_dir().join(SILERO_VAD_FILE);
+        if candidate.exists() {
+            debug!("Using Silero VAD from models dir: {}", candidate.display());
+            return candidate;
+        }
+    }
+
     // Try HF cache first (from `hf download snakers4/silero-vad`)
     if let Some(snapshot) = hf_cache::find_snapshot(SILERO_VAD_REPO, &[SILERO_VAD_FILE]) {
         let model_path = snapshot.join(SILERO_VAD_FILE);

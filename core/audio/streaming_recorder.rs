@@ -1,10 +1,11 @@
 use crate::audio::recorder::{Recorder, RecorderConfig};
-use crate::stream_postprocess::StreamPostProcessor;
+use crate::stream_postprocess::{LexiconPostProcessor, StreamPostProcessor};
 use crate::stt::whisper;
 use crate::stt::whisper::append_with_overlap_dedup;
 use crate::stt::whisper::singleton::engine as get_engine;
 use crate::vad;
 use anyhow::{Context, Result, anyhow};
+use chrono::SecondsFormat;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::VecDeque;
@@ -13,7 +14,7 @@ use std::{fs::OpenOptions, io::Write, path::Path};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 const DEFAULT_CHUNK_DURATION_SEC: f32 = 15.0;
 const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for context
@@ -68,6 +69,16 @@ impl StreamingRecorder {
     }
 
     pub async fn start(&mut self, language: Option<String>) -> Result<()> {
+        let use_buffered_stream = env_bool_default("CODESCRIBE_BUFFERED_STREAM", true);
+        self.start_with_buffered(language, use_buffered_stream)
+            .await
+    }
+
+    pub async fn start_with_buffered(
+        &mut self,
+        language: Option<String>,
+        use_buffered_stream: bool,
+    ) -> Result<()> {
         // Clear previous transcript
         *self.transcript_buffer.lock().await = String::new();
 
@@ -105,7 +116,6 @@ impl StreamingRecorder {
         let transcript_buffer = self.transcript_buffer.clone();
         let stream_log_path = stream_log_path();
         let delta_callback = self.delta_callback.clone();
-        let use_buffered_stream = env_bool_default("CODESCRIBE_BUFFERED_STREAM", true);
         self.transcription_handle = Some(tokio::spawn(async move {
             if use_buffered_stream {
                 buffered_transcription_worker(
@@ -118,7 +128,11 @@ impl StreamingRecorder {
                 )
                 .await;
             } else {
-                let postprocessor = StreamPostProcessor::new();
+                let postprocessor = if env_bool("CODESCRIBE_BUFFERED_STREAM") {
+                    Some(StreamPostProcessor::new())
+                } else {
+                    None
+                };
                 transcription_worker(
                     rx,
                     transcript_buffer,
@@ -175,58 +189,48 @@ async fn transcription_worker(
     transcript_buffer: Arc<Mutex<String>>,
     sample_rate: u32,
     language: Option<String>,
-    mut postprocessor: StreamPostProcessor,
+    mut postprocessor: Option<StreamPostProcessor>,
     delta_callback: Option<StreamDeltaCallback>,
     stream_log_path: Option<std::path::PathBuf>,
 ) {
     info!("Transcription worker started");
 
-    let mut pending_samples: Vec<f32> = Vec::new();
     let chunk_duration_sec = stream_chunk_duration_sec();
     let overlap_sec = stream_overlap_sec(chunk_duration_sec);
-    let chunk_limit = (sample_rate as f32 * chunk_duration_sec) as usize;
-    let overlap_size = (sample_rate as f32 * overlap_sec) as usize;
+    let chunk_limit = (vad::VAD_SAMPLE_RATE as f32 * chunk_duration_sec) as usize;
+    let overlap_size = (vad::VAD_SAMPLE_RATE as f32 * overlap_sec) as usize;
+    let mut session = SpeechSession::new_stream(sample_rate, chunk_limit, overlap_size);
 
     // We keep track of how many samples we've processed to know when to overlap
     // Actually, we just keep the last samples in pending_samples?
     // No, pending_samples grows. When it hits limit, we transcribe.
     // Then we keep the tail as the new pending_samples.
 
-    while let Some(mut data) = chunk_receiver.recv().await {
-        pending_samples.append(&mut data);
-
-        if pending_samples.len() >= chunk_limit {
-            process_chunk(
-                &pending_samples,
-                &transcript_buffer,
-                sample_rate,
-                language.as_deref(),
-                &mut postprocessor,
-                delta_callback.as_ref(),
-                stream_log_path.as_deref(),
-            )
-            .await;
-
-            // Keep overlap for next chunk
-            if pending_samples.len() > overlap_size {
-                let start_idx = pending_samples.len() - overlap_size;
-                pending_samples = pending_samples[start_idx..].to_vec();
-            } else {
-                // Should not happen if chunk_limit > overlap_size
-                pending_samples.clear();
+    while let Some(data) = chunk_receiver.recv().await {
+        for event in session.feed(&data, sample_rate) {
+            if let SpeechEvent::Chunk(samples) = event {
+                process_chunk(
+                    &samples,
+                    &transcript_buffer,
+                    session.output_sample_rate(),
+                    language.as_deref(),
+                    postprocessor.as_mut(),
+                    delta_callback.as_ref(),
+                    stream_log_path.as_deref(),
+                )
+                .await;
             }
         }
     }
 
-    // Process remaining samples (final chunk)
-    if !pending_samples.is_empty() {
-        debug!("Processing final chunk ({} samples)", pending_samples.len());
+    if let Some(SpeechEvent::Chunk(samples)) = session.flush() {
+        debug!("Processing final chunk ({} samples)", samples.len());
         process_chunk(
-            &pending_samples,
+            &samples,
             &transcript_buffer,
-            sample_rate,
+            session.output_sample_rate(),
             language.as_deref(),
-            &mut postprocessor,
+            postprocessor.as_mut(),
             delta_callback.as_ref(),
             stream_log_path.as_deref(),
         )
@@ -236,135 +240,329 @@ async fn transcription_worker(
     info!("Transcription worker finished");
 }
 
-// VADConfig removed - now using centralized vad::VadConfig from core/vad/config.rs
-
-struct VADSegmenter {
-    pending_samples: Vec<f32>,
-    sample_rate: u32,
-    /// Speech probability threshold (0.0-1.0)
-    speech_threshold: f32,
-    silence_duration_sec: f32,
-    max_utterance_sec: f32,
-    pre_roll_samples: usize,
-    silence_frames: usize,
-    is_in_speech: bool,
+enum SpeechEvent {
+    Chunk(Vec<f32>),
+    Utterance(Vec<f32>),
 }
 
-impl VADSegmenter {
-    fn new(sample_rate: u32) -> Self {
-        Self::with_config(sample_rate, vad::VadConfig::default())
-    }
+enum SpeechMode {
+    Stream {
+        chunk_limit: usize,
+        overlap_size: usize,
+    },
+    Utterance {
+        max_utterance_samples: usize,
+    },
+}
 
-    fn with_config(sample_rate: u32, config: vad::VadConfig) -> Self {
-        let pre_roll_samples = (config.pre_roll_sec * sample_rate as f32).round().max(1.0) as usize;
+struct SpeechSession {
+    mode: SpeechMode,
+    threshold: f32,
+    neg_threshold: f32,
+    min_speech_samples: usize,
+    min_silence_samples: usize,
+    in_speech: bool,
+    speech_samples: usize,
+    silence_samples: usize,
+    pending_speech: Vec<f32>,
+    pending_silence: Vec<f32>,
+    pending_samples: Vec<f32>,
+    last_append_at: Instant,
+    vad: Option<vad::SileroVad>,
+    resampler: Option<vad::Resampler>,
+    output_sample_rate: u32,
+}
 
-        // Ensure VAD is initialized with the passed config (not default!)
-        // Note: if VAD already initialized, this is a no-op (early exit)
-        if let Err(e) = vad::init_with_config(&vad::default_model_path(), config.clone()) {
-            tracing::warn!(
-                "VAD init failed in VADSegmenter: {} - silence detection disabled, \
-                 will rely on max_utterance_sec ({:.1}s) for flush",
-                e,
-                config.max_utterance_sec
-            );
-        }
+impl SpeechSession {
+    fn new_stream(sample_rate: u32, chunk_limit: usize, overlap_size: usize) -> Self {
+        let config = hardcoded_vad_config();
+        let output_sample_rate = vad::VAD_SAMPLE_RATE;
+        let min_speech_samples = (config.min_speech_duration_sec * output_sample_rate as f32)
+            .round()
+            .max(1.0) as usize;
+        let min_silence_samples = (config.max_silence_duration_sec * output_sample_rate as f32)
+            .round()
+            .max(1.0) as usize;
+        let neg_threshold = (config.threshold - 0.15).max(0.05);
+
+        let vad = init_silero_vad(output_sample_rate, &config);
+        let resampler = if sample_rate != output_sample_rate {
+            Some(vad::Resampler::new(sample_rate))
+        } else {
+            None
+        };
 
         Self {
+            mode: SpeechMode::Stream {
+                chunk_limit,
+                overlap_size,
+            },
+            threshold: config.threshold,
+            neg_threshold,
+            min_speech_samples,
+            min_silence_samples,
+            in_speech: false,
+            speech_samples: 0,
+            silence_samples: 0,
+            pending_speech: Vec::new(),
+            pending_silence: Vec::new(),
             pending_samples: Vec::new(),
-            sample_rate,
-            speech_threshold: config.threshold,
-            silence_duration_sec: config.max_silence_duration_sec,
-            max_utterance_sec: config.max_utterance_sec,
-            pre_roll_samples,
-            silence_frames: 0,
-            is_in_speech: false,
+            last_append_at: Instant::now(),
+            vad,
+            resampler,
+            output_sample_rate,
         }
     }
 
-    fn feed(&mut self, audio: &[f32]) -> Option<Vec<f32>> {
-        if audio.is_empty() {
-            return None;
-        }
+    fn new_utterance(sample_rate: u32) -> Self {
+        let config = hardcoded_vad_config();
+        let output_sample_rate = vad::VAD_SAMPLE_RATE;
+        let min_speech_samples = (config.min_speech_duration_sec * output_sample_rate as f32)
+            .round()
+            .max(1.0) as usize;
+        let min_silence_samples = (config.max_silence_duration_sec * output_sample_rate as f32)
+            .round()
+            .max(1.0) as usize;
+        let neg_threshold = (config.threshold - 0.15).max(0.05);
 
-        self.pending_samples.extend_from_slice(audio);
-
-        // Use Silero VAD for speech detection (with automatic resampling to 16kHz)
-        let speech_prob = vad::speech_probability(audio, self.sample_rate);
-        let is_silence = speech_prob < self.speech_threshold;
-
-        if is_silence {
-            if self.is_in_speech {
-                self.silence_frames = self.silence_frames.saturating_add(audio.len());
-                let silence_duration = self.silence_frames as f32 / self.sample_rate as f32;
-                if silence_duration >= self.silence_duration_sec {
-                    // Cut before silence — don't feed trailing silence to Whisper
-                    let utterance_end = self
-                        .pending_samples
-                        .len()
-                        .saturating_sub(self.silence_frames);
-                    return self.split_at(utterance_end);
-                }
-            } else if self.pending_samples.len() > self.pre_roll_samples {
-                // Trim leading silence to prevent unbounded buffer growth
-                let start_idx = self.pending_samples.len() - self.pre_roll_samples;
-                self.pending_samples = self.pending_samples[start_idx..].to_vec();
-            }
+        let vad = init_silero_vad(output_sample_rate, &config);
+        let resampler = if sample_rate != output_sample_rate {
+            Some(vad::Resampler::new(sample_rate))
         } else {
-            self.is_in_speech = true;
-            self.silence_frames = 0;
-        }
+            None
+        };
 
-        let max_samples = (self.max_utterance_sec * self.sample_rate as f32) as usize;
-        if self.pending_samples.len() >= max_samples {
-            return self.split_at(self.pending_samples.len());
-        }
+        let max_utterance_samples = (config.max_utterance_sec * output_sample_rate as f32) as usize;
 
-        None
+        Self {
+            mode: SpeechMode::Utterance {
+                max_utterance_samples,
+            },
+            threshold: config.threshold,
+            neg_threshold,
+            min_speech_samples,
+            min_silence_samples,
+            in_speech: false,
+            speech_samples: 0,
+            silence_samples: 0,
+            pending_speech: Vec::new(),
+            pending_silence: Vec::new(),
+            pending_samples: Vec::new(),
+            last_append_at: Instant::now(),
+            vad,
+            resampler,
+            output_sample_rate,
+        }
     }
 
-    fn flush(&mut self) -> Option<Vec<f32>> {
+    fn feed(&mut self, audio: &[f32], _sample_rate: u32) -> Vec<SpeechEvent> {
+        let mut events = Vec::new();
+        if audio.is_empty() {
+            return events;
+        }
+
+        let resampled = if let Some(resampler) = self.resampler.as_mut() {
+            resampler.resample(audio)
+        } else {
+            audio.to_vec()
+        };
+
+        for frame in resampled.chunks(vad::CHUNK_SIZE) {
+            let mut frame_buf = frame.to_vec();
+            let speech_prob = match self.vad.as_mut() {
+                Some(vad) => {
+                    if frame_buf.len() < vad::CHUNK_SIZE {
+                        frame_buf.resize(vad::CHUNK_SIZE, 0.0);
+                    }
+                    vad.predict(&frame_buf).unwrap_or(0.0)
+                }
+                None => 1.0,
+            };
+
+            let decision = self.gate_with_prob(frame, speech_prob);
+            if let Some(mut gated) = decision.audio {
+                self.pending_samples.append(&mut gated);
+                self.last_append_at = Instant::now();
+            }
+
+            if decision.ended {
+                if !self.pending_samples.is_empty() {
+                    events.push(self.emit_final());
+                }
+                return events;
+            }
+
+            match self.mode {
+                SpeechMode::Stream {
+                    chunk_limit,
+                    overlap_size: _,
+                } => {
+                    if self.pending_samples.len() >= chunk_limit {
+                        events.push(self.emit_chunk());
+                    }
+                }
+                SpeechMode::Utterance {
+                    max_utterance_samples,
+                } => {
+                    if self.pending_samples.len() >= max_utterance_samples {
+                        events.push(self.emit_final());
+                    }
+                }
+            }
+        }
+        events
+    }
+
+    fn flush(&mut self) -> Option<SpeechEvent> {
         if self.pending_samples.is_empty() {
             return None;
         }
-        let utterance = std::mem::take(&mut self.pending_samples);
-        self.silence_frames = 0;
-        self.is_in_speech = false;
-        Some(utterance)
+        Some(self.emit_final())
     }
 
-    /// Split utterance at given position. Keeps pre-roll from speech end.
-    fn split_at(&mut self, utterance_end: usize) -> Option<Vec<f32>> {
-        if utterance_end == 0 {
-            self.pending_samples.clear();
-            self.silence_frames = 0;
-            self.is_in_speech = false;
-            return None;
+    fn emit_chunk(&mut self) -> SpeechEvent {
+        let chunk = std::mem::take(&mut self.pending_samples);
+        if let SpeechMode::Stream { overlap_size, .. } = self.mode
+            && overlap_size > 0
+            && chunk.len() > overlap_size
+        {
+            let start = chunk.len() - overlap_size;
+            self.pending_samples.extend_from_slice(&chunk[start..]);
+        }
+        self.last_append_at = Instant::now();
+        SpeechEvent::Chunk(chunk)
+    }
+
+    fn emit_final(&mut self) -> SpeechEvent {
+        let chunk = std::mem::take(&mut self.pending_samples);
+        self.pending_speech.clear();
+        self.pending_silence.clear();
+        self.speech_samples = 0;
+        self.silence_samples = 0;
+        self.in_speech = false;
+        self.last_append_at = Instant::now();
+        match self.mode {
+            SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
+            SpeechMode::Utterance { .. } => SpeechEvent::Utterance(chunk),
+        }
+    }
+
+    fn gate_with_prob(&mut self, audio: &[f32], speech_prob: f32) -> GateDecision {
+        let is_speech = speech_prob >= self.threshold;
+
+        if self.in_speech {
+            if speech_prob >= self.neg_threshold {
+                self.silence_samples = 0;
+                if !self.pending_silence.is_empty() {
+                    let mut out = Vec::with_capacity(self.pending_silence.len() + audio.len());
+                    out.append(&mut self.pending_silence);
+                    out.extend_from_slice(audio);
+                    return GateDecision {
+                        audio: Some(out),
+                        ended: false,
+                    };
+                }
+                return GateDecision {
+                    audio: Some(audio.to_vec()),
+                    ended: false,
+                };
+            }
+
+            self.pending_silence.extend_from_slice(audio);
+            self.silence_samples = self.silence_samples.saturating_add(audio.len());
+            if self.silence_samples >= self.min_silence_samples {
+                self.in_speech = false;
+                self.silence_samples = 0;
+                self.pending_silence.clear();
+                self.speech_samples = 0;
+                self.pending_speech.clear();
+                return GateDecision {
+                    audio: None,
+                    ended: true,
+                };
+            }
+            return GateDecision {
+                audio: None,
+                ended: false,
+            };
         }
 
-        let utterance = self.pending_samples[..utterance_end].to_vec();
-        let pre_roll_start = utterance_end.saturating_sub(self.pre_roll_samples);
-        self.pending_samples = self.pending_samples[pre_roll_start..utterance_end].to_vec();
-        self.silence_frames = 0;
-        self.is_in_speech = false;
-        Some(utterance)
+        if is_speech {
+            self.pending_speech.extend_from_slice(audio);
+            self.speech_samples = self.speech_samples.saturating_add(audio.len());
+            if self.speech_samples >= self.min_speech_samples {
+                self.in_speech = true;
+                self.speech_samples = 0;
+                let out = std::mem::take(&mut self.pending_speech);
+                return GateDecision {
+                    audio: Some(out),
+                    ended: false,
+                };
+            }
+            return GateDecision {
+                audio: None,
+                ended: false,
+            };
+        }
+
+        self.pending_speech.clear();
+        self.speech_samples = 0;
+        GateDecision {
+            audio: None,
+            ended: false,
+        }
     }
+
+    fn output_sample_rate(&self) -> u32 {
+        self.output_sample_rate
+    }
+}
+
+fn hardcoded_vad_config() -> vad::VadConfig {
+    vad::VadConfig {
+        threshold: 0.50,
+        min_speech_duration_sec: 0.05,
+        max_silence_duration_sec: 0.20,
+        max_utterance_sec: 300.0,
+        pre_roll_sec: 0.0,
+    }
+}
+
+fn init_silero_vad(sample_rate: u32, config: &vad::VadConfig) -> Option<vad::SileroVad> {
+    let model_path = vad::default_model_path();
+    match vad::SileroVad::new(&model_path, config.clone()) {
+        Ok(mut vad) => {
+            vad.set_input_sample_rate(sample_rate);
+            info!("Silero VAD ready (model: {})", model_path.display());
+            Some(vad)
+        }
+        Err(e) => {
+            warn!("Silero VAD init failed ({}): {}", model_path.display(), e);
+            None
+        }
+    }
+}
+
+struct GateDecision {
+    audio: Option<Vec<f32>>,
+    ended: bool,
 }
 
 struct TranscriptionPipeline {
     language: Option<String>,
-    postprocessor: StreamPostProcessor,
+    postprocessor: LexiconPostProcessor,
 }
 
 impl TranscriptionPipeline {
     fn new(language: Option<String>) -> Self {
         Self {
             language,
-            postprocessor: StreamPostProcessor::new(),
+            postprocessor: LexiconPostProcessor::new(),
         }
     }
 
     fn postprocess(&mut self, text: &str) -> Option<String> {
-        self.postprocessor.process_utterance(text)
+        self.postprocessor.process(text)
     }
 }
 
@@ -546,7 +744,7 @@ async fn buffered_transcription_worker(
 ) {
     info!("Buffered transcription worker started");
 
-    let mut segmenter = VADSegmenter::new(sample_rate);
+    let mut session = SpeechSession::new_utterance(sample_rate);
     let mut pipeline = TranscriptionPipeline::new(language);
     let emitter = Arc::new(Mutex::new(BufferedEmitter::new(
         transcript_buffer.clone(),
@@ -557,15 +755,29 @@ async fn buffered_transcription_worker(
     let emitter_handle = tokio::spawn(emitter_tick_loop(emitter.clone()));
 
     while let Some(data) = chunk_receiver.recv().await {
-        if let Some(utterance) = segmenter.feed(&data)
-            && let Err(e) = handle_utterance(utterance, sample_rate, &mut pipeline, &emitter).await
-        {
-            error!("Buffered transcription failed: {}", e);
+        for event in session.feed(&data, sample_rate) {
+            if let SpeechEvent::Utterance(utterance) = event
+                && let Err(e) = handle_utterance(
+                    utterance,
+                    session.output_sample_rate(),
+                    &mut pipeline,
+                    &emitter,
+                )
+                .await
+            {
+                error!("Buffered transcription failed: {}", e);
+            }
         }
     }
 
-    if let Some(utterance) = segmenter.flush()
-        && let Err(e) = handle_utterance(utterance, sample_rate, &mut pipeline, &emitter).await
+    if let Some(SpeechEvent::Utterance(utterance)) = session.flush()
+        && let Err(e) = handle_utterance(
+            utterance,
+            session.output_sample_rate(),
+            &mut pipeline,
+            &emitter,
+        )
+        .await
     {
         error!("Final buffered transcription failed: {}", e);
     }
@@ -611,7 +823,7 @@ async fn process_chunk(
     transcript_buffer: &Arc<Mutex<String>>,
     sample_rate: u32,
     language: Option<&str>,
-    postprocessor: &mut StreamPostProcessor,
+    mut postprocessor: Option<&mut StreamPostProcessor>,
     delta_callback: Option<&StreamDeltaCallback>,
     stream_log_path: Option<&Path>,
 ) {
@@ -665,7 +877,18 @@ async fn process_chunk(
         Ok(Ok(text)) => {
             if !text.trim().is_empty() {
                 debug!("Chunk transcribed: '{}'", text.trim());
-                if let Some(cleaned) = postprocessor.process(&text) {
+                let cleaned = if let Some(processor) = postprocessor.as_mut() {
+                    processor.process(&text)
+                } else {
+                    let cleaned = crate::stream_postprocess::normalize_whitespace(&text);
+                    if cleaned.trim().is_empty() {
+                        None
+                    } else {
+                        Some(cleaned)
+                    }
+                };
+
+                if let Some(cleaned) = cleaned {
                     let mut buffer = transcript_buffer.lock().await;
                     let before = buffer.clone();
                     append_with_overlap_dedup(&mut buffer, &cleaned);
@@ -770,7 +993,10 @@ fn append_to_stream_log(path: &Path, text: &str) -> std::io::Result<()> {
     }
 
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "{}", text.trim_end())?;
+    let ts = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mut payload = text.replace('\n', "\\n").replace('\r', "\\r");
+    payload = payload.replace('\u{0008}', "\\b");
+    writeln!(file, "[{}] {}", ts, payload)?;
     Ok(())
 }
 
@@ -873,7 +1099,7 @@ pub fn transcribe_streaming_samples(
             text.split_whitespace().count()
         );
 
-        if let Some(processor) = postprocessor.as_deref_mut() {
+        if let Some(processor) = postprocessor.as_mut() {
             if let Some(cleaned) = processor.process(&text) {
                 append_with_overlap_dedup(&mut out, &cleaned);
             }

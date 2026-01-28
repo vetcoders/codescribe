@@ -251,7 +251,6 @@ impl SemanticGate {
 
 #[derive(Debug)]
 pub struct StreamPostProcessor {
-    lexicon: Lexicon,
     gate: SemanticGate,
     stats: StreamPostProcessStats,
 }
@@ -271,7 +270,6 @@ pub struct StreamPostProcessStats {
 impl StreamPostProcessor {
     pub fn new() -> Self {
         Self {
-            lexicon: Lexicon::from_builtin(),
             gate: SemanticGate::new(),
             stats: StreamPostProcessStats {
                 embeddings_enabled: embeddings_enabled(),
@@ -280,12 +278,13 @@ impl StreamPostProcessor {
         }
     }
 
-    /// Process a streaming chunk — applies lexicon, cleanup, and semantic gate.
+    /// Process a streaming chunk — applies cleanup + semantic gate only.
+    /// Lexicon is handled in buffered mode.
     pub fn process(&mut self, text: &str) -> Option<String> {
         self.process_internal(text, true)
     }
 
-    /// Process a complete utterance — applies lexicon and cleanup, no semantic gate.
+    /// Process a complete utterance — cleanup only, no semantic gate.
     /// Use this for VAD-segmented utterances where each segment is naturally distinct.
     pub fn process_utterance(&mut self, text: &str) -> Option<String> {
         self.process_internal(text, false)
@@ -293,24 +292,16 @@ impl StreamPostProcessor {
 
     fn process_internal(&mut self, text: &str, apply_gate: bool) -> Option<String> {
         self.stats.input_chunks += 1;
-        self.lexicon.maybe_reload();
-
         if text.trim().is_empty() {
             self.stats.dropped_chunks += 1;
             return None;
         }
 
-        let mut cleaned = self.lexicon.apply(text);
-        if cleaned != text {
-            self.stats.lexicon_rewrites += 1;
-        }
-
-        let cleaned_after_cleanup = cleanup_artifacts(&cleaned);
-        if cleaned_after_cleanup != cleaned {
+        let cleaned_after_cleanup = cleanup_artifacts(text);
+        if cleaned_after_cleanup != text {
             self.stats.repetition_cleanups += 1;
         }
-        cleaned = cleaned_after_cleanup;
-        cleaned = normalize_whitespace(&cleaned);
+        let cleaned = normalize_whitespace(&cleaned_after_cleanup);
 
         if cleaned.trim().is_empty() {
             self.stats.dropped_chunks += 1;
@@ -338,7 +329,39 @@ impl StreamPostProcessor {
     }
 }
 
+pub struct LexiconPostProcessor {
+    lexicon: Lexicon,
+}
+
+impl LexiconPostProcessor {
+    pub fn new() -> Self {
+        Self {
+            lexicon: Lexicon::from_builtin(),
+        }
+    }
+
+    pub fn process(&mut self, text: &str) -> Option<String> {
+        if text.trim().is_empty() {
+            return None;
+        }
+        self.lexicon.maybe_reload();
+        let cleaned = self.lexicon.apply(text);
+        let cleaned_after_cleanup = cleanup_artifacts(&cleaned);
+        let cleaned_after_cleanup = normalize_whitespace(&cleaned_after_cleanup);
+        if cleaned_after_cleanup.trim().is_empty() {
+            return None;
+        }
+        Some(cleaned_after_cleanup)
+    }
+}
+
 impl Default for StreamPostProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for LexiconPostProcessor {
     fn default() -> Self {
         Self::new()
     }
@@ -436,7 +459,7 @@ fn cleanup_artifacts(text: &str) -> String {
     text.to_string()
 }
 
-fn normalize_whitespace(text: &str) -> String {
+pub(crate) fn normalize_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -610,28 +633,18 @@ mod tests {
     }
 
     #[test]
-    fn test_postprocessor_always_applies_lexicon_contract() {
-        // Contract: every call to process() applies lexicon rewrites
-        // regardless of semantic gate state or chunk history
-        let mut processor = StreamPostProcessor::new();
+    fn test_lexicon_applied_in_buffered_processor() {
+        let mut processor = LexiconPostProcessor::new();
 
-        // First call — lexicon should rewrite known terms
         let out1 = processor
             .process("Uzywam doker do kontenerow")
             .expect("non-empty");
-        assert!(
-            out1.contains("Docker"),
-            "First call should apply lexicon: {out1}"
-        );
+        assert!(out1.contains("Docker"), "Expected lexicon rewrite: {out1}");
 
-        // Second call with different text — still applies lexicon
         let out2 = processor
             .process("Mam git hub repository z kodem")
             .expect("non-empty");
-        assert!(
-            out2.contains("GitHub"),
-            "Second call should apply lexicon: {out2}"
-        );
+        assert!(out2.contains("GitHub"), "Expected lexicon rewrite: {out2}");
     }
 
     #[test]

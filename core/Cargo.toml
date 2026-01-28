@@ -86,4 +86,4 @@ dirs = "6"
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
 # embed_model is set by build.rs when Whisper model is available
 # embed_tts is set by build.rs when TTS model is available (CODESCRIBE_EMBED_TTS=1)
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)', 'cfg(embed_e5)'] }
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)', 'cfg(embed_e5)', 'cfg(embed_vad)'] }
