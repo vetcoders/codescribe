@@ -62,6 +62,20 @@ category = "vad"
 description = "Pre-roll buffer (seconds) before speech onset"
 range = "0.0-2.0"
 
+[vars.CODESCRIBE_VAD_GATE_MODE]
+default = "simple"
+type = "string"
+reload = "restart"
+category = "vad"
+description = "Silero gate mode: simple (default) or iter (vad_iter with temp_end/prev_end)"
+
+[vars.CODESCRIBE_VAD_ITER]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "vad"
+description = "Shortcut for CODESCRIBE_VAD_GATE_MODE=iter"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Audio / Recording
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -47,14 +47,12 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `CODESCRIBE_TYPING_CPS` – domyślnie `30` (HOT RELOADED)
 - `CODESCRIBE_EMIT_WORDS_MAX` – max słów na tick (buffered), domyślnie `3` (HOT RELOADED)
 
-**VAD (Silero neural network)**
-- `CODESCRIBE_VAD_THRESHOLD` – próg detekcji mowy 0.0-1.0, domyślnie `0.35` (RESTART NEEDED)
-- `CODESCRIBE_VAD_SILENCE_SEC` – cisza przed utterance boundary, domyślnie `2.5s` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MIN_SPEECH_SEC` – min. czas mowy przed detekcją, domyślnie `0.1` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` – max. czas wypowiedzi, domyślnie `60` (RESTART NEEDED)
-- `CODESCRIBE_VAD_PRE_ROLL_SEC` – pre-roll w sekundach, domyślnie `0.5` (RESTART NEEDED)
+**VAD gate (Silero)**
+- `CODESCRIBE_VAD_GATE_MODE` – `simple` (domyślnie) lub `iter` (vad_iter z temp_end/prev_end) (RESTART NEEDED)
+- `CODESCRIBE_VAD_ITER=1` – skrót do `iter` (RESTART NEEDED)
 
-> **Uwaga:** VAD config jest read-only po inicjalizacji (OnceLock). Zmiana wymaga restartu aplikacji.
+> **Uwaga:** Live gate używa twardych parametrów SoTA (pre‑roll + speech_pad).
+> Zmienne `CODESCRIBE_VAD_*` są legacy/offline i **nie wpływają** na live gate.
 
 **Post‑process (gating)**
 - `CODESCRIBE_STREAM_SIMILARITY` – domyślnie z kodu (HOT RELOADED)
@@ -127,7 +125,7 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 
 ### Audio
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)
-- `CODESCRIBE_VAD_THRESHOLD`, `CODESCRIBE_VAD_SILENCE_SEC` (RESTART NEEDED)
+- `CODESCRIBE_VAD_GATE_MODE`, `CODESCRIBE_VAD_ITER` (RESTART NEEDED)
 
 ### Transkrypcja (local/cloud)
 - `USE_LOCAL_STT` (RESTART NEEDED)
@@ -142,11 +140,8 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `CODESCRIBE_BUFFERED_STREAM` (HOT RELOADED)
 - `CODESCRIBE_BUFFER_DELAY_MS` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
-- `CODESCRIBE_VAD_THRESHOLD` (RESTART NEEDED)
-- `CODESCRIBE_VAD_SILENCE_SEC` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MIN_SPEECH_SEC` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` (RESTART NEEDED)
-- `CODESCRIBE_VAD_PRE_ROLL_SEC` (RESTART NEEDED)
+- `CODESCRIBE_VAD_GATE_MODE` (RESTART NEEDED)
+- `CODESCRIBE_VAD_ITER` (RESTART NEEDED)
 
 ### Post‑process (gating / embeddings)
 - `CODESCRIBE_STREAM_SIMILARITY` (HOT RELOADED)
@@ -248,6 +243,8 @@ make test-sse
 USE_LOCAL_STT=1
 # (optional) język:
 # WHISPER_LANGUAGE=pl
+# (optional) Silero gate:
+# CODESCRIBE_VAD_GATE_MODE=iter
 ```
 
 **2) Local + AI formatting**
@@ -267,7 +264,7 @@ STT_API_KEY=...
 
 **4) Strojenie streaming / powtórki**
 ```
-CODESCRIBE_STREAM_CHUNK_SEC=12
+CODESCRIBE_STREAM_CHUNK_SEC=4
 CODESCRIBE_STREAM_SIMILARITY=0.90
 CODESCRIBE_STREAM_NOVELTY=0.20
 ```

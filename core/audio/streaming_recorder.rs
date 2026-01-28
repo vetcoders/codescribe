@@ -14,7 +14,7 @@ use std::{fs::OpenOptions, io::Write, path::Path};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const DEFAULT_CHUNK_DURATION_SEC: f32 = 15.0;
 const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for context
@@ -197,9 +197,7 @@ async fn transcription_worker(
 
     let chunk_duration_sec = stream_chunk_duration_sec();
     let overlap_sec = stream_overlap_sec(chunk_duration_sec);
-    let chunk_limit = (vad::VAD_SAMPLE_RATE as f32 * chunk_duration_sec) as usize;
-    let overlap_size = (vad::VAD_SAMPLE_RATE as f32 * overlap_sec) as usize;
-    let mut session = SpeechSession::new_stream(sample_rate, chunk_limit, overlap_size);
+    let mut session = SpeechSession::new_stream(sample_rate, chunk_duration_sec, overlap_sec);
 
     // We keep track of how many samples we've processed to know when to overlap
     // Actually, we just keep the last samples in pending_samples?
@@ -255,6 +253,23 @@ enum SpeechMode {
     },
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum VadGateMode {
+    /// Gate audio before it reaches Whisper (legacy).
+    Simple,
+    /// Silero VAD iter logic as a hard gate (legacy).
+    Iter,
+    /// Silero VAD is a supervisor: audio always flows, VAD only defines boundaries.
+    Supervisor,
+}
+
+struct GateConfig {
+    vad: vad::VadConfig,
+    pre_roll_sec: f32,
+    speech_pad_sec: f32,
+    mode: VadGateMode,
+}
+
 struct SpeechSession {
     mode: SpeechMode,
     threshold: f32,
@@ -267,37 +282,75 @@ struct SpeechSession {
     pending_speech: Vec<f32>,
     pending_silence: Vec<f32>,
     pending_samples: Vec<f32>,
+    pre_roll: VecDeque<f32>,
+    pre_roll_samples: usize,
+    speech_pad_samples: usize,
     last_append_at: Instant,
     vad: Option<vad::SileroVad>,
     resampler: Option<vad::Resampler>,
+    vad_resample_buf: Vec<f32>,
     output_sample_rate: u32,
+    raw_sample_rate: u32,
+    gate_mode: VadGateMode,
+    iter_state: Option<VadIterState>,
+    iter_speech_start: Option<usize>,
+    raw_buffer: VecDeque<f32>,
+    raw_buffer_start: usize,
+    raw_cursor: usize,
+    segment_start: Option<usize>,
+    pending_end: Option<usize>,
+    pre_roll_raw: usize,
+    speech_pad_raw: usize,
+    last_emit_raw: usize,
 }
 
 impl SpeechSession {
-    fn new_stream(sample_rate: u32, chunk_limit: usize, overlap_size: usize) -> Self {
-        let config = hardcoded_vad_config();
-        let output_sample_rate = vad::VAD_SAMPLE_RATE;
-        let min_speech_samples = (config.min_speech_duration_sec * output_sample_rate as f32)
+    fn new_stream(sample_rate: u32, chunk_duration_sec: f32, overlap_sec: f32) -> Self {
+        let config = hardcoded_gate_config();
+        let vad_sample_rate = vad::VAD_SAMPLE_RATE;
+        let output_sample_rate = match config.mode {
+            VadGateMode::Supervisor => sample_rate,
+            _ => vad_sample_rate,
+        };
+        let min_speech_samples = (config.vad.min_speech_duration_sec * vad_sample_rate as f32)
             .round()
             .max(1.0) as usize;
-        let min_silence_samples = (config.max_silence_duration_sec * output_sample_rate as f32)
+        let min_silence_samples = (config.vad.max_silence_duration_sec * vad_sample_rate as f32)
             .round()
             .max(1.0) as usize;
-        let neg_threshold = (config.threshold - 0.15).max(0.05);
+        let neg_threshold = (config.vad.threshold - 0.15).max(0.05);
 
-        let vad = init_silero_vad(output_sample_rate, &config);
-        let resampler = if sample_rate != output_sample_rate {
+        let vad = init_silero_vad(vad_sample_rate, &config.vad);
+        let resampler = if sample_rate != vad_sample_rate {
             Some(vad::Resampler::new(sample_rate))
         } else {
             None
         };
+        let pre_roll_samples = (config.pre_roll_sec * output_sample_rate as f32)
+            .round()
+            .max(0.0) as usize;
+        let speech_pad_samples = (config.speech_pad_sec * output_sample_rate as f32)
+            .round()
+            .max(0.0) as usize;
+        let iter_state = match config.mode {
+            VadGateMode::Iter | VadGateMode::Supervisor => {
+                Some(VadIterState::new(&config, vad::VAD_SAMPLE_RATE))
+            }
+            VadGateMode::Simple => None,
+        };
+        let chunk_limit_raw = (sample_rate as f32 * chunk_duration_sec).round().max(1.0) as usize;
+        let overlap_raw = (sample_rate as f32 * overlap_sec).round().max(0.0) as usize;
+        let pre_roll_raw = (sample_rate as f32 * config.pre_roll_sec).round().max(0.0) as usize;
+        let speech_pad_raw = (sample_rate as f32 * config.speech_pad_sec)
+            .round()
+            .max(0.0) as usize;
 
         Self {
             mode: SpeechMode::Stream {
-                chunk_limit,
-                overlap_size,
+                chunk_limit: chunk_limit_raw,
+                overlap_size: overlap_raw,
             },
-            threshold: config.threshold,
+            threshold: config.vad.threshold,
             neg_threshold,
             min_speech_samples,
             min_silence_samples,
@@ -307,38 +360,71 @@ impl SpeechSession {
             pending_speech: Vec::new(),
             pending_silence: Vec::new(),
             pending_samples: Vec::new(),
+            pre_roll: VecDeque::new(),
+            pre_roll_samples,
+            speech_pad_samples,
             last_append_at: Instant::now(),
             vad,
             resampler,
+            vad_resample_buf: Vec::new(),
             output_sample_rate,
+            raw_sample_rate: sample_rate,
+            gate_mode: config.mode,
+            iter_state,
+            iter_speech_start: None,
+            raw_buffer: VecDeque::new(),
+            raw_buffer_start: 0,
+            raw_cursor: 0,
+            segment_start: None,
+            pending_end: None,
+            pre_roll_raw,
+            speech_pad_raw,
+            last_emit_raw: 0,
         }
     }
 
     fn new_utterance(sample_rate: u32) -> Self {
-        let config = hardcoded_vad_config();
-        let output_sample_rate = vad::VAD_SAMPLE_RATE;
-        let min_speech_samples = (config.min_speech_duration_sec * output_sample_rate as f32)
+        let config = hardcoded_gate_config();
+        let vad_sample_rate = vad::VAD_SAMPLE_RATE;
+        let output_sample_rate = match config.mode {
+            VadGateMode::Supervisor => sample_rate,
+            _ => vad_sample_rate,
+        };
+        let min_speech_samples = (config.vad.min_speech_duration_sec * vad_sample_rate as f32)
             .round()
             .max(1.0) as usize;
-        let min_silence_samples = (config.max_silence_duration_sec * output_sample_rate as f32)
+        let min_silence_samples = (config.vad.max_silence_duration_sec * vad_sample_rate as f32)
             .round()
             .max(1.0) as usize;
-        let neg_threshold = (config.threshold - 0.15).max(0.05);
+        let neg_threshold = (config.vad.threshold - 0.15).max(0.05);
 
-        let vad = init_silero_vad(output_sample_rate, &config);
-        let resampler = if sample_rate != output_sample_rate {
+        let vad = init_silero_vad(vad_sample_rate, &config.vad);
+        let resampler = if sample_rate != vad_sample_rate {
             Some(vad::Resampler::new(sample_rate))
         } else {
             None
         };
 
-        let max_utterance_samples = (config.max_utterance_sec * output_sample_rate as f32) as usize;
+        let max_utterance_samples =
+            (config.vad.max_utterance_sec * output_sample_rate as f32) as usize;
+        let pre_roll_samples = (config.pre_roll_sec * output_sample_rate as f32)
+            .round()
+            .max(0.0) as usize;
+        let speech_pad_samples = (config.speech_pad_sec * output_sample_rate as f32)
+            .round()
+            .max(0.0) as usize;
+        let iter_state = match config.mode {
+            VadGateMode::Iter | VadGateMode::Supervisor => {
+                Some(VadIterState::new(&config, vad::VAD_SAMPLE_RATE))
+            }
+            VadGateMode::Simple => None,
+        };
 
         Self {
             mode: SpeechMode::Utterance {
                 max_utterance_samples,
             },
-            threshold: config.threshold,
+            threshold: config.vad.threshold,
             neg_threshold,
             min_speech_samples,
             min_silence_samples,
@@ -348,10 +434,26 @@ impl SpeechSession {
             pending_speech: Vec::new(),
             pending_silence: Vec::new(),
             pending_samples: Vec::new(),
+            pre_roll: VecDeque::new(),
+            pre_roll_samples,
+            speech_pad_samples,
             last_append_at: Instant::now(),
             vad,
             resampler,
+            vad_resample_buf: Vec::new(),
             output_sample_rate,
+            raw_sample_rate: sample_rate,
+            gate_mode: config.mode,
+            iter_state,
+            iter_speech_start: None,
+            raw_buffer: VecDeque::new(),
+            raw_buffer_start: 0,
+            raw_cursor: 0,
+            segment_start: None,
+            pending_end: None,
+            pre_roll_raw: 0,
+            speech_pad_raw: 0,
+            last_emit_raw: 0,
         }
     }
 
@@ -361,25 +463,28 @@ impl SpeechSession {
             return events;
         }
 
+        if self.gate_mode == VadGateMode::Supervisor {
+            return self.feed_supervisor(audio);
+        }
+
         let resampled = if let Some(resampler) = self.resampler.as_mut() {
             resampler.resample(audio)
         } else {
             audio.to_vec()
         };
+        self.vad_resample_buf.extend_from_slice(&resampled);
 
-        for frame in resampled.chunks(vad::CHUNK_SIZE) {
-            let mut frame_buf = frame.to_vec();
+        while self.vad_resample_buf.len() >= vad::CHUNK_SIZE {
+            let frame: Vec<f32> = self.vad_resample_buf.drain(..vad::CHUNK_SIZE).collect();
             let speech_prob = match self.vad.as_mut() {
-                Some(vad) => {
-                    if frame_buf.len() < vad::CHUNK_SIZE {
-                        frame_buf.resize(vad::CHUNK_SIZE, 0.0);
-                    }
-                    vad.predict(&frame_buf).unwrap_or(0.0)
-                }
+                Some(vad) => vad.predict(&frame).unwrap_or(0.0),
                 None => 1.0,
             };
-
-            let decision = self.gate_with_prob(frame, speech_prob);
+            let decision = match self.gate_mode {
+                VadGateMode::Simple => self.gate_with_prob(&frame, speech_prob),
+                VadGateMode::Iter => self.gate_with_iter(&frame, speech_prob),
+                VadGateMode::Supervisor => self.gate_with_iter(&frame, speech_prob),
+            };
             if let Some(mut gated) = decision.audio {
                 self.pending_samples.append(&mut gated);
                 self.last_append_at = Instant::now();
@@ -413,7 +518,139 @@ impl SpeechSession {
         events
     }
 
+    fn feed_supervisor(&mut self, audio: &[f32]) -> Vec<SpeechEvent> {
+        let mut events = Vec::new();
+        if audio.is_empty() {
+            return events;
+        }
+
+        // Always keep raw audio flowing.
+        self.raw_buffer.extend(audio);
+        self.raw_cursor = self.raw_cursor.saturating_add(audio.len());
+
+        // Run Silero on 16kHz view of the audio, then map boundaries to raw.
+        let resampled = if let Some(resampler) = self.resampler.as_mut() {
+            resampler.resample(audio)
+        } else {
+            audio.to_vec()
+        };
+        self.vad_resample_buf.extend_from_slice(&resampled);
+
+        while self.vad_resample_buf.len() >= vad::CHUNK_SIZE {
+            let frame: Vec<f32> = self.vad_resample_buf.drain(..vad::CHUNK_SIZE).collect();
+            let speech_prob = match self.vad.as_mut() {
+                Some(vad) => vad.predict(&frame).unwrap_or(0.0),
+                None => 1.0,
+            };
+
+            let mut start_event: Option<usize> = None;
+            let mut end_event: Option<usize> = None;
+
+            if let Some(iter_state) = self.iter_state.as_mut() {
+                let event = iter_state.update(speech_prob);
+                match event {
+                    VadIterEvent::Start { start_sample } => {
+                        start_event = Some(start_sample);
+                    }
+                    VadIterEvent::End { end_sample } => {
+                        end_event = Some(end_sample);
+                    }
+                    VadIterEvent::None => {}
+                }
+            } else {
+                // Fallback to simple threshold logic.
+                if !self.in_speech && speech_prob >= self.threshold {
+                    self.in_speech = true;
+                    self.speech_samples = 0;
+                    start_event = Some(self.speech_samples);
+                } else if self.in_speech && speech_prob < self.neg_threshold {
+                    self.silence_samples = self.silence_samples.saturating_add(frame.len());
+                    if self.silence_samples >= self.min_silence_samples {
+                        self.in_speech = false;
+                        self.silence_samples = 0;
+                        end_event = Some(self.speech_samples);
+                    }
+                }
+            }
+
+            if let Some(start_sample) = start_event {
+                let raw_start = self
+                    .vad_to_raw_index(start_sample)
+                    .saturating_sub(self.pre_roll_raw);
+                self.segment_start = Some(raw_start);
+                self.last_emit_raw = raw_start;
+            }
+
+            if let Some(end_sample) = end_event {
+                let raw_end = self
+                    .vad_to_raw_index(end_sample)
+                    .saturating_add(self.speech_pad_raw);
+                self.pending_end = Some(raw_end);
+            }
+
+            if let Some(iter_state) = self.iter_state.as_ref() {
+                trace!(
+                    "VAD index sync: vad_current={} raw_cursor={} mapped={}",
+                    iter_state.current_sample,
+                    self.raw_cursor,
+                    self.vad_to_raw_index(iter_state.current_sample)
+                );
+            }
+
+            if let SpeechMode::Stream {
+                chunk_limit,
+                overlap_size,
+            } = self.mode
+                && self.segment_start.is_some()
+                && self.pending_end.is_none()
+                && self.raw_cursor.saturating_sub(self.last_emit_raw) >= chunk_limit
+            {
+                let end = self.raw_cursor;
+                if let Some(chunk) = self.raw_slice(self.last_emit_raw, end) {
+                    events.push(SpeechEvent::Chunk(chunk));
+                }
+                if overlap_size > 0 {
+                    self.last_emit_raw = end.saturating_sub(overlap_size);
+                } else {
+                    self.last_emit_raw = end;
+                }
+            }
+        }
+
+        if let Some(end) = self.pending_end
+            && self.raw_cursor >= end
+        {
+            if let Some(start) = self.segment_start.take()
+                && let Some(chunk) = self.raw_slice(start, end)
+            {
+                match self.mode {
+                    SpeechMode::Stream { .. } => events.push(SpeechEvent::Chunk(chunk)),
+                    SpeechMode::Utterance { .. } => events.push(SpeechEvent::Utterance(chunk)),
+                }
+            }
+            self.pending_end = None;
+            self.last_emit_raw = end;
+            self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
+        }
+
+        events
+    }
+
     fn flush(&mut self) -> Option<SpeechEvent> {
+        if self.gate_mode == VadGateMode::Supervisor {
+            if let Some(start) = self.segment_start.take() {
+                let end = self.raw_cursor;
+                self.pending_end = None;
+                self.last_emit_raw = end;
+                if let Some(chunk) = self.raw_slice(start, end) {
+                    return Some(match self.mode {
+                        SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
+                        SpeechMode::Utterance { .. } => SpeechEvent::Utterance(chunk),
+                    });
+                }
+            }
+            return None;
+        }
         if self.pending_samples.is_empty() {
             return None;
         }
@@ -440,6 +677,11 @@ impl SpeechSession {
         self.speech_samples = 0;
         self.silence_samples = 0;
         self.in_speech = false;
+        self.pre_roll.clear();
+        self.iter_speech_start = None;
+        if let Some(iter_state) = self.iter_state.as_mut() {
+            iter_state.reset();
+        }
         self.last_append_at = Instant::now();
         match self.mode {
             SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
@@ -473,6 +715,15 @@ impl SpeechSession {
             if self.silence_samples >= self.min_silence_samples {
                 self.in_speech = false;
                 self.silence_samples = 0;
+                if self.speech_pad_samples > 0 && !self.pending_silence.is_empty() {
+                    let pad = self
+                        .pending_silence
+                        .drain(..self.speech_pad_samples.min(self.pending_silence.len()))
+                        .collect::<Vec<_>>();
+                    if !pad.is_empty() {
+                        self.pending_samples.extend_from_slice(&pad);
+                    }
+                }
                 self.pending_silence.clear();
                 self.speech_samples = 0;
                 self.pending_speech.clear();
@@ -493,7 +744,11 @@ impl SpeechSession {
             if self.speech_samples >= self.min_speech_samples {
                 self.in_speech = true;
                 self.speech_samples = 0;
-                let out = std::mem::take(&mut self.pending_speech);
+                let mut out = Vec::new();
+                if self.pre_roll_samples > 0 && !self.pre_roll.is_empty() {
+                    out.extend(self.pre_roll.drain(..));
+                }
+                out.extend(std::mem::take(&mut self.pending_speech));
                 return GateDecision {
                     audio: Some(out),
                     ended: false,
@@ -507,24 +762,141 @@ impl SpeechSession {
 
         self.pending_speech.clear();
         self.speech_samples = 0;
+        self.push_pre_roll(audio);
         GateDecision {
             audio: None,
             ended: false,
         }
     }
 
+    fn gate_with_iter(&mut self, audio: &[f32], speech_prob: f32) -> GateDecision {
+        let Some(iter_state) = self.iter_state.as_mut() else {
+            return self.gate_with_prob(audio, speech_prob);
+        };
+
+        let was_triggered = iter_state.triggered();
+        let event = iter_state.update(speech_prob);
+        let is_triggered = iter_state.triggered();
+
+        if !is_triggered {
+            self.push_pre_roll(audio);
+        } else {
+            if !was_triggered {
+                if let VadIterEvent::Start { start_sample } = event {
+                    self.iter_speech_start = Some(start_sample);
+                } else {
+                    self.iter_speech_start = Some(iter_state.current_speech_start());
+                }
+                if self.pre_roll_samples > 0 && !self.pre_roll.is_empty() {
+                    self.pending_samples.extend(self.pre_roll.drain(..));
+                }
+            }
+            self.pending_samples.extend_from_slice(audio);
+        }
+
+        if let VadIterEvent::End { end_sample } = event {
+            if let Some(start_sample) = self.iter_speech_start.take() {
+                let speech_len = end_sample.saturating_sub(start_sample);
+                let mut target_len = self
+                    .pre_roll_samples
+                    .saturating_add(speech_len)
+                    .saturating_add(self.speech_pad_samples);
+                if target_len == 0 {
+                    target_len = self.pending_samples.len();
+                }
+                if self.pending_samples.len() > target_len {
+                    self.pending_samples.truncate(target_len);
+                }
+            }
+            self.in_speech = false;
+            self.speech_samples = 0;
+            self.silence_samples = 0;
+            self.pending_speech.clear();
+            self.pending_silence.clear();
+            return GateDecision {
+                audio: None,
+                ended: true,
+            };
+        }
+
+        GateDecision {
+            audio: None,
+            ended: false,
+        }
+    }
+
+    fn push_pre_roll(&mut self, audio: &[f32]) {
+        if self.pre_roll_samples == 0 {
+            return;
+        }
+        for &sample in audio {
+            if self.pre_roll.len() >= self.pre_roll_samples {
+                self.pre_roll.pop_front();
+            }
+            self.pre_roll.push_back(sample);
+        }
+    }
+
     fn output_sample_rate(&self) -> u32 {
         self.output_sample_rate
     }
+
+    fn vad_to_raw_index(&self, vad_index: usize) -> usize {
+        if self.raw_sample_rate == 0 {
+            return vad_index;
+        }
+        ((vad_index as f32 * self.raw_sample_rate as f32) / vad::VAD_SAMPLE_RATE as f32)
+            .round()
+            .max(0.0) as usize
+    }
+
+    fn raw_slice(&self, start: usize, end: usize) -> Option<Vec<f32>> {
+        if end <= start {
+            return None;
+        }
+        if start < self.raw_buffer_start || end > self.raw_cursor {
+            return None;
+        }
+        let start_idx = start - self.raw_buffer_start;
+        let end_idx = end - self.raw_buffer_start;
+        if end_idx <= start_idx {
+            return None;
+        }
+        Some(
+            self.raw_buffer
+                .iter()
+                .skip(start_idx)
+                .take(end_idx.saturating_sub(start_idx))
+                .cloned()
+                .collect(),
+        )
+    }
+
+    fn trim_raw_buffer(&mut self, keep_from: usize) {
+        if keep_from <= self.raw_buffer_start {
+            return;
+        }
+        let drop = keep_from - self.raw_buffer_start;
+        for _ in 0..drop.min(self.raw_buffer.len()) {
+            self.raw_buffer.pop_front();
+        }
+        self.raw_buffer_start = keep_from;
+    }
 }
 
-fn hardcoded_vad_config() -> vad::VadConfig {
-    vad::VadConfig {
-        threshold: 0.50,
-        min_speech_duration_sec: 0.05,
-        max_silence_duration_sec: 0.20,
-        max_utterance_sec: 300.0,
-        pre_roll_sec: 0.0,
+fn hardcoded_gate_config() -> GateConfig {
+    GateConfig {
+        vad: vad::VadConfig {
+            threshold: 0.50,
+            min_speech_duration_sec: 0.05,
+            max_silence_duration_sec: 0.20,
+            max_utterance_sec: 300.0,
+            pre_roll_sec: 0.064,
+        },
+        // Silero reference defaults (64ms) for padding at boundaries.
+        pre_roll_sec: 0.064,
+        speech_pad_sec: 0.064,
+        mode: gate_mode_from_env(),
     }
 }
 
@@ -546,6 +918,164 @@ fn init_silero_vad(sample_rate: u32, config: &vad::VadConfig) -> Option<vad::Sil
 struct GateDecision {
     audio: Option<Vec<f32>>,
     ended: bool,
+}
+
+#[derive(Debug)]
+struct VadIterState {
+    params: VadIterParams,
+    current_sample: usize,
+    temp_end: usize,
+    next_start: usize,
+    prev_end: usize,
+    triggered: bool,
+    speech_start: usize,
+}
+
+#[derive(Debug)]
+struct VadIterParams {
+    threshold: f32,
+    min_silence_samples: usize,
+    min_speech_samples: usize,
+    max_speech_samples: f32,
+    frame_size_samples: usize,
+    min_silence_samples_at_max_speech: usize,
+}
+
+#[derive(Debug, Copy, Clone)]
+enum VadIterEvent {
+    None,
+    Start { start_sample: usize },
+    End { end_sample: usize },
+}
+
+impl VadIterState {
+    fn new(config: &GateConfig, sample_rate: u32) -> Self {
+        let sr_per_ms = sample_rate as f32 / 1000.0;
+        let frame_size_samples = vad::CHUNK_SIZE;
+        let min_silence_samples = (config.vad.max_silence_duration_sec * sample_rate as f32)
+            .round()
+            .max(1.0) as usize;
+        let min_speech_samples = (config.vad.min_speech_duration_sec * sample_rate as f32)
+            .round()
+            .max(1.0) as usize;
+        let speech_pad_samples = (config.speech_pad_sec * sample_rate as f32)
+            .round()
+            .max(0.0) as usize;
+        let max_speech_samples = config.vad.max_utterance_sec * sample_rate as f32
+            - frame_size_samples as f32
+            - 2.0 * speech_pad_samples as f32;
+        let min_silence_samples_at_max_speech = (sr_per_ms * 98.0).round() as usize;
+
+        Self {
+            params: VadIterParams {
+                threshold: config.vad.threshold,
+                min_silence_samples,
+                min_speech_samples,
+                max_speech_samples,
+                frame_size_samples,
+                min_silence_samples_at_max_speech,
+            },
+            current_sample: 0,
+            temp_end: 0,
+            next_start: 0,
+            prev_end: 0,
+            triggered: false,
+            speech_start: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.current_sample = 0;
+        self.temp_end = 0;
+        self.next_start = 0;
+        self.prev_end = 0;
+        self.triggered = false;
+        self.speech_start = 0;
+    }
+
+    fn triggered(&self) -> bool {
+        self.triggered
+    }
+
+    fn current_speech_start(&self) -> usize {
+        self.speech_start
+    }
+
+    fn update(&mut self, speech_prob: f32) -> VadIterEvent {
+        self.current_sample = self
+            .current_sample
+            .saturating_add(self.params.frame_size_samples);
+        let frame_start = self
+            .current_sample
+            .saturating_sub(self.params.frame_size_samples);
+
+        if speech_prob > self.params.threshold {
+            if self.temp_end != 0 {
+                self.temp_end = 0;
+                if self.next_start < self.prev_end {
+                    self.next_start = frame_start;
+                }
+            }
+            if !self.triggered {
+                self.triggered = true;
+                self.speech_start = frame_start;
+                return VadIterEvent::Start {
+                    start_sample: frame_start,
+                };
+            }
+            return VadIterEvent::None;
+        }
+
+        if self.triggered
+            && (self.current_sample.saturating_sub(self.speech_start) as f32)
+                > self.params.max_speech_samples
+        {
+            if self.prev_end > 0 {
+                let end = self.prev_end;
+                if self.next_start < self.prev_end {
+                    self.triggered = false;
+                } else {
+                    self.speech_start = self.next_start;
+                }
+                self.prev_end = 0;
+                self.next_start = 0;
+                self.temp_end = 0;
+                return VadIterEvent::End { end_sample: end };
+            }
+
+            let end = self.current_sample;
+            self.triggered = false;
+            self.prev_end = 0;
+            self.next_start = 0;
+            self.temp_end = 0;
+            return VadIterEvent::End { end_sample: end };
+        }
+
+        let neg_threshold = (self.params.threshold - 0.15).max(0.05);
+        if self.triggered && speech_prob < neg_threshold {
+            if self.temp_end == 0 {
+                self.temp_end = self.current_sample;
+            }
+            if self.current_sample.saturating_sub(self.temp_end)
+                > self.params.min_silence_samples_at_max_speech
+            {
+                self.prev_end = self.temp_end;
+            }
+            if self.current_sample.saturating_sub(self.temp_end) >= self.params.min_silence_samples
+            {
+                let end = self.temp_end;
+                if end.saturating_sub(self.speech_start) > self.params.min_speech_samples {
+                    self.triggered = false;
+                    self.prev_end = 0;
+                    self.next_start = 0;
+                    self.temp_end = 0;
+                    return VadIterEvent::End { end_sample: end };
+                }
+            }
+        }
+
+        VadIterEvent::None
+    }
 }
 
 struct TranscriptionPipeline {
@@ -1028,6 +1558,22 @@ fn env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+fn gate_mode_from_env() -> VadGateMode {
+    if env_bool("CODESCRIBE_VAD_ITER") {
+        return VadGateMode::Iter;
+    }
+    match std::env::var("CODESCRIBE_VAD_GATE_MODE")
+        .ok()
+        .map(|v| v.to_lowercase())
+        .as_deref()
+    {
+        Some("supervisor") | Some("quality") | Some("managed") => VadGateMode::Supervisor,
+        Some("iter") | Some("vad_iter") | Some("silero_iter") => VadGateMode::Iter,
+        Some("simple") | Some("gate") | Some("basic") => VadGateMode::Simple,
+        _ => VadGateMode::Supervisor,
+    }
+}
+
 fn stream_chunk_duration_sec() -> f32 {
     env_f32("CODESCRIBE_STREAM_CHUNK_SEC", DEFAULT_CHUNK_DURATION_SEC).clamp(0.5, 30.0)
 }
@@ -1136,9 +1682,13 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    #[ignore] // Requires Silero VAD model (run with: cargo test -- --ignored)
-    fn test_vad_segmenter_flush_on_silence() {
-        // Initialize VAD - skip if model unavailable
+    #[ignore] // Manual: requires microphone + Silero model (set CODESCRIBE_E2E_MIC=1)
+    fn test_vad_gate_live_chunk_sizes() {
+        if !env_bool("CODESCRIBE_E2E_MIC") {
+            eprintln!("Skipping mic gate test (set CODESCRIBE_E2E_MIC=1 to enable)");
+            return;
+        }
+
         let model_path = vad::default_model_path();
         if !model_path.exists() {
             eprintln!(
@@ -1147,56 +1697,61 @@ mod tests {
             );
             return;
         }
-        vad::init(&model_path).expect("Failed to init VAD");
 
-        let config = vad::VadConfig {
-            threshold: 0.5, // Probability threshold for speech detection
-            min_speech_duration_sec: 0.1,
-            max_silence_duration_sec: 0.3,
-            max_utterance_sec: 2.0,
-            pre_roll_sec: 0.1, // 100ms
-        };
-        let mut segmenter = VADSegmenter::with_config(1000, config);
+        let record_sec = env_f32("CODESCRIBE_E2E_MIC_SEC", 6.0).max(2.0);
+        println!("Speak now for ~{:.1}s...", record_sec);
 
-        // Feed speech (high amplitude triggers VAD)
-        let speech = vec![0.8; 400];
-        assert!(segmenter.feed(&speech).is_none());
+        let mut recorder = Recorder::new().expect("Failed to create recorder");
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let wav_path = rt
+            .block_on(async {
+                recorder.start().await.expect("Failed to start recorder");
+                tokio::time::sleep(Duration::from_secs_f32(record_sec)).await;
+                recorder.stop().await.expect("Failed to stop recorder")
+            })
+            .expect("No WAV produced");
 
-        // Feed silence (VAD should detect no speech)
-        let silence = vec![0.0; 300];
-        let utterance = segmenter
-            .feed(&silence)
-            .expect("Expected utterance after silence");
-        assert!(!utterance.is_empty());
-    }
+        let (samples, sample_rate) =
+            load_audio_file(&wav_path).expect("Failed to load recorded audio");
 
-    #[test]
-    #[ignore] // Requires Silero VAD model (run with: cargo test -- --ignored)
-    fn test_vad_segmenter_flush_on_max_duration() {
-        // Initialize VAD - skip if model unavailable
-        let model_path = vad::default_model_path();
-        if !model_path.exists() {
-            eprintln!(
-                "Skipping: Silero VAD model not found at {}",
-                model_path.display()
+        let mut resampler = vad::Resampler::new(sample_rate);
+        let samples_16k = resampler.resample(&samples);
+        let chunk_sec = 4.0f32;
+        let chunk_limit = (vad::VAD_SAMPLE_RATE as f32 * chunk_sec) as usize;
+
+        let cases = [
+            ("lt", chunk_limit / 2),
+            ("eq", chunk_limit),
+            ("gt", chunk_limit * 2),
+        ];
+
+        for (label, block_len) in cases {
+            let mut session = SpeechSession::new_stream(vad::VAD_SAMPLE_RATE, chunk_sec, 0.0);
+            let mut chunk_events = 0usize;
+            let mut idx = 0usize;
+            while idx < samples_16k.len() {
+                let end = (idx + block_len).min(samples_16k.len());
+                let slice = &samples_16k[idx..end];
+                for event in session.feed(slice, vad::VAD_SAMPLE_RATE) {
+                    if matches!(event, SpeechEvent::Chunk(_)) {
+                        chunk_events += 1;
+                    }
+                }
+                idx = end;
+            }
+            if let Some(SpeechEvent::Chunk(_)) = session.flush() {
+                chunk_events += 1;
+            }
+
+            assert!(
+                chunk_events > 0,
+                "Expected at least one chunk for case {} (block_len={})",
+                label,
+                block_len
             );
-            return;
         }
-        vad::init(&model_path).expect("Failed to init VAD");
 
-        let config = vad::VadConfig {
-            threshold: 0.5, // Probability threshold for speech detection
-            min_speech_duration_sec: 0.1,
-            max_silence_duration_sec: 1.0,
-            max_utterance_sec: 0.5,
-            pre_roll_sec: 0.1, // 100ms
-        };
-        let mut segmenter = VADSegmenter::with_config(1000, config);
-        let speech = vec![0.8; 600];
-        let utterance = segmenter
-            .feed(&speech)
-            .expect("Expected utterance after max duration");
-        assert!(!utterance.is_empty());
+        let _ = fs::remove_file(&wav_path);
     }
 
     #[test]
