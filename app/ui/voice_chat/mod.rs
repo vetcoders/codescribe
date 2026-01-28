@@ -212,10 +212,12 @@ fn show_voice_chat_overlay_impl() {
         }
         add_subview(blur_view, header_view);
 
+        let title_x = 16.0;
+        let title_w = 120.0;
         let title_label = crate::ui_helpers::create_label(crate::ui_helpers::LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(16.0, window_height - 30.0),
-                &CGSize::new(160.0, 20.0),
+                &CGPoint::new(title_x, window_height - 30.0),
+                &CGSize::new(title_w, 20.0),
             ),
             text: "CodeScribe".to_string(),
             font_size: 13.0,
@@ -227,10 +229,15 @@ fn show_voice_chat_overlay_impl() {
         });
         add_subview(blur_view, title_label);
 
+        // Keep the tab control between the title and the right-side icon cluster.
+        // The overlay window is typically ~450px wide; fixed coordinates can overlap.
+        let right_cluster_start_x = window_width - 192.0;
+        let tab_x = title_x + title_w + 10.0;
+        let tab_w = (right_cluster_start_x - 8.0 - tab_x).max(80.0);
         let tab_control = create_segmented_control(
             CGRect::new(
-                &CGPoint::new(170.0, window_height - 34.0),
-                &CGSize::new(120.0, 24.0),
+                &CGPoint::new(tab_x, window_height - 34.0),
+                &CGSize::new(tab_w, 24.0),
             ),
             &["Drawer", "Agent"],
         );
