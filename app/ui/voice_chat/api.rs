@@ -243,12 +243,19 @@ pub fn is_conversation_active() -> bool {
 // ═══════════════════════════════════════════════════════════
 
 pub fn update_active_tab_impl(tab: Tab) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    update_active_tab_locked(&mut state, tab);
+}
+
+fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
     unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.active_tab = tab;
 
         if let Some(tab_control) = state.tab_control {
-            let _: () = msg_send![tab_control as Id, setSelectedSegment: if tab == Tab::Drawer { 0_isize } else { 1_isize }];
+            let _: () = msg_send![
+                tab_control as Id,
+                setSelectedSegment: if tab == Tab::Drawer { 0_isize } else { 1_isize }
+            ];
         }
 
         let show_drawer = tab == Tab::Drawer;
@@ -812,7 +819,7 @@ pub(super) fn toggle_drawer_favorites_only_impl() {
     state.drawer_favorites_only = !state.drawer_favorites_only;
 
     // Jump to Drawer (this feature is Drawer-scoped).
-    update_active_tab_impl(Tab::Drawer);
+    update_active_tab_locked(&mut state, Tab::Drawer);
 
     update_favorites_button_with_state(&mut state);
 
