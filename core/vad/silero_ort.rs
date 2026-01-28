@@ -388,7 +388,7 @@ pub fn init_with_config(model_path: &Path, config: VadConfig) -> Result<()> {
     }
 
     // Try to create worker - if it fails, VAD stays uninitialized
-    // (speech_probability will return 1.0, disabling auto-stop)
+    // (speech_probability will return 1.0, effectively disabling segmentation)
     match VadWorker::new(model_path, config.clone()) {
         Ok(worker) => {
             // Only set config/path AFTER successful init
@@ -399,7 +399,7 @@ pub fn init_with_config(model_path: &Path, config: VadConfig) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            tracing::error!("VAD init failed: {} - auto-stop disabled", e);
+            tracing::error!("VAD init failed: {} - segmentation disabled", e);
             Err(e)
         }
     }
@@ -422,8 +422,8 @@ pub fn is_initialized() -> bool {
 /// This "eventual consistency" approach avoids blocking the audio thread.
 /// After a few calls, the returned value will reflect recent audio.
 ///
-/// **Important:** Returns 1.0 when VAD not initialized (assume speech)
-/// to prevent immediate auto-stop in recorders.
+/// **Important:** Returns 1.0 when VAD not initialized (assume speech),
+/// which effectively disables silence-based segmentation.
 pub fn speech_probability(samples: &[f32], sample_rate: u32) -> f32 {
     if let Some(worker) = VAD_WORKER.get() {
         // Submit new audio (non-blocking)
@@ -431,7 +431,7 @@ pub fn speech_probability(samples: &[f32], sample_rate: u32) -> f32 {
         // Return last computed probability (instant, atomic read)
         worker.last_probability()
     } else {
-        // VAD not initialized - assume speech to prevent premature auto-stop
+        // VAD not initialized - assume speech to prevent premature segmentation
         1.0
     }
 }

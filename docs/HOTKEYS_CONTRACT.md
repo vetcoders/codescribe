@@ -81,7 +81,7 @@ HotkeyEvent::Hold { action: Up, assistive: bool }     // Release
 
 **Trigger:** Double-tap Option key within 450ms
 **Behavior:** First tap starts recording, second tap stops
-**VAD:** ENABLED - auto-stops after `CODESCRIBE_VAD_SILENCE_SEC` seconds of silence
+**VAD:** ENABLED - ends utterance after `CODESCRIBE_VAD_SILENCE_SEC` seconds of silence (no stop)
 
 | Config | Keys | Mode |
 |--------|------|------|
@@ -126,7 +126,7 @@ stateDiagram-v2
     REC_HOLD --> BUSY : Hold Up<br/>(Ctrl released)
     REC_HOLD --> REC_HOLD : Shift pressed<br/>(upgrade to assistive)
 
-    REC_TOGGLE --> BUSY : Toggle again<br/>or VAD silence timeout
+    REC_TOGGLE --> BUSY : Toggle again
 
     CONVERSATION --> IDLE : Conversation Up<br/>(Ctrl+Option released)
 
@@ -139,7 +139,7 @@ stateDiagram-v2
 
     note right of REC_TOGGLE
         VAD: ENABLED
-        Auto-stop on silence
+        Utterance boundary on silence (no stop)
     end note
 
     note right of CONVERSATION
@@ -187,10 +187,10 @@ flowchart LR
     style C_VAD fill:#cce5ff
 ```
 
-| Mode | VAD Auto-Stop | Reason |
+| Mode | VAD Segmentation | Reason |
 |------|---------------|--------|
-| **Hold** | ❌ NO | User controls recording by releasing key. If they want to hold in silence for 45 minutes, that's their choice. |
-| **Toggle** | ✅ YES | Hands-free mode needs auto-stop. Silence threshold from `CODESCRIBE_VAD_SILENCE_SEC`. |
+| **Hold** | ✅ YES | VAD segments utterances; user controls start/stop via key release. |
+| **Toggle** | ✅ YES | Hands-free mode uses utterance boundaries (no stop). |
 | **Conversation** | Internal | Moshi handles turn-taking internally. |
 
 ---
@@ -206,13 +206,12 @@ flowchart LR
 | `TOGGLE_TRIGGER` | `double_option` | `double_option`, `double_right_option`, `none` | RESTART |
 | `HOLD_START_DELAY_MS` | `150` | 0-1000 | RESTART |
 
-### VAD Configuration (Toggle Mode Only)
+### VAD Configuration
 
 | Variable | Default | Range | Description |
 |----------|---------|-------|-------------|
-| `CODESCRIBE_VAD_ENABLED` | `1` | 0/1 | Enable auto-stop on silence |
 | `CODESCRIBE_VAD_THRESHOLD` | `0.35` | 0.1-0.95 | Speech probability threshold |
-| `CODESCRIBE_VAD_SILENCE_SEC` | `2.5` | 0.1-10.0 | Silence before auto-stop |
+| `CODESCRIBE_VAD_SILENCE_SEC` | `2.5` | 0.1-10.0 | Silence before utterance boundary |
 
 ---
 
@@ -238,7 +237,7 @@ sequenceDiagram
 
     rect rgb(200, 255, 200)
         Note over Controller: State: IDLE → REC_HOLD
-        Controller->>Recorder: start() [NO VAD callback!]
+        Controller->>Recorder: start()
         Recorder->>Whisper: Audio chunks (streaming)
         Whisper-->>Controller: Live transcription deltas
     end
@@ -276,10 +275,9 @@ sequenceDiagram
 
     rect rgb(200, 255, 200)
         Note over Controller: State: IDLE → REC_TOGGLE
-        Controller->>VAD: Register silence callback
         loop Recording with VAD
             VAD->>VAD: Monitor speech probability
-            VAD-->>Controller: Speech detected (prob > 0.35)
+            VAD-->>Recorder: Utterance boundary on silence
         end
     end
 
@@ -287,7 +285,7 @@ sequenceDiagram
         User->>HotkeyDetector: Double-tap Option
         HotkeyDetector->>Controller: ToggleNormal
     else VAD detects silence
-        VAD->>Controller: Silence > 2.5s
+        VAD->>Recorder: Utterance boundary (no stop)
     end
 
     rect rgb(255, 230, 200)
@@ -401,8 +399,7 @@ When `HOLD_EXCLUSIVE=true` (default):
 | Hotkeys don't work | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable CodeScribe |
 | Double-tap too sensitive | Interval too long | Not configurable (450ms hardcoded) |
 | Recording won't stop (hold) | Key stuck in system | Release all modifiers, try again |
-| VAD stops too early | Threshold too high | Lower `CODESCRIBE_VAD_THRESHOLD` |
-| VAD doesn't stop | Threshold too low or disabled | Check `CODESCRIBE_VAD_ENABLED=1` |
+| VAD cuts utterance too early | Threshold too high | Lower `CODESCRIBE_VAD_THRESHOLD` |
 
 ---
 
@@ -414,7 +411,7 @@ When `HOLD_EXCLUSIVE=true` (default):
 | `app/controller/mod.rs` | State machine, event handling |
 | `app/controller/types.rs` | State enum |
 | `core/vad/config.rs` | VAD configuration |
-| `core/audio/recorder.rs` | VAD callback integration |
+| `core/audio/streaming_recorder.rs` | Silero VAD segmentation |
 
 ---
 

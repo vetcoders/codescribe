@@ -69,10 +69,9 @@ sequenceDiagram
         REC-->>UI: delta_callback("...chunk...")
     end
 
-    REC-->>VAD: silence detected (hang_sec)
-    VAD-->>CTRL: vad_triggered = true
-    CTRL->>REC: stop()
-    CTRL->>LLM: format_text_with_status(..., on_delta)
+    REC-->>VAD: silence detected (utterance boundary)
+    VAD-->>REC: flush utterance (no stop)
+    REC->>LLM: format_text_with_status(..., on_delta)
 
     loop AI streaming
         LLM-->>UI: append_delta("...token...")

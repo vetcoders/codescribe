@@ -64,7 +64,7 @@ pub fn register_overlay_controller(controller: Arc<RecordingController>) {
     }
 }
 
-/// Stop the current recording and enter decision mode without waiting for VAD.
+/// Stop the current recording and enter decision mode.
 pub fn request_recording_commit() {
     let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
         warn!("Overlay controller not registered; cannot commit recording");
@@ -106,9 +106,6 @@ pub struct RecordingController {
 
     /// Lock to serialize finish_recording calls
     serial_lock: Arc<Mutex<()>>,
-
-    /// Flag set by VAD (silence detection) when recording should auto-stop
-    vad_triggered: Arc<AtomicBool>,
 
     /// Assistive hands-off loop active (Right Option toggle)
     assistive_loop_active: Arc<AtomicBool>,
@@ -178,7 +175,6 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
-            vad_triggered: Arc::new(AtomicBool::new(false)),
             assistive_loop_active: Arc::new(AtomicBool::new(false)),
             // Conversation mode (lazy init)
             conversation_engine: Arc::new(Mutex::new(None)),
@@ -231,7 +227,6 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
-            vad_triggered: Arc::new(AtomicBool::new(false)),
             assistive_loop_active: Arc::new(AtomicBool::new(false)),
             // Conversation mode (lazy init)
             conversation_engine: Arc::new(Mutex::new(None)),
@@ -256,16 +251,6 @@ impl RecordingController {
     /// Snapshot of current controller configuration
     pub async fn get_config(&self) -> Config {
         self.config.read().await.clone()
-    }
-
-    /// Check if VAD (silence detection) has triggered auto-stop
-    pub fn is_vad_triggered(&self) -> bool {
-        self.vad_triggered.load(Ordering::SeqCst)
-    }
-
-    /// Clear the VAD triggered flag
-    pub fn clear_vad_triggered(&self) {
-        self.vad_triggered.store(false, Ordering::SeqCst);
     }
 
     /// Cancel any pending delayed hold-start task
@@ -851,8 +836,7 @@ impl RecordingController {
         // Cancel any existing delayed start
         self.cancel_pending_hold_start().await;
 
-        // HOLD MODE: No VAD - user controls recording by releasing the key
-        // (VAD flag not used here, only in toggle mode)
+        // HOLD MODE: User controls recording by releasing the key.
 
         let state = Arc::clone(&self.state);
         let session_id = Arc::clone(&self.session_id);
@@ -880,11 +864,9 @@ impl RecordingController {
             set_assistive_session(is_assistive);
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
-            // HOLD MODE: No VAD auto-stop! User controls recording by releasing the key.
+            // HOLD MODE: User controls recording by releasing the key.
             // If user wants to hold in silence for 45 minutes - that's their choice.
-            // VAD is ONLY active in toggle (handsoff) mode.
             let mut rec = recorder.lock().await;
-            rec.recorder.config.auto_silence = false;
             // Set streaming callback for overlay updates (routed by session mode)
             rec.set_delta_callback(Some(Arc::new(|text: &str| {
                 route_transcription_delta(text);
@@ -986,22 +968,7 @@ impl RecordingController {
         let language = config.whisper_language;
         drop(config);
 
-        // Reset VAD flag and set callback
-        self.vad_triggered.store(false, Ordering::SeqCst);
-        let vad_flag = Arc::clone(&self.vad_triggered);
-
-        // Start the recorder with VAD callback
-        // hang_sec is configured via CODESCRIBE_VAD_SILENCE_SEC env var (single source of truth)
         let mut recorder = self.recorder.lock().await;
-        recorder.recorder.config.auto_silence = std::env::var("CODESCRIBE_VAD_ENABLED")
-            .ok()
-            .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
-            .unwrap_or(true);
-
-        recorder.recorder.set_on_vad_stop(move || {
-            info!("VAD callback: setting vad_triggered flag");
-            vad_flag.store(true, Ordering::SeqCst);
-        });
 
         // Set streaming callback for overlay updates (routed by session mode)
         recorder.set_delta_callback(Some(Arc::new(|text: &str| {
@@ -1049,50 +1016,7 @@ impl RecordingController {
         // Update tray status to Listening
         let _ = update_tray_status(TrayStatus::Listening);
 
-        if is_assistive {
-            self.spawn_assistive_vad_watch(new_session_id);
-        }
-
         Ok(())
-    }
-
-    fn spawn_assistive_vad_watch(&self, expected_session: String) {
-        let vad_flag = Arc::clone(&self.vad_triggered);
-        let state = Arc::clone(&self.state);
-        let session_id = Arc::clone(&self.session_id);
-        let loop_active = Arc::clone(&self.assistive_loop_active);
-
-        tokio::spawn(async move {
-            loop {
-                if !loop_active.load(Ordering::SeqCst) {
-                    break;
-                }
-                if *state.read().await != State::RecToggle {
-                    break;
-                }
-                if vad_flag.load(Ordering::SeqCst) {
-                    let current = session_id.read().await.clone();
-                    if current.as_deref() != Some(expected_session.as_str()) {
-                        break;
-                    }
-                    vad_flag.store(false, Ordering::SeqCst);
-                    if let Some(controller) = OVERLAY_CONTROLLER.get().cloned() {
-                        if let Err(e) = controller.finish_recording().await {
-                            warn!("Assistive VAD auto-stop failed: {}", e);
-                            break;
-                        }
-                        if controller.assistive_loop_active.load(Ordering::SeqCst) {
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            if let Err(e) = controller.start_toggle_recording(true).await {
-                                warn!("Assistive loop restart failed: {}", e);
-                            }
-                        }
-                    }
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        });
     }
 
     /// Stop recording, transcribe, format, and paste the result

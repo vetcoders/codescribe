@@ -51,10 +51,9 @@ sequenceDiagram
         REC-->>UI: delta_callback("...chunk...")
     end
 
-    REC-->>VAD: silence detected (hang_sec)
-    VAD-->>CTRL: vad_triggered = true
-    CTRL->>REC: stop()
-    CTRL->>LLM: format_text_with_status(..., on_delta)
+    REC-->>VAD: silence detected (utterance boundary)
+    VAD-->>REC: flush utterance (no stop)
+    REC->>LLM: format_text_with_status(..., on_delta)
 
     loop AI streaming
         LLM-->>UI: append_delta("...token...")
@@ -64,9 +63,9 @@ sequenceDiagram
     CTRL-->>UI: auto_hide (timeout)
 ```
 
-## VAD – stabilny auto‑stop (Silero VAD)
+## VAD – stabilna segmentacja (Silero VAD)
 
-VAD jest wbudowany w `Recorder` i używa **Silero VAD** (neural network ONNX). Zasada:
+VAD działa w `StreamingRecorder` i używa **Silero VAD** (neural network ONNX). Zasada:
 
 -   Próbki `f32` są wysyłane do worker thread (fire-and-forget, non-blocking).
 -   Silero zwraca probability (0.0-1.0) czy to mowa.

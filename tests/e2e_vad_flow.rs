@@ -3,7 +3,7 @@
 //! Tests the complete pipeline:
 //! - VAD initialization (singleton, thread-safety)
 //! - Speech probability computation (non-blocking)
-//! - Silence detection and auto-stop
+//! - Silence detection and utterance boundary
 //! - VADSegmenter utterance segmentation
 //!
 //! Created by M&K (c)2026 VetCoders

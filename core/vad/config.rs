@@ -42,7 +42,7 @@ impl Default for VadConfig {
                 1.0,
             ),
 
-            // Silence duration before auto-stop (allows natural pauses)
+            // Silence duration before utterance flush (allows natural pauses)
             // Default 2.5s - human speech pauses are typically 1-2s
             max_silence_duration_sec: env_f32_clamped("CODESCRIBE_VAD_SILENCE_SEC", 2.5, 0.1, 10.0),
 

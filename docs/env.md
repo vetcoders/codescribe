@@ -35,9 +35,6 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `SOUND_NAME` – domyślnie `Tink` (RESTART NEEDED)
 - `SOUND_VOLUME` – domyślnie `1.0` (RESTART NEEDED)
 
-**VAD (Voice Activity Detection)**
-- `CODESCRIBE_VAD_ENABLED` – domyślnie `1` (RESTART NEEDED)
-
 **Historia / storage**
 - `HISTORY_ENABLED` – domyślnie `1` (zawsze ON) (RESTART NEEDED)
 - `DUMP_AUDIO_LOGS` – domyślnie `1` (zawsze ON) (RESTART NEEDED)
@@ -51,9 +48,8 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `CODESCRIBE_EMIT_WORDS_MAX` – max słów na tick (buffered), domyślnie `3` (HOT RELOADED)
 
 **VAD (Silero neural network)**
-- `CODESCRIBE_VAD_ENABLED` – włącz/wyłącz auto-stop, domyślnie `1` (RESTART NEEDED)
 - `CODESCRIBE_VAD_THRESHOLD` – próg detekcji mowy 0.0-1.0, domyślnie `0.35` (RESTART NEEDED)
-- `CODESCRIBE_VAD_SILENCE_SEC` – cisza przed auto-stop, domyślnie `2.5s` (RESTART NEEDED)
+- `CODESCRIBE_VAD_SILENCE_SEC` – cisza przed utterance boundary, domyślnie `2.5s` (RESTART NEEDED)
 - `CODESCRIBE_VAD_MIN_SPEECH_SEC` – min. czas mowy przed detekcją, domyślnie `0.1` (RESTART NEEDED)
 - `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` – max. czas wypowiedzi, domyślnie `60` (RESTART NEEDED)
 - `CODESCRIBE_VAD_PRE_ROLL_SEC` – pre-roll w sekundach, domyślnie `0.5` (RESTART NEEDED)
@@ -131,7 +127,7 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 
 ### Audio
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)
-- `CODESCRIBE_VAD_ENABLED`, `CODESCRIBE_VAD_THRESHOLD`, `CODESCRIBE_VAD_SILENCE_SEC` (RESTART NEEDED)
+- `CODESCRIBE_VAD_THRESHOLD`, `CODESCRIBE_VAD_SILENCE_SEC` (RESTART NEEDED)
 
 ### Transkrypcja (local/cloud)
 - `USE_LOCAL_STT` (RESTART NEEDED)
@@ -146,7 +142,6 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `CODESCRIBE_BUFFERED_STREAM` (HOT RELOADED)
 - `CODESCRIBE_BUFFER_DELAY_MS` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
-- `CODESCRIBE_VAD_ENABLED` (RESTART NEEDED)
 - `CODESCRIBE_VAD_THRESHOLD` (RESTART NEEDED)
 - `CODESCRIBE_VAD_SILENCE_SEC` (RESTART NEEDED)
 - `CODESCRIBE_VAD_MIN_SPEECH_SEC` (RESTART NEEDED)

@@ -15,6 +15,7 @@ EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo n
 ENV_LOAD := set -a; [ -f $$HOME/.codescribe/.env ] && source $$HOME/.codescribe/.env; set +a
 E2E_ENV_EXAMPLE := .env.example
 E2E_ENV_FILE := ./.env.e2e
+TEST_BUILD_JOBS ?= 2
 ENV_LOAD_E2E := set -a; [ -f $(E2E_ENV_FILE) ] && source $(E2E_ENV_FILE); set +a
 E2E_ENV_GEN := ./scripts/validate-envs.sh --env-example --env-example-path $(E2E_ENV_EXAMPLE) --emit-e2e-env $(E2E_ENV_FILE)
 
@@ -170,33 +171,33 @@ lint:
 
 test:
 	@echo "=== Tests (workspace) ==="
-	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test --workspace --all-targets -- --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --workspace --all-targets -- --nocapture
 	@echo "=== Tests (ignored / real API) ==="
-	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test --workspace --all-targets -- --ignored --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --workspace --all-targets -- --ignored --nocapture
 
 test-quick:
 	@echo "=== Tests (quick, no real API) ==="
-	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test --workspace --all-targets -- --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --workspace --all-targets -- --nocapture
 
 test-e2e:
 	@echo "=== E2E Tests (mock) ==="
 	@$(E2E_ENV_GEN)
-	@$(ENV_LOAD_E2E); $(APPLY_TEST_LLM); cargo test e2e --release -- --nocapture
+	@$(ENV_LOAD_E2E); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test e2e --release -- --nocapture
 
 test-e2e-real:
 	@echo "=== E2E Tests (real API) ==="
 	@echo "Requires: LLM_API_KEY, LLM_ASSISTIVE_API_KEY"
 	@$(E2E_ENV_GEN)
-	@$(ENV_LOAD_E2E); $(APPLY_TEST_LLM); cargo test e2e --release -- --ignored --nocapture
+	@$(ENV_LOAD_E2E); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test e2e --release -- --ignored --nocapture
 
 test-sse:
 	@echo "=== SSE Streaming Tests ==="
 	@$(E2E_ENV_GEN)
-	@$(ENV_LOAD_E2E); $(APPLY_TEST_LLM); cargo test e2e_sse --release -- --ignored --nocapture
+	@$(ENV_LOAD_E2E); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test e2e_sse --release -- --ignored --nocapture
 
 test-formatting:
 	@echo "=== AI Formatting Tests ==="
-	@$(ENV_LOAD); $(APPLY_TEST_LLM); cargo test formatting --release -- --nocapture
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test formatting --release -- --nocapture
 
 test-all:
 	@echo "=== Full Test Suite ==="
@@ -207,7 +208,7 @@ test-roundtrip:
 	@echo "=== Round-Trip Tests (TTS→STT→Embeddings) ==="
 	@echo "Tests actual embedded models pipeline integrity"
 	@$(E2E_ENV_GEN)
-	@$(ENV_LOAD_E2E); CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip --release -- --nocapture
+	@$(ENV_LOAD_E2E); CODESCRIBE_E2E_ROUNDTRIP=1 CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --test e2e_round_trip --release -- --nocapture
 
 demo:
 	@echo "=== Full Pipeline Demo ==="

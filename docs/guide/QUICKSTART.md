@@ -81,7 +81,7 @@ LLM_API_KEY=sk-your-key-here
 |------|--------|--------------|
 | **Raw** | Hold `Ctrl` | Fastest, no AI, raw Whisper output |
 | **Assistive** | Hold `Ctrl+Shift` | AI-enhanced, expands/improves text |
-| **Toggle** | Double-tap `Option` | Hands-free, auto-stops on silence |
+| **Toggle** | Double-tap `Option` | Hands-free, ends utterance on silence |
 
 ### Visual Feedback
 

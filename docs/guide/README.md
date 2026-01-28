@@ -60,7 +60,7 @@ That's it. You're transcribing.
 |--------|------|--------------|
 | `Ctrl` hold | **Raw** | Fast dictation, no AI, text pasted directly |
 | `Ctrl+Shift` hold | **Assistive** | AI expands/enhances your speech |
-| `Double Option` | **Toggle** | Hands-free, auto-stops on silence |
+| `Double Option` | **Toggle** | Hands-free, ends utterance on silence |
 
 ---
 

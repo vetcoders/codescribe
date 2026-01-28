@@ -40,9 +40,8 @@ CODESCRIBE_TYPING_CPS=35
 # Number of words emitted per tick (buffered mode)
 CODESCRIBE_EMIT_WORDS_MAX=3
 # VAD config (centralized in core/vad/config.rs)
-# CODESCRIBE_VAD_ENABLED=1              # Enable/disable VAD auto-stop (default: true)
 # CODESCRIBE_VAD_THRESHOLD=0.35         # Speech probability 0.0-1.0 (lower=more sensitive)
-# CODESCRIBE_VAD_SILENCE_SEC=2.5        # Silence duration before auto-stop
+# CODESCRIBE_VAD_SILENCE_SEC=2.5        # Silence duration before utterance flush
 # CODESCRIBE_VAD_MIN_SPEECH_SEC=0.1     # Min speech before triggering
 # CODESCRIBE_VAD_MAX_UTTERANCE_SEC=60   # Force flush after this duration
 # CODESCRIBE_VAD_PRE_ROLL_SEC=0.5       # Buffer before speech onset
@@ -84,7 +83,6 @@ RESTORE_CLIPBOARD=1
 RESTORE_CLIPBOARD_DELAY_MS=1000
 
 # === Audio ===
-CODESCRIBE_VAD_ENABLED=0
 BEEP_ON_START=1
 SOUND_NAME=Tink
 SOUND_VOLUME=0.25

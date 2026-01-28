@@ -38,8 +38,7 @@ cargo run --example record_streaming
 Both examples respect these environment variables:
 
 - `CODESCRIBE_VAD_THRESHOLD` - Speech probability threshold 0.0-1.0 (default: 0.35)
-- `CODESCRIBE_VAD_SILENCE_SEC` - Silence duration before auto-stop (default: 2.5)
-- `CODESCRIBE_VAD_ENABLED` - Enable/disable silence detection (default: true)
+- `CODESCRIBE_VAD_SILENCE_SEC` - Silence duration before utterance flush (default: 2.5)
 
 Example:
 ```bash

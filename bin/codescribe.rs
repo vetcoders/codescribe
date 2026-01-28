@@ -354,11 +354,7 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
 
     whisper::init()?;
 
-    // Live mode should not auto-stop on silence; let user control Ctrl+C.
-    let config = codescribe::audio::recorder::RecorderConfig {
-        auto_silence: false,
-        ..Default::default()
-    };
+    let config = codescribe::audio::recorder::RecorderConfig::default();
     let mut recorder =
         codescribe::audio::streaming_recorder::StreamingRecorder::with_config(config)?;
 
@@ -366,7 +362,7 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
     recorder.set_delta_callback(Some(Arc::new({
         let emitter = Arc::clone(&emitter);
         move |delta: &str| {
-            emitter.emit_raw(delta);
+            emitter.emit_delta(delta);
         }
     })));
 
@@ -469,26 +465,6 @@ async fn run_daemon() -> Result<()> {
                     eprintln!("Hotkey event error: {}", e);
                 }
             });
-        }
-    });
-
-    // VAD monitor task - auto-finish recording when silence detected
-    let vad_controller = Arc::clone(&controller);
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            if vad_controller.is_vad_triggered() {
-                // Only auto-finish when actively recording to avoid spam
-                if !vad_controller.is_recording().await {
-                    vad_controller.clear_vad_triggered();
-                    continue;
-                }
-                debug!("VAD triggered - auto-finishing recording");
-                vad_controller.clear_vad_triggered();
-                if let Err(e) = vad_controller.finish_recording().await {
-                    warn!("VAD finish_recording error: {}", e);
-                }
-            }
         }
     });
 
@@ -652,6 +628,7 @@ fn emit_stdout(text: &str) -> Result<()> {
 struct StreamEmitter {
     last_len: Mutex<usize>,
     had_output: AtomicBool,
+    buffer: Mutex<String>,
 }
 
 impl StreamEmitter {
@@ -659,6 +636,7 @@ impl StreamEmitter {
         Arc::new(Self {
             last_len: Mutex::new(0),
             had_output: AtomicBool::new(false),
+            buffer: Mutex::new(String::new()),
         })
     }
 
@@ -669,6 +647,19 @@ impl StreamEmitter {
         if emit_stdout(text).is_ok() {
             self.had_output.store(true, Ordering::SeqCst);
         }
+    }
+
+    fn emit_delta(&self, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
+
+        let snapshot = {
+            let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            apply_delta_to_string(&mut buffer, delta);
+            buffer.clone()
+        };
+        self.emit_cumulative(&snapshot);
     }
 
     fn emit_cumulative(&self, cumulative: &str) {
@@ -685,6 +676,16 @@ impl StreamEmitter {
     fn finish(&self) {
         if self.had_output.load(Ordering::SeqCst) {
             let _ = emit_stdout("\n");
+        }
+    }
+}
+
+fn apply_delta_to_string(target: &mut String, delta: &str) {
+    for ch in delta.chars() {
+        if ch == '\u{0008}' {
+            target.pop();
+        } else {
+            target.push(ch);
         }
     }
 }

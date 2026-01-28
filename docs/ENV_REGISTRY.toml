@@ -22,13 +22,6 @@ updated = "2026-01-27"
 # VAD (Voice Activity Detection) - Silero Neural Network
 # ═══════════════════════════════════════════════════════════════════════════════
 
-[vars.CODESCRIBE_VAD_ENABLED]
-default = "1"
-type = "bool"
-reload = "restart"
-category = "vad"
-description = "Enable/disable VAD auto-stop on silence"
-
 [vars.CODESCRIBE_VAD_THRESHOLD]
 default = "0.35"
 type = "f32"
@@ -42,7 +35,7 @@ default = "2.5"
 type = "f32"
 reload = "restart"
 category = "vad"
-description = "Silence duration (seconds) before auto-stop"
+description = "Silence duration (seconds) before utterance flush"
 range = "0.1-10.0"
 
 [vars.CODESCRIBE_VAD_MIN_SPEECH_SEC]

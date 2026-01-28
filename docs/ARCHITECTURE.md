@@ -220,7 +220,7 @@ match (hotkey, flags) {
 | Stream postprocess (semantic gating) | ✅ |
 | Quality loop + report | ✅ |
 | CodeScribe Core separation | ✅ |
-| VAD (auto-stop on silence) | ✅ |
+| VAD (utterance boundary on silence) | ✅ |
 | Transcription overlay | ✅ |
 | Tauri GUI (future) | 📋 |
 

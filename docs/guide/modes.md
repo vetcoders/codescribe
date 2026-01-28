@@ -83,11 +83,11 @@ The delay prevents accidental recordings from quick Ctrl taps (common when using
 3. Speak freely - no keys to hold
 4. Either:
    - Double-tap `Option` again to stop, OR
-   - Wait 5 seconds of silence (auto-stop)
+   - Wait 5 seconds of silence (utterance boundary)
 
 ### Characteristics
 - **Hands-free** - no keys to hold while speaking
-- **VAD (Voice Activity Detection)** - auto-stops on silence
+- **VAD (Voice Activity Detection)** - ends utterance on silence
 - **Respects AI settings** - uses formatting if enabled
 - **Great for long content** - paragraphs, emails, documentation
 

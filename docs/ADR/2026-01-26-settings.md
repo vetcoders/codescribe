@@ -157,7 +157,7 @@ CodeScribe uses **Responses API** (`/v1/responses`) with SSE streaming. You can 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `CODESCRIBE_VAD_SILENCE_DB` | -60 to -20 | -45 | Silence threshold in dB |
-| `CODESCRIBE_VAD_SILENCE_SEC` | 0.5-5.0 | 1.5 | Silence duration before auto-stop |
+| `CODESCRIBE_VAD_SILENCE_SEC` | 0.5-5.0 | 1.5 | Silence duration before utterance flush |
 | `CODESCRIBE_VAD_PRE_ROLL_MS` | 0-1000 | 300 | Audio to keep before speech detected |
 
 ### Streaming Transcription
