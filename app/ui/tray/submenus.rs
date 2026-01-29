@@ -13,7 +13,7 @@ pub type HoldMenuIds = (MenuId, MenuId, MenuId, MenuId, MenuId, MenuId);
 
 /// Build the Hold Hotkeys submenu
 pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
-    let hold_menu = Submenu::new("Shortcuts", true);
+    let hold_menu = Submenu::new("Hotkeys", true);
 
     // Read from Config (source of truth for initial state)
     let config = crate::config::Config::load();
@@ -41,7 +41,7 @@ pub fn build_hold_hotkeys_submenu() -> Result<(Submenu, HoldMenuIds)> {
     );
     hold_menu.append(&hold_summary)?;
 
-    let reset_item = MenuItem::new("Reset shortcuts (recommended)", true, None);
+    let reset_item = MenuItem::new("Reset hotkeys (recommended)", true, None);
     let reset_id = reset_item.id().clone();
     hold_menu.append(&reset_item)?;
     hold_menu.append(&PredefinedMenuItem::separator())?;

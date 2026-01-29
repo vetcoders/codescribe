@@ -4,8 +4,8 @@
 //! - Status line (dynamic)
 //! - Show Chat Overlay
 //! - Open history folder
-//! - Shortcuts submenu
-//! - Tools submenu (prompts/diagnostics/quality)
+//! - Copy last transcript
+//! - Advanced submenu (hotkeys/prompts/diagnostics/quality)
 //! - Help/About
 //! - Quit
 //!
@@ -34,9 +34,9 @@ thread_local! {
 /// Status: Idle
 /// Show Chat Overlay
 /// Open history...
+/// Copy last transcript
 /// ─────────────
-/// Hotkeys ▸
-/// Tools ▸
+/// Advanced… ▸
 /// ─────────────
 /// Help
 /// About
@@ -67,18 +67,28 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let open_history_id = open_history_item.id().clone();
     menu.append(&open_history_item)?;
 
-    // 4. Separator
+    // 4. Copy last transcript
+    let copy_last_item = MenuItem::new("Copy last transcript", true, None);
+    let copy_last_id = copy_last_item.id().clone();
+    menu.append(&copy_last_item)?;
+
+    // 5. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 5. Shortcuts submenu
+    // 6. Advanced submenu (power-user options)
+    let advanced_menu = Submenu::new("Advanced…", true);
+
+    // 6a. Hotkeys submenu
     let (hold_hotkeys_menu, hold_ids) = build_hold_hotkeys_submenu()?;
-    menu.append(&hold_hotkeys_menu)?;
+    advanced_menu.append(&hold_hotkeys_menu)?;
 
-    // 6. Tools submenu
-    let tools_menu = Submenu::new("Tools", true);
+    advanced_menu.append(&PredefinedMenuItem::separator())?;
 
-    // 6a. Edit prompts submenu
-    let prompts_menu = Submenu::new("Edit prompts", true);
+    // 6b. Prompts submenu
+    let prompts_menu = Submenu::new("Prompts", true);
+    let prompts_note = MenuItem::new("Location: ~/.codescribe/prompts", false, None);
+    prompts_menu.append(&prompts_note)?;
+    prompts_menu.append(&PredefinedMenuItem::separator())?;
     let open_assistive_prompt_item = MenuItem::new("Assistive…", true, None);
     let open_assistive_prompt_id = open_assistive_prompt_item.id().clone();
     prompts_menu.append(&open_assistive_prompt_item)?;
@@ -93,20 +103,21 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let open_prompts_folder_id = open_prompts_folder_item.id().clone();
     prompts_menu.append(&open_prompts_folder_item)?;
 
-    tools_menu.append(&prompts_menu)?;
-    tools_menu.append(&PredefinedMenuItem::separator())?;
+    advanced_menu.append(&prompts_menu)?;
 
-    // 6b. Copy diagnostics
+    advanced_menu.append(&PredefinedMenuItem::separator())?;
+
+    // 6c. Diagnostics submenu
+    let diagnostics_menu = Submenu::new("Diagnostics", true);
+    let diag_note = MenuItem::new("Copy includes permissions + env status", false, None);
+    diagnostics_menu.append(&diag_note)?;
+    diagnostics_menu.append(&PredefinedMenuItem::separator())?;
+
     let copy_diag_item = MenuItem::new("Copy diagnostics", true, None);
     let copy_diag_id = copy_diag_item.id().clone();
-    tools_menu.append(&copy_diag_item)?;
+    diagnostics_menu.append(&copy_diag_item)?;
 
-    // 6c. Copy last transcript
-    let copy_last_item = MenuItem::new("Copy Last to Clipboard", true, None);
-    let copy_last_id = copy_last_item.id().clone();
-    tools_menu.append(&copy_last_item)?;
-
-    // 6d. Quality menu item (shows pending mismatches from daemon)
+    // Quality menu item (shows pending mismatches from daemon)
     let state = crate::quality_loop::read_daemon_state();
     let quality_label = if !state.available {
         "Quality: unavailable".to_string()
@@ -117,14 +128,16 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     };
     let quality_item = MenuItem::new(&quality_label, true, None);
     let quality_open_report_id = quality_item.id().clone();
-    tools_menu.append(&quality_item)?;
+    diagnostics_menu.append(&quality_item)?;
 
     // Store for dynamic updates
     QUALITY_MENU_ITEM.with(|cell| {
         *cell.borrow_mut() = Some(quality_item);
     });
 
-    menu.append(&tools_menu)?;
+    advanced_menu.append(&diagnostics_menu)?;
+
+    menu.append(&advanced_menu)?;
 
     // 7. Separator
     menu.append(&PredefinedMenuItem::separator())?;
@@ -234,8 +247,8 @@ mod tests {
             "Status: Idle".to_string(),
             "Show Chat Overlay".to_string(),
             "Open history...".to_string(),
-            "Shortcuts".to_string(),
-            "Tools".to_string(),
+            "Copy last transcript".to_string(),
+            "Advanced…".to_string(),
             "Help".to_string(),
             "About".to_string(),
             "Quit".to_string(),

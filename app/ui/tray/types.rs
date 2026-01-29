@@ -90,7 +90,7 @@ pub enum TrayMenuEvent {
     OpenFormattingPrompt,
     OpenPromptsFolder,
 
-    // Shortcuts
+    // Hotkeys
     ResetShortcuts,
 }
 
