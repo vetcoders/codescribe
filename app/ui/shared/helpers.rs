@@ -1296,18 +1296,50 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
 /// Open a file in the default editor (TextEdit, etc.)
 pub fn open_file_in_editor(path: &std::path::Path) -> bool {
     // Most reliable approach in the app-bundle environment: call `/usr/bin/open`.
-    // NSWorkspace sometimes reports success but doesn't surface the editor window (or respects
-    // odd per-app settings). `open -e` is predictable.
+    // NSWorkspace sometimes reports success but doesn't surface the editor window. `open -e`
+    // (TextEdit) is predictable and works without PATH.
     #[cfg(target_os = "macos")]
     {
+        use tracing::{info, warn};
+
         let path = path.to_path_buf();
-        let run = |args: &[&str]| -> bool {
-            let mut cmd = std::process::Command::new("/usr/bin/open");
-            cmd.args(args).arg(&path);
-            cmd.status().map(|s| s.success()).unwrap_or(false)
+        let run_open = |args: &[&str]| -> bool {
+            let out = std::process::Command::new("/usr/bin/open")
+                .args(args)
+                .arg(&path)
+                .output();
+            match out {
+                Ok(out) => {
+                    let code = out.status.code().unwrap_or(-1);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    if !stderr.trim().is_empty() {
+                        info!(
+                            "open {:?} exit={} stderr={}",
+                            args,
+                            code,
+                            stderr.trim().replace('\n', "\\n")
+                        );
+                    } else {
+                        info!("open {:?} exit={}", args, code);
+                    }
+                    out.status.success()
+                }
+                Err(e) => {
+                    warn!("open {:?} failed to spawn: {}", args, e);
+                    false
+                }
+            }
         };
 
-        if run(&["-e"]) || run(&["-t"]) || run(&[]) {
+        // Force TextEdit and bring it to front; otherwise it can open "somewhere" (another Space)
+        // and look like a no-op from the user's POV.
+        if run_open(&["-e"]) {
+            let _ = std::process::Command::new("/usr/bin/osascript")
+                .args(["-e", r#"tell application "TextEdit" to activate"#])
+                .status();
+            return true;
+        }
+        if run_open(&["-t"]) || run_open(&[]) {
             return true;
         }
     }
