@@ -814,8 +814,13 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         ];
 
         // Bubble width: content-aware but capped.
-        // If it wraps at max width, keep the bubble full width for readability.
-        let wraps_at_max = rect_max.size.height > line_height * 1.6 || display_text.contains('\n');
+        // If it wraps (or is long), keep the bubble full width for readability.
+        //
+        // We also treat long single-paragraph responses as "wrap-prone" because otherwise a
+        // narrow bubble can force one-word-per-line rendering (looks broken).
+        let is_long = display_text.chars().count() > 80;
+        let wraps_at_max =
+            rect_max.size.height > line_height * 1.6 || display_text.contains('\n') || is_long;
         let bubble_width = if wraps_at_max {
             config.max_width
         } else {
