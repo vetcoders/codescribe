@@ -1324,7 +1324,7 @@ pub fn open_file_in_editor(path: &std::path::Path) -> bool {
     #[cfg(target_os = "macos")]
     {
         let path = path.to_path_buf();
-        if std::process::Command::new("open")
+        if std::process::Command::new("/usr/bin/open")
             .arg("-t")
             .arg(&path)
             .status()
@@ -1332,7 +1332,7 @@ pub fn open_file_in_editor(path: &std::path::Path) -> bool {
         {
             return true;
         }
-        return std::process::Command::new("open")
+        return std::process::Command::new("/usr/bin/open")
             .arg(&path)
             .status()
             .is_ok();

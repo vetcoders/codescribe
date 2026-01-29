@@ -463,26 +463,30 @@ unsafe fn sync_agent_document_view_size(state: &VoiceChatOverlayState, max_width
     let _: () = msg_send![container, setNeedsLayout: true];
     let _: () = msg_send![container, layoutSubtreeIfNeeded];
 
-    // Sum arranged subview heights + stack spacing to get an accurate document height.
+    // Prefer AppKit's own fittingSize; it accounts for stack layout and avoids cases where
+    // arrangedSubviews frames lag behind until interaction (which would make scroll "dead").
+    let fitting: CGSize = msg_send![container, fittingSize];
+    let mut total_h = fitting.height.max(1.0);
+
+    // Defensive: also sum arranged subview heights + spacing, and take the max.
     let arranged: Id = msg_send![container, arrangedSubviews];
-    if arranged.is_null() {
-        return;
-    }
-    let count: usize = msg_send![arranged, count];
-    let spacing: f64 = msg_send![container, spacing];
-    let mut total_h = 0.0;
-    for i in 0..count {
-        let v: Id = msg_send![arranged, objectAtIndex: i];
-        if v.is_null() {
-            continue;
+    if !arranged.is_null() {
+        let count: usize = msg_send![arranged, count];
+        let spacing: f64 = msg_send![container, spacing];
+        let mut sum_h = 0.0;
+        for i in 0..count {
+            let v: Id = msg_send![arranged, objectAtIndex: i];
+            if v.is_null() {
+                continue;
+            }
+            let frame: CGRect = msg_send![v, frame];
+            sum_h += frame.size.height.max(0.0);
+            if i + 1 < count {
+                sum_h += spacing;
+            }
         }
-        let frame: CGRect = msg_send![v, frame];
-        total_h += frame.size.height.max(0.0);
-        if i + 1 < count {
-            total_h += spacing;
-        }
+        total_h = total_h.max(sum_h.max(1.0));
     }
-    total_h = total_h.max(1.0);
 
     let _: () = msg_send![container, setFrameSize: CGSize::new(max_width, total_h)];
     let _: () = msg_send![container, setNeedsLayout: true];
@@ -491,6 +495,7 @@ unsafe fn sync_agent_document_view_size(state: &VoiceChatOverlayState, max_width
     // Ensure the scroll view updates its clip view after the document view changes size.
     if let Some(scroll_view_ptr) = state.agent_scroll_view {
         let scroll_view = scroll_view_ptr as Id;
+        let _: () = msg_send![scroll_view, tile];
         let content_view: Id = msg_send![scroll_view, contentView];
         if !content_view.is_null() {
             let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
