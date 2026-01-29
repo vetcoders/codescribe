@@ -363,10 +363,9 @@ impl RecordingController {
 
                             // If we switch modes while already recording, update UI immediately.
                             if matches!(current_state, State::RecHold | State::RecToggle) {
-                                let ctx =
-                                    tokio::task::spawn_blocking(|| capture_frontmost_app_only())
-                                        .await
-                                        .unwrap_or_default();
+                                let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
+                                    .await
+                                    .unwrap_or_default();
                                 *self.assistive_context.write().await = Some(ctx);
                                 crate::voice_chat_ui::set_voice_chat_target_app(
                                     self.assistive_context
@@ -391,10 +390,9 @@ impl RecordingController {
 
                             // If we switch modes while already recording, update UI immediately.
                             if matches!(current_state, State::RecHold | State::RecToggle) {
-                                let ctx =
-                                    tokio::task::spawn_blocking(|| capture_assistive_context())
-                                        .await
-                                        .unwrap_or_default();
+                                let ctx = tokio::task::spawn_blocking(capture_assistive_context)
+                                    .await
+                                    .unwrap_or_default();
                                 *self.assistive_context.write().await = Some(ctx);
                                 crate::voice_chat_ui::set_voice_chat_target_app(
                                     self.assistive_context
@@ -998,15 +996,13 @@ impl RecordingController {
             if is_assistive {
                 // Capture context BEFORE showing any overlay (overlays can steal focus).
                 let ctx = match hold_mode {
-                    HoldMode::Selection => {
-                        tokio::task::spawn_blocking(|| capture_assistive_context())
-                            .await
-                            .unwrap_or_default()
-                    }
-                    HoldMode::Chat => tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                    HoldMode::Selection => tokio::task::spawn_blocking(capture_assistive_context)
                         .await
                         .unwrap_or_default(),
-                    HoldMode::Raw => tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                    HoldMode::Chat => tokio::task::spawn_blocking(capture_frontmost_app_only)
+                        .await
+                        .unwrap_or_default(),
+                    HoldMode::Raw => tokio::task::spawn_blocking(capture_frontmost_app_only)
                         .await
                         .unwrap_or_default(),
                 };
@@ -1026,7 +1022,7 @@ impl RecordingController {
                 crate::voice_chat_ui::update_voice_chat_status("Listening...");
             } else {
                 // Capture frontmost app for paste actions (no selection/clipboard).
-                let ctx = tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
                     .await
                     .unwrap_or_default();
                 *assistive_context.write().await = Some(ctx);
@@ -1152,7 +1148,7 @@ impl RecordingController {
         if is_assistive {
             // Toggle-assistive is a hands-off chat loop (no selection).
             // Capture only target app (no clipboard).
-            let ctx = tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+            let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
                 .await
                 .unwrap_or_default();
             *self.assistive_context.write().await = Some(ctx);
@@ -1171,7 +1167,7 @@ impl RecordingController {
             crate::voice_chat_ui::update_voice_chat_status("Listening...");
         } else {
             // Capture frontmost app for paste actions (no selection/clipboard).
-            let ctx = tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+            let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
                 .await
                 .unwrap_or_default();
             *self.assistive_context.write().await = Some(ctx);
@@ -1565,7 +1561,7 @@ impl RecordingController {
 
             // Ensure we have a target app label (best-effort, no selection, no clipboard).
             if ctx.frontmost_app.is_none() {
-                ctx.frontmost_app = tokio::task::spawn_blocking(|| capture_frontmost_app_only())
+                ctx.frontmost_app = tokio::task::spawn_blocking(capture_frontmost_app_only)
                     .await
                     .ok()
                     .and_then(|c| c.frontmost_app);

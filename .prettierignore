@@ -1,4 +1,8 @@
 **/.git/**
+**/.claude/**
+**/.loctree/**
+**/.pytest_cache/**
+**/.venv/**
 **/.DS_Store
 **/node_modules/**
 **/target/**

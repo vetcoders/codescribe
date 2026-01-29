@@ -219,10 +219,10 @@ fn selected_text_from_frontmost(max_chars: usize, copy_delay_ms: u64) -> Option<
         }
     };
 
-    if let Some(snapshot) = snapshot {
-        if let Err(e) = snapshot.restore() {
-            debug!("Assistive context: clipboard restore failed: {}", e);
-        }
+    if let Some(snapshot) = snapshot
+        && let Err(e) = snapshot.restore()
+    {
+        debug!("Assistive context: clipboard restore failed: {}", e);
     }
 
     copied = copied.trim().to_string();
@@ -231,11 +231,11 @@ fn selected_text_from_frontmost(max_chars: usize, copy_delay_ms: u64) -> Option<
     }
 
     // If clipboard didn't change, treat as "no selection" to avoid leaking arbitrary clipboard data.
-    if let Some(prev) = prev_text {
-        if copied == prev.trim() {
-            debug!("Assistive context: clipboard unchanged; treating as no selection");
-            return None;
-        }
+    if let Some(prev) = prev_text
+        && copied == prev.trim()
+    {
+        debug!("Assistive context: clipboard unchanged; treating as no selection");
+        return None;
     }
 
     if copied.len() > max_chars {
