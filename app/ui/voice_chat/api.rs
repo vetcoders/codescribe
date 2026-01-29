@@ -336,6 +336,19 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
     }
 }
 
+/// Reflow Agent layout after the overlay window was resized.
+///
+/// Without this, long messages can look clipped until the next message arrives.
+pub(super) fn reflow_agent_after_resize_impl() {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.active_tab != Tab::Agent {
+        return;
+    }
+
+    update_chat_view_with_state(&mut state, false);
+    resize_agent_input_locked(&mut state);
+}
+
 fn update_voice_chat_status_impl(status: &str) {
     unsafe {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());

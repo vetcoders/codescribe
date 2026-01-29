@@ -9,13 +9,15 @@ use objc::{msg_send, sel, sel_impl};
 use std::sync::Once;
 use tracing::{debug, info};
 
-use crate::ui_helpers::{get_text_field_string, ns_string, set_hidden, set_text_field_string};
+use crate::ui_helpers::{
+    clamp_overlay_position, get_text_field_string, ns_string, set_hidden, set_text_field_string,
+};
 
 use super::api::{
     clear_overlay_state, clear_voice_chat_text_impl, commit_last_user_message_impl,
     discard_last_message_impl, filter_drawer, handle_card_copy, handle_card_delete,
-    handle_card_edit, handle_card_favorite, send_draft_message_impl,
-    toggle_drawer_favorites_only_impl, update_active_tab_impl,
+    handle_card_edit, handle_card_favorite, reflow_agent_after_resize_impl,
+    send_draft_message_impl, toggle_drawer_favorites_only_impl, update_active_tab_impl,
 };
 use super::state::{ChatRole, OVERLAY_STATE, Tab};
 
@@ -141,6 +143,14 @@ pub fn window_delegate_class() -> *const Class {
                 sel!(windowWillClose:),
                 on_window_will_close as extern "C" fn(&Object, Sel, Id),
             );
+            decl.add_method(
+                sel!(windowDidMove:),
+                on_window_did_move as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(windowDidEndLiveResize:),
+                on_window_did_end_live_resize as extern "C" fn(&Object, Sel, Id),
+            );
             let cls = decl.register();
             WINDOW_DELEGATE_CLASS = cls;
         });
@@ -199,6 +209,67 @@ extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id)
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     clear_overlay_state(&mut state);
     debug!("Voice chat overlay closed by user");
+}
+
+unsafe fn clamp_overlay_window_to_visible(window: Id) {
+    let ns_screen = Class::get("NSScreen").unwrap();
+    let mut screen: Id = msg_send![window, screen];
+    if screen.is_null() {
+        screen = msg_send![ns_screen, mainScreen];
+    }
+    if screen.is_null() {
+        return;
+    }
+
+    let visible_frame: CGRect = msg_send![screen, visibleFrame];
+    let frame: CGRect = msg_send![window, frame];
+    let margin = 20.0;
+
+    let (x, y) = clamp_overlay_position(
+        visible_frame,
+        frame.size.width,
+        frame.size.height,
+        margin,
+        frame.origin.x,
+        frame.origin.y,
+    );
+
+    if (x - frame.origin.x).abs() > 0.5 || (y - frame.origin.y).abs() > 0.5 {
+        let _: () = msg_send![window, setFrameOrigin: CGPoint::new(x, y)];
+    }
+}
+
+extern "C" fn on_window_did_move(_this: &Object, _cmd: Sel, notification: Id) {
+    unsafe {
+        let window: Id = msg_send![notification, object];
+        if window.is_null() {
+            return;
+        }
+        clamp_overlay_window_to_visible(window);
+    }
+}
+
+extern "C" fn on_window_did_end_live_resize(_this: &Object, _cmd: Sel, notification: Id) {
+    unsafe {
+        let window: Id = msg_send![notification, object];
+        if !window.is_null() {
+            clamp_overlay_window_to_visible(window);
+
+            // Cap max size to the current screen's visible frame (handles space/screen changes).
+            let ns_screen = Class::get("NSScreen").unwrap();
+            let mut screen: Id = msg_send![window, screen];
+            if screen.is_null() {
+                screen = msg_send![ns_screen, mainScreen];
+            }
+            if !screen.is_null() {
+                let visible: CGRect = msg_send![screen, visibleFrame];
+                let _: () = msg_send![window, setContentMaxSize: visible.size];
+            }
+        }
+
+        // Reflow bubbles to the new width/height.
+        reflow_agent_after_resize_impl();
+    }
 }
 
 extern "C" fn on_tab_changed(_this: &Object, _cmd: Sel, sender: Id) {

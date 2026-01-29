@@ -80,6 +80,10 @@ fn show_voice_chat_overlay_impl() {
                 // Ensure previously-created overlays remain visible and sized correctly.
                 let _: () = msg_send![window, orderFrontRegardless];
                 let _: () = msg_send![window, setAlphaValue: 1.0f64];
+                // Ensure the overlay shows up even when the user is in a fullscreen Space.
+                let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary;
+                let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
 
                 if let Some(blur_ptr) = state.blur_view {
                     let blur_view = blur_ptr as Id;
