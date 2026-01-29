@@ -832,15 +832,76 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             (content_width + padding_x * 2.0).min(bubble_max_width)
         };
 
-        // Re-measure height for the final layout width (important when bubble_width < max).
+        // Label width for wrapping and later reflow.
         let text_layout_width = (bubble_width - padding_x * 2.0).max(40.0);
-        let text_rect: CGRect = msg_send![
-            text_str,
-            boundingRectWithSize: CGSize::new(text_layout_width, 10_000.0)
-            options: opts
-            attributes: attrs
+
+        // Build the label first and ask AppKit (cell) for the exact wrapped height.
+        // This avoids "second line appears only after click" issues where our NSString
+        // measurement disagrees with NSTextField's rendering.
+        let text_label: Id = msg_send![ns_text_field, alloc];
+        let text_label: Id = msg_send![
+            text_label,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(padding_x, padding_bottom),
+                &CGSize::new(text_layout_width.max(1.0), line_height),
+            )
         ];
-        let text_height = text_rect.size.height.ceil().max(line_height);
+
+        let _: () = msg_send![text_label, setBezeled: false];
+        let _: () = msg_send![text_label, setEditable: false];
+        let _: () = msg_send![text_label, setSelectable: true];
+        let _: () = msg_send![text_label, setDrawsBackground: false];
+        let _: () = msg_send![text_label, setUsesSingleLineMode: false];
+
+        // Enable wrapping for multi-line messages.
+        let cell: Id = msg_send![text_label, cell];
+        if !cell.is_null() {
+            let _: () = msg_send![cell, setWraps: true];
+            let _: () = msg_send![cell, setScrollable: false];
+        }
+
+        // Text color (role-aware)
+        let (tr, tg, tb, ta) = if config.is_error {
+            bubble_colors::ERROR_TEXT
+        } else {
+            match config.role {
+                BubbleRole::User => bubble_colors::USER_TEXT,
+                BubbleRole::Assistant => {
+                    if config.is_streaming {
+                        bubble_colors::STREAMING_TEXT
+                    } else {
+                        bubble_colors::ASSISTANT_TEXT
+                    }
+                }
+                BubbleRole::System => bubble_colors::ASSISTANT_TEXT,
+            }
+        };
+        let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
+        let _: () = msg_send![text_label, setTextColor: text_color];
+
+        let _: () = msg_send![text_label, setFont: font];
+        let _: () = msg_send![text_label, setStringValue: text_str];
+        let _: () = msg_send![text_label, setLineBreakMode: 0_isize]; // NSLineBreakByWordWrapping
+
+        // Ask the cell for the wrapped size within the fixed width.
+        let measure_bounds = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(text_layout_width.max(1.0), 10_000.0),
+        );
+        let cell: Id = msg_send![text_label, cell];
+        let measured: CGSize = if cell.is_null() {
+            // Fallback to NSString measurement (best effort).
+            let text_rect: CGRect = msg_send![
+                text_str,
+                boundingRectWithSize: CGSize::new(text_layout_width, 10_000.0)
+                options: opts
+                attributes: attrs
+            ];
+            text_rect.size
+        } else {
+            msg_send![cell, cellSizeForBounds: measure_bounds]
+        };
+        let text_height = measured.height.ceil().max(line_height);
         let bubble_height = text_height + padding_top + padding_bottom;
 
         // Container view (for alignment)
@@ -921,52 +982,12 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             }
         }
 
-        // Text label inside bubble
+        // Update label frame to the final measured height.
         let text_frame = CGRect::new(
             &CGPoint::new(padding_x, padding_bottom),
-            &CGSize::new((bubble_width - padding_x * 2.0).max(1.0), text_height),
+            &CGSize::new(text_layout_width.max(1.0), text_height),
         );
-        let text_label: Id = msg_send![ns_text_field, alloc];
-        let text_label: Id = msg_send![text_label, initWithFrame: text_frame];
-
-        let _: () = msg_send![text_label, setBezeled: false];
-        let _: () = msg_send![text_label, setEditable: false];
-        let _: () = msg_send![text_label, setSelectable: true];
-        let _: () = msg_send![text_label, setDrawsBackground: false];
-        let _: () = msg_send![text_label, setUsesSingleLineMode: false];
-
-        // Enable wrapping for multi-line messages.
-        let cell: Id = msg_send![text_label, cell];
-        if !cell.is_null() {
-            let _: () = msg_send![cell, setWraps: true];
-            let _: () = msg_send![cell, setScrollable: false];
-        }
-
-        // Text color (role-aware)
-        let (tr, tg, tb, ta) = if config.is_error {
-            bubble_colors::ERROR_TEXT
-        } else {
-            match config.role {
-                BubbleRole::User => bubble_colors::USER_TEXT,
-                BubbleRole::Assistant => {
-                    if config.is_streaming {
-                        bubble_colors::STREAMING_TEXT
-                    } else {
-                        bubble_colors::ASSISTANT_TEXT
-                    }
-                }
-                BubbleRole::System => bubble_colors::ASSISTANT_TEXT,
-            }
-        };
-        let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
-        let _: () = msg_send![text_label, setTextColor: text_color];
-
-        let _: () = msg_send![text_label, setFont: font];
-
-        let _: () = msg_send![text_label, setStringValue: text_str];
-
-        // Word wrap
-        let _: () = msg_send![text_label, setLineBreakMode: 0_isize]; // NSLineBreakByWordWrapping
+        let _: () = msg_send![text_label, setFrame: text_frame];
 
         // Assemble hierarchy
         let _: () = msg_send![bubble, addSubview: text_label];
@@ -1115,7 +1136,6 @@ pub unsafe fn update_stack_item_height(view: Id, new_height: f64) {
 /// `text_label` must be the label returned by `create_bubble_view`.
 pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, display_text: &str) {
     unsafe {
-        let ns_dict = Class::get("NSDictionary").unwrap();
         let ns_font = Class::get("NSFont").unwrap();
 
         let font: Id = msg_send![text_label, font];
@@ -1146,27 +1166,28 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
             label_frame.size.width.max(1.0)
         };
 
-        let text_str = ns_string(display_text);
-        let font_key = ns_string("NSFont");
-        let attrs: Id = msg_send![ns_dict, dictionaryWithObject: font forKey: font_key];
-        let opts: u64 = 1 | 2; // NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-        let text_rect: CGRect = msg_send![
-            text_str,
-            boundingRectWithSize: CGSize::new(width, 10_000.0)
-            options: opts
-            attributes: attrs
-        ];
-
         // Approximate line-height floor to avoid tiny/bad measurements.
         let point_size: f64 = msg_send![font, pointSize];
         let line_height = (point_size * 1.35).max(14.0);
-
-        let text_height = text_rect.size.height.ceil().max(line_height);
 
         // Match `create_bubble_view` layout constants.
         let padding_top = 10.0;
         let copy_button_height = 16.0;
         let padding_bottom = copy_button_height + 8.0;
+
+        // Ask the label's cell for the wrapped height in the current width.
+        let measure_bounds = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(width.max(1.0), 10_000.0),
+        );
+        let cell: Id = msg_send![text_label, cell];
+        let measured: CGSize = if cell.is_null() {
+            // Fallback to a conservative single line height.
+            CGSize::new(width.max(1.0), line_height)
+        } else {
+            msg_send![cell, cellSizeForBounds: measure_bounds]
+        };
+        let text_height = measured.height.ceil().max(line_height);
         let bubble_height = text_height + padding_top + padding_bottom;
 
         // Resize bubble background view (label's superview).
@@ -1202,10 +1223,14 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
             );
             let _: () = msg_send![bubble, setFrame: new_bubble_frame];
             let _: () = msg_send![bubble, setNeedsDisplay: true];
+            let _: () = msg_send![text_label, setNeedsDisplay: true];
         }
 
         // Resize container (stack arranged subview).
-        let _: () = msg_send![container, setFrameSize: CGSize::new(container_frame.size.width, bubble_height)];
+        let _: () = msg_send![
+            container,
+            setFrameSize: CGSize::new(container_frame.size.width, bubble_height)
+        ];
         update_stack_item_height(container, bubble_height);
 
         let _: () = msg_send![container, setNeedsLayout: true];
