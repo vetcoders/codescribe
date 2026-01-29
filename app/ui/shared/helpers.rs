@@ -100,6 +100,16 @@ pub fn copy_to_clipboard(text: &str) {
     let _ = clipboard::copy(text);
 }
 
+/// Set a tooltip on any NSView.
+/// # Safety
+/// `view` must be a valid Objective-C object that supports `setToolTip:`.
+pub unsafe fn set_tooltip(view: Id, text: &str) {
+    unsafe {
+        let tip = ns_string(text);
+        let _: () = msg_send![view, setToolTip: tip];
+    }
+}
+
 // ============================================================================
 // Text Field Helpers
 // ============================================================================
@@ -127,16 +137,6 @@ pub unsafe fn set_text_field_string(field: Id, text: &str) {
     unsafe {
         let value = ns_string(text);
         let _: () = msg_send![field, setStringValue: value];
-    }
-}
-
-/// Set tooltip for a control/view.
-/// # Safety
-/// `view` must be a valid Objective-C object that supports `setToolTip:`.
-pub unsafe fn set_tooltip(view: Id, text: &str) {
-    unsafe {
-        let tip = ns_string(text);
-        let _: () = msg_send![view, setToolTip: tip];
     }
 }
 
@@ -953,14 +953,6 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let _: () = msg_send![text_label, setEditable: false];
         let _: () = msg_send![text_label, setSelectable: true];
         let _: () = msg_send![text_label, setDrawsBackground: false];
-        let _: () = msg_send![text_label, setUsesSingleLineMode: false];
-
-        // Enable wrapping for multi-line messages.
-        let cell: Id = msg_send![text_label, cell];
-        if !cell.is_null() {
-            let _: () = msg_send![cell, setWraps: true];
-            let _: () = msg_send![cell, setScrollable: false];
-        }
 
         // Text color (role-aware)
         let (tr, tg, tb, ta) = if config.is_error {
@@ -1307,12 +1299,6 @@ pub fn create_vertical_stack_view(frame: CGRect) -> Id {
 /// `stack` must be a valid `NSStackView` and `view` a valid `NSView`.
 pub unsafe fn stack_view_add(stack: Id, view: Id) {
     unsafe {
-        // NSStackView uses Auto Layout for arranged subviews. Our views are created with manual
-        // frames, so we need to:
-        // - opt out of autoresizing-mask constraints
-        // - provide at least a height constraint, otherwise subviews can collapse/overlap
-        let _: () = msg_send![view, setTranslatesAutoresizingMaskIntoConstraints: false];
-
         let _: () = msg_send![stack, addArrangedSubview: view];
 
         // Pin height to the initial frame height (good enough for our chat bubbles/cards).
