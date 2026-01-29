@@ -805,7 +805,9 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let attrs: Id = msg_send![ns_dict, dictionaryWithObject: font forKey: font_key];
         let opts: u64 = 1 | 2; // NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
 
-        let text_max_width = (config.max_width - padding_x * 2.0).max(40.0);
+        // Keep a small side margin inside the container so full-width bubbles don't overflow.
+        let bubble_max_width = (config.max_width - 16.0).max(80.0);
+        let text_max_width = (bubble_max_width - padding_x * 2.0).max(40.0);
         let rect_max: CGRect = msg_send![
             text_str,
             boundingRectWithSize: CGSize::new(text_max_width, 10_000.0)
@@ -822,10 +824,10 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let wraps_at_max =
             rect_max.size.height > line_height * 1.6 || display_text.contains('\n') || is_long;
         let bubble_width = if wraps_at_max {
-            config.max_width
+            bubble_max_width
         } else {
             let content_width = rect_max.size.width.min(text_max_width).max(1.0);
-            (content_width + padding_x * 2.0).min(config.max_width)
+            (content_width + padding_x * 2.0).min(bubble_max_width)
         };
 
         // Re-measure height for the final layout width (important when bubble_width < max).
@@ -1121,8 +1123,21 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
             font
         };
 
+        let container_frame: CGRect = msg_send![container, frame];
+        let max_width = container_frame.size.width.max(80.0);
+        let bubble_max_width = (max_width - 16.0).max(80.0);
+
+        // If the message is getting long, switch to full-width to avoid one-word-per-line bubbles.
+        let is_long = display_text.chars().count() > 80;
+        let force_full_width = display_text.contains('\n') || is_long;
+
         let label_frame: CGRect = msg_send![text_label, frame];
-        let width = label_frame.size.width.max(1.0);
+        let width = if force_full_width {
+            let padding_x = 12.0;
+            (bubble_max_width - padding_x * 2.0).max(40.0)
+        } else {
+            label_frame.size.width.max(1.0)
+        };
 
         let text_str = ns_string(display_text);
         let font_key = ns_string("NSFont");
@@ -1147,31 +1162,48 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
         let padding_bottom = copy_button_height + 8.0;
         let bubble_height = text_height + padding_top + padding_bottom;
 
-        // Resize label.
-        let new_label_frame = CGRect::new(
-            &CGPoint::new(label_frame.origin.x, padding_bottom),
-            &CGSize::new(label_frame.size.width, text_height),
-        );
-        let _: () = msg_send![text_label, setFrame: new_label_frame];
-
         // Resize bubble background view (label's superview).
         let bubble: Id = msg_send![text_label, superview];
         if !bubble.is_null() {
             let bubble_frame: CGRect = msg_send![bubble, frame];
+            let mut bubble_width = bubble_frame.size.width;
+            let mut bubble_x = bubble_frame.origin.x;
+
+            if force_full_width {
+                bubble_width = bubble_max_width;
+                // Preserve alignment based on prior x (user bubbles are right-aligned).
+                let was_right_aligned = bubble_x > 20.0;
+                bubble_x = if was_right_aligned {
+                    (max_width - bubble_width - 8.0).max(8.0)
+                } else {
+                    8.0
+                };
+            }
+
+            // Resize label to match bubble width (keep in sync with create_bubble_view).
+            let padding_x = 12.0;
+            let new_label_w = (bubble_width - padding_x * 2.0).max(1.0);
+            let new_label_frame = CGRect::new(
+                &CGPoint::new(padding_x, padding_bottom),
+                &CGSize::new(new_label_w, text_height),
+            );
+            let _: () = msg_send![text_label, setFrame: new_label_frame];
+
             let new_bubble_frame = CGRect::new(
-                &bubble_frame.origin,
-                &CGSize::new(bubble_frame.size.width, bubble_height),
+                &CGPoint::new(bubble_x, bubble_frame.origin.y),
+                &CGSize::new(bubble_width, bubble_height),
             );
             let _: () = msg_send![bubble, setFrame: new_bubble_frame];
+            let _: () = msg_send![bubble, setNeedsDisplay: true];
         }
 
         // Resize container (stack arranged subview).
-        let container_frame: CGRect = msg_send![container, frame];
         let _: () = msg_send![container, setFrameSize: CGSize::new(container_frame.size.width, bubble_height)];
         update_stack_item_height(container, bubble_height);
 
         let _: () = msg_send![container, setNeedsLayout: true];
         let _: () = msg_send![container, layoutSubtreeIfNeeded];
+        let _: () = msg_send![container, setNeedsDisplay: true];
     }
 }
 
