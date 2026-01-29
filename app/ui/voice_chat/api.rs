@@ -1044,7 +1044,17 @@ pub fn handle_card_copy(index: usize) {
 pub fn handle_card_edit(index: usize) {
     let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(entry) = state.drawer_entries.get(index) {
-        let _ = open_file_in_editor(&entry.path);
+        let ok = open_file_in_editor(&entry.path);
+        if !ok {
+            #[cfg(target_os = "macos")]
+            {
+                let _ = std::process::Command::new("/usr/bin/open")
+                    .arg("-R")
+                    .arg(&entry.path)
+                    .status();
+            }
+            tracing::warn!("Drawer Edit failed to open: {}", entry.path.display());
+        }
     }
 }
 

@@ -1324,18 +1324,22 @@ pub fn open_file_in_editor(path: &std::path::Path) -> bool {
     #[cfg(target_os = "macos")]
     {
         let path = path.to_path_buf();
-        if std::process::Command::new("/usr/bin/open")
-            .arg("-t")
-            .arg(&path)
-            .status()
-            .is_ok()
-        {
+        let run = |args: &[&str]| -> bool {
+            let mut cmd = std::process::Command::new("/usr/bin/open");
+            cmd.args(args).arg(&path);
+            cmd.status().map(|s| s.success()).unwrap_or(false)
+        };
+
+        // Force TextEdit first (most predictable "edit" behavior).
+        if run(&["-e"]) {
             return true;
         }
-        return std::process::Command::new("/usr/bin/open")
-            .arg(&path)
-            .status()
-            .is_ok();
+        // Fallback to "default text editor".
+        if run(&["-t"]) {
+            return true;
+        }
+        // Final fallback: default application for the file type.
+        run(&[])
     }
 
     #[cfg(not(target_os = "macos"))]
