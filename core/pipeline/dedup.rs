@@ -5,6 +5,14 @@
 ///   (ported from `engine::append_with_overlap_dedup`)
 /// - **Suffix overlap** (`strip_suffix_overlap`): character-level suffix/prefix strip between utterances
 ///   (ported from `TranscriptionPipeline::strip_overlap`)
+///
+/// # Note: batch vs live dedup
+///
+/// The **live streaming** path (`pipeline::streaming`) uses these functions.
+/// The **batch/file** path (`engine::transcribe_long_streaming`) still uses
+/// `engine::append_with_overlap_dedup` — an identical algorithm kept local to
+/// the engine module. This is intentional: the batch path is self-contained
+/// and does not route through the pipeline.
 
 // ── helpers ──────────────────────────────────────────────
 
@@ -128,20 +136,37 @@ pub fn dedup_chunk_overlap(out: &mut String, segment: &str) {
 
 /// Strip overlapping prefix from `new_text` that matches a suffix of `last_suffix`.
 ///
-/// Character-level, case-insensitive. Returns the non-overlapping remainder.
+/// Character-level, case-insensitive. Uses char boundaries to avoid
+/// panics on multi-byte UTF-8 (Polish diacritics, emoji, etc.).
 pub fn strip_suffix_overlap(last_suffix: &str, new_text: &str) -> String {
     if last_suffix.is_empty() {
         return new_text.to_string();
     }
-    for len in (3..=last_suffix.len().min(new_text.len())).rev() {
-        if last_suffix[last_suffix.len().saturating_sub(len)..]
-            .eq_ignore_ascii_case(&new_text[..len])
-        {
-            let stripped = new_text[len..].trim_start();
-            if !stripped.is_empty() {
-                return stripped.to_string();
+
+    // Collect valid byte offsets from char boundaries (longest first).
+    let suffix_bounds: Vec<usize> = last_suffix.char_indices().map(|(i, _)| i).collect();
+    let text_bounds: Vec<usize> = {
+        let mut v: Vec<usize> = new_text.char_indices().map(|(i, _)| i).collect();
+        v.push(new_text.len()); // include final boundary
+        v
+    };
+
+    // Try overlap lengths from longest to shortest (min 3 bytes).
+    for &suffix_start in &suffix_bounds {
+        let suffix_tail = &last_suffix[suffix_start..];
+        let tail_len = suffix_tail.len();
+        if tail_len < 3 {
+            break;
+        }
+        // Find the matching char boundary in new_text for this byte length.
+        if let Ok(_) = text_bounds.binary_search(&tail_len) {
+            if suffix_tail.eq_ignore_ascii_case(&new_text[..tail_len]) {
+                let stripped = new_text[tail_len..].trim_start();
+                if !stripped.is_empty() {
+                    return stripped.to_string();
+                }
+                return String::new();
             }
-            return String::new();
         }
     }
     new_text.to_string()
@@ -198,5 +223,19 @@ mod tests {
     fn test_suffix_overlap_empty() {
         let result = strip_suffix_overlap("", "Hello world.");
         assert_eq!(result, "Hello world.");
+    }
+
+    #[test]
+    fn test_suffix_overlap_polish_diacritics() {
+        // "ż" is 2 bytes in UTF-8 — old code would panic slicing mid-char
+        let result = strip_suffix_overlap("weterynarzem.", "weterynarzem. Dziękuję.");
+        assert_eq!(result, "Dziękuję.");
+    }
+
+    #[test]
+    fn test_suffix_overlap_emoji() {
+        // 🐕 is 4 bytes — stress-test char boundary logic
+        let result = strip_suffix_overlap("pies 🐕.", "🐕. Koniec.");
+        assert_eq!(result, "Koniec.");
     }
 }

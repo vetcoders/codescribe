@@ -23,6 +23,17 @@ impl DeltaSink for CallbackSink {
     }
 }
 
+/// Convenience constructor: wrap a plain `Fn(&str)` closure into `Arc<dyn DeltaSink>`.
+///
+/// This is the recommended entry point for external consumers who just want
+/// to receive transcript deltas as `&str` without importing `CallbackSink` directly.
+pub fn from_callback<F>(f: F) -> Arc<dyn DeltaSink>
+where
+    F: Fn(&str) + Send + Sync + 'static,
+{
+    Arc::new(CallbackSink::new(Arc::new(f)))
+}
+
 /// Test helper: collects all delta strings for assertions.
 pub struct CollectorSink {
     collected: Mutex<Vec<String>>,
@@ -60,6 +71,18 @@ mod tests {
         }));
         sink.apply(&TranscriptDelta::from_raw("hello"));
         assert_eq!(*received.lock().unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_from_callback_convenience() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let r = received.clone();
+        let sink = super::from_callback(move |s: &str| {
+            r.lock().unwrap().push(s.to_string());
+        });
+        sink.apply(&TranscriptDelta::from_raw("alpha"));
+        sink.apply(&TranscriptDelta::from_raw("beta"));
+        assert_eq!(*received.lock().unwrap(), vec!["alpha", "beta"]);
     }
 
     #[test]

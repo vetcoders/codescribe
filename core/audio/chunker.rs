@@ -771,10 +771,19 @@ pub(crate) fn hardcoded_gate_config() -> GateConfig {
         vad_cfg.pre_roll_sec = 0.064;
     }
 
+    // Derive gate-level pre_roll/speech_pad from the (env-aware) vad config,
+    // with a dedicated env override for speech_pad (not in VadConfig).
+    let pre_roll = vad_cfg.pre_roll_sec;
+    let speech_pad = std::env::var("CODESCRIBE_VAD_SPEECH_PAD_SEC")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map(|v| v.clamp(0.0, 2.0))
+        .unwrap_or(pre_roll); // default: mirror pre_roll
+
     GateConfig {
         vad: vad_cfg,
-        pre_roll_sec: 0.064,
-        speech_pad_sec: 0.064,
+        pre_roll_sec: pre_roll,
+        speech_pad_sec: speech_pad,
         mode: gate_mode_from_env(),
     }
 }
