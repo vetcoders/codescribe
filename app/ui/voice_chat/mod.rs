@@ -14,8 +14,9 @@ pub use api::{
     append_voice_chat_user_delta, clear_voice_chat_text, filter_drawer, hide_voice_chat_overlay,
     is_auto_send_enabled, is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,
     reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_send_callback,
-    set_voice_chat_sending, set_voice_chat_text, set_voice_chat_user_text, show_agent_tab,
-    show_drawer_tab, update_conversation_state, update_drawer_after_save, update_voice_chat_status,
+    set_voice_chat_sending, set_voice_chat_target_app, set_voice_chat_text,
+    set_voice_chat_user_text, show_agent_tab, show_drawer_tab, update_conversation_state,
+    update_drawer_after_save, update_voice_chat_status,
 };
 pub use state::{ConversationModeState, VoiceChatOverlayConfig};
 
@@ -33,8 +34,8 @@ use tracing::{info, warn};
 use crate::ui_helpers::{
     NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style, color_clear,
     create_button, create_scrollable_text_view, create_segmented_control,
-    create_vertical_stack_view, ns_string, overlay_window_class, set_hidden, set_tooltip,
-    window_set_alpha, window_show,
+    create_vertical_stack_view, ns_string, overlay_window_class, set_hidden, window_set_alpha,
+    window_show,
 };
 
 use api::update_active_tab_impl;
@@ -72,20 +73,7 @@ fn show_voice_chat_overlay_impl() {
             let window = window_ptr as Id;
             let is_window: bool = msg_send![window, isKindOfClass: ns_window];
             if is_window {
-                // Ensure previously-created overlays remain visible and sized correctly.
                 let _: () = msg_send![window, orderFrontRegardless];
-                let _: () = msg_send![window, setAlphaValue: 1.0f64];
-
-                if let Some(blur_ptr) = state.blur_view {
-                    let blur_view = blur_ptr as Id;
-                    let w_frame: CGRect = msg_send![window, frame];
-                    let blur_frame = CGRect::new(
-                        &CGPoint::new(0.0, 0.0),
-                        &CGSize::new(w_frame.size.width, w_frame.size.height),
-                    );
-                    let _: () = msg_send![blur_view, setFrame: blur_frame];
-                }
-
                 info!("Voice chat overlay reused");
                 return;
             }

@@ -1,18 +1,18 @@
-/// Unified deduplication for the transcription pipeline.
-///
-/// Two granularities:
-/// - **Chunk overlap** (`dedup_chunk_overlap`): word-level exact+fuzzy dedup at chunk boundaries
-///   (ported from `engine::append_with_overlap_dedup`)
-/// - **Suffix overlap** (`strip_suffix_overlap`): character-level suffix/prefix strip between utterances
-///   (ported from `TranscriptionPipeline::strip_overlap`)
-///
-/// # Note: batch vs live dedup
-///
-/// The **live streaming** path (`pipeline::streaming`) uses these functions.
-/// The **batch/file** path (`engine::transcribe_long_streaming`) still uses
-/// `engine::append_with_overlap_dedup` — an identical algorithm kept local to
-/// the engine module. This is intentional: the batch path is self-contained
-/// and does not route through the pipeline.
+//! Unified deduplication for the transcription pipeline.
+//!
+//! Two granularities:
+//! - **Chunk overlap** (`dedup_chunk_overlap`): word-level exact+fuzzy dedup at chunk boundaries
+//!   (ported from `engine::append_with_overlap_dedup`)
+//! - **Suffix overlap** (`strip_suffix_overlap`): character-level suffix/prefix strip between utterances
+//!   (ported from `TranscriptionPipeline::strip_overlap`)
+//!
+//! # Note: batch vs live dedup
+//!
+//! The **live streaming** path (`pipeline::streaming`) uses these functions.
+//! The **batch/file** path (`engine::transcribe_long_streaming`) still uses
+//! `engine::append_with_overlap_dedup` — an identical algorithm kept local to
+//! the engine module. This is intentional: the batch path is self-contained
+//! and does not route through the pipeline.
 
 // ── helpers ──────────────────────────────────────────────
 
@@ -159,14 +159,14 @@ pub fn strip_suffix_overlap(last_suffix: &str, new_text: &str) -> String {
             break;
         }
         // Find the matching char boundary in new_text for this byte length.
-        if let Ok(_) = text_bounds.binary_search(&tail_len) {
-            if suffix_tail.eq_ignore_ascii_case(&new_text[..tail_len]) {
-                let stripped = new_text[tail_len..].trim_start();
-                if !stripped.is_empty() {
-                    return stripped.to_string();
-                }
-                return String::new();
+        if text_bounds.binary_search(&tail_len).is_ok()
+            && suffix_tail.eq_ignore_ascii_case(&new_text[..tail_len])
+        {
+            let stripped = new_text[tail_len..].trim_start();
+            if !stripped.is_empty() {
+                return stripped.to_string();
             }
+            return String::new();
         }
     }
     new_text.to_string()

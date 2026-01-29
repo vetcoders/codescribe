@@ -15,6 +15,12 @@ use crate::pipeline::contracts::{RawTranscript, SpeechUtterance, TranscriptionAd
 /// Thread-safe: the singleton uses `OnceLock<Mutex<LocalWhisperEngine>>`.
 pub struct WhisperSingletonAdapter;
 
+impl Default for WhisperSingletonAdapter {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl WhisperSingletonAdapter {
     pub fn new() -> Self {
         Self
