@@ -24,6 +24,7 @@ That's it. You're transcribing.
 | [Installation](installation.md) | System requirements, installation methods, permissions |
 | [Recording Modes](modes.md) | Hold-to-talk, toggle mode, assistive mode |
 | [Chat Overlay](chat-overlay.md) | Voice Chat UI, drafts, AI responses |
+| [Overlay UX (POC)](overlay-ux-poc.md) | Agent/Drawer UX notes for this branch |
 | [Settings](settings.md) | Configuration options, environment variables |
 | [Troubleshooting](troubleshooting.md) | Common issues and solutions |
 | [Privacy & Security](privacy.md) | What stays local, what goes to cloud |
