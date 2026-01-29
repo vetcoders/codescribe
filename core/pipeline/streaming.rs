@@ -41,24 +41,37 @@ pub type StreamDeltaCallback = Arc<dyn Fn(&str) + Send + Sync>;
 // ── Hallucination filter ─────────────────────────────────────────────────────
 
 const WHISPER_HALLUCINATIONS: &[&str] = &[
-    "thank you", "thanks for watching", "thanks for listening",
-    "dziękuję za uwagę", "do zobaczenia",
-    "subscribe", "like and subscribe",
-    ".com", "codescribe", "www.",
+    "thank you",
+    "thanks for watching",
+    "thanks for listening",
+    "dziękuję za uwagę",
+    "do zobaczenia",
+    "subscribe",
+    "like and subscribe",
+    ".com",
+    "codescribe",
+    "www.",
 ];
 
 const SHORT_SPEECH_WHITELIST: &[&str] = &[
-    "tak", "nie", "co?", "co", "dobra", "dobrze", "ok", "okej",
-    "no", "no?", "mhm", "aha", "jasne", "pewnie", "super",
-    "hej", "halo", "cześć", "siema", "dzięki", "proszę",
+    "tak", "nie", "co?", "co", "dobra", "dobrze", "ok", "okej", "no", "no?", "mhm", "aha", "jasne",
+    "pewnie", "super", "hej", "halo", "cześć", "siema", "dzięki", "proszę",
 ];
 
 pub(crate) fn is_hallucination(text: &str) -> bool {
     let lower = text.trim().to_lowercase();
-    if SHORT_SPEECH_WHITELIST.iter().any(|w| lower == *w) { return false; }
-    if WHISPER_HALLUCINATIONS.iter().any(|h| lower == *h) { return true; }
-    if lower.len() < 30 && WHISPER_HALLUCINATIONS.iter().any(|h| lower.contains(h))
-       && lower.split_whitespace().count() <= 4 { return true; }
+    if SHORT_SPEECH_WHITELIST.iter().any(|w| lower == *w) {
+        return false;
+    }
+    if WHISPER_HALLUCINATIONS.iter().any(|h| lower == *h) {
+        return true;
+    }
+    if lower.len() < 30
+        && WHISPER_HALLUCINATIONS.iter().any(|h| lower.contains(h))
+        && lower.split_whitespace().count() <= 4
+    {
+        return true;
+    }
     false
 }
 
@@ -176,6 +189,28 @@ impl BufferedEmitter {
         if self.emitted_text.is_empty() {
             return;
         }
+        // Guard: reject corrections that would rewrite most of the text.
+        // Common-prefix must cover >= 70% of the shorter string.
+        let prefix_len = self
+            .emitted_text
+            .chars()
+            .zip(corrected.chars())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let min_len = self
+            .emitted_text
+            .chars()
+            .count()
+            .min(corrected.chars().count());
+        if min_len > 0 && (prefix_len as f64 / min_len as f64) < 0.70 {
+            debug!(
+                "Correction rejected: common prefix {}/{} ({:.0}%) < 70%",
+                prefix_len,
+                min_len,
+                prefix_len as f64 / min_len as f64 * 100.0,
+            );
+            return;
+        }
         self.correction_pending = Some(corrected);
     }
 
@@ -206,7 +241,8 @@ impl BufferedEmitter {
 
         const CORRECTION_COOLDOWN_MS: u64 = 500;
         if let Some(ref _corrected) = self.correction_pending {
-            let can_correct = self.last_correction_at
+            let can_correct = self
+                .last_correction_at
                 .map(|t| t.elapsed() >= Duration::from_millis(CORRECTION_COOLDOWN_MS))
                 .unwrap_or(true);
             if can_correct {
@@ -452,6 +488,12 @@ pub(crate) async fn buffered_transcription_worker(
                             if let Some(cleaned) = pipeline.postprocess(&raw) {
                                 let mut guard = emitter.lock().await;
                                 guard.push_correction(cleaned);
+                                // postprocess() already updated last_suffix to match
+                                // the re-transcribed text — no restore needed.
+                            } else {
+                                // Re-transcription was empty/filtered — restore suffix
+                                // so the next utterance deduplicates against the Phase-1 draft.
+                                pipeline.last_suffix = current_suffix;
                             }
                         }
                         _ => {
@@ -483,9 +525,7 @@ pub(crate) async fn buffered_transcription_worker(
         guard.finish();
         info!(
             "Stream Session Stats: Hallucinations dropped: {}, Overlaps stripped: {}, Corrections applied: {}",
-            pipeline.hallucination_drops,
-            pipeline.overlap_strips,
-            guard.corrections_applied
+            pipeline.hallucination_drops, pipeline.overlap_strips, guard.corrections_applied
         );
     }
 
@@ -830,6 +870,53 @@ mod tests {
 
         let res = pipeline.strip_overlap("Hello world");
         assert_eq!(res, "Hello world");
+    }
+
+    #[test]
+    fn test_suffix_preserved_when_postprocess_filters() {
+        // Simulates the re-transcription scenario: if postprocess returns None
+        // (e.g. hallucination), last_suffix must stay at the pre-snapshot value.
+        let mut pipeline = TranscriptionPipeline::new(None);
+        pipeline.last_suffix = "original suffix".to_string();
+
+        // "Thank you" is a hallucination — postprocess returns None
+        let result = pipeline.postprocess("Thank you");
+        assert!(result.is_none());
+        // last_suffix unchanged (strip_overlap was never reached)
+        assert_eq!(pipeline.last_suffix, "original suffix");
+    }
+
+    #[test]
+    fn test_suffix_updated_after_successful_postprocess() {
+        let mut pipeline = TranscriptionPipeline::new(None);
+        pipeline.last_suffix = "old tail".to_string();
+
+        let result = pipeline.postprocess("This is a brand new sentence.");
+        assert!(result.is_some());
+        // last_suffix should now reflect the new text's suffix
+        assert_ne!(pipeline.last_suffix, "old tail");
+        assert!(pipeline.last_suffix.contains("sentence"));
+    }
+
+    #[test]
+    fn test_correction_guard_rejects_low_prefix() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let mut emitter = BufferedEmitter::new(buf, None, None);
+            emitter.emitted_text = "Hello world, this is a test.".to_string();
+
+            // Completely different text — should be rejected (<70% prefix)
+            emitter.push_correction("Goodbye universe, nothing alike.".to_string());
+            assert!(emitter.correction_pending.is_none());
+
+            // Similar text with minor tail fix — should be accepted (>70% prefix)
+            emitter.push_correction("Hello world, this is a test!".to_string());
+            assert!(emitter.correction_pending.is_some());
+        });
     }
 
     #[test]

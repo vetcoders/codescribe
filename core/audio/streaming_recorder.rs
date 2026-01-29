@@ -1,8 +1,7 @@
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::pipeline::streaming::{
-    buffered_transcription_worker, env_bool, env_bool_default, stream_log_path,
-    transcription_worker,
+    buffered_transcription_worker, env_bool_default, stream_log_path, transcription_worker,
 };
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -107,11 +106,9 @@ impl StreamingRecorder {
                 )
                 .await;
             } else {
-                let postprocessor = if env_bool("CODESCRIBE_BUFFERED_STREAM") {
-                    Some(StreamPostProcessor::new())
-                } else {
-                    None
-                };
+                // Always-on contract: every transcript passes through postprocessor
+                // (lexicon + cleanup + semantic gate) regardless of buffered mode.
+                let postprocessor = Some(StreamPostProcessor::new());
                 transcription_worker(
                     rx,
                     transcript_buffer,

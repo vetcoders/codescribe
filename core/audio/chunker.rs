@@ -447,6 +447,12 @@ impl SpeechSession {
             self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
         }
 
+        // Safety net: when no segment is active, cap raw_buffer to pre-roll size.
+        // This prevents unbounded growth during silence or when VAD never fires Start.
+        if self.segment_start.is_none() && self.pending_end.is_none() {
+            self.trim_raw_buffer(self.raw_cursor.saturating_sub(self.pre_roll_raw));
+        }
+
         events
     }
 
@@ -747,25 +753,37 @@ impl SpeechSession {
 // ═══════════════════════════════════════════════════════════
 
 pub(crate) fn hardcoded_gate_config() -> GateConfig {
+    // Start from env-aware VadConfig::default() so CODESCRIBE_VAD_* env vars
+    // are always respected. Then apply streaming-specific overrides only for
+    // fields that don't have an explicit env override set.
+    let mut vad_cfg = vad::VadConfig::default();
+
+    // Streaming needs a tighter threshold than the batch default (0.35).
+    if std::env::var("CODESCRIBE_VAD_THRESHOLD").is_err() {
+        vad_cfg.threshold = 0.50;
+    }
+    // Short min-speech for responsive streaming.
+    if std::env::var("CODESCRIBE_VAD_MIN_SPEECH_SEC").is_err() {
+        vad_cfg.min_speech_duration_sec = 0.05;
+    }
+    // Short silence tolerance for streaming chunk boundaries.
+    if std::env::var("CODESCRIBE_VAD_SILENCE_SEC").is_err() {
+        vad_cfg.max_silence_duration_sec = 0.20;
+    }
+    // Silero reference pre-roll (64ms) for tight boundary padding.
+    if std::env::var("CODESCRIBE_VAD_PRE_ROLL_SEC").is_err() {
+        vad_cfg.pre_roll_sec = 0.064;
+    }
+
     GateConfig {
-        vad: vad::VadConfig {
-            threshold: 0.50,
-            min_speech_duration_sec: 0.05,
-            max_silence_duration_sec: 0.20,
-            max_utterance_sec: 300.0,
-            pre_roll_sec: 0.064,
-        },
-        // Silero reference defaults (64ms) for padding at boundaries.
+        vad: vad_cfg,
         pre_roll_sec: 0.064,
         speech_pad_sec: 0.064,
         mode: gate_mode_from_env(),
     }
 }
 
-pub(crate) fn init_silero_vad(
-    sample_rate: u32,
-    config: &vad::VadConfig,
-) -> Option<vad::SileroVad> {
+pub(crate) fn init_silero_vad(sample_rate: u32, config: &vad::VadConfig) -> Option<vad::SileroVad> {
     let model_path = vad::default_model_path();
     match vad::SileroVad::new(&model_path, config.clone()) {
         Ok(mut vad) => {
