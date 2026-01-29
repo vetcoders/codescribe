@@ -1042,20 +1042,78 @@ pub fn handle_card_copy(index: usize) {
 }
 
 pub fn handle_card_edit(index: usize) {
-    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(entry) = state.drawer_entries.get(index) {
-        tracing::info!("Drawer Edit clicked: {}", entry.path.display());
-        let ok = open_file_in_editor(&entry.path);
-        if !ok {
-            #[cfg(target_os = "macos")]
-            {
-                let _ = std::process::Command::new("/usr/bin/open")
-                    .arg("-R")
-                    .arg(&entry.path)
-                    .status();
-            }
-            tracing::warn!("Drawer Edit failed to open: {}", entry.path.display());
+    let (path, window_usize) = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let path = state.drawer_entries.get(index).map(|e| e.path.clone());
+        (path, state.window)
+    };
+
+    let Some(path) = path else {
+        return;
+    };
+
+    tracing::info!("Drawer Edit clicked: {}", path.display());
+    let ok = open_file_in_editor(&path);
+    if !ok {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("/usr/bin/open")
+                .arg("-R")
+                .arg(&path)
+                .status();
         }
+        tracing::warn!("Drawer Edit failed to open: {}", path.display());
+        return;
+    }
+
+    // UX: briefly hide the overlay so the editor is visible immediately.
+    // Then only bring it back if CodeScribe is still the active app.
+    #[cfg(target_os = "macos")]
+    if let Some(window_usize) = window_usize {
+        unsafe {
+            crate::ui_helpers::window_hide(window_usize as Id);
+        }
+
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(750));
+
+            Queue::main().exec_async(move || {
+                let still_same_window = {
+                    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    state.window == Some(window_usize)
+                };
+                if !still_same_window {
+                    return;
+                }
+
+                let is_active = unsafe {
+                    let ns_running_app = match Class::get("NSRunningApplication") {
+                        Some(c) => c,
+                        None => return,
+                    };
+                    let current: Id = msg_send![ns_running_app, currentApplication];
+                    if current.is_null() {
+                        return;
+                    }
+                    let active: bool = msg_send![current, isActive];
+                    active
+                };
+
+                // Restore floating level and show only if CodeScribe is active.
+                unsafe {
+                    let window = window_usize as Id;
+                    let _: () = msg_send![
+                        window,
+                        setLevel: crate::ui_helpers::NS_FLOATING_WINDOW_LEVEL
+                    ];
+                }
+                if is_active {
+                    unsafe {
+                        crate::ui_helpers::window_show(window_usize as Id);
+                    }
+                }
+            });
+        });
     }
 }
 
