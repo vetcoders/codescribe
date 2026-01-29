@@ -857,7 +857,8 @@ fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
         let wrapped_lines = text.chars().count().div_ceil(52).max(1);
         let visual_lines = hard_lines.max(wrapped_lines);
 
-        let min_h = 56.0;
+        // Keep the input compact by default (single-line-ish), then grow smoothly up to a cap.
+        let min_h = 44.0;
         let max_h = 140.0;
         let line_h = 18.0;
         let desired_h = if text.trim().is_empty() {

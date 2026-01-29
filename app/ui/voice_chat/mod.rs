@@ -222,7 +222,8 @@ fn show_voice_chat_overlay_impl() {
         let header_height = 44.0;
         let footer_height = 44.0;
         // Start compact; grows dynamically as the user types/pastes more content.
-        let agent_input_height = 56.0;
+        // Agent input starts compact and can grow with content (see `resize_agent_input_locked`).
+        let agent_input_height = 44.0;
 
         // Header
         let header_frame = CGRect::new(
