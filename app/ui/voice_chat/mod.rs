@@ -232,28 +232,7 @@ fn show_voice_chat_overlay_impl() {
             &["Drawer", "Agent"],
         );
         button_set_action(tab_control, action_handler, sel!(onTabChanged:));
-        set_tooltip(
-            tab_control,
-            "Przełącz widok: Drawer (historia) / Agent (czat)",
-        );
         add_subview(blur_view, tab_control);
-
-        // Drawer favorites filter (hearts on/off)
-        let favorites_button = create_button(
-            CGRect::new(
-                &CGPoint::new(window_width - 192.0, window_height - 34.0),
-                &CGSize::new(24.0, 24.0),
-            ),
-            "♡",
-            button_style::SMALL_SQUARE,
-        );
-        button_set_action(
-            favorites_button,
-            action_handler,
-            sel!(onToggleFavoritesOnly:),
-        );
-        set_tooltip(favorites_button, "Pokaż tylko ulubione w Drawerze");
-        add_subview(blur_view, favorites_button);
 
         let paste_last_button = create_button(
             CGRect::new(
@@ -268,7 +247,6 @@ fn show_voice_chat_overlay_impl() {
             action_handler,
             sel!(onPasteLastResponse:),
         );
-        set_tooltip(paste_last_button, "Wklej ostatnią odpowiedź AI");
         add_subview(blur_view, paste_last_button);
 
         let copy_last_button = create_button(
@@ -280,7 +258,6 @@ fn show_voice_chat_overlay_impl() {
             button_style::SMALL_SQUARE,
         );
         button_set_action(copy_last_button, action_handler, sel!(onCopyLastResponse:));
-        set_tooltip(copy_last_button, "Skopiuj ostatnią odpowiedź AI");
         add_subview(blur_view, copy_last_button);
 
         let new_thread_button = create_button(
@@ -292,19 +269,27 @@ fn show_voice_chat_overlay_impl() {
             button_style::SMALL_SQUARE,
         );
         button_set_action(new_thread_button, action_handler, sel!(onNewThread:));
-        set_tooltip(new_thread_button, "Nowy wątek (wyczyść czat)");
         add_subview(blur_view, new_thread_button);
+
+        let settings_button = create_button(
+            CGRect::new(
+                &CGPoint::new(window_width - 64.0, window_height - 34.0),
+                &CGSize::new(24.0, 24.0),
+            ),
+            "⚙",
+            button_style::SMALL_SQUARE,
+        );
+        add_subview(blur_view, settings_button);
 
         let close_button = create_button(
             CGRect::new(
-                &CGPoint::new(window_width - 64.0, window_height - 34.0),
+                &CGPoint::new(window_width - 34.0, window_height - 34.0),
                 &CGSize::new(24.0, 24.0),
             ),
             "✕",
             button_style::SMALL_SQUARE,
         );
         button_set_action(close_button, action_handler, sel!(onClose:));
-        set_tooltip(close_button, "Zamknij okno");
         add_subview(blur_view, close_button);
 
         // Drawer scroll view + stack
@@ -357,7 +342,7 @@ fn show_voice_chat_overlay_impl() {
         let search_field: Id = msg_send![ns_search, alloc];
         let search_frame = CGRect::new(
             &CGPoint::new(16.0, 12.0),
-            &CGSize::new(window_width - 32.0, 24.0),
+            &CGSize::new(window_width - 200.0, 24.0),
         );
         let search_field: Id = msg_send![search_field, initWithFrame: search_frame];
         let placeholder = ns_string("Search...");
@@ -365,6 +350,26 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![search_field, setTarget: action_handler];
         let _: () = msg_send![search_field, setAction: sel!(onSearchChanged:)];
         add_subview(blur_view, search_field);
+
+        let type_button = create_button(
+            CGRect::new(
+                &CGPoint::new(window_width - 176.0, 12.0),
+                &CGSize::new(72.0, 24.0),
+            ),
+            "Type ▾",
+            button_style::SMALL_SQUARE,
+        );
+        add_subview(blur_view, type_button);
+
+        let mode_button = create_button(
+            CGRect::new(
+                &CGPoint::new(window_width - 96.0, 12.0),
+                &CGSize::new(72.0, 24.0),
+            ),
+            "Mode ▾",
+            button_style::SMALL_SQUARE,
+        );
+        add_subview(blur_view, mode_button);
 
         // Agent input bar
         let input_bar: Id = msg_send![Class::get("NSView").unwrap(), alloc];
@@ -417,9 +422,8 @@ fn show_voice_chat_overlay_impl() {
         state.blur_view = Some(blur_view as usize);
         state.title_label = Some(title_label as usize);
         state.tab_control = Some(tab_control as usize);
-        state.favorites_button = Some(favorites_button as usize);
         state.close_button = Some(close_button as usize);
-        state.settings_button = None;
+        state.settings_button = Some(settings_button as usize);
         state.drawer_scroll_view = Some(drawer_scroll as usize);
         state.drawer_container = Some(drawer_container as usize);
         state.search_field = Some(search_field as usize);
