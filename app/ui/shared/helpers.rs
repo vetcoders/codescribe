@@ -1304,6 +1304,13 @@ pub fn open_file_in_editor(path: &std::path::Path) -> bool {
         use tracing::{info, warn};
 
         let path = path.to_path_buf();
+        if !path.exists() {
+            warn!(
+                "open_file_in_editor: path does not exist: {}",
+                path.display()
+            );
+            return false;
+        }
         let run_open = |args: &[&str]| -> bool {
             let out = std::process::Command::new("/usr/bin/open")
                 .args(args)
@@ -1367,15 +1374,11 @@ pub fn open_file_in_editor(path: &std::path::Path) -> bool {
 
         // Force TextEdit and try to surface it; otherwise it can open "somewhere" (another Space)
         // and look like a no-op from the user's POV.
-        if run_open(&["-e"]) {
+        // Prefer `open -a TextEdit <file>` (explicit app + file). Fallback to `-e` if needed.
+        if run_open(&["-a", "TextEdit"]) || run_open(&["-e"]) {
             // Give launch a moment so NSRunningApplication can see the process.
             std::thread::sleep(Duration::from_millis(75));
             activate_textedit_best_effort();
-
-            // Fallback: explicit activation via `open -a` (still no PATH reliance).
-            let _ = std::process::Command::new("/usr/bin/open")
-                .args(["-a", "TextEdit"])
-                .status();
             return true;
         }
         if run_open(&["-t"]) || run_open(&[]) {
