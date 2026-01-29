@@ -170,10 +170,8 @@ lint:
 	@cargo clippy --workspace -- -D warnings
 
 test:
-	@echo "=== Tests (workspace) ==="
-	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --workspace --all-targets -- --nocapture
-	@echo "=== Tests (ignored / real API) ==="
-	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --workspace --all-targets -- --ignored --nocapture
+	@echo "=== Tests (workspace, all incl. real API) ==="
+	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --workspace --all-targets -- --include-ignored --nocapture
 
 test-quick:
 	@echo "=== Tests (quick, no real API) ==="
@@ -230,7 +228,7 @@ check:
 	@echo "=== Format Check (Rust) ==="
 	@cargo fmt --all -- --check
 	@echo "=== Format Check (non-Rust) ==="
-	@npx --yes prettier@2.7.1 --check . --ignore-path .prettierignore --ignore-unknown || true
+	@git ls-files --cached --exclude-standard | xargs npx --yes prettier@2.7.1 --check --ignore-path .prettierignore --ignore-unknown || true
 	@echo "=== Clippy (workspace, all targets) ==="
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@echo "=== Semgrep ==="
@@ -241,7 +239,7 @@ fix:
 	@echo "=== Format Fix (Rust) ==="
 	@cargo fmt --all
 	@echo "=== Format Fix (non-Rust) ==="
-	@npx --yes prettier@2.7.1 --write . --ignore-path .prettierignore --ignore-unknown
+	@git ls-files --cached --exclude-standard | xargs npx --yes prettier@2.7.1 --write --ignore-path .prettierignore --ignore-unknown
 	@echo "Formatting applied"
 
 # ============================================================================
