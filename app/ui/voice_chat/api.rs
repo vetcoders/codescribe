@@ -527,6 +527,7 @@ pub(super) fn clear_voice_chat_text_impl() {
     } else if let Some(input_field) = state.agent_input_field {
         unsafe { set_text_field_string(input_field as Id, "") };
     }
+    resize_agent_input_locked(&mut state);
 
     update_chat_view_with_state(&mut state, true);
     update_send_button_with_state(&mut state);
@@ -560,6 +561,7 @@ pub fn send_draft_message_impl() {
         } else if let Some(input_field) = state.agent_input_field {
             unsafe { set_text_field_string(input_field as Id, "") };
         }
+        resize_agent_input_locked(&mut state);
         update_chat_view_with_state(&mut state, true);
         update_send_button_with_state(&mut state);
         let handler = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
@@ -718,6 +720,110 @@ fn update_send_button_with_state(state: &mut VoiceChatOverlayState) {
             let title = if state.is_sending { "…" } else { ">" };
             let title = ns_string(title);
             let _: () = msg_send![btn, setTitle: title];
+        }
+    }
+}
+
+/// Resize the Agent input bar based on current draft text.
+///
+/// Keeps it compact by default, and grows it when the user types/pastes longer messages.
+pub fn resize_agent_input_to_draft() {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    resize_agent_input_locked(&mut state);
+}
+
+fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
+    unsafe {
+        let (
+            Some(window_ptr),
+            Some(bar_ptr),
+            Some(scroll_ptr),
+            Some(text_view_ptr),
+            Some(send_ptr),
+        ) = (
+            state.window,
+            state.agent_input_bar,
+            state.agent_input_scroll_view,
+            state.agent_input_text_view,
+            state.agent_send_button,
+        )
+        else {
+            return;
+        };
+
+        let window = window_ptr as Id;
+        let input_bar = bar_ptr as Id;
+        let input_scroll = scroll_ptr as Id;
+        let text_view = text_view_ptr as Id;
+        let send_btn = send_ptr as Id;
+
+        let window_frame: CGRect = msg_send![window, frame];
+        let window_width = window_frame.size.width;
+        let window_height = window_frame.size.height;
+
+        let text = get_text_view_string(text_view);
+        let hard_lines = (text.matches('\n').count() + 1).max(1);
+        // Heuristic for wrapped lines: assume ~52 chars per visual line at this width.
+        let wrapped_lines = ((text.chars().count() + 51) / 52).max(1);
+        let visual_lines = hard_lines.max(wrapped_lines);
+
+        let min_h = 56.0;
+        let max_h = 140.0;
+        let line_h = 18.0;
+        let desired_h = if text.trim().is_empty() {
+            min_h
+        } else {
+            (min_h + (visual_lines.saturating_sub(1) as f64) * line_h).clamp(min_h, max_h)
+        };
+
+        let current_bar: CGRect = msg_send![input_bar, frame];
+        if (current_bar.size.height - desired_h).abs() < 0.5 {
+            return;
+        }
+
+        // Resize input bar (anchored to bottom).
+        let new_bar_frame = CGRect::new(
+            &CGPoint::new(current_bar.origin.x, current_bar.origin.y),
+            &CGSize::new(window_width - 32.0, desired_h),
+        );
+        let _: () = msg_send![input_bar, setFrame: new_bar_frame];
+
+        // Resize the scrollable text view inside the bar.
+        let text_area_frame = CGRect::new(
+            &CGPoint::new(12.0, 10.0),
+            &CGSize::new(window_width - 90.0, (desired_h - 20.0).max(24.0)),
+        );
+        let _: () = msg_send![input_scroll, setFrame: text_area_frame];
+
+        // Recenter send button vertically.
+        let send_y = ((desired_h - 32.0) / 2.0).max(8.0);
+        let send_frame = CGRect::new(
+            &CGPoint::new(window_width - 76.0, send_y),
+            &CGSize::new(36.0, 32.0),
+        );
+        let _: () = msg_send![send_btn, setFrame: send_frame];
+
+        // Resize Agent scroll view so it doesn't overlap with input.
+        if let Some(agent_scroll_ptr) = state.agent_scroll_view {
+            let agent_scroll = agent_scroll_ptr as Id;
+            let header_height = 44.0;
+            let bottom = desired_h + 18.0;
+            let top = window_height - header_height - 10.0;
+            let new_agent_frame = CGRect::new(
+                &CGPoint::new(16.0, bottom),
+                &CGSize::new(window_width - 32.0, (top - bottom).max(0.0)),
+            );
+            let _: () = msg_send![agent_scroll, setFrame: new_agent_frame];
+
+            if let Some(container_ptr) = state.agent_container {
+                let container = container_ptr as Id;
+                let container_frame: CGRect = msg_send![container, frame];
+                let new_container = CGRect::new(
+                    &CGPoint::new(0.0, 0.0),
+                    &CGSize::new(container_frame.size.width, new_agent_frame.size.height),
+                );
+                let _: () = msg_send![container, setFrame: new_container];
+            }
         }
     }
 }

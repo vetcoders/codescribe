@@ -114,6 +114,11 @@ pub fn action_handler_class() -> *const Class {
                 sel!(onExportAssistantSave:),
                 on_export_assistant_save as extern "C" fn(&Object, Sel, Id),
             );
+            // NSTextView delegate (auto-resize input bar as content grows/shrinks).
+            decl.add_method(
+                sel!(textDidChange:),
+                on_text_did_change as extern "C" fn(&Object, Sel, Id),
+            );
             let cls = decl.register();
             ACTION_HANDLER_CLASS = cls;
         });
@@ -435,6 +440,11 @@ extern "C" fn on_export_assistant_save(_this: &Object, _cmd: Sel, _sender: Id) {
     } else {
         info!("Failed to save chat (assistant-only) export");
     }
+}
+
+extern "C" fn on_text_did_change(_this: &Object, _cmd: Sel, _notification: Id) {
+    // Runs on main thread. Keep lightweight and only re-layout when height changes.
+    super::api::resize_agent_input_to_draft();
 }
 
 // ═══════════════════════════════════════════════════════════

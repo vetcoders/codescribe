@@ -194,7 +194,8 @@ fn show_voice_chat_overlay_impl() {
 
         let header_height = 44.0;
         let footer_height = 44.0;
-        let agent_input_height = 96.0;
+        // Start compact; grows dynamically as the user types/pastes more content.
+        let agent_input_height = 56.0;
 
         // Header
         let header_frame = CGRect::new(
@@ -229,17 +230,34 @@ fn show_voice_chat_overlay_impl() {
         });
         add_subview(blur_view, title_label);
 
+        // Header right-side controls (right-aligned, consistent spacing).
+        let header_btn_y = window_height - 34.0;
+        let btn_w = 24.0;
+        let btn_h = 24.0;
+        let gap = 8.0;
+        let right_pad = 16.0;
+
+        let mut x = window_width - right_pad - btn_w;
+        let close_button_x = x;
+        x -= gap + 28.0;
+        let new_thread_button_x = x;
+        x -= gap + btn_w;
+        let copy_last_button_x = x;
+        x -= gap + btn_w;
+        let paste_last_button_x = x;
+        x -= gap + btn_w;
+        let favorites_button_x = x;
+        x -= gap + btn_w;
+        let export_button_x = x;
+
         // Keep the tab control between the title and the right-side icon cluster.
-        // The overlay window is typically ~450px wide; fixed coordinates can overlap.
-        let right_cluster_start_x = window_width - 224.0;
+        let right_cluster_start_x = export_button_x;
         let tab_x = title_x + title_w + 10.0;
-        // Don't enforce a minimum width here; on narrower windows, forcing a min can make the
-        // segmented control overlap the right-side icon cluster.
-        let tab_w = (right_cluster_start_x - 8.0 - tab_x).max(0.0);
+        let tab_w = (right_cluster_start_x - gap - tab_x).max(0.0);
         let tab_control = create_segmented_control(
             CGRect::new(
-                &CGPoint::new(tab_x, window_height - 34.0),
-                &CGSize::new(tab_w, 24.0),
+                &CGPoint::new(tab_x, header_btn_y),
+                &CGSize::new(tab_w, btn_h),
             ),
             &["Drawer", "Agent"],
         );
@@ -250,11 +268,23 @@ fn show_voice_chat_overlay_impl() {
         );
         add_subview(blur_view, tab_control);
 
+        let export_button = create_button(
+            CGRect::new(
+                &CGPoint::new(export_button_x, header_btn_y),
+                &CGSize::new(btn_w, btn_h),
+            ),
+            "⇩",
+            button_style::SMALL_SQUARE,
+        );
+        button_set_action(export_button, action_handler, sel!(onExportMenu:));
+        set_tooltip(export_button, "Eksportuj rozmowę (Markdown)");
+        add_subview(blur_view, export_button);
+
         // Drawer favorites filter (hearts on/off)
         let favorites_button = create_button(
             CGRect::new(
-                &CGPoint::new(window_width - 192.0, window_height - 34.0),
-                &CGSize::new(24.0, 24.0),
+                &CGPoint::new(favorites_button_x, header_btn_y),
+                &CGSize::new(btn_w, btn_h),
             ),
             "♡",
             button_style::SMALL_SQUARE,
@@ -267,22 +297,10 @@ fn show_voice_chat_overlay_impl() {
         set_tooltip(favorites_button, "Pokaż tylko ulubione w Drawerze");
         add_subview(blur_view, favorites_button);
 
-        let export_button = create_button(
-            CGRect::new(
-                &CGPoint::new(window_width - 224.0, window_height - 34.0),
-                &CGSize::new(24.0, 24.0),
-            ),
-            "⇩",
-            button_style::SMALL_SQUARE,
-        );
-        button_set_action(export_button, action_handler, sel!(onExportMenu:));
-        set_tooltip(export_button, "Eksportuj rozmowę (Markdown)");
-        add_subview(blur_view, export_button);
-
         let paste_last_button = create_button(
             CGRect::new(
-                &CGPoint::new(window_width - 160.0, window_height - 34.0),
-                &CGSize::new(24.0, 24.0),
+                &CGPoint::new(paste_last_button_x, header_btn_y),
+                &CGSize::new(btn_w, btn_h),
             ),
             "⇲",
             button_style::SMALL_SQUARE,
@@ -297,8 +315,8 @@ fn show_voice_chat_overlay_impl() {
 
         let copy_last_button = create_button(
             CGRect::new(
-                &CGPoint::new(window_width - 128.0, window_height - 34.0),
-                &CGSize::new(24.0, 24.0),
+                &CGPoint::new(copy_last_button_x, header_btn_y),
+                &CGSize::new(btn_w, btn_h),
             ),
             "⧉",
             button_style::SMALL_SQUARE,
@@ -309,8 +327,8 @@ fn show_voice_chat_overlay_impl() {
 
         let new_thread_button = create_button(
             CGRect::new(
-                &CGPoint::new(window_width - 96.0, window_height - 34.0),
-                &CGSize::new(28.0, 24.0),
+                &CGPoint::new(new_thread_button_x, header_btn_y),
+                &CGSize::new(28.0, btn_h),
             ),
             "↻",
             button_style::SMALL_SQUARE,
@@ -321,8 +339,8 @@ fn show_voice_chat_overlay_impl() {
 
         let close_button = create_button(
             CGRect::new(
-                &CGPoint::new(window_width - 64.0, window_height - 34.0),
-                &CGSize::new(24.0, 24.0),
+                &CGPoint::new(close_button_x, header_btn_y),
+                &CGSize::new(btn_w, btn_h),
             ),
             "✕",
             button_style::SMALL_SQUARE,
@@ -418,6 +436,7 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![agent_input_text_view, setFont: text_font];
         // Plain text: avoid rich text / style surprises when pasting.
         let _: () = msg_send![agent_input_text_view, setRichText: false];
+        let _: () = msg_send![agent_input_text_view, setDelegate: action_handler];
         let _: () = msg_send![input_bar, addSubview: agent_input_scroll];
 
         let send_y = ((agent_input_height - 32.0) / 2.0).max(8.0);
