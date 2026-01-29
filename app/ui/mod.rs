@@ -45,6 +45,7 @@ unsafe extern "C" {
 const AX_ERROR_SUCCESS: i32 = 0;
 const AX_FOCUSED_UIELEMENT_ATTRIBUTE: &str = "AXFocusedUIElement";
 const AX_ROLE_ATTRIBUTE: &str = "AXRole";
+const AX_SELECTED_TEXT_ATTRIBUTE: &str = "AXSelectedText";
 const AX_SELECTED_TEXT_RANGE_ATTRIBUTE: &str = "AXSelectedTextRange";
 const AX_POSITION_ATTRIBUTE: &str = "AXPosition";
 const AX_SIZE_ATTRIBUTE: &str = "AXSize";
@@ -329,6 +330,131 @@ pub fn get_caret_position() -> Option<(f64, f64)> {
         // Estimate caret position (top-left of element + small offset)
         // For better accuracy, we'd need to parse the text layout, but this is a reasonable approximation
         Some((position.x, position.y + size.height / 2.0))
+    }
+}
+
+/// Get currently selected text from the focused UI element (best-effort).
+///
+/// Notes:
+/// - Requires Accessibility permission.
+/// - Many apps expose selected text via `AXSelectedText`, but not all.
+/// - Returns `None` if there's no selection or the attribute isn't supported.
+pub fn get_selected_text(max_chars: usize) -> Option<String> {
+    unsafe {
+        let system_wide = AXUIElementCreateSystemWide();
+        if system_wide.is_null() {
+            return None;
+        }
+
+        let mut focused_element: AXId = ptr::null_mut();
+        let attr_name = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
+        let result = AXUIElementCopyAttributeValue(
+            system_wide,
+            attr_name.as_concrete_TypeRef() as AXId,
+            &mut focused_element,
+        );
+
+        CFRelease(system_wide);
+
+        if result != AX_ERROR_SUCCESS || focused_element.is_null() {
+            return None;
+        }
+
+        let mut selected_value: AXId = ptr::null_mut();
+        let selected_attr = CFString::new(AX_SELECTED_TEXT_ATTRIBUTE);
+        let selected_result = AXUIElementCopyAttributeValue(
+            focused_element,
+            selected_attr.as_concrete_TypeRef() as AXId,
+            &mut selected_value,
+        );
+
+        CFRelease(focused_element);
+
+        if selected_result != AX_ERROR_SUCCESS || selected_value.is_null() {
+            return None;
+        }
+
+        let selected_str = CFString::wrap_under_get_rule(selected_value as *const _).to_string();
+        CFRelease(selected_value);
+
+        let mut s = selected_str.trim().to_string();
+        if s.is_empty() {
+            return None;
+        }
+
+        if max_chars > 0 && s.len() > max_chars {
+            s.truncate(max_chars);
+            s.push('…');
+        }
+
+        Some(s)
+    }
+}
+
+/// Get the current selected text length (range length) from the focused UI element.
+///
+/// Returns:
+/// - `Some(0)` if the element supports `AXSelectedTextRange` but there's no selection
+/// - `Some(n>0)` if there's a selection
+/// - `None` if the attribute isn't available or any step fails
+pub fn get_selected_text_length() -> Option<usize> {
+    unsafe {
+        let system_wide = AXUIElementCreateSystemWide();
+        if system_wide.is_null() {
+            return None;
+        }
+
+        let mut focused_element: AXId = ptr::null_mut();
+        let attr_name = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
+        let result = AXUIElementCopyAttributeValue(
+            system_wide,
+            attr_name.as_concrete_TypeRef() as AXId,
+            &mut focused_element,
+        );
+
+        CFRelease(system_wide);
+
+        if result != AX_ERROR_SUCCESS || focused_element.is_null() {
+            return None;
+        }
+
+        let mut range_value: AXId = ptr::null_mut();
+        let range_attr = CFString::new(AX_SELECTED_TEXT_RANGE_ATTRIBUTE);
+        let range_result = AXUIElementCopyAttributeValue(
+            focused_element,
+            range_attr.as_concrete_TypeRef() as AXId,
+            &mut range_value,
+        );
+
+        CFRelease(focused_element);
+
+        if range_result != AX_ERROR_SUCCESS || range_value.is_null() {
+            return None;
+        }
+
+        #[repr(C)]
+        struct CFRange {
+            location: i64,
+            length: i64,
+        }
+
+        let mut cf_range = CFRange {
+            location: 0,
+            length: 0,
+        };
+
+        let ok = AXValueGetValue(
+            range_value,
+            AX_VALUE_CFRANGE_TYPE,
+            &mut cf_range as *mut _ as *mut std::ffi::c_void,
+        );
+        CFRelease(range_value);
+
+        if !ok {
+            return None;
+        }
+
+        Some(cf_range.length.max(0) as usize)
     }
 }
 

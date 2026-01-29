@@ -29,6 +29,8 @@ use tracing::{debug, info, warn};
 
 /// macOS virtual key code for 'V' key
 const KEYCODE_V: CGKeyCode = 9;
+/// macOS virtual key code for 'C' key
+const KEYCODE_C: CGKeyCode = 8;
 /// macOS virtual key code for Right Arrow
 const KEYCODE_RIGHT_ARROW: CGKeyCode = 124;
 
@@ -227,6 +229,22 @@ fn simulate_cmd_v() -> Result<()> {
 
     // Key up: V with Cmd modifier
     simulate_key_event(KEYCODE_V, false, cmd_flag)?;
+
+    Ok(())
+}
+
+/// Simulates Cmd+C keystroke using CGEvent
+///
+/// Used for best-effort selection capture (clipboard snapshot+restore).
+pub(crate) fn simulate_cmd_c() -> Result<()> {
+    let cmd_flag = CGEventFlags::CGEventFlagCommand;
+
+    // Key down: C with Cmd modifier
+    simulate_key_event(KEYCODE_C, true, cmd_flag)?;
+    thread::sleep(Duration::from_millis(10));
+
+    // Key up: C with Cmd modifier
+    simulate_key_event(KEYCODE_C, false, cmd_flag)?;
 
     Ok(())
 }

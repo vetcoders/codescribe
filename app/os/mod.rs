@@ -4,3 +4,5 @@ pub mod clipboard;
 pub mod hotkeys;
 #[cfg(target_os = "macos")]
 pub mod permissions;
+#[cfg(target_os = "macos")]
+pub mod selection;
