@@ -12,8 +12,9 @@ use tracing::{debug, info, warn};
 
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, create_bubble_view, create_card_view, get_text_field_string,
-    list_draft_files, ns_string, open_file_in_editor, set_text_field_string, stack_view_add,
-    stack_view_clear, window_set_alpha, window_show,
+    list_draft_files, ns_string, open_file_in_editor, resize_bubble_container_for_text,
+    set_text_field_string, stack_view_add, stack_view_clear, update_bubble_text, window_set_alpha,
+    window_show,
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
@@ -384,13 +385,22 @@ fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> b
         let Some(last_message) = state.messages.last() else {
             return false;
         };
-        let Some((_bubble_ptr, label_ptr)) = state.agent_bubble_views.last().copied() else {
+        let Some((bubble_ptr, label_ptr)) = state.agent_bubble_views.last().copied() else {
             return false;
         };
 
+        let container = bubble_ptr as Id;
         let label = label_ptr as Id;
+        update_bubble_text(label, &last_message.text, last_message.is_streaming);
         let display_text = display_text_for_message(last_message);
-        set_text_field_string(label, &display_text);
+        resize_bubble_container_for_text(container, label, &display_text);
+
+        // Keep the latest message in view while streaming.
+        if let Some(scroll_view_ptr) = state.agent_scroll_view {
+            let _ = scroll_view_ptr;
+            let bounds: CGRect = msg_send![container, bounds];
+            let _: () = msg_send![container, scrollRectToVisible: bounds];
+        }
         true
     }
 }
