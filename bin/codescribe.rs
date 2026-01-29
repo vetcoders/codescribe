@@ -436,6 +436,8 @@ async fn run_daemon() -> Result<()> {
 
     #[cfg(target_os = "macos")]
     codescribe::set_dock_icon();
+    #[cfg(target_os = "macos")]
+    codescribe::install_basic_edit_menu();
 
     #[cfg(target_os = "macos")]
     codescribe::os::permissions::request_all_permissions();

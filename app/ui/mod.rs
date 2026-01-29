@@ -11,6 +11,7 @@ use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
+use objc::runtime::Sel;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{
@@ -19,6 +20,7 @@ use objc2_app_kit::{
 use std::ptr;
 
 use crate::ui::shared::helpers::{add_subview, window_close, window_show};
+use crate::ui_helpers::ns_string;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -810,6 +812,89 @@ pub fn set_dock_icon() {
         debug!("Dock icon set successfully");
     });
 }
+
+/// Install a minimal AppKit main menu with standard Edit key equivalents.
+///
+/// CodeScribe runs as an `LSUIElement` agent app (no visible menu bar). In this mode AppKit still
+/// relies on the app's `mainMenu` to resolve Command-key equivalents like Cmd+C / Cmd+V for text
+/// controls (field editor). Without it, selectable text in bubbles and the Agent input field can
+/// appear "dead" for copy/paste even though typing works.
+///
+/// This is safe to call multiple times.
+#[cfg(target_os = "macos")]
+pub fn install_basic_edit_menu() {
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        Queue::main().exec_async(|| unsafe {
+            let ns_app_class = Class::get("NSApplication").expect("NSApplication class not found");
+            let app: Id = msg_send![ns_app_class, sharedApplication];
+            if app.is_null() {
+                warn!("install_basic_edit_menu: NSApplication sharedApplication is null");
+                return;
+            }
+
+            let ns_menu = Class::get("NSMenu").expect("NSMenu class not found");
+            let ns_menu_item = Class::get("NSMenuItem").expect("NSMenuItem class not found");
+
+            let main_menu: Id = msg_send![ns_menu, alloc];
+            let main_menu: Id = msg_send![main_menu, init];
+
+            // App menu (required for some key equivalent routing, even if hidden)
+            let app_item: Id = msg_send![ns_menu_item, alloc];
+            let app_item: Id = msg_send![app_item, init];
+            let app_menu: Id = msg_send![ns_menu, alloc];
+            let app_menu: Id = msg_send![app_menu, init];
+
+            let quit_title = ns_string("Quit CodeScribe");
+            let quit_key = ns_string("q");
+            let quit_item: Id = msg_send![ns_menu_item, alloc];
+            let quit_item: Id =
+                msg_send![quit_item, initWithTitle: quit_title action: sel!(terminate:) keyEquivalent: quit_key];
+            let _: () = msg_send![app_menu, addItem: quit_item];
+            let _: () = msg_send![app_item, setSubmenu: app_menu];
+            let _: () = msg_send![main_menu, addItem: app_item];
+
+            // Edit menu with standard key equivalents
+            let edit_item: Id = msg_send![ns_menu_item, alloc];
+            let edit_item: Id = msg_send![edit_item, init];
+            let _: () = msg_send![edit_item, setTitle: ns_string("Edit")];
+
+            let edit_menu: Id = msg_send![ns_menu, alloc];
+            let edit_menu: Id = msg_send![edit_menu, init];
+
+            let make_edit = |title: &str, sel: Sel, key: &str| -> Id {
+                let item: Id = msg_send![ns_menu_item, alloc];
+                msg_send![
+                    item,
+                    initWithTitle: ns_string(title)
+                    action: sel
+                    keyEquivalent: ns_string(key)
+                ]
+            };
+
+            let cut_item = make_edit("Cut", sel!(cut:), "x");
+            let copy_item = make_edit("Copy", sel!(copy:), "c");
+            let paste_item = make_edit("Paste", sel!(paste:), "v");
+            let select_all_item = make_edit("Select All", sel!(selectAll:), "a");
+
+            let _: () = msg_send![edit_menu, addItem: cut_item];
+            let _: () = msg_send![edit_menu, addItem: copy_item];
+            let _: () = msg_send![edit_menu, addItem: paste_item];
+            let _: () = msg_send![edit_menu, addItem: select_all_item];
+
+            let _: () = msg_send![edit_item, setSubmenu: edit_menu];
+            let _: () = msg_send![main_menu, addItem: edit_item];
+
+            let _: () = msg_send![app, setMainMenu: main_menu];
+            debug!("install_basic_edit_menu: mainMenu installed");
+        });
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn install_basic_edit_menu() {}
 
 #[cfg(test)]
 mod tests {
