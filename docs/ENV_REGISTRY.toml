@@ -62,6 +62,14 @@ category = "vad"
 description = "Pre-roll buffer (seconds) before speech onset"
 range = "0.0-2.0"
 
+[vars.CODESCRIBE_VAD_SPEECH_PAD_SEC]
+default = ""
+type = "f32"
+reload = "restart"
+category = "vad"
+description = "Speech padding (seconds) appended after speech offset. Defaults to pre_roll_sec value"
+range = "0.0-2.0"
+
 [vars.CODESCRIBE_VAD_GATE_MODE]
 default = "simple"
 type = "string"

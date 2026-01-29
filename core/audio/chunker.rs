@@ -1000,6 +1000,7 @@ impl VadIterState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn vad_iter_state_basic_lifecycle() {
@@ -1067,6 +1068,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn gate_mode_default_is_supervisor() {
         // Without env vars set, default should be Supervisor
         let config = hardcoded_gate_config();
@@ -1074,6 +1076,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_gate_mode_respects_env() {
         // Set env to Iter — constructors must NOT override to Supervisor.
         // SAFETY: test runs single-threaded (cargo test default); no concurrent env reads.
