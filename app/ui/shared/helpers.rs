@@ -818,9 +818,10 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         // Bubble width: content-aware but capped.
         // If it wraps (or is long), keep the bubble full width for readability.
         //
-        // We also treat long single-paragraph responses as "wrap-prone" because otherwise a
-        // narrow bubble can force one-word-per-line rendering (looks broken).
-        let is_long = display_text.chars().count() > 80;
+        // We treat streaming messages as "wrap-prone" earlier to avoid the initial narrow bubble
+        // that later expands mid-stream.
+        let long_threshold = if config.is_streaming { 30 } else { 80 };
+        let is_long = display_text.chars().count() > long_threshold;
         let wraps_at_max =
             rect_max.size.height > line_height * 1.6 || display_text.contains('\n') || is_long;
         let bubble_width = if wraps_at_max {
@@ -1128,7 +1129,12 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
         let bubble_max_width = (max_width - 16.0).max(80.0);
 
         // If the message is getting long, switch to full-width to avoid one-word-per-line bubbles.
-        let is_long = display_text.chars().count() > 80;
+        //
+        // During streaming we append " …" so we can detect it and widen earlier to prevent
+        // the initial narrow bubble phase.
+        let streaming_like = display_text.ends_with('…');
+        let long_threshold = if streaming_like { 30 } else { 80 };
+        let is_long = display_text.chars().count() > long_threshold;
         let force_full_width = display_text.contains('\n') || is_long;
 
         let label_frame: CGRect = msg_send![text_label, frame];
