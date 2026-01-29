@@ -12,9 +12,9 @@ use tracing::{debug, info, warn};
 
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, create_bubble_view, create_card_view, get_text_field_string,
-    list_draft_files, ns_string, open_file_in_editor, resize_bubble_container_for_text,
-    set_text_field_string, stack_view_add, stack_view_clear, update_bubble_text, window_set_alpha,
-    window_show,
+    get_text_view_string, list_draft_files, ns_string, open_file_in_editor,
+    resize_bubble_container_for_text, set_text_field_string, set_text_view_string, stack_view_add,
+    stack_view_clear, update_bubble_text, window_set_alpha, window_show,
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
@@ -269,13 +269,8 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         if let Some(agent_view) = state.agent_scroll_view {
             crate::ui_helpers::set_hidden(agent_view as Id, show_drawer);
         }
-        if let Some(agent_input) = state.agent_input_field {
-            let superview: Id = msg_send![agent_input as Id, superview];
-            if !superview.is_null() {
-                crate::ui_helpers::set_hidden(superview, show_drawer);
-            } else {
-                crate::ui_helpers::set_hidden(agent_input as Id, show_drawer);
-            }
+        if let Some(agent_input_bar) = state.agent_input_bar {
+            crate::ui_helpers::set_hidden(agent_input_bar as Id, show_drawer);
         }
         if let Some(agent_send) = state.agent_send_button {
             crate::ui_helpers::set_hidden(agent_send as Id, show_drawer);
@@ -285,7 +280,8 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         // We do NOT force activation (to avoid stealing focus), but if the window is already
         // key, we nudge first responder to the input field for better UX.
         if tab == Tab::Agent {
-            if let (Some(window_ptr), Some(input_ptr)) = (state.window, state.agent_input_field) {
+            if let (Some(window_ptr), Some(input_ptr)) = (state.window, state.agent_input_text_view)
+            {
                 let window = window_ptr as Id;
                 let is_key: bool = msg_send![window, isKeyWindow];
                 if is_key {
@@ -466,13 +462,8 @@ fn ensure_agent_tab_visible(state: &mut VoiceChatOverlayState) {
         if let Some(agent_view) = state.agent_scroll_view {
             crate::ui_helpers::set_hidden(agent_view as Id, show_drawer);
         }
-        if let Some(agent_input) = state.agent_input_field {
-            let superview: Id = msg_send![agent_input as Id, superview];
-            if !superview.is_null() {
-                crate::ui_helpers::set_hidden(superview, show_drawer);
-            } else {
-                crate::ui_helpers::set_hidden(agent_input as Id, show_drawer);
-            }
+        if let Some(agent_input_bar) = state.agent_input_bar {
+            crate::ui_helpers::set_hidden(agent_input_bar as Id, show_drawer);
         }
         if let Some(agent_send) = state.agent_send_button {
             crate::ui_helpers::set_hidden(agent_send as Id, show_drawer);
@@ -486,10 +477,10 @@ pub(super) fn clear_voice_chat_text_impl() {
     state.manual_draft.clear();
     state.is_sending = false;
 
-    if let Some(input_field) = state.agent_input_field {
-        unsafe {
-            set_text_field_string(input_field as Id, "");
-        }
+    if let Some(input_view) = state.agent_input_text_view {
+        unsafe { set_text_view_string(input_view as Id, "") };
+    } else if let Some(input_field) = state.agent_input_field {
+        unsafe { set_text_field_string(input_field as Id, "") };
     }
 
     update_chat_view_with_state(&mut state, true);
@@ -500,10 +491,13 @@ pub(super) fn clear_voice_chat_text_impl() {
 pub fn send_draft_message_impl() {
     let callback = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(input_field) = state.agent_input_field else {
+        let draft = if let Some(text_view) = state.agent_input_text_view {
+            unsafe { get_text_view_string(text_view as Id) }
+        } else if let Some(input_field) = state.agent_input_field {
+            unsafe { get_text_field_string(input_field as Id) }
+        } else {
             return;
         };
-        let draft = unsafe { get_text_field_string(input_field as Id) };
         let draft = draft.trim().to_string();
         if draft.is_empty() {
             return;
@@ -516,8 +510,10 @@ pub fn send_draft_message_impl() {
         });
         state.manual_draft.clear();
         state.is_sending = true;
-        unsafe {
-            set_text_field_string(input_field as Id, "");
+        if let Some(text_view) = state.agent_input_text_view {
+            unsafe { set_text_view_string(text_view as Id, "") };
+        } else if let Some(input_field) = state.agent_input_field {
+            unsafe { set_text_field_string(input_field as Id, "") };
         }
         update_chat_view_with_state(&mut state, true);
         update_send_button_with_state(&mut state);
@@ -774,6 +770,9 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.agent_scroll_view = None;
     state.agent_container = None;
     state.agent_bubble_views.clear();
+    state.agent_input_bar = None;
+    state.agent_input_scroll_view = None;
+    state.agent_input_text_view = None;
     state.agent_input_field = None;
     state.agent_send_button = None;
     state.active_tab = Tab::Drawer;

@@ -33,8 +33,8 @@ use tracing::{info, warn};
 
 use crate::ui_helpers::{
     NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style, color_clear,
-    create_button, create_segmented_control, create_vertical_stack_view, ns_string, set_hidden,
-    set_tooltip, window_set_alpha, window_show,
+    create_button, create_scrollable_text_view, create_segmented_control,
+    create_vertical_stack_view, ns_string, set_hidden, set_tooltip, window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -194,7 +194,7 @@ fn show_voice_chat_overlay_impl() {
 
         let header_height = 44.0;
         let footer_height = 44.0;
-        let agent_input_height = 52.0;
+        let agent_input_height = 96.0;
 
         // Header
         let header_frame = CGRect::new(
@@ -341,13 +341,25 @@ fn show_voice_chat_overlay_impl() {
         add_subview(blur_view, drawer_scroll);
 
         // Agent scroll view + stack
+        let agent_scroll_frame_bottom = agent_input_height + 18.0;
+        let agent_scroll_frame_top = window_height - header_height - 10.0;
+        let agent_scroll_frame = CGRect::new(
+            &CGPoint::new(16.0, agent_scroll_frame_bottom),
+            &CGSize::new(
+                window_width - 32.0,
+                (agent_scroll_frame_top - agent_scroll_frame_bottom).max(0.0),
+            ),
+        );
         let agent_scroll: Id = msg_send![ns_scroll, alloc];
-        let agent_scroll: Id = msg_send![agent_scroll, initWithFrame: drawer_frame];
+        let agent_scroll: Id = msg_send![agent_scroll, initWithFrame: agent_scroll_frame];
         let _: () = msg_send![agent_scroll, setHasVerticalScroller: true];
         let _: () = msg_send![agent_scroll, setDrawsBackground: false];
         let agent_container = create_vertical_stack_view(CGRect::new(
             &CGPoint::new(0.0, 0.0),
-            &CGSize::new(drawer_frame.size.width, drawer_frame.size.height),
+            &CGSize::new(
+                agent_scroll_frame.size.width,
+                agent_scroll_frame.size.height,
+            ),
         ));
         let _: () = msg_send![agent_scroll, setDocumentView: agent_container];
         add_subview(blur_view, agent_scroll);
@@ -383,25 +395,23 @@ fn show_voice_chat_overlay_impl() {
         }
         add_subview(blur_view, input_bar);
 
-        let ns_text_field = Class::get("NSTextField").unwrap();
-        let agent_input: Id = msg_send![ns_text_field, alloc];
-        let agent_input: Id = msg_send![agent_input, initWithFrame: CGRect::new(&CGPoint::new(12.0, 12.0), &CGSize::new(window_width - 90.0, 28.0))];
-        // Make this a real input field (NSTextField defaults can be non-editable).
-        // We style it via the surrounding `input_bar` layer instead of the default bezel.
-        let _: () = msg_send![agent_input, setBezeled: false];
-        let _: () = msg_send![agent_input, setBordered: false];
-        let _: () = msg_send![agent_input, setDrawsBackground: false];
-        let _: () = msg_send![agent_input, setEditable: true];
-        let _: () = msg_send![agent_input, setSelectable: true];
-        let _: () = msg_send![agent_input, setEnabled: true];
-        let _: () = msg_send![agent_input, setPlaceholderString: ns_string("Napisz polecenie...")];
-        let _: () = msg_send![agent_input, setTarget: action_handler];
-        let _: () = msg_send![agent_input, setAction: sel!(onInputSubmit:)];
-        let _: () = msg_send![input_bar, addSubview: agent_input];
+        let text_area_frame = CGRect::new(
+            &CGPoint::new(12.0, 10.0),
+            &CGSize::new(window_width - 90.0, agent_input_height - 20.0),
+        );
+        let (agent_input_scroll, agent_input_text_view) =
+            create_scrollable_text_view(text_area_frame, true);
+        let ns_font = Class::get("NSFont").unwrap();
+        let text_font: Id = msg_send![ns_font, systemFontOfSize: 13.0f64];
+        let _: () = msg_send![agent_input_text_view, setFont: text_font];
+        // Plain text: avoid rich text / style surprises when pasting.
+        let _: () = msg_send![agent_input_text_view, setRichText: false];
+        let _: () = msg_send![input_bar, addSubview: agent_input_scroll];
 
+        let send_y = ((agent_input_height - 32.0) / 2.0).max(8.0);
         let agent_send_button = create_button(
             CGRect::new(
-                &CGPoint::new(window_width - 76.0, 10.0),
+                &CGPoint::new(window_width - 76.0, send_y),
                 &CGSize::new(36.0, 32.0),
             ),
             ">",
@@ -427,7 +437,10 @@ fn show_voice_chat_overlay_impl() {
         state.search_field = Some(search_field as usize);
         state.agent_scroll_view = Some(agent_scroll as usize);
         state.agent_container = Some(agent_container as usize);
-        state.agent_input_field = Some(agent_input as usize);
+        state.agent_input_bar = Some(input_bar as usize);
+        state.agent_input_scroll_view = Some(agent_input_scroll as usize);
+        state.agent_input_text_view = Some(agent_input_text_view as usize);
+        state.agent_input_field = None;
         state.agent_send_button = Some(agent_send_button as usize);
         state.action_handler = Some(action_handler as usize);
         state.active_tab = Tab::Drawer;
