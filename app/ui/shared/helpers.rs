@@ -11,10 +11,13 @@
 
 use crate::os::clipboard;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+use objc::declare::ClassDecl;
+use objc::runtime::Sel;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{NSBackingStoreType, NSWindowCollectionBehavior, NSWindowStyleMask};
 use std::ffi::CString;
+use std::sync::Once;
 
 /// Type alias for Objective-C object pointers
 pub type Id = *mut Object;
@@ -1306,7 +1309,7 @@ pub fn list_draft_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// Create a vertical NSStackView for stacking views
 pub fn create_vertical_stack_view(frame: CGRect) -> Id {
     unsafe {
-        let ns_stack_view = Class::get("NSStackView").unwrap();
+        let ns_stack_view = flipped_stack_view_class();
 
         let stack: Id = msg_send![ns_stack_view, alloc];
         let stack: Id = msg_send![stack, initWithFrame: frame];
@@ -1322,6 +1325,27 @@ pub fn create_vertical_stack_view(frame: CGRect) -> Id {
     }
 }
 
+fn flipped_stack_view_class() -> &'static Class {
+    static mut CLS: *const Class = std::ptr::null();
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        let superclass = Class::get("NSStackView").expect("NSStackView class missing");
+        let mut decl = ClassDecl::new("CodeScribeFlippedStackView", superclass)
+            .expect("CodeScribeFlippedStackView already defined");
+        decl.add_method(
+            sel!(isFlipped),
+            is_flipped as extern "C" fn(&Object, Sel) -> bool,
+        );
+        let cls = decl.register();
+        CLS = cls as *const Class;
+    });
+    unsafe { &*CLS }
+}
+
+extern "C" fn is_flipped(_this: &Object, _cmd: Sel) -> bool {
+    true
+}
+
 /// Add a view to NSStackView
 /// # Safety
 /// `stack` must be a valid `NSStackView` and `view` a valid `NSView`.
@@ -1334,6 +1358,27 @@ pub unsafe fn stack_view_add(stack: Id, view: Id) {
         let _: () = msg_send![view, setTranslatesAutoresizingMaskIntoConstraints: false];
 
         let _: () = msg_send![stack, addArrangedSubview: view];
+
+        // Ensure a deterministic width. Without leading/trailing constraints, NSStackView can
+        // produce ambiguous layouts (overlaps / broken scrolling) when used as a scroll document.
+        let view_leading: Id = msg_send![view, leadingAnchor];
+        let view_trailing: Id = msg_send![view, trailingAnchor];
+        let stack_leading: Id = msg_send![stack, leadingAnchor];
+        let stack_trailing: Id = msg_send![stack, trailingAnchor];
+        if !view_leading.is_null()
+            && !view_trailing.is_null()
+            && !stack_leading.is_null()
+            && !stack_trailing.is_null()
+        {
+            let leading: Id = msg_send![view_leading, constraintEqualToAnchor: stack_leading];
+            let trailing: Id = msg_send![view_trailing, constraintEqualToAnchor: stack_trailing];
+            if !leading.is_null() {
+                let _: () = msg_send![leading, setActive: true];
+            }
+            if !trailing.is_null() {
+                let _: () = msg_send![trailing, setActive: true];
+            }
+        }
 
         // Pin height to the initial frame height (good enough for our chat bubbles/cards).
         let frame: CGRect = msg_send![view, frame];
