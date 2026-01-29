@@ -131,6 +131,12 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `USE_LOCAL_STT` (RESTART NEEDED)
 - `LOCAL_MODEL`, `WHISPER_MODEL`, `WHISPER_LANGUAGE` (RESTART NEEDED)
 - `WHISPER_INITIAL_PROMPT` – prompt inicjalizujący dla Whisper (słownictwo domenowe, formatowanie) (RESTART NEEDED)
+  - **Co to robi:** Whisper używa initial prompt jako "kondycjonowania" - dostaje te słowa jako kontekst i lepiej rozpoznaje podobne terminy
+  - **Kiedy używać:** Gdy masz domenowe słownictwo (nazwy narzędzi, leki, nazwy własne) które Whisper przekręca
+  - **Format:** Lista słów/fraz oddzielona przecinkami
+  - **Przykład programisty:** `CodeScribe, LibraxisAI, loctree, clippy, semgrep, cargo, Rust, GitHub, Docker`
+  - **Przykład weterynarza:** `Alfaksalon, Robenacoxib, Meloksykam, Gabapentyna, NSAID, USG`
+  - **Polskie słowa:** Dodaj często używane polskie słowa jeśli model je przekręca: `dziękuję, proszę, właściwie`
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
 

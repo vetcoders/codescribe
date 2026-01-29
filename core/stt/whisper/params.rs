@@ -10,7 +10,7 @@ pub struct DecodingParams {
     /// mlx_whisper default: 0
     pub temperature: f32,
     /// Prevent repetitions of n-grams with this size (0 = disabled)
-    /// faster-whisper default: 3
+    /// Size 5 catches more variants than default 3 (e.g., "jest." vs "jest")
     pub no_repeat_ngram_size: usize,
     /// Suppress blank/silence tokens early
     pub suppress_blank: bool,
@@ -33,8 +33,13 @@ pub struct DecodingParams {
 impl Default for DecodingParams {
     fn default() -> Self {
         Self {
-            temperature: 0.0,        // greedy (mlx_whisper default)
-            no_repeat_ngram_size: 3, // block 3-gram repetitions (faster-whisper default)
+            temperature: 0.0, // greedy (mlx_whisper default)
+            // Block 5-gram repetitions during decoding (preventive, not reactive)
+            // Size 5 catches more repetition variants than default 3:
+            // - "jest." vs "jest" variations
+            // - longer phrase loops like "w tej chwili w tej chwili"
+            // faster-whisper/whisper.cpp often use 4-5 for better quality
+            no_repeat_ngram_size: 5,
             suppress_blank: true,
             // Stricter thresholds (aligned with faster-whisper / API):
             // - Reduces hallucinations by rejecting low-quality decodings

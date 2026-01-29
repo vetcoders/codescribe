@@ -5,6 +5,9 @@
 //! - Flat (no nesting)
 //! - Partial chunks (SSE) supported
 
+/// Maximum buffer size before forced flush (防DoS - prevents unbounded memory growth)
+const MAX_BUFFER_SIZE: usize = 64 * 1024; // 64KB
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TagKind {
     Speak,
@@ -72,6 +75,16 @@ impl StreamingTagParser {
     pub fn feed(&mut self, chunk: &str) -> Vec<DemuxEvent> {
         self.buffer.push_str(chunk);
         let mut events = Vec::new();
+
+        // DoS protection: force flush if buffer exceeds limit
+        if self.buffer.len() > MAX_BUFFER_SIZE {
+            tracing::warn!(
+                "Demux buffer exceeded {}KB, forcing flush",
+                MAX_BUFFER_SIZE / 1024
+            );
+            events.extend(self.flush());
+            return events;
+        }
         let speak_min = self.speak_min_chars;
         let speak_max = self.speak_max_chars;
 
@@ -143,7 +156,6 @@ impl StreamingTagParser {
                                     content,
                                     last_emit,
                                     &mut events,
-                                    false,
                                 );
                                 let remainder = content.get(*last_emit..).unwrap_or("");
                                 let remainder = remainder.trim_start();
@@ -177,14 +189,7 @@ impl StreamingTagParser {
                     content.push_str(&self.buffer);
                     self.buffer.clear();
                     if *kind == TagKind::Speak {
-                        emit_speak_chunks(
-                            speak_min,
-                            speak_max,
-                            content,
-                            last_emit,
-                            &mut events,
-                            true,
-                        );
+                        emit_speak_chunks(speak_min, speak_max, content, last_emit, &mut events);
                     }
                     events.push(DemuxEvent::Partial(kind.clone()));
                     break;
@@ -225,14 +230,7 @@ impl StreamingTagParser {
 
                 match kind {
                     TagKind::Speak => {
-                        emit_speak_chunks(
-                            speak_min,
-                            speak_max,
-                            content,
-                            last_emit,
-                            &mut events,
-                            false,
-                        );
+                        emit_speak_chunks(speak_min, speak_max, content, last_emit, &mut events);
                         let remainder = content.get(*last_emit..).unwrap_or("");
                         let remainder = remainder.trim_start();
                         if !remainder.is_empty() {
@@ -274,7 +272,6 @@ fn emit_speak_chunks(
     content: &str,
     last_emit: &mut usize,
     events: &mut Vec<DemuxEvent>,
-    _allow_partial: bool,
 ) {
     if min_chars == 0 || max_chars == 0 {
         return;
