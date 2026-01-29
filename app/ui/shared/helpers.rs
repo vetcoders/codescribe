@@ -1300,6 +1300,7 @@ pub fn open_file_in_editor(path: &std::path::Path) -> bool {
     // (TextEdit) is predictable and works without PATH.
     #[cfg(target_os = "macos")]
     {
+        use std::time::Duration;
         use tracing::{info, warn};
 
         let path = path.to_path_buf();
@@ -1331,11 +1332,49 @@ pub fn open_file_in_editor(path: &std::path::Path) -> bool {
             }
         };
 
-        // Force TextEdit and bring it to front; otherwise it can open "somewhere" (another Space)
+        let activate_textedit_best_effort = || {
+            // Try to bring TextEdit to the foreground without requiring Automation permissions
+            // (osascript can trigger a prompt / fail silently).
+            unsafe {
+                let ns_running_app = match Class::get("NSRunningApplication") {
+                    Some(c) => c,
+                    None => return,
+                };
+                let bundle_id = ns_string("com.apple.TextEdit");
+                let apps: Id =
+                    msg_send![ns_running_app, runningApplicationsWithBundleIdentifier: bundle_id];
+                if apps.is_null() {
+                    return;
+                }
+
+                let count: usize = msg_send![apps, count];
+                if count == 0 {
+                    return;
+                }
+
+                // NSApplicationActivateAllWindows (1) | NSApplicationActivateIgnoringOtherApps (2)
+                let opts: u64 = 3;
+                for i in 0..count {
+                    let app: Id = msg_send![apps, objectAtIndex: i];
+                    if app.is_null() {
+                        continue;
+                    }
+                    let ok: bool = msg_send![app, activateWithOptions: opts];
+                    info!("TextEdit activateWithOptions result={}", ok);
+                }
+            }
+        };
+
+        // Force TextEdit and try to surface it; otherwise it can open "somewhere" (another Space)
         // and look like a no-op from the user's POV.
         if run_open(&["-e"]) {
-            let _ = std::process::Command::new("/usr/bin/osascript")
-                .args(["-e", r#"tell application "TextEdit" to activate"#])
+            // Give launch a moment so NSRunningApplication can see the process.
+            std::thread::sleep(Duration::from_millis(75));
+            activate_textedit_best_effort();
+
+            // Fallback: explicit activation via `open -a` (still no PATH reliance).
+            let _ = std::process::Command::new("/usr/bin/open")
+                .args(["-a", "TextEdit"])
                 .status();
             return true;
         }
