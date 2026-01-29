@@ -72,7 +72,20 @@ fn show_voice_chat_overlay_impl() {
             let window = window_ptr as Id;
             let is_window: bool = msg_send![window, isKindOfClass: ns_window];
             if is_window {
+                // Ensure previously-created overlays remain visible and sized correctly.
                 let _: () = msg_send![window, orderFrontRegardless];
+                let _: () = msg_send![window, setAlphaValue: 1.0f64];
+
+                if let Some(blur_ptr) = state.blur_view {
+                    let blur_view = blur_ptr as Id;
+                    let w_frame: CGRect = msg_send![window, frame];
+                    let blur_frame = CGRect::new(
+                        &CGPoint::new(0.0, 0.0),
+                        &CGSize::new(w_frame.size.width, w_frame.size.height),
+                    );
+                    let _: () = msg_send![blur_view, setFrame: blur_frame];
+                }
+
                 info!("Voice chat overlay reused");
                 return;
             }
@@ -444,14 +457,17 @@ fn show_voice_chat_overlay_impl() {
         crate::ui_helpers::animate_fade(window, 1.0, 0.2);
 
         let has_messages = !state.messages.is_empty();
+        let desired_tab = if has_messages {
+            Tab::Agent
+        } else {
+            state.active_tab
+        };
         drop(state);
         api::refresh_drawer();
-        if has_messages {
-            update_active_tab_impl(Tab::Agent);
+        update_active_tab_impl(desired_tab);
+        if has_messages || matches!(desired_tab, Tab::Agent) {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             api::update_chat_view_with_state(&mut state, true);
-        } else {
-            update_active_tab_impl(Tab::Drawer);
         }
     }
 }
