@@ -382,9 +382,12 @@ fn show_voice_chat_overlay_impl() {
         let ns_scroll = Class::get("NSScrollView").unwrap();
         let drawer_scroll: Id = msg_send![ns_scroll, alloc];
         let drawer_scroll: Id = msg_send![drawer_scroll, initWithFrame: drawer_frame];
-        // Hide scrollers; scrolling still works via trackpad/mouse wheel.
-        let _: () = msg_send![drawer_scroll, setHasVerticalScroller: false];
+        // Keep scrolling enabled; hide scrollbars via overlay + autohide.
+        let _: () = msg_send![drawer_scroll, setHasVerticalScroller: true];
         let _: () = msg_send![drawer_scroll, setDrawsBackground: false];
+        let _: () = msg_send![drawer_scroll, setAutohidesScrollers: true];
+        // NSScrollerStyleOverlay == 1
+        let _: () = msg_send![drawer_scroll, setScrollerStyle: 1_isize];
         let _: () = msg_send![
             drawer_scroll,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
@@ -410,9 +413,12 @@ fn show_voice_chat_overlay_impl() {
         );
         let agent_scroll: Id = msg_send![ns_scroll, alloc];
         let agent_scroll: Id = msg_send![agent_scroll, initWithFrame: agent_scroll_frame];
-        // Hide scrollers; scrolling still works via trackpad/mouse wheel.
-        let _: () = msg_send![agent_scroll, setHasVerticalScroller: false];
+        // Keep scrolling enabled; hide scrollbars via overlay + autohide.
+        let _: () = msg_send![agent_scroll, setHasVerticalScroller: true];
         let _: () = msg_send![agent_scroll, setDrawsBackground: false];
+        let _: () = msg_send![agent_scroll, setAutohidesScrollers: true];
+        // NSScrollerStyleOverlay == 1
+        let _: () = msg_send![agent_scroll, setScrollerStyle: 1_isize];
         let _: () = msg_send![
             agent_scroll,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE

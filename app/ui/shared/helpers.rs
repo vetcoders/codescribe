@@ -396,11 +396,14 @@ pub fn create_scrollable_text_view(frame: CGRect, editable: bool) -> (Id, Id) {
         // Create scroll view
         let scroll: Id = msg_send![ns_scroll_view, alloc];
         let scroll: Id = msg_send![scroll, initWithFrame: frame];
-        // Keep scrollbars invisible; scrolling still works via trackpad/mouse wheel.
-        let _: () = msg_send![scroll, setHasVerticalScroller: false];
+        // Keep scrolling enabled; hide scrollbars via overlay + autohide.
+        let _: () = msg_send![scroll, setHasVerticalScroller: true];
         let _: () = msg_send![scroll, setHasHorizontalScroller: false];
         let _: () = msg_send![scroll, setDrawsBackground: false];
         let _: () = msg_send![scroll, setBorderType: 0_isize]; // NSNoBorder
+        let _: () = msg_send![scroll, setAutohidesScrollers: true];
+        // NSScrollerStyleOverlay == 1
+        let _: () = msg_send![scroll, setScrollerStyle: 1_isize];
 
         // Create text view with same size
         let text_frame = CGRect::new(
@@ -823,8 +826,12 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         // that later expands mid-stream.
         let long_threshold = if config.is_streaming { 30 } else { 80 };
         let is_long = display_text.chars().count() > long_threshold;
-        let wraps_at_max =
-            rect_max.size.height > line_height * 1.6 || display_text.contains('\n') || is_long;
+        let wraps_at_max = rect_max.size.height > line_height * 1.6
+            || display_text.contains('\n')
+            || is_long
+            // When streaming starts with the "• • •" placeholder, force full-width bubbles
+            // to avoid the initial tiny/narrow bubble that later expands mid-stream.
+            || (config.is_streaming && config.text.is_empty());
         let bubble_width = if wraps_at_max {
             bubble_max_width
         } else {

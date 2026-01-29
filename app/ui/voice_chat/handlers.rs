@@ -212,6 +212,12 @@ extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id)
 }
 
 unsafe fn clamp_overlay_window_to_visible(window: Id) {
+    // Don't fight AppKit during live resizing; it can cause flicker/"disappearing" windows.
+    let in_live_resize: bool = msg_send![window, inLiveResize];
+    if in_live_resize {
+        return;
+    }
+
     let ns_screen = Class::get("NSScreen").unwrap();
     let mut screen: Id = msg_send![window, screen];
     if screen.is_null() {

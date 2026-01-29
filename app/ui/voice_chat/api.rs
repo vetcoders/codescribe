@@ -669,12 +669,15 @@ pub(super) fn update_chat_view_with_state(
             .agent_scroll_view
             .map(|p| {
                 let scroll_view = p as Id;
-                let content_view: Id = msg_send![scroll_view, contentView];
-                if content_view.is_null() {
-                    return 390.0;
-                }
-                let bounds: CGRect = msg_send![content_view, bounds];
-                bounds.size.width
+                let frame: CGRect = msg_send![scroll_view, frame];
+                frame.size.width
+            })
+            .or_else(|| {
+                state.window.map(|p| {
+                    let window = p as Id;
+                    let frame: CGRect = msg_send![window, frame];
+                    (frame.size.width - 32.0).max(240.0)
+                })
             })
             .unwrap_or(390.0)
             .clamp(240.0, 1200.0);
