@@ -8,6 +8,7 @@
 //!
 //! Created by M&K (c)2026 VetCoders
 
+pub mod chunker;
 pub mod loader;
 pub mod playback;
 pub mod recorder;

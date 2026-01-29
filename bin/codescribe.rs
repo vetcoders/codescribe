@@ -697,13 +697,7 @@ impl StreamEmitter {
 }
 
 fn apply_delta_to_string(target: &mut String, delta: &str) {
-    for ch in delta.chars() {
-        if ch == '\u{0008}' {
-            target.pop();
-        } else {
-            target.push(ch);
-        }
-    }
+    codescribe_core::contracts::TranscriptDelta::from_raw(delta).apply(target);
 }
 
 fn sync_hotkey_config(config: &codescribe::config::Config) {

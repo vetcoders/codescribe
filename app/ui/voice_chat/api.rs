@@ -268,7 +268,7 @@ fn append_voice_chat_user_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_streaming_user_message(&mut state);
     if let Some(last) = state.messages.last_mut() {
-        apply_delta_with_backspace(&mut last.text, delta);
+        codescribe_core::contracts::TranscriptDelta::from_raw(delta).apply(&mut last.text);
         last.is_streaming = true;
     }
     update_chat_view_with_state(&mut state, false);
@@ -278,20 +278,10 @@ fn append_voice_chat_assistant_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_streaming_assistant_message(&mut state);
     if let Some(last) = state.messages.last_mut() {
-        apply_delta_with_backspace(&mut last.text, delta);
+        codescribe_core::contracts::TranscriptDelta::from_raw(delta).apply(&mut last.text);
         last.is_streaming = true;
     }
     update_chat_view_with_state(&mut state, false);
-}
-
-fn apply_delta_with_backspace(target: &mut String, delta: &str) {
-    for ch in delta.chars() {
-        if ch == '\u{0008}' {
-            target.pop();
-        } else {
-            target.push(ch);
-        }
-    }
 }
 
 fn finalize_user_message_impl(text: &str) {
