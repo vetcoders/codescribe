@@ -412,6 +412,8 @@ async fn run_daemon() -> Result<()> {
 
     #[cfg(target_os = "macos")]
     codescribe::set_dock_icon();
+    #[cfg(target_os = "macos")]
+    codescribe::install_basic_edit_menu();
 
     codescribe::whisper::init().context("Failed to initialize Whisper")?;
     let controller = Arc::new(RecordingController::new());
