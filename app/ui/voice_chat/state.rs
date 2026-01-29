@@ -2,6 +2,7 @@
 //!
 //! Contains overlay state, configuration, and message types.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -99,6 +100,7 @@ pub struct VoiceChatOverlayState {
     // Header
     pub title_label: Option<usize>,
     pub tab_control: Option<usize>,
+    pub favorites_button: Option<usize>,
     pub close_button: Option<usize>,
     pub settings_button: Option<usize>,
 
@@ -107,11 +109,16 @@ pub struct VoiceChatOverlayState {
     pub drawer_container: Option<usize>,
     pub drawer_entries: Vec<DrawerEntry>,
     pub search_field: Option<usize>,
+    pub drawer_favorites_only: bool,
+    pub favorites: HashSet<String>,
 
     // Agent tab
     pub agent_scroll_view: Option<usize>,
     pub agent_container: Option<usize>,
     pub agent_bubble_views: Vec<(usize, usize)>,
+    pub agent_input_bar: Option<usize>,
+    pub agent_input_scroll_view: Option<usize>,
+    pub agent_input_text_view: Option<usize>,
     pub agent_input_field: Option<usize>,
     pub agent_send_button: Option<usize>,
 
@@ -139,15 +146,21 @@ impl Default for VoiceChatOverlayState {
             blur_view: None,
             title_label: None,
             tab_control: None,
+            favorites_button: None,
             close_button: None,
             settings_button: None,
             drawer_scroll_view: None,
             drawer_container: None,
             drawer_entries: Vec::new(),
             search_field: None,
+            drawer_favorites_only: false,
+            favorites: HashSet::new(),
             agent_scroll_view: None,
             agent_container: None,
             agent_bubble_views: Vec::new(),
+            agent_input_bar: None,
+            agent_input_scroll_view: None,
+            agent_input_text_view: None,
             agent_input_field: None,
             agent_send_button: None,
             active_tab: Tab::Drawer,

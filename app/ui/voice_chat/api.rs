@@ -3,7 +3,7 @@
 //! Contains all the public functions for controlling the overlay and
 //! internal helper functions for state updates.
 
-use core_graphics::geometry::CGPoint;
+use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
@@ -12,8 +12,9 @@ use tracing::{debug, info, warn};
 
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, create_bubble_view, create_card_view, get_text_field_string,
-    list_draft_files, ns_string, open_file_in_editor, set_text_field_string, stack_view_add,
-    stack_view_clear,
+    get_text_view_string, list_draft_files, ns_string, open_file_in_editor,
+    resize_bubble_container_for_text, set_text_field_string, set_text_view_string, stack_view_add,
+    stack_view_clear, update_bubble_text, window_set_alpha, window_show,
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
@@ -221,12 +222,19 @@ pub fn is_conversation_active() -> bool {
 // ═══════════════════════════════════════════════════════════
 
 pub fn update_active_tab_impl(tab: Tab) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    update_active_tab_locked(&mut state, tab);
+}
+
+fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
     unsafe {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.active_tab = tab;
 
         if let Some(tab_control) = state.tab_control {
-            let _: () = msg_send![tab_control as Id, setSelectedSegment: if tab == Tab::Drawer { 0_isize } else { 1_isize }];
+            let _: () = msg_send![
+                tab_control as Id,
+                setSelectedSegment: if tab == Tab::Drawer { 0_isize } else { 1_isize }
+            ];
         }
 
         let show_drawer = tab == Tab::Drawer;
@@ -239,16 +247,25 @@ pub fn update_active_tab_impl(tab: Tab) {
         if let Some(agent_view) = state.agent_scroll_view {
             crate::ui_helpers::set_hidden(agent_view as Id, show_drawer);
         }
-        if let Some(agent_input) = state.agent_input_field {
-            let superview: Id = msg_send![agent_input as Id, superview];
-            if !superview.is_null() {
-                crate::ui_helpers::set_hidden(superview, show_drawer);
-            } else {
-                crate::ui_helpers::set_hidden(agent_input as Id, show_drawer);
-            }
+        if let Some(agent_input_bar) = state.agent_input_bar {
+            crate::ui_helpers::set_hidden(agent_input_bar as Id, show_drawer);
         }
         if let Some(agent_send) = state.agent_send_button {
             crate::ui_helpers::set_hidden(agent_send as Id, show_drawer);
+        }
+
+        // When switching to Agent, make sure the input field can actually receive text.
+        // We do NOT force activation (to avoid stealing focus), but if the window is already
+        // key, we nudge first responder to the input field for better UX.
+        if tab == Tab::Agent {
+            if let (Some(window_ptr), Some(input_ptr)) = (state.window, state.agent_input_text_view)
+            {
+                let window = window_ptr as Id;
+                let is_key: bool = msg_send![window, isKeyWindow];
+                if is_key {
+                    let _: bool = msg_send![window, makeFirstResponder: input_ptr as Id];
+                }
+            }
         }
     }
 }
@@ -281,7 +298,59 @@ fn append_voice_chat_assistant_delta_impl(delta: &str) {
         codescribe_core::contracts::TranscriptDelta::from_raw(delta).apply(&mut last.text);
         last.is_streaming = true;
     }
-    update_chat_view_with_state(&mut state, false);
+    if !try_update_last_message_view_in_place(&mut state) {
+        update_chat_view_with_state(&mut state, false);
+    }
+}
+
+fn display_text_for_message(message: &ChatMessage) -> String {
+    if message.is_streaming && message.text.is_empty() {
+        "• • •".to_string()
+    } else if message.is_streaming {
+        format!("{} …", message.text)
+    } else {
+        message.text.clone()
+    }
+}
+
+fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> bool {
+    unsafe {
+        // If the view list doesn't match messages, a full rebuild is safer.
+        if state.agent_bubble_views.len() != state.messages.len() {
+            return false;
+        }
+
+        let Some(last_message) = state.messages.last() else {
+            return false;
+        };
+        let Some((bubble_ptr, label_ptr)) = state.agent_bubble_views.last().copied() else {
+            return false;
+        };
+
+        let container = bubble_ptr as Id;
+        let label = label_ptr as Id;
+        update_bubble_text(label, &last_message.text, last_message.is_streaming);
+        let display_text = display_text_for_message(last_message);
+        resize_bubble_container_for_text(container, label, &display_text);
+
+        // Keep the latest message in view while streaming.
+        if let Some(scroll_view_ptr) = state.agent_scroll_view {
+            let _ = scroll_view_ptr;
+            let bounds: CGRect = msg_send![container, bounds];
+            let _: () = msg_send![container, scrollRectToVisible: bounds];
+        }
+        true
+    }
+}
+
+fn apply_delta_with_backspace(target: &mut String, delta: &str) {
+    for ch in delta.chars() {
+        if ch == '\u{0008}' {
+            target.pop();
+        } else {
+            target.push(ch);
+        }
+    }
 }
 
 fn finalize_user_message_impl(text: &str) {
@@ -308,16 +377,50 @@ fn finalize_assistant_message_impl(text: &str, is_error: bool) {
     update_send_button_with_state(&mut state);
 }
 
+fn ensure_agent_tab_visible(state: &mut VoiceChatOverlayState) {
+    unsafe {
+        // Make sure the window is actually visible, even if it was previously hidden/closed.
+        if let Some(window_ptr) = state.window {
+            let window = window_ptr as Id;
+            window_set_alpha(window, 1.0);
+            window_show(window);
+        }
+
+        // Force Agent tab for any live/assistive messaging.
+        state.active_tab = Tab::Agent;
+        if let Some(tab_control) = state.tab_control {
+            let _: () = msg_send![tab_control as Id, setSelectedSegment: 1_isize];
+        }
+
+        let show_drawer = false;
+        if let Some(drawer_view) = state.drawer_scroll_view {
+            crate::ui_helpers::set_hidden(drawer_view as Id, !show_drawer);
+        }
+        if let Some(search_field) = state.search_field {
+            crate::ui_helpers::set_hidden(search_field as Id, !show_drawer);
+        }
+        if let Some(agent_view) = state.agent_scroll_view {
+            crate::ui_helpers::set_hidden(agent_view as Id, show_drawer);
+        }
+        if let Some(agent_input_bar) = state.agent_input_bar {
+            crate::ui_helpers::set_hidden(agent_input_bar as Id, show_drawer);
+        }
+        if let Some(agent_send) = state.agent_send_button {
+            crate::ui_helpers::set_hidden(agent_send as Id, show_drawer);
+        }
+    }
+}
+
 pub(super) fn clear_voice_chat_text_impl() {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.messages.clear();
     state.manual_draft.clear();
     state.is_sending = false;
 
-    if let Some(input_field) = state.agent_input_field {
-        unsafe {
-            set_text_field_string(input_field as Id, "");
-        }
+    if let Some(input_view) = state.agent_input_text_view {
+        unsafe { set_text_view_string(input_view as Id, "") };
+    } else if let Some(input_field) = state.agent_input_field {
+        unsafe { set_text_field_string(input_field as Id, "") };
     }
 
     update_chat_view_with_state(&mut state, true);
@@ -328,10 +431,13 @@ pub(super) fn clear_voice_chat_text_impl() {
 pub fn send_draft_message_impl() {
     let callback = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(input_field) = state.agent_input_field else {
+        let draft = if let Some(text_view) = state.agent_input_text_view {
+            unsafe { get_text_view_string(text_view as Id) }
+        } else if let Some(input_field) = state.agent_input_field {
+            unsafe { get_text_field_string(input_field as Id) }
+        } else {
             return;
         };
-        let draft = unsafe { get_text_field_string(input_field as Id) };
         let draft = draft.trim().to_string();
         if draft.is_empty() {
             return;
@@ -344,8 +450,10 @@ pub fn send_draft_message_impl() {
         });
         state.manual_draft.clear();
         state.is_sending = true;
-        unsafe {
-            set_text_field_string(input_field as Id, "");
+        if let Some(text_view) = state.agent_input_text_view {
+            unsafe { set_text_view_string(text_view as Id, "") };
+        } else if let Some(input_field) = state.agent_input_field {
+            unsafe { set_text_field_string(input_field as Id, "") };
         }
         update_chat_view_with_state(&mut state, true);
         update_send_button_with_state(&mut state);
@@ -437,6 +545,7 @@ pub(super) fn update_chat_view_with_state(
         stack_view_clear(container);
         state.agent_bubble_views.clear();
 
+        let mut last_bubble: Option<Id> = None;
         for (index, message) in state.messages.iter().enumerate() {
             let role = match message.role {
                 ChatRole::User => BubbleRole::User,
@@ -453,6 +562,7 @@ pub(super) fn update_chat_view_with_state(
                 copy_action_target: state.action_handler.map(|p| p as Id),
             });
             stack_view_add(container, bubble);
+            last_bubble = Some(bubble);
             state
                 .agent_bubble_views
                 .push((bubble as usize, text_label as usize));
@@ -470,8 +580,24 @@ pub(super) fn update_chat_view_with_state(
 
         if scroll_to_bottom && let Some(scroll_view_ptr) = state.agent_scroll_view {
             let scroll_view = scroll_view_ptr as Id;
-            let content_view: Id = msg_send![scroll_view, contentView];
-            let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, f64::MAX)];
+
+            let _: () = msg_send![container, layoutSubtreeIfNeeded];
+            let fitting: CGSize = msg_send![container, fittingSize];
+            let frame: CGRect = msg_send![container, frame];
+            let new_size = CGSize::new(frame.size.width, fitting.height.max(frame.size.height));
+            let _: () = msg_send![container, setFrameSize: new_size];
+
+            if scroll_to_bottom {
+                // Prefer scrollRectToVisible over scrollToPoint (less sensitive to flipped coords).
+                if let Some(bubble) = last_bubble {
+                    let bounds: CGRect = msg_send![bubble, bounds];
+                    let _: () = msg_send![bubble, scrollRectToVisible: bounds];
+                } else {
+                    let content_view: Id = msg_send![scroll_view, contentView];
+                    let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, 0.0)];
+                    let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
+                }
+            }
         }
     }
 }
@@ -575,6 +701,9 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.agent_scroll_view = None;
     state.agent_container = None;
     state.agent_bubble_views.clear();
+    state.agent_input_bar = None;
+    state.agent_input_scroll_view = None;
+    state.agent_input_text_view = None;
     state.agent_input_field = None;
     state.agent_send_button = None;
     state.active_tab = Tab::Drawer;
@@ -585,6 +714,7 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
 
 fn refresh_drawer_impl() {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.favorites = load_favorites_from_disk();
     state.drawer_entries = load_drawer_entries();
     let query = state
         .search_field
@@ -616,6 +746,7 @@ pub fn handle_card_delete(index: usize) {
     {
         warn!("Failed to delete {}: {}", entry.path.display(), err);
     }
+    state.favorites = load_favorites_from_disk();
     state.drawer_entries = load_drawer_entries();
     render_drawer_entries(&mut state, "");
 }
@@ -624,8 +755,48 @@ pub fn handle_card_favorite(index: usize) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(entry) = state.drawer_entries.get_mut(index) {
         entry.is_favorite = !entry.is_favorite;
+        let key = entry.path.to_string_lossy().to_string();
+        if entry.is_favorite {
+            state.favorites.insert(key);
+        } else {
+            state.favorites.remove(&key);
+        }
+        save_favorites_to_disk(&state.favorites);
     }
+    update_favorites_button_with_state(&mut state);
     render_drawer_entries(&mut state, "");
+}
+
+pub(super) fn toggle_drawer_favorites_only_impl() {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.drawer_favorites_only = !state.drawer_favorites_only;
+
+    // Jump to Drawer (this feature is Drawer-scoped).
+    update_active_tab_locked(&mut state, Tab::Drawer);
+
+    update_favorites_button_with_state(&mut state);
+
+    let query = state
+        .search_field
+        .map(|field| unsafe { get_text_field_string(field as Id) })
+        .unwrap_or_default();
+    render_drawer_entries(&mut state, &query);
+}
+
+fn update_favorites_button_with_state(state: &mut VoiceChatOverlayState) {
+    unsafe {
+        let Some(btn_ptr) = state.favorites_button else {
+            return;
+        };
+        let btn = btn_ptr as Id;
+        let title = if state.drawer_favorites_only {
+            "♥"
+        } else {
+            "♡"
+        };
+        let title = ns_string(title);
+        let _: () = msg_send![btn, setTitle: title];
+    }
 }
 
 fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: &str) {
@@ -638,6 +809,9 @@ fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: &str) {
 
         let filter = query.trim().to_lowercase();
         for (index, entry) in state.drawer_entries.iter().enumerate() {
+            if state.drawer_favorites_only && !entry.is_favorite {
+                continue;
+            }
             if !filter.is_empty() {
                 let hay = entry.preview.to_lowercase();
                 if !hay.contains(&filter) {
@@ -745,6 +919,7 @@ pub fn load_drawer_entries() -> Vec<DrawerEntry> {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let dir = config_dir.join("transcriptions").join(today);
 
+    let favorites = load_favorites_from_disk();
     let files = list_draft_files(&dir);
     files
         .into_iter()
@@ -771,16 +946,54 @@ pub fn load_drawer_entries() -> Vec<DrawerEntry> {
                 TranscriptionMode::Toggle
             };
             let is_ai_formatted = name.contains("_ai") && !name.contains("ai-failed");
+            let is_favorite = favorites.contains(&path.to_string_lossy().to_string());
             DrawerEntry {
                 path,
                 timestamp,
                 mode,
                 preview,
                 is_ai_formatted,
-                is_favorite: false,
+                is_favorite,
             }
         })
         .collect()
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct FavoritesFile {
+    version: u32,
+    paths: Vec<String>,
+}
+
+fn favorites_path() -> std::path::PathBuf {
+    let dir = codescribe_core::config::Config::config_dir();
+    dir.join("voice_chat_favorites.json")
+}
+
+fn load_favorites_from_disk() -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    let path = favorites_path();
+    let Ok(data) = std::fs::read_to_string(&path) else {
+        return HashSet::new();
+    };
+    let Ok(file) = serde_json::from_str::<FavoritesFile>(&data) else {
+        return HashSet::new();
+    };
+    file.paths.into_iter().collect()
+}
+
+fn save_favorites_to_disk(favorites: &std::collections::HashSet<String>) {
+    let path = favorites_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let file = FavoritesFile {
+        version: 1,
+        paths: favorites.iter().cloned().collect(),
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&file) {
+        let _ = std::fs::write(&path, json);
+    }
 }
 
 pub fn update_drawer_after_save(path: &std::path::Path) {

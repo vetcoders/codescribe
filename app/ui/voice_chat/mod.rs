@@ -32,8 +32,9 @@ use tracing::{info, warn};
 
 use crate::ui_helpers::{
     NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style, color_clear,
-    create_button, create_segmented_control, create_vertical_stack_view, ns_string,
-    overlay_window_class, set_hidden, window_set_alpha, window_show,
+    create_button, create_scrollable_text_view, create_segmented_control,
+    create_vertical_stack_view, ns_string, overlay_window_class, set_hidden, set_tooltip,
+    window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -181,7 +182,7 @@ fn show_voice_chat_overlay_impl() {
 
         let header_height = 44.0;
         let footer_height = 44.0;
-        let agent_input_height = 52.0;
+        let agent_input_height = 96.0;
 
         // Header
         let header_frame = CGRect::new(
@@ -199,10 +200,12 @@ fn show_voice_chat_overlay_impl() {
         }
         add_subview(blur_view, header_view);
 
+        let title_x = 16.0;
+        let title_w = 120.0;
         let title_label = crate::ui_helpers::create_label(crate::ui_helpers::LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(16.0, window_height - 30.0),
-                &CGSize::new(160.0, 20.0),
+                &CGPoint::new(title_x, window_height - 30.0),
+                &CGSize::new(title_w, 20.0),
             ),
             text: "CodeScribe".to_string(),
             font_size: 13.0,
@@ -214,15 +217,71 @@ fn show_voice_chat_overlay_impl() {
         });
         add_subview(blur_view, title_label);
 
+        // Keep the tab control between the title and the right-side icon cluster.
+        // The overlay window is typically ~450px wide; fixed coordinates can overlap.
+        let right_cluster_start_x = window_width - 192.0;
+        let tab_x = title_x + title_w + 10.0;
+        // Don't enforce a minimum width here; on narrower windows, forcing a min can make the
+        // segmented control overlap the right-side icon cluster.
+        let tab_w = (right_cluster_start_x - 8.0 - tab_x).max(0.0);
         let tab_control = create_segmented_control(
             CGRect::new(
-                &CGPoint::new(170.0, window_height - 34.0),
-                &CGSize::new(160.0, 24.0),
+                &CGPoint::new(tab_x, window_height - 34.0),
+                &CGSize::new(tab_w, 24.0),
             ),
             &["Drawer", "Agent"],
         );
         button_set_action(tab_control, action_handler, sel!(onTabChanged:));
+        set_tooltip(
+            tab_control,
+            "Przełącz widok: Drawer (historia) / Agent (czat)",
+        );
         add_subview(blur_view, tab_control);
+
+        // Drawer favorites filter (hearts on/off)
+        let favorites_button = create_button(
+            CGRect::new(
+                &CGPoint::new(window_width - 192.0, window_height - 34.0),
+                &CGSize::new(24.0, 24.0),
+            ),
+            "♡",
+            button_style::SMALL_SQUARE,
+        );
+        button_set_action(
+            favorites_button,
+            action_handler,
+            sel!(onToggleFavoritesOnly:),
+        );
+        set_tooltip(favorites_button, "Pokaż tylko ulubione w Drawerze");
+        add_subview(blur_view, favorites_button);
+
+        let paste_last_button = create_button(
+            CGRect::new(
+                &CGPoint::new(window_width - 160.0, window_height - 34.0),
+                &CGSize::new(24.0, 24.0),
+            ),
+            "⇲",
+            button_style::SMALL_SQUARE,
+        );
+        button_set_action(
+            paste_last_button,
+            action_handler,
+            sel!(onPasteLastResponse:),
+        );
+        set_tooltip(paste_last_button, "Wklej ostatnią odpowiedź AI");
+        add_subview(blur_view, paste_last_button);
+
+        let copy_last_button = create_button(
+            CGRect::new(
+                &CGPoint::new(window_width - 128.0, window_height - 34.0),
+                &CGSize::new(24.0, 24.0),
+            ),
+            "⧉",
+            button_style::SMALL_SQUARE,
+        );
+        button_set_action(copy_last_button, action_handler, sel!(onCopyLastResponse:));
+        set_tooltip(copy_last_button, "Skopiuj ostatnią odpowiedź AI");
+        add_subview(blur_view, copy_last_button);
 
         let new_thread_button = create_button(
             CGRect::new(
@@ -233,27 +292,19 @@ fn show_voice_chat_overlay_impl() {
             button_style::SMALL_SQUARE,
         );
         button_set_action(new_thread_button, action_handler, sel!(onNewThread:));
+        set_tooltip(new_thread_button, "Nowy wątek (wyczyść czat)");
         add_subview(blur_view, new_thread_button);
-
-        let settings_button = create_button(
-            CGRect::new(
-                &CGPoint::new(window_width - 64.0, window_height - 34.0),
-                &CGSize::new(24.0, 24.0),
-            ),
-            "⚙",
-            button_style::SMALL_SQUARE,
-        );
-        add_subview(blur_view, settings_button);
 
         let close_button = create_button(
             CGRect::new(
-                &CGPoint::new(window_width - 34.0, window_height - 34.0),
+                &CGPoint::new(window_width - 64.0, window_height - 34.0),
                 &CGSize::new(24.0, 24.0),
             ),
             "✕",
             button_style::SMALL_SQUARE,
         );
         button_set_action(close_button, action_handler, sel!(onClose:));
+        set_tooltip(close_button, "Zamknij okno");
         add_subview(blur_view, close_button);
 
         // Drawer scroll view + stack
@@ -278,13 +329,25 @@ fn show_voice_chat_overlay_impl() {
         add_subview(blur_view, drawer_scroll);
 
         // Agent scroll view + stack
+        let agent_scroll_frame_bottom = agent_input_height + 18.0;
+        let agent_scroll_frame_top = window_height - header_height - 10.0;
+        let agent_scroll_frame = CGRect::new(
+            &CGPoint::new(16.0, agent_scroll_frame_bottom),
+            &CGSize::new(
+                window_width - 32.0,
+                (agent_scroll_frame_top - agent_scroll_frame_bottom).max(0.0),
+            ),
+        );
         let agent_scroll: Id = msg_send![ns_scroll, alloc];
-        let agent_scroll: Id = msg_send![agent_scroll, initWithFrame: drawer_frame];
+        let agent_scroll: Id = msg_send![agent_scroll, initWithFrame: agent_scroll_frame];
         let _: () = msg_send![agent_scroll, setHasVerticalScroller: true];
         let _: () = msg_send![agent_scroll, setDrawsBackground: false];
         let agent_container = create_vertical_stack_view(CGRect::new(
             &CGPoint::new(0.0, 0.0),
-            &CGSize::new(drawer_frame.size.width, drawer_frame.size.height),
+            &CGSize::new(
+                agent_scroll_frame.size.width,
+                agent_scroll_frame.size.height,
+            ),
         ));
         let _: () = msg_send![agent_scroll, setDocumentView: agent_container];
         add_subview(blur_view, agent_scroll);
@@ -294,7 +357,7 @@ fn show_voice_chat_overlay_impl() {
         let search_field: Id = msg_send![ns_search, alloc];
         let search_frame = CGRect::new(
             &CGPoint::new(16.0, 12.0),
-            &CGSize::new(window_width - 200.0, 24.0),
+            &CGSize::new(window_width - 32.0, 24.0),
         );
         let search_field: Id = msg_send![search_field, initWithFrame: search_frame];
         let placeholder = ns_string("Search...");
@@ -302,26 +365,6 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![search_field, setTarget: action_handler];
         let _: () = msg_send![search_field, setAction: sel!(onSearchChanged:)];
         add_subview(blur_view, search_field);
-
-        let type_button = create_button(
-            CGRect::new(
-                &CGPoint::new(window_width - 176.0, 12.0),
-                &CGSize::new(72.0, 24.0),
-            ),
-            "Type ▾",
-            button_style::SMALL_SQUARE,
-        );
-        add_subview(blur_view, type_button);
-
-        let mode_button = create_button(
-            CGRect::new(
-                &CGPoint::new(window_width - 96.0, 12.0),
-                &CGSize::new(72.0, 24.0),
-            ),
-            "Mode ▾",
-            button_style::SMALL_SQUARE,
-        );
-        add_subview(blur_view, mode_button);
 
         // Agent input bar
         let input_bar: Id = msg_send![Class::get("NSView").unwrap(), alloc];
@@ -340,18 +383,23 @@ fn show_voice_chat_overlay_impl() {
         }
         add_subview(blur_view, input_bar);
 
-        let ns_text_field = Class::get("NSTextField").unwrap();
-        let agent_input: Id = msg_send![ns_text_field, alloc];
-        let agent_input: Id = msg_send![agent_input, initWithFrame: CGRect::new(&CGPoint::new(12.0, 12.0), &CGSize::new(window_width - 90.0, 28.0))];
-        let _: () = msg_send![agent_input, setBezeled: true];
-        let _: () = msg_send![agent_input, setPlaceholderString: ns_string("Napisz polecenie...")];
-        let _: () = msg_send![agent_input, setTarget: action_handler];
-        let _: () = msg_send![agent_input, setAction: sel!(onInputSubmit:)];
-        let _: () = msg_send![input_bar, addSubview: agent_input];
+        let text_area_frame = CGRect::new(
+            &CGPoint::new(12.0, 10.0),
+            &CGSize::new(window_width - 90.0, agent_input_height - 20.0),
+        );
+        let (agent_input_scroll, agent_input_text_view) =
+            create_scrollable_text_view(text_area_frame, true);
+        let ns_font = Class::get("NSFont").unwrap();
+        let text_font: Id = msg_send![ns_font, systemFontOfSize: 13.0f64];
+        let _: () = msg_send![agent_input_text_view, setFont: text_font];
+        // Plain text: avoid rich text / style surprises when pasting.
+        let _: () = msg_send![agent_input_text_view, setRichText: false];
+        let _: () = msg_send![input_bar, addSubview: agent_input_scroll];
 
+        let send_y = ((agent_input_height - 32.0) / 2.0).max(8.0);
         let agent_send_button = create_button(
             CGRect::new(
-                &CGPoint::new(window_width - 76.0, 10.0),
+                &CGPoint::new(window_width - 76.0, send_y),
                 &CGSize::new(36.0, 32.0),
             ),
             ">",
@@ -369,14 +417,18 @@ fn show_voice_chat_overlay_impl() {
         state.blur_view = Some(blur_view as usize);
         state.title_label = Some(title_label as usize);
         state.tab_control = Some(tab_control as usize);
+        state.favorites_button = Some(favorites_button as usize);
         state.close_button = Some(close_button as usize);
-        state.settings_button = Some(settings_button as usize);
+        state.settings_button = None;
         state.drawer_scroll_view = Some(drawer_scroll as usize);
         state.drawer_container = Some(drawer_container as usize);
         state.search_field = Some(search_field as usize);
         state.agent_scroll_view = Some(agent_scroll as usize);
         state.agent_container = Some(agent_container as usize);
-        state.agent_input_field = Some(agent_input as usize);
+        state.agent_input_bar = Some(input_bar as usize);
+        state.agent_input_scroll_view = Some(agent_input_scroll as usize);
+        state.agent_input_text_view = Some(agent_input_text_view as usize);
+        state.agent_input_field = None;
         state.agent_send_button = Some(agent_send_button as usize);
         state.action_handler = Some(action_handler as usize);
         state.active_tab = Tab::Drawer;
