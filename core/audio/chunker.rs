@@ -100,14 +100,8 @@ pub(crate) struct SpeechSession {
 
 impl SpeechSession {
     pub fn new_stream(sample_rate: u32, chunk_duration_sec: f32, overlap_sec: f32) -> Self {
-        let mut config = hardcoded_gate_config();
-        if config.mode != VadGateMode::Supervisor {
-            debug!(
-                "Forcing Supervisor gate in live stream (was {:?})",
-                config.mode
-            );
-            config.mode = VadGateMode::Supervisor;
-        }
+        let config = hardcoded_gate_config();
+        debug!("SpeechSession::new_stream gate_mode={:?}", config.mode);
         let vad_sample_rate = vad::VAD_SAMPLE_RATE;
         let output_sample_rate = match config.mode {
             VadGateMode::Supervisor => sample_rate,
@@ -185,14 +179,8 @@ impl SpeechSession {
     }
 
     pub fn new_utterance(sample_rate: u32) -> Self {
-        let mut config = hardcoded_gate_config();
-        if config.mode != VadGateMode::Supervisor {
-            debug!(
-                "Forcing Supervisor gate in live stream (was {:?})",
-                config.mode
-            );
-            config.mode = VadGateMode::Supervisor;
-        }
+        let config = hardcoded_gate_config();
+        debug!("SpeechSession::new_utterance gate_mode={:?}", config.mode);
         let vad_sample_rate = vad::VAD_SAMPLE_RATE;
         let output_sample_rate = match config.mode {
             VadGateMode::Supervisor => sample_rate,
@@ -259,8 +247,10 @@ impl SpeechSession {
             raw_cursor: 0,
             segment_start: None,
             pending_end: None,
-            pre_roll_raw: 0,
-            speech_pad_raw: 0,
+            pre_roll_raw: (sample_rate as f32 * config.pre_roll_sec).round().max(0.0) as usize,
+            speech_pad_raw: (sample_rate as f32 * config.speech_pad_sec)
+                .round()
+                .max(0.0) as usize,
             last_emit_raw: 0,
         }
     }
@@ -699,6 +689,12 @@ impl SpeechSession {
         self.vad_resample_buf.len()
     }
 
+    /// Pre-roll size in raw samples (test-only accessor).
+    #[cfg(test)]
+    pub fn pre_roll_raw(&self) -> usize {
+        self.pre_roll_raw
+    }
+
     /// Raw audio buffer length (test-only accessor).
     #[cfg(test)]
     pub fn raw_buffer_len(&self) -> usize {
@@ -1066,6 +1062,34 @@ mod tests {
         // Without env vars set, default should be Supervisor
         let config = hardcoded_gate_config();
         assert_eq!(config.mode, VadGateMode::Supervisor);
+    }
+
+    #[test]
+    fn test_gate_mode_respects_env() {
+        // Set env to Iter — constructors must NOT override to Supervisor.
+        // SAFETY: test runs single-threaded (cargo test default); no concurrent env reads.
+        unsafe {
+            std::env::set_var("CODESCRIBE_VAD_GATE_MODE", "iter");
+        }
+        let stream = SpeechSession::new_stream(16000, 6.0, 1.0);
+        assert_eq!(stream.gate_mode(), VadGateMode::Iter);
+        let utterance = SpeechSession::new_utterance(16000);
+        assert_eq!(utterance.gate_mode(), VadGateMode::Iter);
+        unsafe {
+            std::env::remove_var("CODESCRIBE_VAD_GATE_MODE");
+        }
+    }
+
+    #[test]
+    fn test_utterance_pre_roll_nonzero() {
+        // new_utterance() must calculate pre_roll from config, not hardcode 0.
+        let session = SpeechSession::new_utterance(16000);
+        // Config has pre_roll_sec=0.064 → 16000*0.064 = 1024 samples
+        assert!(
+            session.pre_roll_raw() > 0,
+            "pre_roll_raw should be > 0, got {}",
+            session.pre_roll_raw()
+        );
     }
 
     #[test]

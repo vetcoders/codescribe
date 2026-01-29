@@ -7,9 +7,9 @@
 //! Created by M&K (c)2026 VetCoders
 
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
+use crate::pipeline::dedup::{dedup_chunk_overlap, strip_suffix_overlap};
 use crate::pipeline::stream_postprocess::{LexiconPostProcessor, StreamPostProcessor};
 use crate::stt::whisper;
-use crate::stt::whisper::append_with_overlap_dedup;
 use crate::stt::whisper::singleton::engine as get_engine;
 use anyhow::{Result, anyhow};
 use chrono::SecondsFormat;
@@ -36,7 +36,12 @@ lazy_static! {
 
 // ── Public type alias ────────────────────────────────────────────────────────
 
-pub type StreamDeltaCallback = Arc<dyn Fn(&str) + Send + Sync>;
+use crate::pipeline::contracts::{DeltaSink, TranscriptDelta};
+
+/// Legacy alias — now backed by `DeltaSink` trait instead of bare `Fn(&str)`.
+/// Consumers should migrate to `Arc<dyn DeltaSink>` directly.
+#[deprecated(note = "Use Arc<dyn DeltaSink> directly")]
+pub type StreamDeltaCallback = Arc<dyn DeltaSink>;
 
 // ── Hallucination filter ─────────────────────────────────────────────────────
 
@@ -97,20 +102,7 @@ impl TranscriptionPipeline {
     }
 
     pub(crate) fn strip_overlap(&mut self, text: &str) -> String {
-        if self.last_suffix.is_empty() {
-            return text.to_string();
-        }
-        let suffix = &self.last_suffix;
-        for len in (3..=suffix.len().min(text.len())).rev() {
-            if suffix[suffix.len().saturating_sub(len)..].eq_ignore_ascii_case(&text[..len]) {
-                let stripped = text[len..].trim_start();
-                if !stripped.is_empty() {
-                    return stripped.to_string();
-                }
-                return String::new();
-            }
-        }
-        text.to_string()
+        strip_suffix_overlap(&self.last_suffix, text)
     }
 
     pub(crate) fn postprocess(&mut self, text: &str) -> Option<String> {
@@ -253,8 +245,8 @@ impl BufferedEmitter {
                             let mut buffer = self.transcript_buffer.lock().await;
                             *buffer = self.emitted_text.clone();
                         }
-                        if let Some(callback) = &self.delta_callback {
-                            callback(&delta);
+                        if let Some(sink) = &self.delta_callback {
+                            sink.apply(&TranscriptDelta::from_raw(&delta));
                         }
                         if let Some(path) = self.stream_log_path.as_deref() {
                             let _ = append_to_stream_log(path, &delta);
@@ -285,8 +277,8 @@ impl BufferedEmitter {
                 apply_delta_to_string(&mut buffer, &delta);
             }
 
-            if let Some(callback) = &self.delta_callback {
-                callback(&delta);
+            if let Some(sink) = &self.delta_callback {
+                sink.apply(&TranscriptDelta::from_raw(&delta));
             }
 
             if let Some(path) = self.stream_log_path.as_deref() {
@@ -610,13 +602,13 @@ async fn process_chunk(
                 if let Some(cleaned) = cleaned {
                     let mut buffer = transcript_buffer.lock().await;
                     let before = buffer.clone();
-                    append_with_overlap_dedup(&mut buffer, &cleaned);
+                    dedup_chunk_overlap(&mut buffer, &cleaned);
                     if let Some(delta) = build_redacted_delta(&before, &buffer) {
                         let has_effect =
                             delta.chars().any(|c| c == '\u{0008}' || !c.is_whitespace());
                         if has_effect {
-                            if let Some(callback) = delta_callback {
-                                callback(&delta);
+                            if let Some(sink) = delta_callback {
+                                sink.apply(&TranscriptDelta::from_raw(&delta));
                             }
                             if let Some(path) = stream_log_path {
                                 let _ = append_to_stream_log(path, &delta);
@@ -703,10 +695,10 @@ pub fn transcribe_streaming_samples(
 
         if let Some(processor) = postprocessor.as_mut() {
             if let Some(cleaned) = processor.process(&text) {
-                append_with_overlap_dedup(&mut out, &cleaned);
+                dedup_chunk_overlap(&mut out, &cleaned);
             }
         } else {
-            append_with_overlap_dedup(&mut out, &text);
+            dedup_chunk_overlap(&mut out, &text);
         }
 
         if end == samples.len() {

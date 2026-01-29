@@ -146,9 +146,11 @@ impl RecordingController {
 
         let mut recorder =
             StreamingRecorder::new().expect("Failed to initialize streaming recorder");
-        recorder.set_delta_callback(Some(Arc::new(|delta| {
-            route_transcription_delta(delta);
-        })));
+        recorder.set_delta_callback(Some(Arc::new(
+            codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|delta: &str| {
+                route_transcription_delta(delta);
+            })),
+        )));
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
         if let Ok(models) = model_manager.list_models()
@@ -199,9 +201,11 @@ impl RecordingController {
 
         let mut recorder =
             StreamingRecorder::new().expect("Failed to initialize streaming recorder");
-        recorder.set_delta_callback(Some(Arc::new(|delta| {
-            route_transcription_delta(delta);
-        })));
+        recorder.set_delta_callback(Some(Arc::new(
+            codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|delta: &str| {
+                route_transcription_delta(delta);
+            })),
+        )));
 
         let model_manager = ModelManager::new().expect("Failed to initialize model manager");
         if let Ok(models) = model_manager.list_models()
@@ -868,9 +872,11 @@ impl RecordingController {
             // If user wants to hold in silence for 45 minutes - that's their choice.
             let mut rec = recorder.lock().await;
             // Set streaming callback for overlay updates (routed by session mode)
-            rec.set_delta_callback(Some(Arc::new(|text: &str| {
-                route_transcription_delta(text);
-            })));
+            rec.set_delta_callback(Some(Arc::new(
+                codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|text: &str| {
+                    route_transcription_delta(text);
+                })),
+            )));
             if !cfg!(test)
                 && let Err(e) = rec.start(Some(language.as_str().to_string())).await
             {
@@ -971,9 +977,11 @@ impl RecordingController {
         let mut recorder = self.recorder.lock().await;
 
         // Set streaming callback for overlay updates (routed by session mode)
-        recorder.set_delta_callback(Some(Arc::new(|text: &str| {
-            route_transcription_delta(text);
-        })));
+        recorder.set_delta_callback(Some(Arc::new(
+            codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|text: &str| {
+                route_transcription_delta(text);
+            })),
+        )));
 
         // Skip actual audio stream in tests (no CoreAudio device needed)
         if !cfg!(test) {
