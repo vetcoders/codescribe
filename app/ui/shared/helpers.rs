@@ -763,7 +763,7 @@ pub struct BubbleConfig {
 /// Returns (container_view, text_label) tuple for later updates
 pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
     unsafe {
-        let ns_view = Class::get("NSView").unwrap();
+        let ns_view = flipped_view_class();
         let ns_text_field = Class::get("NSTextField").unwrap();
         let ns_color = Class::get("NSColor").unwrap();
         let ns_font = Class::get("NSFont").unwrap();
@@ -852,7 +852,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let text_label: Id = msg_send![
             text_label,
             initWithFrame: CGRect::new(
-                &CGPoint::new(padding_x, padding_bottom),
+                &CGPoint::new(padding_x, padding_top),
                 &CGSize::new(text_layout_width.max(1.0), line_height),
             )
         ];
@@ -994,7 +994,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
 
         // Update label frame to the final measured height.
         let text_frame = CGRect::new(
-            &CGPoint::new(padding_x, padding_bottom),
+            &CGPoint::new(padding_x, padding_top),
             &CGSize::new(text_layout_width.max(1.0), text_height),
         );
         let _: () = msg_send![text_label, setFrame: text_frame];
@@ -1009,7 +1009,8 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let button_width = 40.0;
             let button_height = copy_button_height;
             let button_x = bubble_width - button_width - padding_x;
-            let button_y = 4.0; // Bottom of bubble
+            // Flipped coords: anchor near the bottom edge.
+            let button_y = (bubble_height - button_height - 4.0).max(4.0);
 
             let button_frame = CGRect::new(
                 &CGPoint::new(button_x, button_y),
@@ -1222,10 +1223,35 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
             let padding_x = 12.0;
             let new_label_w = (bubble_width - padding_x * 2.0).max(1.0);
             let new_label_frame = CGRect::new(
-                &CGPoint::new(padding_x, padding_bottom),
+                &CGPoint::new(padding_x, padding_top),
                 &CGSize::new(new_label_w, text_height),
             );
             let _: () = msg_send![text_label, setFrame: new_label_frame];
+
+            // Reposition the Copy button to stay anchored near the bottom edge (flipped coords).
+            let ns_button = Class::get("NSButton").unwrap();
+            let subviews: Id = msg_send![bubble, subviews];
+            if !subviews.is_null() {
+                let sub_count: usize = msg_send![subviews, count];
+                for i in 0..sub_count {
+                    let v: Id = msg_send![subviews, objectAtIndex: i];
+                    if v.is_null() {
+                        continue;
+                    }
+                    let is_button: bool = msg_send![v, isKindOfClass: ns_button];
+                    if !is_button {
+                        continue;
+                    }
+                    let btn_frame: CGRect = msg_send![v, frame];
+                    let btn_h = btn_frame.size.height;
+                    let new_y = (bubble_height - btn_h - 4.0).max(4.0);
+                    let new_frame = CGRect::new(
+                        &CGPoint::new(btn_frame.origin.x, new_y),
+                        &CGSize::new(btn_frame.size.width, btn_frame.size.height),
+                    );
+                    let _: () = msg_send![v, setFrame: new_frame];
+                }
+            }
 
             let new_bubble_frame = CGRect::new(
                 &CGPoint::new(bubble_x, bubble_frame.origin.y),
@@ -1344,6 +1370,23 @@ fn flipped_stack_view_class() -> &'static Class {
 
 extern "C" fn is_flipped(_this: &Object, _cmd: Sel) -> bool {
     true
+}
+
+fn flipped_view_class() -> &'static Class {
+    static mut CLS: *const Class = std::ptr::null();
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        let superclass = Class::get("NSView").expect("NSView class missing");
+        let mut decl = ClassDecl::new("CodeScribeFlippedView", superclass)
+            .expect("CodeScribeFlippedView already defined");
+        decl.add_method(
+            sel!(isFlipped),
+            is_flipped as extern "C" fn(&Object, Sel) -> bool,
+        );
+        let cls = decl.register();
+        CLS = cls as *const Class;
+    });
+    unsafe { &*CLS }
 }
 
 /// Add a view to NSStackView
