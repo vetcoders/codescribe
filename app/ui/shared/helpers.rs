@@ -1243,6 +1243,14 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
         let _: () = msg_send![container, setNeedsLayout: true];
         let _: () = msg_send![container, layoutSubtreeIfNeeded];
         let _: () = msg_send![container, setNeedsDisplay: true];
+
+        // NSStackView (superview) does the actual arrangement; ensure it reflows immediately
+        // so updated height constraints take effect without requiring a click/focus change.
+        let stack: Id = msg_send![container, superview];
+        if !stack.is_null() {
+            let _: () = msg_send![stack, setNeedsLayout: true];
+            let _: () = msg_send![stack, layoutSubtreeIfNeeded];
+        }
     }
 }
 

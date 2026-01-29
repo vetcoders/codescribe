@@ -397,7 +397,9 @@ fn show_voice_chat_overlay_impl() {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(drawer_frame.size.width, drawer_frame.size.height),
         ));
-        let _: () = msg_send![drawer_container, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE];
+        // Document views inside NSScrollView must NOT be height-resizable, otherwise AppKit will
+        // keep them pinned to the clip view height and effectively disable scrolling.
+        let _: () = msg_send![drawer_container, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE];
         let _: () = msg_send![drawer_scroll, setDocumentView: drawer_container];
         add_subview(blur_view, drawer_scroll);
 
@@ -430,7 +432,8 @@ fn show_voice_chat_overlay_impl() {
                 agent_scroll_frame.size.height,
             ),
         ));
-        let _: () = msg_send![agent_container, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE];
+        // Same rule: keep the document view width-resizable, but let its height expand to content.
+        let _: () = msg_send![agent_container, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE];
         let _: () = msg_send![agent_scroll, setDocumentView: agent_container];
         add_subview(blur_view, agent_scroll);
 

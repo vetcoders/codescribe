@@ -428,6 +428,76 @@ fn display_text_for_message(message: &ChatMessage) -> String {
     }
 }
 
+unsafe fn agent_max_width(state: &VoiceChatOverlayState) -> f64 {
+    state
+        .agent_scroll_view
+        .map(|p| {
+            let scroll_view = p as Id;
+            let content_view: Id = msg_send![scroll_view, contentView];
+            if content_view.is_null() {
+                let frame: CGRect = msg_send![scroll_view, frame];
+                frame.size.width
+            } else {
+                let bounds: CGRect = msg_send![content_view, bounds];
+                bounds.size.width
+            }
+        })
+        .or_else(|| {
+            state.window.map(|p| {
+                let window = p as Id;
+                let frame: CGRect = msg_send![window, frame];
+                (frame.size.width - 32.0).max(240.0)
+            })
+        })
+        .unwrap_or(390.0)
+        .clamp(240.0, 1200.0)
+}
+
+unsafe fn sync_agent_document_view_size(state: &VoiceChatOverlayState, max_width: f64) {
+    let Some(container_ptr) = state.agent_container else {
+        return;
+    };
+    let container = container_ptr as Id;
+
+    // Ensure arrangedSubviews frames are up-to-date before measuring.
+    let _: () = msg_send![container, setNeedsLayout: true];
+    let _: () = msg_send![container, layoutSubtreeIfNeeded];
+
+    // Sum arranged subview heights + stack spacing to get an accurate document height.
+    let arranged: Id = msg_send![container, arrangedSubviews];
+    if arranged.is_null() {
+        return;
+    }
+    let count: usize = msg_send![arranged, count];
+    let spacing: f64 = msg_send![container, spacing];
+    let mut total_h = 0.0;
+    for i in 0..count {
+        let v: Id = msg_send![arranged, objectAtIndex: i];
+        if v.is_null() {
+            continue;
+        }
+        let frame: CGRect = msg_send![v, frame];
+        total_h += frame.size.height.max(0.0);
+        if i + 1 < count {
+            total_h += spacing;
+        }
+    }
+    total_h = total_h.max(1.0);
+
+    let _: () = msg_send![container, setFrameSize: CGSize::new(max_width, total_h)];
+    let _: () = msg_send![container, setNeedsLayout: true];
+    let _: () = msg_send![container, layoutSubtreeIfNeeded];
+
+    // Ensure the scroll view updates its clip view after the document view changes size.
+    if let Some(scroll_view_ptr) = state.agent_scroll_view {
+        let scroll_view = scroll_view_ptr as Id;
+        let content_view: Id = msg_send![scroll_view, contentView];
+        if !content_view.is_null() {
+            let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
+        }
+    }
+}
+
 fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> bool {
     unsafe {
         // If the view list doesn't match messages, a full rebuild is safer.
@@ -447,12 +517,18 @@ fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> b
         update_bubble_text(label, &last_message.text, last_message.is_streaming);
         let display_text = display_text_for_message(last_message);
         resize_bubble_container_for_text(container, label, &display_text);
+        let max_width = agent_max_width(state);
+        sync_agent_document_view_size(state, max_width);
 
         // Keep the latest message in view while streaming.
         if let Some(scroll_view_ptr) = state.agent_scroll_view {
             let _ = scroll_view_ptr;
             let bounds: CGRect = msg_send![container, bounds];
-            let _: () = msg_send![container, scrollRectToVisible: bounds];
+            // Scroll to the bottom edge of the bubble; if the bubble is taller than the viewport,
+            // scrolling the whole bounds can keep the top visible and never reach the bottom.
+            let y = (bounds.size.height - 2.0).max(0.0);
+            let rect = CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(bounds.size.width, 2.0));
+            let _: () = msg_send![container, scrollRectToVisible: rect];
         }
         true
     }
@@ -665,22 +741,7 @@ pub(super) fn update_chat_view_with_state(
         state.agent_bubble_views.clear();
 
         // Size bubbles to the current visible content width (supports resizable overlay).
-        let max_width = state
-            .agent_scroll_view
-            .map(|p| {
-                let scroll_view = p as Id;
-                let frame: CGRect = msg_send![scroll_view, frame];
-                frame.size.width
-            })
-            .or_else(|| {
-                state.window.map(|p| {
-                    let window = p as Id;
-                    let frame: CGRect = msg_send![window, frame];
-                    (frame.size.width - 32.0).max(240.0)
-                })
-            })
-            .unwrap_or(390.0)
-            .clamp(240.0, 1200.0);
+        let max_width = agent_max_width(state);
 
         let mut last_bubble: Option<Id> = None;
         for (index, message) in state.messages.iter().enumerate() {
@@ -716,25 +777,20 @@ pub(super) fn update_chat_view_with_state(
         }
 
         // Ensure the document view size matches its arranged subviews; otherwise scrolling can
-        // jump to empty space and look like messages "disappear".
-        if let Some(scroll_view_ptr) = state.agent_scroll_view {
-            let scroll_view = scroll_view_ptr as Id;
+        // be disabled and long messages will just "grow" out of view.
+        sync_agent_document_view_size(state, max_width);
 
-            let _: () = msg_send![container, layoutSubtreeIfNeeded];
-            let fitting: CGSize = msg_send![container, fittingSize];
-            let new_size = CGSize::new(max_width, fitting.height.max(1.0));
-            let _: () = msg_send![container, setFrameSize: new_size];
-
-            if scroll_to_bottom {
-                // Prefer scrollRectToVisible over scrollToPoint (less sensitive to flipped coords).
-                if let Some(bubble) = last_bubble {
-                    let bounds: CGRect = msg_send![bubble, bounds];
-                    let _: () = msg_send![bubble, scrollRectToVisible: bounds];
-                } else {
-                    let content_view: Id = msg_send![scroll_view, contentView];
-                    let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, 0.0)];
-                    let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
-                }
+        if scroll_to_bottom {
+            if let Some(bubble) = last_bubble {
+                let bounds: CGRect = msg_send![bubble, bounds];
+                let y = (bounds.size.height - 2.0).max(0.0);
+                let rect = CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(bounds.size.width, 2.0));
+                let _: () = msg_send![bubble, scrollRectToVisible: rect];
+            } else if let Some(scroll_view_ptr) = state.agent_scroll_view {
+                let scroll_view = scroll_view_ptr as Id;
+                let content_view: Id = msg_send![scroll_view, contentView];
+                let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, 0.0)];
+                let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
             }
         }
     }
