@@ -236,12 +236,8 @@ use std::sync::{Arc, atomic::AtomicU32};
 
 /// Message to VAD worker (fire-and-forget, no response channel)
 enum VadMessage {
-    Predict {
-        samples: Vec<f32>,
-        sample_rate: u32,
-    },
+    Predict { samples: Vec<f32>, sample_rate: u32 },
     Reset,
-    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -254,6 +250,8 @@ struct VadWorker {
     initialized: AtomicBool,
     /// Last computed probability (f32 as bits for atomic access)
     last_prob: Arc<AtomicU32>,
+    /// Worker thread handle for clean shutdown
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl VadWorker {
@@ -278,7 +276,7 @@ impl VadWorker {
         // Oneshot channel to confirm model loaded successfully
         let (init_tx, init_rx) = mpsc::sync_channel::<Result<()>>(1);
 
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             let mut vad = match SileroVad::new(&path, config) {
                 Ok(v) => {
                     // Signal success to main thread
@@ -325,6 +323,7 @@ impl VadWorker {
                     sender: tx,
                     initialized: AtomicBool::new(true),
                     last_prob,
+                    thread: Some(handle),
                 })
             }
             Ok(Err(e)) => {
@@ -355,6 +354,17 @@ impl VadWorker {
 
     fn reset(&self) {
         let _ = self.sender.try_send(VadMessage::Reset);
+    }
+}
+
+impl Drop for VadWorker {
+    fn drop(&mut self) {
+        // Send shutdown signal; if the channel is full or closed, the thread
+        // will exit anyway when the sender is dropped and `for msg in rx` ends.
+        let _ = self.sender.try_send(VadMessage::Shutdown);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
     }
 }
 

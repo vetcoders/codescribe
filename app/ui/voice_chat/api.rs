@@ -75,7 +75,7 @@ pub fn add_voice_chat_error_message(text: &str) {
     let text_owned = text.to_string();
     Queue::main().exec_async(move || {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::System,
             text: text_owned.clone(),
             is_streaming: false,
@@ -92,7 +92,7 @@ pub fn add_voice_chat_user_message(text: &str) {
     let text_owned = text.to_string();
     Queue::main().exec_async(move || {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::User,
             text: text_owned,
             is_streaming: false,
@@ -384,8 +384,12 @@ pub(super) fn clear_voice_chat_text_impl() {
 }
 
 /// Send the draft message (called from handlers)
+///
+/// SAFETY: OVERLAY_STATE must be fully released before invoking the send
+/// callback, which may re-acquire the lock from another thread/queue.
 pub fn send_draft_message_impl() {
-    let callback = {
+    // Phase 1: extract draft and update state (OVERLAY_STATE held)
+    let draft = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let draft = if let Some(text_view) = state.agent_input_text_view {
             unsafe { get_text_view_string(text_view as Id) }
@@ -398,7 +402,7 @@ pub fn send_draft_message_impl() {
         if draft.is_empty() {
             return;
         }
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::User,
             text: draft.clone(),
             is_streaming: false,
@@ -413,11 +417,18 @@ pub fn send_draft_message_impl() {
         }
         update_chat_view_with_state(&mut state, true);
         update_send_button_with_state(&mut state);
-        let handler = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
-        (handler.clone(), draft)
+        draft
+        // OVERLAY_STATE released here
     };
 
-    if let (Some(handler), draft) = callback {
+    // Phase 2: read callback (separate lock scope)
+    let handler = {
+        let guard = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clone()
+    };
+
+    // Phase 3: invoke callback with NO locks held
+    if let Some(handler) = handler {
         handler(draft);
     } else {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -427,7 +438,8 @@ pub fn send_draft_message_impl() {
 }
 
 pub(super) fn commit_last_user_message_impl() {
-    let callback = {
+    // Phase 1: extract text and mark sending (OVERLAY_STATE held)
+    let text = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let Some(last_message) = state.messages.last() else {
             return;
@@ -439,11 +451,18 @@ pub(super) fn commit_last_user_message_impl() {
         state.is_sending = true;
         update_chat_view_with_state(&mut state, true);
         update_send_button_with_state(&mut state);
-        let handler = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
-        (handler.clone(), text)
+        text
+        // OVERLAY_STATE released here
     };
 
-    if let (Some(handler), text) = callback {
+    // Phase 2: read callback (separate lock scope)
+    let handler = {
+        let guard = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clone()
+    };
+
+    // Phase 3: invoke callback with NO locks held
+    if let Some(handler) = handler {
         handler(text);
     } else {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -465,7 +484,7 @@ fn ensure_streaming_assistant_message(state: &mut VoiceChatOverlayState) {
         .last()
         .is_none_or(|msg| msg.role != ChatRole::Assistant || !msg.is_streaming);
     if needs_new {
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::Assistant,
             text: String::new(),
             is_streaming: true,
@@ -480,7 +499,7 @@ fn ensure_streaming_user_message(state: &mut VoiceChatOverlayState) {
         .last()
         .is_none_or(|msg| msg.role != ChatRole::User || !msg.is_streaming);
     if needs_new {
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::User,
             text: String::new(),
             is_streaming: true,
@@ -544,11 +563,24 @@ fn update_send_button_with_state(state: &mut VoiceChatOverlayState) {
     unsafe {
         if let Some(button_ptr) = state.agent_send_button {
             let btn = button_ptr as Id;
-            let enabled = !state.is_sending && state.auto_send_enabled;
+            // In auto-send mode: button shows "Auto" and is disabled (voice input sends
+            // automatically). In draft mode: button shows ">" and the user clicks to send.
+            let enabled = !state.is_sending;
             let _: () = msg_send![btn, setEnabled: enabled];
-            let title = if state.is_sending { "…" } else { ">" };
-            let title = ns_string(title);
-            let _: () = msg_send![btn, setTitle: title];
+            let title = if state.is_sending {
+                "…"
+            } else if state.auto_send_enabled {
+                "Auto"
+            } else {
+                ">"
+            };
+            let label = if state.auto_send_enabled {
+                "Auto-send enabled"
+            } else {
+                "Send message"
+            };
+            let _: () = msg_send![btn, setTitle: ns_string(title)];
+            let _: () = msg_send![btn, setAccessibilityLabel: ns_string(label)];
         }
     }
 }
@@ -660,28 +692,61 @@ fn refresh_drawer_impl() {
     render_drawer_entries(&mut state, &query);
 }
 
+/// Check that a path is within the CodeScribe transcriptions directory.
+/// Prevents accidental read/delete of files outside the sandbox.
+fn is_safe_transcription_path(path: &std::path::Path) -> bool {
+    let config_dir = codescribe_core::config::Config::config_dir();
+    let allowed_root = config_dir.join("transcriptions");
+    match (path.canonicalize(), allowed_root.canonicalize()) {
+        (Ok(canon), Ok(root)) => canon.starts_with(root),
+        // If canonicalize fails (file doesn't exist yet), fall back to prefix check
+        _ => path.starts_with(&allowed_root),
+    }
+}
+
 pub fn handle_card_copy(index: usize) {
     let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(entry) = state.drawer_entries.get(index)
-        && let Ok(contents) = std::fs::read_to_string(&entry.path)
-    {
-        copy_to_clipboard(&contents);
+    if let Some(entry) = state.drawer_entries.get(index) {
+        if !is_safe_transcription_path(&entry.path) {
+            warn!(
+                "Blocked copy: path outside transcriptions dir: {}",
+                entry.path.display()
+            );
+            return;
+        }
+        if let Ok(contents) = std::fs::read_to_string(&entry.path) {
+            copy_to_clipboard(&contents);
+        }
     }
 }
 
 pub fn handle_card_edit(index: usize) {
     let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(entry) = state.drawer_entries.get(index) {
+        if !is_safe_transcription_path(&entry.path) {
+            warn!(
+                "Blocked edit: path outside transcriptions dir: {}",
+                entry.path.display()
+            );
+            return;
+        }
         let _ = open_file_in_editor(&entry.path);
     }
 }
 
 pub fn handle_card_delete(index: usize) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(entry) = state.drawer_entries.get(index)
-        && let Err(err) = std::fs::remove_file(&entry.path)
-    {
-        warn!("Failed to delete {}: {}", entry.path.display(), err);
+    if let Some(entry) = state.drawer_entries.get(index) {
+        if !is_safe_transcription_path(&entry.path) {
+            warn!(
+                "Blocked delete: path outside transcriptions dir: {}",
+                entry.path.display()
+            );
+            return;
+        }
+        if let Err(err) = std::fs::remove_file(&entry.path) {
+            warn!("Failed to delete {}: {}", entry.path.display(), err);
+        }
     }
     state.drawer_entries = load_drawer_entries();
     render_drawer_entries(&mut state, "");

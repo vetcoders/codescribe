@@ -139,6 +139,9 @@ pub struct RecordingController {
 
     /// Flag to skip Moshi init if models are not available (avoids spam)
     moshi_unavailable: Arc<AtomicBool>,
+
+    /// Background tasks (cloud saves, etc.) — aborted on reset
+    background_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl RecordingController {
@@ -151,15 +154,20 @@ impl RecordingController {
             config.hold_start_delay_ms, config.beep_on_start, config.whisper_language
         );
 
-        let mut recorder =
-            StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        let mut recorder = StreamingRecorder::new().unwrap_or_else(|e| {
+            error!("StreamingRecorder init failed: {e}");
+            panic!("Cannot start CodeScribe without audio recorder: {e}");
+        });
         recorder.set_delta_callback(Some(Arc::new(
             codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|delta: &str| {
                 route_transcription_delta(delta);
             })),
         )));
 
-        let model_manager = ModelManager::new().expect("Failed to initialize model manager");
+        let model_manager = ModelManager::new().unwrap_or_else(|e| {
+            error!("ModelManager init failed: {e}");
+            panic!("Cannot start CodeScribe without model manager: {e}");
+        });
         if let Ok(models) = model_manager.list_models()
             && !models.is_empty()
         {
@@ -193,6 +201,7 @@ impl RecordingController {
             conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
             moshi_unavailable: Arc::new(AtomicBool::new(false)),
+            background_tasks: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -207,15 +216,20 @@ impl RecordingController {
             cfg.hold_start_delay_ms, cfg.beep_on_start, cfg.whisper_language
         );
 
-        let mut recorder =
-            StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        let mut recorder = StreamingRecorder::new().unwrap_or_else(|e| {
+            error!("StreamingRecorder init failed: {e}");
+            panic!("Cannot start CodeScribe without audio recorder: {e}");
+        });
         recorder.set_delta_callback(Some(Arc::new(
             codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|delta: &str| {
                 route_transcription_delta(delta);
             })),
         )));
 
-        let model_manager = ModelManager::new().expect("Failed to initialize model manager");
+        let model_manager = ModelManager::new().unwrap_or_else(|e| {
+            error!("ModelManager init failed: {e}");
+            panic!("Cannot start CodeScribe without model manager: {e}");
+        });
         if let Ok(models) = model_manager.list_models()
             && !models.is_empty()
         {
@@ -248,6 +262,7 @@ impl RecordingController {
             conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
             moshi_unavailable: Arc::new(AtomicBool::new(false)),
+            background_tasks: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1650,7 +1665,7 @@ impl RecordingController {
         } else if let Some(handle) = cloud_handle {
             let slug_hint = raw_text.clone();
             let timestamp = recording_timestamp;
-            tokio::spawn(async move {
+            let bg_handle = tokio::spawn(async move {
                 match handle.await {
                     Ok(Ok(text)) => {
                         let entry = crate::state::history::save_entry_with_timestamp_and_slug(
@@ -1665,6 +1680,11 @@ impl RecordingController {
                     Err(e) => error!("Cloud transcription task failed: {}", e),
                 }
             });
+            // Track for cleanup on reset
+            if let Ok(mut tasks) = self.background_tasks.try_lock() {
+                tasks.retain(|h| !h.is_finished());
+                tasks.push(bg_handle);
+            }
         }
 
         Ok(())
@@ -1687,6 +1707,13 @@ impl RecordingController {
         *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
         *self.assistive_context.write().await = None;
+
+        // Abort outstanding background tasks
+        if let Ok(mut tasks) = self.background_tasks.try_lock() {
+            for handle in tasks.drain(..) {
+                handle.abort();
+            }
+        }
 
         // Hide UI indicators
         hide_hold_badge();

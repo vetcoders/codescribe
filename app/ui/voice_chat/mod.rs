@@ -414,6 +414,22 @@ fn show_voice_chat_overlay_impl() {
         button_set_action(agent_send_button, action_handler, sel!(onSend:));
         let _: () = msg_send![input_bar, addSubview: agent_send_button];
 
+        // Accessibility labels (VoiceOver)
+        let _: () = msg_send![close_button, setAccessibilityLabel: ns_string("Close overlay")];
+        let _: () = msg_send![settings_button, setAccessibilityLabel: ns_string("Settings")];
+        let _: () = msg_send![agent_send_button, setAccessibilityLabel: ns_string("Send message")];
+        let _: () = msg_send![tab_control, setAccessibilityLabel: ns_string("View selector")];
+        let _: () =
+            msg_send![search_field, setAccessibilityLabel: ns_string("Search transcriptions")];
+        let _: () =
+            msg_send![agent_input_text_view, setAccessibilityLabel: ns_string("Message input")];
+        let _: () =
+            msg_send![paste_last_button, setAccessibilityLabel: ns_string("Paste last response")];
+        let _: () =
+            msg_send![copy_last_button, setAccessibilityLabel: ns_string("Copy last response")];
+        let _: () =
+            msg_send![new_thread_button, setAccessibilityLabel: ns_string("New conversation")];
+
         // Initial visibility
         set_hidden(agent_scroll, true);
         set_hidden(input_bar, true);

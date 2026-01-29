@@ -55,7 +55,7 @@ mod pipeline_integration {
 
         // Utterance 2 — overlaps with end of utterance 1
         let utt2 = "world. And more.";
-        let stripped = strip_suffix_overlap(&last_suffix, utt2);
+        let stripped = strip_suffix_overlap(last_suffix, utt2);
         if !stripped.is_empty() {
             if !transcript.ends_with(' ') && !stripped.starts_with(' ') {
                 transcript.push(' ');

@@ -89,6 +89,10 @@ pub struct DrawerEntry {
     pub is_favorite: bool,
 }
 
+/// Maximum number of chat messages retained in memory.
+/// Oldest messages are dropped when this limit is exceeded.
+const MAX_CHAT_MESSAGES: usize = 100;
+
 /// Voice chat overlay state
 pub struct VoiceChatOverlayState {
     // Window
@@ -165,6 +169,17 @@ impl Default for VoiceChatOverlayState {
             last_target_app: None,
             conversation_state: ConversationModeState::default(),
             action_handler: None,
+        }
+    }
+}
+
+impl VoiceChatOverlayState {
+    /// Append a message, dropping the oldest if over the cap.
+    pub fn push_message(&mut self, msg: ChatMessage) {
+        self.messages.push(msg);
+        if self.messages.len() > MAX_CHAT_MESSAGES {
+            let excess = self.messages.len() - MAX_CHAT_MESSAGES;
+            self.messages.drain(..excess);
         }
     }
 }

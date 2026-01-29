@@ -41,5 +41,5 @@ fn test_vad_gate_segments_speech_only() {
 
     // We only assert that some output is produced (gate lets speech through)
     let out = transcribe_streaming_samples(&samples, sample_rate, None, None).unwrap_or_default();
-    assert!(out.len() >= 0, "Transcription completed without panic");
+    let _ = out; // assert: reached here without panic
 }

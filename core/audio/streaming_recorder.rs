@@ -516,11 +516,7 @@ mod tests {
         if let Some(vad_sample) = session.vad_current_sample() {
             let mapped = session.vad_to_raw_index_pub(vad_sample);
             let raw_cur = session.raw_cursor();
-            let drift = if mapped > raw_cur {
-                mapped - raw_cur
-            } else {
-                raw_cur - mapped
-            };
+            let drift = mapped.abs_diff(raw_cur);
             let vad_chunk = 512usize;
             let vad_sr = 16000.0f32;
             let tolerance = ((vad_chunk as f32 * input_sr as f32) / vad_sr) as usize;
