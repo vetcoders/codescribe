@@ -126,6 +126,7 @@ pub struct VoiceChatOverlayState {
     pub manual_draft: String,
     pub is_sending: bool,
     pub auto_send_enabled: bool,
+    pub last_target_app: Option<String>,
 
     // Conversation mode (Moshi)
     pub conversation_state: ConversationModeState,
@@ -161,6 +162,7 @@ impl Default for VoiceChatOverlayState {
             manual_draft: String::new(),
             is_sending: false,
             auto_send_enabled: true,
+            last_target_app: None,
             conversation_state: ConversationModeState::default(),
             action_handler: None,
         }

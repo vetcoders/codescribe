@@ -3,7 +3,7 @@
 //! Contains all the public functions for controlling the overlay and
 //! internal helper functions for state updates.
 
-use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+use core_graphics::geometry::{CGPoint, CGRect};
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
@@ -14,7 +14,7 @@ use crate::ui_helpers::{
     BubbleConfig, BubbleRole, create_bubble_view, create_card_view, get_text_field_string,
     get_text_view_string, list_draft_files, ns_string, open_file_in_editor,
     resize_bubble_container_for_text, set_text_field_string, set_text_view_string, stack_view_add,
-    stack_view_clear, update_bubble_text, window_set_alpha, window_show,
+    stack_view_clear, update_bubble_text,
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
@@ -192,6 +192,14 @@ pub fn show_drawer_tab() {
     });
 }
 
+/// Store the name of the app the user was in when starting assistive mode.
+pub fn set_voice_chat_target_app(app_name: Option<String>) {
+    Queue::main().exec_async(move || {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.last_target_app = app_name;
+    });
+}
+
 /// Update the conversation mode state (Moshi full-duplex indicators)
 pub fn update_conversation_state(new_state: ConversationModeState) {
     Queue::main().exec_async(move || {
@@ -250,14 +258,13 @@ pub fn update_active_tab_impl(tab: Tab) {
         // When switching to Agent, make sure the input field can actually receive text.
         // We do NOT force activation (to avoid stealing focus), but if the window is already
         // key, we nudge first responder to the input field for better UX.
-        if tab == Tab::Agent {
-            if let (Some(window_ptr), Some(input_ptr)) = (state.window, state.agent_input_text_view)
-            {
-                let window = window_ptr as Id;
-                let is_key: bool = msg_send![window, isKeyWindow];
-                if is_key {
-                    let _: bool = msg_send![window, makeFirstResponder: input_ptr as Id];
-                }
+        if tab == Tab::Agent
+            && let (Some(window_ptr), Some(input_ptr)) = (state.window, state.agent_input_text_view)
+        {
+            let window = window_ptr as Id;
+            let is_key: bool = msg_send![window, isKeyWindow];
+            if is_key {
+                let _: bool = msg_send![window, makeFirstResponder: input_ptr as Id];
             }
         }
     }
@@ -336,16 +343,6 @@ fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> b
     }
 }
 
-fn apply_delta_with_backspace(target: &mut String, delta: &str) {
-    for ch in delta.chars() {
-        if ch == '\u{0008}' {
-            target.pop();
-        } else {
-            target.push(ch);
-        }
-    }
-}
-
 fn finalize_user_message_impl(text: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_streaming_user_message(&mut state);
@@ -368,40 +365,6 @@ fn finalize_assistant_message_impl(text: &str, is_error: bool) {
     state.is_sending = false;
     update_chat_view_with_state(&mut state, true);
     update_send_button_with_state(&mut state);
-}
-
-fn ensure_agent_tab_visible(state: &mut VoiceChatOverlayState) {
-    unsafe {
-        // Make sure the window is actually visible, even if it was previously hidden/closed.
-        if let Some(window_ptr) = state.window {
-            let window = window_ptr as Id;
-            window_set_alpha(window, 1.0);
-            window_show(window);
-        }
-
-        // Force Agent tab for any live/assistive messaging.
-        state.active_tab = Tab::Agent;
-        if let Some(tab_control) = state.tab_control {
-            let _: () = msg_send![tab_control as Id, setSelectedSegment: 1_isize];
-        }
-
-        let show_drawer = false;
-        if let Some(drawer_view) = state.drawer_scroll_view {
-            crate::ui_helpers::set_hidden(drawer_view as Id, !show_drawer);
-        }
-        if let Some(search_field) = state.search_field {
-            crate::ui_helpers::set_hidden(search_field as Id, !show_drawer);
-        }
-        if let Some(agent_view) = state.agent_scroll_view {
-            crate::ui_helpers::set_hidden(agent_view as Id, show_drawer);
-        }
-        if let Some(agent_input_bar) = state.agent_input_bar {
-            crate::ui_helpers::set_hidden(agent_input_bar as Id, show_drawer);
-        }
-        if let Some(agent_send) = state.agent_send_button {
-            crate::ui_helpers::set_hidden(agent_send as Id, show_drawer);
-        }
-    }
 }
 
 pub(super) fn clear_voice_chat_text_impl() {

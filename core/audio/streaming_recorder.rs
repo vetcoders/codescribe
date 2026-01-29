@@ -10,14 +10,18 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info};
 
 // Re-export public API that was moved to pipeline::streaming
-pub use crate::pipeline::streaming::{StreamDeltaCallback, transcribe_streaming_samples};
+#[allow(deprecated)]
+pub use crate::pipeline::streaming::StreamDeltaCallback;
+pub use crate::pipeline::streaming::transcribe_streaming_samples;
+
+use crate::pipeline::contracts::DeltaSink;
 
 pub struct StreamingRecorder {
     pub recorder: Recorder,
     transcript_buffer: Arc<Mutex<String>>,
     transcription_handle: Option<JoinHandle<()>>,
     sample_rate: u32,
-    delta_callback: Option<StreamDeltaCallback>,
+    delta_callback: Option<Arc<dyn DeltaSink>>,
 }
 
 impl StreamingRecorder {
@@ -47,7 +51,7 @@ impl StreamingRecorder {
         })
     }
 
-    pub fn set_delta_callback(&mut self, callback: Option<StreamDeltaCallback>) {
+    pub fn set_delta_callback(&mut self, callback: Option<Arc<dyn DeltaSink>>) {
         self.delta_callback = callback;
     }
 

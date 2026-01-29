@@ -138,7 +138,7 @@ pub(crate) struct BufferedEmitter {
     current_segment: Option<String>,
     current_tokens: Vec<String>,
     current_token_index: usize,
-    delta_callback: Option<StreamDeltaCallback>,
+    delta_callback: Option<Arc<dyn DeltaSink>>,
     transcript_buffer: Arc<Mutex<String>>,
     stream_log_path: Option<std::path::PathBuf>,
     finished: bool,
@@ -152,7 +152,7 @@ pub(crate) struct BufferedEmitter {
 impl BufferedEmitter {
     pub(crate) fn new(
         transcript_buffer: Arc<Mutex<String>>,
-        delta_callback: Option<StreamDeltaCallback>,
+        delta_callback: Option<Arc<dyn DeltaSink>>,
         stream_log_path: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
@@ -237,25 +237,24 @@ impl BufferedEmitter {
                 .last_correction_at
                 .map(|t| t.elapsed() >= Duration::from_millis(CORRECTION_COOLDOWN_MS))
                 .unwrap_or(true);
-            if can_correct {
-                if let Some(corrected) = self.correction_pending.take() {
-                    if let Some(delta) = build_redacted_delta(&self.emitted_text, &corrected) {
-                        apply_delta_to_string(&mut self.emitted_text, &delta);
-                        {
-                            let mut buffer = self.transcript_buffer.lock().await;
-                            *buffer = self.emitted_text.clone();
-                        }
-                        if let Some(sink) = &self.delta_callback {
-                            sink.apply(&TranscriptDelta::from_raw(&delta));
-                        }
-                        if let Some(path) = self.stream_log_path.as_deref() {
-                            let _ = append_to_stream_log(path, &delta);
-                        }
-                        self.last_correction_at = Some(Instant::now());
-                        self.corrections_applied += 1;
-                        return false;
-                    }
+            if can_correct
+                && let Some(corrected) = self.correction_pending.take()
+                && let Some(delta) = build_redacted_delta(&self.emitted_text, &corrected)
+            {
+                apply_delta_to_string(&mut self.emitted_text, &delta);
+                {
+                    let mut buffer = self.transcript_buffer.lock().await;
+                    *buffer = self.emitted_text.clone();
                 }
+                if let Some(sink) = &self.delta_callback {
+                    sink.apply(&TranscriptDelta::from_raw(&delta));
+                }
+                if let Some(path) = self.stream_log_path.as_deref() {
+                    let _ = append_to_stream_log(path, &delta);
+                }
+                self.last_correction_at = Some(Instant::now());
+                self.corrections_applied += 1;
+                return false;
             }
         }
 
@@ -371,7 +370,7 @@ pub(crate) async fn transcription_worker(
     sample_rate: u32,
     language: Option<String>,
     mut postprocessor: Option<StreamPostProcessor>,
-    delta_callback: Option<StreamDeltaCallback>,
+    delta_callback: Option<Arc<dyn DeltaSink>>,
     stream_log_path: Option<std::path::PathBuf>,
 ) {
     info!("Transcription worker started");
@@ -419,7 +418,7 @@ pub(crate) async fn buffered_transcription_worker(
     transcript_buffer: Arc<Mutex<String>>,
     sample_rate: u32,
     language: Option<String>,
-    delta_callback: Option<StreamDeltaCallback>,
+    delta_callback: Option<Arc<dyn DeltaSink>>,
     stream_log_path: Option<std::path::PathBuf>,
 ) {
     info!("Buffered transcription worker started");
@@ -559,7 +558,7 @@ async fn process_chunk(
     sample_rate: u32,
     language: Option<&str>,
     mut postprocessor: Option<&mut StreamPostProcessor>,
-    delta_callback: Option<&StreamDeltaCallback>,
+    delta_callback: Option<&Arc<dyn DeltaSink>>,
     stream_log_path: Option<&Path>,
 ) {
     if samples.is_empty() {
