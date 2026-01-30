@@ -34,8 +34,8 @@ use tracing::{info, warn};
 use crate::ui_helpers::{
     NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style, color_clear,
     create_button, create_scrollable_text_view, create_segmented_control,
-    create_vertical_stack_view, ns_string, overlay_window_class, set_hidden, window_set_alpha,
-    window_show,
+    create_vertical_stack_view, ns_string, overlay_window_class, set_hidden, set_tooltip,
+    window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -44,6 +44,10 @@ use state::{OVERLAY_STATE, Tab};
 
 // Type alias for Objective-C object pointers
 pub type Id = *mut Object;
+
+// NSViewAutoresizingMaskOptions bitmask (legacy constants).
+const NSVIEW_MIN_X_MARGIN: u64 = 1 << 0;
+const NSVIEW_MAX_Y_MARGIN: u64 = 1 << 5;
 
 /// Show the voice chat overlay window
 pub fn show_voice_chat_overlay() {

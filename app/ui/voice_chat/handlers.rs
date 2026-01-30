@@ -5,6 +5,7 @@
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
 use objc::{msg_send, sel, sel_impl};
+use core_graphics::geometry::{CGPoint, CGRect};
 use std::sync::Once;
 use tracing::{debug, info};
 
