@@ -691,7 +691,9 @@ pub fn send_draft_message_impl() {
                 } else {
                     format!("{draft}\n\n{block}")
                 };
-                handler(payload);
+                // The send callback uses `tokio::spawn`, which requires a runtime handle.
+                // Calling it from an arbitrary background thread can panic (release builds abort).
+                Queue::main().exec_async(move || handler(payload));
             });
         } else {
             handler(draft);
@@ -739,7 +741,7 @@ pub(super) fn commit_last_user_message_impl() {
                 } else {
                     format!("{text}\n\n{block}")
                 };
-                handler(payload);
+                Queue::main().exec_async(move || handler(payload));
             });
         } else {
             handler(text);
