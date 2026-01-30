@@ -686,6 +686,7 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
     out.push_str("ATTACHMENTS (file context)\n");
 
     let mut total_chars = out.chars().count();
+    let mut image_paths: Vec<String> = Vec::new();
     for path in paths {
         if total_chars >= MAX_TOTAL_CHARS {
             break;
@@ -706,7 +707,20 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
             .read_to_end(&mut buf);
 
         let Ok(mut s) = String::from_utf8(buf) else {
-            out.push_str("(skipped: not UTF-8 text)\n");
+            let ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            let is_image = matches!(
+                ext.as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff"
+            );
+            if is_image {
+                out.push_str("(image detected; will be sent as vision input)\n");
+                image_paths.push(display.to_string());
+            } else {
+                out.push_str("(skipped: not UTF-8 text)\n");
+            }
             continue;
         };
 
@@ -734,6 +748,21 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
         out.push_str("```\n");
 
         total_chars = out.chars().count();
+    }
+
+    if !image_paths.is_empty() && total_chars < MAX_TOTAL_CHARS {
+        out.push_str("\n---\n");
+        out.push_str("ATTACHMENTS (image paths)\n");
+        image_paths.sort();
+        for p in image_paths {
+            if total_chars >= MAX_TOTAL_CHARS {
+                break;
+            }
+            out.push_str("- ");
+            out.push_str(&p);
+            out.push('\n');
+            total_chars = out.chars().count();
+        }
     }
 
     out

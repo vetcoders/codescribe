@@ -7,9 +7,10 @@ This branch adds a more “power-user” chat overlay with two tabs: **Agent** a
 - **Voice → chat**: your spoken input appears as a user bubble; the assistant streams its reply into an assistant bubble.
 - **Selection context**: if you trigger the “selection” mode while text is selected in another app, the selected text is provided as context to the assistant.
 - **Type input**: the bottom text field supports typing. It starts compact and grows only when needed.
-- **Attachments (📎)**: attach files as extra context for the assistant (text only).
+- **Attachments (📎)**: attach files as extra context for the assistant.
   - The attachment set is sent **once** per thread (unless you change/clear attachments).
-  - Only **UTF-8 text** is inlined, with size limits to avoid huge prompts (large/binary files are skipped).
+  - **Text files**: only **UTF-8 text** is inlined, with size limits to avoid huge prompts (large/binary files are skipped).
+  - **Images** (`png/jpg/webp/gif/...`): sent as **vision input** when the configured LLM endpoint supports `input_image`.
 - **Export (↓ icon)**: exports the current Agent thread as Markdown:
   - **All** → *Copy as Markdown* / *Save as Markdown (to history)*
   - **Assistant only** → *Copy as Markdown* / *Save as Markdown (to history)*
