@@ -44,6 +44,18 @@ pub fn action_handler_class() -> *const Class {
                 on_send as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
+                sel!(onAttachMenu:),
+                on_attach_menu as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onAttachPick:),
+                on_attach_pick as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onAttachClear:),
+                on_attach_clear as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
                 sel!(onTabChanged:),
                 on_tab_changed as extern "C" fn(&Object, Sel, Id),
             );
@@ -199,6 +211,111 @@ extern "C" fn can_become_main_window(_this: &Object, _cmd: Sel) -> bool {
 
 extern "C" fn on_send(_this: &Object, _cmd: Sel, _sender: Id) {
     send_draft_message_impl();
+}
+
+extern "C" fn on_attach_menu(this: &Object, _cmd: Sel, sender: Id) {
+    unsafe {
+        let ns_menu = Class::get("NSMenu").unwrap();
+        let ns_menu_item = Class::get("NSMenuItem").unwrap();
+
+        let menu: Id = msg_send![ns_menu, new];
+        let target: Id = (this as *const Object) as Id;
+
+        let attach: Id = msg_send![ns_menu_item, alloc];
+        let attach: Id = msg_send![
+            attach,
+            initWithTitle: ns_string("Attach files…")
+            action: sel!(onAttachPick:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![attach, setTarget: target];
+        let _: () = msg_send![menu, addItem: attach];
+
+        let count = {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.attached_files.len()
+        };
+        if count > 0 {
+            let sep: Id = msg_send![ns_menu_item, separatorItem];
+            let _: () = msg_send![menu, addItem: sep];
+
+            let clear_title = format!("Clear attachments ({})", count);
+            let clear: Id = msg_send![ns_menu_item, alloc];
+            let clear: Id = msg_send![
+                clear,
+                initWithTitle: ns_string(&clear_title)
+                action: sel!(onAttachClear:)
+                keyEquivalent: ns_string("")
+            ];
+            let _: () = msg_send![clear, setTarget: target];
+            let _: () = msg_send![menu, addItem: clear];
+        }
+
+        // Pop up anchored at the button.
+        let bounds: CGRect = msg_send![sender, bounds];
+        let location = CGPoint::new(0.0, bounds.size.height);
+        let nil_item: *mut Object = std::ptr::null_mut();
+        let _: bool = msg_send![
+            menu,
+            popUpMenuPositioningItem: nil_item
+            atLocation: location
+            inView: sender
+        ];
+    }
+}
+
+extern "C" fn on_attach_pick(_this: &Object, _cmd: Sel, _sender: Id) {
+    let picked = crate::ui_helpers::pick_files_open_panel("Attach files");
+    if picked.is_empty() {
+        return;
+    }
+
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    for p in picked {
+        if !state.attached_files.contains(&p) {
+            state.attached_files.push(p);
+        }
+    }
+    state.attached_files_last_sent = None;
+    update_attach_button_ui_locked(&mut state);
+}
+
+extern "C" fn on_attach_clear(_this: &Object, _cmd: Sel, _sender: Id) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.attached_files.clear();
+    state.attached_files_last_sent = None;
+    update_attach_button_ui_locked(&mut state);
+}
+
+fn update_attach_button_ui_locked(state: &mut super::state::VoiceChatOverlayState) {
+    unsafe {
+        let Some(btn_ptr) = state.agent_attach_button else {
+            return;
+        };
+        let btn = btn_ptr as Id;
+        let count = state.attached_files.len();
+        let title = if count == 0 {
+            "📎".to_string()
+        } else {
+            format!("📎{}", count)
+        };
+        let _: () = msg_send![btn, setTitle: ns_string(&title)];
+
+        if count == 0 {
+            let _: () = msg_send![btn, setToolTip: ns_string("Załącz pliki (kontekst dla asystenta)")];
+        } else {
+            let mut names: Vec<String> = state
+                .attached_files
+                .iter()
+                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .collect();
+            names.sort();
+            let shown: Vec<String> = names.into_iter().take(3).collect();
+            let suffix = if count > 3 { "…" } else { "" };
+            let tip = format!("Załączone: {}{}", shown.join(", "), suffix);
+            let _: () = msg_send![btn, setToolTip: ns_string(&tip)];
+        }
+    }
 }
 
 extern "C" fn on_close(_this: &Object, _cmd: Sel, _sender: Id) {

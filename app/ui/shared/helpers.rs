@@ -1293,6 +1293,70 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
 // File Operations Helpers
 // ============================================================================
 
+/// Pick one or more files via native macOS open panel.
+///
+/// Returns absolute paths. Intended for "attach as context" flows (Agent chat).
+pub fn pick_files_open_panel(title: &str) -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let Some(ns_open_panel) = Class::get("NSOpenPanel") else {
+            return Vec::new();
+        };
+        let panel: Id = msg_send![ns_open_panel, openPanel];
+        if panel.is_null() {
+            return Vec::new();
+        }
+
+        let _: () = msg_send![panel, setTitle: ns_string(title)];
+        let _: () = msg_send![panel, setCanChooseFiles: true];
+        let _: () = msg_send![panel, setCanChooseDirectories: false];
+        let _: () = msg_send![panel, setAllowsMultipleSelection: true];
+
+        // Prefer predictable prompt text (keeps UX clear).
+        let _: () = msg_send![panel, setPrompt: ns_string("Attach")];
+
+        // runModal returns NSModalResponse (NSModalResponseOK == 1).
+        let resp: isize = msg_send![panel, runModal];
+        if resp != 1 {
+            return Vec::new();
+        }
+
+        let urls: Id = msg_send![panel, URLs];
+        if urls.is_null() {
+            return Vec::new();
+        }
+
+        let count: usize = msg_send![urls, count];
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let url: Id = msg_send![urls, objectAtIndex: i];
+            if url.is_null() {
+                continue;
+            }
+            let ns_path: Id = msg_send![url, path];
+            if ns_path.is_null() {
+                continue;
+            }
+            let c_str: *const i8 = msg_send![ns_path, UTF8String];
+            if c_str.is_null() {
+                continue;
+            }
+            let s = std::ffi::CStr::from_ptr(c_str).to_string_lossy().to_string();
+            if s.is_empty() {
+                continue;
+            }
+            out.push(std::path::PathBuf::from(s));
+        }
+        out
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = title;
+        Vec::new()
+    }
+}
+
 /// Open a file in the default editor (TextEdit, etc.)
 pub fn open_file_in_editor(path: &std::path::Path) -> bool {
     // Most reliable approach in the app-bundle environment: call `/usr/bin/open`.

@@ -7,6 +7,9 @@ This branch adds a more “power-user” chat overlay with two tabs: **Agent** a
 - **Voice → chat**: your spoken input appears as a user bubble; the assistant streams its reply into an assistant bubble.
 - **Selection context**: if you trigger the “selection” mode while text is selected in another app, the selected text is provided as context to the assistant.
 - **Type input**: the bottom text field supports typing. It starts compact and grows only when needed.
+- **Attachments (📎)**: attach files as extra context for the assistant (text only).
+  - The attachment set is sent **once** per thread (unless you change/clear attachments).
+  - Only **UTF-8 text** is inlined, with size limits to avoid huge prompts (large/binary files are skipped).
 - **Export (↓ icon)**: exports the current Agent thread as Markdown:
   - **All** → *Copy as Markdown* / *Save as Markdown (to history)*
   - **Assistant only** → *Copy as Markdown* / *Save as Markdown (to history)*
@@ -24,4 +27,3 @@ This branch adds a more “power-user” chat overlay with two tabs: **Agent** a
 
 - Everyday actions live at top-level.
 - Advanced options (especially hotkeys) are intentionally tucked under **Tools → Advanced…** to reduce cognitive load.
-

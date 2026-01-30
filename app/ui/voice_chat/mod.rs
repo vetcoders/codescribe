@@ -475,7 +475,8 @@ fn show_voice_chat_overlay_impl() {
 
         let text_area_frame = CGRect::new(
             &CGPoint::new(12.0, 10.0),
-            &CGSize::new(window_width - 90.0, agent_input_height - 20.0),
+            // Leave room for Attach + Send buttons on the right.
+            &CGSize::new(window_width - 140.0, agent_input_height - 20.0),
         );
         let (agent_input_scroll, agent_input_text_view) =
             create_scrollable_text_view(text_area_frame, true);
@@ -491,7 +492,24 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![agent_input_text_view, setDelegate: action_handler];
         let _: () = msg_send![input_bar, addSubview: agent_input_scroll];
 
+        // Attach button (file context for Agent).
         let send_y = ((agent_input_height - 32.0) / 2.0).max(8.0);
+        let agent_attach_button = create_button(
+            CGRect::new(
+                &CGPoint::new(window_width - 120.0, send_y),
+                &CGSize::new(36.0, 32.0),
+            ),
+            "📎",
+            button_style::ROUNDED,
+        );
+        button_set_action(agent_attach_button, action_handler, sel!(onAttachMenu:));
+        let _: () = msg_send![
+            agent_attach_button,
+            setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MAX_Y_MARGIN
+        ];
+        set_tooltip(agent_attach_button, "Załącz pliki (kontekst dla asystenta)");
+        let _: () = msg_send![input_bar, addSubview: agent_attach_button];
+
         let agent_send_button = create_button(
             CGRect::new(
                 &CGPoint::new(window_width - 76.0, send_y),
@@ -528,6 +546,7 @@ fn show_voice_chat_overlay_impl() {
         state.agent_input_scroll_view = Some(agent_input_scroll as usize);
         state.agent_input_text_view = Some(agent_input_text_view as usize);
         state.agent_input_field = None;
+        state.agent_attach_button = Some(agent_attach_button as usize);
         state.agent_send_button = Some(agent_send_button as usize);
         state.action_handler = Some(action_handler as usize);
         state.active_tab = Tab::Drawer;

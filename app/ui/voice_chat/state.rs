@@ -120,7 +120,12 @@ pub struct VoiceChatOverlayState {
     pub agent_input_scroll_view: Option<usize>,
     pub agent_input_text_view: Option<usize>,
     pub agent_input_field: Option<usize>,
+    pub agent_attach_button: Option<usize>,
     pub agent_send_button: Option<usize>,
+    /// Files attached as additional context for Agent chat.
+    pub attached_files: Vec<PathBuf>,
+    /// Fingerprint of the last attachment set that was sent to the assistant.
+    pub attached_files_last_sent: Option<u64>,
 
     // Active tab
     pub active_tab: Tab,
@@ -166,7 +171,10 @@ impl Default for VoiceChatOverlayState {
             agent_input_scroll_view: None,
             agent_input_text_view: None,
             agent_input_field: None,
+            agent_attach_button: None,
             agent_send_button: None,
+            attached_files: Vec::new(),
+            attached_files_last_sent: None,
             active_tab: Tab::Drawer,
             messages: Vec::new(),
             manual_draft: String::new(),
