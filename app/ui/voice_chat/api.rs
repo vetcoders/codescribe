@@ -448,6 +448,8 @@ pub fn send_draft_message_impl() {
                 } else {
                     format!("{draft}\n\n{block}")
                 };
+                // The send callback uses `tokio::spawn`, which requires a runtime handle.
+                // Calling it from an arbitrary background thread can panic (release builds abort).
                 Queue::main().exec_async(move || handler(payload));
             });
         } else {
