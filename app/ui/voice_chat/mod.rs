@@ -249,7 +249,8 @@ fn show_voice_chat_overlay_impl() {
         add_subview(blur_view, header_view);
 
         let title_x = 16.0;
-        let title_w = 120.0;
+        // Give the tab control more room to avoid truncation ("Dr..." / "A...").
+        let title_w = 84.0;
         let title_label = crate::ui_helpers::create_label(crate::ui_helpers::LabelConfig {
             frame: CGRect::new(
                 &CGPoint::new(title_x, window_height - 30.0),

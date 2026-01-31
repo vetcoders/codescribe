@@ -967,16 +967,218 @@ fn attachment_fingerprint(paths: &[std::path::PathBuf]) -> u64 {
 
 fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
     use std::io::Read;
+    use std::process::Command;
 
     const MAX_TOTAL_CHARS: usize = 120_000;
     const MAX_FILE_CHARS: usize = 40_000;
     const MAX_FILE_BYTES: usize = 512 * 1024; // cap IO; we only inline a prefix anyway
+    const PDF_MIN_TEXT_CHARS: usize = 100;
+
+    fn env_usize(key: &str, default_value: usize) -> usize {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(default_value)
+    }
+
+    fn env_bool(key: &str, default_value: bool) -> bool {
+        std::env::var(key)
+            .ok()
+            .map(|v| {
+                !matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+            })
+            .unwrap_or(default_value)
+    }
+
+    fn command_exists(name: &str) -> bool {
+        match Command::new(name).arg("--version").output() {
+            Ok(_) => true,
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        }
+    }
+
+    fn run_command_stdout(mut cmd: Command) -> Result<Vec<u8>, String> {
+        let output = cmd.output().map_err(|e| e.to_string())?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                "command failed".to_string()
+            } else {
+                stderr
+            })
+        }
+    }
+
+    fn extract_pdf_text_pdftotext(path: &std::path::Path, pages: usize) -> Result<String, String> {
+        let pages = pages.max(1);
+        let mut cmd = Command::new("pdftotext");
+        cmd.args(["-f", "1", "-l", &pages.to_string()])
+            .arg(path)
+            .arg("-");
+        let stdout = run_command_stdout(cmd)?;
+        Ok(String::from_utf8_lossy(&stdout).into_owned())
+    }
+
+    fn temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
+        let pid = std::process::id();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis();
+        let dir = std::env::temp_dir().join(format!("{prefix}_{pid}_{stamp}"));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Ok(dir)
+    }
+
+    fn extract_pdf_text_ocrmypdf(
+        path: &std::path::Path,
+        pages: usize,
+        language: &str,
+    ) -> Result<String, String> {
+        let pages = pages.max(1);
+        let dir = temp_dir("codescribe_pdf_ocr")?;
+        let output_pdf = dir.join("ocr.pdf");
+
+        // NOTE: we OCR only first N pages to keep latency acceptable.
+        // `ocrmypdf` doesn't support "first N pages" directly, so we pre-split via `pdftk`/`qpdf`
+        // would add more deps; instead we run ocrmypdf on whole doc only when asked.
+        // Here: best-effort; if you want faster, disable OCR or raise pages and accept cost.
+        //
+        // We still respect `pages` when extracting with pdftotext after OCR.
+        let _ = pages;
+        let mut cmd = Command::new("ocrmypdf");
+        cmd.args([
+            "--language",
+            language,
+            "--force-ocr",
+            "--clean",
+            "--deskew",
+            "--remove-background",
+        ])
+        .arg(path)
+        .arg(&output_pdf);
+        let _ = run_command_stdout(cmd)?;
+
+        let text = extract_pdf_text_pdftotext(&output_pdf, pages).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(text)
+    }
+
+    fn extract_pdf_text_tesseract(
+        path: &std::path::Path,
+        pages: usize,
+        language: &str,
+    ) -> Result<String, String> {
+        let pages = pages.max(1);
+        let dir = temp_dir("codescribe_pdf_pages")?;
+        let prefix = dir.join("page");
+
+        if command_exists("pdftoppm") {
+            let mut cmd = Command::new("pdftoppm");
+            cmd.args(["-png", "-r", "300", "-f", "1", "-l", &pages.to_string()])
+                .arg(path)
+                .arg(&prefix);
+            let _ = run_command_stdout(cmd)?;
+        } else if command_exists("convert") {
+            // ImageMagick fallback: convert first N pages (best-effort).
+            let output = dir.join("page-%03d.png");
+            let mut cmd = Command::new("convert");
+            cmd.args(["-density", "300"])
+                .arg(path)
+                .args(["-quality", "100"])
+                .arg(output);
+            let _ = run_command_stdout(cmd)?;
+        } else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("Missing pdftoppm/convert for PDF->image".to_string());
+        }
+
+        let mut images: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        images.sort();
+
+        if images.is_empty() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("PDF->image produced no pages".to_string());
+        }
+
+        if !command_exists("tesseract") {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("Missing tesseract".to_string());
+        }
+
+        let mut out = String::new();
+        for (i, img) in images.iter().take(pages).enumerate() {
+            let mut cmd = Command::new("tesseract");
+            cmd.arg(img).arg("stdout").args(["-l", language]);
+            let stdout = run_command_stdout(cmd)?;
+            let text = String::from_utf8_lossy(&stdout);
+            out.push_str(&format!("=== PAGE {} ===\n", i + 1));
+            out.push_str(text.trim());
+            out.push_str("\n\n");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(out)
+    }
+
+    fn extract_pdf_text_auto(
+        path: &std::path::Path,
+        pages: usize,
+    ) -> Result<(String, &'static str), String> {
+        let text = extract_pdf_text_pdftotext(path, pages).unwrap_or_default();
+        if text.trim().chars().count() >= PDF_MIN_TEXT_CHARS {
+            return Ok((text, "pdftotext"));
+        }
+
+        let ocr_enabled = env_bool("CODESCRIBE_ATTACH_PDF_OCR", true);
+        if !ocr_enabled {
+            return Ok((text, "pdftotext (minimal text)"));
+        }
+
+        // Default OCR languages: Polish + English (matches our typical WHISPER_LANGUAGE=pl).
+        let ocr_lang = std::env::var("CODESCRIBE_ATTACH_PDF_OCR_LANG")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "pol+eng".to_string());
+
+        if command_exists("ocrmypdf")
+            && command_exists("pdftotext")
+            && let Ok(ocr_text) = extract_pdf_text_ocrmypdf(path, pages, &ocr_lang)
+            && ocr_text.trim().chars().count() >= PDF_MIN_TEXT_CHARS
+        {
+            return Ok((ocr_text, "ocrmypdf+pdftotext"));
+        }
+
+        if let Ok(ocr_text) = extract_pdf_text_tesseract(path, pages, &ocr_lang)
+            && ocr_text.trim().chars().count() >= PDF_MIN_TEXT_CHARS
+        {
+            return Ok((ocr_text, "tesseract"));
+        }
+
+        Ok((text, "pdftotext (minimal text)"))
+    }
 
     let mut out = String::new();
     out.push_str("ATTACHMENTS (file context)\n");
 
     let mut total_chars = out.chars().count();
     let mut image_paths: Vec<String> = Vec::new();
+    let pdf_pages = env_usize("CODESCRIBE_ATTACH_PDF_PAGES", 3);
     for path in paths {
         if total_chars >= MAX_TOTAL_CHARS {
             break;
@@ -985,6 +1187,54 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
         let display = path.to_string_lossy();
         out.push_str("\n---\n");
         out.push_str(&format!("FILE: {display}\n"));
+
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if ext == "pdf" {
+            if !command_exists("pdftotext") {
+                out.push_str(
+                    "(PDF: missing pdftotext. Install poppler and retry, or paste text manually.)\n",
+                );
+                continue;
+            }
+
+            match extract_pdf_text_auto(path, pdf_pages) {
+                Ok((mut text, method)) => {
+                    // Cap per-file and total.
+                    if text.chars().count() > MAX_FILE_CHARS {
+                        text = text.chars().take(MAX_FILE_CHARS).collect();
+                        text.push_str("\n… (truncated)\n");
+                    }
+
+                    let remaining = MAX_TOTAL_CHARS.saturating_sub(total_chars);
+                    if remaining == 0 {
+                        break;
+                    }
+                    let mut snippet: String = text.chars().take(remaining).collect();
+                    if snippet.len() < text.len() {
+                        snippet.push_str("\n… (truncated)\n");
+                    }
+
+                    out.push_str(&format!(
+                        "(PDF text extracted via {method}; pages: {pdf_pages})\n"
+                    ));
+                    out.push_str("```text\n");
+                    out.push_str(&snippet);
+                    if !snippet.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str("```\n");
+                }
+                Err(e) => {
+                    out.push_str(&format!("(PDF: extraction failed: {e})\n"));
+                }
+            }
+
+            total_chars = out.chars().count();
+            continue;
+        }
 
         let Ok(mut f) = std::fs::File::open(path) else {
             out.push_str("(failed to open)\n");
@@ -995,10 +1245,6 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
         let _ = (&mut f).take(MAX_FILE_BYTES as u64).read_to_end(&mut buf);
 
         let Ok(mut s) = String::from_utf8(buf) else {
-            let ext = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_ascii_lowercase())
-                .unwrap_or_default();
             let is_image = matches!(
                 ext.as_str(),
                 "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff"
