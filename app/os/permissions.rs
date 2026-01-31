@@ -232,20 +232,78 @@ pub fn diagnostics_report() -> String {
     let mut out = String::new();
     let _ = writeln!(&mut out, "CodeScribe diagnostics");
     let _ = writeln!(&mut out, "pid: {}", std::process::id());
-    let _ = writeln!(
-        &mut out,
-        "exe: {}",
-        std::env::current_exe()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "<unknown>".to_string())
-    );
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string());
+    let _ = writeln!(&mut out, "exe: {}", exe);
 
     if let Some(bundle_id) = current_bundle_identifier() {
         let _ = writeln!(&mut out, "bundle_id: {}", bundle_id);
     }
 
+    let app_bundle = exe.contains(".app/Contents/MacOS/");
+    let _ = writeln!(
+        &mut out,
+        "app_bundle: {}",
+        if app_bundle { "yes" } else { "no" }
+    );
+
     let _ = writeln!(&mut out, "accessibility: {:?}", check_accessibility());
     let _ = writeln!(&mut out, "input_monitoring: {:?}", check_input_monitoring());
+
+    // Small, safe config hints (do not print secrets).
+    for key in [
+        "WHISPER_LANGUAGE",
+        "HOLD_MODS",
+        "HOLD_START_DELAY_MS",
+        "TOGGLE_TRIGGER",
+        "CODESCRIBE_BUFFERED_STREAM",
+        "CODESCRIBE_STREAM_CHUNK_SEC",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            let _ = writeln!(&mut out, "{key}: {val}");
+        }
+    }
+
+    // Best-effort codesign info (helps debug TCC resets).
+    #[cfg(target_os = "macos")]
+    {
+        let _ = writeln!(&mut out);
+        let _ = writeln!(&mut out, "codesign:");
+        if let Ok(output) = std::process::Command::new("codesign")
+            .args(["-dv", "--verbose=2", &exe])
+            .output()
+        {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for line in stderr.lines().take(40) {
+                let _ = writeln!(&mut out, "  {}", line);
+            }
+        } else {
+            let _ = writeln!(&mut out, "  <unavailable>");
+        }
+    }
+
+    // Best-effort process list (helps spot stray CLI/daemon processes).
+    #[cfg(target_os = "macos")]
+    {
+        let _ = writeln!(&mut out);
+        let _ = writeln!(&mut out, "processes:");
+        if let Ok(output) = std::process::Command::new("ps")
+            .args(["-ax", "-o", "pid=,comm=,args="])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout
+                .lines()
+                .filter(|l| l.to_lowercase().contains("codescribe"))
+                .take(30)
+            {
+                let _ = writeln!(&mut out, "  {}", line.trim());
+            }
+        } else {
+            let _ = writeln!(&mut out, "  <unavailable>");
+        }
+    }
 
     out
 }

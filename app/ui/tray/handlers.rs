@@ -24,6 +24,10 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_open_history_folder();
     } else if event_id == &menu_ids.copy_diagnostics {
         handle_copy_diagnostics();
+    } else if event_id == &menu_ids.open_accessibility_settings {
+        handle_open_accessibility_settings();
+    } else if event_id == &menu_ids.open_input_monitoring_settings {
+        handle_open_input_monitoring_settings();
     } else if event_id == &menu_ids.open_assistive_prompt {
         handle_open_assistive_prompt();
     } else if event_id == &menu_ids.open_formatting_prompt {
@@ -95,6 +99,37 @@ fn handle_copy_diagnostics() {
             )
             .spawn();
     }
+}
+
+#[cfg(target_os = "macos")]
+fn open_privacy_settings(deeplink: &str) {
+    let url = format!(
+        "x-apple.systempreferences:com.apple.preference.security?{}",
+        deeplink
+    );
+    let _ = Command::new("open").arg(url).spawn();
+}
+
+#[cfg(target_os = "macos")]
+fn handle_open_accessibility_settings() {
+    send_menu_event(TrayMenuEvent::OpenAccessibilitySettings);
+    open_privacy_settings("Privacy_Accessibility");
+}
+
+#[cfg(target_os = "macos")]
+fn handle_open_input_monitoring_settings() {
+    send_menu_event(TrayMenuEvent::OpenInputMonitoringSettings);
+    open_privacy_settings("Privacy_ListenEvent");
+}
+
+#[cfg(not(target_os = "macos"))]
+fn handle_open_accessibility_settings() {
+    send_menu_event(TrayMenuEvent::OpenAccessibilitySettings);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn handle_open_input_monitoring_settings() {
+    send_menu_event(TrayMenuEvent::OpenInputMonitoringSettings);
 }
 
 fn handle_open_assistive_prompt() {
