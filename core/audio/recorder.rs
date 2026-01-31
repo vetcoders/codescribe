@@ -78,13 +78,9 @@ const CHANNELS: u16 = 1;
 
 /// Speech probability threshold (0.0-1.0) for VAD
 /// Below this is considered silence. Default: 0.5
-const DEFAULT_SPEECH_THRESHOLD: f32 = 0.5;
-
 /// Silence duration threshold (seconds)
 /// Recording stops automatically after this duration of continuous silence.
 /// Synced with VadConfig::max_silence_duration_sec default (1.2s)
-const DEFAULT_HANG_SEC: f32 = 1.2;
-
 /// Size of audio chunks to read from stream (samples)
 const BLOCK_SIZE: usize = 1024;
 
@@ -109,19 +105,15 @@ pub struct RecorderConfig {
 
 impl Default for RecorderConfig {
     fn default() -> Self {
+        // Keep a single source of truth for VAD thresholds/silence durations.
+        // This matches streaming segmentation + tray presets and also supports
+        // the "simple" sensitivity knobs (CODESCRIBE_VAD_SENSITIVITY, etc.).
+        let vad_cfg = vad::VadConfig::default();
         Self {
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,
-            speech_threshold: std::env::var("CODESCRIBE_VAD_THRESHOLD")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(DEFAULT_SPEECH_THRESHOLD)
-                .clamp(0.1, 0.9),
-            hang_sec: std::env::var("CODESCRIBE_VAD_MAX_SILENCE_SEC")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(DEFAULT_HANG_SEC)
-                .clamp(0.1, 10.0),
+            speech_threshold: vad_cfg.threshold.clamp(0.1, 0.9),
+            hang_sec: vad_cfg.max_silence_duration_sec.clamp(0.1, 10.0),
             auto_silence: std::env::var("AUTO_SILENCE")
                 .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
                 .unwrap_or(true),
