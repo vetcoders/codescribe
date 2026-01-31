@@ -17,6 +17,8 @@ use anyhow::Result;
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
+use codescribe_core::vad;
+
 use crate::config::Config;
 use crate::tray::submenus::build_hold_hotkeys_submenu;
 use crate::tray::types::MenuIds;
@@ -25,6 +27,7 @@ use crate::tray::types::MenuIds;
 thread_local! {
     pub static STATUS_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
     pub static QUALITY_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
+    pub static SILERO_VAD_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
 }
 
 /// Build the tray menu
@@ -120,6 +123,17 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         *cell.borrow_mut() = Some(quality_item);
     });
 
+    diagnostics_menu.append(&PredefinedMenuItem::separator())?;
+
+    // Silero VAD model status / install action
+    let vad_label = silero_vad_label();
+    let silero_vad_item = MenuItem::new(&vad_label, true, None);
+    let silero_vad_install_id = silero_vad_item.id().clone();
+    diagnostics_menu.append(&silero_vad_item)?;
+    SILERO_VAD_MENU_ITEM.with(|cell| {
+        *cell.borrow_mut() = Some(silero_vad_item);
+    });
+
     tools_menu.append(&diagnostics_menu)?;
 
     // 6c. Advanced (rare)
@@ -175,6 +189,8 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             hotkeys_reset: hotkeys_reset_id,
             // Quality
             quality_open_report: quality_open_report_id,
+            // Models
+            silero_vad_install: silero_vad_install_id,
         },
     ))
 }
@@ -216,6 +232,24 @@ pub fn update_quality_label() {
     };
 
     QUALITY_MENU_ITEM.with(|cell| {
+        if let Some(ref item) = *cell.borrow() {
+            item.set_text(&label);
+        }
+    });
+}
+
+fn silero_vad_label() -> String {
+    let model_path = vad::default_model_path();
+    if model_path.exists() {
+        "Silero VAD: ready (Install/Repair…)".to_string()
+    } else {
+        "Silero VAD: missing (Install…)".to_string()
+    }
+}
+
+pub fn update_silero_vad_label() {
+    let label = silero_vad_label();
+    SILERO_VAD_MENU_ITEM.with(|cell| {
         if let Some(ref item) = *cell.borrow() {
             item.set_text(&label);
         }

@@ -46,6 +46,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     // Quality - Open Report
     else if event_id == &menu_ids.quality_open_report {
         handle_open_quality_report();
+    } else if event_id == &menu_ids.silero_vad_install {
+        handle_install_silero_vad();
     } else {
         debug!("Unknown menu event id: {:?}", event_id);
     }
@@ -102,6 +104,10 @@ fn handle_open_formatting_prompt() {
 fn handle_open_prompts_folder() {
     send_menu_event(TrayMenuEvent::OpenPromptsFolder);
     crate::config::open_prompts_folder();
+}
+
+fn handle_install_silero_vad() {
+    send_menu_event(TrayMenuEvent::InstallSileroVad);
 }
 
 // ============================================================================

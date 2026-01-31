@@ -84,6 +84,7 @@ pub enum TrayMenuEvent {
 
     // Diagnostics
     CopyDiagnostics,
+    InstallSileroVad,
 
     // Prompts
     OpenAssistivePrompt,
@@ -129,4 +130,7 @@ pub struct MenuIds {
 
     // Quality
     pub quality_open_report: MenuId,
+
+    // Models
+    pub silero_vad_install: MenuId,
 }

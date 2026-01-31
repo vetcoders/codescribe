@@ -478,6 +478,53 @@ async fn run_daemon() -> Result<()> {
                     tray::TrayMenuEvent::SetToggleTrigger(trigger) => {
                         config.toggle_trigger = *trigger;
                     }
+                    tray::TrayMenuEvent::InstallSileroVad => {
+                        eprintln!("Installing Silero VAD model…");
+                        match codescribe_core::vad::ensure_downloaded_to_user_dir().await {
+                            Ok(path) => {
+                                eprintln!("Silero VAD downloaded: {}", path.display());
+                                let init_path = path.clone();
+                                let init_result = tokio::task::spawn_blocking(move || {
+                                    codescribe_core::vad::init(&init_path)
+                                })
+                                .await;
+
+                                match init_result {
+                                    Ok(Ok(())) => {
+                                        eprintln!("Silero VAD initialized");
+                                        #[cfg(target_os = "macos")]
+                                        {
+                                            let _ = std::process::Command::new("osascript")
+                                                .arg("-e")
+                                                .arg(
+                                                    r#"display notification "Silero VAD is ready" with title "CodeScribe""#,
+                                                )
+                                                .spawn();
+                                        }
+                                    }
+                                    Ok(Err(e)) => {
+                                        eprintln!("Silero VAD init failed: {}", e);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Silero VAD init task failed: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Silero VAD download failed: {}", e);
+                                #[cfg(target_os = "macos")]
+                                {
+                                    let _ = std::process::Command::new("osascript")
+                                        .arg("-e")
+                                        .arg(format!(
+                                            "display notification \"{}\" with title \"CodeScribe\"",
+                                            e.to_string().replace('\"', "'")
+                                        ))
+                                        .spawn();
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
                 sync_hotkey_config(&config);

@@ -26,9 +26,14 @@
 //! Created by M&K (c)2026 VetCoders
 
 pub mod config;
+pub mod install;
 pub mod silero_ort;
 
 pub use config::VadConfig;
+pub use install::{
+    SILERO_VAD_FILE, SILERO_VAD_URL, ensure_downloaded_to_user_dir, user_model_path,
+    user_models_dir,
+};
 pub use silero_ort::{
     Resampler, SileroVad, VAD_SAMPLE_RATE, default_model_path, init, init_with_config,
     is_initialized, is_speech, reset, speech_probability,
