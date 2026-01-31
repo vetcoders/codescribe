@@ -966,6 +966,8 @@ impl RecordingController {
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is configured via CODESCRIBE_VAD_MAX_SILENCE_SEC env var (single source of truth)
             let mut rec = recorder.lock().await;
+            // Hold-to-talk: the key-down is the source of truth. Don't auto-stop mid-hold.
+            rec.recorder.config.auto_silence = false;
             rec.recorder.set_on_vad_stop(move || {
                 info!("VAD callback: setting vad_triggered flag");
                 vad_flag.store(true, Ordering::SeqCst);
@@ -1113,6 +1115,8 @@ impl RecordingController {
         // hang_sec is configured via CODESCRIBE_VAD_MAX_SILENCE_SEC env var (single source of truth)
         let mut recorder = self.recorder.lock().await;
 
+        // Toggle mode: VAD-based auto-stop is the intended UX.
+        recorder.recorder.config.auto_silence = true;
         recorder.recorder.set_on_vad_stop(move || {
             info!("VAD callback: setting vad_triggered flag");
             vad_flag.store(true, Ordering::SeqCst);
