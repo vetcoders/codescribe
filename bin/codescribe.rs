@@ -575,10 +575,19 @@ async fn run_daemon() -> Result<()> {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             if vad_controller.is_vad_triggered() {
-                eprintln!("VAD triggered - auto-finishing recording");
-                vad_controller.clear_vad_triggered();
-                if let Err(e) = vad_controller.finish_recording().await {
-                    eprintln!("VAD finish_recording error: {}", e);
+                // IMPORTANT:
+                // - In toggle mode, VAD-based auto-finish is the intended UX.
+                // - In hold-to-talk mode, the user's key-down is the source of truth; do NOT stop early.
+                let state = vad_controller.current_state().await;
+                if state == codescribe::controller::State::RecToggle {
+                    eprintln!("VAD triggered - auto-finishing recording");
+                    vad_controller.clear_vad_triggered();
+                    if let Err(e) = vad_controller.finish_recording().await {
+                        eprintln!("VAD finish_recording error: {}", e);
+                    }
+                } else {
+                    // Clear so it doesn't "carry over" into a later toggle session.
+                    vad_controller.clear_vad_triggered();
                 }
             }
         }
