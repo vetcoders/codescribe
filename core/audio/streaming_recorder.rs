@@ -69,7 +69,9 @@ impl StreamingRecorder {
     }
 
     pub async fn start(&mut self, language: Option<String>) -> Result<()> {
-        let use_buffered_stream = env_bool_default("CODESCRIBE_BUFFERED_STREAM", true);
+        // docs/env.md says default is 0: prefer real-time chunking (live preview),
+        // and keep buffered mode as an explicit opt-in.
+        let use_buffered_stream = env_bool_default("CODESCRIBE_BUFFERED_STREAM", false);
         self.start_with_buffered(language, use_buffered_stream)
             .await
     }
