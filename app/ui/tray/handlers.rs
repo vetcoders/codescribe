@@ -28,6 +28,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         handle_open_accessibility_settings();
     } else if event_id == &menu_ids.open_input_monitoring_settings {
         handle_open_input_monitoring_settings();
+    } else if event_id == &menu_ids.reset_input_monitoring_permission {
+        handle_reset_input_monitoring_permission();
     } else if event_id == &menu_ids.open_assistive_prompt {
         handle_open_assistive_prompt();
     } else if event_id == &menu_ids.open_formatting_prompt {
@@ -122,6 +124,26 @@ fn handle_open_input_monitoring_settings() {
     open_privacy_settings("Privacy_ListenEvent");
 }
 
+#[cfg(target_os = "macos")]
+fn handle_reset_input_monitoring_permission() {
+    send_menu_event(TrayMenuEvent::ResetInputMonitoringPermission);
+
+    // Reset TCC for ListenEvent (Input Monitoring) for our bundle id.
+    // User still needs to re-grant in System Settings after restart.
+    let _ = Command::new("tccutil")
+        .args(["reset", "ListenEvent", "com.codescribe.app"])
+        .spawn();
+
+    open_privacy_settings("Privacy_ListenEvent");
+
+    let _ = Command::new("osascript")
+        .arg("-e")
+        .arg(
+            r#"display notification "Input Monitoring reset. Re-open CodeScribe, then enable it in Input Monitoring settings." with title "CodeScribe""#,
+        )
+        .spawn();
+}
+
 #[cfg(not(target_os = "macos"))]
 fn handle_open_accessibility_settings() {
     send_menu_event(TrayMenuEvent::OpenAccessibilitySettings);
@@ -130,6 +152,11 @@ fn handle_open_accessibility_settings() {
 #[cfg(not(target_os = "macos"))]
 fn handle_open_input_monitoring_settings() {
     send_menu_event(TrayMenuEvent::OpenInputMonitoringSettings);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn handle_reset_input_monitoring_permission() {
+    send_menu_event(TrayMenuEvent::ResetInputMonitoringPermission);
 }
 
 fn handle_open_assistive_prompt() {

@@ -86,6 +86,7 @@ pub enum TrayMenuEvent {
     CopyDiagnostics,
     OpenAccessibilitySettings,
     OpenInputMonitoringSettings,
+    ResetInputMonitoringPermission,
     InstallSileroVad,
     SetVadPreset(VadPreset),
 
@@ -129,6 +130,7 @@ pub struct MenuIds {
     pub copy_diagnostics: MenuId,
     pub open_accessibility_settings: MenuId,
     pub open_input_monitoring_settings: MenuId,
+    pub reset_input_monitoring_permission: MenuId,
     pub open_assistive_prompt: MenuId,
     pub open_formatting_prompt: MenuId,
     pub open_prompts_folder: MenuId,

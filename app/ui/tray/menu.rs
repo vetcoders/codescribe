@@ -128,6 +128,11 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let open_input_monitoring_id = open_input_monitoring_item.id().clone();
     diagnostics_menu.append(&open_input_monitoring_item)?;
 
+    let reset_input_monitoring_item =
+        MenuItem::new("Reset Input Monitoring permission (restart)…", true, None);
+    let reset_input_monitoring_id = reset_input_monitoring_item.id().clone();
+    diagnostics_menu.append(&reset_input_monitoring_item)?;
+
     // Quality menu item (shows pending mismatches from daemon)
     let state = crate::quality_loop::read_daemon_state();
     let quality_label = if !state.available {
@@ -244,6 +249,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             copy_diagnostics: copy_diag_id,
             open_accessibility_settings: open_accessibility_id,
             open_input_monitoring_settings: open_input_monitoring_id,
+            reset_input_monitoring_permission: reset_input_monitoring_id,
             open_assistive_prompt: open_assistive_prompt_id,
             open_formatting_prompt: open_formatting_prompt_id,
             open_prompts_folder: open_prompts_folder_id,
