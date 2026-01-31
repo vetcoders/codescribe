@@ -967,6 +967,7 @@ fn attachment_fingerprint(paths: &[std::path::PathBuf]) -> u64 {
 
 fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
     use std::io::Read;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     const MAX_TOTAL_CHARS: usize = 120_000;
@@ -994,11 +995,46 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
             .unwrap_or(default_value)
     }
 
-    fn command_exists(name: &str) -> bool {
-        match Command::new(name).arg("--version").output() {
-            Ok(_) => true,
-            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    fn tool_env_key(name: &str) -> String {
+        format!(
+            "CODESCRIBE_TOOL_{}",
+            name.to_ascii_uppercase().replace('-', "_")
+        )
+    }
+
+    fn tool_path(name: &str) -> Option<PathBuf> {
+        if let Ok(v) = std::env::var(tool_env_key(name)) {
+            let v = v.trim();
+            if !v.is_empty() {
+                let p = PathBuf::from(v);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
         }
+
+        // macOS GUI apps often have a minimal PATH that doesn't include Homebrew.
+        // Prefer common install locations so this works when launched from Finder.
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+            let p = Path::new(dir).join(name);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+
+        None
+    }
+
+    fn tool_command(name: &str) -> Command {
+        if let Some(p) = tool_path(name) {
+            Command::new(p)
+        } else {
+            Command::new(name)
+        }
+    }
+
+    fn command_exists(name: &str) -> bool {
+        tool_path(name).is_some()
     }
 
     fn run_command_stdout(mut cmd: Command) -> Result<Vec<u8>, String> {
@@ -1017,7 +1053,7 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
 
     fn extract_pdf_text_pdftotext(path: &std::path::Path, pages: usize) -> Result<String, String> {
         let pages = pages.max(1);
-        let mut cmd = Command::new("pdftotext");
+        let mut cmd = tool_command("pdftotext");
         cmd.args(["-f", "1", "-l", &pages.to_string()])
             .arg(path)
             .arg("-");
@@ -1052,7 +1088,7 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
         //
         // We still respect `pages` when extracting with pdftotext after OCR.
         let _ = pages;
-        let mut cmd = Command::new("ocrmypdf");
+        let mut cmd = tool_command("ocrmypdf");
         cmd.args([
             "--language",
             language,
@@ -1080,7 +1116,7 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
         let prefix = dir.join("page");
 
         if command_exists("pdftoppm") {
-            let mut cmd = Command::new("pdftoppm");
+            let mut cmd = tool_command("pdftoppm");
             cmd.args(["-png", "-r", "300", "-f", "1", "-l", &pages.to_string()])
                 .arg(path)
                 .arg(&prefix);
@@ -1088,7 +1124,7 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
         } else if command_exists("convert") {
             // ImageMagick fallback: convert first N pages (best-effort).
             let output = dir.join("page-%03d.png");
-            let mut cmd = Command::new("convert");
+            let mut cmd = tool_command("convert");
             cmd.args(["-density", "300"])
                 .arg(path)
                 .args(["-quality", "100"])
@@ -1123,7 +1159,7 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
 
         let mut out = String::new();
         for (i, img) in images.iter().take(pages).enumerate() {
-            let mut cmd = Command::new("tesseract");
+            let mut cmd = tool_command("tesseract");
             cmd.arg(img).arg("stdout").args(["-l", language]);
             let stdout = run_command_stdout(cmd)?;
             let text = String::from_utf8_lossy(&stdout);
@@ -1162,7 +1198,7 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
             let mut has_pol = false;
             let mut has_eng = false;
             if command_exists("tesseract") {
-                let mut cmd = Command::new("tesseract");
+                let mut cmd = tool_command("tesseract");
                 cmd.arg("--list-langs");
                 if let Ok(stdout) = run_command_stdout(cmd) {
                     for line in String::from_utf8_lossy(&stdout).lines() {
@@ -1219,7 +1255,7 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
         }
 
         let dir = temp_dir("codescribe_pdf_ql")?;
-        let mut cmd = Command::new("qlmanage");
+        let mut cmd = tool_command("qlmanage");
         cmd.args(["-t", "-s", "1400", "-o"]).arg(&dir).arg(path);
         let _ = run_command_stdout(cmd)?;
 
@@ -1240,7 +1276,7 @@ fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
             return Err("QuickLook produced no PNG".to_string());
         };
 
-        let mut cmd = Command::new("tesseract");
+        let mut cmd = tool_command("tesseract");
         cmd.arg(img).arg("stdout").args(["-l", language]);
         let stdout = run_command_stdout(cmd)?;
         let text = String::from_utf8_lossy(&stdout).into_owned();
