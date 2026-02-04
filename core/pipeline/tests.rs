@@ -4,10 +4,13 @@
 /// multi-utterance scenarios without needing a real Whisper engine.
 #[cfg(test)]
 mod pipeline_integration {
+    use crate::audio::load_audio_file;
     use crate::pipeline::contracts::DeltaSink;
     use crate::pipeline::contracts::TranscriptDelta;
     use crate::pipeline::dedup::{dedup_chunk_overlap, strip_suffix_overlap};
     use crate::pipeline::sinks::{CallbackSink, CollectorSink};
+    use crate::pipeline::streaming::{transcribe_buffered_samples, transcribe_streaming_samples};
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     // ── Test 1: Pipeline roundtrip, no dedup needed ──────────────
@@ -135,5 +138,112 @@ mod pipeline_integration {
         dedup_chunk_overlap(&mut buffer, "world");
 
         assert_eq!(buffer, "Hello world");
+    }
+
+    // ── Test 8: Overlay vs CLI streaming (real audio, opt-in) ───────────────
+
+    fn e2e_enabled() -> bool {
+        std::env::var("CODESCRIBE_E2E_STT")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    }
+
+    fn data_assets_dir() -> Option<PathBuf> {
+        let home = std::env::var("HOME").ok()?;
+        let dir = PathBuf::from(home).join(".codescribe/data_assets");
+        if dir.exists() { Some(dir) } else { None }
+    }
+
+    fn sample_asset() -> Option<PathBuf> {
+        let dir = data_assets_dir()?;
+        let path = dir.join("01_no-to-dobra.wav");
+        if path.exists() { Some(path) } else { None }
+    }
+
+    fn normalize_text(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        for ch in input.to_lowercase().chars() {
+            if ch.is_alphanumeric()
+                || ch == ' '
+                || ch == 'ą'
+                || ch == 'ć'
+                || ch == 'ę'
+                || ch == 'ł'
+                || ch == 'ń'
+                || ch == 'ó'
+                || ch == 'ś'
+                || ch == 'ż'
+                || ch == 'ź'
+            {
+                out.push(ch);
+            } else {
+                out.push(' ');
+            }
+        }
+        out.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn word_overlap_ratio(actual: &str, expected: &str) -> f32 {
+        let actual_words: std::collections::HashSet<&str> = actual.split_whitespace().collect();
+        let expected_words: Vec<&str> = expected.split_whitespace().collect();
+        if expected_words.is_empty() {
+            return 0.0;
+        }
+        let matches = expected_words
+            .iter()
+            .filter(|w| actual_words.contains(**w))
+            .count();
+        matches as f32 / expected_words.len() as f32
+    }
+
+    #[tokio::test]
+    async fn test_overlay_vs_cli_streaming_consistency() {
+        if !e2e_enabled() {
+            eprintln!("Skipping overlay-vs-cli E2E (set CODESCRIBE_E2E_STT=1 to enable)");
+            return;
+        }
+
+        let audio_path = match sample_asset() {
+            Some(p) => p,
+            None => {
+                eprintln!("No real audio assets found at ~/.codescribe/data_assets");
+                return;
+            }
+        };
+
+        let (samples, sample_rate) = load_audio_file(&audio_path).expect("load audio samples");
+
+        // CLI raw streaming (no overlay postprocess)
+        let raw = transcribe_streaming_samples(&samples, sample_rate, None, None)
+            .expect("raw streaming transcribe");
+
+        // Overlay-style buffered pipeline (VAD → utterances → buffered emitter)
+        let overlay = transcribe_buffered_samples(&samples, sample_rate, None)
+            .await
+            .expect("overlay buffered transcribe");
+
+        assert!(
+            !overlay.trim().is_empty(),
+            "Overlay pipeline returned empty transcript"
+        );
+
+        let norm_raw = normalize_text(&raw);
+        let norm_overlay = normalize_text(&overlay);
+        let overlap = word_overlap_ratio(&norm_overlay, &norm_raw)
+            .max(word_overlap_ratio(&norm_raw, &norm_overlay));
+
+        println!(
+            "Overlay vs CLI overlap: {:.2} (raw={} chars, overlay={} chars)",
+            overlap,
+            raw.len(),
+            overlay.len()
+        );
+
+        assert!(
+            overlap >= 0.55,
+            "Overlay vs CLI overlap too low ({:.2})",
+            overlap
+        );
     }
 }

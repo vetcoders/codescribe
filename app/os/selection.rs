@@ -45,7 +45,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
 ///
 /// Env knobs (POC):
 /// - `ASSISTIVE_CONTEXT_ENABLED` (default: 1)
-/// - `ASSISTIVE_CONTEXT_MAX_CHARS` (default: 5000)
+/// - `ASSISTIVE_CONTEXT_MAX_CHARS` (default: 20000)
 /// - `ASSISTIVE_CONTEXT_INCLUDE_APP` (default: 1)
 /// - `ASSISTIVE_CONTEXT_COPY_DELAY_MS` (default: 150)
 /// - `ASSISTIVE_CONTEXT_COPY_FALLBACK` (default: 0) - enable Cmd+C fallback when AX selection is unavailable
@@ -59,7 +59,7 @@ pub fn capture_assistive_context() -> AssistiveContext {
         return AssistiveContext::default();
     }
 
-    let max_chars = env_usize("ASSISTIVE_CONTEXT_MAX_CHARS", 5000);
+    let max_chars = env_usize("ASSISTIVE_CONTEXT_MAX_CHARS", 20000);
     let include_app = env_flag("ASSISTIVE_CONTEXT_INCLUDE_APP", true);
     let copy_delay_ms = env_u64("ASSISTIVE_CONTEXT_COPY_DELAY_MS", 150);
 
@@ -86,7 +86,10 @@ pub fn capture_assistive_context() -> AssistiveContext {
     debug!(
         "Assistive context captured (app_present={}, selected_chars={})",
         frontmost_app.is_some(),
-        selected_text.as_ref().map(|s| s.len()).unwrap_or(0)
+        selected_text
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0)
     );
 
     AssistiveContext {
@@ -238,8 +241,9 @@ fn selected_text_from_frontmost(max_chars: usize, copy_delay_ms: u64) -> Option<
         return None;
     }
 
-    if copied.len() > max_chars {
-        copied.truncate(max_chars);
+    let copied_chars = copied.chars().count();
+    if copied_chars > max_chars {
+        copied = copied.chars().take(max_chars).collect();
         copied.push('…');
     }
 

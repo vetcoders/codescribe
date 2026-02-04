@@ -12,9 +12,13 @@
 use crate::os::clipboard;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel};
+use objc::runtime::Sel;
+use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
-use objc2_app_kit::{NSBackingStoreType, NSWindowCollectionBehavior, NSWindowStyleMask};
+use objc2_app_kit::{
+    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
+};
 use std::ffi::CString;
 use std::sync::Once;
 
@@ -25,38 +29,222 @@ pub type Id = *mut Object;
 pub const NS_FLOATING_WINDOW_LEVEL: i64 = 3;
 pub const NS_STATUS_WINDOW_LEVEL: i64 = 25;
 
-// Custom overlay window class so borderless windows can receive input.
-static OVERLAY_WINDOW_INIT: Once = Once::new();
-static mut OVERLAY_WINDOW_CLASS: *const Class = std::ptr::null();
+// ============================================================================
+// UI Tokens (shared sizes/spacing; aligned to Settings)
+// ============================================================================
 
-extern "C" fn can_become_key(_this: &Object, _cmd: Sel) -> bool {
-    true
+pub mod ui_tokens {
+    pub const TITLE_FONT_SIZE: f64 = 15.0;
+    pub const BODY_FONT_SIZE: f64 = 13.0;
+    pub const SMALL_FONT_SIZE: f64 = 11.0;
+    pub const MICRO_FONT_SIZE: f64 = 10.0;
+
+    pub const HEADER_HEIGHT: f64 = 44.0;
+    pub const FOOTER_HEIGHT: f64 = 56.0;
+    pub const EDGE_PADDING: f64 = 16.0;
+    pub const EDGE_PADDING_TIGHT: f64 = 12.0;
+
+    pub const TITLE_LABEL_WIDTH: f64 = 96.0;
+    pub const HEADER_BUTTON_SIZE: f64 = 28.0;
+    pub const HEADER_BUTTON_GAP: f64 = 8.0;
+    pub const HELP_PANEL_WIDTH: f64 = 150.0;
+    pub const FOOTER_INSET: f64 = 8.0;
+    pub const AGENT_INPUT_HEIGHT: f64 = 44.0;
+    pub const CONTENT_GAP: f64 = 10.0;
+    pub const SIDEBAR_MIN_WIDTH: f64 = 200.0;
+    pub const SIDEBAR_MAX_WIDTH: f64 = 320.0;
+
+    pub const CORNER_RADIUS_LG: f64 = 16.0;
+    pub const CORNER_RADIUS_MD: f64 = 12.0;
+    pub const CORNER_RADIUS_SM: f64 = 8.0;
+
+    pub const STATUS_PILL_HEIGHT: f64 = 20.0;
+    pub const STATUS_PILL_WIDTH: f64 = 110.0;
+    pub const STATUS_DOT_SIZE: f64 = 6.0;
+    pub const BUBBLE_MAX_WIDTH: f64 = 560.0;
+
+    pub const PLACEHOLDER_LINE_WIDTH: f64 = 120.0;
+    pub const PLACEHOLDER_LINE_HEIGHT: f64 = 2.0;
+
+    pub const EMPTY_STATE_HEIGHT: f64 = 160.0;
+    pub const EMPTY_STATE_BUTTON_HEIGHT: f64 = 28.0;
+    pub const EMPTY_STATE_BUTTON_WIDTH: f64 = 140.0;
+    pub const EMPTY_STATE_BUTTON_GAP: f64 = 12.0;
 }
 
-/// Get a custom NSWindow subclass that can become key/main (for borderless overlays).
-pub fn overlay_window_class() -> *const Class {
-    unsafe {
-        OVERLAY_WINDOW_INIT.call_once(|| {
-            let superclass = Class::get("NSWindow").expect("NSWindow not found");
-            let mut decl = ClassDecl::new("CodeScribeOverlayWindow", superclass)
-                .expect("Failed to declare overlay window class");
-            decl.add_method(
-                sel!(canBecomeKeyWindow),
-                can_become_key as extern "C" fn(&Object, Sel) -> bool,
-            );
-            decl.add_method(
-                sel!(canBecomeMainWindow),
-                can_become_key as extern "C" fn(&Object, Sel) -> bool,
-            );
-            OVERLAY_WINDOW_CLASS = decl.register();
-        });
-        OVERLAY_WINDOW_CLASS
-    }
-}
+pub const NS_FOCUS_RING_TYPE_EXTERIOR: i64 = 1;
 
 // ============================================================================
 // Color Helpers
 // ============================================================================
+
+pub mod ui_colors {
+    use super::Id;
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+
+    fn with_alpha(color: Id, alpha: f64) -> Id {
+        unsafe { msg_send![color, colorWithAlphaComponent: alpha] }
+    }
+
+    pub fn sidebar_bg() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, windowBackgroundColor];
+            with_alpha(base, 0.6)
+        }
+    }
+
+    pub fn panel_bg() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, controlBackgroundColor];
+            with_alpha(base, 0.65)
+        }
+    }
+
+    pub fn input_bar_bg() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, controlBackgroundColor];
+            with_alpha(base, 0.92)
+        }
+    }
+
+    pub fn input_bar_border() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, separatorColor];
+            with_alpha(base, 0.8)
+        }
+    }
+
+    pub fn overlay_text() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, labelColor];
+            with_alpha(base, 0.92)
+        }
+    }
+
+    pub fn overlay_hint_text() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, secondaryLabelColor];
+            with_alpha(base, 0.7)
+        }
+    }
+
+    pub fn separator() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            msg_send![ns_color, separatorColor]
+        }
+    }
+
+    pub fn card_bg() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, controlBackgroundColor];
+            with_alpha(base, 0.78)
+        }
+    }
+
+    pub fn empty_state_bg() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, controlBackgroundColor];
+            with_alpha(base, 0.7)
+        }
+    }
+
+    pub fn bubble_user_bg() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, controlAccentColor];
+            with_alpha(base, 0.18)
+        }
+    }
+
+    pub fn bubble_user_border() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, controlAccentColor];
+            with_alpha(base, 0.35)
+        }
+    }
+
+    pub fn bubble_assistant_bg() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, controlBackgroundColor];
+            with_alpha(base, 0.8)
+        }
+    }
+
+    pub fn bubble_system_bg() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, windowBackgroundColor];
+            with_alpha(base, 0.8)
+        }
+    }
+
+    pub fn bubble_border() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, separatorColor];
+            with_alpha(base, 0.4)
+        }
+    }
+
+    pub fn bubble_text() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            msg_send![ns_color, labelColor]
+        }
+    }
+
+    pub fn bubble_meta_text() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, secondaryLabelColor];
+            with_alpha(base, 0.85)
+        }
+    }
+
+    pub fn bubble_streaming_text() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, secondaryLabelColor];
+            with_alpha(base, 0.7)
+        }
+    }
+
+    pub fn bubble_error_bg() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            let base: Id = msg_send![ns_color, systemRedColor];
+            with_alpha(base, 0.12)
+        }
+    }
+
+    pub fn bubble_error_text() -> Id {
+        unsafe {
+            let ns_color = Class::get("NSColor").unwrap();
+            msg_send![ns_color, systemRedColor]
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct NSEdgeInsets {
+    pub top: f64,
+    pub left: f64,
+    pub bottom: f64,
+    pub right: f64,
+}
 
 /// Create an NSColor from RGBA values (0.0-1.0)
 pub fn color_rgba(r: f64, g: f64, b: f64, a: f64) -> Id {
@@ -82,6 +270,197 @@ pub fn color_clear() -> Id {
     }
 }
 
+/// Create label color (dynamic in light/dark).
+pub fn color_label() -> Id {
+    unsafe {
+        let ns_color = Class::get("NSColor").unwrap();
+        msg_send![ns_color, labelColor]
+    }
+}
+
+/// Create secondary label color (dynamic in light/dark).
+pub fn color_secondary_label() -> Id {
+    unsafe {
+        let ns_color = Class::get("NSColor").unwrap();
+        msg_send![ns_color, secondaryLabelColor]
+    }
+}
+
+/// Prefer layout region guides (newer AppKit) or safe-area guides if available, then fall back.
+///
+/// # Safety
+/// `view` must be a valid `NSView` instance.
+pub unsafe fn layout_insets_for_view(view: Id) -> NSEdgeInsets {
+    let bounds: CGRect = unsafe { msg_send![view, bounds] };
+
+    if let Some(frame) = unsafe { layout_region_frame_for_view(view) } {
+        return insets_from_frame(bounds, frame);
+    }
+
+    let responds_guide: bool =
+        unsafe { msg_send![view, respondsToSelector: sel!(safeAreaLayoutGuide)] };
+    if responds_guide {
+        let guide: Id = unsafe { msg_send![view, safeAreaLayoutGuide] };
+        if let Some(frame) = unsafe { layout_guide_frame(guide) } {
+            return insets_from_frame(bounds, frame);
+        }
+    }
+
+    let responds_insets: bool =
+        unsafe { msg_send![view, respondsToSelector: sel!(safeAreaInsets)] };
+    if responds_insets {
+        return unsafe { msg_send![view, safeAreaInsets] };
+    }
+
+    NSEdgeInsets::default()
+}
+
+/// Best-effort layout region frame for a view.
+///
+/// # Safety
+/// `view` must be a valid `NSView` instance.
+pub unsafe fn layout_region_frame_for_view(view: Id) -> Option<CGRect> {
+    let guide = unsafe { layout_region_guide_for_view(view) }?;
+    unsafe { layout_guide_frame(guide) }
+}
+
+/// Best-effort layout region guide for a view.
+///
+/// # Safety
+/// `view` must be a valid `NSView` instance.
+pub unsafe fn layout_region_guide_for_view(view: Id) -> Option<Id> {
+    let responds_guides: bool =
+        unsafe { msg_send![view, respondsToSelector: sel!(layoutRegionGuides)] };
+    if responds_guides {
+        let guides: Id = unsafe { msg_send![view, layoutRegionGuides] };
+        if !guides.is_null() {
+            let responds_content: bool =
+                unsafe { msg_send![guides, respondsToSelector: sel!(contentLayoutGuide)] };
+            if responds_content {
+                let guide: Id = unsafe { msg_send![guides, contentLayoutGuide] };
+                if !guide.is_null() {
+                    return Some(guide);
+                }
+            }
+
+            let responds_safe: bool =
+                unsafe { msg_send![guides, respondsToSelector: sel!(safeAreaLayoutGuide)] };
+            if responds_safe {
+                let guide: Id = unsafe { msg_send![guides, safeAreaLayoutGuide] };
+                if !guide.is_null() {
+                    return Some(guide);
+                }
+            }
+        }
+    }
+
+    let responds_region: bool = unsafe { msg_send![view, respondsToSelector: sel!(layoutRegion)] };
+    if !responds_region {
+        let responds_safe: bool =
+            unsafe { msg_send![view, respondsToSelector: sel!(safeAreaLayoutGuide)] };
+        if responds_safe {
+            let guide: Id = unsafe { msg_send![view, safeAreaLayoutGuide] };
+            if !guide.is_null() {
+                return Some(guide);
+            }
+        }
+        return None;
+    }
+
+    let region: Id = unsafe { msg_send![view, layoutRegion] };
+    if region.is_null() {
+        return None;
+    }
+
+    let responds_content: bool =
+        unsafe { msg_send![region, respondsToSelector: sel!(contentLayoutGuide)] };
+    if responds_content {
+        let guide: Id = unsafe { msg_send![region, contentLayoutGuide] };
+        if !guide.is_null() {
+            return Some(guide);
+        }
+    }
+
+    let responds_safe: bool =
+        unsafe { msg_send![region, respondsToSelector: sel!(safeAreaLayoutGuide)] };
+    if responds_safe {
+        let guide: Id = unsafe { msg_send![region, safeAreaLayoutGuide] };
+        if !guide.is_null() {
+            return Some(guide);
+        }
+    }
+
+    None
+}
+
+unsafe fn layout_guide_frame(guide: Id) -> Option<CGRect> {
+    if guide.is_null() {
+        return None;
+    }
+    let responds_frame: bool = unsafe { msg_send![guide, respondsToSelector: sel!(layoutFrame)] };
+    if !responds_frame {
+        return None;
+    }
+    let frame: CGRect = unsafe { msg_send![guide, layoutFrame] };
+    Some(frame)
+}
+
+fn insets_from_frame(bounds: CGRect, frame: CGRect) -> NSEdgeInsets {
+    let bounds_max_x = bounds.origin.x + bounds.size.width;
+    let bounds_max_y = bounds.origin.y + bounds.size.height;
+    let frame_max_x = frame.origin.x + frame.size.width;
+    let frame_max_y = frame.origin.y + frame.size.height;
+
+    let left = (frame.origin.x - bounds.origin.x).max(0.0);
+    let bottom = (frame.origin.y - bounds.origin.y).max(0.0);
+    let right = (bounds_max_x - frame_max_x).max(0.0);
+    let top = (bounds_max_y - frame_max_y).max(0.0);
+
+    NSEdgeInsets {
+        top,
+        left,
+        bottom,
+        right,
+    }
+}
+
+/// Create a glass effect view if available, otherwise fallback to NSVisualEffectView.
+pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial) -> Id {
+    unsafe {
+        if let Some(glass_cls) = Class::get("NSGlassEffectView") {
+            let supports_material: bool =
+                msg_send![glass_cls, instancesRespondToSelector: sel!(setMaterial:)];
+            if supports_material {
+                let view: Id = msg_send![glass_cls, alloc];
+                let view: Id = msg_send![view, initWithFrame: frame];
+                let _: () = msg_send![view, setMaterial: material];
+                let supports_blend: bool =
+                    msg_send![glass_cls, instancesRespondToSelector: sel!(setBlendingMode:)];
+                if supports_blend {
+                    let _: () =
+                        msg_send![view, setBlendingMode: NSVisualEffectBlendingMode::BehindWindow];
+                }
+                let supports_state: bool =
+                    msg_send![glass_cls, instancesRespondToSelector: sel!(setState:)];
+                if supports_state {
+                    let _: () = msg_send![view, setState: NSVisualEffectState::Active];
+                }
+                let _: () = msg_send![view, setWantsLayer: true];
+                return view;
+            }
+        }
+
+        let visual_cls = Class::get("NSVisualEffectView").unwrap();
+        let view: Id = msg_send![visual_cls, alloc];
+        let view: Id = msg_send![view, initWithFrame: frame];
+        let _: () = msg_send![view, setMaterial: material];
+        let _: () = msg_send![view, setBlendingMode: NSVisualEffectBlendingMode::BehindWindow];
+        let _: () = msg_send![view, setState: NSVisualEffectState::Active];
+        let _: () = msg_send![view, setWantsLayer: true];
+        view
+    }
+}
+
 // ============================================================================
 // String Helpers
 // ============================================================================
@@ -98,16 +477,6 @@ pub fn ns_string(s: &str) -> Id {
 /// Copy text to the system clipboard (best-effort).
 pub fn copy_to_clipboard(text: &str) {
     let _ = clipboard::copy(text);
-}
-
-/// Set a tooltip on any NSView.
-/// # Safety
-/// `view` must be a valid Objective-C object that supports `setToolTip:`.
-pub unsafe fn set_tooltip(view: Id, text: &str) {
-    unsafe {
-        let tip = ns_string(text);
-        let _: () = msg_send![view, setToolTip: tip];
-    }
 }
 
 // ============================================================================
@@ -137,6 +506,16 @@ pub unsafe fn set_text_field_string(field: Id, text: &str) {
     unsafe {
         let value = ns_string(text);
         let _: () = msg_send![field, setStringValue: value];
+    }
+}
+
+/// Set tooltip for a control/view.
+/// # Safety
+/// `view` must be a valid Objective-C object that supports `setToolTip:`.
+pub unsafe fn set_tooltip(view: Id, text: &str) {
+    unsafe {
+        let tip = ns_string(text);
+        let _: () = msg_send![view, setToolTip: tip];
     }
 }
 
@@ -291,6 +670,118 @@ pub fn create_button(frame: CGRect, title: &str, style: isize) -> Id {
     }
 }
 
+/// Set a button's SF Symbol image (returns true if applied).
+/// # Safety
+/// `button` must be a valid NSButton instance.
+pub unsafe fn set_button_symbol(button: Id, symbol_name: &str) -> bool {
+    unsafe {
+        let Some(ns_image) = Class::get("NSImage") else {
+            return false;
+        };
+        let responds: bool = msg_send![
+            ns_image,
+            respondsToSelector: sel!(imageWithSystemSymbolName:accessibilityDescription:)
+        ];
+        if !responds {
+            return false;
+        }
+        let name = ns_string(symbol_name);
+        let desc = ns_string("");
+        let image: Id = msg_send![
+            ns_image,
+            imageWithSystemSymbolName: name
+            accessibilityDescription: desc
+        ];
+        if image.is_null() {
+            return false;
+        }
+        let _: () = msg_send![button, setImage: image];
+        // NSImageOnly == 1
+        let _: () = msg_send![button, setImagePosition: 1_isize];
+        true
+    }
+}
+
+/// Set an SF Symbol image on a segmented control segment.
+/// # Safety
+/// `control` must be a valid NSSegmentedControl instance.
+pub unsafe fn set_segment_symbol(control: Id, segment: isize, symbol_name: &str) -> bool {
+    let Some(ns_image) = Class::get("NSImage") else {
+        return false;
+    };
+    let responds: bool = msg_send![
+        ns_image,
+        respondsToSelector: sel!(imageWithSystemSymbolName:accessibilityDescription:)
+    ];
+    if !responds {
+        return false;
+    }
+    let name = ns_string(symbol_name);
+    let desc = ns_string("");
+    let image: Id = msg_send![
+        ns_image,
+        imageWithSystemSymbolName: name
+        accessibilityDescription: desc
+    ];
+    if image.is_null() {
+        return false;
+    }
+    let _: () = msg_send![control, setImage: image forSegment: segment];
+    true
+}
+
+/// Style a toolbar icon button (borderless, inline bezel, tinted symbol).
+/// # Safety
+/// `button` must be a valid NSButton instance.
+pub unsafe fn style_toolbar_icon_button(button: Id) {
+    let _: () = msg_send![button, setBezelStyle: button_style::SHADOWLESS_SQUARE];
+    let responds_bordered: bool = msg_send![button, respondsToSelector: sel!(setBordered:)];
+    if responds_bordered {
+        let _: () = msg_send![button, setBordered: false];
+    }
+    let responds_transparent: bool = msg_send![button, respondsToSelector: sel!(setTransparent:)];
+    if responds_transparent {
+        let _: () = msg_send![button, setTransparent: true];
+    }
+    let responds_shows_border: bool =
+        msg_send![button, respondsToSelector: sel!(setShowsBorderOnlyWhileMouseInside:)];
+    if responds_shows_border {
+        let _: () = msg_send![button, setShowsBorderOnlyWhileMouseInside: true];
+    }
+    let responds_image_position: bool =
+        msg_send![button, respondsToSelector: sel!(setImagePosition:)];
+    if responds_image_position {
+        // NSImageOnly == 1
+        let _: () = msg_send![button, setImagePosition: 1_isize];
+    }
+    let responds_tint: bool = msg_send![button, respondsToSelector: sel!(setContentTintColor:)];
+    if responds_tint {
+        let tint = color_label();
+        let _: () = msg_send![button, setContentTintColor: tint];
+    }
+}
+
+/// Update a toolbar icon button to reflect active/inactive tab state.
+/// # Safety
+/// `button` must be a valid NSButton instance.
+pub unsafe fn set_tab_button_active(button: Id, active: bool) {
+    let ns_color = Class::get("NSColor").unwrap();
+    let responds_tint: bool = msg_send![button, respondsToSelector: sel!(setContentTintColor:)];
+    if responds_tint {
+        let tint: Id = if active {
+            msg_send![ns_color, controlAccentColor]
+        } else {
+            msg_send![ns_color, secondaryLabelColor]
+        };
+        let _: () = msg_send![button, setContentTintColor: tint];
+    }
+    let responds_state: bool = msg_send![button, respondsToSelector: sel!(setState:)];
+    if responds_state {
+        let state: isize = if active { 1 } else { 0 };
+        let _: () = msg_send![button, setState: state];
+    }
+}
+
 /// Set button target and action
 /// # Safety
 /// `button` and `target` must be valid Objective-C objects.
@@ -339,7 +830,6 @@ pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &st
     unsafe {
         let ns_view = Class::get("NSView").unwrap();
         let ns_text_field = Class::get("NSTextField").unwrap();
-        let ns_color = Class::get("NSColor").unwrap();
         let ns_font = Class::get("NSFont").unwrap();
 
         let card: Id = msg_send![ns_view, alloc];
@@ -347,11 +837,15 @@ pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &st
         let _: () = msg_send![card, setWantsLayer: true];
         let layer: Id = msg_send![card, layer];
         if !layer.is_null() {
-            let bg_color: Id =
-                msg_send![ns_color, colorWithRed: 0.2 green: 0.2 blue: 0.2 alpha: 0.4];
+            let bg_color: Id = ui_colors::card_bg();
             let cg_color: Id = msg_send![bg_color, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg_color];
             let _: () = msg_send![layer, setCornerRadius: 12.0f64];
+            let border: Id = ui_colors::separator();
+            let border: Id = msg_send![border, colorWithAlphaComponent: 0.35f64];
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![layer, setBorderColor: cg_border];
+            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
         }
 
         let title_frame = CGRect::new(
@@ -366,9 +860,9 @@ pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &st
         let _: () = msg_send![title_field, setSelectable: false];
         let title_text = ns_string(title);
         let _: () = msg_send![title_field, setStringValue: title_text];
-        let title_font: Id = msg_send![ns_font, boldSystemFontOfSize: 12.0f64];
+        let title_font: Id = msg_send![ns_font, boldSystemFontOfSize: ui_tokens::BODY_FONT_SIZE];
         let _: () = msg_send![title_field, setFont: title_font];
-        let title_color: Id = msg_send![ns_color, colorWithWhite: 1.0 alpha: 0.9];
+        let title_color: Id = color_label();
         let _: () = msg_send![title_field, setTextColor: title_color];
         let _: () = msg_send![card, addSubview: title_field];
 
@@ -384,15 +878,21 @@ pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &st
         let _: () = msg_send![subtitle_field, setSelectable: false];
         let subtitle_text = ns_string(subtitle);
         let _: () = msg_send![subtitle_field, setStringValue: subtitle_text];
-        let subtitle_font: Id = msg_send![ns_font, systemFontOfSize: 11.0f64];
+        let subtitle_font: Id = msg_send![ns_font, systemFontOfSize: ui_tokens::SMALL_FONT_SIZE];
         let _: () = msg_send![subtitle_field, setFont: subtitle_font];
-        let subtitle_color: Id = msg_send![ns_color, colorWithWhite: 1.0 alpha: 0.5];
+        let subtitle_color: Id = color_secondary_label();
         let _: () = msg_send![subtitle_field, setTextColor: subtitle_color];
         let _: () = msg_send![card, addSubview: subtitle_field];
 
+        // Leave room for the actions row ("Copy / Edit / Delete / ♥") at the bottom.
+        let preview_bottom = 36.0;
+        let preview_top = 56.0;
         let preview_frame = CGRect::new(
-            &CGPoint::new(12.0, 12.0),
-            &CGSize::new(frame.size.width - 24.0, frame.size.height - 56.0),
+            &CGPoint::new(12.0, preview_bottom),
+            &CGSize::new(
+                frame.size.width - 24.0,
+                (frame.size.height - preview_top - preview_bottom).max(18.0),
+            ),
         );
         let preview_field: Id = msg_send![ns_text_field, alloc];
         let preview_field: Id = msg_send![preview_field, initWithFrame: preview_frame];
@@ -403,9 +903,9 @@ pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &st
         let _: () = msg_send![preview_field, setLineBreakMode: 0];
         let preview_text = ns_string(preview);
         let _: () = msg_send![preview_field, setStringValue: preview_text];
-        let preview_font: Id = msg_send![ns_font, systemFontOfSize: 12.0f64];
+        let preview_font: Id = msg_send![ns_font, systemFontOfSize: ui_tokens::BODY_FONT_SIZE];
         let _: () = msg_send![preview_field, setFont: preview_font];
-        let preview_color: Id = msg_send![ns_color, colorWithWhite: 1.0 alpha: 0.85];
+        let preview_color: Id = color_secondary_label();
         let _: () = msg_send![preview_field, setTextColor: preview_color];
         let _: () = msg_send![card, addSubview: preview_field];
 
@@ -427,10 +927,14 @@ pub fn create_scrollable_text_view(frame: CGRect, editable: bool) -> (Id, Id) {
         // Create scroll view
         let scroll: Id = msg_send![ns_scroll_view, alloc];
         let scroll: Id = msg_send![scroll, initWithFrame: frame];
+        // Keep scrolling enabled; hide scrollbars via overlay + autohide.
         let _: () = msg_send![scroll, setHasVerticalScroller: true];
         let _: () = msg_send![scroll, setHasHorizontalScroller: false];
         let _: () = msg_send![scroll, setDrawsBackground: false];
         let _: () = msg_send![scroll, setBorderType: 0_isize]; // NSNoBorder
+        let _: () = msg_send![scroll, setAutohidesScrollers: true];
+        // NSScrollerStyleOverlay == 1
+        let _: () = msg_send![scroll, setScrollerStyle: 1_isize];
 
         // Create text view with same size
         let text_frame = CGRect::new(
@@ -442,14 +946,28 @@ pub fn create_scrollable_text_view(frame: CGRect, editable: bool) -> (Id, Id) {
 
         let _: () = msg_send![text_view, setEditable: editable];
         let _: () = msg_send![text_view, setSelectable: true];
+        if editable {
+            let responds_placeholder: bool =
+                msg_send![text_view, respondsToSelector: sel!(setPlaceholderString:)];
+            if responds_placeholder {
+                let placeholder = ns_string("Type a message");
+                let _: () = msg_send![text_view, setPlaceholderString: placeholder];
+            }
+        }
 
         // Transparent background
         let clear: Id = msg_send![ns_color, clearColor];
         let _: () = msg_send![text_view, setBackgroundColor: clear];
 
-        // White text
-        let white: Id = msg_send![ns_color, whiteColor];
-        let _: () = msg_send![text_view, setTextColor: white];
+        // Dynamic text color (light/dark).
+        let text_color: Id = msg_send![ns_color, textColor];
+        let _: () = msg_send![text_view, setTextColor: text_color];
+        let responds_caret: bool =
+            msg_send![text_view, respondsToSelector: sel!(setInsertionPointColor:)];
+        if responds_caret {
+            let caret: Id = msg_send![ns_color, controlAccentColor];
+            let _: () = msg_send![text_view, setInsertionPointColor: caret];
+        }
 
         // Auto-resize with scroll view
         let _: () = msg_send![text_view, setMinSize: CGSize::new(0.0, frame.size.height)];
@@ -568,7 +1086,8 @@ pub unsafe fn window_set_alpha(window: Id, alpha: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CGPoint, CGRect, CGSize, clamp_overlay_position};
+    use super::*;
+    use serial_test::serial;
 
     #[test]
     fn clamp_overlay_position_keeps_window_inside_frame() {
@@ -576,6 +1095,74 @@ mod tests {
         let (x, y) = clamp_overlay_position(visible, 60.0, 60.0, 10.0, 1000.0, -1000.0);
         assert_eq!(x, 30.0);
         assert_eq!(y, 10.0);
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    fn layout_insets_default_are_non_negative() {
+        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
+            return;
+        }
+        unsafe {
+            let ns_view = Class::get("NSView").unwrap();
+            let view: Id = msg_send![ns_view, alloc];
+            let view: Id = msg_send![
+                view,
+                initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(120.0, 80.0))
+            ];
+            let insets = layout_insets_for_view(view);
+            assert!(insets.left >= 0.0);
+            assert!(insets.right >= 0.0);
+            assert!(insets.top >= 0.0);
+            assert!(insets.bottom >= 0.0);
+        }
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    fn markdown_render_applies_or_falls_back() {
+        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
+            return;
+        }
+        unsafe {
+            let ns_text = Class::get("NSTextField").unwrap();
+            let ns_font = Class::get("NSFont").unwrap();
+            let field: Id = msg_send![ns_text, alloc];
+            let field: Id = msg_send![
+                field,
+                initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(200.0, 60.0))
+            ];
+            let font: Id = msg_send![ns_font, systemFontOfSize: 13.0f64];
+            let applied = apply_markdown_to_text_field(field, "**bold** `code`", font);
+            let text = get_text(field);
+            assert!(text.contains("bold"));
+            assert!(text.contains("code"));
+            if applied {
+                let attr: Id = msg_send![field, attributedStringValue];
+                let len: usize = msg_send![attr, length];
+                assert!(len >= text.len());
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    fn set_button_symbol_uses_sf_symbols() {
+        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
+            return;
+        }
+        unsafe {
+            let ns_button = Class::get("NSButton").unwrap();
+            let button: Id = msg_send![ns_button, alloc];
+            let button: Id = msg_send![
+                button,
+                initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(24.0, 24.0))
+            ];
+            assert!(set_button_symbol(button, "tray.full"));
+        }
     }
 }
 
@@ -732,34 +1319,22 @@ pub unsafe fn set_enabled(view: Id, enabled: bool) {
     }
 }
 
+/// Opt into a visible focus ring for keyboard navigation.
+/// # Safety
+/// `view` must be a valid NSView instance.
+pub unsafe fn set_focus_ring(view: Id) {
+    unsafe {
+        let _: () = msg_send![view, setFocusRingType: NS_FOCUS_RING_TYPE_EXTERIOR];
+    }
+}
+
 // ============================================================================
 // Chat Bubble Helpers (GlyphPulse / Quantum style)
 // ============================================================================
 
-/// GlyphPulse/Quantum palette adapted for native bubbles
-pub mod bubble_colors {
-    /// User bubble background - quantum cyan
-    pub const USER_BG: (f64, f64, f64, f64) = (0.0, 1.0, 1.0, 1.0);
-    /// User bubble text - CRT black
-    pub const USER_TEXT: (f64, f64, f64, f64) = (0.039, 0.039, 0.039, 1.0);
-    /// Assistant bubble background - deep navy glass
-    pub const ASSISTANT_BG: (f64, f64, f64, f64) = (0.086, 0.129, 0.243, 0.5);
-    /// Assistant bubble border - subtle white
-    pub const ASSISTANT_BORDER: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 0.08);
-    /// Assistant/system text - primary light
-    pub const ASSISTANT_TEXT: (f64, f64, f64, f64) = (0.886, 0.91, 0.941, 1.0);
-    /// Streaming text tint - muted
-    pub const STREAMING_TEXT: (f64, f64, f64, f64) = (0.58, 0.639, 0.722, 1.0);
-    /// System bubble background - slightly denser navy
-    pub const SYSTEM_BG: (f64, f64, f64, f64) = (0.086, 0.129, 0.243, 0.65);
-    /// System bubble border - subtle white
-    pub const SYSTEM_BORDER: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 0.08);
-    /// Error bubble background - soft red tint
-    pub const ERROR_BG: (f64, f64, f64, f64) = (1.0, 0.42, 0.42, 0.1);
-    /// Error bubble border/text - error red
-    pub const ERROR_BORDER: (f64, f64, f64, f64) = (1.0, 0.373, 0.341, 1.0);
-    pub const ERROR_TEXT: (f64, f64, f64, f64) = (1.0, 0.373, 0.341, 1.0);
-}
+const NSTRACKING_MOUSE_ENTERED_AND_EXITED: u64 = 1 << 0;
+const NSTRACKING_ACTIVE_ALWAYS: u64 = 1 << 7;
+const NSTRACKING_IN_VISIBLE_RECT: u64 = 1 << 9;
 
 /// Role for chat bubble styling
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -769,6 +1344,79 @@ pub enum BubbleRole {
     System,
 }
 
+fn markdown_options_with_base_font(font: Id) -> Option<Id> {
+    unsafe {
+        let options_cls = Class::get("NSAttributedStringMarkdownParsingOptions")?;
+        let options: Id = msg_send![options_cls, alloc];
+        let options: Id = msg_send![options, init];
+        if options.is_null() {
+            return None;
+        }
+        let responds_base: bool = msg_send![options, respondsToSelector: sel!(setBaseFont:)];
+        if responds_base && !font.is_null() {
+            let _: () = msg_send![options, setBaseFont: font];
+        }
+        Some(options)
+    }
+}
+
+unsafe fn markdown_attributed_string(text: &str, font: Id) -> Option<Id> {
+    let ns_attr = Class::get("NSAttributedString")?;
+    let text_ns = ns_string(text);
+    let options = markdown_options_with_base_font(font).unwrap_or(std::ptr::null_mut::<Object>());
+
+    let supports_with_error: bool = msg_send![ns_attr, instancesRespondToSelector: sel!(initWithMarkdown:options:baseURL:error:)];
+    if supports_with_error {
+        let obj: Id = msg_send![ns_attr, alloc];
+        let obj: Id = msg_send![
+            obj,
+            initWithMarkdown: text_ns
+            options: options
+            baseURL: std::ptr::null::<Object>()
+            error: std::ptr::null_mut::<*mut Object>()
+        ];
+        if !obj.is_null() {
+            return Some(obj);
+        }
+    }
+
+    let supports_simple: bool =
+        msg_send![ns_attr, instancesRespondToSelector: sel!(initWithMarkdown:options:baseURL:)];
+    if supports_simple {
+        let obj: Id = msg_send![ns_attr, alloc];
+        let obj: Id = msg_send![
+            obj,
+            initWithMarkdown: text_ns
+            options: options
+            baseURL: std::ptr::null::<Object>()
+        ];
+        if !obj.is_null() {
+            return Some(obj);
+        }
+    }
+
+    None
+}
+
+unsafe fn apply_markdown_to_text_field(text_label: Id, text: &str, font: Id) -> bool {
+    let responds_attr: bool =
+        msg_send![text_label, respondsToSelector: sel!(setAttributedStringValue:)];
+    if !responds_attr {
+        return false;
+    }
+    let font = if font.is_null() {
+        let ns_font = Class::get("NSFont").unwrap();
+        msg_send![ns_font, systemFontOfSize: 13.0f64]
+    } else {
+        font
+    };
+    if let Some(attr) = unsafe { markdown_attributed_string(text, font) } {
+        let _: () = msg_send![text_label, setAttributedStringValue: attr];
+        return true;
+    }
+    false
+}
+
 /// Configuration for creating a chat bubble
 pub struct BubbleConfig {
     pub text: String,
@@ -776,6 +1424,7 @@ pub struct BubbleConfig {
     pub max_width: f64,
     pub is_streaming: bool,
     pub is_error: bool,
+    pub metadata: Option<String>,
     /// Optional message index for Copy button (None = no button)
     pub message_index: Option<usize>,
     /// Optional action target for Copy button
@@ -787,9 +1436,8 @@ pub struct BubbleConfig {
 /// Returns (container_view, text_label) tuple for later updates
 pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
     unsafe {
-        let ns_view = Class::get("NSView").unwrap();
-        let ns_text_field = Class::get("NSTextField").unwrap();
-        let ns_color = Class::get("NSColor").unwrap();
+        let ns_view = bubble_container_view_class();
+        let ns_text_field = bubble_text_field_class();
         let ns_font = Class::get("NSFont").unwrap();
         let ns_dict = Class::get("NSDictionary").unwrap();
 
@@ -808,6 +1456,12 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             10.0
         };
         let line_height = font_size * 1.4;
+        let meta_height = if config.metadata.is_some() {
+            (ui_tokens::SMALL_FONT_SIZE + 4.0).max(12.0)
+        } else {
+            0.0
+        };
+        let meta_spacing = if config.metadata.is_some() { 4.0 } else { 0.0 };
 
         // Font (prefer JetBrains Mono if installed)
         let jb_name = ns_string("JetBrainsMono-Regular");
@@ -853,8 +1507,12 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         // that later expands mid-stream.
         let long_threshold = if config.is_streaming { 30 } else { 80 };
         let is_long = display_text.chars().count() > long_threshold;
-        let wraps_at_max =
-            rect_max.size.height > line_height * 1.6 || display_text.contains('\n') || is_long;
+        let wraps_at_max = rect_max.size.height > line_height * 1.6
+            || display_text.contains('\n')
+            || is_long
+            // When streaming starts with the "• • •" placeholder, force full-width bubbles
+            // to avoid the initial tiny/narrow bubble that later expands mid-stream.
+            || (config.is_streaming && config.text.is_empty());
         let bubble_width = if wraps_at_max {
             bubble_max_width
         } else {
@@ -862,22 +1520,90 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             (content_width + padding_x * 2.0).min(bubble_max_width)
         };
 
-        // Re-measure height for the final layout width (important when bubble_width < max).
+        // Label width for wrapping and later reflow.
         let text_layout_width = (bubble_width - padding_x * 2.0).max(40.0);
-        let text_rect: CGRect = msg_send![
-            text_str,
-            boundingRectWithSize: CGSize::new(text_layout_width, 10_000.0)
-            options: opts
-            attributes: attrs
+
+        // Build the label first and ask AppKit (cell) for the exact wrapped height.
+        // This avoids "second line appears only after click" issues where our NSString
+        // measurement disagrees with NSTextField's rendering.
+        let text_label: Id = msg_send![ns_text_field, alloc];
+        let text_label: Id = msg_send![
+            text_label,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(padding_x, padding_top),
+                &CGSize::new(text_layout_width.max(1.0), line_height),
+            )
         ];
-        let text_height = text_rect.size.height.ceil().max(line_height);
+
+        let _: () = msg_send![text_label, setBezeled: false];
+        let _: () = msg_send![text_label, setEditable: false];
+        let _: () = msg_send![text_label, setSelectable: true];
+        let _: () = msg_send![text_label, setDrawsBackground: false];
+        let _: () = msg_send![text_label, setUsesSingleLineMode: false];
+        let responds_attr: bool =
+            msg_send![text_label, respondsToSelector: sel!(setAllowsEditingTextAttributes:)];
+        if responds_attr {
+            let _: () = msg_send![text_label, setAllowsEditingTextAttributes: true];
+        }
+
+        // Enable wrapping for multi-line messages.
+        let cell: Id = msg_send![text_label, cell];
+        if !cell.is_null() {
+            let _: () = msg_send![cell, setWraps: true];
+            let _: () = msg_send![cell, setScrollable: false];
+        }
+
+        // Text color (role-aware)
+        let text_color: Id = if config.is_error {
+            ui_colors::bubble_error_text()
+        } else {
+            match config.role {
+                BubbleRole::User => ui_colors::bubble_text(),
+                BubbleRole::Assistant => {
+                    if config.is_streaming {
+                        ui_colors::bubble_streaming_text()
+                    } else {
+                        ui_colors::bubble_text()
+                    }
+                }
+                BubbleRole::System => ui_colors::bubble_text(),
+            }
+        };
+        let _: () = msg_send![text_label, setTextColor: text_color];
+
+        let _: () = msg_send![text_label, setFont: font];
+        if !apply_markdown_to_text_field(text_label, &display_text, font) {
+            let _: () = msg_send![text_label, setStringValue: text_str];
+        }
+        let _: () = msg_send![text_label, setLineBreakMode: 0_isize]; // NSLineBreakByWordWrapping
+
+        // Ask the cell for the wrapped size within the fixed width.
+        let measure_bounds = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(text_layout_width.max(1.0), 10_000.0),
+        );
+        let cell: Id = msg_send![text_label, cell];
+        let measured: CGSize = if cell.is_null() {
+            // Fallback to NSString measurement (best effort).
+            let text_rect: CGRect = msg_send![
+                text_str,
+                boundingRectWithSize: CGSize::new(text_layout_width, 10_000.0)
+                options: opts
+                attributes: attrs
+            ];
+            text_rect.size
+        } else {
+            msg_send![cell, cellSizeForBounds: measure_bounds]
+        };
+        let text_height = measured.height.ceil().max(line_height);
         let bubble_height = text_height + padding_top + padding_bottom;
+        let container_height = bubble_height + meta_height + meta_spacing;
 
         // Container view (for alignment)
         let container: Id = msg_send![ns_view, alloc];
         let container_frame = CGRect::new(
             &CGPoint::new(0.0, 0.0),
-            &CGSize::new(config.max_width, bubble_height),
+            &CGSize::new(config.max_width, container_height),
         );
         let container: Id = msg_send![container, initWithFrame: container_frame];
 
@@ -887,23 +1613,23 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             BubbleRole::User => (config.max_width - bubble_width - 8.0).max(8.0), // Right-aligned
             BubbleRole::Assistant | BubbleRole::System => 8.0,                    // Left-aligned
         };
+        let bubble_y = meta_height + meta_spacing;
         let bubble_frame = CGRect::new(
-            &CGPoint::new(bubble_x, 0.0),
+            &CGPoint::new(bubble_x, bubble_y),
             &CGSize::new(bubble_width, bubble_height),
         );
         let bubble: Id = msg_send![bubble, initWithFrame: bubble_frame];
 
         // Set bubble background color based on role
-        let (r, g, b, a) = if config.is_error {
-            bubble_colors::ERROR_BG
+        let bg_color: Id = if config.is_error {
+            ui_colors::bubble_error_bg()
         } else {
             match config.role {
-                BubbleRole::User => bubble_colors::USER_BG,
-                BubbleRole::Assistant => bubble_colors::ASSISTANT_BG,
-                BubbleRole::System => bubble_colors::SYSTEM_BG,
+                BubbleRole::User => ui_colors::bubble_user_bg(),
+                BubbleRole::Assistant => ui_colors::bubble_assistant_bg(),
+                BubbleRole::System => ui_colors::bubble_system_bg(),
             }
         };
-        let bg_color: Id = msg_send![ns_color, colorWithRed: r green: g blue: b alpha: a];
 
         // Set background via layer (for rounded corners)
         let _: () = msg_send![bubble, setWantsLayer: true];
@@ -915,80 +1641,59 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let _: () = msg_send![layer, setCornerRadius: 12.0f64];
             let _: () = msg_send![layer, setMasksToBounds: false];
             // Border styling
-            let (br, bg, bb, ba, bw) = if config.is_error {
-                (
-                    bubble_colors::ERROR_BORDER.0,
-                    bubble_colors::ERROR_BORDER.1,
-                    bubble_colors::ERROR_BORDER.2,
-                    bubble_colors::ERROR_BORDER.3,
-                    1.0f64,
-                )
+            let (border_color, bw) = if config.is_error {
+                (ui_colors::bubble_error_text(), 1.0f64)
             } else {
                 match config.role {
-                    BubbleRole::Assistant => (
-                        bubble_colors::ASSISTANT_BORDER.0,
-                        bubble_colors::ASSISTANT_BORDER.1,
-                        bubble_colors::ASSISTANT_BORDER.2,
-                        bubble_colors::ASSISTANT_BORDER.3,
-                        1.0f64,
-                    ),
-                    BubbleRole::System => (
-                        bubble_colors::SYSTEM_BORDER.0,
-                        bubble_colors::SYSTEM_BORDER.1,
-                        bubble_colors::SYSTEM_BORDER.2,
-                        bubble_colors::SYSTEM_BORDER.3,
-                        1.0f64,
-                    ),
-                    BubbleRole::User => (0.0, 0.0, 0.0, 0.0, 0.0f64),
+                    BubbleRole::User => (ui_colors::bubble_user_border(), 1.0f64),
+                    BubbleRole::Assistant | BubbleRole::System => {
+                        (ui_colors::bubble_border(), 1.0f64)
+                    }
                 }
             };
             if bw > 0.0 {
-                let border_color: Id =
-                    msg_send![ns_color, colorWithRed: br green: bg blue: bb alpha: ba];
                 let cg_border: Id = msg_send![border_color, CGColor];
                 let _: () = msg_send![layer, setBorderColor: cg_border];
                 let _: () = msg_send![layer, setBorderWidth: bw];
             }
         }
 
-        // Text label inside bubble
+        // Update label frame to the final measured height.
         let text_frame = CGRect::new(
-            &CGPoint::new(padding_x, padding_bottom),
-            &CGSize::new((bubble_width - padding_x * 2.0).max(1.0), text_height),
+            &CGPoint::new(padding_x, padding_top),
+            &CGSize::new(text_layout_width.max(1.0), text_height),
         );
-        let text_label: Id = msg_send![ns_text_field, alloc];
-        let text_label: Id = msg_send![text_label, initWithFrame: text_frame];
+        let _: () = msg_send![text_label, setFrame: text_frame];
 
-        let _: () = msg_send![text_label, setBezeled: false];
-        let _: () = msg_send![text_label, setEditable: false];
-        let _: () = msg_send![text_label, setSelectable: true];
-        let _: () = msg_send![text_label, setDrawsBackground: false];
+        // Metadata (role/time/mode) above the bubble.
+        if let Some(meta) = config.metadata.as_ref() {
+            let meta_label: Id = msg_send![ns_text_field, alloc];
+            let meta_frame = CGRect::new(
+                &CGPoint::new(bubble_x, 0.0),
+                &CGSize::new(bubble_width.max(1.0), meta_height.max(1.0)),
+            );
+            let meta_label: Id = msg_send![meta_label, initWithFrame: meta_frame];
+            let _: () = msg_send![meta_label, setBezeled: false];
+            let _: () = msg_send![meta_label, setEditable: false];
+            let _: () = msg_send![meta_label, setSelectable: false];
+            let _: () = msg_send![meta_label, setDrawsBackground: false];
 
-        // Text color (role-aware)
-        let (tr, tg, tb, ta) = if config.is_error {
-            bubble_colors::ERROR_TEXT
-        } else {
-            match config.role {
-                BubbleRole::User => bubble_colors::USER_TEXT,
-                BubbleRole::Assistant => {
-                    if config.is_streaming {
-                        bubble_colors::STREAMING_TEXT
-                    } else {
-                        bubble_colors::ASSISTANT_TEXT
-                    }
-                }
-                BubbleRole::System => bubble_colors::ASSISTANT_TEXT,
-            }
-        };
-        let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
-        let _: () = msg_send![text_label, setTextColor: text_color];
+            let meta_font: Id = msg_send![ns_font, systemFontOfSize: ui_tokens::SMALL_FONT_SIZE];
+            let _: () = msg_send![meta_label, setFont: meta_font];
+            let meta_color: Id = ui_colors::bubble_meta_text();
+            let _: () = msg_send![meta_label, setTextColor: meta_color];
 
-        let _: () = msg_send![text_label, setFont: font];
+            let alignment: isize = if config.role == BubbleRole::User {
+                2
+            } else {
+                0
+            };
+            let _: () = msg_send![meta_label, setAlignment: alignment];
+            let _: () = msg_send![meta_label, setStringValue: ns_string(meta)];
+            let _: () = msg_send![meta_label, setIdentifier: ns_string("codescribe_bubble_meta")];
 
-        let _: () = msg_send![text_label, setStringValue: text_str];
-
-        // Word wrap
-        let _: () = msg_send![text_label, setLineBreakMode: 0_isize]; // NSLineBreakByWordWrapping
+            let _: () = msg_send![container, addSubview: meta_label];
+        }
 
         // Assemble hierarchy
         let _: () = msg_send![bubble, addSubview: text_label];
@@ -1000,7 +1705,8 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let button_width = 40.0;
             let button_height = copy_button_height;
             let button_x = bubble_width - button_width - padding_x;
-            let button_y = 4.0; // Bottom of bubble
+            // Flipped coords: anchor near the bottom edge.
+            let button_y = (bubble_height - button_height - 4.0).max(4.0);
 
             let button_frame = CGRect::new(
                 &CGPoint::new(button_x, button_y),
@@ -1026,21 +1732,44 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let _: () = msg_send![copy_button, setFont: small_font];
 
             // Match bubble text tint
-            let button_color: Id =
-                msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
+            let button_color: Id = ui_colors::bubble_text();
             let _: () = msg_send![copy_button, setContentTintColor: button_color];
 
             // Store message index in tag for retrieval on click
             let _: () = msg_send![copy_button, setTag: msg_index as isize];
+            let _: () = msg_send![
+                copy_button,
+                setIdentifier: ns_string("codescribe_copy_button")
+            ];
 
             // Set action
             let _: () = msg_send![copy_button, setTarget: target];
             let _: () = msg_send![copy_button, setAction: sel!(onCopyMessage:)];
 
+            let _: () = msg_send![copy_button, setHidden: true];
             let _: () = msg_send![bubble, addSubview: copy_button];
         }
 
         let _: () = msg_send![container, addSubview: bubble];
+
+        if config.message_index.is_some() {
+            let ns_tracking_area = Class::get("NSTrackingArea").unwrap();
+            let tracking_opts = NSTRACKING_MOUSE_ENTERED_AND_EXITED
+                | NSTRACKING_ACTIVE_ALWAYS
+                | NSTRACKING_IN_VISIBLE_RECT;
+            let tracking_area: Id = msg_send![ns_tracking_area, alloc];
+            let tracking_area: Id = msg_send![
+                tracking_area,
+                initWithRect: CGRect::new(
+                    &CGPoint::new(0.0, 0.0),
+                    &CGSize::new(bubble_width.max(1.0), bubble_height.max(1.0)),
+                )
+                options: tracking_opts
+                owner: bubble
+                userInfo: std::ptr::null::<Object>()
+            ];
+            let _: () = msg_send![bubble, addTrackingArea: tracking_area];
+        }
 
         (container, text_label)
     }
@@ -1051,8 +1780,6 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
 /// `text_label` must be a valid `NSTextField` instance.
 pub unsafe fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool) {
     unsafe {
-        let ns_color = Class::get("NSColor").unwrap();
-
         let display_text = if is_streaming && text.is_empty() {
             "• • •".to_string()
         } else if is_streaming {
@@ -1061,16 +1788,18 @@ pub unsafe fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool)
             text.to_string()
         };
 
-        let text_str = ns_string(&display_text);
-        let _: () = msg_send![text_label, setStringValue: text_str];
+        let font: Id = msg_send![text_label, font];
+        if !apply_markdown_to_text_field(text_label, &display_text, font) {
+            let text_str = ns_string(&display_text);
+            let _: () = msg_send![text_label, setStringValue: text_str];
+        }
 
         // Update text color based on streaming state (assistant defaults)
-        let (tr, tg, tb, ta) = if is_streaming {
-            bubble_colors::STREAMING_TEXT
+        let text_color: Id = if is_streaming {
+            ui_colors::bubble_streaming_text()
         } else {
-            bubble_colors::ASSISTANT_TEXT
+            ui_colors::bubble_text()
         };
-        let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
         let _: () = msg_send![text_label, setTextColor: text_color];
     }
 }
@@ -1137,7 +1866,6 @@ pub unsafe fn update_stack_item_height(view: Id, new_height: f64) {
 /// `text_label` must be the label returned by `create_bubble_view`.
 pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, display_text: &str) {
     unsafe {
-        let ns_dict = Class::get("NSDictionary").unwrap();
         let ns_font = Class::get("NSFont").unwrap();
 
         let font: Id = msg_send![text_label, font];
@@ -1168,28 +1896,59 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
             label_frame.size.width.max(1.0)
         };
 
-        let text_str = ns_string(display_text);
-        let font_key = ns_string("NSFont");
-        let attrs: Id = msg_send![ns_dict, dictionaryWithObject: font forKey: font_key];
-        let opts: u64 = 1 | 2; // NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-        let text_rect: CGRect = msg_send![
-            text_str,
-            boundingRectWithSize: CGSize::new(width, 10_000.0)
-            options: opts
-            attributes: attrs
-        ];
-
         // Approximate line-height floor to avoid tiny/bad measurements.
         let point_size: f64 = msg_send![font, pointSize];
         let line_height = (point_size * 1.35).max(14.0);
-
-        let text_height = text_rect.size.height.ceil().max(line_height);
 
         // Match `create_bubble_view` layout constants.
         let padding_top = 10.0;
         let copy_button_height = 16.0;
         let padding_bottom = copy_button_height + 8.0;
+
+        // Ask the label's cell for the wrapped height in the current width.
+        let measure_bounds = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(width.max(1.0), 10_000.0),
+        );
+        let cell: Id = msg_send![text_label, cell];
+        let measured: CGSize = if cell.is_null() {
+            // Fallback to a conservative single line height.
+            CGSize::new(width.max(1.0), line_height)
+        } else {
+            msg_send![cell, cellSizeForBounds: measure_bounds]
+        };
+        let text_height = measured.height.ceil().max(line_height);
         let bubble_height = text_height + padding_top + padding_bottom;
+        let mut meta_height = 0.0;
+        let mut meta_spacing = 0.0;
+        let mut meta_label: Option<Id> = None;
+
+        let subviews: Id = msg_send![container, subviews];
+        if !subviews.is_null() {
+            let sub_count: usize = msg_send![subviews, count];
+            for i in 0..sub_count {
+                let v: Id = msg_send![subviews, objectAtIndex: i];
+                if v.is_null() {
+                    continue;
+                }
+                let ident: Id = msg_send![v, identifier];
+                if ident.is_null() {
+                    continue;
+                }
+                let c_str: *const i8 = msg_send![ident, UTF8String];
+                if c_str.is_null() {
+                    continue;
+                }
+                let s = std::ffi::CStr::from_ptr(c_str).to_string_lossy();
+                if s == "codescribe_bubble_meta" {
+                    let frame: CGRect = msg_send![v, frame];
+                    meta_height = frame.size.height.max(ui_tokens::SMALL_FONT_SIZE);
+                    meta_spacing = 4.0;
+                    meta_label = Some(v);
+                    break;
+                }
+            }
+        }
 
         // Resize bubble background view (label's superview).
         let bubble: Id = msg_send![text_label, superview];
@@ -1213,26 +1972,77 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
             let padding_x = 12.0;
             let new_label_w = (bubble_width - padding_x * 2.0).max(1.0);
             let new_label_frame = CGRect::new(
-                &CGPoint::new(padding_x, padding_bottom),
+                &CGPoint::new(padding_x, padding_top),
                 &CGSize::new(new_label_w, text_height),
             );
             let _: () = msg_send![text_label, setFrame: new_label_frame];
 
+            if let Some(meta_ptr) = meta_label {
+                let meta_frame = CGRect::new(
+                    &CGPoint::new(bubble_x, 0.0),
+                    &CGSize::new(bubble_width.max(1.0), meta_height.max(1.0)),
+                );
+                let _: () = msg_send![meta_ptr, setFrame: meta_frame];
+            }
+
+            // Reposition the Copy button to stay anchored near the bottom edge (flipped coords).
+            let ns_button = Class::get("NSButton").unwrap();
+            let subviews: Id = msg_send![bubble, subviews];
+            if !subviews.is_null() {
+                let sub_count: usize = msg_send![subviews, count];
+                for i in 0..sub_count {
+                    let v: Id = msg_send![subviews, objectAtIndex: i];
+                    if v.is_null() {
+                        continue;
+                    }
+                    let is_button: bool = msg_send![v, isKindOfClass: ns_button];
+                    if !is_button {
+                        continue;
+                    }
+                    let btn_frame: CGRect = msg_send![v, frame];
+                    let btn_h = btn_frame.size.height;
+                    let new_y = (bubble_height - btn_h - 4.0).max(4.0);
+                    let new_frame = CGRect::new(
+                        &CGPoint::new(btn_frame.origin.x, new_y),
+                        &CGSize::new(btn_frame.size.width, btn_frame.size.height),
+                    );
+                    let _: () = msg_send![v, setFrame: new_frame];
+                }
+            }
+
+            let bubble_y = if meta_height > 0.0 {
+                meta_height + meta_spacing
+            } else {
+                bubble_frame.origin.y
+            };
             let new_bubble_frame = CGRect::new(
-                &CGPoint::new(bubble_x, bubble_frame.origin.y),
+                &CGPoint::new(bubble_x, bubble_y),
                 &CGSize::new(bubble_width, bubble_height),
             );
             let _: () = msg_send![bubble, setFrame: new_bubble_frame];
             let _: () = msg_send![bubble, setNeedsDisplay: true];
+            let _: () = msg_send![text_label, setNeedsDisplay: true];
         }
 
         // Resize container (stack arranged subview).
-        let _: () = msg_send![container, setFrameSize: CGSize::new(container_frame.size.width, bubble_height)];
-        update_stack_item_height(container, bubble_height);
+        let container_height = bubble_height + meta_height + meta_spacing;
+        let _: () = msg_send![
+            container,
+            setFrameSize: CGSize::new(container_frame.size.width, container_height)
+        ];
+        update_stack_item_height(container, container_height);
 
         let _: () = msg_send![container, setNeedsLayout: true];
         let _: () = msg_send![container, layoutSubtreeIfNeeded];
         let _: () = msg_send![container, setNeedsDisplay: true];
+
+        // NSStackView (superview) does the actual arrangement; ensure it reflows immediately
+        // so updated height constraints take effect without requiring a click/focus change.
+        let stack: Id = msg_send![container, superview];
+        if !stack.is_null() {
+            let _: () = msg_send![stack, setNeedsLayout: true];
+            let _: () = msg_send![stack, layoutSubtreeIfNeeded];
+        }
     }
 }
 
@@ -1240,8 +2050,188 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
 // File Operations Helpers
 // ============================================================================
 
+/// Pick one or more files via native macOS open panel.
+///
+/// Returns absolute paths. Intended for "attach as context" flows (Agent chat).
+pub fn pick_files_open_panel(title: &str) -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let Some(ns_open_panel) = Class::get("NSOpenPanel") else {
+            return Vec::new();
+        };
+        let panel: Id = msg_send![ns_open_panel, openPanel];
+        if panel.is_null() {
+            return Vec::new();
+        }
+
+        let _: () = msg_send![panel, setTitle: ns_string(title)];
+        let _: () = msg_send![panel, setCanChooseFiles: true];
+        let _: () = msg_send![panel, setCanChooseDirectories: false];
+        let _: () = msg_send![panel, setAllowsMultipleSelection: true];
+
+        // Prefer predictable prompt text (keeps UX clear).
+        let _: () = msg_send![panel, setPrompt: ns_string("Attach")];
+
+        // runModal returns NSModalResponse (NSModalResponseOK == 1).
+        let resp: isize = msg_send![panel, runModal];
+        if resp != 1 {
+            return Vec::new();
+        }
+
+        let urls: Id = msg_send![panel, URLs];
+        if urls.is_null() {
+            return Vec::new();
+        }
+
+        let count: usize = msg_send![urls, count];
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let url: Id = msg_send![urls, objectAtIndex: i];
+            if url.is_null() {
+                continue;
+            }
+            let ns_path: Id = msg_send![url, path];
+            if ns_path.is_null() {
+                continue;
+            }
+            let c_str: *const i8 = msg_send![ns_path, UTF8String];
+            if c_str.is_null() {
+                continue;
+            }
+            let s = std::ffi::CStr::from_ptr(c_str)
+                .to_string_lossy()
+                .to_string();
+            if s.is_empty() {
+                continue;
+            }
+            out.push(std::path::PathBuf::from(s));
+        }
+        out
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = title;
+        Vec::new()
+    }
+}
+
 /// Open a file in the default editor (TextEdit, etc.)
 pub fn open_file_in_editor(path: &std::path::Path) -> bool {
+    // Most reliable approach in the app-bundle environment: call `/usr/bin/open`.
+    // NSWorkspace sometimes reports success but doesn't surface the editor window. `open -e`
+    // (TextEdit) is predictable and works without PATH.
+    #[cfg(target_os = "macos")]
+    {
+        use std::time::Duration;
+        use tracing::{info, warn};
+
+        let path = path.to_path_buf();
+        if !path.exists() {
+            warn!(
+                "open_file_in_editor: path does not exist: {}",
+                path.display()
+            );
+            return false;
+        }
+
+        let open_via_nsworkspace_textedit = || -> bool {
+            unsafe {
+                let ns_workspace = match Class::get("NSWorkspace") {
+                    Some(c) => c,
+                    None => return false,
+                };
+                let workspace: Id = msg_send![ns_workspace, sharedWorkspace];
+                if workspace.is_null() {
+                    return false;
+                }
+
+                let path_str = path.to_string_lossy();
+                let ns_path = ns_string(&path_str);
+                let app = ns_string("TextEdit");
+
+                // Prefer explicit app open (avoids "Open…" panel / wrong default handler).
+                let ok: bool = msg_send![workspace, openFile: ns_path withApplication: app];
+                info!("NSWorkspace openFile:withApplication(TextEdit) ok={}", ok);
+                ok
+            }
+        };
+
+        let run_open = |args: &[&str]| -> bool {
+            let out = std::process::Command::new("/usr/bin/open")
+                .args(args)
+                .arg(&path)
+                .output();
+            match out {
+                Ok(out) => {
+                    let code = out.status.code().unwrap_or(-1);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    if !stderr.trim().is_empty() {
+                        info!(
+                            "open {:?} exit={} stderr={}",
+                            args,
+                            code,
+                            stderr.trim().replace('\n', "\\n")
+                        );
+                    } else {
+                        info!("open {:?} exit={}", args, code);
+                    }
+                    out.status.success()
+                }
+                Err(e) => {
+                    warn!("open {:?} failed to spawn: {}", args, e);
+                    false
+                }
+            }
+        };
+
+        let activate_textedit_best_effort = || {
+            // Try to bring TextEdit to the foreground without requiring Automation permissions
+            // (osascript can trigger a prompt / fail silently).
+            unsafe {
+                let ns_running_app = match Class::get("NSRunningApplication") {
+                    Some(c) => c,
+                    None => return,
+                };
+                let bundle_id = ns_string("com.apple.TextEdit");
+                let apps: Id =
+                    msg_send![ns_running_app, runningApplicationsWithBundleIdentifier: bundle_id];
+                if apps.is_null() {
+                    return;
+                }
+
+                let count: usize = msg_send![apps, count];
+                if count == 0 {
+                    return;
+                }
+
+                // NSApplicationActivateAllWindows (1) | NSApplicationActivateIgnoringOtherApps (2)
+                let opts: u64 = 3;
+                for i in 0..count {
+                    let app: Id = msg_send![apps, objectAtIndex: i];
+                    if app.is_null() {
+                        continue;
+                    }
+                    let ok: bool = msg_send![app, activateWithOptions: opts];
+                    info!("TextEdit activateWithOptions result={}", ok);
+                }
+            }
+        };
+
+        // Force TextEdit and try to surface it; otherwise it can open "somewhere" (another Space)
+        // and look like a no-op from the user's POV.
+        // Prefer `open -a TextEdit <file>` (explicit app + file). Fallback to `-e` if needed.
+        if open_via_nsworkspace_textedit() || run_open(&["-a", "TextEdit"]) || run_open(&["-e"]) {
+            // Give launch a moment so NSRunningApplication can see the process.
+            std::thread::sleep(Duration::from_millis(75));
+            activate_textedit_best_effort();
+            return true;
+        }
+        if run_open(&["-t"]) || run_open(&[]) {
+            return true;
+        }
+    }
+
     unsafe {
         let ns_workspace = Class::get("NSWorkspace").unwrap();
         let workspace: Id = msg_send![ns_workspace, sharedWorkspace];
@@ -1249,9 +2239,26 @@ pub fn open_file_in_editor(path: &std::path::Path) -> bool {
         let path_str = path.to_string_lossy();
         let ns_path = ns_string(&path_str);
 
-        let result: bool = msg_send![workspace, openFile: ns_path];
-        result
+        let ok: bool = msg_send![workspace, openFile: ns_path];
+        if ok {
+            return true;
+        }
+
+        // Fallback: open via file:// URL (some apps prefer this path).
+        let ns_url = Class::get("NSURL").unwrap();
+        let url: Id = msg_send![ns_url, fileURLWithPath: ns_path];
+        if url.is_null() {
+            // last resort below (shell open)
+        } else {
+            let ok2: bool = msg_send![workspace, openURL: url];
+            if ok2 {
+                return true;
+            }
+        }
     }
+
+    let _ = path;
+    false
 }
 
 /// List draft files from a directory, sorted by modification time (newest first)
@@ -1304,12 +2311,216 @@ pub fn create_vertical_stack_view(frame: CGRect) -> Id {
     }
 }
 
+/// Create a flipped vertical NSStackView (y-axis grows downward).
+///
+/// This is useful for chat-like UIs where we want "top-down" coordinates and stable bubble
+/// sizing during streaming.
+pub fn create_flipped_vertical_stack_view(frame: CGRect) -> Id {
+    unsafe {
+        let ns_stack_view = flipped_stack_view_class();
+
+        let stack: Id = msg_send![ns_stack_view, alloc];
+        let stack: Id = msg_send![stack, initWithFrame: frame];
+
+        // Vertical orientation (1 = NSUserInterfaceLayoutOrientationVertical)
+        let _: () = msg_send![stack, setOrientation: 1_isize];
+        // Top alignment
+        let _: () = msg_send![stack, setAlignment: 1_isize]; // NSLayoutAttributeLeft
+        // Spacing between views
+        let _: () = msg_send![stack, setSpacing: 8.0f64];
+
+        stack
+    }
+}
+
+fn flipped_stack_view_class() -> &'static Class {
+    static mut CLS: *const Class = std::ptr::null();
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        let superclass = Class::get("NSStackView").expect("NSStackView class missing");
+        let mut decl = ClassDecl::new("CodeScribeFlippedStackView", superclass)
+            .expect("CodeScribeFlippedStackView already defined");
+        decl.add_method(
+            sel!(isFlipped),
+            is_flipped as extern "C" fn(&Object, Sel) -> bool,
+        );
+        let cls = decl.register();
+        CLS = cls as *const Class;
+    });
+    unsafe { &*CLS }
+}
+
+extern "C" fn is_flipped(_this: &Object, _cmd: Sel) -> bool {
+    true
+}
+
+fn bubble_container_view_class() -> &'static Class {
+    static mut CLS: *const Class = std::ptr::null();
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        let superclass = Class::get("NSView").expect("NSView class missing");
+        let mut decl = ClassDecl::new("CodeScribeBubbleContainerView", superclass)
+            .expect("CodeScribeBubbleContainerView already defined");
+        decl.add_method(
+            sel!(isFlipped),
+            is_flipped as extern "C" fn(&Object, Sel) -> bool,
+        );
+        decl.add_method(
+            sel!(scrollWheel:),
+            bubble_container_scroll_wheel as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(mouseEntered:),
+            bubble_container_mouse_entered as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(mouseExited:),
+            bubble_container_mouse_exited as extern "C" fn(&Object, Sel, Id),
+        );
+        let cls = decl.register();
+        CLS = cls as *const Class;
+    });
+    unsafe { &*CLS }
+}
+
+extern "C" fn bubble_container_scroll_wheel(this: &Object, _cmd: Sel, event: Id) {
+    unsafe {
+        let view: Id = (this as *const Object) as Id;
+        if view.is_null() || event.is_null() {
+            return;
+        }
+
+        // When the pointer is over a bubble background, AppKit may not route wheel events to the
+        // surrounding scroll view. Forward explicitly so long messages stay scrollable.
+        let scroll: Id = msg_send![view, enclosingScrollView];
+        if !scroll.is_null() {
+            let _: () = msg_send![scroll, scrollWheel: event];
+            return;
+        }
+
+        let next: Id = msg_send![view, nextResponder];
+        if !next.is_null() {
+            let _: () = msg_send![next, scrollWheel: event];
+        }
+    }
+}
+
+extern "C" fn bubble_container_mouse_entered(this: &Object, _cmd: Sel, _event: Id) {
+    unsafe {
+        let view: Id = (this as *const Object) as Id;
+        toggle_bubble_copy_buttons(view, true);
+    }
+}
+
+extern "C" fn bubble_container_mouse_exited(this: &Object, _cmd: Sel, _event: Id) {
+    unsafe {
+        let view: Id = (this as *const Object) as Id;
+        toggle_bubble_copy_buttons(view, false);
+    }
+}
+
+unsafe fn toggle_bubble_copy_buttons(view: Id, visible: bool) {
+    let ns_button = Class::get("NSButton").unwrap();
+    let subviews: Id = msg_send![view, subviews];
+    if subviews.is_null() {
+        return;
+    }
+    let count: usize = msg_send![subviews, count];
+    for i in 0..count {
+        let v: Id = msg_send![subviews, objectAtIndex: i];
+        if v.is_null() {
+            continue;
+        }
+        let is_button: bool = msg_send![v, isKindOfClass: ns_button];
+        if is_button {
+            let ident: Id = msg_send![v, identifier];
+            if !ident.is_null() {
+                let c_str: *const i8 = msg_send![ident, UTF8String];
+                if !c_str.is_null() {
+                    let s = unsafe { std::ffi::CStr::from_ptr(c_str) }.to_string_lossy();
+                    if s == "codescribe_copy_button" {
+                        let _: () = msg_send![v, setHidden: !visible];
+                    }
+                }
+            }
+            continue;
+        }
+        unsafe { toggle_bubble_copy_buttons(v, visible) };
+    }
+}
+
+fn bubble_text_field_class() -> &'static Class {
+    static mut CLS: *const Class = std::ptr::null();
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        let superclass = Class::get("NSTextField").expect("NSTextField class missing");
+        let mut decl = ClassDecl::new("CodeScribeBubbleTextField", superclass)
+            .expect("CodeScribeBubbleTextField already defined");
+        decl.add_method(
+            sel!(scrollWheel:),
+            bubble_text_scroll_wheel as extern "C" fn(&Object, Sel, Id),
+        );
+        let cls = decl.register();
+        CLS = cls as *const Class;
+    });
+    unsafe { &*CLS }
+}
+
+extern "C" fn bubble_text_scroll_wheel(this: &Object, _cmd: Sel, event: Id) {
+    unsafe {
+        let view: Id = (this as *const Object) as Id;
+        if view.is_null() || event.is_null() {
+            return;
+        }
+
+        // Selectable text fields sometimes "eat" scroll wheel events without scrolling anything.
+        // Forward the wheel to the enclosing scroll view so Agent/Drawer can always scroll.
+        let scroll: Id = msg_send![view, enclosingScrollView];
+        if !scroll.is_null() {
+            let _: () = msg_send![scroll, scrollWheel: event];
+            return;
+        }
+
+        let next: Id = msg_send![view, nextResponder];
+        if !next.is_null() {
+            let _: () = msg_send![next, scrollWheel: event];
+        }
+    }
+}
+
 /// Add a view to NSStackView
 /// # Safety
 /// `stack` must be a valid `NSStackView` and `view` a valid `NSView`.
 pub unsafe fn stack_view_add(stack: Id, view: Id) {
     unsafe {
+        // NSStackView uses Auto Layout for arranged subviews. Our views are created with manual
+        // frames, so we need to:
+        // - opt out of autoresizing-mask constraints
+        // - provide at least a height constraint, otherwise subviews can collapse/overlap
+        let _: () = msg_send![view, setTranslatesAutoresizingMaskIntoConstraints: false];
+
         let _: () = msg_send![stack, addArrangedSubview: view];
+
+        // Ensure a deterministic width. Without leading/trailing constraints, NSStackView can
+        // produce ambiguous layouts (overlaps / broken scrolling) when used as a scroll document.
+        let view_leading: Id = msg_send![view, leadingAnchor];
+        let view_trailing: Id = msg_send![view, trailingAnchor];
+        let stack_leading: Id = msg_send![stack, leadingAnchor];
+        let stack_trailing: Id = msg_send![stack, trailingAnchor];
+        if !view_leading.is_null()
+            && !view_trailing.is_null()
+            && !stack_leading.is_null()
+            && !stack_trailing.is_null()
+        {
+            let leading: Id = msg_send![view_leading, constraintEqualToAnchor: stack_leading];
+            let trailing: Id = msg_send![view_trailing, constraintEqualToAnchor: stack_trailing];
+            if !leading.is_null() {
+                let _: () = msg_send![leading, setActive: true];
+            }
+            if !trailing.is_null() {
+                let _: () = msg_send![trailing, setActive: true];
+            }
+        }
 
         // Pin height to the initial frame height (good enough for our chat bubbles/cards).
         let frame: CGRect = msg_send![view, frame];
@@ -1332,7 +2543,85 @@ pub unsafe fn stack_view_clear(stack: Id) {
 
         for i in (0..count).rev() {
             let view: Id = msg_send![arranged, objectAtIndex: i];
+            // For NSStackView, removing an arranged subview requires two steps:
+            // 1) removeArrangedSubview (removes constraints/arrangement bookkeeping)
+            // 2) removeFromSuperview (removes it from the view hierarchy)
+            let _: () = msg_send![stack, removeArrangedSubview: view];
             let _: () = msg_send![view, removeFromSuperview];
         }
+    }
+}
+
+// ============================================================================
+// Editable Text Input Helpers
+// ============================================================================
+
+/// Create an editable text input field with a border and placeholder.
+pub fn create_text_input(frame: CGRect, placeholder: &str, initial_value: &str) -> Id {
+    unsafe {
+        let ns_text_field = Class::get("NSTextField").unwrap();
+        let ns_font = Class::get("NSFont").unwrap();
+
+        let field: Id = msg_send![ns_text_field, alloc];
+        let field: Id = msg_send![field, initWithFrame: frame];
+
+        let _: () = msg_send![field, setBezeled: true];
+        let _: () = msg_send![field, setEditable: true];
+        let _: () = msg_send![field, setSelectable: true];
+        let _: () = msg_send![field, setDrawsBackground: true];
+
+        let font: Id = msg_send![ns_font, systemFontOfSize: 13.0f64];
+        let _: () = msg_send![field, setFont: font];
+
+        let ph = ns_string(placeholder);
+        let _: () = msg_send![field, setPlaceholderString: ph];
+
+        if !initial_value.is_empty() {
+            let val = ns_string(initial_value);
+            let _: () = msg_send![field, setStringValue: val];
+        }
+
+        field
+    }
+}
+
+/// Create a secure (password) text input field.
+pub fn create_secure_text_input(frame: CGRect, placeholder: &str) -> Id {
+    unsafe {
+        let ns_secure = Class::get("NSSecureTextField").unwrap();
+        let ns_font = Class::get("NSFont").unwrap();
+
+        let field: Id = msg_send![ns_secure, alloc];
+        let field: Id = msg_send![field, initWithFrame: frame];
+
+        let _: () = msg_send![field, setBezeled: true];
+        let _: () = msg_send![field, setEditable: true];
+        let _: () = msg_send![field, setSelectable: true];
+        let _: () = msg_send![field, setDrawsBackground: true];
+
+        let font: Id = msg_send![ns_font, systemFontOfSize: 13.0f64];
+        let _: () = msg_send![field, setFont: font];
+
+        let ph = ns_string(placeholder);
+        let _: () = msg_send![field, setPlaceholderString: ph];
+
+        field
+    }
+}
+
+/// Create an NSSlider (continuous, horizontal).
+pub fn create_slider(frame: CGRect, min: f64, max: f64, value: f64) -> Id {
+    unsafe {
+        let ns_slider = Class::get("NSSlider").unwrap();
+
+        let slider: Id = msg_send![ns_slider, alloc];
+        let slider: Id = msg_send![slider, initWithFrame: frame];
+
+        let _: () = msg_send![slider, setMinValue: min];
+        let _: () = msg_send![slider, setMaxValue: max];
+        let _: () = msg_send![slider, setDoubleValue: value];
+        let _: () = msg_send![slider, setContinuous: true];
+
+        slider
     }
 }

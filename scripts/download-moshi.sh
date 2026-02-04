@@ -35,12 +35,10 @@ echo ""
 echo "Target directory: $MODELS_DIR"
 echo ""
 
-# Check for huggingface-cli
-if ! command -v huggingface-cli &> /dev/null; then
-    echo "⚠️  huggingface-cli not found. Installing..."
-    pip install -U huggingface_hub
-    echo ""
-    echo "Please run this script again after installation."
+# Check for hf CLI
+if ! command -v hf &> /dev/null; then
+    echo "⚠️  hf CLI not found. Install with: pipx install huggingface_hub"
+    echo "   See: https://huggingface.co/docs/huggingface_hub/guides/cli"
     exit 1
 fi
 
@@ -62,7 +60,7 @@ if [ "$DOWNLOAD_MOSHIKO" = true ]; then
         echo "   Source: kyutai/moshiko-candle-q8"
         echo ""
 
-        huggingface-cli download kyutai/moshiko-candle-q8 \
+        hf download kyutai/moshiko-candle-q8 \
             --include "*.safetensors" "*.json" \
             --local-dir "$MOSHIKO_DIR"
 
@@ -87,7 +85,7 @@ if [ "$DOWNLOAD_MOSHIKA" = true ]; then
         echo "   Source: kyutai/moshika-candle-q8"
         echo ""
 
-        huggingface-cli download kyutai/moshika-candle-q8 \
+        hf download kyutai/moshika-candle-q8 \
             --include "*.safetensors" "*.json" \
             --local-dir "$MOSHIKA_DIR"
 

@@ -9,6 +9,7 @@
 #       --apple-id "your@email.com" --team-id "TEAMID" --password "app-specific-pwd"
 #
 # Usage:
+#   ./scripts/notarize.sh CodeScribe-<VERSION>.dmg
 #   NOTARY_PROFILE=MyProfile ./scripts/notarize.sh CodeScribe.dmg
 #
 # Created by M&K (c)2026 VetCoders
@@ -20,8 +21,8 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 # Configuration
-NOTARY_PROFILE="${NOTARY_PROFILE:-}"
-APP_NAME="CodeScribe"
+NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
+APP_NAME="${CODESCRIBE_APP_NAME:-CodeScribe}"
 BUNDLE_DIR="bundle/${APP_NAME}.app"
 
 # Parse arguments
@@ -29,18 +30,13 @@ if [ $# -lt 1 ]; then
     echo "Usage: $0 <dmg_file>"
     echo ""
     echo "Environment variables:"
-    echo "  NOTARY_PROFILE  - Keychain profile name (required)"
+    echo "  NOTARY_PROFILE  - Keychain profile name (default: ${NOTARY_PROFILE})"
     echo ""
     echo "Setup credentials first:"
-    echo "  xcrun notarytool store-credentials \"CODESCRIBE_NOTARY\" \\"
+    echo "  xcrun notarytool store-credentials \"${NOTARY_PROFILE}\" \\"
     echo "      --apple-id \"your@email.com\" \\"
     echo "      --team-id \"TEAMID\" \\"
     echo "      --password \"app-specific-password\""
-    exit 1
-fi
-
-if [ -z "$NOTARY_PROFILE" ]; then
-    echo "✗ NOTARY_PROFILE is required (notarytool keychain profile)."
     exit 1
 fi
 

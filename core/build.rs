@@ -3,9 +3,12 @@
 //! Exports embedded model data and configuration.
 //! Generates embedded_model_data.rs and embedded_tts_data.rs in OUT_DIR for release builds.
 //!
-//! Release builds EMBED Whisper model by default for zero-dependency distribution.
-//! Opt-out with CODESCRIBE_NO_EMBED=1 to skip embedding.
+//! Release builds EMBED Whisper + Silero VAD by default (zero-dependency distribution).
+//! Opt-out with CODESCRIBE_NO_EMBED=1 to skip all embedding.
 //! Additional models (TTS, E5) require opt-in via CODESCRIBE_EMBED_TTS / CODESCRIBE_EMBED_E5.
+//!
+//! ⚠ Binary > 3GB causes dylib crash on macOS — Whisper (~888MB) + Silero (~2MB) = safe.
+//!   Adding E5 (~1.1GB) is OK. Adding TTS on top may exceed limit — test before shipping!
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -30,6 +33,7 @@ const DEFAULT_E5_REPO: &str = "intfloat/multilingual-e5-base";
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_MODEL_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_TTS");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
@@ -74,7 +78,7 @@ fn main() {
         }
 
         // TTS model embedding (optional, via CODESCRIBE_EMBED_TTS=1)
-        let embed_tts = env::var("CODESCRIBE_EMBED_TTS").is_ok() && !no_embed;
+        let embed_tts = env_flag("CODESCRIBE_EMBED_TTS", false) && !no_embed;
         let tts_model_path =
             resolve_tts_embed_model_path(&manifest_dir, DEFAULT_TTS_MODEL_NAME, DEFAULT_TTS_REPO);
         let tts_dest_path = Path::new(&out_dir).join("embedded_tts_data.rs");
@@ -165,15 +169,15 @@ fn main() {
             println!("cargo:warning=E5 embedding disabled (set CODESCRIBE_EMBED_E5=1 to embed)");
         }
 
-        // Silero VAD embedding (small, default in release when available)
-        let silero_path = codescribe_dir.join("models").join("silero_vad.onnx");
+        // Silero VAD — always embedded from repo (2.3MB, non-negotiable)
+        let silero_path = Path::new(&manifest_dir)
+            .parent()
+            .unwrap_or(Path::new(&manifest_dir))
+            .join("models")
+            .join("silero_vad.onnx");
         let silero_dest_path = Path::new(&out_dir).join("embedded_vad_data.rs");
-        let silero_exists = silero_path.exists();
-        if is_release && silero_exists && !no_embed {
-            println!(
-                "cargo:warning=Embedding Silero VAD model from: {}",
-                silero_path.display()
-            );
+        println!("cargo:rerun-if-changed={}", silero_path.display());
+        if silero_path.exists() {
             let silero_content = format!(
                 r#"
                 pub static MODEL: &[u8] = include_bytes!(r"{}");
@@ -183,12 +187,11 @@ fn main() {
             fs::write(&silero_dest_path, silero_content)
                 .expect("Failed to write embedded_vad_data.rs");
             println!("cargo:rustc-cfg=embed_vad");
-        } else if is_release && !silero_exists {
-            println!(
-                "cargo:warning=Silero VAD model not found at: {}",
+        } else {
+            panic!(
+                "Silero VAD model missing from repo: {}\nThis file must be committed to the repository.",
                 silero_path.display()
             );
-            println!("cargo:warning=Download with: scripts/download-silero.sh");
         }
 
         // Release builds embed Whisper by default (zero-dependency distribution)
@@ -198,7 +201,7 @@ fn main() {
         if should_embed_whisper {
             // Release + model found → embed it
             println!(
-                "cargo:warning=Embedding model from: {}",
+                "cargo:warning=Embedding Whisper model from: {}",
                 model_path.display()
             );
             let content = format!(
@@ -260,6 +263,13 @@ fn resolve_whisper_embed_model_path(
     embed_model: &str,
     default_repo: &str,
 ) -> PathBuf {
+    // CODESCRIBE_MODEL_PATH takes priority — explicit user override
+    if let Ok(model_path) = env::var("CODESCRIBE_MODEL_PATH") {
+        let p = PathBuf::from(model_path.trim());
+        if p.join("config.json").exists() {
+            return p;
+        }
+    }
     if embed_model.contains('/') {
         if let Some(snapshot) = find_hf_snapshot(embed_model) {
             return snapshot;

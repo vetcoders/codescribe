@@ -18,6 +18,7 @@
 //! Created by M&K (c)2026 VetCoders
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use tokio::time::Instant;
 use tracing::{debug, trace};
@@ -40,6 +41,10 @@ pub(crate) enum SpeechMode {
     },
     Utterance {
         max_utterance_samples: usize,
+        /// Periodic interim emit limit (samples). Continuous speech without VAD
+        /// silence triggers an interim Utterance every `interim_limit` samples
+        /// so Whisper + UI stay responsive during long stretches of speech.
+        interim_limit: usize,
     },
 }
 
@@ -96,6 +101,9 @@ pub(crate) struct SpeechSession {
     pre_roll_raw: usize,
     speech_pad_raw: usize,
     last_emit_raw: usize,
+    vad_frames_total: u64,
+    vad_frames_speech: u64,
+    last_vad_heartbeat: Instant,
 }
 
 impl SpeechSession {
@@ -175,6 +183,9 @@ impl SpeechSession {
             pre_roll_raw,
             speech_pad_raw,
             last_emit_raw: 0,
+            vad_frames_total: 0,
+            vad_frames_speech: 0,
+            last_vad_heartbeat: Instant::now(),
         }
     }
 
@@ -203,6 +214,12 @@ impl SpeechSession {
 
         let max_utterance_samples =
             (config.vad.max_utterance_sec * output_sample_rate as f32) as usize;
+        let interim_sec: f32 = std::env::var("CODESCRIBE_UTTERANCE_INTERIM_SEC")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(5.0)
+            .clamp(1.0, 30.0);
+        let interim_limit = (interim_sec * output_sample_rate as f32) as usize;
         let pre_roll_samples = (config.pre_roll_sec * output_sample_rate as f32)
             .round()
             .max(0.0) as usize;
@@ -219,6 +236,7 @@ impl SpeechSession {
         Self {
             mode: SpeechMode::Utterance {
                 max_utterance_samples,
+                interim_limit,
             },
             threshold: config.vad.threshold,
             neg_threshold,
@@ -252,6 +270,9 @@ impl SpeechSession {
                 .round()
                 .max(0.0) as usize,
             last_emit_raw: 0,
+            vad_frames_total: 0,
+            vad_frames_speech: 0,
+            last_vad_heartbeat: Instant::now(),
         }
     }
 
@@ -278,6 +299,7 @@ impl SpeechSession {
                 Some(vad) => vad.predict(&frame).unwrap_or(0.0),
                 None => 1.0,
             };
+            self.update_vad_heartbeat(speech_prob);
             let decision = match self.gate_mode {
                 VadGateMode::Simple => self.gate_with_prob(&frame, speech_prob),
                 VadGateMode::Iter => self.gate_with_iter(&frame, speech_prob),
@@ -306,9 +328,14 @@ impl SpeechSession {
                 }
                 SpeechMode::Utterance {
                     max_utterance_samples,
+                    interim_limit,
                 } => {
                     if self.pending_samples.len() >= max_utterance_samples {
                         events.push(self.emit_final());
+                    } else if self.pending_samples.len() >= interim_limit {
+                        let chunk = std::mem::take(&mut self.pending_samples);
+                        self.last_append_at = Instant::now();
+                        events.push(SpeechEvent::Utterance(chunk));
                     }
                 }
             }
@@ -340,6 +367,7 @@ impl SpeechSession {
                 Some(vad) => vad.predict(&frame).unwrap_or(0.0),
                 None => 1.0,
             };
+            self.update_vad_heartbeat(speech_prob);
 
             trace!(
                 "VAD frame: prob={:.3} threshold={:.3} triggered={} segment_start={:?}",
@@ -418,6 +446,26 @@ impl SpeechSession {
                 // Trim raw buffer to prevent unbounded growth during long speech.
                 // Keep from last_emit_raw minus pre-roll so overlap slicing still works.
                 self.trim_raw_buffer(self.last_emit_raw.saturating_sub(self.pre_roll_raw));
+            }
+
+            // Utterance interim: emit every interim_limit samples during continuous
+            // speech so the buffered worker gets frequent Whisper passes.
+            if let SpeechMode::Utterance { interim_limit, .. } = self.mode
+                && self.segment_start.is_some()
+                && self.pending_end.is_none()
+                && self.raw_cursor.saturating_sub(self.last_emit_raw) >= interim_limit
+            {
+                let end = self.raw_cursor;
+                if let Some(chunk) = self.raw_slice(self.last_emit_raw, end) {
+                    debug!(
+                        "Utterance interim emit: {} samples ({}s)",
+                        chunk.len(),
+                        chunk.len() as f32 / self.output_sample_rate as f32
+                    );
+                    events.push(SpeechEvent::Utterance(chunk));
+                }
+                self.last_emit_raw = end;
+                self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
             }
         }
 
@@ -504,6 +552,31 @@ impl SpeechSession {
         match self.mode {
             SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
             SpeechMode::Utterance { .. } => SpeechEvent::Utterance(chunk),
+        }
+    }
+
+    fn update_vad_heartbeat(&mut self, speech_prob: f32) {
+        self.vad_frames_total = self.vad_frames_total.saturating_add(1);
+        if speech_prob >= self.threshold {
+            self.vad_frames_speech = self.vad_frames_speech.saturating_add(1);
+        }
+
+        if self.last_vad_heartbeat.elapsed() >= Duration::from_secs(2) {
+            let silence = self.vad_frames_total.saturating_sub(self.vad_frames_speech);
+            debug!(
+                "VAD heartbeat: frames={} speech={} silence={} prob={:.3} threshold={:.3} gate={:?} segment_start={:?} pending_end={:?}",
+                self.vad_frames_total,
+                self.vad_frames_speech,
+                silence,
+                speech_prob,
+                self.threshold,
+                self.gate_mode,
+                self.segment_start,
+                self.pending_end
+            );
+            self.vad_frames_total = 0;
+            self.vad_frames_speech = 0;
+            self.last_vad_heartbeat = Instant::now();
         }
     }
 
@@ -754,10 +827,7 @@ pub(crate) fn hardcoded_gate_config() -> GateConfig {
     // fields that don't have an explicit env override set.
     let mut vad_cfg = vad::VadConfig::default();
 
-    // Streaming needs a tighter threshold than the batch default (0.35).
-    if std::env::var("CODESCRIBE_VAD_THRESHOLD").is_err() {
-        vad_cfg.threshold = 0.50;
-    }
+    // Threshold stays at VadConfig default unless explicitly overridden.
     // Short min-speech for responsive streaming.
     if std::env::var("CODESCRIBE_VAD_MIN_SPEECH_SEC").is_err() {
         vad_cfg.min_speech_duration_sec = 0.05;

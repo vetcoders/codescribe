@@ -1,7 +1,7 @@
 //! Silero VAD wrapper using ort directly.
 //!
 //! Custom implementation using ort runtime directly.
-//! Model: silero_vad.onnx v5 from https://github.com/snakers4/silero-vad
+//! Model: silero_vad.onnx v6 from https://github.com/snakers4/silero-vad
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -17,7 +17,6 @@ use ort::value::Value;
 use tracing::{debug, info};
 
 use super::config::VadConfig;
-use super::embedded;
 use crate::hf_cache;
 
 /// Silero VAD sample rate (always 16kHz)
@@ -26,14 +25,14 @@ pub const VAD_SAMPLE_RATE: u32 = 16000;
 /// Chunk size for Silero (512 samples = 32ms at 16kHz)
 const CHUNK_SIZE: usize = 512;
 
-/// Context size for Silero v5 (64 samples at 16kHz).
+/// Context size for Silero v6 (64 samples at 16kHz).
 /// Each inference call requires prepending the last 64 samples from the
 /// previous chunk.  Without this the model receives incomplete input and
 /// returns unreliable speech probabilities.
 const CONTEXT_SIZE: usize = 64;
 
-/// Unified state shape for Silero v5: [2, 1, 128].
-/// v4 used separate h/c tensors with dim 64; v5 merged them.
+/// Unified state shape for Silero v6: [2, 1, 128].
+/// v4 used separate h/c tensors with dim 64; v5+ merged them.
 const STATE_SHAPE: [usize; 3] = [2, 1, 128];
 
 /// Global VAD worker
@@ -85,9 +84,9 @@ impl Resampler {
     }
 }
 
-/// Silero VAD v5 model wrapper.
+/// Silero VAD v6 model wrapper (backwards-compatible with v5 ONNX API).
 ///
-/// v5 API differences from v4:
+/// v5+ API differences from v4:
 ///  - Unified state tensor `[2, 1, 128]` (v4 had separate h/c `[2, 1, 64]`)
 ///  - Input order: `input, state, sr` (v4: `input, sr, h, c`)
 ///  - Output names: `output`, `stateN` (v4: positional)
@@ -101,24 +100,13 @@ pub struct SileroVad {
 }
 
 impl SileroVad {
-    /// Load Silero VAD model from embedded bytes (if available) or path
+    /// Load Silero VAD model from path
     pub fn new(model_path: &Path, config: VadConfig) -> Result<Self> {
-        let session = if let Some(model_bytes) = embedded::get_embedded_data() {
-            info!(
-                "Loading Silero VAD model from embedded bytes ({:.2} MB)",
-                model_bytes.len() as f64 / 1_000_000.0
-            );
-            Session::builder()?
-                .with_intra_threads(1)?
-                .commit_from_memory(model_bytes)
-                .context("Failed to load embedded Silero VAD ONNX model")?
-        } else {
-            info!("Loading Silero VAD model from: {}", model_path.display());
-            Session::builder()?
-                .with_intra_threads(1)?
-                .commit_from_file(model_path)
-                .context("Failed to load Silero VAD ONNX model")?
-        };
+        info!("Loading Silero VAD model from: {}", model_path.display());
+        let session = Session::builder()?
+            .with_intra_threads(1)?
+            .commit_from_file(model_path)
+            .context("Failed to load Silero VAD ONNX model")?;
 
         debug!("Silero VAD model loaded successfully");
 
@@ -168,7 +156,7 @@ impl SileroVad {
         Ok(max_prob)
     }
 
-    /// Predict on a single 512-sample chunk using Silero v5 API.
+    /// Predict on a single 512-sample chunk using Silero v6 API.
     ///
     /// Prepends 64-sample context, sends `[input, state, sr]`,
     /// reads `output` (prob) and `stateN` (updated state).
@@ -182,7 +170,7 @@ impl SileroVad {
         let ctx_start = chunk.len().saturating_sub(CONTEXT_SIZE);
         self.context[..].copy_from_slice(&chunk[ctx_start..]);
 
-        // Input tensors — v5 order: input, state, sr
+        // Input tensors — v5+ order: input, state, sr
         let input = ndarray::Array2::from_shape_vec([1, input_data.len()], input_data)
             .map_err(|e| anyhow::anyhow!("input shape: {}", e))?;
         let sr = ndarray::Array1::from_vec(vec![VAD_SAMPLE_RATE as i64]);
@@ -236,8 +224,12 @@ use std::sync::{Arc, atomic::AtomicU32};
 
 /// Message to VAD worker (fire-and-forget, no response channel)
 enum VadMessage {
-    Predict { samples: Vec<f32>, sample_rate: u32 },
+    Predict {
+        samples: Vec<f32>,
+        sample_rate: u32,
+    },
     Reset,
+    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -250,8 +242,6 @@ struct VadWorker {
     initialized: AtomicBool,
     /// Last computed probability (f32 as bits for atomic access)
     last_prob: Arc<AtomicU32>,
-    /// Worker thread handle for clean shutdown
-    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl VadWorker {
@@ -276,7 +266,7 @@ impl VadWorker {
         // Oneshot channel to confirm model loaded successfully
         let (init_tx, init_rx) = mpsc::sync_channel::<Result<()>>(1);
 
-        let handle = thread::spawn(move || {
+        thread::spawn(move || {
             let mut vad = match SileroVad::new(&path, config) {
                 Ok(v) => {
                     // Signal success to main thread
@@ -323,7 +313,6 @@ impl VadWorker {
                     sender: tx,
                     initialized: AtomicBool::new(true),
                     last_prob,
-                    thread: Some(handle),
                 })
             }
             Ok(Err(e)) => {
@@ -354,17 +343,6 @@ impl VadWorker {
 
     fn reset(&self) {
         let _ = self.sender.try_send(VadMessage::Reset);
-    }
-}
-
-impl Drop for VadWorker {
-    fn drop(&mut self) {
-        // Send shutdown signal; if the channel is full or closed, the thread
-        // will exit anyway when the sender is dropped and `for msg in rx` ends.
-        let _ = self.sender.try_send(VadMessage::Shutdown);
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
-        }
     }
 }
 

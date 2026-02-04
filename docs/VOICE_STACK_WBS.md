@@ -13,12 +13,12 @@ Integration of E5-large embedder and Sesame CSM-1B TTS into CodeScribe, followin
 
 ### Target Stack
 
-| Component | Model | Size (Q8) | Candle Module | Owner |
-|-----------|-------|-----------|---------------|-------|
-| STT | Whisper large-v3-turbo | 894 MB | `whisper` | ✅ Existing |
-| Embedder | E5-large multilingual | ~670 MB | `bert` | 🟢 Junie |
-| TTS | Sesame CSM-1B | ~1.0 GB | `csm` | 🟣 Klaudiusz |
-| **Total** | | **~2.6 GB** | | |
+| Component | Model                  | Size (Q8)   | Candle Module | Owner        |
+| --------- | ---------------------- | ----------- | ------------- | ------------ |
+| STT       | Whisper large-v3-turbo | 894 MB      | `whisper`     | ✅ Existing  |
+| Embedder  | E5-large multilingual  | ~670 MB     | `bert`        | 🟢 Junie     |
+| TTS       | Sesame CSM-1B          | ~1.0 GB     | `csm`         | 🟣 Klaudiusz |
+| **Total** |                        | **~2.6 GB** |               |              |
 
 ### Requirements
 
@@ -74,13 +74,13 @@ docs/                  ← 🟦 CODEX
 
 ### Tasks
 
-| Task | File | Notes |
-|------|------|-------|
-| Module structure | `embedder/mod.rs` | Follow Whisper pattern |
-| Embedded loader | `embedder/embedded.rs` | Same as Whisper |
-| BERT engine | `embedder/engine.rs` | `candle_transformers::models::bert` |
-| Singleton | `embedder/singleton.rs` | Same as Whisper |
-| Q8 quantization | `embedder/engine.rs` | Same dequant as Whisper |
+| Task             | File                    | Notes                               |
+| ---------------- | ----------------------- | ----------------------------------- |
+| Module structure | `embedder/mod.rs`       | Follow Whisper pattern              |
+| Embedded loader  | `embedder/embedded.rs`  | Same as Whisper                     |
+| BERT engine      | `embedder/engine.rs`    | `candle_transformers::models::bert` |
+| Singleton        | `embedder/singleton.rs` | Same as Whisper                     |
+| Q8 quantization  | `embedder/engine.rs`    | Same dequant as Whisper             |
 
 ### Public API
 
@@ -103,7 +103,7 @@ pub fn similarity(a: &[f32], b: &[f32]) -> f32;
 ### Download Command
 
 ```bash
-huggingface-cli download intfloat/multilingual-e5-large \
+hf download intfloat/multilingual-e5-large \
   --include "model.safetensors" "tokenizer.json" "config.json" \
   --local-dir models/e5-large
 ```
@@ -122,15 +122,15 @@ huggingface-cli download intfloat/multilingual-e5-large \
 
 ### Tasks
 
-| Task | File | Notes |
-|------|------|-------|
-| Module structure | `tts/mod.rs` | New, based on Junie's pattern |
-| Embedded loader | `tts/embedded.rs` | Larger model (~1GB) |
-| CSM engine | `tts/engine.rs` | `candle_transformers::models::csm` |
-| Audio generation | `tts/audio_output.rs` | cpal playback, wav export |
-| Voice management | `tts/voices.rs` | Voice selection, speaker IDs |
-| Build.rs update | `build.rs` | Orchestrate all 3 models |
-| Lib exports | `lib.rs` | Wire everything together |
+| Task             | File                  | Notes                              |
+| ---------------- | --------------------- | ---------------------------------- |
+| Module structure | `tts/mod.rs`          | New, based on Junie's pattern      |
+| Embedded loader  | `tts/embedded.rs`     | Larger model (~1GB)                |
+| CSM engine       | `tts/engine.rs`       | `candle_transformers::models::csm` |
+| Audio generation | `tts/audio_output.rs` | cpal playback, wav export          |
+| Voice management | `tts/voices.rs`       | Voice selection, speaker IDs       |
+| Build.rs update  | `build.rs`            | Orchestrate all 3 models           |
+| Lib exports      | `lib.rs`              | Wire everything together           |
 
 ### Public API
 
@@ -154,7 +154,7 @@ pub fn list_voices() -> Vec<&'static str>;
 ### Download Command
 
 ```bash
-huggingface-cli download sesame/csm-1b \
+hf download sesame/csm-1b \
   --include "*.safetensors" "*.json" \
   --local-dir models/csm-1b
 ```
@@ -173,16 +173,16 @@ huggingface-cli download sesame/csm-1b \
 
 ### Tasks
 
-| Task | File | Notes |
-|------|------|-------|
-| Download E5 | `scripts/download-e5.sh` | HuggingFace CLI |
-| Download CSM | `scripts/download-csm.sh` | HuggingFace CLI |
-| Download all | `scripts/download-all-models.sh` | Combined script |
-| Embedder tests | `tests/e2e_embedder*.rs` | After Junie's module |
-| TTS tests | `tests/e2e_tts*.rs` | After Klaudiusz's module |
-| Pipeline tests | `tests/e2e_voice_pipeline*.rs` | Full integration |
-| CLAUDE.md | `CLAUDE.md` | Update for new modules |
-| Architecture | `docs/ARCHITECTURE.md` | Update diagrams |
+| Task           | File                             | Notes                    |
+| -------------- | -------------------------------- | ------------------------ |
+| Download E5    | `scripts/download-e5.sh`         | HuggingFace CLI          |
+| Download CSM   | `scripts/download-csm.sh`        | HuggingFace CLI          |
+| Download all   | `scripts/download-all-models.sh` | Combined script          |
+| Embedder tests | `tests/e2e_embedder*.rs`         | After Junie's module     |
+| TTS tests      | `tests/e2e_tts*.rs`              | After Klaudiusz's module |
+| Pipeline tests | `tests/e2e_voice_pipeline*.rs`   | Full integration         |
+| CLAUDE.md      | `CLAUDE.md`                      | Update for new modules   |
+| Architecture   | `docs/ARCHITECTURE.md`           | Update diagrams          |
 
 ### Test Examples
 
@@ -227,18 +227,18 @@ fn test_full_voice_pipeline() {
 
 ### Week 1
 
-| Day | Junie (Embedder) | Klaudiusz (TTS) | Codex (Support) |
-|-----|------------------|-----------------|-----------------|
-| 1-2 | `embedder/` full implementation | `tts/` scaffolding + CSM research | Download scripts + test scaffolding |
-| 3-4 | `embedder/` done, PR ready | `tts/engine.rs` + `audio_output.rs` | `e2e_embedder*.rs` tests |
-| 5 | Review Klaudiusz's TTS (pattern check) | `tts/` done, PR ready | `e2e_tts*.rs` tests |
+| Day | Junie (Embedder)                       | Klaudiusz (TTS)                     | Codex (Support)                     |
+| --- | -------------------------------------- | ----------------------------------- | ----------------------------------- |
+| 1-2 | `embedder/` full implementation        | `tts/` scaffolding + CSM research   | Download scripts + test scaffolding |
+| 3-4 | `embedder/` done, PR ready             | `tts/engine.rs` + `audio_output.rs` | `e2e_embedder*.rs` tests            |
+| 5   | Review Klaudiusz's TTS (pattern check) | `tts/` done, PR ready               | `e2e_tts*.rs` tests                 |
 
 ### Week 2
 
-| Day | Junie | Klaudiusz | Codex |
-|-----|-------|-----------|-------|
-| 1-2 | Support / bug fixes | `build.rs` + `lib.rs` integration | `e2e_pipeline*.rs` + docs |
-| 3 | ALL: Merge, integration testing, bug fixes |
+| Day | Junie                                      | Klaudiusz                         | Codex                     |
+| --- | ------------------------------------------ | --------------------------------- | ------------------------- |
+| 1-2 | Support / bug fixes                        | `build.rs` + `lib.rs` integration | `e2e_pipeline*.rs` + docs |
+| 3   | ALL: Merge, integration testing, bug fixes |
 
 ---
 
@@ -261,11 +261,11 @@ fn test_full_voice_pipeline() {
 
 ### Shared Files (Coordinate)
 
-| File | Owner | Others |
-|------|-------|--------|
-| `lib.rs` | Klaudiusz | Notify before touching |
-| `build.rs` | Klaudiusz | Notify before touching |
-| `Cargo.toml` | Coordinate | Discuss dep additions |
+| File         | Owner      | Others                 |
+| ------------ | ---------- | ---------------------- |
+| `lib.rs`     | Klaudiusz  | Notify before touching |
+| `build.rs`   | Klaudiusz  | Notify before touching |
+| `Cargo.toml` | Coordinate | Discuss dep additions  |
 
 ### Junie as Pattern Authority
 
@@ -308,4 +308,4 @@ https://huggingface.co/sesame/csm-1b
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
+_Created by M&K (c)2026 VetCoders_

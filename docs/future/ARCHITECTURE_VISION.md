@@ -89,13 +89,13 @@ The stream contains interspersed content types, delimited by XML-like tags or sp
 
 1. **Default Channel**: Tokens flow to the internal buffer/context.
 2. **Audio Channel (`<speak>` / `<audio>` tag)**:
-    - Libraxis Qube buffers text within tags.
-    - Sends to TTS Module.
-    - TTS returns Audio Bytes.
-    - Libraxis Qube pushes Audio Bytes down the Client WebSocket.
+   - Libraxis Qube buffers text within tags.
+   - Sends to TTS Module.
+   - TTS returns Audio Bytes.
+   - Libraxis Qube pushes Audio Bytes down the Client WebSocket.
 3. **Artifact Channel (`<artifact>` / `<task>` tag)**:
-    - Content is diverted to specific handlers (e.g., PDF writer, File saver).
-    - Client receives only a notification ("Report generated").
+   - Content is diverted to specific handlers (e.g., PDF writer, File saver).
+   - Client receives only a notification ("Report generated").
 
 ## 4. Components Breakdown
 
@@ -109,11 +109,11 @@ The stream contains interspersed content types, delimited by XML-like tags or sp
 
 - **Role**: The "Brain stem".
 - **Responsibilities**:
-    - Maintains Session State.
-    - Manages the WebSocket connection.
-    - **Candle Bridge**: Feeds audio chunks to Whisper; receives text tokens.
-    - **Agent Bridge**: Feeds transcript to LLM; receives response stream.
-    - **Demuxer**: Parses response stream tags and routes data.
+  - Maintains Session State.
+  - Manages the WebSocket connection.
+  - **Candle Bridge**: Feeds audio chunks to Whisper; receives text tokens.
+  - **Agent Bridge**: Feeds transcript to LLM; receives response stream.
+  - **Demuxer**: Parses response stream tags and routes data.
 
 ### C. Candle Transformers (ASR Module)
 
@@ -141,8 +141,8 @@ The stream contains interspersed content types, delimited by XML-like tags or sp
 
 - **Hardware**: Laptop (Client) + Dragon Workstation (Libraxis Qube).
 - **Setup**:
-    - Laptop runs only the Client (Mic/Speaker).
-    - Dragon runs Libraxis Qube, Candle, LLM, TTS.
+  - Laptop runs only the Client (Mic/Speaker).
+  - Dragon runs Libraxis Qube, Candle, LLM, TTS.
 - **Transport**: WebSocket over LAN/VPN (`wss://dragon...`).
 - **Latency**: Network RTT + Inference.
 - **Benefit**: Laptop stays cool/quiet; Dragon uses massive RAM/GPU for better models.

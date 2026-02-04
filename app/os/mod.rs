@@ -3,6 +3,8 @@ pub mod clipboard;
 #[cfg(target_os = "macos")]
 pub mod hotkeys;
 #[cfg(target_os = "macos")]
+pub mod notifications;
+#[cfg(target_os = "macos")]
 pub mod permissions;
 #[cfg(target_os = "macos")]
 pub mod selection;

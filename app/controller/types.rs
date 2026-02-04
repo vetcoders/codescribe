@@ -127,5 +127,7 @@ pub struct HotkeyInput {
     pub key_type: HotkeyType,
     pub action: HotkeyAction,
     pub assistive: bool,
+    pub hold_mode: crate::os::hotkeys::HoldMode,
+    pub force_raw: bool,
     pub force_ai: bool,
 }

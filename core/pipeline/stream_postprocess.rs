@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -20,6 +21,13 @@ const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.93;
 const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
 const MAX_EMBED_CHARS: usize = 512;
 const MAX_DROPS_IN_ROW: u8 = 2;
+
+lazy_static! {
+    // Whisper sometimes emits trailing emoticon artifacts like ":D", ":-D", "::D", often repeated.
+    // We strip them only at the end of the utterance.
+    static ref TRAILING_SMILEY_D_RE: Regex =
+        Regex::new(r"(?i)(?:\s*:+-?d)+(?:\s*:+\s*)*$").expect("trailing :D regex");
+}
 
 #[derive(Debug, Deserialize)]
 struct LexiconEntry {
@@ -251,6 +259,7 @@ impl SemanticGate {
 
 #[derive(Debug)]
 pub struct StreamPostProcessor {
+    lexicon: Lexicon,
     gate: SemanticGate,
     stats: StreamPostProcessStats,
 }
@@ -270,6 +279,7 @@ pub struct StreamPostProcessStats {
 impl StreamPostProcessor {
     pub fn new() -> Self {
         Self {
+            lexicon: Lexicon::from_builtin(),
             gate: SemanticGate::new(),
             stats: StreamPostProcessStats {
                 embeddings_enabled: embeddings_enabled(),
@@ -278,13 +288,12 @@ impl StreamPostProcessor {
         }
     }
 
-    /// Process a streaming chunk — applies cleanup + semantic gate only.
-    /// Lexicon is handled in buffered mode.
+    /// Process a streaming chunk — applies lexicon, cleanup, and semantic gate.
     pub fn process(&mut self, text: &str) -> Option<String> {
         self.process_internal(text, true)
     }
 
-    /// Process a complete utterance — cleanup only, no semantic gate.
+    /// Process a complete utterance — applies lexicon and cleanup, no semantic gate.
     /// Use this for VAD-segmented utterances where each segment is naturally distinct.
     pub fn process_utterance(&mut self, text: &str) -> Option<String> {
         self.process_internal(text, false)
@@ -292,16 +301,24 @@ impl StreamPostProcessor {
 
     fn process_internal(&mut self, text: &str, apply_gate: bool) -> Option<String> {
         self.stats.input_chunks += 1;
+        self.lexicon.maybe_reload();
+
         if text.trim().is_empty() {
             self.stats.dropped_chunks += 1;
             return None;
         }
 
-        let cleaned_after_cleanup = cleanup_artifacts(text);
-        if cleaned_after_cleanup != text {
+        let mut cleaned = self.lexicon.apply(text);
+        if cleaned != text {
+            self.stats.lexicon_rewrites += 1;
+        }
+
+        let cleaned_after_cleanup = cleanup_artifacts(&cleaned);
+        if cleaned_after_cleanup != cleaned {
             self.stats.repetition_cleanups += 1;
         }
-        let cleaned = normalize_whitespace(&cleaned_after_cleanup);
+        cleaned = cleaned_after_cleanup;
+        cleaned = normalize_whitespace(&cleaned);
 
         if cleaned.trim().is_empty() {
             self.stats.dropped_chunks += 1;
@@ -329,39 +346,7 @@ impl StreamPostProcessor {
     }
 }
 
-pub struct LexiconPostProcessor {
-    lexicon: Lexicon,
-}
-
-impl LexiconPostProcessor {
-    pub fn new() -> Self {
-        Self {
-            lexicon: Lexicon::from_builtin(),
-        }
-    }
-
-    pub fn process(&mut self, text: &str) -> Option<String> {
-        if text.trim().is_empty() {
-            return None;
-        }
-        self.lexicon.maybe_reload();
-        let cleaned = self.lexicon.apply(text);
-        let cleaned_after_cleanup = cleanup_artifacts(&cleaned);
-        let cleaned_after_cleanup = normalize_whitespace(&cleaned_after_cleanup);
-        if cleaned_after_cleanup.trim().is_empty() {
-            return None;
-        }
-        Some(cleaned_after_cleanup)
-    }
-}
-
 impl Default for StreamPostProcessor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Default for LexiconPostProcessor {
     fn default() -> Self {
         Self::new()
     }
@@ -452,14 +437,35 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-fn cleanup_artifacts(text: &str) -> String {
-    if crate::ai_formatting::has_repetition_loop(text) {
-        return crate::ai_formatting::remove_simple_repetitions(text);
+fn env_flag(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return default;
+            }
+            let v = trimmed.to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off" || v == "no")
+        }
+        Err(_) => default,
     }
-    text.to_string()
 }
 
-pub(crate) fn normalize_whitespace(text: &str) -> String {
+fn cleanup_artifacts(text: &str) -> String {
+    // Default ON: treat trailing ":D" bursts as ASR artifacts.
+    let mut out = if env_flag("CODESCRIBE_STRIP_TRAILING_SMILEY_D", true) {
+        TRAILING_SMILEY_D_RE.replace(text, "").to_string()
+    } else {
+        text.to_string()
+    };
+
+    if crate::ai_formatting::has_repetition_loop(&out) {
+        out = crate::ai_formatting::remove_simple_repetitions(&out);
+    }
+    out
+}
+
+fn normalize_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -492,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_lexicon_rewrite() {
-        let mut processor = LexiconPostProcessor::new();
+        let mut processor = StreamPostProcessor::new();
         let input = "Uzywam doker do kontenerow i mam api key do github.";
         let output = processor.process(input).expect("expected output");
         assert!(
@@ -507,6 +513,14 @@ mod tests {
         let input = "To jest to jest to jest   bardzo  wazny \n test systemu.";
         let output = processor.process(input).expect("expected output");
         assert_eq!(output, "To jest bardzo wazny test systemu.");
+    }
+
+    #[test]
+    fn test_strip_trailing_smiley_d() {
+        let mut processor = StreamPostProcessor::new();
+        let input = "Siema, czy jestes tam? :D :";
+        let output = processor.process_utterance(input).expect("expected output");
+        assert_eq!(output, "Siema, czy jestes tam?");
     }
 
     #[test]
@@ -633,18 +647,28 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicon_applied_in_buffered_processor() {
-        let mut processor = LexiconPostProcessor::new();
+    fn test_postprocessor_always_applies_lexicon_contract() {
+        // Contract: every call to process() applies lexicon rewrites
+        // regardless of semantic gate state or chunk history
+        let mut processor = StreamPostProcessor::new();
 
+        // First call — lexicon should rewrite known terms
         let out1 = processor
             .process("Uzywam doker do kontenerow")
             .expect("non-empty");
-        assert!(out1.contains("Docker"), "Expected lexicon rewrite: {out1}");
+        assert!(
+            out1.contains("Docker"),
+            "First call should apply lexicon: {out1}"
+        );
 
+        // Second call with different text — still applies lexicon
         let out2 = processor
             .process("Mam git hub repository z kodem")
             .expect("non-empty");
-        assert!(out2.contains("GitHub"), "Expected lexicon rewrite: {out2}");
+        assert!(
+            out2.contains("GitHub"),
+            "Second call should apply lexicon: {out2}"
+        );
     }
 
     #[test]

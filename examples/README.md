@@ -13,6 +13,7 @@ cargo run --example record_test
 ```
 
 **Features shown:**
+
 - Creating a Recorder with default config
 - Starting/stopping recording
 - Auto-silence detection (stops after 0.8s of silence)
@@ -28,6 +29,7 @@ cargo run --example record_streaming
 ```
 
 **Features shown:**
+
 - Custom configuration (disabling auto-silence)
 - Taking periodic snapshots while recording
 - Manual control over recording lifecycle
@@ -37,12 +39,14 @@ cargo run --example record_streaming
 
 Both examples respect these environment variables:
 
-- `CODESCRIBE_VAD_THRESHOLD` - Speech probability threshold 0.0-1.0 (default: 0.35)
-- `CODESCRIBE_VAD_SILENCE_SEC` - Silence duration before utterance flush (default: 2.5)
+- `CODESCRIBE_VAD_THRESHOLD` - Speech probability threshold 0.0-1.0 (default: 0.5)
+- `CODESCRIBE_VAD_MAX_SILENCE_SEC` - Silence duration before auto-stop (default: 1.2)
+- `AUTO_SILENCE` - Enable/disable silence detection (default: true)
 
 Example:
+
 ```bash
-CODESCRIBE_VAD_THRESHOLD=0.4 CODESCRIBE_VAD_SILENCE_SEC=1.5 cargo run --example record_test
+CODESCRIBE_VAD_THRESHOLD=0.4 CODESCRIBE_VAD_MAX_SILENCE_SEC=1.5 cargo run --example record_test
 ```
 
 ## Requirements
@@ -52,4 +56,5 @@ CODESCRIBE_VAD_THRESHOLD=0.4 CODESCRIBE_VAD_SILENCE_SEC=1.5 cargo run --example 
 - Rust 1.70+ with tokio runtime
 
 ---
+
 Created by M&K (c)2025 The LibraxisAI Team

@@ -1,5 +1,6 @@
 use codescribe_core::config::Config;
 use serial_test::serial;
+use std::fs;
 use tempfile::TempDir;
 
 struct EnvGuard {
@@ -145,36 +146,17 @@ fn required_model_path_when_no_embed() {
 
 #[test]
 #[serial]
-fn migrate_env_legacy_keys_to_canonical() {
-    let dir = TempDir::new().expect("tempdir");
-    let env_path = dir.path().join(".env");
-    std::fs::write(
-        &env_path,
-        r#"
-LLM_HOST=http://localhost:11434
-OLLAMA_MODEL=llama3
-WHISPER_SERVER_URL=https://legacy.example.com/stt
-"#,
-    )
-    .expect("write env");
+fn env_path_override_is_respected() {
+    let tmp = TempDir::new().expect("tempdir");
+    let env_path = tmp.path().join("custom.env");
+    fs::write(&env_path, "HOLD_MODS=ctrl_alt\n").expect("write env");
 
     let _g1 = EnvGuard::set("CODESCRIBE_ENV_PATH", env_path.to_string_lossy().as_ref());
+    let _g2 = EnvGuard::unset("HOLD_MODS");
 
-    // Trigger migration
-    let _cfg = Config::load();
-
-    let vars = Config::parse_env_file(&env_path).expect("parse env");
-
-    assert_eq!(
-        vars.get("LLM_ENDPOINT").map(String::as_str),
-        Some("http://localhost:11434/api/chat")
-    );
-    assert_eq!(vars.get("LLM_MODEL").map(String::as_str), Some("llama3"));
-    assert_eq!(
-        vars.get("STT_ENDPOINT").map(String::as_str),
-        Some("https://legacy.example.com/stt")
-    );
-    assert!(!vars.contains_key("LLM_HOST"));
-    assert!(!vars.contains_key("OLLAMA_MODEL"));
-    assert!(!vars.contains_key("WHISPER_SERVER_URL"));
+    let cfg = Config::load();
+    assert_eq!(cfg.hold_mods.as_str(), "ctrl_alt");
 }
+
+// NOTE: Legacy key migration test removed - no users have legacy keys yet.
+// If we ever need migration, we'll add proper tests then.

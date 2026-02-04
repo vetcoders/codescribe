@@ -19,13 +19,18 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
     assert!(formatting.contains("TRANSCRIPTION FORMATTER"));
 
     let assistive = prompts::get_assistive_prompt();
-    assert!(assistive.contains("Jesteś kurierem/enhancerem"));
+    assert!(assistive.contains("Jesteś asystentem tekstowym"));
 
     // Files should exist under CODESCRIBE_DATA_DIR/prompts/...
     let formatting_path = prompts::get_formatting_prompt_path();
     let assistive_path = prompts::get_assistive_prompt_path();
-    assert!(formatting_path.starts_with(tmp.path()));
-    assert!(assistive_path.starts_with(tmp.path()));
+    // Canonicalize tmp.path() to handle macOS /var → /private/var symlink
+    let tmp_canon = tmp
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| tmp.path().to_path_buf());
+    assert!(formatting_path.starts_with(&tmp_canon));
+    assert!(assistive_path.starts_with(&tmp_canon));
     assert!(formatting_path.exists());
     assert!(assistive_path.exists());
 
@@ -42,7 +47,7 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
 
     // --- History: should respect config_dir override ---
     let e1 = history::save_entry("raw one two");
-    assert!(e1.path.starts_with(tmp.path()));
+    assert!(e1.path.starts_with(&tmp_canon));
     assert!(
         fs::read_to_string(&e1.path)
             .unwrap()

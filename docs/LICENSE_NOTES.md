@@ -1,7 +1,7 @@
 # CodeScribe License Notes
 
 CodeScribe is distributed under the **BSD 4-Clause License (Original BSD)**. The clause that
-usually raises questions is the *advertising clause*:
+usually raises questions is the _advertising clause_:
 
 > "All advertising materials mentioning features or use of this software must display the
 > acknowledgement: This product includes software developed by Loctree."
@@ -9,7 +9,7 @@ usually raises questions is the *advertising clause*:
 What this means in practice:
 
 | Scenario                                                             | Requirement                                                                        |
-|----------------------------------------------------------------------|------------------------------------------------------------------------------------|
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | README / documentation inside this repo                              | already satisfied (see README §License).                                           |
 | Public marketing site, blog post, product page mentioning CodeScribe | include the acknowledgement sentence verbatim.                                     |
 | Binary redistributions (DMG, PKG)                                    | include the acknowledgement in the splash / "About" dialog or accompanying README. |

@@ -80,32 +80,60 @@ pub enum TrayMenuEvent {
 
     // Hold Hotkeys submenu
     SetHoldMods(HoldMods),
-    ToggleHoldExclusive,
     SetToggleTrigger(ToggleTrigger),
+    SetHoldExclusive(bool),
 
     // History (open folder)
     OpenHistoryFolder,
+
+    // Diagnostics
+    CopyDiagnostics,
+    OpenAccessibilitySettings,
+    OpenInputMonitoringSettings,
+    ResetInputMonitoringPermission,
+    InstallSileroVad,
+    SetVadPreset(VadPreset),
+
+    // Prompts
+    OpenAssistivePrompt,
+    OpenFormattingPrompt,
+    OpenPromptsFolder,
+
+    // Notes
+    SetQuickNotesEnabled(bool),
+    SetQuickNotesSaveOnly(bool),
+
+    // Hotkeys
+    ResetShortcuts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VadPreset {
+    Sensitive,
+    Balanced,
+    Conservative,
 }
 
 // ============================================================================
 // Menu Item Storage Structs
 // ============================================================================
 
-/// Hold Hotkeys menu items for radio-button behavior
-pub struct HoldMenuItems {
-    pub ctrl: CheckMenuItem,
-    pub ctrl_opt: CheckMenuItem,
-    pub ctrl_shift: CheckMenuItem,
-    pub ctrl_cmd: CheckMenuItem,
-    pub label: MenuItem,
+/// Hotkeys menu items that need runtime updates.
+pub struct HotkeysMenuItems {
+    pub hold_summary: MenuItem,
+    pub hold_ctrl: CheckMenuItem,
+    pub hold_ctrl_alt: CheckMenuItem,
+    pub hold_ctrl_shift: CheckMenuItem,
+    pub hold_ctrl_cmd: CheckMenuItem,
+    pub toggle_assistive: CheckMenuItem,
+    pub toggle_dictation: CheckMenuItem,
+    pub toggle_label: MenuItem,
 }
 
-/// Toggle Trigger menu items for radio-button behavior
-pub struct ToggleMenuItems {
-    pub double_opt: CheckMenuItem,
-    pub double_ralt: CheckMenuItem,
-    pub disabled: CheckMenuItem,
-    pub label: MenuItem,
+/// Notes menu items that need runtime updates.
+pub struct NotesMenuItems {
+    pub quick_notes_toggle: CheckMenuItem,
+    pub quick_notes_save_only: CheckMenuItem,
 }
 
 // ============================================================================
@@ -120,20 +148,41 @@ pub struct MenuIds {
     pub show_overlay: MenuId,
     pub run_onboarding: MenuId,
     pub open_history: MenuId,
+    pub copy_diagnostics: MenuId,
+    pub open_accessibility_settings: MenuId,
+    pub open_input_monitoring_settings: MenuId,
+    pub reset_input_monitoring_permission: MenuId,
+    pub open_assistive_prompt: MenuId,
+    pub open_formatting_prompt: MenuId,
+    pub open_prompts_folder: MenuId,
     pub help: MenuId,
     pub about: MenuId,
     pub quit: MenuId,
 
-    // Hold Hotkeys submenu
-    pub hold_ctrl: MenuId,
-    pub hold_ctrl_opt: MenuId,
-    pub hold_ctrl_shift: MenuId,
-    pub hold_ctrl_cmd: MenuId,
-    pub hold_exclusive: MenuId,
-    pub toggle_double_opt: MenuId,
-    pub toggle_double_ralt: MenuId,
-    pub toggle_disabled: MenuId,
+    // Hotkeys submenu
+    pub hotkeys_toggle_assistive: MenuId,
+    pub hotkeys_toggle_dictation: MenuId,
+    pub hotkeys_reset: MenuId,
+    pub hotkeys_copy_cheatsheet: MenuId,
+    pub hotkeys_hold_ctrl: MenuId,
+    pub hotkeys_hold_ctrl_alt: MenuId,
+    pub hotkeys_hold_ctrl_shift: MenuId,
+    pub hotkeys_hold_ctrl_cmd: MenuId,
 
     // Quality
     pub quality_open_report: MenuId,
+
+    // Models
+    pub silero_vad_install: MenuId,
+
+    // VAD presets
+    pub vad_preset_sensitive: MenuId,
+    pub vad_preset_balanced: MenuId,
+    pub vad_preset_conservative: MenuId,
+
+    // Notes
+    pub notes_toggle_quick_notes: MenuId,
+    pub notes_toggle_save_only: MenuId,
+    pub notes_open_folder: MenuId,
+    pub notes_open_today: MenuId,
 }

@@ -70,6 +70,7 @@ flate2 = "1.0"
 lazy_static = "1.4"
 deunicode = "1.6"
 cap-std = "3"
+security-framework = "3"
 
 # OpenAI Harmony format for /v1/responses API
 openai-harmony = "0.0.8"
@@ -86,4 +87,4 @@ dirs = "6"
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
 # embed_model is set by build.rs when Whisper model is available
 # embed_tts is set by build.rs when TTS model is available (CODESCRIBE_EMBED_TTS=1)
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)', 'cfg(embed_e5)', 'cfg(embed_vad)'] }
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)', 'cfg(embed_e5)'] }

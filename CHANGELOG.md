@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [v0.7.2-dev] – 2026-01-20
 
 ### Added
+
 - **Hands-off Chat Overlay** – Full chat interface in overlay with history, user/assistant roles, and input field.
 - **Persistence** – Chat history is preserved between sessions; messages do not disappear on close.
 - **Auto-send Toggle** – UI checkbox to control automatic sending vs. draft mode.
@@ -18,12 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **UI Improvements** – Input field at top, reversed message flow (newest first), selectable text for copying.
 
 ### Fixed
+
 - **Quality Gates** – Resolved `cargo check` and `make check` warnings; improved code quality.
 - **Reliability** – Fixed issue where overlay would reset state unexpectedly.
 
 ## [v0.7.0] – 2026-01-17
 
 ### Added
+
 - **Strict Embedded Policy** – Whisper model is always embedded into release binary. Zero external model files, zero exceptions.
 - **IPC server** – New IPC server and message types for stable runtime integration.
 - **Quality loop** – Automated transcription quality assessment loop.
@@ -33,15 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **serial_test** – E2E test serialization to reduce race conditions.
 
 ### Changed
+
 - **Version unification** – Consistent versioning across the project.
 - **Security hardening** – `cap-std` and file operation restrictions to allowed paths only.
 
 ### Fixed
+
 - SSE formatting and final text collection fixes.
 
 ## [v0.6.3] – 2026-01-16
 
 ### Added
+
 - **New hotkey architecture** – Each hotkey now determines the processing mode:
   - **Ctrl Hold** = ALWAYS RAW (fast dictation, no AI processing, ignores AI toggle)
   - **Double Option** = respects AI_FORMATTING_ENABLED toggle setting
@@ -56,18 +62,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   immediate handshake and no timeout issues
 
 ### Changed
+
 - **Timeout increased to 90s** – GPT-5.x with longer inputs needs more time
 - **Token limits removed** – All token limits set to 0 (API decides). Tokens are cheap,
   lost notes are not.
 - **force_raw_mode flag** – New controller state flag for explicit RAW mode override
 
 ### Fixed
+
 - **Timeout issues with GPT-5.2** – Streaming mode eliminates 30s timeout failures
 
 ## [v0.6.2] – 2026-01-16
 
 ### Added
-- **Whisper Live (streaming transcription)** – Local transcription now happens *during recording*.
+
+- **Whisper Live (streaming transcription)** – Local transcription now happens _during recording_.
   Audio from the CPAL callback is chunked and processed in the background, so on `stop()` we only
   finalize the last chunk for near-instant time-to-paste.
 - **StreamingRecorder** – New streaming capture/transcription pipeline built around a non-blocking
@@ -76,12 +85,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embedded-model strategy (no bundling `Resources/models/*` that would duplicate ~900MB).
 
 ### Changed
+
 - **Docs & pitch** – Documentation and README now highlight the core differentiator: embedded Whisper
-  + live streaming transcription.
+  - live streaming transcription.
 
 ## [v0.6.1] – 2026-01-14
 
 ### Added
+
 - **Model embedded in binary** – Release builds now include the Whisper model directly via
   `include_bytes!`, eliminating runtime model loading and disk I/O. Binary size ~888MB with
   model welded in. Debug builds still use external model path.
@@ -95,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instance with automatic embedded vs external path resolution.
 
 ### Changed
+
 - **Responses API optimization** – Instructions are now sent only on first request; subsequent
   requests rely on `previous_response_id` to preserve context, reducing payload size.
 - **Build safety** – Release builds now hard-fail when model is missing. Dev-only: set
@@ -106,6 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider separation, audio settings, and debug options.
 
 ### Fixed
+
 - **Clippy warnings** – Resolved unused imports, dead code, and type complexity warnings.
 - **E2E tests** – Fixed `LLM_HOST` → `LLM_ENDPOINT` migration in all test files.
 - **Borrow checker** – Fixed move-after-borrow in AI formatting trace logging.
@@ -113,6 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [v0.6.0] – 2026-01-13
 
 ### Added
+
 - **Native desktop UI (Tauri + Leptos)** – Introduced the (now legacy) Tauri frontend with a
   three-tab interface (Voice Lab, Teacher, Settings). ([a275ae8](https://github.com/VetCoders/CodeScribe/commit/a275ae8),
   [7aa0754](https://github.com/VetCoders/CodeScribe/commit/7aa0754))
@@ -131,6 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requirements. ([7946c17](https://github.com/VetCoders/CodeScribe/commit/7946c17))
 
 ### Changed
+
 - **License** – Switched the project license to Apache 2.0 and added release scripts/docs.
   ([e0e7ec1](https://github.com/VetCoders/CodeScribe/commit/e0e7ec1))
 - **Backend architecture** – Removed the Python backend and updated the Rust CI pipeline to match.
@@ -155,16 +170,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([f8e04ef](https://github.com/VetCoders/CodeScribe/commit/f8e04ef))
 
 ### Fixed
+
 - **Stability** – Handled poisoned mutexes via `into_inner()` fallback to avoid cascading failures
   after panics. ([b7591ab](https://github.com/VetCoders/CodeScribe/commit/b7591ab))
 - **Backend cleanup** – Ensured backend processes are killed on all known ports.
   ([417b002](https://github.com/VetCoders/CodeScribe/commit/417b002))
 
 ### Removed
+
 - **Cleanup** – Removed unused and deprecated code to keep the build clean.
   ([68469dc](https://github.com/VetCoders/CodeScribe/commit/68469dc))
 
 ### Changed (Internal)
+
 - **Foundations** – Landed the initial Rust-based architecture groundwork.
   ([5a17c3a](https://github.com/VetCoders/CodeScribe/commit/5a17c3a))
 
@@ -212,6 +230,7 @@ Historical notes below predate the Keep a Changelog-style format used above.
 ## Phase I – `develop` vs `main`
 
 **Platform & Backends**
+
 - Introduced `CodeScribeServer` as a single-instance backend runner with lazy
   MLX loading and a documented CLI so the React/Tauri Vista client can share the
   same transcription core.
@@ -221,6 +240,7 @@ Historical notes below predate the Keep a Changelog-style format used above.
   prompts to keep recorder lifecycles predictable on macOS.
 
 **AI & Formatting**
+
 - Landed the Ollama LLM backend, multimodal chat client, and the initial dual
   mode AI formatting pipeline (Light+ by default, Harmony/Ollama assistive mode
   when enabled).
@@ -228,6 +248,7 @@ Historical notes below predate the Keep a Changelog-style format used above.
   relaxed overly aggressive formatting to avoid Markdown hallucinations.
 
 **UX & Tooling**
+
 - Rebuilt the tray menus (appearance, permissions, history) and introduced live
   transcription glyph customizations plus extra developer tools.
 - Added `.env.example`, run/debug profiles, troubleshooting docs, MLX cheat
@@ -236,6 +257,7 @@ Historical notes below predate the Keep a Changelog-style format used above.
 ## Phase II – `develop` vs `functional`
 
 **Runtime Modularization**
+
 - Split the monolithic tray runtime into controllers/mixins (`recording`,
   `history`, `models`, `appearance`, etc.) so hotkeys, menus, and async loops can
   evolve independently.
@@ -243,6 +265,7 @@ Historical notes below predate the Keep a Changelog-style format used above.
   to keep Vista integrations working during the refactor.
 
 **Configuration & Tests**
+
 - Simplified environment management: consolidated env templates, updated
   sitecustomize hooks, and made the settings store the single source of truth for
   AI/provider toggles.
@@ -250,11 +273,12 @@ Historical notes below predate the Keep a Changelog-style format used above.
   `tests/manual`, alongside new pytest-based diagnostics.
 
 **Quality of Life**
+
 - Hardened exception handling across the client/backend boundary, added smoke
   tests around the new controllers, and refreshed documentation to mirror the
   current tree/layout.
 
-[Unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.7.0...HEAD
+[unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.7.0...HEAD
 [v0.7.0]: https://github.com/VetCoders/CodeScribe/compare/v0.6.3...v0.7.0
 [v0.6.3]: https://github.com/VetCoders/CodeScribe/compare/v0.6.2...v0.6.3
 [v0.6.2]: https://github.com/VetCoders/CodeScribe/compare/v0.6.1...v0.6.2

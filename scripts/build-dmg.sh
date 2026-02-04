@@ -1,0 +1,131 @@
+#!/bin/bash
+# Build CodeScribe .app bundle + DMG with optional codesign + notarization
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+APP_NAME="${CODESCRIBE_APP_NAME:-CodeScribe}"
+DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_NAME}"
+BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.codescribe.app}"
+MIN_MACOS="${CODESCRIBE_MIN_MACOS:-}"
+LSUIELEMENT="${CODESCRIBE_LSUIELEMENT:-true}"
+ENTITLEMENTS="${CODESCRIBE_ENTITLEMENTS:-$ROOT_DIR/packaging/entitlements.plist}"
+IDENTITY="${CODESCRIBE_CODESIGN_IDENTITY:-}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
+
+VERSION=$(awk -F '"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT_DIR/Cargo.toml" 2>/dev/null || echo "0.0.0")
+DMG_NAME="CodeScribe_${VERSION}.dmg"
+DMG_PATH="$ROOT_DIR/$DMG_NAME"
+APP_PATH="$ROOT_DIR/bundle/${APP_NAME}.app"
+
+SIGN=0
+NOTARIZE=0
+NO_EMBED=0
+FULL=0
+EMBED_TTS=0
+EMBED_E5=0
+
+usage() {
+  cat <<EOF
+Usage: $0 [options]
+
+Options:
+  --sign              Codesign the .app (requires Developer ID)
+  --notarize          Notarize the DMG (requires NOTARY_PROFILE)
+  --identity <name>   Override codesign identity
+  --entitlements <p>  Entitlements plist path (default: $ENTITLEMENTS)
+  --no-embed          Disable all model embedding (CODESCRIBE_NO_EMBED=1)
+  --full              Embed Whisper (default) + TTS + E5 (CODESCRIBE_EMBED_TTS/E5)
+  --embed-tts         Embed TTS model (CODESCRIBE_EMBED_TTS=1)
+  --embed-e5          Embed E5 model (CODESCRIBE_EMBED_E5=1)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --sign) SIGN=1; shift 1;;
+    --notarize) NOTARIZE=1; shift 1;;
+    --identity) IDENTITY="$2"; shift 2;;
+    --entitlements) ENTITLEMENTS="$2"; shift 2;;
+    --no-embed) NO_EMBED=1; shift 1;;
+    --full) FULL=1; shift 1;;
+    --embed-tts) EMBED_TTS=1; shift 1;;
+    --embed-e5) EMBED_E5=1; shift 1;;
+    -h|--help) usage; exit 0;;
+    *) echo "Unknown arg: $1" >&2; usage; exit 1;;
+  esac
+done
+
+if [[ "$FULL" -eq 1 ]]; then
+  EMBED_TTS=1
+  EMBED_E5=1
+fi
+
+BUILD_ENV=(env)
+if [[ "$NO_EMBED" -eq 1 ]]; then
+  BUILD_ENV+=(CODESCRIBE_NO_EMBED=1)
+else
+  BUILD_ENV+=(-u CODESCRIBE_NO_EMBED)
+fi
+if [[ "$EMBED_TTS" -eq 1 ]]; then
+  BUILD_ENV+=(CODESCRIBE_EMBED_TTS=1)
+fi
+if [[ "$EMBED_E5" -eq 1 ]]; then
+  BUILD_ENV+=(CODESCRIBE_EMBED_E5=1)
+fi
+
+echo "=== Build DMG ==="
+echo "App: $APP_NAME"
+echo "Bundle ID: $BUNDLE_ID"
+echo "Version: $VERSION"
+echo "DMG: $DMG_PATH"
+
+(
+  cd "$ROOT_DIR"
+  "${BUILD_ENV[@]}" \
+    CODESCRIBE_APP_NAME="$APP_NAME" \
+    CODESCRIBE_DISPLAY_NAME="$DISPLAY_NAME" \
+    CODESCRIBE_BUNDLE_ID="$BUNDLE_ID" \
+    CODESCRIBE_MIN_MACOS="$MIN_MACOS" \
+    CODESCRIBE_LSUIELEMENT="$LSUIELEMENT" \
+    make bundle
+)
+
+if [[ ! -d "$APP_PATH" ]]; then
+  echo "ERROR: App bundle not found at $APP_PATH" >&2
+  exit 1
+fi
+
+if [[ "$SIGN" -eq 1 ]]; then
+  if [[ -z "$IDENTITY" || "$IDENTITY" == "-" ]]; then
+    echo "ERROR: --sign requires CODESCRIBE_CODESIGN_IDENTITY or --identity" >&2
+    exit 1
+  fi
+  if [[ ! -f "$ENTITLEMENTS" ]]; then
+    echo "ERROR: Entitlements file not found: $ENTITLEMENTS" >&2
+    exit 1
+  fi
+  echo "Codesigning .app with identity: $IDENTITY"
+  codesign --deep --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP_PATH"
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null
+fi
+
+echo "Creating DMG..."
+rm -f "$DMG_PATH"
+TMP_DMG="$(mktemp -d)/dmg"
+mkdir -p "$TMP_DMG"
+cp -R "$APP_PATH" "$TMP_DMG/$APP_NAME.app"
+ln -s /Applications "$TMP_DMG/Applications"
+hdiutil create -volname "$DISPLAY_NAME" -srcfolder "$TMP_DMG" -ov -format UDZO "$DMG_PATH"
+
+if [[ "$SIGN" -eq 1 ]]; then
+  echo "Codesigning DMG..."
+  codesign --force --sign "$IDENTITY" "$DMG_PATH" || true
+fi
+
+echo "DMG ready: $DMG_PATH"
+
+if [[ "$NOTARIZE" -eq 1 ]]; then
+  echo "Notarizing DMG with profile: $NOTARY_PROFILE"
+  NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" "$DMG_PATH"
+fi

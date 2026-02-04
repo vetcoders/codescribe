@@ -13,11 +13,16 @@ SHELL := /bin/bash
 VERSION_FILE := Cargo.toml
 EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo nano)
 ENV_LOAD := set -a; [ -f $$HOME/.codescribe/.env ] && source $$HOME/.codescribe/.env; set +a
-E2E_ENV_EXAMPLE := .env.example
-E2E_ENV_FILE := ./.env.e2e
-TEST_BUILD_JOBS ?= 2
-ENV_LOAD_E2E := set -a; [ -f $(E2E_ENV_FILE) ] && source $(E2E_ENV_FILE); set +a
-E2E_ENV_GEN := ./scripts/validate-envs.sh --env-example --env-example-path $(E2E_ENV_EXAMPLE) --emit-e2e-env $(E2E_ENV_FILE)
+# macOS: use a stable codesign identity to avoid TCC (Accessibility/Input Monitoring) resets after rebuilds.
+# Example:
+#   CODESCRIBE_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" make install-app
+CODESCRIBE_CODESIGN_IDENTITY ?= -
+CODESCRIBE_APP_NAME ?= CodeScribe
+CODESCRIBE_DISPLAY_NAME ?= CodeScribe
+CODESCRIBE_BUNDLE_ID ?= com.codescribe.app
+CODESCRIBE_MIN_MACOS ?=
+CODESCRIBE_LSUIELEMENT ?= true
+CODESCRIBE_ENTITLEMENTS ?= packaging/entitlements.plist
 
 # Test defaults (reference/cloud unless forced local)
 TEST_USE_LOCAL_LLM ?= 0
@@ -55,7 +60,7 @@ release:
 	@cargo build --release
 
 install:
-	@echo "Installing CodeScribe (embedding optional via CODESCRIBE_EMBED_*)..."
+	@echo "Installing CodeScribe (with embedded model)..."
 	@cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
@@ -79,20 +84,53 @@ config:
 
 bundle: release
 	@echo "Creating macOS app bundle..."
-	@mkdir -p bundle/CodeScribe.app/Contents/{MacOS,Resources}
-	@cp target/release/codescribe bundle/CodeScribe.app/Contents/MacOS/
-	@cp assets/AppIcon.icns bundle/CodeScribe.app/Contents/Resources/ 2>/dev/null || true
+	@mkdir -p bundle/$(CODESCRIBE_APP_NAME).app/Contents/{MacOS,Resources}
+	@cp target/release/codescribe bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/
+	@cp target/release/codescribe-loop bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/ 2>/dev/null || true
+	@cp target/release/codescribe-quality bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/ 2>/dev/null || true
+	@cp assets/AppIcon.icns bundle/$(CODESCRIBE_APP_NAME).app/Contents/Resources/ 2>/dev/null || true
 	@VERSION=$$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	if [ -f bundle/CodeScribe.app/Contents/Info.plist ]; then \
-		sed -i '' "s/<string>0\.[0-9]*\.[0-9]*</<string>$$VERSION</g" bundle/CodeScribe.app/Contents/Info.plist; \
+	printf '%s\n' \
+		'<?xml version="1.0" encoding="UTF-8"?>' \
+		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+		'<plist version="1.0">' \
+		'<dict>' \
+		"  <key>CFBundleName</key><string>$(CODESCRIBE_APP_NAME)</string>" \
+		"  <key>CFBundleDisplayName</key><string>$(CODESCRIBE_DISPLAY_NAME)</string>" \
+		"  <key>CFBundleIdentifier</key><string>$(CODESCRIBE_BUNDLE_ID)</string>" \
+		"  <key>CFBundleVersion</key><string>$$VERSION</string>" \
+		"  <key>CFBundleShortVersionString</key><string>$$VERSION</string>" \
+		'  <key>CFBundlePackageType</key><string>APPL</string>' \
+		'  <key>CFBundleExecutable</key><string>codescribe</string>' \
+		'  <key>CFBundleIconFile</key><string>AppIcon</string>' \
+		"  <key>LSUIElement</key><$(CODESCRIBE_LSUIELEMENT)/>" \
+		'  <key>NSMicrophoneUsageDescription</key><string>Needed to transcribe speech.</string>' \
+		'  <key>NSAccessibilityUsageDescription</key><string>Needed to monitor hotkeys and paste results.</string>' \
+		'  <key>NSInputMonitoringUsageDescription</key><string>Needed to detect global hotkeys.</string>' \
+		'</dict>' \
+		'</plist>' \
+		> bundle/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist; \
+	if [ -n "$(CODESCRIBE_MIN_MACOS)" ]; then \
+		/usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string $(CODESCRIBE_MIN_MACOS)" bundle/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist >/dev/null 2>&1 || true; \
 	fi
-	@echo "Bundle ready: bundle/CodeScribe.app"
+	@echo "Bundle ready: bundle/$(CODESCRIBE_APP_NAME).app"
 
 install-app: bundle
 	@echo "Installing to /Applications..."
-	@rm -rf /Applications/CodeScribe.app
-	@cp -R bundle/CodeScribe.app /Applications/
-	@echo "Installed: /Applications/CodeScribe.app"
+	@mkdir -p /Applications
+	@rsync -a --delete bundle/$(CODESCRIBE_APP_NAME).app/ /Applications/$(CODESCRIBE_APP_NAME).app/
+	@if [ "$(CODESCRIBE_CODESIGN_IDENTITY)" = "-" ]; then \
+		echo "Codesigning ad-hoc (no signing identity found)."; \
+		echo "NOTE: macOS Accessibility/Input Monitoring may need re-grant after reinstall."; \
+		echo "TIP: create a local codesign cert (e.g. 'CodeScribe Dev') and set CODESCRIBE_CODESIGN_IDENTITY to keep permissions stable."; \
+		codesign --force --deep --sign - --identifier $(CODESCRIBE_BUNDLE_ID) /Applications/$(CODESCRIBE_APP_NAME).app; \
+	else \
+		echo "Codesigning with identity: $(CODESCRIBE_CODESIGN_IDENTITY)"; \
+		codesign --force --deep --options runtime --entitlements "$(CODESCRIBE_ENTITLEMENTS)" --sign "$(CODESCRIBE_CODESIGN_IDENTITY)" --identifier $(CODESCRIBE_BUNDLE_ID) /Applications/$(CODESCRIBE_APP_NAME).app; \
+	fi
+	@echo "Codesign summary:"
+	@codesign --display --verbose=2 /Applications/$(CODESCRIBE_APP_NAME).app 2>&1 | sed -n '1,12p' || true
+	@echo "Installed: /Applications/$(CODESCRIBE_APP_NAME).app"
 
 # ============================================================================
 # Run
@@ -169,52 +207,85 @@ lint:
 	@echo "=== Clippy ==="
 	@cargo clippy --workspace -- -D warnings
 
+TEST_LOG := /tmp/codescribe-tests.log
+
+define TEST_SETUP
+LOG=$(TEST_LOG); \
+echo "" >> "$$LOG"; \
+echo "╔══════════════════════════════════════════════════════════╗" | tee -a "$$LOG"; \
+echo "║  CodeScribe Test Suite — $$(date '+%Y-%m-%d %H:%M:%S')           ║" | tee -a "$$LOG"; \
+echo "╚══════════════════════════════════════════════════════════╝" | tee -a "$$LOG"; \
+open -a Console "$$LOG"
+endef
+
 test:
-	@echo "=== Tests (workspace, all incl. real API) ==="
-	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --workspace --all-targets -- --include-ignored --nocapture
+	@$(TEST_SETUP); \
+	echo "=== Tests (workspace) ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "=== Tests (ignored / real API) ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test --workspace --all-targets -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "=== Full Pipeline (STT) ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); CODESCRIBE_E2E_STT=1 \
+	cargo test --test e2e_full_pipeline -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-quick:
-	@echo "=== Tests (quick, no real API) ==="
-	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --workspace --all-targets -- --nocapture
+	@$(TEST_SETUP); \
+	echo "=== Tests (quick, no real API) ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-e2e:
-	@echo "=== E2E Tests (mock) ==="
-	@$(E2E_ENV_GEN)
-	@$(ENV_LOAD_E2E); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test e2e --release -- --nocapture
+	@$(TEST_SETUP); \
+	echo "=== E2E Tests (mock) ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test e2e --release -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-e2e-real:
-	@echo "=== E2E Tests (real API) ==="
-	@echo "Requires: LLM_API_KEY, LLM_ASSISTIVE_API_KEY"
-	@$(E2E_ENV_GEN)
-	@$(ENV_LOAD_E2E); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test e2e --release -- --ignored --nocapture
+	@$(TEST_SETUP); \
+	echo "=== E2E Tests (real API) ===" | tee -a "$$LOG"; \
+	echo "Requires: LLM_API_KEY, LLM_ASSISTIVE_API_KEY" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test e2e --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-sse:
-	@echo "=== SSE Streaming Tests ==="
-	@$(E2E_ENV_GEN)
-	@$(ENV_LOAD_E2E); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test e2e_sse --release -- --ignored --nocapture
+	@$(TEST_SETUP); \
+	echo "=== SSE Streaming Tests ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test e2e_sse --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-formatting:
-	@echo "=== AI Formatting Tests ==="
-	@$(ENV_LOAD); $(APPLY_TEST_LLM); CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test formatting --release -- --nocapture
+	@$(TEST_SETUP); \
+	echo "=== AI Formatting Tests ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test formatting --release -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-all:
-	@echo "=== Full Test Suite ==="
-	@$(MAKE) test
-	@echo "Done."
-
-test-roundtrip:
-	@echo "=== Round-Trip Tests (TTS→STT→Embeddings) ==="
-	@echo "Tests actual embedded models pipeline integrity"
-	@$(E2E_ENV_GEN)
-	@$(ENV_LOAD_E2E); CODESCRIBE_E2E_ROUNDTRIP=1 CARGO_BUILD_JOBS=$(TEST_BUILD_JOBS) cargo test --test e2e_round_trip --release -- --nocapture
+	@$(TEST_SETUP); \
+	echo "=== Full Test Suite ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "=== Ignored / Real API ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test --workspace --all-targets -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "=== Full Pipeline (STT) ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); CODESCRIBE_E2E_STT=1 \
+	cargo test --test e2e_full_pipeline -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "=== SSE Streaming ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	cargo test e2e_sse --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 demo:
 	@echo "=== Full Pipeline Demo ==="
 	@cargo run --release --example demo_full_pipeline -- $(AUDIO)
-
-demo-roundtrip:
-	@echo "=== Round-Trip Interactive Demo ==="
-	@cargo run --release --example roundtrip_live -- --interactive
 
 demo-raw:
 	@echo "=== Raw Transcription Demo ==="
@@ -228,7 +299,7 @@ check:
 	@echo "=== Format Check (Rust) ==="
 	@cargo fmt --all -- --check
 	@echo "=== Format Check (non-Rust) ==="
-	@git ls-files --cached --exclude-standard | xargs npx --yes prettier@2.7.1 --check --ignore-path .prettierignore --ignore-unknown || true
+	@npx --yes prettier@2.7.1 --check . --ignore-path .prettierignore --ignore-unknown || true
 	@echo "=== Clippy (workspace, all targets) ==="
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@echo "=== Semgrep ==="
@@ -239,7 +310,7 @@ fix:
 	@echo "=== Format Fix (Rust) ==="
 	@cargo fmt --all
 	@echo "=== Format Fix (non-Rust) ==="
-	@git ls-files --cached --exclude-standard | xargs npx --yes prettier@2.7.1 --write --ignore-path .prettierignore --ignore-unknown
+	@npx --yes prettier@2.7.1 --write . --ignore-path .prettierignore --ignore-unknown
 	@echo "Formatting applied"
 
 # ============================================================================
@@ -270,27 +341,20 @@ help:
 	@echo ""
 	@echo "Build & Install:"
 	@echo "  make build           Build debug binary"
-	@echo "  make release         Build release binary (embedding optional via env)"
-	@echo "  make install         Install CLI (embedding optional via env)"
+	@echo "  make release         Build release binary (with embedded model)"
+	@echo "  make install         Install CLI (~888MB with embedded model)"
 	@echo "  make install-no-embed Install without model (needs CODESCRIBE_MODEL_PATH)"
 	@echo "  make config          Edit ~/.codescribe/.env"
 	@echo "  make bundle          Create CodeScribe.app bundle"
 	@echo "  make install-app     Install to /Applications"
 	@echo ""
 	@echo "Release & Distribution:"
-	@echo "  make dmg             Create DMG from existing .app (unsigned)"
-	@echo "  make dmg-signed      Build .app + DMG + sign (NO notarize)"
-	@echo "  make dmg-full        Build .app + DMG + sign + notarize"
-	@echo "  make notarize        Notarize existing DMG (NOTARY_PROFILE required)"
-	@echo ""
-	@echo "Release env vars:"
-	@echo "  SIGN_IDENTITY=...        Codesign identity (Developer ID Application: ...)"
-	@echo "  NOTARY_PROFILE=...       notarytool profile name"
-	@echo "  BUNDLE_WHISPER=1          bundle local Whisper into .app"
-	@echo "  BUNDLE_FALLBACK_GIT=1     allow fallback git clone if no local model"
+	@echo "  make dmg             Build DMG (ad-hoc signed)"
+	@echo "  make dmg-signed      Build DMG (Developer ID signed)"
+	@echo "  make dmg-full        Build DMG with embedded model (~888MB)"
+	@echo "  make notarize        Notarize DMG with Apple"
 	@echo "  make download-model  Download Whisper model from HF"
 	@echo "  make download-e5     Download E5 embedder model from HF"
-	@echo "  make download-silero-vad  Download Silero VAD model from HF"
 	@echo ""
 	@echo "Run:"
 	@echo "  make start           Start CodeScribe"
@@ -325,22 +389,18 @@ help:
 # ============================================================================
 
 dmg:
-	@./packaging/create_dmg.sh
+	@./scripts/build-dmg.sh
 
 dmg-signed:
-	@SIGN_IDENTITY="$(SIGN_IDENTITY)" NOTARY_PROFILE="$(NOTARY_PROFILE)" \
-		BUNDLE_WHISPER="$(BUNDLE_WHISPER)" BUNDLE_FALLBACK_GIT="$(BUNDLE_FALLBACK_GIT)" \
-		./packaging/release.sh --no-notary
+	@./scripts/build-dmg.sh --sign
 
 dmg-full:
-	@SIGN_IDENTITY="$(SIGN_IDENTITY)" NOTARY_PROFILE="$(NOTARY_PROFILE)" \
-		BUNDLE_WHISPER="$(BUNDLE_WHISPER)" BUNDLE_FALLBACK_GIT="$(BUNDLE_FALLBACK_GIT)" \
-		./packaging/release.sh
+	@./scripts/build-dmg.sh --sign --full
 
 notarize:
 	@if ls CodeScribe_*.dmg 1> /dev/null 2>&1; then \
 		DMG=$$(ls -t CodeScribe_*.dmg | head -1); \
-		NOTARY_PROFILE="$(NOTARY_PROFILE)" ./scripts/notarize.sh "$$DMG"; \
+		./scripts/notarize.sh "$$DMG"; \
 	else \
 		echo "No DMG found. Run 'make dmg-signed' first."; \
 	fi
@@ -350,6 +410,3 @@ download-model:
 
 download-e5:
 	@./scripts/download-e5.sh
-
-download-silero-vad:
-	@./scripts/download-silero-vad.sh

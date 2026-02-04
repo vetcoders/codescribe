@@ -9,6 +9,7 @@
 
 use codescribe::ai_formatting;
 use serial_test::serial;
+use tracing_subscriber::EnvFilter;
 
 /// Load environment from ~/.codescribe/.env if not already set
 fn load_codescribe_env() {
@@ -109,6 +110,10 @@ async fn e2e_sse_streaming_real_formatting() {
 #[serial]
 #[ignore = "Requires real API key - run with make test-sse"]
 async fn e2e_sse_streaming_real_assistive() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new("codescribe_core::llm=debug"))
+        .with_writer(std::io::stderr)
+        .try_init();
     load_codescribe_env();
 
     let Some(api_key) = get_assistive_api_key() else {
@@ -138,13 +143,16 @@ async fn e2e_sse_streaming_real_assistive() {
     let input = "jak napisać funkcję w Rust która odwraca string";
     eprintln!("Input:  {}", input);
 
-    let result = ai_formatting::format_text(input, Some("pl"), true).await;
-    eprintln!("Output: {}", result);
+    let fmt_result = ai_formatting::format_text_with_status(input, Some("pl"), true, None).await;
+    eprintln!("Output: {}", fmt_result.text);
+    eprintln!("Status: {:?}", fmt_result.status);
 
+    let result = fmt_result.text;
     assert!(!result.is_empty(), "Should return AI response");
     assert!(
         result.len() > input.len(),
-        "Assistive response should be longer than input question"
+        "Assistive response should be longer than input question (status={:?})",
+        fmt_result.status
     );
 }
 

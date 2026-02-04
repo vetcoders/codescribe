@@ -188,24 +188,24 @@ fn test_multiple_config_changes() {
 #[test]
 #[serial]
 fn test_env_file_created() {
-    let tmp = setup_test_env();
+    let _tmp = setup_test_env();
 
     let config = Config::load();
     config
         .save_to_env("HOLD_MODS", "ctrl_cmd")
         .expect("save_to_env");
 
-    // Check .env file exists
-    let env_path = tmp.path().join(".env");
-    assert!(env_path.exists(), ".env file should be created");
-
-    // Check file contains our value
-    let contents = std::fs::read_to_string(&env_path).expect("read .env");
-    assert!(
-        contents.contains("HOLD_MODS=ctrl_cmd"),
-        ".env should contain HOLD_MODS=ctrl_cmd, got: {}",
-        contents
+    // HOLD_MODS is a regular-user key → persisted to settings.json (not .env)
+    let settings = codescribe::config::UserSettings::load();
+    assert_eq!(
+        settings.hold_mods.as_deref(),
+        Some("ctrl_cmd"),
+        "settings.json should contain hold_mods=ctrl_cmd"
     );
+
+    // Also verify round-trip through Config::load
+    let reloaded = Config::load();
+    assert_eq!(reloaded.hold_mods.as_str(), "ctrl_cmd");
 }
 
 /// Test all HoldMods variants can be saved and loaded
@@ -242,7 +242,9 @@ fn test_all_toggle_trigger_variants() {
 
     let variants = [
         ("double_option", ToggleTrigger::DoubleOption),
+        ("double_lalt", ToggleTrigger::DoubleLeftOption),
         ("double_ralt", ToggleTrigger::DoubleRightOption),
+        ("double_ctrl", ToggleTrigger::DoubleCtrl),
         ("none", ToggleTrigger::None),
     ];
 

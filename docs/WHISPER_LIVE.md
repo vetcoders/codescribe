@@ -2,18 +2,18 @@
 
 > **Status:** DONE ✅ (2026-01-16)
 >
-> **Tagline:** Whisper is welded into the binary, and transcription happens *during recording*.
+> **Tagline:** Whisper is welded into the binary, and transcription happens _during recording_.
 
 ## TL;DR
 
 CodeScribe’s core power-up is:
 
 1. **Embedded Whisper model** (`whisper-large-v3-turbo-mlx-q8`) in the release binary
-    - **Zero disk I/O** for local STT
-    - Model loads once into GPU/Metal and stays in-process
+   - **Zero disk I/O** for local STT
+   - Model loads once into GPU/Metal and stays in-process
 2. **Live (streaming) transcription** while the user is recording
-    - Audio is chunked and transcribed in the background
-    - On `stop()` we only “close” the last fragment → **near-instant time-to-paste**
+   - Audio is chunked and transcribed in the background
+   - On `stop()` we only “close” the last fragment → **near-instant time-to-paste**
 
 ## What we shipped
 
@@ -87,17 +87,17 @@ flowchart TD
 ### Live streaming recorder
 
 - `src/audio/recorder.rs`
-    - CPAL input stream at **native device rate** (often `48000Hz`)
-    - callback hook for raw `f32` samples
-    - exposes `Recorder::actual_sample_rate()`
+  - CPAL input stream at **native device rate** (often `48000Hz`)
+  - callback hook for raw `f32` samples
+  - exposes `Recorder::actual_sample_rate()`
 - `src/audio/streaming_recorder.rs`
-    - connects recorder callback → `mpsc::channel` (non-blocking)
-    - chunking (default: `15s` chunks + `2s` overlap)
-    - background transcription via `tokio::spawn_blocking`
-    - dedup between chunks via `append_with_overlap_dedup`
+  - connects recorder callback → `mpsc::channel` (non-blocking)
+  - chunking (default: `15s` chunks + `2s` overlap)
+  - background transcription via `tokio::spawn_blocking`
+  - dedup between chunks via `append_with_overlap_dedup`
 - `src/controller.rs`
-    - uses `StreamingRecorder` and prefers the streaming transcript on `stop()`
-    - can still save the WAV for logs and/or cloud fallback
+  - uses `StreamingRecorder` and prefers the streaming transcript on `stop()`
+  - can still save the WAV for logs and/or cloud fallback
 
 ## Build & distribution
 

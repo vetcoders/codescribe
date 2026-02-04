@@ -1,12 +1,14 @@
 # CodeScribe — Konfiguracja środowiska (ENV)
 
 Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez CodeScribe. Układ jest „dla weterynarza”:
-1) co jest domyślne,
-2) co jest wymagane,
-3) jakie są zasady nadpisywania i konflikty,
-4) pełny podział tematyczny.
+
+1. co jest domyślne,
+2. co jest wymagane,
+3. jakie są zasady nadpisywania i konflikty,
+4. pełny podział tematyczny.
 
 **Legenda zmian:**
+
 - **(HOT RELOADED)** – działa od następnej akcji/nagrania (ale tylko jeśli env jest ustawiony w procesie; ręczna edycja `.env` wymaga restartu).
 - **(RESTART NEEDED)** – wymaga restartu aplikacji.
 - **(REBUILD NEEDED)** – wymaga przebudowania binarki.
@@ -16,9 +18,11 @@ Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez Code
 ---
 
 ## A) Systemowe domyślne (defaults)
+
 Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja ma sensowne wartości domyślne.
 
 **Hotkeys / UI / zachowanie podstawowe**
+
 - `HOLD_MODS` – domyślnie `ctrl` (RESTART NEEDED)
 - `HOLD_EXCLUSIVE` – domyślnie `1` (RESTART NEEDED)
 - `TOGGLE_TRIGGER` – domyślnie `double_option` (RESTART NEEDED)
@@ -31,92 +35,106 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `OVERLAY_POSITION_MODE` – domyślnie `snapped_top_right` (RESTART NEEDED)
 
 **Dźwięk / feedback**
+
 - `BEEP_ON_START` – domyślnie `1` (RESTART NEEDED)
 - `SOUND_NAME` – domyślnie `Tink` (RESTART NEEDED)
 - `SOUND_VOLUME` – domyślnie `1.0` (RESTART NEEDED)
 
+**Audio / silence**
+
+- `AUTO_SILENCE` – domyślnie `0` (RESTART NEEDED)
+
 **Historia / storage**
+
 - `HISTORY_ENABLED` – domyślnie `1` (zawsze ON) (RESTART NEEDED)
 - `DUMP_AUDIO_LOGS` – domyślnie `1` (zawsze ON) (RESTART NEEDED)
 
 **Streaming (chunky)**
+
 - `CODESCRIBE_STREAM_CHUNK_SEC` – domyślnie `15.0` (HOT RELOADED)
 - `CODESCRIBE_STREAM_OVERLAP_RATIO` – domyślnie `0.25` (HOT RELOADED)
-- `CODESCRIBE_BUFFERED_STREAM` – domyślnie `1` (HOT RELOADED)
+- `CODESCRIBE_BUFFERED_STREAM` – domyślnie `0` (HOT RELOADED)
 - `CODESCRIBE_BUFFER_DELAY_MS` – domyślnie `3000` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` – domyślnie `30` (HOT RELOADED)
 - `CODESCRIBE_EMIT_WORDS_MAX` – max słów na tick (buffered), domyślnie `3` (HOT RELOADED)
 
-**VAD gate (Silero)**
-- `CODESCRIBE_VAD_GATE_MODE` – `simple` (domyślnie) lub `iter` (vad_iter z temp_end/prev_end) (RESTART NEEDED)
-- `CODESCRIBE_VAD_ITER=1` – skrót do `iter` (RESTART NEEDED)
+**VAD (Silero neural network)**
 
-> **Uwaga:** Live gate derives `pre_roll` and `speech_pad` from `CODESCRIBE_VAD_PRE_ROLL_SEC`
-> (default 0.064 for streaming). Override `speech_pad` separately via `CODESCRIBE_VAD_SPEECH_PAD_SEC`.
+- `CODESCRIBE_VAD_THRESHOLD` – próg detekcji mowy 0.0-1.0, domyślnie `0.5` (RESTART NEEDED)
+- `CODESCRIBE_VAD_MIN_SPEECH_SEC` – min. czas mowy przed detekcją, domyślnie `0.1` (RESTART NEEDED)
+- `CODESCRIBE_VAD_MAX_SILENCE_SEC` – max. cisza przed końcem, domyślnie `1.2` (RESTART NEEDED)
+- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` – max. czas wypowiedzi, domyślnie `60` (RESTART NEEDED)
+- `CODESCRIBE_VAD_PRE_ROLL_SEC` – pre-roll w sekundach, domyślnie `0.3` (RESTART NEEDED)
+
+> **Uwaga:** VAD config jest read-only po inicjalizacji (OnceLock). Zmiana wymaga restartu aplikacji.
 
 **Post‑process (gating)**
+
 - `CODESCRIBE_STREAM_SIMILARITY` – domyślnie z kodu (HOT RELOADED)
 - `CODESCRIBE_STREAM_NOVELTY` – domyślnie z kodu (HOT RELOADED)
 
 **Model lokalny (embedded)**
+
 - brak wymaganych env – model jest w binarce.
 
 ---
 
 ## B) Niezbędne do działania (required)
+
 Samo **local‑only** uruchomienie nie wymaga żadnych envów.
 Poniżej — kiedy coś staje się wymagane.
 
 **1) Cloud STT (gdy wyłączasz local)**
 Wymagane **tylko jeśli** `USE_LOCAL_STT=0` (RESTART NEEDED):
+
 - `STT_ENDPOINT` (RESTART NEEDED)
 - `STT_API_KEY` (RESTART NEEDED)
 
-**Loop-only override (quality reports)**
-Jeśli chcesz wymusić cloud STT **tylko** dla quality loop bez zmiany appki:
-- `CODESCRIBE_LOOP_USE_CLOUD_STT=1` (RESTART NEEDED)
-
 **2) AI Formatting / Assistive (gdy włączasz AI)**
 Wymagane **tylko jeśli** `AI_FORMATTING_ENABLED=1` i chcesz LLM:
+
 - `LLM_ENDPOINT`, `LLM_MODEL`, `LLM_API_KEY` (HOT RELOADED)
   - albo tryb‑specyficzne: `LLM_FORMATTING_*` i/lub `LLM_ASSISTIVE_*` (HOT RELOADED)
 
 **3) Brak embedded modelu (build dev)**
 Wymagane **tylko jeśli** zbudowałeś bez embedu:
+
 - `CODESCRIBE_MODEL_PATH` (RESTART NEEDED)
 
 ---
 
 ## C) Override / konflikty / hierarchie (dla człowieka)
+
 **Tu są zasady priorytetów — co nadpisuje co.**
 
 **Ścieżki / data dir**
+
 - `CODESCRIBE_DATA_DIR` > `CODESCRIBE_APP_DIR` > `~/.codescribe` (RESTART NEEDED)
 - `CODESCRIBE_ENV_PATH` nadpisuje lokalizację `.env` (RESTART NEEDED)
 - `CODESCRIBE_ENV_TEMPLATE` tylko do wygenerowania `.env` (jeśli nie istnieje) (RESTART NEEDED)
 
 **Model lokalny**
+
 - `CODESCRIBE_MODEL_PATH` **nadpisuje embedded** (RESTART NEEDED)
 - `CODESCRIBE_NO_EMBED=1` (build‑time) → **musisz** ustawić `CODESCRIBE_MODEL_PATH` (REBUILD NEEDED)
 
 **STT endpointy**
+
 - `STT_ENDPOINT` (RESTART NEEDED)
 - Jeśli ustawisz `STT_ENDPOINT`, **wymagany jest** `STT_API_KEY` (RESTART NEEDED)
 
 **LLM / endpointy**
+
 - `LLM_FORMATTING_*` **nadpisuje** `LLM_*` dla formattingu (HOT RELOADED)
 - `LLM_ASSISTIVE_*` **nadpisuje** `LLM_*` dla assistive (HOT RELOADED)
 
 **Streaming vs buffered**
-- `LLM_USE_STREAMING` – streaming odpowiedzi z LLM, domyślnie `1` (HOT RELOADED)
-  - `1` lub `true` = SSE streaming (domyślne, pokazuje tekst w czasie rzeczywistym)
-  - `0` lub `false` = buffered (czeka na pełną odpowiedź)
-- `TRANSCRIPT_SEND_MODE` – tryb wysyłania transkrypcji do UI (RESTART NEEDED)
-  - `streaming` = delty w czasie rzeczywistym
-  - `buffered` = pełna transkrypcja na końcu
+
 - `CODESCRIBE_BUFFERED_STREAM=1` → **ignoruje** chunking (`CODESCRIBE_STREAM_CHUNK_SEC`) (HOT RELOADED)
+- `TRANSCRIPT_SEND_MODE=streaming` wysyła delty do overlayu (RESTART NEEDED)
 
 **Overlay pozycja**
+
 - `OVERLAY_POSITION_MODE=custom` aktywuje `OVERLAY_CUSTOM_X/Y` (RESTART NEEDED)
 
 ---
@@ -124,38 +142,38 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 ## D) Pełny podział działowy (wszystkie zmienne)
 
 ### Audio
+
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)
-- `CODESCRIBE_VAD_GATE_MODE`, `CODESCRIBE_VAD_ITER` (RESTART NEEDED)
+- `CODESCRIBE_VAD_THRESHOLD`, `CODESCRIBE_VAD_MAX_SILENCE_SEC`, `AUTO_SILENCE` (RESTART NEEDED)
 
 ### Transkrypcja (local/cloud)
+
 - `USE_LOCAL_STT` (RESTART NEEDED)
 - `LOCAL_MODEL`, `WHISPER_MODEL`, `WHISPER_LANGUAGE` (RESTART NEEDED)
-- `WHISPER_INITIAL_PROMPT` – prompt inicjalizujący dla Whisper (słownictwo domenowe, formatowanie) (RESTART NEEDED)
-  - **Co to robi:** Whisper używa initial prompt jako "kondycjonowania" - dostaje te słowa jako kontekst i lepiej rozpoznaje podobne terminy
-  - **Kiedy używać:** Gdy masz domenowe słownictwo (nazwy narzędzi, leki, nazwy własne) które Whisper przekręca
-  - **Format:** Lista słów/fraz oddzielona przecinkami
-  - **Przykład programisty:** `CodeScribe, LibraxisAI, loctree, clippy, semgrep, cargo, Rust, GitHub, Docker`
-  - **Przykład weterynarza:** `Alfaksalon, Robenacoxib, Meloksykam, Gabapentyna, NSAID, USG`
-  - **Polskie słowa:** Dodaj często używane polskie słowa jeśli model je przekręca: `dziękuję, proszę, właściwie`
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
 
 ### Streaming / VAD / buffer
+
 - `CODESCRIBE_STREAM_CHUNK_SEC` (HOT RELOADED)
 - `CODESCRIBE_STREAM_OVERLAP_RATIO` (HOT RELOADED)
 - `CODESCRIBE_BUFFERED_STREAM` (HOT RELOADED)
 - `CODESCRIBE_BUFFER_DELAY_MS` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
-- `CODESCRIBE_VAD_GATE_MODE` (RESTART NEEDED)
-- `CODESCRIBE_VAD_ITER` (RESTART NEEDED)
-- `CODESCRIBE_VAD_SPEECH_PAD_SEC` – speech padding after offset, defaults to pre_roll value (RESTART NEEDED)
+- `CODESCRIBE_VAD_THRESHOLD` (RESTART NEEDED)
+- `CODESCRIBE_VAD_MIN_SPEECH_SEC` (RESTART NEEDED)
+- `CODESCRIBE_VAD_MAX_SILENCE_SEC` (RESTART NEEDED)
+- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` (RESTART NEEDED)
+- `CODESCRIBE_VAD_PRE_ROLL_SEC` (RESTART NEEDED)
 
 ### Post‑process (gating / embeddings)
+
 - `CODESCRIBE_STREAM_SIMILARITY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_NOVELTY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_DISABLE_EMBEDDINGS` (HOT RELOADED)
 
 ### LLM (formatting/assistive)
+
 - `AI_FORMATTING_ENABLED` (RESTART NEEDED)
 - `LLM_ENDPOINT`, `LLM_MODEL`, `LLM_API_KEY` (HOT RELOADED)
 - `LLM_FORMATTING_ENDPOINT`, `LLM_FORMATTING_MODEL`, `LLM_FORMATTING_API_KEY` (HOT RELOADED)
@@ -167,12 +185,14 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `CODESCRIBE_AI_MAX_RETRIES`, `CODESCRIBE_AI_RETRY_DELAY_MS`, `CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS` (HOT RELOADED)
 
 ### Hotkeys
+
 - `HOLD_MODS` (RESTART NEEDED)
 - `HOLD_EXCLUSIVE` (RESTART NEEDED)
 - `TOGGLE_TRIGGER` (RESTART NEEDED)
 - `HOLD_START_DELAY_MS` (RESTART NEEDED)
 
 ### UI / Overlay / Feedback
+
 - `SHOW_TRAY_GLYPH` (RESTART NEEDED)
 - `HOLD_INDICATOR` (RESTART NEEDED)
 - `HOLD_BADGE_SIZE` (RESTART NEEDED)
@@ -182,23 +202,28 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `BEEP_ON_START`, `SOUND_NAME`, `SOUND_VOLUME` (RESTART NEEDED)
 
 ### Clipboard
+
 - `RESTORE_CLIPBOARD` (RESTART NEEDED)
 - `RESTORE_CLIPBOARD_DELAY_MS` (RESTART NEEDED)
 
 ### Storage / History
+
 - `HISTORY_ENABLED` (RESTART NEEDED)
 - `DUMP_AUDIO_LOGS` (RESTART NEEDED)
 - `CODESCRIBE_DATA_DIR`, `CODESCRIBE_APP_DIR`, `CODESCRIBE_ENV_PATH`, `CODESCRIBE_ENV_TEMPLATE` (RESTART NEEDED)
 
 ### Quality / Report
+
 - `QUALITY_DEBUG_MODE` (HOT RELOADED)
 - `CODESCRIBE_QUALITY_DISABLE_CLOUD` (HOT RELOADED)
 
 ### Backend / misc
+
 - `CODESCRIBE_BACKEND_URL` (HOT RELOADED)
 - `BACKEND_MAX_UPLOAD_MB` (RESTART NEEDED)
 
 ### Debug / test only
+
 - `CODESCRIBE_DEBUG_TOKENS` (RESTART NEEDED)
 - `CODESCRIBE_STREAM_FORCE_EMBEDDINGS` (RESTART NEEDED)
 - `CODESCRIBE_E2E_STT` (RESTART NEEDED)
@@ -210,24 +235,29 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 ---
 
 ## Testy (dla człowieka, bez bólu)
+
 Makefile **automatycznie** ładuje `~/.codescribe/.env` przy uruchamianiu testów.
 
 **Domyślnie** testy używają Twojej referencji z `~/.codescribe/.env`.
 Jeśli chcesz **lokalnie** (Ollama), uruchom:
+
 ```
 TEST_USE_LOCAL_LLM=1 make test
 ```
 
 Lokalny endpoint (Ollama):
+
 ```
 http://localhost:11434/v1/responses
 model: gpt-oss:120b-cloud
 ```
 
 Jeśli chcesz tylko SSE / streaming:
+
 ```
 make test-sse
 ```
+
 - `CODESCRIBE_E2E_OLLAMA` (RESTART NEEDED)
 - `CODESCRIBE_E2E_RUN_MEDIUM` (RESTART NEEDED)
 - `CODESCRIBE_E2E_CORPUS` (RESTART NEEDED)
@@ -238,6 +268,7 @@ make test-sse
 - `CODESCRIBE_E2E_CORPUS_DIR` (RESTART NEEDED)
 
 ### Logging (legacy)
+
 - `LOG_LEVEL` (legacy) (RESTART NEEDED)
 - `RUST_LOG` (RESTART NEEDED)
 
@@ -246,15 +277,15 @@ make test-sse
 # Minimal config (działające przykłady)
 
 **1) Local only (embedded, bez LLM)**
+
 ```
 USE_LOCAL_STT=1
 # (optional) język:
 # WHISPER_LANGUAGE=pl
-# (optional) Silero gate:
-# CODESCRIBE_VAD_GATE_MODE=iter
 ```
 
 **2) Local + AI formatting**
+
 ```
 AI_FORMATTING_ENABLED=1
 LLM_ENDPOINT=https://api.openai.com/v1/responses
@@ -263,6 +294,7 @@ LLM_API_KEY=sk-...
 ```
 
 **3) Cloud‑only STT**
+
 ```
 USE_LOCAL_STT=0
 STT_ENDPOINT=https://api.libraxis.cloud/v1/audio/transcriptions
@@ -270,8 +302,9 @@ STT_API_KEY=...
 ```
 
 **4) Strojenie streaming / powtórki**
+
 ```
-CODESCRIBE_STREAM_CHUNK_SEC=4
+CODESCRIBE_STREAM_CHUNK_SEC=12
 CODESCRIBE_STREAM_SIMILARITY=0.90
 CODESCRIBE_STREAM_NOVELTY=0.20
 ```
@@ -279,6 +312,7 @@ CODESCRIBE_STREAM_NOVELTY=0.20
 ---
 
 ## Report expectation (dla wdrożeniowca)
+
 - Jeśli coś nie działa: sprawdź `~/.codescribe/.env` i porównaj z sekcją „B” i „C”.
 - Jeśli pojawiają się powtórki: zwiększ `CODESCRIBE_STREAM_CHUNK_SEC`.
 - Jeśli brak AI: sprawdź czy `LLM_*` są ustawione.

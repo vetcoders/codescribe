@@ -9,35 +9,35 @@
 ### Recording Modes
 
 | Feature                          | Status | Files                       |
-|----------------------------------|--------|-----------------------------|
-| Hold Mode (Ctrl = Raw)           | ✅      | `controller/`, `hotkeys.rs` |
-| Assistive Mode (Ctrl+Shift = AI) | ✅      | `controller/`, `hotkeys.rs` |
-| Toggle Mode (Double Option)      | ✅      | `controller/`, `hotkeys.rs` |
-| VAD Auto-Stop (5s silence)       | ✅      | `audio/recorder.rs`         |
+| -------------------------------- | ------ | --------------------------- |
+| Hold Mode (Ctrl = Raw)           | ✅     | `controller/`, `hotkeys.rs` |
+| Assistive Mode (Ctrl+Shift = AI) | ✅     | `controller/`, `hotkeys.rs` |
+| Toggle Mode (Double Option)      | ✅     | `controller/`, `hotkeys.rs` |
+| VAD Auto-Stop (5s silence)       | ✅     | `audio/recorder.rs`         |
 
 ### Voice Chat UI (Mission Control)
 
 | Feature                       | Status | Files                       |
-|-------------------------------|--------|-----------------------------|
-| Split panel layout (60/40)    | ✅      | `voice_chat_ui/mod.rs`      |
-| Chat bubbles (user/assistant) | ✅      | `voice_chat_ui/mod.rs`      |
-| Streaming AI responses        | ✅      | `voice_chat_ui/api.rs`      |
-| Transcriptions tab            | ✅      | `voice_chat_ui/handlers.rs` |
-| Settings tab                  | ✅      | `voice_chat_ui/handlers.rs` |
-| Auto-send toggle              | ✅      | `voice_chat_ui/state.rs`    |
-| Collapsible right panel       | ✅      | `voice_chat_ui/mod.rs`      |
+| ----------------------------- | ------ | --------------------------- |
+| Split panel layout (60/40)    | ✅     | `voice_chat_ui/mod.rs`      |
+| Chat bubbles (user/assistant) | ✅     | `voice_chat_ui/mod.rs`      |
+| Streaming AI responses        | ✅     | `voice_chat_ui/api.rs`      |
+| Transcriptions tab            | ✅     | `voice_chat_ui/handlers.rs` |
+| Settings tab                  | ✅     | `voice_chat_ui/handlers.rs` |
+| Auto-send toggle              | ✅     | `voice_chat_ui/state.rs`    |
+| Collapsible right panel       | ✅     | `voice_chat_ui/mod.rs`      |
 
 ### Infrastructure
 
 | Feature                                | Status | Files                         |
-|----------------------------------------|--------|-------------------------------|
-| Embedded Whisper model (~888MB)        | ✅      | `whisper/embedded.rs`         |
-| Streaming transcription (Whisper Live) | ✅      | `audio/streaming_recorder.rs` |
-| IPC Server (Unix socket)               | ✅      | `ipc/server.rs`               |
-| Quality Loop (self-improvement)        | ✅      | `quality_loop.rs`             |
-| Quality Reports (batch analysis)       | ✅      | `quality_report.rs`           |
-| CodeScribe Core separation             | ✅      | `codescribe-core/`            |
-| Tray app with submenus                 | ✅      | `tray/`                       |
+| -------------------------------------- | ------ | ----------------------------- |
+| Embedded Whisper model (~888MB)        | ✅     | `whisper/embedded.rs`         |
+| Streaming transcription (Whisper Live) | ✅     | `audio/streaming_recorder.rs` |
+| IPC Server (Unix socket)               | ✅     | `ipc/server.rs`               |
+| Quality Loop (self-improvement)        | ✅     | `quality_loop.rs`             |
+| Quality Reports (batch analysis)       | ✅     | `quality_report.rs`           |
+| CodeScribe Core separation             | ✅     | `codescribe-core/`            |
+| Tray app with submenus                 | ✅     | `tray/`                       |
 
 ---
 
@@ -83,10 +83,10 @@
 ## 🔧 Technical Debt
 
 | Item                                   | Priority | Notes                      |
-|----------------------------------------|----------|----------------------------|
-| ~~Split voice_chat_ui.rs (<1000 LOC)~~ | ✅ Done   | 4 modules created          |
-| ~~Split controller.rs (<1000 LOC)~~    | ✅ Done   | 4 modules created          |
-| ~~Move Settings to overlay~~           | ✅ Done   | Removed from tray menu     |
+| -------------------------------------- | -------- | -------------------------- |
+| ~~Split voice_chat_ui.rs (<1000 LOC)~~ | ✅ Done  | 4 modules created          |
+| ~~Split controller.rs (<1000 LOC)~~    | ✅ Done  | 4 modules created          |
+| ~~Move Settings to overlay~~           | ✅ Done  | Removed from tray menu     |
 | Update lexicon (Roost→Rust, etc.)      | CRITICAL | `assets/programming.jsonl` |
 
 ---
@@ -94,7 +94,7 @@
 ## 📊 Metrics
 
 | Metric                | Value                |
-|-----------------------|----------------------|
+| --------------------- | -------------------- |
 | Total Rust LOC        | ~15,000              |
 | codescribe-core       | ~8,000 LOC           |
 | codescribe (daemon)   | ~7,000 LOC           |
@@ -111,4 +111,4 @@
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
+_Created by M&K (c)2026 VetCoders_

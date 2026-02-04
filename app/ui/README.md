@@ -5,6 +5,7 @@ This module provides native macOS functionality for displaying a floating badge 
 ## Features
 
 ### 1. Hold Badge Indicator
+
 A small, floating circular window that follows the cursor/caret position during recording:
 
 - **Appearance**: Customizable circular badge (default: 12px red circle)
@@ -14,6 +15,7 @@ A small, floating circular window that follows the cursor/caret position during 
 - **Multi-Space**: Can appear on all macOS spaces
 
 ### 2. Caret Tracking
+
 Uses macOS Accessibility API to find the text insertion point:
 
 - Queries focused UI element
@@ -22,6 +24,7 @@ Uses macOS Accessibility API to find the text insertion point:
 - Falls back to cursor position if caret unavailable
 
 ### 3. Cursor Position
+
 Simple mouse cursor tracking via NSEvent.
 
 ## API
@@ -98,6 +101,7 @@ pub struct HoldBadgeConfig {
 ```
 
 **Defaults:**
+
 - `diameter`: 12.0 pixels
 - `offset`: (10.0, -10.0) - right and above
 - `update_interval_ms`: 150ms
@@ -106,18 +110,22 @@ pub struct HoldBadgeConfig {
 ## Implementation Details
 
 ### Thread Safety
+
 - Uses `Arc<Mutex<>>` for shared state
 - Window pointer stored as `usize` for `Send` compatibility
 - Safe to call from any thread
 
 ### Window Behavior
+
 - **Level**: NSStatusWindowLevel (25) - floats above regular windows
 - **Style**: Borderless, transparent background
 - **Mouse**: Ignores all mouse events (pass-through)
 - **Spaces**: Can join all macOS spaces/desktops
 
 ### Position Tracking
+
 The badge position is updated in a background thread:
+
 1. Check if caret position available via Accessibility API
 2. Fall back to cursor position if caret not found
 3. Apply configured offset
@@ -126,7 +134,9 @@ The badge position is updated in a background thread:
 6. Repeat while badge is visible
 
 ### Accessibility API Usage
+
 The module queries:
+
 - **AXFocusedUIElement**: Get currently focused UI element
 - **AXRole**: Check element type (text field, text area, etc.)
 - **AXSelectedTextRange**: Get text selection/caret position
@@ -135,6 +145,7 @@ The module queries:
 ## Requirements
 
 ### Dependencies
+
 ```toml
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.25"
@@ -145,11 +156,14 @@ lazy_static = "1.4"
 ```
 
 ### Permissions
+
 The application needs **Accessibility** permissions to track caret positions:
+
 1. System Settings → Privacy & Security → Accessibility
 2. Add your application to the allowed list
 
 Without these permissions:
+
 - `focused_element_accepts_text()` returns `false`
 - `get_caret_position()` returns `None`
 - Badge falls back to cursor tracking
@@ -157,6 +171,7 @@ Without these permissions:
 ## Examples
 
 ### Recording Indicator
+
 ```rust
 // Show badge when recording starts
 fn on_recording_start() {
@@ -170,6 +185,7 @@ fn on_recording_stop() {
 ```
 
 ### Smart Positioning
+
 ```rust
 // Use different offsets based on text field presence
 let config = if focused_element_accepts_text() {
@@ -188,6 +204,7 @@ show_hold_badge_with_config(config);
 ```
 
 ### Visual Feedback States
+
 ```rust
 // Different colors for different states
 fn show_recording_badge() {
@@ -210,11 +227,13 @@ fn show_processing_badge() {
 ## Demo
 
 Run the included example:
+
 ```bash
 cargo run --example hold_badge_demo
 ```
 
 This will:
+
 1. Check focused element text acceptance
 2. Display cursor and caret positions
 3. Show default badge for 3 seconds
@@ -231,6 +250,7 @@ This will:
 ## Future Enhancements
 
 Potential improvements:
+
 - [ ] Multiple simultaneous badges
 - [ ] Animation support (pulse, fade, etc.)
 - [ ] Custom shapes (not just circles)

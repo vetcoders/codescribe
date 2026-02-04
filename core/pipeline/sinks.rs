@@ -41,15 +41,15 @@ pub struct CollectorSink {
 
 impl Default for CollectorSink {
     fn default() -> Self {
-        Self {
-            collected: Mutex::new(Vec::new()),
-        }
+        Self::new()
     }
 }
 
 impl CollectorSink {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            collected: Mutex::new(Vec::new()),
+        }
     }
 
     pub fn collected(&self) -> Vec<String> {

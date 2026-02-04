@@ -3,7 +3,7 @@
 //! These types define the boundaries between pipeline stages:
 //!   AudioChunk → SpeechUtterance → RawTranscript → PostprocessResult → TranscriptDelta → DeltaSink
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 
 use serde::{Deserialize, Serialize};
 

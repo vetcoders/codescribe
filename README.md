@@ -60,7 +60,7 @@ flowchart TB
 
 > **Note:** The diagram above shows the **target architecture** with Tauri GUI (Voice Lab / Teacher / Settings). Current release is a **native macOS tray app** (without Tauri), and the Lab UI is **future-only**. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for current implementation details.
 
-> **Status:** current release (see `Cargo.toml`) — **Strictly Embedded Model** (~888MB binary, zero exceptions) + *Whisper Live* (streaming transcription).
+> **Status:** current release (see `Cargo.toml`) — **Strictly Embedded Model** (~888MB binary, zero exceptions) + _Whisper Live_ (streaming transcription).
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/BACKLOG.md`](docs/BACKLOG.md) | [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md)
 
@@ -98,7 +98,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 
 - **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
 - **Strictly Embedded Whisper** — Model is welded into the binary (~888MB). No external files, zero disk I/O, no exceptions.
-- **Whisper Live** — Streaming transcription happens *during recording* (chunks + overlap), so `stop()` is
+- **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
 - **IPC Server** — Stable runtime interface for GUI/clients
@@ -114,7 +114,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 ## Tech Stack
 
 | Component        | Technology                        | Purpose                    |
-|------------------|-----------------------------------|----------------------------|
+| ---------------- | --------------------------------- | -------------------------- |
 | Language         | Rust 2024 Edition                 | Native performance         |
 | ML Framework     | candle-core + candle-transformers | Whisper inference          |
 | GPU Acceleration | Metal (Apple Silicon)             | Hardware-accelerated STT   |
@@ -202,12 +202,12 @@ flowchart TD
 
 ### Recording Modes
 
-| Mode                  | Trigger                    | Description                                    |
-|-----------------------|----------------------------|------------------------------------------------|
-| **Hold-to-talk**      | Hold `Ctrl` (800ms delay)  | Release to transcribe + paste (raw transcript) |
-| **Hold Assistive**    | Hold `Ctrl+Shift`          | AI augmentation mode                           |
-| **Toggle Formatting** | Double-tap `Left Option`   | AI-formatted version of speech                 |
-| **Toggle Assistive**  | Double-tap `Right Option`  | Augmented AI response                          |
+| Mode                  | Trigger                   | Description                                    |
+| --------------------- | ------------------------- | ---------------------------------------------- |
+| **Hold-to-talk**      | Hold `Ctrl` (800ms delay) | Release to transcribe + paste (raw transcript) |
+| **Hold Assistive**    | Hold `Ctrl+Shift`         | AI augmentation mode                           |
+| **Toggle Formatting** | Double-tap `Left Option`  | AI-formatted version of speech                 |
+| **Toggle Assistive**  | Double-tap `Right Option` | Augmented AI response                          |
 
 See [`docs/BACKLOG.md`](docs/BACKLOG.md) for detailed mode descriptions and future enhancements (VAD, Overlay).
 
@@ -392,7 +392,7 @@ make download-model   # Download Whisper model
 ## Code Quality
 
 | Tool           | Purpose    | Config            |
-|----------------|------------|-------------------|
+| -------------- | ---------- | ----------------- |
 | **Clippy**     | Linting    | `-D warnings`     |
 | **rustfmt**    | Formatting | Rust 2024 edition |
 | **cargo test** | Testing    | Unit + E2E        |
@@ -426,8 +426,8 @@ Grant permissions in System Settings > Privacy & Security when prompted.
 
 ### In Progress
 
-- [ ] Voice Activity Detection (VAD) for auto-stop — *implemented but not integrated*
-- [ ] Overlay text preview — *code exists, not fully integrated*
+- [ ] Voice Activity Detection (VAD) for auto-stop — _implemented but not integrated_
+- [ ] Overlay text preview — _code exists, not fully integrated_
 
 ### Planned
 

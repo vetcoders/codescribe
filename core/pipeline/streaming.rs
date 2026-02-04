@@ -8,7 +8,7 @@
 
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::dedup::{dedup_chunk_overlap, strip_suffix_overlap};
-use crate::pipeline::stream_postprocess::{LexiconPostProcessor, StreamPostProcessor};
+use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::whisper;
 use crate::stt::whisper::singleton::engine as get_engine;
 use anyhow::{Result, anyhow};
@@ -84,7 +84,7 @@ pub(crate) fn is_hallucination(text: &str) -> bool {
 
 pub(crate) struct TranscriptionPipeline {
     pub(crate) language: Option<String>,
-    pub(crate) postprocessor: LexiconPostProcessor,
+    pub(crate) postprocessor: StreamPostProcessor,
     pub(crate) last_suffix: String,
     pub(crate) hallucination_drops: u64,
     pub(crate) overlap_strips: u64,
@@ -94,7 +94,7 @@ impl TranscriptionPipeline {
     pub(crate) fn new(language: Option<String>) -> Self {
         Self {
             language,
-            postprocessor: LexiconPostProcessor::new(),
+            postprocessor: StreamPostProcessor::new(),
             last_suffix: String::new(),
             hallucination_drops: 0,
             overlap_strips: 0,
@@ -419,11 +419,13 @@ pub(crate) async fn buffered_transcription_worker(
     sample_rate: u32,
     language: Option<String>,
     delta_callback: Option<Arc<dyn DeltaSink>>,
+    vad_stop_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     stream_log_path: Option<std::path::PathBuf>,
 ) {
     info!("Buffered transcription worker started");
 
     let mut session = SpeechSession::new_utterance(sample_rate);
+    let mut vad_stop_emitted = false;
     let mut pipeline = TranscriptionPipeline::new(language);
     let emitter = Arc::new(Mutex::new(BufferedEmitter::new(
         transcript_buffer.clone(),
@@ -440,6 +442,12 @@ pub(crate) async fn buffered_transcription_worker(
     while let Some(data) = chunk_receiver.recv().await {
         for event in session.feed(&data, sample_rate) {
             if let SpeechEvent::Utterance(utterance) = event {
+                if !vad_stop_emitted {
+                    if let Some(callback) = &vad_stop_callback {
+                        callback();
+                    }
+                    vad_stop_emitted = true;
+                }
                 if utterance_count == 0 && correction_audio_buf.is_empty() {
                     suffix_snapshot = pipeline.last_suffix.clone();
                 }
@@ -509,6 +517,10 @@ pub(crate) async fn buffered_transcription_worker(
         .await
     {
         error!("Final buffered transcription failed: {}", e);
+    }
+
+    if !vad_stop_emitted && let Some(callback) = &vad_stop_callback {
+        callback();
     }
 
     {
@@ -590,7 +602,7 @@ async fn process_chunk(
                 let cleaned = if let Some(processor) = postprocessor.as_mut() {
                     processor.process(&text)
                 } else {
-                    let cleaned = crate::pipeline::stream_postprocess::normalize_whitespace(&text);
+                    let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
                     if cleaned.trim().is_empty() {
                         None
                     } else {
@@ -714,7 +726,59 @@ pub fn transcribe_streaming_samples(
         out.split_whitespace().count()
     );
 
+    // Optional: apply lexicon post-processing to streaming output.
+    // Disabled by default to preserve legacy behavior.
+    if env_bool_default("CODESCRIBE_STREAM_LEXICON", false) && !out.trim().is_empty() {
+        let mut lex = StreamPostProcessor::new();
+        if let Some(cleaned) = lex.process(&out) {
+            out = cleaned;
+        }
+    }
+
     Ok(out)
+}
+
+/// Public helper: run the buffered (overlay) pipeline on in-memory samples.
+///
+/// This mirrors the live overlay behavior (VAD → utterance → buffered emitter),
+/// but runs on a finite sample buffer for test/CLI comparisons.
+pub async fn transcribe_buffered_samples(
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<String>,
+) -> Result<String> {
+    if samples.is_empty() {
+        return Ok(String::new());
+    }
+
+    // Simulate live callback cadence (~100ms) to keep VAD/utterance behavior realistic.
+    let chunk_size = ((sample_rate as f32) * 0.1).round().max(1.0) as usize;
+
+    let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
+    let transcript_buffer = Arc::new(Mutex::new(String::new()));
+
+    let worker = tokio::spawn(buffered_transcription_worker(
+        rx,
+        transcript_buffer.clone(),
+        sample_rate,
+        language,
+        None,
+        None,
+        None,
+    ));
+
+    for chunk in samples.chunks(chunk_size) {
+        if tx.send(chunk.to_vec()).await.is_err() {
+            return Err(anyhow!("Buffered transcription worker dropped channel"));
+        }
+    }
+    drop(tx);
+
+    worker
+        .await
+        .map_err(|e| anyhow!("Buffered transcription worker join error: {}", e))?;
+
+    Ok(transcript_buffer.lock().await.clone())
 }
 
 // ── Delta helpers ────────────────────────────────────────────────────────────

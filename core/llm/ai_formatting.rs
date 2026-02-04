@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
@@ -330,10 +331,129 @@ struct InputItem {
 
 /// Content part for input messages
 #[derive(Debug, Serialize)]
-struct InputContent {
-    #[serde(rename = "type")]
-    content_type: &'static str,
-    text: String,
+#[serde(tag = "type")]
+enum InputContent {
+    #[serde(rename = "input_text")]
+    Text { text: String },
+    #[serde(rename = "input_image")]
+    Image { image_url: String },
+}
+
+fn image_mime_from_path(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        "tif" | "tiff" => Some("image/tiff"),
+        _ => None,
+    }
+}
+
+fn strip_image_attachments(user_message: &str) -> (String, Vec<PathBuf>) {
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut image_paths: Vec<PathBuf> = Vec::new();
+    let mut in_block = false;
+
+    for line in user_message.lines() {
+        let trimmed = line.trim();
+
+        if trimmed == "ATTACHMENTS (image paths)" {
+            // Drop a preceding separator if present to avoid leaving a dangling "---".
+            if out_lines
+                .last()
+                .is_some_and(|l| l.trim() == "---" || l.trim() == "—")
+            {
+                out_lines.pop();
+            }
+            in_block = true;
+            continue;
+        }
+
+        if in_block {
+            if trimmed.is_empty() {
+                in_block = false;
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("- ") {
+                let p = rest.trim();
+                if !p.is_empty() {
+                    image_paths.push(PathBuf::from(p));
+                }
+                continue;
+            }
+            // Unexpected line → end block, keep the line.
+            in_block = false;
+            out_lines.push(line.to_string());
+            continue;
+        }
+
+        out_lines.push(line.to_string());
+    }
+
+    (out_lines.join("\n"), image_paths)
+}
+
+fn encode_image_as_data_url(path: &PathBuf) -> Option<String> {
+    use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+
+    const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024; // 8MB per image
+
+    let mime = image_mime_from_path(path)?;
+
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > MAX_IMAGE_BYTES {
+        warn!(
+            "Skipping image attachment (too large, {} bytes): {}",
+            meta.len(),
+            path.display()
+        );
+        return None;
+    }
+
+    let bytes = std::fs::read(path).ok()?;
+    let b64 = BASE64.encode(bytes);
+    Some(format!("data:{mime};base64,{b64}"))
+}
+
+fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
+    const MAX_IMAGES: usize = 4;
+
+    let (mut cleaned, mut image_paths) = strip_image_attachments(user_message);
+    if image_paths.len() > MAX_IMAGES {
+        warn!(
+            "Too many image attachments ({}); keeping first {}",
+            image_paths.len(),
+            MAX_IMAGES
+        );
+        image_paths.truncate(MAX_IMAGES);
+    }
+
+    if !image_paths.is_empty() {
+        let names = image_paths
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        cleaned.push_str("\n\n[Attached images: ");
+        cleaned.push_str(&names);
+        cleaned.push_str("]\n");
+    }
+
+    let mut content = vec![InputContent::Text { text: cleaned }];
+    for p in image_paths {
+        let Some(url) = encode_image_as_data_url(&p) else {
+            warn!("Failed to encode image attachment: {}", p.display());
+            continue;
+        };
+        content.push(InputContent::Image { image_url: url });
+    }
+    content
 }
 
 /// Responses API response format
@@ -887,10 +1007,7 @@ async fn call_llm_endpoint(
         model,
         input: vec![InputItem {
             role: "user",
-            content: vec![InputContent {
-                content_type: "input_text",
-                text: user_message.to_string(),
-            }],
+            content: build_responses_user_content(user_message),
         }],
         previous_response_id: previous_response_id.clone(),
         // Only send instructions on first request - Responses API preserves them via previous_response_id
@@ -1010,10 +1127,7 @@ async fn call_llm_endpoint_streaming(
         model,
         input: vec![InputItem {
             role: "user",
-            content: vec![InputContent {
-                content_type: "input_text",
-                text: user_message.to_string(),
-            }],
+            content: build_responses_user_content(user_message),
         }],
         previous_response_id: previous_response_id.clone(),
         // Only send instructions on first request - Responses API preserves them via previous_response_id

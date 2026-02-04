@@ -3,7 +3,7 @@ resolver = "2"
 members = [".", "core"]
 
 [workspace.package]
-version = "0.7.10"
+version = "0.7.12"
 edition = "2024"
 authors = ["VetCoders <hello@vetcoders.io>"]
 
@@ -16,7 +16,7 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.7.10"
+version = "0.7.12"
 edition = "2024"
 description = "Speech-to-text tray app for macOS - Pure Rust"
 authors = ["VetCoders <hello@vetcoders.io>"]
@@ -79,7 +79,6 @@ directories = "6"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-appender = "0.2"
 
 # Error handling
 anyhow = "1"
@@ -120,6 +119,7 @@ dispatch = "0.2"
 tempfile = "3"
 mockito = "1"
 serial_test = "3"
+hound = "3.5"
 
 [lints.rust]
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)

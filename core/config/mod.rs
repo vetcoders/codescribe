@@ -14,14 +14,18 @@
 //! Note: Config is loaded via `Config::load()` and accessed via shared state in main.rs.
 
 mod defaults;
+pub mod keychain;
 mod loader;
+pub mod migrate;
 pub mod models;
 pub mod prompts;
+pub mod settings;
 mod types;
 
 // Re-export types
 pub use types::{Config, HoldMods, OverlayPositionMode, ToggleTrigger, TranscriptSendMode};
 // Language re-exported for external consumers (GUI apps)
+pub use settings::UserSettings;
 pub use types::Language;
 
 // Re-export prompts API (public API for GUI apps)

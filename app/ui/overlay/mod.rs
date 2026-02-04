@@ -7,7 +7,7 @@
 //! - Auto-hides after recording completion
 //!
 //! Use this for: Ctrl hold (raw), Left ⌥⌥ toggle (normal)
-//! For assistive modes (Ctrl+Shift, Right ⌥⌥), use voice_chat_ui instead.
+//! For AI modes (Chat/Selection, Option toggles), use voice_chat_ui instead.
 //!
 //! Design: macOS Tahoe-style with NSVisualEffectView (HudWindow material)
 
@@ -29,10 +29,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+use crate::ui::shared::status::status_from_detail;
 use crate::ui_helpers::{
     add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position,
-    color_white, create_button, overlay_window_class, set_hidden, set_text, window_close,
-    window_set_alpha, window_show,
+    create_button, set_hidden, set_text, ui_colors, window_close, window_set_alpha, window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -85,6 +85,7 @@ struct TranscriptionOverlayState {
     window: Option<usize>,
     text_field: Option<usize>,
     status_field: Option<usize>,
+    auto_hide_label: Option<usize>,
     blur_view: Option<usize>,
     copy_button: Option<usize>,
     augment_button: Option<usize>,
@@ -106,6 +107,7 @@ lazy_static::lazy_static! {
         window: None,
         text_field: None,
         status_field: None,
+        auto_hide_label: None,
         blur_view: None,
         copy_button: None,
         augment_button: None,
@@ -238,6 +240,14 @@ fn set_recording_button_visible(state: &TranscriptionOverlayState, visible: bool
     }
 }
 
+fn set_auto_hide_hint_visible(state: &TranscriptionOverlayState, visible: bool) {
+    if let Some(label_ptr) = state.auto_hide_label {
+        unsafe {
+            set_hidden(label_ptr as Id, !visible);
+        }
+    }
+}
+
 fn set_buttons_enabled(state: &TranscriptionOverlayState, enabled: bool) {
     if let Some(copy_ptr) = state.copy_button {
         unsafe {
@@ -263,6 +273,8 @@ fn set_status_message(state: &TranscriptionOverlayState, msg: &str, show: bool) 
             set_hidden(status_ptr as Id, !show);
         }
     }
+    let status_kind = status_from_detail(msg);
+    let _ = crate::tray::update_tray_status(status_kind.to_tray());
     if let Some(spinner_ptr) = state.progress_indicator {
         unsafe {
             set_hidden(spinner_ptr as Id, !show);
@@ -282,9 +294,9 @@ fn set_status_message(state: &TranscriptionOverlayState, msg: &str, show: bool) 
 
 fn run_ai_copy(text: String, augment: bool) {
     let label = if augment {
-        "Augmentowanie…"
+        "Augmenting..."
     } else {
-        "Formatowanie…"
+        "Formatting..."
     };
     {
         let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -302,7 +314,7 @@ fn run_ai_copy(text: String, augment: bool) {
                 crate::ai_formatting::AiFormatStatus::Applied => {
                     if let Err(e) = clipboard::set_clipboard(&result.text) {
                         warn!("Failed to copy formatted text: {}", e);
-                        set_status_message(&state, "Błąd kopiowania", true);
+                        set_status_message(&state, "Copy failed", true);
                         set_buttons_enabled(&state, true);
                     } else {
                         info!("Copied formatted transcript ({} chars)", result.text.len());
@@ -526,7 +538,6 @@ fn update_overlay_text_and_layout(state: &mut TranscriptionOverlayState) {
 
 /// Show the transcription overlay window
 pub fn show_transcription_overlay() {
-    info!("show_transcription_overlay requested");
     // Cancel any pending auto-hide
     AUTO_HIDE_GENERATION.fetch_add(1, Ordering::SeqCst);
     AUTO_HIDE_PENDING.store(false, Ordering::SeqCst);
@@ -538,7 +549,6 @@ pub fn show_transcription_overlay() {
 
 fn show_transcription_overlay_impl() {
     unsafe {
-        info!("show_transcription_overlay_impl starting");
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
 
         // Reuse existing window if any
@@ -546,8 +556,6 @@ fn show_transcription_overlay_impl() {
             let window = window_ptr as Id;
             let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
             window_show(window);
-            let nil: *mut Object = std::ptr::null_mut();
-            let _: () = msg_send![window, makeKeyAndOrderFront: nil];
             resize_overlay_to_fit_text(&mut state);
             info!("Transcription overlay reused");
             return;
@@ -579,6 +587,7 @@ fn show_transcription_overlay_impl() {
             return;
         }
 
+        let ns_window = ns_window_class.unwrap();
         let ns_text_field = ns_text_field_class.unwrap();
         let ns_screen = ns_screen_class.unwrap();
         let ns_string = ns_string_class.unwrap();
@@ -644,8 +653,7 @@ fn show_transcription_overlay_impl() {
         };
 
         // Create borderless window for modern look
-        let window_class = overlay_window_class();
-        let window: Id = msg_send![window_class, alloc];
+        let window: Id = msg_send![ns_window, alloc];
         if window.is_null() {
             warn!("Failed to alloc NSWindow");
             return;
@@ -675,7 +683,9 @@ fn show_transcription_overlay_impl() {
         let _: () = msg_send![window, setHasShadow: true];
 
         // Join all spaces (follow focus)
-        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces;
+        // Make sure the overlay shows up even when the user is in a fullscreen Space.
+        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary;
         let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
 
         // Get content view
@@ -759,6 +769,33 @@ fn show_transcription_overlay_impl() {
         add_subview(content_view, status_field);
         set_hidden(status_field, true);
 
+        // Auto-hide hint (hidden by default)
+        let auto_hide_frame = CGRect {
+            origin: CGPoint {
+                x: padding,
+                y: window_height - status_height - padding - 16.0,
+            },
+            size: CGSize {
+                width: window_width - padding * 2.0,
+                height: 12.0,
+            },
+        };
+        let auto_hide_label: Id = msg_send![ns_text_field, alloc];
+        let auto_hide_label: Id = msg_send![auto_hide_label, initWithFrame: auto_hide_frame];
+        let _: () = msg_send![auto_hide_label, setBezeled: false];
+        let _: () = msg_send![auto_hide_label, setDrawsBackground: false];
+        let _: () = msg_send![auto_hide_label, setEditable: false];
+        let _: () = msg_send![auto_hide_label, setSelectable: false];
+        let hint_color: Id = ui_colors::overlay_hint_text();
+        let _: () = msg_send![auto_hide_label, setTextColor: hint_color];
+        let hint_font: Id = msg_send![ns_font_class, systemFontOfSize: 10.0f64];
+        let _: () = msg_send![auto_hide_label, setFont: hint_font];
+        let hint_text: Id =
+            msg_send![ns_string, stringWithUTF8String: c"Overlay hides after 5s".as_ptr()];
+        let _: () = msg_send![auto_hide_label, setStringValue: hint_text];
+        add_subview(content_view, auto_hide_label);
+        set_hidden(auto_hide_label, true);
+
         // Spinner (hidden by default)
         let spinner_size = 14.0;
         let spinner_frame = CGRect {
@@ -801,7 +838,7 @@ fn show_transcription_overlay_impl() {
         let _: () = msg_send![text_field, setSelectable: true];
 
         // Semi-transparent white for text
-        let text_color = color_white(0.9);
+        let text_color = ui_colors::overlay_text();
         let _: () = msg_send![text_field, setTextColor: text_color];
 
         // System font for content
@@ -889,10 +926,10 @@ fn show_transcription_overlay_impl() {
             },
         };
 
-        let archive_button = create_button(archive_frame, "Archiwizuj", button_style::ROUNDED);
-        let copy_button = create_button(copy_frame, "Kopiuj", button_style::ROUNDED);
-        let augment_button = create_button(augment_frame, "Augmentuj", button_style::ROUNDED);
-        let commit_button = create_button(commit_frame, "Zakończ", button_style::ROUNDED);
+        let archive_button = create_button(archive_frame, "Archive", button_style::ROUNDED);
+        let copy_button = create_button(copy_frame, "Copy", button_style::ROUNDED);
+        let augment_button = create_button(augment_frame, "Augment", button_style::ROUNDED);
+        let commit_button = create_button(commit_frame, "Finish", button_style::ROUNDED);
 
         button_set_action(archive_button, action_handler, sel!(onArchiveTranscript:));
         button_set_action(copy_button, action_handler, sel!(onCopyTranscript:));
@@ -912,13 +949,12 @@ fn show_transcription_overlay_impl() {
         // Show the window with fade-in animation
         window_set_alpha(window, 0.0);
         window_show(window);
-        let nil: *mut Object = std::ptr::null_mut();
-        let _: () = msg_send![window, makeKeyAndOrderFront: nil];
         animate_fade(window, 1.0, 0.2);
 
         state.window = Some(window as usize);
         state.text_field = Some(text_field as usize);
         state.status_field = Some(status_field as usize);
+        state.auto_hide_label = Some(auto_hide_label as usize);
         state.blur_view = Some(blur_view as usize);
         state.copy_button = Some(copy_button as usize);
         state.augment_button = Some(augment_button as usize);
@@ -952,6 +988,8 @@ fn update_transcription_status_impl(status: &str) {
             set_text(status_field_ptr as Id, status);
         }
     }
+    let status_kind = status_from_detail(status);
+    let _ = crate::tray::update_tray_status(status_kind.to_tray());
 }
 
 /// Append a delta (streaming token) to the overlay text
@@ -964,7 +1002,8 @@ pub fn append_transcription_delta(delta: &str) {
 
 fn append_transcription_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    codescribe_core::contracts::TranscriptDelta::from_raw(delta).apply(&mut state.accumulated_text);
+    codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta)
+        .apply(&mut state.accumulated_text);
     update_overlay_text_and_layout(&mut state);
 }
 
@@ -1030,6 +1069,7 @@ fn clear_transcription_text_impl() {
             set_hidden(status_ptr as Id, true);
         }
     }
+    set_auto_hide_hint_visible(&state, false);
     if let Some(spinner_ptr) = state.progress_indicator {
         unsafe {
             set_hidden(spinner_ptr as Id, true);
@@ -1049,6 +1089,11 @@ pub fn is_transcription_overlay_visible() -> bool {
 pub fn schedule_auto_hide() {
     let generation = AUTO_HIDE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     AUTO_HIDE_PENDING.store(true, Ordering::SeqCst);
+
+    Queue::main().exec_async(|| {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        set_auto_hide_hint_visible(&state, true);
+    });
 
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(AUTO_HIDE_DELAY_SECS));
@@ -1088,24 +1133,61 @@ pub fn enter_decision_mode() {
         let show = state.hover_active;
         set_action_buttons_visible(&state, show);
         set_recording_button_visible(&state, false);
+        // Clear recording indicator, restore white text color
+        set_recording_status(&state, false);
     });
 }
 
-/// Enter recording mode: hide actions and status
+/// Enter recording mode: hide actions, show recording indicator
 pub fn enter_recording_mode() {
     Queue::main().exec_async(|| {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.decision_mode = false;
         state.hover_active = false;
         set_action_buttons_visible(&state, false);
+        set_auto_hide_hint_visible(&state, false);
         set_recording_button_visible(&state, true);
-        set_status_message(&state, "", false);
+        // Show recording indicator (red dot + text), no spinner
+        set_recording_status(&state, true);
     });
+}
+
+/// Show/hide the recording status indicator (red dot, no spinner)
+fn set_recording_status(state: &TranscriptionOverlayState, show: bool) {
+    if let Some(status_ptr) = state.status_field {
+        unsafe {
+            let status_text = if show { "● Recording..." } else { "" };
+            set_text(status_ptr as Id, status_text);
+            set_hidden(status_ptr as Id, !show);
+            // Red color for recording indicator
+            if show {
+                let ns_color = Class::get("NSColor").unwrap();
+                let red: Id = msg_send![ns_color, colorWithRed: 0.95f64
+                                                          green: 0.30f64
+                                                           blue: 0.30f64
+                                                          alpha: 1.0f64];
+                let _: () = msg_send![status_ptr as Id, setTextColor: red];
+            } else {
+                let ns_color = Class::get("NSColor").unwrap();
+                let white: Id = msg_send![ns_color, whiteColor];
+                let _: () = msg_send![status_ptr as Id, setTextColor: white];
+            }
+        }
+        let status_text = if show { "● Recording..." } else { "Idle" };
+        let status_kind = status_from_detail(status_text);
+        let _ = crate::tray::update_tray_status(status_kind.to_tray());
+    }
+    // Hide spinner during recording (spinner is for AI/formatting)
+    if let Some(spinner_ptr) = state.progress_indicator {
+        unsafe {
+            set_hidden(spinner_ptr as Id, true);
+            let _: () = msg_send![spinner_ptr as Id, stopAnimation: std::ptr::null::<Object>()];
+        }
+    }
 }
 
 /// Hide the transcription overlay window (with fade-out animation)
 pub fn hide_transcription_overlay() {
-    info!("hide_transcription_overlay requested");
     // Cancel any pending auto-hide
     AUTO_HIDE_PENDING.store(false, Ordering::SeqCst);
 
@@ -1139,9 +1221,7 @@ fn hide_transcription_overlay_impl() {
             });
         });
 
-        info!("Transcription overlay hidden");
-    } else {
-        debug!("Transcription overlay hide: no window to close");
+        debug!("Transcription overlay hidden");
     }
     state.text_field = None;
     state.status_field = None;
@@ -1161,6 +1241,7 @@ fn hide_transcription_overlay_impl() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_transcription_text() {
@@ -1183,6 +1264,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_auto_hide_generation() {
         // Test that generation counter increments
         let gen1 = AUTO_HIDE_GENERATION.load(Ordering::SeqCst);
@@ -1197,6 +1279,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_auto_hide_hover_guard() {
         AUTO_HIDE_GENERATION.store(42, Ordering::SeqCst);
         AUTO_HIDE_PENDING.store(true, Ordering::SeqCst);

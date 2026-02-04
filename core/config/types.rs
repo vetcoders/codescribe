@@ -31,9 +31,9 @@ impl HoldMods {
     /// Human-readable label for menu display
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Ctrl => "Ctrl only (Raw)",
+            Self::Ctrl => "Ctrl",
             Self::CtrlAlt => "Ctrl+Option",
-            Self::CtrlShift => "Ctrl+Shift (AI)",
+            Self::CtrlShift => "Ctrl+Shift",
             Self::CtrlCmd => "Ctrl+Command",
         }
     }
@@ -59,7 +59,9 @@ impl FromStr for HoldMods {
 pub enum ToggleTrigger {
     #[default]
     DoubleOption,
+    DoubleLeftOption,
     DoubleRightOption,
+    DoubleCtrl,
     None,
 }
 
@@ -67,7 +69,9 @@ impl ToggleTrigger {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::DoubleOption => "double_option",
+            Self::DoubleLeftOption => "double_lalt",
             Self::DoubleRightOption => "double_ralt",
+            Self::DoubleCtrl => "double_ctrl",
             Self::None => "none",
         }
     }
@@ -76,7 +80,9 @@ impl ToggleTrigger {
     pub fn label(&self) -> &'static str {
         match self {
             Self::DoubleOption => "left+right option",
+            Self::DoubleLeftOption => "left option only",
             Self::DoubleRightOption => "right option only",
+            Self::DoubleCtrl => "double ctrl (raw)",
             Self::None => "disabled",
         }
     }
@@ -88,7 +94,9 @@ impl FromStr for ToggleTrigger {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "double_option" => Ok(Self::DoubleOption),
+            "double_lalt" | "double_left_option" => Ok(Self::DoubleLeftOption),
             "double_ralt" | "double_right_option" => Ok(Self::DoubleRightOption),
+            "double_ctrl" | "double_control" => Ok(Self::DoubleCtrl),
             "none" | "disabled" => Ok(Self::None),
             _ => Err(format!("Unknown ToggleTrigger: {}", s)),
         }
@@ -205,7 +213,9 @@ pub struct Config {
 
     /// Toggle trigger method:
     /// - DoubleOption: left=normal toggle, right=assistive toggle
+    /// - DoubleLeftOption: left=normal toggle only
     /// - DoubleRightOption: right=assistive only
+    /// - DoubleCtrl: raw hands-off toggle (double Ctrl)
     /// - None: disabled
     #[serde(default)]
     pub toggle_trigger: ToggleTrigger,
@@ -291,6 +301,16 @@ pub struct Config {
     #[serde(default = "default_history_enabled")]
     pub history_enabled: bool,
 
+    // ===== Quick Notes =====
+    /// When enabled, dictation saves into a daily note file (and does not auto-paste).
+    #[serde(default)]
+    pub quick_notes_enabled: bool,
+
+    /// When Quick Notes is enabled: if true, do not auto-paste (save-only).
+    /// If false, we both save the note and paste as usual.
+    #[serde(default)]
+    pub quick_notes_save_only: bool,
+
     // ===== Backends =====
     /// Whether to use local STT instead of cloud
     #[serde(default)]
@@ -336,7 +356,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hold_mods: HoldMods::default(),
-            hold_exclusive: true, // Ignore extra modifiers by default (Ctrl+K won't trigger)
+            hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
             toggle_trigger: ToggleTrigger::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),
             whisper_language: Language::default(),
@@ -357,6 +377,8 @@ impl Default for Config {
             sound_volume: default_sound_volume(),
             audio_input_device: None,
             history_enabled: default_history_enabled(),
+            quick_notes_enabled: false,
+            quick_notes_save_only: false,
             use_local_stt: false,
             local_model: default_local_model(),
             stt_endpoint: None,
@@ -376,6 +398,13 @@ impl Config {
     pub fn sanitize(&mut self) {
         // Token limits: 0 = no limit (API decides). Don't override.
         // Tokens are cheap, lost notes are not.
+
+        // Hotkeys sanity: if DoubleCtrl hands-off toggle is enabled,
+        // Ctrl-only hold-to-talk is disabled to avoid breaking Ctrl+shortcuts.
+        // Use Ctrl+Option hold instead.
+        if self.toggle_trigger == ToggleTrigger::DoubleCtrl && self.hold_mods == HoldMods::Ctrl {
+            self.hold_mods = HoldMods::CtrlAlt;
+        }
 
         // Clamp sound volume
         self.sound_volume = self.sound_volume.clamp(0.0, 1.0);

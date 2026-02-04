@@ -6,12 +6,12 @@ CodeScribe is designed with privacy as a core principle. Your audio is processed
 
 ## Privacy Summary
 
-| Data | Where It Goes | Your Control |
-|------|---------------|--------------|
-| **Audio** | Your Mac only | Never leaves unless you enable cloud STT |
-| **Transcripts** | Your Mac only | Stored in ~/.codescribe/transcriptions/ |
-| **AI requests** | Your chosen provider | Only if AI formatting enabled |
-| **Telemetry** | Nowhere | No tracking, no analytics, no phone-home |
+| Data            | Where It Goes        | Your Control                             |
+| --------------- | -------------------- | ---------------------------------------- |
+| **Audio**       | Your Mac only        | Never leaves unless you enable cloud STT |
+| **Transcripts** | Your Mac only        | Stored in ~/.codescribe/transcriptions/  |
+| **AI requests** | Your chosen provider | Only if AI formatting enabled            |
+| **Telemetry**   | Nowhere              | No tracking, no analytics, no phone-home |
 
 ---
 
@@ -19,13 +19,13 @@ CodeScribe is designed with privacy as a core principle. Your audio is processed
 
 ### Always Local (Cannot Be Changed)
 
-| Component | Location | Notes |
-|-----------|----------|-------|
-| Whisper model | Embedded in binary | ~888MB, runs on Metal GPU |
-| Audio recording | RAM only | Deleted after transcription |
-| Transcripts | ~/.codescribe/transcriptions/ | You control retention |
-| Configuration | ~/.codescribe/.env | Plain text, editable |
-| Prompts | ~/.codescribe/prompts/ | Your custom prompts |
+| Component       | Location                      | Notes                       |
+| --------------- | ----------------------------- | --------------------------- |
+| Whisper model   | Embedded in binary            | ~888MB, runs on Metal GPU   |
+| Audio recording | RAM only                      | Deleted after transcription |
+| Transcripts     | ~/.codescribe/transcriptions/ | You control retention       |
+| Configuration   | ~/.codescribe/.env            | Plain text, editable        |
+| Prompts         | ~/.codescribe/prompts/        | Your custom prompts         |
 
 ### No Network Required For
 
@@ -44,11 +44,13 @@ CodeScribe is designed with privacy as a core principle. Your audio is processed
 ### Optional: AI Formatting
 
 **When enabled** (`AI_FORMATTING_ENABLED=1`):
+
 - Transcribed text is sent to your configured AI provider
 - This is the text, not the audio
 - Uses HTTPS encryption
 
 **Data sent to AI**:
+
 ```
 - Your transcript text
 - System prompt (formatting/assistive)
@@ -56,6 +58,7 @@ CodeScribe is designed with privacy as a core principle. Your audio is processed
 ```
 
 **Not sent**:
+
 ```
 - Audio files
 - File paths
@@ -67,10 +70,12 @@ CodeScribe is designed with privacy as a core principle. Your audio is processed
 ### Optional: Cloud STT
 
 **When enabled** (for LibraxisAI users):
+
 - Audio may be sent to cloud STT as fallback
 - Only if local Whisper fails
 
 **To disable**:
+
 ```bash
 USE_LOCAL_STT=1
 CODESCRIBE_QUALITY_DISABLE_CLOUD=1
@@ -80,12 +85,12 @@ CODESCRIBE_QUALITY_DISABLE_CLOUD=1
 
 ## AI Provider Comparison
 
-| Provider | Data Retention | Privacy |
-|----------|----------------|---------|
-| **Local Ollama** | None (your machine) | ★★★★★ Maximum |
-| **OpenAI** | 30 days (API), opt-out available | ★★★☆☆ Standard |
-| **Anthropic** | 30 days (API), opt-out available | ★★★☆☆ Standard |
-| **LibraxisAI** | Custom (your instance) | ★★★★☆ Good |
+| Provider         | Data Retention                   | Privacy        |
+| ---------------- | -------------------------------- | -------------- |
+| **Local Ollama** | None (your machine)              | ★★★★★ Maximum  |
+| **OpenAI**       | 30 days (API), opt-out available | ★★★☆☆ Standard |
+| **Anthropic**    | 30 days (API), opt-out available | ★★★☆☆ Standard |
+| **LibraxisAI**   | Custom (your instance)           | ★★★★☆ Good     |
 
 ### Maximum Privacy Configuration
 
@@ -137,11 +142,11 @@ Now AI formatting runs 100% locally.
 
 CodeScribe requests these permissions:
 
-| Permission | Why | Risk Level |
-|------------|-----|------------|
-| **Microphone** | Record your speech | Medium - only during recording |
-| **Accessibility** | Detect hotkeys, paste text | Low - standard automation |
-| **Input Monitoring** | Detect modifier keys | Low - only key states, not keystrokes |
+| Permission           | Why                        | Risk Level                            |
+| -------------------- | -------------------------- | ------------------------------------- |
+| **Microphone**       | Record your speech         | Medium - only during recording        |
+| **Accessibility**    | Detect hotkeys, paste text | Low - standard automation             |
+| **Input Monitoring** | Detect modifier keys       | Low - only key states, not keystrokes |
 
 ### What We Don't Access
 
@@ -169,11 +174,13 @@ By default, transcripts are saved to `~/.codescribe/transcriptions/`:
 ```
 
 **To disable history**:
+
 ```bash
 HISTORY_ENABLED=0
 ```
 
 **To clear history**:
+
 ```bash
 rm -rf ~/.codescribe/transcriptions/*
 ```
@@ -181,6 +188,7 @@ rm -rf ~/.codescribe/transcriptions/*
 ### Audio Files
 
 Audio is NOT saved by default. To enable (for debugging):
+
 ```bash
 DUMP_AUDIO_LOGS=1
 ```
@@ -192,15 +200,16 @@ Audio files go to `~/.codescribe/audio/`.
 ## Network Connections
 
 ### CodeScribe Makes No Connections If:
+
 - AI formatting is disabled
 - Using only Raw mode (Ctrl hold)
 - No LLM_ENDPOINT configured
 
 ### CodeScribe Connects To:
 
-| Destination | When | Data |
-|-------------|------|------|
-| `LLM_ENDPOINT` | AI formatting | Text transcript |
+| Destination    | When               | Data               |
+| -------------- | ------------------ | ------------------ |
+| `LLM_ENDPOINT` | AI formatting      | Text transcript    |
 | `STT_ENDPOINT` | Cloud STT fallback | Audio (if enabled) |
 
 ### Verify Network Activity
@@ -226,6 +235,7 @@ ls -la ~/.codescribe/.env
 ```
 
 **Secure your config**:
+
 ```bash
 chmod 600 ~/.codescribe/.env
 ```
@@ -237,6 +247,7 @@ chmod 600 ~/.codescribe/.env
 ## Open Source Transparency
 
 CodeScribe is open source:
+
 - **Repository**: github.com/VetCoders/CodeScribe
 - **License**: BSD 4-Clause
 - **Audit**: You can inspect all code
@@ -249,12 +260,12 @@ No hidden functionality, no obfuscation.
 
 ### Potential Risks
 
-| Risk | Mitigation |
-|------|------------|
-| Sensitive audio recorded | Only records when hotkey active |
+| Risk                         | Mitigation                                   |
+| ---------------------------- | -------------------------------------------- |
+| Sensitive audio recorded     | Only records when hotkey active              |
 | Transcript stored insecurely | Files only readable by you (700 permissions) |
-| API key exposure | .env file with restricted permissions |
-| Man-in-middle on AI requests | HTTPS enforced |
+| API key exposure             | .env file with restricted permissions        |
+| Man-in-middle on AI requests | HTTPS enforced                               |
 
 ### Recommendations
 
@@ -277,4 +288,4 @@ For EU users:
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
+_Created by M&K (c)2026 VetCoders_

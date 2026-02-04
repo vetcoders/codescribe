@@ -244,6 +244,8 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
                 key_type: HotkeyType::Toggle,
                 action: HotkeyAction::Press,
                 assistive,
+                hold_mode: crate::os::hotkeys::HoldMode::Raw,
+                force_raw: !assistive,
                 force_ai: false,
             };
 

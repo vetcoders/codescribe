@@ -763,10 +763,15 @@ mod tests {
     fn test_transcriptions_dir() {
         let tmp = TempDir::new().expect("tempdir");
         let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        // Canonicalize to handle macOS /var → /private/var symlink
+        let tmp_canon = tmp
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| tmp.path().to_path_buf());
 
         let dir = transcriptions_dir(&Local::now());
         assert!(dir.to_string_lossy().contains("transcriptions"));
-        assert!(dir.starts_with(tmp.path()));
+        assert!(dir.starts_with(&tmp_canon));
     }
 
     #[test]
@@ -774,6 +779,11 @@ mod tests {
     fn test_save_and_retrieve() {
         let tmp = TempDir::new().expect("tempdir");
         let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        // Canonicalize to handle macOS /var → /private/var symlink
+        let tmp_canon = tmp
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| tmp.path().to_path_buf());
 
         let text = "Test transcript content";
         let entry = save_entry(text);
@@ -781,7 +791,7 @@ mod tests {
         assert!(entry.path.exists());
         assert_eq!(entry.preview, text);
         assert!(entry.path.to_string_lossy().ends_with(".txt"));
-        assert!(entry.path.starts_with(tmp.path()));
+        assert!(entry.path.starts_with(&tmp_canon));
 
         // Clean up
         let _ = fs::remove_file(&entry.path);

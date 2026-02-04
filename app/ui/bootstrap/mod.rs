@@ -16,12 +16,15 @@ use objc2_app_kit::{
 };
 use tracing::{info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, HoldMods, ToggleTrigger};
 use crate::ipc::{IpcCommand, IpcResponse};
+use crate::os::hotkeys;
+use crate::tray::{TrayMenuEvent, send_menu_event};
 use crate::ui::bootstrap::handlers::action_handler_class;
 use crate::ui_helpers::{
-    LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button, button_set_action, color_rgba,
-    color_white, create_label, set_text_field_string, window_close, window_show,
+    LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button, button_set_action, color_clear,
+    create_checkbox, create_label, create_secure_text_input, create_slider, create_text_input,
+    ns_string, set_text_field_string, ui_colors, ui_tokens, window_close, window_show,
 };
 
 mod handlers;
@@ -29,8 +32,12 @@ mod handlers;
 // Type alias for Objective-C object pointers
 type Id = *mut Object;
 
-const BOOTSTRAP_WIDTH: f64 = 480.0;
-const BOOTSTRAP_HEIGHT: f64 = 260.0;
+const SETTINGS_WIDTH: f64 = 560.0;
+const SETTINGS_HEIGHT: f64 = 420.0;
+const SIDEBAR_WIDTH: f64 = 120.0;
+const TAB_SETUP: usize = 0;
+const _TAB_KEYS: usize = 1;
+const _TAB_AUDIO: usize = 2;
 
 const STEP_TEST_MIC: usize = 0;
 const STEP_SHOW_OVERLAY: usize = 1;
@@ -39,7 +46,15 @@ const STEP_PRESS_HOTKEY: usize = 2;
 #[derive(Default)]
 struct BootstrapState {
     window: Option<usize>,
+    root_view: Option<usize>,
     step_labels: [Option<usize>; 3],
+    tab_buttons: [Option<usize>; 3],
+    content_views: [Option<usize>; 3],
+    active_tab: usize,
+    keys_hold_popup: Option<usize>,
+    keys_toggle_popup: Option<usize>,
+    keys_preset_popup: Option<usize>,
+    keys_exclusive_checkbox: Option<usize>,
 }
 
 lazy_static! {
@@ -80,6 +95,71 @@ pub fn show_bootstrap_overlay() {
 }
 
 fn show_bootstrap_overlay_impl() {
+    crate::show_voice_chat_overlay();
+    crate::voice_chat_ui::show_settings_tab();
+}
+
+/// Attach the Settings view inside an existing parent view (overlay).
+///
+/// # Safety
+/// `parent` must be a valid `NSView` instance owned by AppKit.
+pub unsafe fn attach_settings_view(
+    parent: Id,
+    frame: core_graphics::geometry::CGRect,
+) -> Option<Id> {
+    unsafe {
+        let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(root_ptr) = state.root_view {
+            let root = root_ptr as Id;
+            let _: () = msg_send![root, setFrame: frame];
+            let _: () = msg_send![
+                root,
+                setAutoresizingMask: 2_isize | 16_isize // NSViewWidthSizable | NSViewHeightSizable
+            ];
+            let superview: Id = msg_send![root, superview];
+            if superview.is_null() {
+                add_subview(parent, root);
+            }
+            return Some(root);
+        }
+
+        let ns_visual = Class::get("NSVisualEffectView").unwrap();
+        let root: Id = msg_send![ns_visual, alloc];
+        let root: Id = msg_send![root, initWithFrame: frame];
+        let _: () = msg_send![root, setMaterial: NSVisualEffectMaterial::WindowBackground];
+        let _: () = msg_send![root, setBlendingMode: NSVisualEffectBlendingMode::BehindWindow];
+        let _: () = msg_send![root, setState: NSVisualEffectState::Active];
+        let _: () = msg_send![root, setWantsLayer: true];
+        let _: () = msg_send![
+            root,
+            setAutoresizingMask: 2_isize | 16_isize // NSViewWidthSizable | NSViewHeightSizable
+        ];
+        let layer: Id = msg_send![root, layer];
+        if !layer.is_null() {
+            let _: () = msg_send![layer, setCornerRadius: 14.0f64];
+            let _: () = msg_send![layer, setMasksToBounds: true];
+        }
+        add_subview(parent, root);
+
+        let action_handler_class = action_handler_class();
+        let action_handler: Id = msg_send![action_handler_class, new];
+        build_settings_ui(
+            root,
+            frame.size.width,
+            frame.size.height,
+            action_handler,
+            &mut state,
+        );
+
+        state.root_view = Some(root as usize);
+        state.window = None;
+
+        Some(root)
+    }
+}
+
+#[allow(dead_code)]
+fn show_bootstrap_window_impl() {
     unsafe {
         let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -98,19 +178,19 @@ fn show_bootstrap_overlay_impl() {
 
         let main_screen: Id = msg_send![ns_screen, mainScreen];
         if main_screen.is_null() {
-            warn!("No main screen available for bootstrap overlay");
+            warn!("No main screen available for settings window");
             return;
         }
         let visible_frame: core_graphics::geometry::CGRect = msg_send![main_screen, visibleFrame];
 
-        let x = visible_frame.origin.x + (visible_frame.size.width - BOOTSTRAP_WIDTH) / 2.0;
-        let y = visible_frame.origin.y + (visible_frame.size.height - BOOTSTRAP_HEIGHT) / 2.0;
+        let x = visible_frame.origin.x + (visible_frame.size.width - SETTINGS_WIDTH) / 2.0;
+        let y = visible_frame.origin.y + (visible_frame.size.height - SETTINGS_HEIGHT) / 2.0;
 
         let frame = core_graphics::geometry::CGRect {
             origin: core_graphics::geometry::CGPoint { x, y },
             size: core_graphics::geometry::CGSize {
-                width: BOOTSTRAP_WIDTH,
-                height: BOOTSTRAP_HEIGHT,
+                width: SETTINGS_WIDTH,
+                height: SETTINGS_HEIGHT,
             },
         };
 
@@ -126,8 +206,7 @@ fn show_bootstrap_overlay_impl() {
         ];
 
         let _: () = msg_send![window, setOpaque: false];
-        let clear_color = color_rgba(0.0, 0.0, 0.0, 0.0);
-        let _: () = msg_send![window, setBackgroundColor: clear_color];
+        let _: () = msg_send![window, setBackgroundColor: color_clear()];
         let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
         let _: () = msg_send![window, setHasShadow: true];
         let _: () = msg_send![window, setMovableByWindowBackground: true];
@@ -137,14 +216,18 @@ fn show_bootstrap_overlay_impl() {
 
         let content_view: Id = msg_send![window, contentView];
         if content_view.is_null() {
-            warn!("Failed to get content view for bootstrap overlay");
+            warn!("Failed to get content view for settings window");
             return;
         }
 
-        let blur_frame = core_graphics::geometry::CGRect::new(
-            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-            &core_graphics::geometry::CGSize::new(BOOTSTRAP_WIDTH, BOOTSTRAP_HEIGHT),
-        );
+        // Full-window blur background
+        let blur_frame = core_graphics::geometry::CGRect {
+            origin: core_graphics::geometry::CGPoint { x: 0.0, y: 0.0 },
+            size: core_graphics::geometry::CGSize {
+                width: SETTINGS_WIDTH,
+                height: SETTINGS_HEIGHT,
+            },
+        };
         let blur_view: Id = msg_send![ns_visual, alloc];
         let blur_view: Id = msg_send![blur_view, initWithFrame: blur_frame];
         let _: () = msg_send![blur_view, setMaterial: NSVisualEffectMaterial::HUDWindow];
@@ -160,170 +243,295 @@ fn show_bootstrap_overlay_impl() {
 
         let action_handler_class = action_handler_class();
         let action_handler: Id = msg_send![action_handler_class, new];
+        build_settings_ui(
+            blur_view,
+            SETTINGS_WIDTH,
+            SETTINGS_HEIGHT,
+            action_handler,
+            &mut state,
+        );
 
+        state.window = Some(window as usize);
+        state.root_view = Some(blur_view as usize);
+
+        window_show(window);
+        let nil: *mut Object = std::ptr::null_mut();
+        let _: () = msg_send![window, makeKeyAndOrderFront: nil];
+
+        info!("Settings window shown");
+    }
+}
+
+unsafe fn build_settings_ui(
+    root_view: Id,
+    settings_width: f64,
+    settings_height: f64,
+    action_handler: Id,
+    state: &mut BootstrapState,
+) {
+    unsafe {
+        let ns_view = Class::get("NSView").unwrap();
+
+        let settings_width = settings_width.max(SIDEBAR_WIDTH + 240.0);
+        let settings_height = settings_height.max(280.0);
+        let content_x = SIDEBAR_WIDTH;
+        let content_width = (settings_width - SIDEBAR_WIDTH).max(240.0);
+        let content_h = settings_height - 52.0;
+
+        // ====================================================================
+        // Title: "Settings"
+        // ====================================================================
         let title_label = create_label(LabelConfig {
             frame: core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(20.0, BOOTSTRAP_HEIGHT - 40.0),
-                &core_graphics::geometry::CGSize::new(BOOTSTRAP_WIDTH - 40.0, 24.0),
+                &core_graphics::geometry::CGPoint::new(20.0, settings_height - 40.0),
+                &core_graphics::geometry::CGSize::new(settings_width - 40.0, 24.0),
             ),
-            text: "Welcome to CodeScribe".to_string(),
-            font_size: 15.0,
+            text: "Settings".to_string(),
+            font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
-            text_color: color_white(0.95),
+            text_color: crate::ui_helpers::color_label(),
             background_color: None,
             selectable: false,
             editable: false,
         });
-        add_subview(blur_view, title_label);
+        add_subview(root_view, title_label);
 
-        let subtitle_label = create_label(LabelConfig {
-            frame: core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(20.0, BOOTSTRAP_HEIGHT - 64.0),
-                &core_graphics::geometry::CGSize::new(BOOTSTRAP_WIDTH - 40.0, 18.0),
-            ),
-            text: "3 quick steps (under 60s)".to_string(),
-            font_size: 12.0,
-            bold: false,
-            text_color: color_white(0.7),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        add_subview(blur_view, subtitle_label);
+        // ====================================================================
+        // Sidebar (left, 120px wide, darker background)
+        // ====================================================================
+        let sidebar_frame = core_graphics::geometry::CGRect::new(
+            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(SIDEBAR_WIDTH, content_h),
+        );
+        let sidebar: Id = msg_send![ns_view, alloc];
+        let sidebar: Id = msg_send![sidebar, initWithFrame: sidebar_frame];
+        let _: () = msg_send![sidebar, setWantsLayer: true];
+        let sidebar_layer: Id = msg_send![sidebar, layer];
+        if !sidebar_layer.is_null() {
+            let sidebar_bg = ui_colors::sidebar_bg();
+            let cg_color: Id = msg_send![sidebar_bg, CGColor];
+            let _: () = msg_send![sidebar_layer, setBackgroundColor: cg_color];
+        }
+        add_subview(root_view, sidebar);
+
+        // Sidebar tab buttons
+        let tab_names = ["Setup", "Keys", "Audio"];
+        let tab_sels = [sel!(onTabSetup:), sel!(onTabKeys:), sel!(onTabAudio:)];
+        let mut tab_buttons: [Option<usize>; 3] = [None; 3];
+
+        for (i, (name, sel)) in tab_names.iter().zip(tab_sels.iter()).enumerate() {
+            let btn_y = content_h - 44.0 * (i as f64 + 1.0);
+            let btn_frame = core_graphics::geometry::CGRect::new(
+                &core_graphics::geometry::CGPoint::new(0.0, btn_y),
+                &core_graphics::geometry::CGSize::new(SIDEBAR_WIDTH, 36.0),
+            );
+
+            let tab_btn = create_sidebar_tab_button(btn_frame, name, i == TAB_SETUP);
+            button_set_action(tab_btn, action_handler, *sel);
+            add_subview(sidebar, tab_btn);
+            tab_buttons[i] = Some(tab_btn as usize);
+        }
+
+        // ====================================================================
+        // Content area views (one per tab)
+        // ====================================================================
+        let content_frame = core_graphics::geometry::CGRect::new(
+            &core_graphics::geometry::CGPoint::new(content_x, 0.0),
+            &core_graphics::geometry::CGSize::new(content_width, content_h),
+        );
+
+        // --- Setup tab (index 0) ---
+        let setup_view: Id = msg_send![ns_view, alloc];
+        let setup_view: Id = msg_send![setup_view, initWithFrame: content_frame];
+        add_subview(root_view, setup_view);
 
         // Step 1: Test mic
         let step1_label = create_label(LabelConfig {
             frame: core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(20.0, BOOTSTRAP_HEIGHT - 110.0),
-                &core_graphics::geometry::CGSize::new(260.0, 20.0),
+                &core_graphics::geometry::CGPoint::new(20.0, content_h - 50.0),
+                &core_graphics::geometry::CGSize::new(220.0, 20.0),
             ),
             text: "1) Test mic".to_string(),
-            font_size: 13.0,
+            font_size: ui_tokens::BODY_FONT_SIZE,
             bold: true,
-            text_color: color_white(0.9),
+            text_color: crate::ui_helpers::color_label(),
             background_color: None,
             selectable: false,
             editable: false,
         });
-        add_subview(blur_view, step1_label);
+        add_subview(setup_view, step1_label);
 
         let step1_status = create_label(LabelConfig {
             frame: core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(300.0, BOOTSTRAP_HEIGHT - 110.0),
+                &core_graphics::geometry::CGPoint::new(260.0, content_h - 50.0),
                 &core_graphics::geometry::CGSize::new(80.0, 20.0),
             ),
             text: "pending".to_string(),
-            font_size: 11.0,
+            font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: false,
-            text_color: color_white(0.6),
+            text_color: crate::ui_helpers::color_secondary_label(),
             background_color: None,
             selectable: false,
             editable: false,
         });
-        add_subview(blur_view, step1_status);
+        add_subview(setup_view, step1_status);
 
         let step1_btn = button(
             core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(380.0, BOOTSTRAP_HEIGHT - 114.0),
+                &core_graphics::geometry::CGPoint::new(content_width - 110.0, content_h - 54.0),
                 &core_graphics::geometry::CGSize::new(80.0, 26.0),
             ),
             "Test",
         );
         button_set_action(step1_btn, action_handler, sel!(onTestMic:));
-        add_subview(blur_view, step1_btn);
+        add_subview(setup_view, step1_btn);
 
         // Step 2: Show overlay
         let step2_label = create_label(LabelConfig {
             frame: core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(20.0, BOOTSTRAP_HEIGHT - 145.0),
-                &core_graphics::geometry::CGSize::new(260.0, 20.0),
+                &core_graphics::geometry::CGPoint::new(20.0, content_h - 90.0),
+                &core_graphics::geometry::CGSize::new(220.0, 20.0),
             ),
             text: "2) Show chat overlay".to_string(),
-            font_size: 13.0,
+            font_size: ui_tokens::BODY_FONT_SIZE,
             bold: true,
-            text_color: color_white(0.9),
+            text_color: crate::ui_helpers::color_label(),
             background_color: None,
             selectable: false,
             editable: false,
         });
-        add_subview(blur_view, step2_label);
+        add_subview(setup_view, step2_label);
 
         let step2_status = create_label(LabelConfig {
             frame: core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(300.0, BOOTSTRAP_HEIGHT - 145.0),
+                &core_graphics::geometry::CGPoint::new(260.0, content_h - 90.0),
                 &core_graphics::geometry::CGSize::new(80.0, 20.0),
             ),
             text: "pending".to_string(),
-            font_size: 11.0,
+            font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: false,
-            text_color: color_white(0.6),
+            text_color: crate::ui_helpers::color_secondary_label(),
             background_color: None,
             selectable: false,
             editable: false,
         });
-        add_subview(blur_view, step2_status);
+        add_subview(setup_view, step2_status);
 
         let step2_btn = button(
             core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(380.0, BOOTSTRAP_HEIGHT - 149.0),
+                &core_graphics::geometry::CGPoint::new(content_width - 110.0, content_h - 94.0),
                 &core_graphics::geometry::CGSize::new(80.0, 26.0),
             ),
             "Show",
         );
         button_set_action(step2_btn, action_handler, sel!(onShowOverlay:));
-        add_subview(blur_view, step2_btn);
+        add_subview(setup_view, step2_btn);
 
         // Step 3: Press hotkey
         let step3_label = create_label(LabelConfig {
             frame: core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(20.0, BOOTSTRAP_HEIGHT - 180.0),
-                &core_graphics::geometry::CGSize::new(260.0, 20.0),
+                &core_graphics::geometry::CGPoint::new(20.0, content_h - 130.0),
+                &core_graphics::geometry::CGSize::new(220.0, 20.0),
             ),
             text: "3) Press hotkey (Ctrl+Shift)".to_string(),
-            font_size: 13.0,
+            font_size: ui_tokens::BODY_FONT_SIZE,
             bold: true,
-            text_color: color_white(0.9),
+            text_color: crate::ui_helpers::color_label(),
             background_color: None,
             selectable: false,
             editable: false,
         });
-        add_subview(blur_view, step3_label);
+        add_subview(setup_view, step3_label);
 
         let step3_status = create_label(LabelConfig {
             frame: core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(300.0, BOOTSTRAP_HEIGHT - 180.0),
+                &core_graphics::geometry::CGPoint::new(260.0, content_h - 130.0),
                 &core_graphics::geometry::CGSize::new(80.0, 20.0),
             ),
             text: "pending".to_string(),
-            font_size: 11.0,
+            font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: false,
-            text_color: color_white(0.6),
+            text_color: crate::ui_helpers::color_secondary_label(),
             background_color: None,
             selectable: false,
             editable: false,
         });
-        add_subview(blur_view, step3_status);
+        add_subview(setup_view, step3_status);
 
         let step3_btn = button(
             core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(380.0, BOOTSTRAP_HEIGHT - 184.0),
+                &core_graphics::geometry::CGPoint::new(content_width - 110.0, content_h - 134.0),
                 &core_graphics::geometry::CGSize::new(80.0, 26.0),
             ),
             "Done",
         );
         button_set_action(step3_btn, action_handler, sel!(onHotkeyDone:));
-        add_subview(blur_view, step3_btn);
+        add_subview(setup_view, step3_btn);
 
-        // Footer buttons
+        // LLM Configuration section
+        let llm_y_start = content_h - 180.0;
+        let llm_section = create_label(LabelConfig {
+            frame: core_graphics::geometry::CGRect::new(
+                &core_graphics::geometry::CGPoint::new(20.0, llm_y_start),
+                &core_graphics::geometry::CGSize::new(content_width - 40.0, 18.0),
+            ),
+            text: "AI Provider (optional)".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: crate::ui_helpers::color_secondary_label(),
+            ..Default::default()
+        });
+        add_subview(setup_view, llm_section);
+
+        let config = Config::load();
+        let llm_endpoint_val = config.llm_endpoint.as_deref().unwrap_or("");
+        let llm_endpoint_field = create_text_input(
+            core_graphics::geometry::CGRect::new(
+                &core_graphics::geometry::CGPoint::new(20.0, llm_y_start - 28.0),
+                &core_graphics::geometry::CGSize::new(content_width - 40.0, 22.0),
+            ),
+            "LLM Endpoint (e.g. https://api.openai.com/v1/responses)",
+            llm_endpoint_val,
+        );
+        button_set_action(
+            llm_endpoint_field,
+            action_handler,
+            sel!(onLlmEndpointChanged:),
+        );
+        add_subview(setup_view, llm_endpoint_field);
+
+        let llm_model_val = std::env::var("LLM_MODEL").unwrap_or_default();
+        let llm_model_field = create_text_input(
+            core_graphics::geometry::CGRect::new(
+                &core_graphics::geometry::CGPoint::new(20.0, llm_y_start - 56.0),
+                &core_graphics::geometry::CGSize::new(content_width - 40.0, 22.0),
+            ),
+            "LLM Model (e.g. gpt-4.1-mini)",
+            &llm_model_val,
+        );
+        button_set_action(llm_model_field, action_handler, sel!(onLlmModelChanged:));
+        add_subview(setup_view, llm_model_field);
+
+        let llm_key_field = create_secure_text_input(
+            core_graphics::geometry::CGRect::new(
+                &core_graphics::geometry::CGPoint::new(20.0, llm_y_start - 84.0),
+                &core_graphics::geometry::CGSize::new(content_width - 40.0, 22.0),
+            ),
+            "API Key (stored in Keychain)",
+        );
+        button_set_action(llm_key_field, action_handler, sel!(onLlmKeyChanged:));
+        add_subview(setup_view, llm_key_field);
+
+        // Footer buttons (inside setup_view)
         let finish_btn = button(
             core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(BOOTSTRAP_WIDTH - 110.0, 16.0),
+                &core_graphics::geometry::CGPoint::new(content_width - 110.0, 16.0),
                 &core_graphics::geometry::CGSize::new(90.0, 28.0),
             ),
             "Finish",
         );
         button_set_action(finish_btn, action_handler, sel!(onFinish:));
-        add_subview(blur_view, finish_btn);
+        add_subview(setup_view, finish_btn);
 
         let skip_btn = button(
             core_graphics::geometry::CGRect::new(
@@ -333,26 +541,129 @@ fn show_bootstrap_overlay_impl() {
             "Skip",
         );
         button_set_action(skip_btn, action_handler, sel!(onFinish:));
-        add_subview(blur_view, skip_btn);
+        add_subview(setup_view, skip_btn);
 
+        // --- Keys tab (index 1) ---
+        let keys_view = build_keys_tab(action_handler, content_frame);
+        let _: () = msg_send![keys_view, setHidden: true];
+        add_subview(root_view, keys_view);
+
+        // --- Audio tab (index 2) ---
+        let audio_view = build_audio_tab(action_handler, content_frame);
+        let _: () = msg_send![audio_view, setHidden: true];
+        add_subview(root_view, audio_view);
+
+        // ====================================================================
         // Store state
-        state.window = Some(window as usize);
+        // ====================================================================
         state.step_labels = [
             Some(step1_status as usize),
             Some(step2_status as usize),
             Some(step3_status as usize),
         ];
-
-        window_show(window);
-        let nil: *mut Object = std::ptr::null_mut();
-        let _: () = msg_send![window, makeKeyAndOrderFront: nil];
-
-        info!("Bootstrap overlay shown");
+        state.tab_buttons = tab_buttons;
+        state.content_views = [
+            Some(setup_view as usize),
+            Some(keys_view as usize),
+            Some(audio_view as usize),
+        ];
+        state.active_tab = TAB_SETUP;
     }
 }
 
+/// Create a sidebar tab button (flat, full-width, with highlight for active state).
+unsafe fn create_sidebar_tab_button(
+    frame: core_graphics::geometry::CGRect,
+    title: &str,
+    active: bool,
+) -> Id {
+    unsafe {
+        let ns_button = Class::get("NSButton").unwrap();
+        let ns_font = Class::get("NSFont").unwrap();
+
+        let btn: Id = msg_send![ns_button, alloc];
+        let btn: Id = msg_send![btn, initWithFrame: frame];
+
+        let title_str = crate::ui_helpers::ns_string(title);
+        let _: () = msg_send![btn, setTitle: title_str];
+        let _: () = msg_send![btn, setBordered: false];
+
+        let font: Id = msg_send![ns_font, systemFontOfSize: ui_tokens::SMALL_FONT_SIZE];
+        let _: () = msg_send![btn, setFont: font];
+
+        let _: () = msg_send![btn, setWantsLayer: true];
+        let layer: Id = msg_send![btn, layer];
+        if !layer.is_null() {
+            let bg = if active {
+                ui_colors::panel_bg()
+            } else {
+                crate::ui_helpers::color_clear()
+            };
+            let cg_color: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg_color];
+            let _: () = msg_send![layer, setCornerRadius: ui_tokens::CORNER_RADIUS_SM];
+        }
+
+        let tint = if active {
+            crate::ui_helpers::color_label()
+        } else {
+            crate::ui_helpers::color_secondary_label()
+        };
+        let _: () = msg_send![btn, setContentTintColor: tint];
+
+        btn
+    }
+}
+
+/// Switch to a given tab index. Hides all content views, shows the selected one,
+/// and updates sidebar button highlights.
+pub(super) fn switch_tab(index: usize) {
+    Queue::main().exec_async(move || unsafe {
+        let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if index >= 3 || state.active_tab == index {
+            return;
+        }
+        state.active_tab = index;
+
+        // Hide all content views, show selected
+        for (i, cv) in state.content_views.iter().enumerate() {
+            if let Some(ptr) = cv {
+                let view = *ptr as Id;
+                let _: () = msg_send![view, setHidden: (i != index)];
+            }
+        }
+
+        // Update tab button highlights
+        for (i, tb) in state.tab_buttons.iter().enumerate() {
+            if let Some(ptr) = tb {
+                let btn = *ptr as Id;
+                let active = i == index;
+
+                let _: () = msg_send![btn, setWantsLayer: true];
+                let layer: Id = msg_send![btn, layer];
+                if !layer.is_null() {
+                    let bg = if active {
+                        ui_colors::panel_bg()
+                    } else {
+                        crate::ui_helpers::color_clear()
+                    };
+                    let cg_color: Id = msg_send![bg, CGColor];
+                    let _: () = msg_send![layer, setBackgroundColor: cg_color];
+                }
+
+                let tint = if active {
+                    crate::ui_helpers::color_label()
+                } else {
+                    crate::ui_helpers::color_secondary_label()
+                };
+                let _: () = msg_send![btn, setContentTintColor: tint];
+            }
+        }
+    });
+}
+
 pub(super) fn handle_test_mic() {
-    update_step_status(STEP_TEST_MIC, "recording…");
+    update_step_status(STEP_TEST_MIC, "recording\u{2026}");
 
     if let Err(e) = send_ipc(IpcCommand::StartRecording { assistive: false }) {
         warn!("Bootstrap test mic failed to start: {}", e);
@@ -380,6 +691,7 @@ pub(super) fn handle_hotkey_done() {
 
 pub(super) fn handle_finish() {
     mark_bootstrap_done();
+    crate::voice_chat_ui::show_agent_tab();
     hide_bootstrap_overlay();
 }
 
@@ -388,9 +700,37 @@ pub fn hide_bootstrap_overlay() {
         let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(window_ptr) = state.window.take() {
             window_close(window_ptr as Id);
+            state.root_view = None;
+            state.step_labels = [None, None, None];
+            state.tab_buttons = [None, None, None];
+            state.content_views = [None, None, None];
+            state.keys_hold_popup = None;
+            state.keys_toggle_popup = None;
+            state.keys_preset_popup = None;
+            state.keys_exclusive_checkbox = None;
+            return;
         }
-        state.step_labels = [None, None, None];
+
+        if let Some(root_ptr) = state.root_view {
+            let _: () = msg_send![root_ptr as Id, setHidden: true];
+        }
     });
+}
+
+/// Reset embedded Settings view state when the overlay is destroyed.
+pub fn reset_embedded_bootstrap_state() {
+    let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.window.is_some() {
+        return;
+    }
+    state.root_view = None;
+    state.step_labels = [None, None, None];
+    state.tab_buttons = [None, None, None];
+    state.content_views = [None, None, None];
+    state.keys_hold_popup = None;
+    state.keys_toggle_popup = None;
+    state.keys_preset_popup = None;
+    state.keys_exclusive_checkbox = None;
 }
 
 fn update_step_status(index: usize, text: &str) {
@@ -401,6 +741,656 @@ fn update_step_status(index: usize, text: &str) {
             set_text_field_string(label as Id, &text);
         }
     });
+}
+
+fn set_keys_popup_index(popup: Option<usize>, index: isize) {
+    if let Some(popup) = popup {
+        unsafe {
+            let popup = popup as Id;
+            let _: () = msg_send![popup, selectItemAtIndex: index];
+        }
+    }
+}
+
+fn set_keys_checkbox_state(checkbox: Option<usize>, enabled: bool) {
+    if let Some(checkbox) = checkbox {
+        unsafe {
+            let checkbox = checkbox as Id;
+            let state_value: isize = if enabled { 1 } else { 0 };
+            let _: () = msg_send![checkbox, setState: state_value];
+        }
+    }
+}
+
+fn mark_keys_preset_custom() {
+    let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    set_keys_popup_index(state.keys_preset_popup, 2);
+}
+
+// ============================================================================
+// Keys tab
+// ============================================================================
+
+unsafe fn build_keys_tab(action_handler: Id, frame: core_graphics::geometry::CGRect) -> Id {
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    unsafe {
+        let ns_view = Class::get("NSView").unwrap();
+        let ns_popup = Class::get("NSPopUpButton").unwrap();
+
+        let container: Id = msg_send![ns_view, alloc];
+        let container: Id = msg_send![container, initWithFrame: frame];
+
+        let pad = ui_tokens::EDGE_PADDING;
+        let content_w = frame.size.width - pad * 2.0;
+        let mut y = frame.size.height - 40.0;
+        let primary = crate::ui_helpers::color_label();
+        let secondary = crate::ui_helpers::color_secondary_label();
+
+        // Section title
+        let title = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            text: "Hotkey Configuration".to_string(),
+            font_size: ui_tokens::BODY_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, title);
+        y -= 36.0;
+
+        let config = Config::load();
+
+        // Preset dropdown
+        let preset_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
+            text: "Hotkey preset:".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, preset_label);
+
+        let preset_popup: Id = msg_send![ns_popup, alloc];
+        let preset_popup: Id = msg_send![preset_popup, initWithFrame:
+            CGRect::new(&CGPoint::new(pad + 124.0, y - 2.0), &CGSize::new(content_w - 124.0, 24.0))
+            pullsDown: false
+        ];
+        let preset_titles = ["Monika Power (recommended)", "Safe (no toggles)", "Custom"];
+        for title in &preset_titles {
+            let ns_title = ns_string(title);
+            let _: () = msg_send![preset_popup, addItemWithTitle: ns_title];
+        }
+        let preset_idx: isize = if config.hold_mods == crate::config::HoldMods::CtrlAlt
+            && config.toggle_trigger == crate::config::ToggleTrigger::DoubleOption
+            && !config.hold_exclusive
+        {
+            0
+        } else if config.toggle_trigger == crate::config::ToggleTrigger::None
+            && config.hold_mods == crate::config::HoldMods::Ctrl
+            && config.hold_exclusive
+        {
+            1
+        } else {
+            2
+        };
+        let _: () = msg_send![preset_popup, selectItemAtIndex: preset_idx];
+        button_set_action(preset_popup, action_handler, sel!(onPresetChanged:));
+        add_subview(container, preset_popup);
+        y -= 40.0;
+
+        // Hold base dropdown
+        let hold_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
+            text: "Hold base:".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, hold_label);
+
+        let hold_popup: Id = msg_send![ns_popup, alloc];
+        let hold_popup: Id = msg_send![hold_popup, initWithFrame:
+            CGRect::new(&CGPoint::new(pad + 124.0, y - 2.0), &CGSize::new(content_w - 124.0, 24.0))
+            pullsDown: false
+        ];
+        for title in &["Ctrl", "Ctrl+Option", "Ctrl+Shift", "Ctrl+Command"] {
+            let ns_title = ns_string(title);
+            let _: () = msg_send![hold_popup, addItemWithTitle: ns_title];
+        }
+        let hold_idx: isize = match config.hold_mods.as_str() {
+            "ctrl" => 0,
+            "ctrl_alt" => 1,
+            "ctrl_shift" => 2,
+            "ctrl_cmd" => 3,
+            _ => 0,
+        };
+        let _: () = msg_send![hold_popup, selectItemAtIndex: hold_idx];
+        button_set_action(hold_popup, action_handler, sel!(onHoldModChanged:));
+        add_subview(container, hold_popup);
+        y -= 36.0;
+
+        // Shift/Cmd modes toggle
+        let modes_check = create_checkbox(
+            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 20.0)),
+            "Enable Shift/Cmd modes (Chat/Selection)",
+            !config.hold_exclusive,
+        );
+        button_set_action(modes_check, action_handler, sel!(onHoldExclusiveChanged:));
+        add_subview(container, modes_check);
+        y -= 32.0;
+
+        // Hands-off toggle dropdown
+        let toggle_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
+            text: "Hands-off toggle:".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, toggle_label);
+
+        let toggle_popup: Id = msg_send![ns_popup, alloc];
+        let toggle_popup: Id = msg_send![toggle_popup, initWithFrame:
+            CGRect::new(&CGPoint::new(pad + 124.0, y - 2.0), &CGSize::new(content_w - 124.0, 24.0))
+            pullsDown: false
+        ];
+        let toggle_titles = [
+            "Off",
+            "Double Ctrl (RAW)",
+            "Left Option (normal)",
+            "Right Option (assistive)",
+            "Option keys (left=format, right=assistive)",
+        ];
+        for title in &toggle_titles {
+            let ns_title = ns_string(title);
+            let _: () = msg_send![toggle_popup, addItemWithTitle: ns_title];
+        }
+        let toggle_idx: isize = match config.toggle_trigger {
+            crate::config::ToggleTrigger::None => 0,
+            crate::config::ToggleTrigger::DoubleCtrl => 1,
+            crate::config::ToggleTrigger::DoubleLeftOption => 2,
+            crate::config::ToggleTrigger::DoubleRightOption => 3,
+            crate::config::ToggleTrigger::DoubleOption => 4,
+        };
+        let _: () = msg_send![toggle_popup, selectItemAtIndex: toggle_idx];
+        button_set_action(toggle_popup, action_handler, sel!(onToggleTriggerChanged:));
+        add_subview(container, toggle_popup);
+        y -= 44.0;
+
+        // Hold start delay slider
+        let delay_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
+            text: "Hold delay (ms):".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, delay_label);
+
+        let delay_ms = Config::load().hold_start_delay_ms as f64;
+        let delay_slider = create_slider(
+            CGRect::new(
+                &CGPoint::new(pad + 124.0, y),
+                &CGSize::new(content_w - 124.0, 20.0),
+            ),
+            200.0,
+            1500.0,
+            delay_ms,
+        );
+        button_set_action(delay_slider, action_handler, sel!(onDelayChanged:));
+        add_subview(container, delay_slider);
+
+        {
+            let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.keys_hold_popup = Some(hold_popup as usize);
+            state.keys_toggle_popup = Some(toggle_popup as usize);
+            state.keys_preset_popup = Some(preset_popup as usize);
+            state.keys_exclusive_checkbox = Some(modes_check as usize);
+        }
+
+        container
+    } // unsafe
+}
+
+// ============================================================================
+// Audio tab
+// ============================================================================
+
+unsafe fn build_audio_tab(action_handler: Id, frame: core_graphics::geometry::CGRect) -> Id {
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    unsafe {
+        let ns_view = Class::get("NSView").unwrap();
+        let ns_popup = Class::get("NSPopUpButton").unwrap();
+
+        let container: Id = msg_send![ns_view, alloc];
+        let container: Id = msg_send![container, initWithFrame: frame];
+
+        let pad = ui_tokens::EDGE_PADDING;
+        let content_w = frame.size.width - pad * 2.0;
+        let mut y = frame.size.height - 40.0;
+        let primary = crate::ui_helpers::color_label();
+        let secondary = crate::ui_helpers::color_secondary_label();
+
+        // Section title
+        let title = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            text: "Audio & Transcription".to_string(),
+            font_size: ui_tokens::BODY_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, title);
+        y -= 36.0;
+
+        // Language dropdown
+        let lang_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(130.0, 18.0)),
+            text: "Whisper language:".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, lang_label);
+
+        let lang_popup: Id = msg_send![ns_popup, alloc];
+        let lang_popup: Id = msg_send![lang_popup, initWithFrame:
+            CGRect::new(&CGPoint::new(pad + 134.0, y - 2.0), &CGSize::new(180.0, 24.0))
+            pullsDown: false
+        ];
+        let _: () = msg_send![lang_popup, addItemWithTitle: ns_string("Polish (pl)")];
+        let _: () = msg_send![lang_popup, addItemWithTitle: ns_string("English (en)")];
+        let config = Config::load();
+        let lang_idx: isize = match config.whisper_language.as_str() {
+            "pl" => 0,
+            "en" => 1,
+            _ => 0,
+        };
+        let _: () = msg_send![lang_popup, selectItemAtIndex: lang_idx];
+        button_set_action(lang_popup, action_handler, sel!(onLanguageChanged:));
+        add_subview(container, lang_popup);
+        y -= 38.0;
+
+        // AI Formatting toggle
+        let fmt_check = create_checkbox(
+            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 20.0)),
+            "AI Formatting",
+            config.ai_formatting_enabled,
+        );
+        button_set_action(fmt_check, action_handler, sel!(onFormattingToggled:));
+        add_subview(container, fmt_check);
+        y -= 18.0;
+
+        let fmt_desc = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(pad + 22.0, y),
+                &CGSize::new(content_w - 22.0, 16.0),
+            ),
+            text: "Use LLM to clean up transcriptions".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, fmt_desc);
+        y -= 34.0;
+
+        // VAD sensitivity dropdown
+        let vad_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 18.0)),
+            text: "VAD sensitivity:".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, vad_label);
+
+        let vad_popup: Id = msg_send![ns_popup, alloc];
+        let vad_popup: Id = msg_send![vad_popup, initWithFrame:
+            CGRect::new(&CGPoint::new(pad + 124.0, y - 2.0), &CGSize::new(240.0, 24.0))
+            pullsDown: false
+        ];
+        let _: () = msg_send![vad_popup, addItemWithTitle: ns_string("Balanced")];
+        let _: () = msg_send![vad_popup, addItemWithTitle: ns_string("Aggressive (less silence)")];
+        let _: () =
+            msg_send![vad_popup, addItemWithTitle: ns_string("Conservative (more context)")];
+        let _: () = msg_send![vad_popup, selectItemAtIndex: 0_isize];
+        button_set_action(vad_popup, action_handler, sel!(onVadPresetChanged:));
+        add_subview(container, vad_popup);
+        y -= 38.0;
+
+        // Buffered streaming toggle
+        let buffered_on = std::env::var("CODESCRIBE_BUFFERED_STREAM")
+            .unwrap_or_default()
+            .trim()
+            == "1";
+        let buf_check = create_checkbox(
+            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 20.0)),
+            "Backspace-magic streaming",
+            buffered_on,
+        );
+        button_set_action(buf_check, action_handler, sel!(onBufferedToggled:));
+        add_subview(container, buf_check);
+        y -= 18.0;
+
+        let buf_desc = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(pad + 22.0, y),
+                &CGSize::new(content_w - 22.0, 16.0),
+            ),
+            text: "Progressive transcription with correction".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, buf_desc);
+        y -= 34.0;
+
+        // Beep on start toggle
+        let beep_check = create_checkbox(
+            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 20.0)),
+            "Beep on recording start",
+            config.beep_on_start,
+        );
+        button_set_action(beep_check, action_handler, sel!(onBeepToggled:));
+        add_subview(container, beep_check);
+        y -= 34.0;
+
+        // Sound volume slider
+        let vol_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
+            text: "Sound volume:".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, vol_label);
+
+        let vol_slider = create_slider(
+            CGRect::new(
+                &CGPoint::new(pad + 124.0, y),
+                &CGSize::new(content_w - 124.0, 20.0),
+            ),
+            0.0,
+            1.0,
+            config.sound_volume as f64,
+        );
+        button_set_action(vol_slider, action_handler, sel!(onVolumeChanged:));
+        add_subview(container, vol_slider);
+
+        container
+    } // unsafe
+}
+
+// ============================================================================
+// Settings handler stubs (Keys + Audio tabs)
+// ============================================================================
+
+pub(super) extern "C" fn on_hold_mod_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    unsafe {
+        let idx: isize = msg_send![sender, indexOfSelectedItem];
+        let (value, mods) = match idx {
+            0 => ("ctrl", HoldMods::Ctrl),
+            1 => ("ctrl_alt", HoldMods::CtrlAlt),
+            2 => ("ctrl_shift", HoldMods::CtrlShift),
+            3 => ("ctrl_cmd", HoldMods::CtrlCmd),
+            _ => ("ctrl", HoldMods::Ctrl),
+        };
+        info!("Settings: hold modifier -> {}", value);
+        let config = Config::load();
+        let _ = config.save_to_env("HOLD_MODS", value);
+        hotkeys::set_hold_mods(mods);
+        send_menu_event(TrayMenuEvent::SetHoldMods(mods));
+
+        // If DoubleCtrl toggle is enabled, Ctrl-only hold is unsafe → disable toggle.
+        if mods == HoldMods::Ctrl && config.toggle_trigger == ToggleTrigger::DoubleCtrl {
+            let _ = config.save_to_env("TOGGLE_TRIGGER", ToggleTrigger::None.as_str());
+            hotkeys::set_toggle_trigger(ToggleTrigger::None);
+            send_menu_event(TrayMenuEvent::SetToggleTrigger(ToggleTrigger::None));
+
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            set_keys_popup_index(state.keys_toggle_popup, 0);
+        }
+
+        mark_keys_preset_custom();
+    }
+}
+
+pub(super) extern "C" fn on_preset_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    unsafe {
+        let idx: isize = msg_send![sender, indexOfSelectedItem];
+        match idx {
+            // Monika Power (recommended)
+            0 => {
+                info!("Settings: hotkey preset -> monika_power");
+                let config = Config::load();
+                let _ = config.save_to_env("HOLD_MODS", HoldMods::CtrlAlt.as_str());
+                let _ = config.save_to_env("TOGGLE_TRIGGER", ToggleTrigger::DoubleOption.as_str());
+                let _ = config.save_to_env("HOLD_EXCLUSIVE", "0");
+                hotkeys::set_hold_mods(HoldMods::CtrlAlt);
+                hotkeys::set_toggle_trigger(ToggleTrigger::DoubleOption);
+                hotkeys::set_exclusive_mode(false);
+                send_menu_event(TrayMenuEvent::SetHoldMods(HoldMods::CtrlAlt));
+                send_menu_event(TrayMenuEvent::SetToggleTrigger(ToggleTrigger::DoubleOption));
+                send_menu_event(TrayMenuEvent::SetHoldExclusive(false));
+
+                let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                set_keys_popup_index(state.keys_hold_popup, 1);
+                set_keys_popup_index(state.keys_toggle_popup, 4);
+                set_keys_checkbox_state(state.keys_exclusive_checkbox, true);
+            }
+            // Safe (no toggles)
+            1 => {
+                info!("Settings: hotkey preset -> safe");
+                let config = Config::load();
+                let _ = config.save_to_env("HOLD_MODS", HoldMods::Ctrl.as_str());
+                let _ = config.save_to_env("TOGGLE_TRIGGER", ToggleTrigger::None.as_str());
+                let _ = config.save_to_env("HOLD_EXCLUSIVE", "1");
+                hotkeys::set_hold_mods(HoldMods::Ctrl);
+                hotkeys::set_toggle_trigger(ToggleTrigger::None);
+                hotkeys::set_exclusive_mode(true);
+                send_menu_event(TrayMenuEvent::SetHoldMods(HoldMods::Ctrl));
+                send_menu_event(TrayMenuEvent::SetToggleTrigger(ToggleTrigger::None));
+                send_menu_event(TrayMenuEvent::SetHoldExclusive(true));
+
+                let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                set_keys_popup_index(state.keys_hold_popup, 0);
+                set_keys_popup_index(state.keys_toggle_popup, 0);
+                set_keys_checkbox_state(state.keys_exclusive_checkbox, false);
+            }
+            _ => {
+                info!("Settings: hotkey preset -> custom");
+            }
+        }
+    }
+}
+
+pub(super) extern "C" fn on_hold_exclusive_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let state: isize = msg_send![sender, state];
+        let enabled = state == 1;
+        let hold_exclusive = !enabled;
+        info!("Settings: hold exclusive -> {}", hold_exclusive);
+        let config = Config::load();
+        let _ = config.save_to_env("HOLD_EXCLUSIVE", if hold_exclusive { "1" } else { "0" });
+        hotkeys::set_exclusive_mode(hold_exclusive);
+        send_menu_event(TrayMenuEvent::SetHoldExclusive(hold_exclusive));
+        mark_keys_preset_custom();
+    }
+}
+
+pub(super) extern "C" fn on_toggle_trigger_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let idx: isize = msg_send![sender, indexOfSelectedItem];
+        let (trigger, value) = match idx {
+            0 => (ToggleTrigger::None, "none"),
+            1 => (ToggleTrigger::DoubleCtrl, "double_ctrl"),
+            2 => (ToggleTrigger::DoubleLeftOption, "double_lalt"),
+            3 => (ToggleTrigger::DoubleRightOption, "double_ralt"),
+            4 => (ToggleTrigger::DoubleOption, "double_option"),
+            _ => (ToggleTrigger::None, "none"),
+        };
+        info!("Settings: toggle trigger -> {}", value);
+        let config = Config::load();
+        let _ = config.save_to_env("TOGGLE_TRIGGER", value);
+        hotkeys::set_toggle_trigger(trigger);
+        send_menu_event(TrayMenuEvent::SetToggleTrigger(trigger));
+
+        // If enabling DoubleCtrl and hold is Ctrl-only, switch to Ctrl+Option and enable modes.
+        if trigger == ToggleTrigger::DoubleCtrl && config.hold_mods == HoldMods::Ctrl {
+            let _ = config.save_to_env("HOLD_MODS", HoldMods::CtrlAlt.as_str());
+            let _ = config.save_to_env("HOLD_EXCLUSIVE", "0");
+            hotkeys::set_hold_mods(HoldMods::CtrlAlt);
+            hotkeys::set_exclusive_mode(false);
+            send_menu_event(TrayMenuEvent::SetHoldMods(HoldMods::CtrlAlt));
+            send_menu_event(TrayMenuEvent::SetHoldExclusive(false));
+
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            set_keys_popup_index(state.keys_hold_popup, 1);
+            set_keys_checkbox_state(state.keys_exclusive_checkbox, true);
+        }
+
+        mark_keys_preset_custom();
+    }
+}
+
+pub(super) extern "C" fn on_language_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    unsafe {
+        let idx: isize = msg_send![sender, indexOfSelectedItem];
+        let lang = match idx {
+            0 => "pl",
+            1 => "en",
+            _ => "pl",
+        };
+        info!("Settings: language -> {}", lang);
+        let config = Config::load();
+        let _ = config.save_to_env("WHISPER_LANGUAGE", lang);
+    }
+}
+
+pub(super) extern "C" fn on_formatting_toggled(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let state: isize = msg_send![sender, state];
+        let enabled = state == 1;
+        info!("Settings: AI formatting -> {}", enabled);
+        let config = Config::load();
+        let _ = config.save_to_env("AI_FORMATTING_ENABLED", if enabled { "1" } else { "0" });
+    }
+}
+
+pub(super) extern "C" fn on_vad_preset_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let idx: isize = msg_send![sender, indexOfSelectedItem];
+        let preset = match idx {
+            0 => "balanced",
+            1 => "aggressive",
+            2 => "conservative",
+            _ => "balanced",
+        };
+        info!("Settings: VAD preset -> {}", preset);
+        let config = Config::load();
+        let _ = config.save_to_env("VAD_PRESET", preset);
+    }
+}
+
+pub(super) extern "C" fn on_llm_endpoint_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let ns_val: Id = msg_send![sender, stringValue];
+        let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
+        let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
+        info!("Settings: LLM endpoint -> {}", value);
+        let config = Config::load();
+        let _ = config.save_to_env("LLM_ENDPOINT", &value);
+    }
+}
+
+pub(super) extern "C" fn on_llm_model_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let ns_val: Id = msg_send![sender, stringValue];
+        let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
+        let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
+        info!("Settings: LLM model -> {}", value);
+        let config = Config::load();
+        let _ = config.save_to_env("LLM_MODEL", &value);
+    }
+}
+
+pub(super) extern "C" fn on_llm_key_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    unsafe {
+        let ns_val: Id = msg_send![sender, stringValue];
+        let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
+        let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
+        if !value.is_empty() {
+            info!("Settings: LLM API key updated (stored in Keychain)");
+            let config = Config::load();
+            let _ = config.save_to_env("LLM_API_KEY", &value);
+        }
+    }
+}
+
+pub(super) extern "C" fn on_delay_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    unsafe {
+        let value: f64 = msg_send![sender, doubleValue];
+        let ms = value.round() as u64;
+        info!("Settings: hold delay -> {}ms", ms);
+        let config = Config::load();
+        let _ = config.save_to_env("HOLD_START_DELAY_MS", &ms.to_string());
+    }
+}
+
+pub(super) extern "C" fn on_beep_toggled(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    unsafe {
+        let state: isize = msg_send![sender, state];
+        let enabled = state == 1;
+        info!("Settings: beep on start -> {}", enabled);
+        let config = Config::load();
+        let _ = config.save_to_env("BEEP_ON_START", if enabled { "1" } else { "0" });
+    }
+}
+
+pub(super) extern "C" fn on_volume_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    unsafe {
+        let value: f64 = msg_send![sender, doubleValue];
+        info!("Settings: sound volume -> {:.2}", value);
+        let config = Config::load();
+        let _ = config.save_to_env("SOUND_VOLUME", &format!("{:.2}", value));
+    }
+}
+
+pub(super) extern "C" fn on_buffered_toggled(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    unsafe {
+        let state: isize = msg_send![sender, state];
+        let enabled = state == 1;
+        info!("Settings: buffered streaming -> {}", enabled);
+        let config = Config::load();
+        let _ = config.save_to_env(
+            "CODESCRIBE_BUFFERED_STREAM",
+            if enabled { "1" } else { "0" },
+        );
+    }
 }
 
 fn send_ipc(cmd: IpcCommand) -> Result<IpcResponse, String> {
@@ -418,4 +1408,41 @@ fn send_ipc(cmd: IpcCommand) -> Result<IpcResponse, String> {
     reader.read_line(&mut line).map_err(|e| e.to_string())?;
 
     serde_json::from_str::<IpcResponse>(&line).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    fn attach_settings_view_builds_root_view() {
+        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
+            return;
+        }
+        unsafe {
+            let ns_view = Class::get("NSView").unwrap();
+            let parent: Id = msg_send![ns_view, alloc];
+            let parent: Id = msg_send![
+                parent,
+                initWithFrame: core_graphics::geometry::CGRect::new(
+                    &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+                    &core_graphics::geometry::CGSize::new(480.0, 320.0),
+                )
+            ];
+
+            let frame = core_graphics::geometry::CGRect::new(
+                &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+                &core_graphics::geometry::CGSize::new(480.0, 320.0),
+            );
+            let view = attach_settings_view(parent, frame);
+            assert!(view.is_some());
+
+            reset_embedded_bootstrap_state();
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            assert!(state.root_view.is_none());
+        }
+    }
 }

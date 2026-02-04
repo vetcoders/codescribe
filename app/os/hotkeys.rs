@@ -6,6 +6,7 @@
 // - Hold Ctrl (or configured combo): Start recording while held, stop when released
 // - Double-tap Left Option: Toggle recording on/off (normal, AI formatting)
 // - Double-tap Right Option: Toggle assistive hands-off (AI augmentation)
+// - Double-tap Ctrl: Toggle recording on/off (raw, auto-paste)
 //
 // Design: Uses CGEventTap to monitor modifier flag changes only.
 // We specifically avoid calling TSMGetInputSourceProperty which caused
@@ -20,7 +21,9 @@
 //
 // ToggleTrigger options:
 // - DoubleOption: Left Option (normal) + Right Option (assistive)
+// - DoubleLeftOption: Left Option only (normal)
 // - DoubleRightOption: Right Option only (assistive only)
+// - DoubleCtrl: Ctrl only (raw hands-off)
 // - None: Toggle mode completely disabled
 
 use crate::config::{HoldMods, ToggleTrigger};
@@ -59,15 +62,17 @@ pub fn get_hold_mods() -> HoldMods {
 
 // --- Global Toggle Trigger Setting ---
 
-/// Atomic storage for ToggleTrigger (0=DoubleOption, 1=DoubleRightOption, 2=None)
+/// Atomic storage for ToggleTrigger (0=DoubleOption, 1=DoubleLeftOption, 2=DoubleRightOption, 3=DoubleCtrl, 4=None)
 static TOGGLE_TRIGGER: AtomicU8 = AtomicU8::new(0);
 
 /// Set the toggle trigger mode (thread-safe)
 pub fn set_toggle_trigger(trigger: ToggleTrigger) {
     let value = match trigger {
         ToggleTrigger::DoubleOption => 0,
-        ToggleTrigger::DoubleRightOption => 1,
-        ToggleTrigger::None => 2,
+        ToggleTrigger::DoubleLeftOption => 1,
+        ToggleTrigger::DoubleRightOption => 2,
+        ToggleTrigger::DoubleCtrl => 3,
+        ToggleTrigger::None => 4,
     };
     TOGGLE_TRIGGER.store(value, AtomicOrdering::SeqCst);
     tracing::info!("Toggle trigger set to: {:?}", trigger);
@@ -77,24 +82,25 @@ pub fn set_toggle_trigger(trigger: ToggleTrigger) {
 pub fn get_toggle_trigger() -> ToggleTrigger {
     match TOGGLE_TRIGGER.load(AtomicOrdering::SeqCst) {
         0 => ToggleTrigger::DoubleOption,
-        1 => ToggleTrigger::DoubleRightOption,
+        1 => ToggleTrigger::DoubleLeftOption,
+        2 => ToggleTrigger::DoubleRightOption,
+        3 => ToggleTrigger::DoubleCtrl,
         _ => ToggleTrigger::None,
     }
 }
 
 // --- Global Exclusive Mode Setting ---
-// Note: Exclusive mode is now implicitly handled by HoldMods configuration.
-// When HoldMods::Ctrl is set, Option key is excluded from hold combo.
-// This function is kept for API compatibility with existing code.
+// Exclusive mode controls whether Shift/Cmd can act as mode modifiers for hold gestures.
+// When enabled, we ignore Shift/Cmd and keep hold mode as RAW.
 
 use std::sync::atomic::AtomicBool;
 
-/// Atomic storage for exclusive mode (Ctrl and Option mutually exclusive)
+/// Atomic storage for exclusive mode (Shift/Cmd mode modifiers disabled)
 static EXCLUSIVE_MODE: AtomicBool = AtomicBool::new(true);
 
 /// Set exclusive mode (thread-safe)
-/// When true, Ctrl and Option are mutually exclusive (default behavior)
-/// When false, they can be pressed together (legacy behavior)
+/// When true, Shift/Cmd modifiers are ignored for hold mode
+/// When false, Shift/Cmd can act as mode modifiers (Chat/Selection)
 pub fn set_exclusive_mode(enabled: bool) {
     EXCLUSIVE_MODE.store(enabled, AtomicOrdering::SeqCst);
     tracing::info!("Hotkey exclusive mode set to: {}", enabled);
@@ -104,6 +110,8 @@ pub fn set_exclusive_mode(enabled: bool) {
 
 /// Double-tap interval for toggle detection (milliseconds)
 const DOUBLE_TAP_INTERVAL_MS: u64 = 450;
+/// Max press duration for a "tap" gesture (milliseconds)
+const TAP_MAX_MS: u64 = 220;
 
 // --- Types ---
 
@@ -114,18 +122,33 @@ pub enum HoldAction {
     Up,
 }
 
+/// High-level hold intent derived from modifier state.
+///
+/// UX split:
+/// - `Raw`: dictation → auto-paste (fast)
+/// - `Chat`: voice chat to AI → response in overlay (no auto-paste)
+/// - `Selection`: apply instruction to selected text → response in overlay (no auto-paste)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HoldMode {
+    #[default]
+    Raw,
+    Chat,
+    Selection,
+}
+
 /// Hotkey event emitted by the listener
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyEvent {
     /// Hold gesture detected (press/release configured modifier combo)
-    /// The boolean indicates "assistive mode" (Shift was held during the gesture)
-    Hold { action: HoldAction, assistive: bool },
+    Hold { action: HoldAction, mode: HoldMode },
+    /// Modifier change while hold is active (e.g., add/remove Shift/Cmd).
+    HoldUpdate { mode: HoldMode },
     /// Normal toggle gesture (double-tap left Option)
     ToggleNormal,
+    /// Raw toggle gesture (double-tap Ctrl)
+    ToggleRaw,
     /// Assistive toggle gesture (double-tap right Option)
     ToggleAssistive,
-    /// Conversation mode gesture (Ctrl+Option hold) - full-duplex Moshi
-    Conversation { action: HoldAction },
 }
 
 /// Modifier flags for hold gesture detection
@@ -159,7 +182,10 @@ impl ModifierFlags {
     /// Check if the current flags match the required flags
     pub fn matches(&self, required: &ModifierFlags, exclusive: bool) -> bool {
         if exclusive {
-            self.ctrl == required.ctrl && self.alt == required.alt && self.cmd == required.cmd
+            self.ctrl == required.ctrl
+                && self.alt == required.alt
+                && self.shift == required.shift
+                && self.cmd == required.cmd
         } else {
             (!required.ctrl || self.ctrl)
                 && (!required.alt || self.alt)
@@ -186,6 +212,7 @@ mod macos {
     use super::*;
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
     use std::thread;
 
     // CGEvent types and flags
@@ -215,6 +242,9 @@ mod macos {
     // macOS virtual keycodes for Option keys
     const K_VK_OPTION: i64 = 58; // Left Option
     const K_VK_RIGHT_OPTION: i64 = 61; // Right Option
+    // macOS virtual keycodes for Control keys
+    const K_VK_CONTROL: i64 = 59; // Left Control
+    const K_VK_RIGHT_CONTROL: i64 = 62; // Right Control
 
     // CGEventTap constants
     const K_CG_SESSION_EVENT_TAP: u32 = 1;
@@ -267,14 +297,20 @@ mod macos {
         hold_active: bool,
         /// When hold combo was activated (for hold duration check)
         hold_active_ts: Option<Instant>,
-        /// Assistive mode detected during this hold
-        assistive_mode: bool,
+        /// Current hold mode derived from Shift/Cmd state
+        hold_mode: HoldMode,
         /// Hold event already sent (prevent duplicates)
         hold_event_sent: bool,
         /// Last left Option tap timestamp
         last_left_tap_ts: Option<Instant>,
         /// Last right Option tap timestamp
         last_right_tap_ts: Option<Instant>,
+        /// Last Ctrl tap timestamp
+        last_ctrl_tap_ts: Option<Instant>,
+        /// Ctrl is currently held
+        ctrl_down: bool,
+        /// When Ctrl was pressed (for "tap" duration)
+        ctrl_down_ts: Option<Instant>,
         /// Option is currently held
         option_down: bool,
         /// Whether the currently held Option is the RIGHT Option key
@@ -290,10 +326,13 @@ mod macos {
             Self {
                 hold_active: false,
                 hold_active_ts: None,
-                assistive_mode: false,
+                hold_mode: HoldMode::Raw,
                 hold_event_sent: false,
                 last_left_tap_ts: None,
                 last_right_tap_ts: None,
+                last_ctrl_tap_ts: None,
+                ctrl_down: false,
+                ctrl_down_ts: None,
                 option_down: false,
                 right_option_held: false,
                 key_pressed_during_modifier: false,
@@ -302,7 +341,7 @@ mod macos {
         }
     }
 
-    fn register_option_tap(
+    fn register_double_tap(
         last_tap: &mut Option<Instant>,
         event: HotkeyEvent,
         tx: &Sender<HotkeyEvent>,
@@ -320,32 +359,60 @@ mod macos {
     }
 
     /// Check if the configured hold combo is currently pressed
-    /// Returns (combo_active, is_assistive)
+    /// Returns combo_active
     fn check_hold_combo(
         ctrl: bool,
         shift: bool,
         option: bool,
         cmd: bool,
         hold_mods: HoldMods,
-    ) -> (bool, bool) {
-        let combo_active = match hold_mods {
-            // Ctrl alone triggers (Option must NOT be pressed for exclusivity with toggle)
-            HoldMods::Ctrl => ctrl && !option && !cmd,
-            // Ctrl+Alt (Option) together trigger
-            HoldMods::CtrlAlt => ctrl && option && !cmd,
-            // Ctrl+Shift together trigger (shift is part of combo, not assistive)
-            HoldMods::CtrlShift => ctrl && shift && !option && !cmd,
-            // Ctrl+Command together trigger
-            HoldMods::CtrlCmd => ctrl && cmd && !option,
-        };
+    ) -> bool {
+        // If Option is pressed but it's not part of the configured hold combo,
+        // treat it as "not a hold" to avoid conflicts with Option double-tap toggles.
+        if option && !matches!(hold_mods, HoldMods::CtrlAlt) {
+            return false;
+        }
 
-        // Assistive mode: Shift held DURING the gesture (except for CtrlShift mode where shift is required)
-        let is_assistive = match hold_mods {
-            HoldMods::CtrlShift => false, // Shift is part of the combo, not assistive
-            _ => shift,
-        };
+        // IMPORTANT:
+        // We intentionally IGNORE Shift/Cmd in the hold combo matching.
+        // Shift/Cmd act as *mode modifiers* on top of the base hold gesture.
+        //
+        // If we included Shift/Cmd in the matching (especially with "exclusive" mode),
+        // pressing Shift while holding Ctrl would look like "Hold Up", causing rapid
+        // start/stop thrashing and, in worst cases, system-level freezes (event tap churn).
+        match hold_mods {
+            HoldMods::Ctrl => ctrl,
+            HoldMods::CtrlAlt => ctrl && option,
+            HoldMods::CtrlShift => ctrl && shift,
+            HoldMods::CtrlCmd => ctrl && cmd,
+        }
+    }
 
-        (combo_active, is_assistive)
+    fn compute_hold_mode(shift: bool, cmd: bool, hold_mods: HoldMods) -> HoldMode {
+        if EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst) {
+            return HoldMode::Raw;
+        }
+
+        // Shift/Cmd mode modifiers only work with multi-key hold combos
+        // (e.g. Ctrl+Option). With bare Ctrl hold, Shift/Cmd must be ignored
+        // because Ctrl+K, Ctrl+Shift+K etc. are normal terminal shortcuts.
+        match hold_mods {
+            HoldMods::Ctrl => HoldMode::Raw,
+            HoldMods::CtrlShift | HoldMods::CtrlCmd => {
+                // Shift or Cmd is already part of the base combo — no room for modifiers
+                HoldMode::Raw
+            }
+            HoldMods::CtrlAlt => {
+                // Ctrl+Option is specific enough — Shift/Cmd can safely modify
+                if cmd {
+                    HoldMode::Selection
+                } else if shift {
+                    HoldMode::Chat
+                } else {
+                    HoldMode::Raw
+                }
+            }
+        }
     }
 
     // Global state pointer for callback (must be static for C callback)
@@ -395,7 +462,7 @@ mod macos {
                     // Send Hold Up to cancel the pending hold in controller
                     let _ = state.tx.send(HotkeyEvent::Hold {
                         action: HoldAction::Up,
-                        assistive: state.assistive_mode,
+                        mode: state.hold_mode,
                     });
                     state.hold_active = false;
                     state.hold_active_ts = None;
@@ -404,6 +471,13 @@ mod macos {
                 } else {
                     tracing::debug!("Key pressed during recording - allowed (past delay window)");
                 }
+            }
+
+            // If Ctrl is held, this is a modifier combo (Ctrl+K, Ctrl+C, etc.), not a tap.
+            // Invalidate any pending Ctrl double-tap sequence.
+            if ctrl_held && (state.ctrl_down || state.hold_active) {
+                state.key_pressed_during_modifier = true;
+                state.last_ctrl_tap_ts = None;
             }
 
             // If Option is held → invalidate tap sequence (Option+Arrow, etc.)
@@ -444,53 +518,51 @@ mod macos {
         let option_now = (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0;
         let cmd_now = (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0;
 
-        // Reset key_pressed flag when all modifiers released
-        if !ctrl_now && !option_now && !cmd_now {
-            state.key_pressed_during_modifier = false;
-        }
-
         // Determine if this is specifically the right Option key
         let is_right_option = keycode == K_VK_RIGHT_OPTION;
         let is_option_key = keycode == K_VK_OPTION || keycode == K_VK_RIGHT_OPTION;
+        let is_ctrl_key = keycode == K_VK_CONTROL || keycode == K_VK_RIGHT_CONTROL;
 
         // Get current settings
         let hold_mods = get_hold_mods();
         let toggle_trigger = get_toggle_trigger();
 
+        let raw_toggle_enabled = matches!(toggle_trigger, ToggleTrigger::DoubleCtrl);
+
         // Check if hold combo is active
-        let (combo_active, is_assistive) =
-            check_hold_combo(ctrl_now, shift_now, option_now, cmd_now, hold_mods);
+        let combo_active = if raw_toggle_enabled && matches!(hold_mods, HoldMods::Ctrl) {
+            // When double-Ctrl is enabled, we disable "Ctrl-only hold-to-talk" by default.
+            // Otherwise Ctrl+shortcuts (Ctrl+K/C/V) keep firing recordings in the background.
+            false
+        } else {
+            check_hold_combo(ctrl_now, shift_now, option_now, cmd_now, hold_mods)
+        };
+        let mode_now = compute_hold_mode(shift_now, cmd_now, hold_mods);
 
         // Detect hold combo activation/deactivation
         if combo_active && !state.hold_active {
             // Hold combo just activated
             state.hold_active = true;
             state.hold_active_ts = Some(Instant::now());
-            state.assistive_mode = is_assistive;
+            state.hold_mode = mode_now;
             state.hold_event_sent = false;
 
             tracing::debug!(
-                "Hold combo activated ({:?}, assistive={}) - sending event",
+                "Hold combo activated ({:?}, mode={:?}) - sending Hold Down event",
                 hold_mods,
-                is_assistive
+                state.hold_mode
             );
-            // Send appropriate event based on hold mode
-            // CtrlAlt (Ctrl+Option) = Conversation mode (Moshi full-duplex)
-            if hold_mods == HoldMods::CtrlAlt {
-                let _ = state.tx.send(HotkeyEvent::Conversation {
-                    action: HoldAction::Down,
-                });
-            } else {
-                let _ = state.tx.send(HotkeyEvent::Hold {
-                    action: HoldAction::Down,
-                    assistive: state.assistive_mode,
-                });
-            }
+            // Send Hold Down immediately for responsiveness
+            let _ = state.tx.send(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: state.hold_mode,
+            });
             state.hold_event_sent = true;
-        } else if combo_active && state.hold_active && is_assistive && !state.assistive_mode {
-            // Shift was added while combo active - upgrade to assistive mode
-            state.assistive_mode = true;
-            tracing::info!("Upgraded to assistive mode (Shift added during hold)");
+        } else if combo_active && state.hold_active && mode_now != state.hold_mode {
+            state.hold_mode = mode_now;
+            let _ = state.tx.send(HotkeyEvent::HoldUpdate {
+                mode: state.hold_mode,
+            });
         } else if !combo_active && state.hold_active {
             // Hold combo just deactivated
             state.hold_active = false;
@@ -502,26 +574,64 @@ mod macos {
                     let elapsed = ts.elapsed();
                     tracing::debug!("Hold combo released after {:?}", elapsed);
                 }
-                // Send appropriate event based on hold mode
-                if hold_mods == HoldMods::CtrlAlt {
-                    let _ = state.tx.send(HotkeyEvent::Conversation {
-                        action: HoldAction::Up,
-                    });
-                } else {
-                    let _ = state.tx.send(HotkeyEvent::Hold {
-                        action: HoldAction::Up,
-                        assistive: state.assistive_mode,
-                    });
-                }
+                let _ = state.tx.send(HotkeyEvent::Hold {
+                    action: HoldAction::Up,
+                    mode: state.hold_mode,
+                });
             }
             state.hold_active_ts = None;
         }
 
-        let normal_toggle_enabled = matches!(toggle_trigger, ToggleTrigger::DoubleOption);
+        let normal_toggle_enabled = matches!(
+            toggle_trigger,
+            ToggleTrigger::DoubleOption | ToggleTrigger::DoubleLeftOption
+        );
         let assistive_toggle_enabled = matches!(
             toggle_trigger,
             ToggleTrigger::DoubleOption | ToggleTrigger::DoubleRightOption
         );
+
+        // Ctrl double-tap (raw hands-off toggle). This mode intentionally avoids Option handling
+        // to prevent the "Option toggle" permission regressions from affecting dictation.
+        if raw_toggle_enabled {
+            if is_ctrl_key && ctrl_now && !state.ctrl_down {
+                state.ctrl_down = true;
+                state.ctrl_down_ts = Some(Instant::now());
+            } else if is_ctrl_key && !ctrl_now && state.ctrl_down {
+                // Ctrl released
+                state.ctrl_down = false;
+                let held_for = state
+                    .ctrl_down_ts
+                    .take()
+                    .map(|ts| ts.elapsed())
+                    .unwrap_or_default();
+
+                // Only treat as a tap if it was quick and "pure" (no extra modifiers, no combos).
+                if held_for <= Duration::from_millis(TAP_MAX_MS)
+                    && !shift_now
+                    && !option_now
+                    && !cmd_now
+                    && !state.key_pressed_during_modifier
+                {
+                    register_double_tap(
+                        &mut state.last_ctrl_tap_ts,
+                        HotkeyEvent::ToggleRaw,
+                        &state.tx,
+                    );
+                } else {
+                    // Long holds or combos should not arm the double-tap detector.
+                    state.last_ctrl_tap_ts = None;
+                    state.key_pressed_during_modifier = false;
+                }
+            }
+
+            // Ignore Option toggle processing in this mode.
+            // Reset key_pressed flag when all modifiers released (after processing).
+            if !ctrl_now && !option_now && !cmd_now {
+                state.key_pressed_during_modifier = false;
+            }
+            return event;
+        }
 
         // Skip Option processing if toggle is disabled
         if matches!(toggle_trigger, ToggleTrigger::None) {
@@ -578,7 +688,7 @@ mod macos {
                 if current_tap_is_right {
                     state.last_left_tap_ts = None;
                     if assistive_toggle_enabled {
-                        register_option_tap(
+                        register_double_tap(
                             &mut state.last_right_tap_ts,
                             HotkeyEvent::ToggleAssistive,
                             &state.tx,
@@ -586,13 +696,18 @@ mod macos {
                     }
                 } else if normal_toggle_enabled {
                     state.last_right_tap_ts = None;
-                    register_option_tap(
+                    register_double_tap(
                         &mut state.last_left_tap_ts,
                         HotkeyEvent::ToggleNormal,
                         &state.tx,
                     );
                 }
             }
+        }
+
+        // Reset key_pressed flag when all modifiers released (after processing).
+        if !ctrl_now && !option_now && !cmd_now {
+            state.key_pressed_during_modifier = false;
         }
 
         event
@@ -604,17 +719,25 @@ mod macos {
             return Err("Hotkey listener already running".to_string());
         }
 
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+
         thread::spawn(move || {
-            if let Err(e) = run_event_tap(tx) {
+            if let Err(e) = run_event_tap(tx, ready_tx) {
                 tracing::error!("CGEventTap error: {}", e);
             }
             RUNNING.store(false, Ordering::SeqCst);
         });
 
-        // Give the thread a moment to start
-        thread::sleep(Duration::from_millis(100));
-
-        Ok(())
+        // Wait for startup confirmation so we can surface permission errors.
+        match ready_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(
+                "Timed out while starting CGEventTap (hotkeys). Check Accessibility permission."
+                    .to_string(),
+            ),
+            Err(e) => Err(format!("Failed to start hotkeys: {}", e)),
+        }
     }
 
     /// Enable hotkey processing (thread-safe)
@@ -635,7 +758,10 @@ mod macos {
     }
 
     /// Run the CGEventTap on the current thread (blocking)
-    fn run_event_tap(tx: Sender<HotkeyEvent>) -> Result<(), String> {
+    fn run_event_tap(
+        tx: Sender<HotkeyEvent>,
+        ready_tx: mpsc::Sender<Result<(), String>>,
+    ) -> Result<(), String> {
         // Create state on heap and store global pointer
         let state = Box::new(HotkeyState::new(tx));
         let state_ptr = Box::into_raw(state);
@@ -665,7 +791,9 @@ mod macos {
                 let _ = Box::from_raw(state_ptr);
                 GLOBAL_STATE = None;
             }
-            return Err("Failed to create CGEventTap - check Accessibility permission".to_string());
+            let msg = "Failed to create CGEventTap - check Accessibility permission".to_string();
+            let _ = ready_tx.send(Err(msg.clone()));
+            return Err(msg);
         }
 
         // Enable the tap
@@ -681,7 +809,9 @@ mod macos {
                 let _ = Box::from_raw(state_ptr);
                 GLOBAL_STATE = None;
             }
-            return Err("CGEventTap not enabled - macOS denied access".to_string());
+            let msg = "CGEventTap not enabled - macOS denied access".to_string();
+            let _ = ready_tx.send(Err(msg.clone()));
+            return Err(msg);
         }
         tracing::debug!("CGEventTap verified as enabled");
 
@@ -693,7 +823,9 @@ mod macos {
                 let _ = Box::from_raw(state_ptr);
                 GLOBAL_STATE = None;
             }
-            return Err("Failed to create run loop source".to_string());
+            let msg = "Failed to create run loop source".to_string();
+            let _ = ready_tx.send(Err(msg.clone()));
+            return Err(msg);
         }
 
         // Add to run loop
@@ -709,6 +841,7 @@ mod macos {
             hold_mods,
             toggle_trigger
         );
+        let _ = ready_tx.send(Ok(()));
 
         // Run the loop (blocking - should never return)
         tracing::debug!("Entering CFRunLoopRun (should block forever)...");
@@ -726,6 +859,66 @@ mod macos {
         }
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn compute_hold_mode_respects_modifiers() {
+            let prev = EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst);
+            EXCLUSIVE_MODE.store(false, AtomicOrdering::SeqCst);
+
+            // Ctrl-only ignores Shift/Cmd modifiers
+            assert_eq!(
+                compute_hold_mode(true, false, HoldMods::Ctrl),
+                HoldMode::Raw
+            );
+            assert_eq!(
+                compute_hold_mode(false, true, HoldMods::Ctrl),
+                HoldMode::Raw
+            );
+
+            // Ctrl+Option allows modifiers
+            assert_eq!(
+                compute_hold_mode(true, false, HoldMods::CtrlAlt),
+                HoldMode::Chat
+            );
+            assert_eq!(
+                compute_hold_mode(false, true, HoldMods::CtrlAlt),
+                HoldMode::Selection
+            );
+            assert_eq!(
+                compute_hold_mode(false, false, HoldMods::CtrlAlt),
+                HoldMode::Raw
+            );
+
+            // Ctrl+Shift/Cmd are fixed to raw
+            assert_eq!(
+                compute_hold_mode(true, false, HoldMods::CtrlShift),
+                HoldMode::Raw
+            );
+            assert_eq!(
+                compute_hold_mode(false, true, HoldMods::CtrlCmd),
+                HoldMode::Raw
+            );
+
+            EXCLUSIVE_MODE.store(prev, AtomicOrdering::SeqCst);
+        }
+
+        #[test]
+        fn compute_hold_mode_exclusive_forces_raw() {
+            let prev = EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst);
+            EXCLUSIVE_MODE.store(true, AtomicOrdering::SeqCst);
+
+            assert_eq!(
+                compute_hold_mode(true, true, HoldMods::CtrlAlt),
+                HoldMode::Raw
+            );
+
+            EXCLUSIVE_MODE.store(prev, AtomicOrdering::SeqCst);
+        }
     }
 }
 
@@ -842,14 +1035,14 @@ mod tests {
         };
         assert!(current.matches(&required, true));
 
-        // With Shift (assistive mode) - should still match in exclusive mode
+        // With Shift - should NOT match in exclusive mode
         let current_with_shift = ModifierFlags {
             ctrl: true,
             alt: false,
             shift: true,
             cmd: false,
         };
-        assert!(current_with_shift.matches(&required, true));
+        assert!(!current_with_shift.matches(&required, true));
 
         // Extra modifier (Alt) - should NOT match in exclusive mode
         let current_with_extra = ModifierFlags {
@@ -898,9 +1091,17 @@ mod tests {
         set_toggle_trigger(ToggleTrigger::DoubleOption);
         assert_eq!(get_toggle_trigger(), ToggleTrigger::DoubleOption);
 
+        // Test DoubleLeftOption
+        set_toggle_trigger(ToggleTrigger::DoubleLeftOption);
+        assert_eq!(get_toggle_trigger(), ToggleTrigger::DoubleLeftOption);
+
         // Test DoubleRightOption
         set_toggle_trigger(ToggleTrigger::DoubleRightOption);
         assert_eq!(get_toggle_trigger(), ToggleTrigger::DoubleRightOption);
+
+        // Test DoubleCtrl
+        set_toggle_trigger(ToggleTrigger::DoubleCtrl);
+        assert_eq!(get_toggle_trigger(), ToggleTrigger::DoubleCtrl);
 
         // Test None (disabled)
         set_toggle_trigger(ToggleTrigger::None);

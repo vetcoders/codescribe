@@ -7,14 +7,13 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use codescribe::config::Config;
 use codescribe::os::hotkeys;
-use codescribe::{ai_formatting, audio, whisper};
+use codescribe::{ai_formatting, audio, tray, whisper};
+use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tracing::{debug, info, warn};
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// CodeScribe CLI - Local speech-to-text transcription
 ///
@@ -96,6 +95,7 @@ enum MigrateKind {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
+
     let cli = Cli::parse();
 
     // Handle --config flag
@@ -114,37 +114,55 @@ async fn main() -> Result<()> {
     }
 }
 
-static LOG_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> =
-    std::sync::OnceLock::new();
-
 fn init_tracing() {
-    // Ensure ~/.codescribe/.env is loaded before we read RUST_LOG.
-    let _ = codescribe::config::Config::load();
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{EnvFilter, fmt};
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    let log_dir = codescribe::config::Config::config_dir().join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let file_appender = tracing_appender::rolling::never(&log_dir, "codescribe.log");
-    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
-    let _ = LOG_GUARD.set(guard);
-
-    let log_to_stdout = std::env::var("CODESCRIBE_LOG_STDOUT")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false);
-
-    let _ = if log_to_stdout {
-        subscriber
-            .with_writer(file_writer.and(std::io::stdout))
-            .try_init()
-    } else {
-        subscriber.with_writer(file_writer).try_init()
+    // Prefer `RUST_LOG`, fall back to legacy `LOG_LEVEL`.
+    let filter = match env::var("RUST_LOG") {
+        Ok(v) => v,
+        Err(_) => match env::var("LOG_LEVEL") {
+            Ok(v) => v.to_lowercase(),
+            Err(_) => "info".to_string(),
+        },
     };
+
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let log_dir = PathBuf::from(home).join(".codescribe").join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("codescribe.log");
+
+    let stderr_layer = fmt::layer()
+        .with_ansi(true)
+        .with_target(true)
+        .with_thread_ids(true);
+
+    let filter_layer = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+
+    if let Ok(file) = file {
+        let file = std::sync::Arc::new(file);
+        let file_layer = fmt::layer()
+            .with_ansi(false)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_writer(move || (*file).try_clone().expect("Failed to clone log file"));
+
+        let _ = tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(stderr_layer)
+            .with(file_layer)
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(stderr_layer)
+            .try_init();
+    }
 }
 
 /// Handle --config flag: create default config and open in editor
@@ -364,35 +382,44 @@ async fn handle_transcribe_file(
 }
 
 async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
+    use tokio::sync::mpsc;
+
     eprintln!("CodeScribe Live Transcription");
     eprintln!("Press Ctrl+C to stop.");
 
     whisper::init()?;
 
-    let config = codescribe::audio::recorder::RecorderConfig::default();
-    let mut recorder =
-        codescribe::audio::streaming_recorder::StreamingRecorder::with_config(config)?;
+    let mut recorder = codescribe::audio::streaming_recorder::StreamingRecorder::new()?;
+    let (vad_tx, mut vad_rx) = mpsc::unbounded_channel::<()>();
+    recorder.recorder.set_on_vad_stop({
+        let vad_tx = vad_tx.clone();
+        move || {
+            let _ = vad_tx.send(());
+        }
+    });
 
     let emitter = StreamEmitter::new();
     recorder.set_delta_callback(Some(Arc::new(
         codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new({
             let emitter = Arc::clone(&emitter);
             move |delta: &str| {
-                emitter.emit_delta(delta);
+                emitter.emit_raw(delta);
             }
         })),
     )));
 
-    // Live CLI should stream continuously (no VAD-gated buffering).
-    recorder.start_with_buffered(language, false).await?;
+    recorder.start(language).await?;
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             eprintln!("Stopping live transcription (Ctrl+C)...");
         }
+        _ = vad_rx.recv() => {
+            eprintln!("Stopping live transcription (VAD)...");
+        }
     }
 
-    let _ = recorder.stop_without_saving().await?;
+    let _ = recorder.stop().await?;
     emitter.finish();
 
     Ok(())
@@ -414,6 +441,9 @@ async fn run_daemon() -> Result<()> {
     codescribe::set_dock_icon();
     #[cfg(target_os = "macos")]
     codescribe::install_basic_edit_menu();
+
+    #[cfg(target_os = "macos")]
+    codescribe::os::permissions::request_all_permissions();
 
     codescribe::whisper::init().context("Failed to initialize Whisper")?;
     let controller = Arc::new(RecordingController::new());
@@ -440,58 +470,154 @@ async fn run_daemon() -> Result<()> {
     let menu_controller = Arc::clone(&controller);
     let menu_handle = Handle::current();
     std::thread::spawn(move || {
-        use tray::TrayMenuEvent;
         for event in menu_rx {
-            // Apply hotkey settings directly from event (avoids race condition with .env save)
-            match &event {
-                TrayMenuEvent::SetHoldMods(mods) => {
-                    hotkeys::set_hold_mods(*mods);
-                }
-                TrayMenuEvent::SetToggleTrigger(trigger) => {
-                    hotkeys::set_toggle_trigger(*trigger);
-                }
-                TrayMenuEvent::ToggleHoldExclusive => {
-                    let config = Config::load();
-                    hotkeys::set_exclusive_mode(!config.hold_exclusive);
-                }
-                _ => {}
-            }
-
-            // Update controller with fresh config for non-hotkey settings
+            let event_for_async = event.clone();
             let controller = Arc::clone(&menu_controller);
             let handle = menu_handle.clone();
             handle.spawn(async move {
-                let config = Config::load();
+                // Apply menu-driven config changes deterministically.
+                // The tray handler writes to `~/.codescribe/.env`, but reading it back immediately
+                // can race on some systems. So we use the event payload as the source of truth
+                // for hotkey-related fields and only reload the rest from disk.
+                let mut config = Config::load();
+                match &event_for_async {
+                    tray::TrayMenuEvent::SetHoldMods(mods) => {
+                        config.hold_mods = *mods;
+                    }
+                    tray::TrayMenuEvent::SetToggleTrigger(trigger) => {
+                        config.toggle_trigger = *trigger;
+                    }
+                    tray::TrayMenuEvent::SetHoldExclusive(exclusive) => {
+                        config.hold_exclusive = *exclusive;
+                    }
+                    tray::TrayMenuEvent::SetQuickNotesEnabled(enabled) => {
+                        config.quick_notes_enabled = *enabled;
+                    }
+                    tray::TrayMenuEvent::SetQuickNotesSaveOnly(save_only) => {
+                        config.quick_notes_save_only = *save_only;
+                    }
+                    tray::TrayMenuEvent::SetVadPreset(preset) => {
+                        apply_vad_preset(&config, *preset);
+                    }
+                    tray::TrayMenuEvent::InstallSileroVad => {
+                        eprintln!("Installing Silero VAD model…");
+                        match codescribe_core::vad::ensure_downloaded_to_user_dir().await {
+                            Ok(path) => {
+                                eprintln!("Silero VAD downloaded: {}", path.display());
+                                let init_path = path.clone();
+                                let init_result = tokio::task::spawn_blocking(move || {
+                                    codescribe_core::vad::init(&init_path)
+                                })
+                                .await;
+
+                                match init_result {
+                                    Ok(Ok(())) => {
+                                        eprintln!("Silero VAD initialized");
+                                        #[cfg(target_os = "macos")]
+                                        {
+                                            codescribe::os::notifications::notify(
+                                                "CodeScribe",
+                                                "Silero VAD is ready",
+                                            );
+                                        }
+                                    }
+                                    Ok(Err(e)) => {
+                                        eprintln!("Silero VAD init failed: {}", e);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Silero VAD init task failed: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Silero VAD download failed: {}", e);
+                                #[cfg(target_os = "macos")]
+                                {
+                                    codescribe::os::notifications::notify(
+                                        "CodeScribe",
+                                        &format!("Silero VAD download failed: {e}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                sync_hotkey_config(&config);
                 controller.set_config(config).await;
             });
 
-            if matches!(event, TrayMenuEvent::Quit) {
+            if matches!(event, tray::TrayMenuEvent::Quit) {
                 break;
             }
         }
     });
 
     let (tx, rx) = unbounded::<HotkeyEvent>();
-    let hotkey_manager = hotkeys::HotkeyManager::new(tx).map_err(|e| anyhow::anyhow!(e))?;
+    let hotkey_manager = match hotkeys::HotkeyManager::new(tx) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            eprintln!(
+                "Hotkeys disabled ({}). If this is macOS, check: System Settings > Privacy & Security > Accessibility.",
+                e
+            );
+            None
+        }
+    };
 
-    let hotkey_controller = Arc::clone(&controller);
-    let hotkey_handle = Handle::current();
-    std::thread::spawn(move || {
-        for event in rx {
-            let controller = Arc::clone(&hotkey_controller);
-            let handle = hotkey_handle.clone();
-            handle.spawn(async move {
-                if let Err(e) = dispatch_hotkey_event(event, controller).await {
-                    eprintln!("Hotkey event error: {}", e);
+    if hotkey_manager.is_some() {
+        let hotkey_controller = Arc::clone(&controller);
+        let hotkey_handle = Handle::current();
+        std::thread::spawn(move || {
+            for event in rx {
+                let controller = Arc::clone(&hotkey_controller);
+                let handle = hotkey_handle.clone();
+                handle.spawn(async move {
+                    if let Err(e) = dispatch_hotkey_event(event, controller).await {
+                        eprintln!("Hotkey event error: {}", e);
+                    }
+                });
+            }
+        });
+    }
+
+    // VAD monitor task - auto-finish recording when silence detected
+    let vad_controller = Arc::clone(&controller);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            if vad_controller.is_vad_triggered() {
+                // IMPORTANT:
+                // - In toggle mode, VAD-based auto-finish is the intended UX.
+                // - In hold-to-talk mode, the user's key-down is the source of truth; do NOT stop early.
+                let state = vad_controller.current_state().await;
+                if state == codescribe::controller::State::RecToggle {
+                    eprintln!("VAD triggered - auto-finishing recording");
+                    vad_controller.clear_vad_triggered();
+                    if let Err(e) = vad_controller.finish_recording().await {
+                        eprintln!("VAD finish_recording error: {}", e);
+                    }
+                } else {
+                    // Clear so it doesn't "carry over" into a later toggle session.
+                    vad_controller.clear_vad_triggered();
                 }
-            });
+            }
         }
     });
 
-    // Start Quality Loop daemon (always-on self-improvement)
-    let quality_child = spawn_quality_daemon();
+    // Quality Loop daemon (self-improvement) — OFF by default.
+    //
+    // The daemon is useful, but if it survives app restarts it can confuse macOS
+    // permissions / input monitoring workflows. Turn it on explicitly when needed.
+    let quality_child = if env_bool("CODESCRIBE_AUTOSTART_QUALITY_DAEMON", false) {
+        spawn_quality_daemon()
+    } else {
+        stop_quality_daemon_if_running();
+        codescribe::quality_loop::mark_daemon_unavailable();
+        None
+    };
 
-    tray::run_with_hotkeys(Some(hotkey_manager))?;
+    tray::run_with_hotkeys(hotkey_manager)?;
 
     // Cleanup: kill quality daemon when tray exits
     if let Some(mut handle) = quality_child {
@@ -500,6 +626,77 @@ async fn run_daemon() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(default)
+}
+
+fn apply_vad_preset(config: &Config, preset: tray::VadPreset) {
+    // NOTE: We set both "simple" and "legacy" keys so that:
+    // - core/vad/config.rs (segmenter) picks it up
+    // - core/audio/recorder.rs (auto-stop) picks it up
+    let (threshold, silence_sec, min_speech_sec, sensitivity) = match preset {
+        tray::VadPreset::Sensitive => (
+            0.35_f32, 1.8_f32, 0.05_f32, // sensitivity ≈ (0.85 - threshold) / 0.65
+            0.77_f32,
+        ),
+        tray::VadPreset::Balanced => (0.5_f32, 1.2_f32, 0.1_f32, 0.54_f32),
+        tray::VadPreset::Conservative => (0.7_f32, 0.8_f32, 0.2_f32, 0.23_f32),
+    };
+
+    let _ = config.save_to_env("CODESCRIBE_VAD_THRESHOLD", &format!("{threshold:.2}"));
+    let _ = config.save_to_env(
+        "CODESCRIBE_VAD_MAX_SILENCE_SEC",
+        &format!("{silence_sec:.2}"),
+    );
+    let _ = config.save_to_env(
+        "CODESCRIBE_VAD_MIN_SPEECH_SEC",
+        &format!("{min_speech_sec:.2}"),
+    );
+
+    // "Simple override" keys used by core/vad/config.rs.
+    let _ = config.save_to_env("CODESCRIBE_VAD_SENSITIVITY", &format!("{sensitivity:.2}"));
+    let _ = config.save_to_env("CODESCRIBE_VAD_SILENCE_SEC", &format!("{silence_sec:.2}"));
+}
+
+fn stop_quality_daemon_if_running() {
+    let config_dir = codescribe::config::Config::config_dir();
+    let pid_path = config_dir.join("logs").join("quality_daemon.pid");
+
+    let pid = std::fs::read_to_string(&pid_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<i32>().ok())
+        .unwrap_or(0);
+    if pid <= 0 {
+        let _ = std::fs::remove_file(&pid_path);
+        return;
+    }
+
+    if !is_process_alive(pid) {
+        let _ = std::fs::remove_file(&pid_path);
+        return;
+    }
+
+    // Best-effort safety check: only kill if it looks like codescribe-loop.
+    let is_codescribe_loop = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.contains("codescribe-loop"))
+        .unwrap_or(false);
+
+    if is_codescribe_loop {
+        let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+        let _ = std::fs::remove_file(&pid_path);
+    }
 }
 
 /// Spawn `codescribe-loop --daemon` as a background child process.
@@ -512,15 +709,6 @@ struct QualityDaemonHandle {
 fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
     use std::process::{Command, Stdio};
 
-    if matches!(
-        std::env::var("CODESCRIBE_QUALITY_DAEMON").as_deref(),
-        Ok("0") | Ok("false") | Ok("off")
-    ) {
-        info!("Quality daemon disabled via CODESCRIBE_QUALITY_DAEMON=0");
-        codescribe::quality_loop::mark_daemon_unavailable();
-        return None;
-    }
-
     // Strategy: find codescribe-loop binary next to current exe, or in PATH
     let loop_bin = find_sibling_binary("codescribe-loop");
 
@@ -531,7 +719,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
             if which_exists("codescribe-loop") {
                 PathBuf::from("codescribe-loop")
             } else {
-                debug!("[quality-daemon] codescribe-loop not found; skipping auto-start");
+                eprintln!("[quality-daemon] codescribe-loop not found; skipping auto-start");
                 codescribe::quality_loop::mark_daemon_unavailable();
                 return None;
             }
@@ -547,7 +735,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
         && let Ok(pid) = pid_str.trim().parse::<i32>()
         && is_process_alive(pid)
     {
-        debug!(
+        eprintln!(
             "[quality-daemon] Already running (pid={}); skipping auto-start",
             pid
         );
@@ -563,7 +751,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
     {
         Ok(f) => f,
         Err(e) => {
-            warn!("[quality-daemon] Failed to open log file: {}", e);
+            eprintln!("[quality-daemon] Failed to open log file: {}", e);
             codescribe::quality_loop::mark_daemon_unavailable();
             return None;
         }
@@ -585,7 +773,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
     {
         Ok(child) => {
             let _ = std::fs::write(&pid_path, child.id().to_string());
-            info!(
+            eprintln!(
                 "[quality-daemon] Started (pid={}, bin={}, log={})",
                 child.id(),
                 bin_path.display(),
@@ -594,7 +782,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
             Some(QualityDaemonHandle { child, pid_path })
         }
         Err(e) => {
-            warn!("[quality-daemon] Failed to spawn: {}", e);
+            eprintln!("[quality-daemon] Failed to spawn: {}", e);
             codescribe::quality_loop::mark_daemon_unavailable();
             None
         }
@@ -648,7 +836,6 @@ fn emit_stdout(text: &str) -> Result<()> {
 struct StreamEmitter {
     last_len: Mutex<usize>,
     had_output: AtomicBool,
-    buffer: Mutex<String>,
 }
 
 impl StreamEmitter {
@@ -656,7 +843,6 @@ impl StreamEmitter {
         Arc::new(Self {
             last_len: Mutex::new(0),
             had_output: AtomicBool::new(false),
-            buffer: Mutex::new(String::new()),
         })
     }
 
@@ -667,19 +853,6 @@ impl StreamEmitter {
         if emit_stdout(text).is_ok() {
             self.had_output.store(true, Ordering::SeqCst);
         }
-    }
-
-    fn emit_delta(&self, delta: &str) {
-        if delta.is_empty() {
-            return;
-        }
-
-        let snapshot = {
-            let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
-            apply_delta_to_string(&mut buffer, delta);
-            buffer.clone()
-        };
-        self.emit_cumulative(&snapshot);
     }
 
     fn emit_cumulative(&self, cumulative: &str) {
@@ -700,10 +873,6 @@ impl StreamEmitter {
     }
 }
 
-fn apply_delta_to_string(target: &mut String, delta: &str) {
-    codescribe_core::contracts::TranscriptDelta::from_raw(delta).apply(target);
-}
-
 fn sync_hotkey_config(config: &codescribe::config::Config) {
     codescribe::os::hotkeys::set_hold_mods(config.hold_mods);
     codescribe::os::hotkeys::set_toggle_trigger(config.toggle_trigger);
@@ -715,10 +884,10 @@ async fn dispatch_hotkey_event(
     controller: std::sync::Arc<codescribe::controller::RecordingController>,
 ) -> Result<()> {
     use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType};
-    use codescribe::os::hotkeys::{HoldAction, HotkeyEvent};
+    use codescribe::os::hotkeys::{HoldAction, HoldMode, HotkeyEvent};
 
     match event {
-        HotkeyEvent::Hold { action, assistive } => {
+        HotkeyEvent::Hold { action, mode } => {
             let mapped_action = match action {
                 HoldAction::Down => HotkeyAction::Down,
                 HoldAction::Up => HotkeyAction::Up,
@@ -726,7 +895,20 @@ async fn dispatch_hotkey_event(
             let input = HotkeyInput {
                 key_type: HotkeyType::Hold,
                 action: mapped_action,
-                assistive,
+                assistive: !matches!(mode, HoldMode::Raw),
+                hold_mode: mode,
+                force_raw: matches!(mode, HoldMode::Raw),
+                force_ai: false,
+            };
+            controller.handle_hotkey_event(input).await?;
+        }
+        HotkeyEvent::HoldUpdate { mode } => {
+            let input = HotkeyInput {
+                key_type: HotkeyType::Hold,
+                action: HotkeyAction::Press,
+                assistive: !matches!(mode, HoldMode::Raw),
+                hold_mode: mode,
+                force_raw: matches!(mode, HoldMode::Raw),
                 force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
@@ -736,7 +918,20 @@ async fn dispatch_hotkey_event(
                 key_type: HotkeyType::Toggle,
                 action: HotkeyAction::Press,
                 assistive: false,
+                hold_mode: HoldMode::Raw,
+                force_raw: false,
                 force_ai: true,
+            };
+            controller.handle_hotkey_event(input).await?;
+        }
+        HotkeyEvent::ToggleRaw => {
+            let input = HotkeyInput {
+                key_type: HotkeyType::Toggle,
+                action: HotkeyAction::Press,
+                assistive: false,
+                hold_mode: HoldMode::Raw,
+                force_raw: true,
+                force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
         }
@@ -745,19 +940,8 @@ async fn dispatch_hotkey_event(
                 key_type: HotkeyType::Toggle,
                 action: HotkeyAction::Press,
                 assistive: true,
-                force_ai: false,
-            };
-            controller.handle_hotkey_event(input).await?;
-        }
-        HotkeyEvent::Conversation { action } => {
-            let mapped_action = match action {
-                HoldAction::Down => HotkeyAction::Down,
-                HoldAction::Up => HotkeyAction::Up,
-            };
-            let input = HotkeyInput {
-                key_type: HotkeyType::Conversation,
-                action: mapped_action,
-                assistive: false,
+                hold_mode: HoldMode::Raw,
+                force_raw: false,
                 force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;

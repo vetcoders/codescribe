@@ -9,6 +9,7 @@
 
 pub mod conversation;
 pub mod history;
+pub mod notes;
 
 // Re-export main types (public API for GUI apps)
 pub use conversation::{
@@ -31,4 +32,8 @@ pub use history::{
     save_entry,
     save_entry_with_kind,
     save_entry_with_timestamp,
+};
+
+pub use notes::{
+    append_quick_note, notes_dir, open_notes_folder, open_today_note, today_note_path,
 };

@@ -1,4 +1,5 @@
 use crate::audio::recorder::{Recorder, RecorderConfig};
+use crate::pipeline::contracts::DeltaSink;
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::pipeline::streaming::{
     buffered_transcription_worker, env_bool_default, stream_log_path, transcription_worker,
@@ -10,11 +11,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info};
 
 // Re-export public API that was moved to pipeline::streaming
-#[allow(deprecated)]
-pub use crate::pipeline::streaming::StreamDeltaCallback;
 pub use crate::pipeline::streaming::transcribe_streaming_samples;
-
-use crate::pipeline::contracts::DeltaSink;
 
 pub struct StreamingRecorder {
     pub recorder: Recorder,
@@ -106,6 +103,7 @@ impl StreamingRecorder {
                     actual_sample_rate,
                     language,
                     delta_callback,
+                    None, // vad_stop_callback — not used in app context
                     log_path,
                 )
                 .await;
@@ -149,8 +147,8 @@ impl StreamingRecorder {
     pub async fn stop_without_saving(&mut self) -> Result<String> {
         info!("Stopping streaming recorder (no WAV)...");
 
-        // 1. Stop recording without writing a WAV file
-        let _ = self.recorder.stop_without_saving().await?;
+        // 1. Stop recording (discard WAV path)
+        let _ = self.recorder.stop().await?;
 
         // 2. Wait for worker to finish processing remaining chunks
         if let Some(handle) = self.transcription_handle.take() {

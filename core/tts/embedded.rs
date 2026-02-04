@@ -23,15 +23,15 @@ mod data {
 }
 
 /// Check if embedded model is available
-///
-/// Note: We only check weights_size, not cfg!(embed_tts).
-/// The cfg!() macro can return false in workspace builds even when
-/// the data was correctly embedded via #[cfg(embed_tts)].
-/// If weights exist (len > 0), the model is available.
 pub fn is_embedded_available() -> bool {
+    let cfg_set = cfg!(embed_tts);
     let weights_size = data::WEIGHTS.len();
-    tracing::debug!("[TTS] Embedded check: weights_size={}", weights_size);
-    weights_size > 0
+    tracing::debug!(
+        "[TTS] Embedded check: cfg={}, weights_size={}",
+        cfg_set,
+        weights_size
+    );
+    cfg_set && weights_size > 0
 }
 
 /// Get embedded model data if available

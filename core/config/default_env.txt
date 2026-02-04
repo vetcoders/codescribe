@@ -10,12 +10,12 @@ LLM_FORMATTING_API_KEY=
 # === Core mode ===
 USE_LOCAL_STT=1
 LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
-WHISPER_LANGUAGE=
+WHISPER_LANGUAGE=pl
 
 # === Hotkeys ===
 HOLD_MODS=ctrl
 HOLD_EXCLUSIVE=1
-TOGGLE_TRIGGER=double_option
+TOGGLE_TRIGGER=none
 HOLD_START_DELAY_MS=800
 
 # === Overlay / UI ===
@@ -28,41 +28,48 @@ HOLD_BADGE_OFFSET_Y=-10
 
 # Two reasonable configurations (choose 1)
 
-## ✅ A) "Hands-off stable" (recommended for VAD)
-
-# less aggressive, does not cut off sentences
-
-CODESCRIBE_BUFFERED_STREAM=1
-CODESCRIBE_STREAM_CHUNK_SEC=3.0
-CODESCRIBE_STREAM_OVERLAP_RATIO=0.2
-CODESCRIBE_BUFFER_DELAY_MS=1800
-CODESCRIBE_TYPING_CPS=35
-# Number of words emitted per tick (buffered mode)
-CODESCRIBE_EMIT_WORDS_MAX=3
+## ✅ B) "Live preview" (recommended default)
+# Shows live deltas in the small overlay while holding Ctrl.
+CODESCRIBE_BUFFERED_STREAM=0
+CODESCRIBE_STREAM_CHUNK_SEC=2.0
+CODESCRIBE_STREAM_OVERLAP_RATIO=0.25
+# (optional) keep these for experimentation / smoother feel:
+# CODESCRIBE_BUFFER_DELAY_MS=1800
+# CODESCRIBE_TYPING_CPS=35
+# CODESCRIBE_EMIT_WORDS_MAX=3
 # VAD config (centralized in core/vad/config.rs)
-# CODESCRIBE_VAD_THRESHOLD=0.35         # Speech probability 0.0-1.0 (lower=more sensitive)
-# CODESCRIBE_VAD_SILENCE_SEC=2.5        # Silence duration before utterance flush
-# CODESCRIBE_VAD_MIN_SPEECH_SEC=0.1     # Min speech before triggering
-# CODESCRIBE_VAD_MAX_UTTERANCE_SEC=60   # Force flush after this duration
-# CODESCRIBE_VAD_PRE_ROLL_SEC=0.5       # Buffer before speech onset
+# Simple controls (preferred):
+##### CODESCRIBE_VAD_SENSITIVITY=0.5 #####
+##### CODESCRIBE_VAD_SILENCE_SEC=1.2 #####
+# Advanced controls (override when needed):
+# CODESCRIBE_VAD_THRESHOLD=0.5
+# CODESCRIBE_VAD_MIN_SPEECH_SEC=0.1
+# CODESCRIBE_VAD_MAX_SILENCE_SEC=1.2
+# CODESCRIBE_VAD_MAX_UTTERANCE_SEC=60
+# CODESCRIBE_VAD_PRE_ROLL_SEC=0.3
 CODESCRIBE_STREAM_SIMILARITY=0.90
 CODESCRIBE_STREAM_NOVELTY=0.20
 # Embedder model override (HuggingFace cache repo id)
 # CODESCRIBE_EMBEDDER_REPO=intfloat/multilingual-e5-small
 
-# ➡️ fewer cuts, more natural phrases, stable overlay.
 # ---------------------------------------------------------------------------
 
-## ✅ B) "Almost live" (streaming without VAD)
-
-# CODESCRIBE_BUFFERED_STREAM=0
-# CODESCRIBE_STREAM_CHUNK_SEC=4.0
-# CODESCRIBE_STREAM_SIMILARITY=0.90
-# CODESCRIBE_STREAM_NOVELTY=0.20
+## ✅ A) "Hands-off stable" (buffered, less jitter)
+# Emits at end-of-utterance with a small delay; can feel more stable but is not "live".
+# CODESCRIBE_BUFFERED_STREAM=1
+# CODESCRIBE_STREAM_CHUNK_SEC=3.0
+# CODESCRIBE_STREAM_OVERLAP_RATIO=0.2
+# CODESCRIBE_BUFFER_DELAY_MS=1800
+# CODESCRIBE_TYPING_CPS=35
+# CODESCRIBE_EMIT_WORDS_MAX=3
 
 # === LLM / Assistive & Formatting ===
 AI_FORMATTING_ENABLED=1
 TRANSCRIPT_SEND_MODE=streaming
+ASSISTIVE_CONTEXT_MAX_CHARS=20000
+#
+# PDF attachments: OCR language hint (used when OCR is needed; prefers offline tools)
+CODESCRIBE_ATTACH_PDF_OCR_LANG=pol+eng
 LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
 LLM_ASSISTIVE_MODEL=gpt-5.2
 # LLM_ASSISTIVE_TEMPERATURE=0.2
@@ -78,11 +85,20 @@ STT_ENDPOINT=https://api.libraxis.cloud/v1/audio/transcriptions
 HISTORY_ENABLED=1
 DUMP_AUDIO_LOGS=1
 
+# === Quick Notes (voice → text notes) ===
+# When enabled, dictation saves to a daily Markdown note.
+QUICK_NOTES_ENABLED=0
+# If enabled, Quick Notes becomes "save-only" (no auto-paste).
+QUICK_NOTES_SAVE_ONLY=0
+# Optional override for notes directory (Vista-friendly):
+# CODESCRIBE_NOTES_DIR=~/Git/vista/notes
+
 # === Clipboard ===
 RESTORE_CLIPBOARD=1
 RESTORE_CLIPBOARD_DELAY_MS=1000
 
 # === Audio ===
+AUTO_SILENCE=0
 BEEP_ON_START=1
 SOUND_NAME=Tink
 SOUND_VOLUME=0.25

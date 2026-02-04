@@ -296,7 +296,9 @@ fn test_all_toggle_trigger_variants() {
 
     let variants = [
         ("double_option", ToggleTrigger::DoubleOption),
+        ("double_lalt", ToggleTrigger::DoubleLeftOption),
         ("double_ralt", ToggleTrigger::DoubleRightOption),
+        ("double_ctrl", ToggleTrigger::DoubleCtrl),
         ("none", ToggleTrigger::None),
     ];
 
