@@ -42,6 +42,7 @@ use crate::audio::streaming_recorder::StreamingRecorder;
 use crate::config::Config;
 use crate::config::models::ModelManager;
 use crate::os::clipboard;
+use crate::os::selection::{AssistiveContext, build_assistive_input, capture_assistive_context};
 use crate::tray::{TrayStatus, update_tray_status};
 use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
@@ -110,6 +111,12 @@ pub struct RecordingController {
     /// Assistive hands-off loop active (Right Option toggle)
     assistive_loop_active: Arc<AtomicBool>,
 
+    /// Best-effort selected-text/app context captured for assistive sessions.
+    ///
+    /// Must be captured BEFORE showing any overlay window, because overlays
+    /// may steal focus and destroy the user's selection context.
+    assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
+
     // ═══════════════════════════════════════════════════════════
     // Conversation mode (Moshi full-duplex)
     // ═══════════════════════════════════════════════════════════
@@ -132,6 +139,9 @@ pub struct RecordingController {
 
     /// Flag to skip Moshi init if models are not available (avoids spam)
     moshi_unavailable: Arc<AtomicBool>,
+
+    /// Background tasks (cloud saves, etc.) — aborted on reset
+    background_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl RecordingController {
@@ -144,13 +154,20 @@ impl RecordingController {
             config.hold_start_delay_ms, config.beep_on_start, config.whisper_language
         );
 
-        let mut recorder =
-            StreamingRecorder::new().expect("Failed to initialize streaming recorder");
-        recorder.set_delta_callback(Some(Arc::new(|delta| {
-            route_transcription_delta(delta);
-        })));
+        let mut recorder = StreamingRecorder::new().unwrap_or_else(|e| {
+            error!("StreamingRecorder init failed: {e}");
+            panic!("Cannot start CodeScribe without audio recorder: {e}");
+        });
+        recorder.set_delta_callback(Some(Arc::new(
+            codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|delta: &str| {
+                route_transcription_delta(delta);
+            })),
+        )));
 
-        let model_manager = ModelManager::new().expect("Failed to initialize model manager");
+        let model_manager = ModelManager::new().unwrap_or_else(|e| {
+            error!("ModelManager init failed: {e}");
+            panic!("Cannot start CodeScribe without model manager: {e}");
+        });
         if let Ok(models) = model_manager.list_models()
             && !models.is_empty()
         {
@@ -176,6 +193,7 @@ impl RecordingController {
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
             assistive_loop_active: Arc::new(AtomicBool::new(false)),
+            assistive_context: Arc::new(RwLock::new(None)),
             // Conversation mode (lazy init)
             conversation_engine: Arc::new(Mutex::new(None)),
             audio_player: Arc::new(Mutex::new(None)),
@@ -183,6 +201,7 @@ impl RecordingController {
             conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
             moshi_unavailable: Arc::new(AtomicBool::new(false)),
+            background_tasks: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -197,13 +216,20 @@ impl RecordingController {
             cfg.hold_start_delay_ms, cfg.beep_on_start, cfg.whisper_language
         );
 
-        let mut recorder =
-            StreamingRecorder::new().expect("Failed to initialize streaming recorder");
-        recorder.set_delta_callback(Some(Arc::new(|delta| {
-            route_transcription_delta(delta);
-        })));
+        let mut recorder = StreamingRecorder::new().unwrap_or_else(|e| {
+            error!("StreamingRecorder init failed: {e}");
+            panic!("Cannot start CodeScribe without audio recorder: {e}");
+        });
+        recorder.set_delta_callback(Some(Arc::new(
+            codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|delta: &str| {
+                route_transcription_delta(delta);
+            })),
+        )));
 
-        let model_manager = ModelManager::new().expect("Failed to initialize model manager");
+        let model_manager = ModelManager::new().unwrap_or_else(|e| {
+            error!("ModelManager init failed: {e}");
+            panic!("Cannot start CodeScribe without model manager: {e}");
+        });
         if let Ok(models) = model_manager.list_models()
             && !models.is_empty()
         {
@@ -228,6 +254,7 @@ impl RecordingController {
             hold_start_task: Arc::new(Mutex::new(None)),
             serial_lock: Arc::new(Mutex::new(())),
             assistive_loop_active: Arc::new(AtomicBool::new(false)),
+            assistive_context: Arc::new(RwLock::new(None)),
             // Conversation mode (lazy init)
             conversation_engine: Arc::new(Mutex::new(None)),
             audio_player: Arc::new(Mutex::new(None)),
@@ -235,6 +262,7 @@ impl RecordingController {
             conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
             moshi_unavailable: Arc::new(AtomicBool::new(false)),
+            background_tasks: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -295,6 +323,7 @@ impl RecordingController {
         } else if matches!(event.action, HotkeyAction::Down | HotkeyAction::Press) {
             // Only reset on Down/Press, not Up (preserves upgrade during hold)
             *self.assistive_mode.write().await = false;
+            *self.assistive_context.write().await = None;
 
             match event.key_type {
                 HotkeyType::Hold => {
@@ -842,6 +871,7 @@ impl RecordingController {
         let session_id = Arc::clone(&self.session_id);
         let recorder = Arc::clone(&self.recorder);
         let delay = Duration::from_millis(delay_ms);
+        let assistive_context = Arc::clone(&self.assistive_context);
 
         let task = tokio::spawn(async move {
             // Wait for the configured delay
@@ -868,9 +898,11 @@ impl RecordingController {
             // If user wants to hold in silence for 45 minutes - that's their choice.
             let mut rec = recorder.lock().await;
             // Set streaming callback for overlay updates (routed by session mode)
-            rec.set_delta_callback(Some(Arc::new(|text: &str| {
-                route_transcription_delta(text);
-            })));
+            rec.set_delta_callback(Some(Arc::new(
+                codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|text: &str| {
+                    route_transcription_delta(text);
+                })),
+            )));
             if !cfg!(test)
                 && let Err(e) = rec.start(Some(language.as_str().to_string())).await
             {
@@ -892,11 +924,18 @@ impl RecordingController {
             show_badge_for_mode(badge_mode);
 
             if is_assistive {
+                // Capture context BEFORE showing any overlay (overlays can steal focus).
+                let ctx = tokio::task::spawn_blocking(capture_assistive_context)
+                    .await
+                    .unwrap_or_default();
+                *assistive_context.write().await = Some(ctx);
+
                 crate::hide_transcription_overlay();
                 crate::show_voice_chat_overlay();
                 crate::show_agent_tab();
                 crate::voice_chat_ui::update_voice_chat_status("Listening...");
             } else {
+                *assistive_context.write().await = None;
                 // Non-assistive: transcription overlay preview
                 crate::clear_transcription_text();
                 crate::show_transcription_overlay();
@@ -971,9 +1010,11 @@ impl RecordingController {
         let mut recorder = self.recorder.lock().await;
 
         // Set streaming callback for overlay updates (routed by session mode)
-        recorder.set_delta_callback(Some(Arc::new(|text: &str| {
-            route_transcription_delta(text);
-        })));
+        recorder.set_delta_callback(Some(Arc::new(
+            codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|text: &str| {
+                route_transcription_delta(text);
+            })),
+        )));
 
         // Skip actual audio stream in tests (no CoreAudio device needed)
         if !cfg!(test) {
@@ -998,11 +1039,18 @@ impl RecordingController {
         set_assistive_session(is_assistive);
 
         if is_assistive {
+            // Capture context BEFORE showing any overlay (overlays can steal focus).
+            let ctx = tokio::task::spawn_blocking(capture_assistive_context)
+                .await
+                .unwrap_or_default();
+            *self.assistive_context.write().await = Some(ctx);
+
             crate::hide_transcription_overlay();
             crate::show_voice_chat_overlay();
             crate::show_agent_tab();
             crate::voice_chat_ui::update_voice_chat_status("Listening...");
         } else {
+            *self.assistive_context.write().await = None;
             // Non-assistive: transcription overlay preview
             crate::clear_transcription_text();
             crate::show_transcription_overlay();
@@ -1075,6 +1123,7 @@ impl RecordingController {
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
+        *self.assistive_context.write().await = None;
         // Keep assistive loop alive only when explicitly enabled and no manual stop was requested
         if result.is_ok() && keep_assistive_loop {
             self.assistive_loop_active.store(true, Ordering::SeqCst);
@@ -1286,17 +1335,26 @@ impl RecordingController {
         // - Quick dictation? → Ctrl (fast, raw)
         // - Need formatting? → Double Option (respects setting)
         // - Need AI help? → Ctrl+Shift (always AI)
-        let (formatted_text, output_kind) = if assistive {
+        let (formatted_text, output_kind, should_auto_paste) = if assistive {
             // Ctrl+Shift: ALWAYS augmentation mode (AI expands content)
             info!("Assistive mode (Ctrl+Shift): augmenting transcript via AI");
 
             if chat_active {
                 // Finalize the streaming user draft into a bubble
+                crate::show_voice_chat_overlay();
                 crate::voice_chat_ui::set_voice_chat_user_text(&clean_text);
                 crate::voice_chat_ui::show_agent_tab();
                 crate::voice_chat_ui::set_voice_chat_sending(true);
                 crate::voice_chat_ui::update_voice_chat_status("Thinking...");
             }
+
+            let ctx = self
+                .assistive_context
+                .read()
+                .await
+                .clone()
+                .unwrap_or_default();
+            let assistive_input = build_assistive_input(&clean_text, &ctx);
 
             let lang_str = language_opt.map(String::from);
 
@@ -1317,7 +1375,7 @@ impl RecordingController {
             };
 
             let result = crate::ai_formatting::format_text_with_status(
-                &clean_text,
+                &assistive_input,
                 lang_str.as_deref(),
                 true,
                 delta_callback,
@@ -1327,6 +1385,7 @@ impl RecordingController {
                 crate::ai_formatting::AiFormatStatus::Applied => {
                     if chat_active {
                         // Display AI response in overlay
+                        crate::show_voice_chat_overlay();
                         crate::voice_chat_ui::update_voice_chat_status("AI Response:");
                         crate::voice_chat_ui::set_voice_chat_text(&result.text);
                         info!(
@@ -1338,6 +1397,7 @@ impl RecordingController {
                 }
                 crate::ai_formatting::AiFormatStatus::Failed => {
                     if chat_active {
+                        crate::show_voice_chat_overlay();
                         crate::voice_chat_ui::update_voice_chat_status("AI Failed");
                         crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
                     }
@@ -1350,7 +1410,7 @@ impl RecordingController {
                     crate::state::history::TranscriptKind::Raw
                 }
             };
-            (result.text, kind)
+            (result.text, kind, false)
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
             // Post-processed clean_text is used (lexicon + cleanup already applied)
@@ -1359,12 +1419,14 @@ impl RecordingController {
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
+                    true,
                 )
             } else {
                 info!("Raw mode (Ctrl): using post-processed transcript");
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
+                    true,
                 )
             }
         } else if force_ai {
@@ -1408,6 +1470,7 @@ impl RecordingController {
                     crate::ai_formatting::AiFormatStatus::Applied => {
                         if chat_active {
                             // Display formatted text in overlay
+                            crate::show_voice_chat_overlay();
                             crate::voice_chat_ui::update_voice_chat_status("Formatted:");
                             crate::voice_chat_ui::set_voice_chat_text(&result.text);
                             info!(
@@ -1431,12 +1494,13 @@ impl RecordingController {
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
-                (result.text, kind)
+                (result.text, kind, false)
             } else if has_repetition {
                 info!("Formatting mode (Left Option): AI unavailable, cleaning repetitions");
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
+                    false,
                 )
             } else {
                 info!(
@@ -1445,6 +1509,7 @@ impl RecordingController {
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
+                    false,
                 )
             }
         } else {
@@ -1491,6 +1556,7 @@ impl RecordingController {
                     crate::ai_formatting::AiFormatStatus::Applied => {
                         if chat_active {
                             // Display formatted text in overlay
+                            crate::show_voice_chat_overlay();
                             crate::voice_chat_ui::update_voice_chat_status("Formatted:");
                             crate::voice_chat_ui::set_voice_chat_text(&result.text);
                             info!(
@@ -1514,13 +1580,14 @@ impl RecordingController {
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
-                (result.text, kind)
+                (result.text, kind, false)
             } else if has_repetition {
                 // Toggle OFF with repetition: local cleanup only
                 info!("Raw mode (Toggle OFF): applying local repetition cleanup");
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
+                    true,
                 )
             } else {
                 // Toggle OFF: using post-processed transcript
@@ -1528,6 +1595,7 @@ impl RecordingController {
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
+                    true,
                 )
             }
         };
@@ -1559,10 +1627,15 @@ impl RecordingController {
             );
         }
 
-        // Paste the text into the active application
-        clipboard::paste_text(&formatted_text).context("Failed to paste text")?;
-
-        info!("Text pasted successfully");
+        if cfg!(test) {
+            info!("Skipping paste in tests (mode={})", mode_label);
+        } else if should_auto_paste {
+            // Paste the text into the active application
+            clipboard::paste_text(&formatted_text).context("Failed to paste text")?;
+            info!("Text pasted successfully");
+        } else {
+            info!("Auto-paste skipped (mode={})", mode_label);
+        }
 
         // Save final transcript (skip duplicate when RAW already stored and unchanged)
         let needs_final_save = !raw_save_enabled
@@ -1592,7 +1665,7 @@ impl RecordingController {
         } else if let Some(handle) = cloud_handle {
             let slug_hint = raw_text.clone();
             let timestamp = recording_timestamp;
-            tokio::spawn(async move {
+            let bg_handle = tokio::spawn(async move {
                 match handle.await {
                     Ok(Ok(text)) => {
                         let entry = crate::state::history::save_entry_with_timestamp_and_slug(
@@ -1607,6 +1680,11 @@ impl RecordingController {
                     Err(e) => error!("Cloud transcription task failed: {}", e),
                 }
             });
+            // Track for cleanup on reset
+            if let Ok(mut tasks) = self.background_tasks.try_lock() {
+                tasks.retain(|h| !h.is_finished());
+                tasks.push(bg_handle);
+            }
         }
 
         Ok(())
@@ -1628,6 +1706,14 @@ impl RecordingController {
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
+        *self.assistive_context.write().await = None;
+
+        // Abort outstanding background tasks
+        if let Ok(mut tasks) = self.background_tasks.try_lock() {
+            for handle in tasks.drain(..) {
+                handle.abort();
+            }
+        }
 
         // Hide UI indicators
         hide_hold_badge();

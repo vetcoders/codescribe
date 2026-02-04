@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn test_lexicon_rewrite() {
-        let mut processor = StreamPostProcessor::new();
+        let mut processor = LexiconPostProcessor::new();
         let input = "Uzywam doker do kontenerow i mam api key do github.";
         let output = processor.process(input).expect("expected output");
         assert!(

@@ -100,6 +100,16 @@ pub fn copy_to_clipboard(text: &str) {
     let _ = clipboard::copy(text);
 }
 
+/// Set a tooltip on any NSView.
+/// # Safety
+/// `view` must be a valid Objective-C object that supports `setToolTip:`.
+pub unsafe fn set_tooltip(view: Id, text: &str) {
+    unsafe {
+        let tip = ns_string(text);
+        let _: () = msg_send![view, setToolTip: tip];
+    }
+}
+
 // ============================================================================
 // Text Field Helpers
 // ============================================================================
@@ -528,6 +538,16 @@ pub unsafe fn window_show(window: Id) {
     }
 }
 
+/// Hide window (order out)
+/// # Safety
+/// `window` must be a valid `NSWindow` instance.
+pub unsafe fn window_hide(window: Id) {
+    unsafe {
+        let nil: *mut Object = std::ptr::null_mut();
+        let _: () = msg_send![window, orderOut: nil];
+    }
+}
+
 /// Close window
 /// # Safety
 /// `window` must be a valid `NSWindow` instance.
@@ -771,25 +791,87 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let ns_text_field = Class::get("NSTextField").unwrap();
         let ns_color = Class::get("NSColor").unwrap();
         let ns_font = Class::get("NSFont").unwrap();
+        let ns_dict = Class::get("NSDictionary").unwrap();
 
-        // Calculate text dimensions (approximate)
         let font_size = 13.0;
-        let padding = 12.0;
+        let padding_x = 12.0;
+        let padding_top = 10.0;
         let copy_button_height = if config.message_index.is_some() {
-            20.0
+            16.0
         } else {
             0.0
         };
-        let chars_per_line = (config.max_width - padding * 2.0) / (font_size * 0.6);
-        let text_len = config.text.len() as f64;
-        let estimated_lines = (text_len / chars_per_line).ceil().max(1.0);
+        // Reserve space for the Copy button so it never overlaps text.
+        let padding_bottom = if copy_button_height > 0.0 {
+            copy_button_height + 8.0
+        } else {
+            10.0
+        };
         let line_height = font_size * 1.4;
-        let text_height = estimated_lines * line_height;
-        let bubble_height = text_height + padding * 2.0 + copy_button_height;
 
-        // Bubble width: content-aware but capped
-        let content_width = (text_len * font_size * 0.6).min(config.max_width - padding * 2.0);
-        let bubble_width = content_width + padding * 2.0;
+        // Font (prefer JetBrains Mono if installed)
+        let jb_name = ns_string("JetBrainsMono-Regular");
+        let jb_font: Id = msg_send![ns_font, fontWithName: jb_name size: font_size];
+        let font: Id = if jb_font.is_null() {
+            msg_send![ns_font, monospacedSystemFontOfSize: font_size weight: 0.0f64]
+        } else {
+            jb_font
+        };
+
+        // Set text (with streaming indicator if needed)
+        let display_text = if config.is_streaming && config.text.is_empty() {
+            "• • •".to_string() // Pulsing dots placeholder
+        } else if config.is_streaming {
+            format!("{} …", config.text)
+        } else {
+            config.text.clone()
+        };
+
+        // Measure text height/width using NSString boundingRectWithSize (handles newlines/wrapping).
+        //
+        // NOTE: `NSFontAttributeName` (key) has the string value "NSFont". AppKit expects that
+        // key, not the literal "NSFontAttributeName" string.
+        let text_str = ns_string(&display_text);
+        let font_key = ns_string("NSFont");
+        let attrs: Id = msg_send![ns_dict, dictionaryWithObject: font forKey: font_key];
+        let opts: u64 = 1 | 2; // NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+
+        // Keep a small side margin inside the container so full-width bubbles don't overflow.
+        let bubble_max_width = (config.max_width - 16.0).max(80.0);
+        let text_max_width = (bubble_max_width - padding_x * 2.0).max(40.0);
+        let rect_max: CGRect = msg_send![
+            text_str,
+            boundingRectWithSize: CGSize::new(text_max_width, 10_000.0)
+            options: opts
+            attributes: attrs
+        ];
+
+        // Bubble width: content-aware but capped.
+        // If it wraps (or is long), keep the bubble full width for readability.
+        //
+        // We treat streaming messages as "wrap-prone" earlier to avoid the initial narrow bubble
+        // that later expands mid-stream.
+        let long_threshold = if config.is_streaming { 30 } else { 80 };
+        let is_long = display_text.chars().count() > long_threshold;
+        let wraps_at_max =
+            rect_max.size.height > line_height * 1.6 || display_text.contains('\n') || is_long;
+        let bubble_width = if wraps_at_max {
+            bubble_max_width
+        } else {
+            let content_width = rect_max.size.width.min(text_max_width).max(1.0);
+            (content_width + padding_x * 2.0).min(bubble_max_width)
+        };
+
+        // Re-measure height for the final layout width (important when bubble_width < max).
+        let text_layout_width = (bubble_width - padding_x * 2.0).max(40.0);
+        let text_rect: CGRect = msg_send![
+            text_str,
+            boundingRectWithSize: CGSize::new(text_layout_width, 10_000.0)
+            options: opts
+            attributes: attrs
+        ];
+        let text_height = text_rect.size.height.ceil().max(line_height);
+        let bubble_height = text_height + padding_top + padding_bottom;
 
         // Container view (for alignment)
         let container: Id = msg_send![ns_view, alloc];
@@ -802,8 +884,8 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         // Bubble background view
         let bubble: Id = msg_send![ns_view, alloc];
         let bubble_x = match config.role {
-            BubbleRole::User => config.max_width - bubble_width - 8.0, // Right-aligned
-            BubbleRole::Assistant | BubbleRole::System => 8.0,         // Left-aligned
+            BubbleRole::User => (config.max_width - bubble_width - 8.0).max(8.0), // Right-aligned
+            BubbleRole::Assistant | BubbleRole::System => 8.0,                    // Left-aligned
         };
         let bubble_frame = CGRect::new(
             &CGPoint::new(bubble_x, 0.0),
@@ -871,8 +953,8 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
 
         // Text label inside bubble
         let text_frame = CGRect::new(
-            &CGPoint::new(padding, padding / 2.0),
-            &CGSize::new(bubble_width - padding * 2.0, text_height),
+            &CGPoint::new(padding_x, padding_bottom),
+            &CGSize::new((bubble_width - padding_x * 2.0).max(1.0), text_height),
         );
         let text_label: Id = msg_send![ns_text_field, alloc];
         let text_label: Id = msg_send![text_label, initWithFrame: text_frame];
@@ -901,25 +983,8 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
         let _: () = msg_send![text_label, setTextColor: text_color];
 
-        // Font (prefer JetBrains Mono if installed)
-        let jb_name = ns_string("JetBrainsMono-Regular");
-        let jb_font: Id = msg_send![ns_font, fontWithName: jb_name size: font_size];
-        let font: Id = if jb_font.is_null() {
-            msg_send![ns_font, monospacedSystemFontOfSize: font_size weight: 0.0f64]
-        } else {
-            jb_font
-        };
         let _: () = msg_send![text_label, setFont: font];
 
-        // Set text (with streaming indicator if needed)
-        let display_text = if config.is_streaming && config.text.is_empty() {
-            "• • •".to_string() // Pulsing dots placeholder
-        } else if config.is_streaming {
-            format!("{} …", config.text)
-        } else {
-            config.text.clone()
-        };
-        let text_str = ns_string(&display_text);
         let _: () = msg_send![text_label, setStringValue: text_str];
 
         // Word wrap
@@ -933,9 +998,9 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let ns_button = Class::get("NSButton").unwrap();
 
             let button_width = 40.0;
-            let button_height = 16.0;
-            let button_x = bubble_width - button_width - padding / 2.0;
-            let button_y = 2.0; // Bottom of bubble
+            let button_height = copy_button_height;
+            let button_x = bubble_width - button_width - padding_x;
+            let button_y = 4.0; // Bottom of bubble
 
             let button_frame = CGRect::new(
                 &CGPoint::new(button_x, button_y),
@@ -1007,6 +1072,167 @@ pub unsafe fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool)
         };
         let text_color: Id = msg_send![ns_color, colorWithRed: tr green: tg blue: tb alpha: ta];
         let _: () = msg_send![text_label, setTextColor: text_color];
+    }
+}
+
+/// Update a stack view item (bubble container) height constraint if present.
+///
+/// `stack_view_add` installs a fixed-height constraint on each arranged subview.
+/// During streaming, the bubble text grows and we need to update that constraint
+/// so the view doesn't clip.
+///
+/// # Safety
+/// `view` must be a valid `NSView` instance.
+pub unsafe fn update_stack_item_height(view: Id, new_height: f64) {
+    unsafe {
+        let constraints: Id = msg_send![view, constraints];
+        if constraints.is_null() {
+            return;
+        }
+        let count: usize = msg_send![constraints, count];
+        for i in 0..count {
+            let c: Id = msg_send![constraints, objectAtIndex: i];
+            if c.is_null() {
+                continue;
+            }
+
+            // Prefer our tagged constraint.
+            let ident: Id = msg_send![c, identifier];
+            if !ident.is_null() {
+                let c_str: *const i8 = msg_send![ident, UTF8String];
+                if !c_str.is_null() {
+                    let s = std::ffi::CStr::from_ptr(c_str).to_string_lossy();
+                    if s == "codescribe_height" {
+                        let _: () = msg_send![c, setConstant: new_height];
+                        return;
+                    }
+                }
+            }
+
+            // Fallback: find a height constraint on this view.
+            let first: Id = msg_send![c, firstItem];
+            if first != view {
+                continue;
+            }
+            let second: Id = msg_send![c, secondItem];
+            if !second.is_null() {
+                continue;
+            }
+            let first_attr: isize = msg_send![c, firstAttribute];
+            // NSLayoutAttributeHeight == 8
+            if first_attr == 8 {
+                let _: () = msg_send![c, setConstant: new_height];
+                return;
+            }
+        }
+    }
+}
+
+/// Resize an existing bubble container + its internal views for the given text.
+///
+/// Used for streaming updates to prevent clipping without rebuilding the whole view tree.
+///
+/// # Safety
+/// `container` must be the container returned by `create_bubble_view`.
+/// `text_label` must be the label returned by `create_bubble_view`.
+pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, display_text: &str) {
+    unsafe {
+        let ns_dict = Class::get("NSDictionary").unwrap();
+        let ns_font = Class::get("NSFont").unwrap();
+
+        let font: Id = msg_send![text_label, font];
+        let font = if font.is_null() {
+            msg_send![ns_font, systemFontOfSize: 13.0f64]
+        } else {
+            font
+        };
+
+        let container_frame: CGRect = msg_send![container, frame];
+        let max_width = container_frame.size.width.max(80.0);
+        let bubble_max_width = (max_width - 16.0).max(80.0);
+
+        // If the message is getting long, switch to full-width to avoid one-word-per-line bubbles.
+        //
+        // During streaming we append " …" so we can detect it and widen earlier to prevent
+        // the initial narrow bubble phase.
+        let streaming_like = display_text.ends_with('…');
+        let long_threshold = if streaming_like { 30 } else { 80 };
+        let is_long = display_text.chars().count() > long_threshold;
+        let force_full_width = display_text.contains('\n') || is_long;
+
+        let label_frame: CGRect = msg_send![text_label, frame];
+        let width = if force_full_width {
+            let padding_x = 12.0;
+            (bubble_max_width - padding_x * 2.0).max(40.0)
+        } else {
+            label_frame.size.width.max(1.0)
+        };
+
+        let text_str = ns_string(display_text);
+        let font_key = ns_string("NSFont");
+        let attrs: Id = msg_send![ns_dict, dictionaryWithObject: font forKey: font_key];
+        let opts: u64 = 1 | 2; // NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+        let text_rect: CGRect = msg_send![
+            text_str,
+            boundingRectWithSize: CGSize::new(width, 10_000.0)
+            options: opts
+            attributes: attrs
+        ];
+
+        // Approximate line-height floor to avoid tiny/bad measurements.
+        let point_size: f64 = msg_send![font, pointSize];
+        let line_height = (point_size * 1.35).max(14.0);
+
+        let text_height = text_rect.size.height.ceil().max(line_height);
+
+        // Match `create_bubble_view` layout constants.
+        let padding_top = 10.0;
+        let copy_button_height = 16.0;
+        let padding_bottom = copy_button_height + 8.0;
+        let bubble_height = text_height + padding_top + padding_bottom;
+
+        // Resize bubble background view (label's superview).
+        let bubble: Id = msg_send![text_label, superview];
+        if !bubble.is_null() {
+            let bubble_frame: CGRect = msg_send![bubble, frame];
+            let mut bubble_width = bubble_frame.size.width;
+            let mut bubble_x = bubble_frame.origin.x;
+
+            if force_full_width {
+                bubble_width = bubble_max_width;
+                // Preserve alignment based on prior x (user bubbles are right-aligned).
+                let was_right_aligned = bubble_x > 20.0;
+                bubble_x = if was_right_aligned {
+                    (max_width - bubble_width - 8.0).max(8.0)
+                } else {
+                    8.0
+                };
+            }
+
+            // Resize label to match bubble width (keep in sync with create_bubble_view).
+            let padding_x = 12.0;
+            let new_label_w = (bubble_width - padding_x * 2.0).max(1.0);
+            let new_label_frame = CGRect::new(
+                &CGPoint::new(padding_x, padding_bottom),
+                &CGSize::new(new_label_w, text_height),
+            );
+            let _: () = msg_send![text_label, setFrame: new_label_frame];
+
+            let new_bubble_frame = CGRect::new(
+                &CGPoint::new(bubble_x, bubble_frame.origin.y),
+                &CGSize::new(bubble_width, bubble_height),
+            );
+            let _: () = msg_send![bubble, setFrame: new_bubble_frame];
+            let _: () = msg_send![bubble, setNeedsDisplay: true];
+        }
+
+        // Resize container (stack arranged subview).
+        let _: () = msg_send![container, setFrameSize: CGSize::new(container_frame.size.width, bubble_height)];
+        update_stack_item_height(container, bubble_height);
+
+        let _: () = msg_send![container, setNeedsLayout: true];
+        let _: () = msg_send![container, layoutSubtreeIfNeeded];
+        let _: () = msg_send![container, setNeedsDisplay: true];
     }
 }
 
@@ -1084,6 +1310,15 @@ pub fn create_vertical_stack_view(frame: CGRect) -> Id {
 pub unsafe fn stack_view_add(stack: Id, view: Id) {
     unsafe {
         let _: () = msg_send![stack, addArrangedSubview: view];
+
+        // Pin height to the initial frame height (good enough for our chat bubbles/cards).
+        let frame: CGRect = msg_send![view, frame];
+        let height_anchor: Id = msg_send![view, heightAnchor];
+        let height_constraint: Id =
+            msg_send![height_anchor, constraintEqualToConstant: frame.size.height];
+        // Tag for later updates (streaming bubbles grow).
+        let _: () = msg_send![height_constraint, setIdentifier: ns_string("codescribe_height")];
+        let _: () = msg_send![height_constraint, setActive: true];
     }
 }
 

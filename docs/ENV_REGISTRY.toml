@@ -62,6 +62,14 @@ category = "vad"
 description = "Pre-roll buffer (seconds) before speech onset"
 range = "0.0-2.0"
 
+[vars.CODESCRIBE_VAD_SPEECH_PAD_SEC]
+default = ""
+type = "f32"
+reload = "restart"
+category = "vad"
+description = "Speech padding (seconds) appended after speech offset. Defaults to pre_roll_sec value"
+range = "0.0-2.0"
+
 [vars.CODESCRIBE_VAD_GATE_MODE]
 default = "simple"
 type = "string"
@@ -717,9 +725,34 @@ reload = "hot"
 category = "debug"
 description = "Path for streaming debug log"
 
+[vars.CODESCRIBE_LOG_STDOUT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "debug"
+description = "Also log to stdout (in addition to log file)"
+
 [vars.RUST_LOG]
 default = ""
 type = "string"
 reload = "restart"
 category = "debug"
 description = "Rust logging filter"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASSISTIVE CONTEXT CAPTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.ASSISTIVE_CONTEXT_MAX_CHARS]
+default = "5000"
+type = "usize"
+reload = "restart"
+category = "assistive"
+description = "Max characters captured from selection for assistive context"
+
+[vars.ASSISTIVE_CONTEXT_COPY_DELAY_MS]
+default = "150"
+type = "u64"
+reload = "restart"
+category = "assistive"
+description = "Delay in ms after Cmd+C before reading clipboard (macOS timing)"

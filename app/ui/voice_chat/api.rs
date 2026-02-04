@@ -3,7 +3,7 @@
 //! Contains all the public functions for controlling the overlay and
 //! internal helper functions for state updates.
 
-use core_graphics::geometry::CGPoint;
+use core_graphics::geometry::{CGPoint, CGRect};
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
@@ -12,8 +12,9 @@ use tracing::{debug, info, warn};
 
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, create_bubble_view, create_card_view, get_text_field_string,
-    list_draft_files, ns_string, open_file_in_editor, set_text_field_string, stack_view_add,
-    stack_view_clear,
+    get_text_view_string, list_draft_files, ns_string, open_file_in_editor,
+    resize_bubble_container_for_text, set_text_field_string, set_text_view_string, stack_view_add,
+    stack_view_clear, update_bubble_text,
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
@@ -74,7 +75,7 @@ pub fn add_voice_chat_error_message(text: &str) {
     let text_owned = text.to_string();
     Queue::main().exec_async(move || {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::System,
             text: text_owned.clone(),
             is_streaming: false,
@@ -91,7 +92,7 @@ pub fn add_voice_chat_user_message(text: &str) {
     let text_owned = text.to_string();
     Queue::main().exec_async(move || {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::User,
             text: text_owned,
             is_streaming: false,
@@ -191,6 +192,14 @@ pub fn show_drawer_tab() {
     });
 }
 
+/// Store the name of the app the user was in when starting assistive mode.
+pub fn set_voice_chat_target_app(app_name: Option<String>) {
+    Queue::main().exec_async(move || {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.last_target_app = app_name;
+    });
+}
+
 /// Update the conversation mode state (Moshi full-duplex indicators)
 pub fn update_conversation_state(new_state: ConversationModeState) {
     Queue::main().exec_async(move || {
@@ -239,16 +248,24 @@ pub fn update_active_tab_impl(tab: Tab) {
         if let Some(agent_view) = state.agent_scroll_view {
             crate::ui_helpers::set_hidden(agent_view as Id, show_drawer);
         }
-        if let Some(agent_input) = state.agent_input_field {
-            let superview: Id = msg_send![agent_input as Id, superview];
-            if !superview.is_null() {
-                crate::ui_helpers::set_hidden(superview, show_drawer);
-            } else {
-                crate::ui_helpers::set_hidden(agent_input as Id, show_drawer);
-            }
+        if let Some(agent_input_bar) = state.agent_input_bar {
+            crate::ui_helpers::set_hidden(agent_input_bar as Id, show_drawer);
         }
         if let Some(agent_send) = state.agent_send_button {
             crate::ui_helpers::set_hidden(agent_send as Id, show_drawer);
+        }
+
+        // When switching to Agent, make sure the input field can actually receive text.
+        // We do NOT force activation (to avoid stealing focus), but if the window is already
+        // key, we nudge first responder to the input field for better UX.
+        if tab == Tab::Agent
+            && let (Some(window_ptr), Some(input_ptr)) = (state.window, state.agent_input_text_view)
+        {
+            let window = window_ptr as Id;
+            let is_key: bool = msg_send![window, isKeyWindow];
+            if is_key {
+                let _: bool = msg_send![window, makeFirstResponder: input_ptr as Id];
+            }
         }
     }
 }
@@ -268,7 +285,7 @@ fn append_voice_chat_user_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_streaming_user_message(&mut state);
     if let Some(last) = state.messages.last_mut() {
-        apply_delta_with_backspace(&mut last.text, delta);
+        codescribe_core::contracts::TranscriptDelta::from_raw(delta).apply(&mut last.text);
         last.is_streaming = true;
     }
     update_chat_view_with_state(&mut state, false);
@@ -278,19 +295,51 @@ fn append_voice_chat_assistant_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_streaming_assistant_message(&mut state);
     if let Some(last) = state.messages.last_mut() {
-        apply_delta_with_backspace(&mut last.text, delta);
+        codescribe_core::contracts::TranscriptDelta::from_raw(delta).apply(&mut last.text);
         last.is_streaming = true;
     }
-    update_chat_view_with_state(&mut state, false);
+    if !try_update_last_message_view_in_place(&mut state) {
+        update_chat_view_with_state(&mut state, false);
+    }
 }
 
-fn apply_delta_with_backspace(target: &mut String, delta: &str) {
-    for ch in delta.chars() {
-        if ch == '\u{0008}' {
-            target.pop();
-        } else {
-            target.push(ch);
+fn display_text_for_message(message: &ChatMessage) -> String {
+    if message.is_streaming && message.text.is_empty() {
+        "• • •".to_string()
+    } else if message.is_streaming {
+        format!("{} …", message.text)
+    } else {
+        message.text.clone()
+    }
+}
+
+fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> bool {
+    unsafe {
+        // If the view list doesn't match messages, a full rebuild is safer.
+        if state.agent_bubble_views.len() != state.messages.len() {
+            return false;
         }
+
+        let Some(last_message) = state.messages.last() else {
+            return false;
+        };
+        let Some((bubble_ptr, label_ptr)) = state.agent_bubble_views.last().copied() else {
+            return false;
+        };
+
+        let container = bubble_ptr as Id;
+        let label = label_ptr as Id;
+        update_bubble_text(label, &last_message.text, last_message.is_streaming);
+        let display_text = display_text_for_message(last_message);
+        resize_bubble_container_for_text(container, label, &display_text);
+
+        // Keep the latest message in view while streaming.
+        if let Some(scroll_view_ptr) = state.agent_scroll_view {
+            let _ = scroll_view_ptr;
+            let bounds: CGRect = msg_send![container, bounds];
+            let _: () = msg_send![container, scrollRectToVisible: bounds];
+        }
+        true
     }
 }
 
@@ -324,10 +373,10 @@ pub(super) fn clear_voice_chat_text_impl() {
     state.manual_draft.clear();
     state.is_sending = false;
 
-    if let Some(input_field) = state.agent_input_field {
-        unsafe {
-            set_text_field_string(input_field as Id, "");
-        }
+    if let Some(input_view) = state.agent_input_text_view {
+        unsafe { set_text_view_string(input_view as Id, "") };
+    } else if let Some(input_field) = state.agent_input_field {
+        unsafe { set_text_field_string(input_field as Id, "") };
     }
 
     update_chat_view_with_state(&mut state, true);
@@ -335,18 +384,25 @@ pub(super) fn clear_voice_chat_text_impl() {
 }
 
 /// Send the draft message (called from handlers)
+///
+/// SAFETY: OVERLAY_STATE must be fully released before invoking the send
+/// callback, which may re-acquire the lock from another thread/queue.
 pub fn send_draft_message_impl() {
-    let callback = {
+    // Phase 1: extract draft and update state (OVERLAY_STATE held)
+    let draft = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(input_field) = state.agent_input_field else {
+        let draft = if let Some(text_view) = state.agent_input_text_view {
+            unsafe { get_text_view_string(text_view as Id) }
+        } else if let Some(input_field) = state.agent_input_field {
+            unsafe { get_text_field_string(input_field as Id) }
+        } else {
             return;
         };
-        let draft = unsafe { get_text_field_string(input_field as Id) };
         let draft = draft.trim().to_string();
         if draft.is_empty() {
             return;
         }
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::User,
             text: draft.clone(),
             is_streaming: false,
@@ -354,16 +410,25 @@ pub fn send_draft_message_impl() {
         });
         state.manual_draft.clear();
         state.is_sending = true;
-        unsafe {
-            set_text_field_string(input_field as Id, "");
+        if let Some(text_view) = state.agent_input_text_view {
+            unsafe { set_text_view_string(text_view as Id, "") };
+        } else if let Some(input_field) = state.agent_input_field {
+            unsafe { set_text_field_string(input_field as Id, "") };
         }
         update_chat_view_with_state(&mut state, true);
         update_send_button_with_state(&mut state);
-        let handler = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
-        (handler.clone(), draft)
+        draft
+        // OVERLAY_STATE released here
     };
 
-    if let (Some(handler), draft) = callback {
+    // Phase 2: read callback (separate lock scope)
+    let handler = {
+        let guard = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clone()
+    };
+
+    // Phase 3: invoke callback with NO locks held
+    if let Some(handler) = handler {
         handler(draft);
     } else {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -373,7 +438,8 @@ pub fn send_draft_message_impl() {
 }
 
 pub(super) fn commit_last_user_message_impl() {
-    let callback = {
+    // Phase 1: extract text and mark sending (OVERLAY_STATE held)
+    let text = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let Some(last_message) = state.messages.last() else {
             return;
@@ -385,11 +451,18 @@ pub(super) fn commit_last_user_message_impl() {
         state.is_sending = true;
         update_chat_view_with_state(&mut state, true);
         update_send_button_with_state(&mut state);
-        let handler = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
-        (handler.clone(), text)
+        text
+        // OVERLAY_STATE released here
     };
 
-    if let (Some(handler), text) = callback {
+    // Phase 2: read callback (separate lock scope)
+    let handler = {
+        let guard = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clone()
+    };
+
+    // Phase 3: invoke callback with NO locks held
+    if let Some(handler) = handler {
         handler(text);
     } else {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -411,7 +484,7 @@ fn ensure_streaming_assistant_message(state: &mut VoiceChatOverlayState) {
         .last()
         .is_none_or(|msg| msg.role != ChatRole::Assistant || !msg.is_streaming);
     if needs_new {
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::Assistant,
             text: String::new(),
             is_streaming: true,
@@ -426,7 +499,7 @@ fn ensure_streaming_user_message(state: &mut VoiceChatOverlayState) {
         .last()
         .is_none_or(|msg| msg.role != ChatRole::User || !msg.is_streaming);
     if needs_new {
-        state.messages.push(ChatMessage {
+        state.push_message(ChatMessage {
             role: ChatRole::User,
             text: String::new(),
             is_streaming: true,
@@ -490,11 +563,24 @@ fn update_send_button_with_state(state: &mut VoiceChatOverlayState) {
     unsafe {
         if let Some(button_ptr) = state.agent_send_button {
             let btn = button_ptr as Id;
-            let enabled = !state.is_sending && state.auto_send_enabled;
+            // In auto-send mode: button shows "Auto" and is disabled (voice input sends
+            // automatically). In draft mode: button shows ">" and the user clicks to send.
+            let enabled = !state.is_sending;
             let _: () = msg_send![btn, setEnabled: enabled];
-            let title = if state.is_sending { "…" } else { ">" };
-            let title = ns_string(title);
-            let _: () = msg_send![btn, setTitle: title];
+            let title = if state.is_sending {
+                "…"
+            } else if state.auto_send_enabled {
+                "Auto"
+            } else {
+                ">"
+            };
+            let label = if state.auto_send_enabled {
+                "Auto-send enabled"
+            } else {
+                "Send message"
+            };
+            let _: () = msg_send![btn, setTitle: ns_string(title)];
+            let _: () = msg_send![btn, setAccessibilityLabel: ns_string(label)];
         }
     }
 }
@@ -585,6 +671,9 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.agent_scroll_view = None;
     state.agent_container = None;
     state.agent_bubble_views.clear();
+    state.agent_input_bar = None;
+    state.agent_input_scroll_view = None;
+    state.agent_input_text_view = None;
     state.agent_input_field = None;
     state.agent_send_button = None;
     state.active_tab = Tab::Drawer;
@@ -603,28 +692,61 @@ fn refresh_drawer_impl() {
     render_drawer_entries(&mut state, &query);
 }
 
+/// Check that a path is within the CodeScribe transcriptions directory.
+/// Prevents accidental read/delete of files outside the sandbox.
+fn is_safe_transcription_path(path: &std::path::Path) -> bool {
+    let config_dir = codescribe_core::config::Config::config_dir();
+    let allowed_root = config_dir.join("transcriptions");
+    match (path.canonicalize(), allowed_root.canonicalize()) {
+        (Ok(canon), Ok(root)) => canon.starts_with(root),
+        // If canonicalize fails (file doesn't exist yet), fall back to prefix check
+        _ => path.starts_with(&allowed_root),
+    }
+}
+
 pub fn handle_card_copy(index: usize) {
     let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(entry) = state.drawer_entries.get(index)
-        && let Ok(contents) = std::fs::read_to_string(&entry.path)
-    {
-        copy_to_clipboard(&contents);
+    if let Some(entry) = state.drawer_entries.get(index) {
+        if !is_safe_transcription_path(&entry.path) {
+            warn!(
+                "Blocked copy: path outside transcriptions dir: {}",
+                entry.path.display()
+            );
+            return;
+        }
+        if let Ok(contents) = std::fs::read_to_string(&entry.path) {
+            copy_to_clipboard(&contents);
+        }
     }
 }
 
 pub fn handle_card_edit(index: usize) {
     let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(entry) = state.drawer_entries.get(index) {
+        if !is_safe_transcription_path(&entry.path) {
+            warn!(
+                "Blocked edit: path outside transcriptions dir: {}",
+                entry.path.display()
+            );
+            return;
+        }
         let _ = open_file_in_editor(&entry.path);
     }
 }
 
 pub fn handle_card_delete(index: usize) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(entry) = state.drawer_entries.get(index)
-        && let Err(err) = std::fs::remove_file(&entry.path)
-    {
-        warn!("Failed to delete {}: {}", entry.path.display(), err);
+    if let Some(entry) = state.drawer_entries.get(index) {
+        if !is_safe_transcription_path(&entry.path) {
+            warn!(
+                "Blocked delete: path outside transcriptions dir: {}",
+                entry.path.display()
+            );
+            return;
+        }
+        if let Err(err) = std::fs::remove_file(&entry.path) {
+            warn!("Failed to delete {}: {}", entry.path.display(), err);
+        }
     }
     state.drawer_entries = load_drawer_entries();
     render_drawer_entries(&mut state, "");

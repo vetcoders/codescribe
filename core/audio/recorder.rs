@@ -414,7 +414,10 @@ impl Recorder {
 
 impl Default for Recorder {
     fn default() -> Self {
-        Self::new().expect("Failed to create default recorder")
+        Self::new().unwrap_or_else(|e| {
+            error!("Recorder::default() failed: {e}");
+            panic!("Cannot create default Recorder: {e}");
+        })
     }
 }
 

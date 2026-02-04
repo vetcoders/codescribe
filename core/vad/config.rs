@@ -99,15 +99,26 @@ impl VadConfig {
 }
 
 fn env_f32(key: &str, default: f32) -> f32 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(default)
+    match std::env::var(key) {
+        Ok(val) => match val.parse::<f32>() {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!("{key}={val:?} is not a valid f32, using default {default}");
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
 /// Parse env var as f32 with clamping to valid range
 fn env_f32_clamped(key: &str, default: f32, min: f32, max: f32) -> f32 {
-    env_f32(key, default).clamp(min, max)
+    let raw = env_f32(key, default);
+    let clamped = raw.clamp(min, max);
+    if raw != clamped {
+        tracing::warn!("{key}={raw} out of range [{min}, {max}], clamped to {clamped}");
+    }
+    clamped
 }
 
 #[cfg(test)]

@@ -51,8 +51,8 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `CODESCRIBE_VAD_GATE_MODE` – `simple` (domyślnie) lub `iter` (vad_iter z temp_end/prev_end) (RESTART NEEDED)
 - `CODESCRIBE_VAD_ITER=1` – skrót do `iter` (RESTART NEEDED)
 
-> **Uwaga:** Live gate używa twardych parametrów SoTA (pre‑roll + speech_pad).
-> Zmienne `CODESCRIBE_VAD_*` są legacy/offline i **nie wpływają** na live gate.
+> **Uwaga:** Live gate derives `pre_roll` and `speech_pad` from `CODESCRIBE_VAD_PRE_ROLL_SEC`
+> (default 0.064 for streaming). Override `speech_pad` separately via `CODESCRIBE_VAD_SPEECH_PAD_SEC`.
 
 **Post‑process (gating)**
 - `CODESCRIBE_STREAM_SIMILARITY` – domyślnie z kodu (HOT RELOADED)
@@ -148,6 +148,7 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
 - `CODESCRIBE_VAD_GATE_MODE` (RESTART NEEDED)
 - `CODESCRIBE_VAD_ITER` (RESTART NEEDED)
+- `CODESCRIBE_VAD_SPEECH_PAD_SEC` – speech padding after offset, defaults to pre_roll value (RESTART NEEDED)
 
 ### Post‑process (gating / embeddings)
 - `CODESCRIBE_STREAM_SIMILARITY` (HOT RELOADED)

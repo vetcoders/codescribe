@@ -89,6 +89,10 @@ pub struct DrawerEntry {
     pub is_favorite: bool,
 }
 
+/// Maximum number of chat messages retained in memory.
+/// Oldest messages are dropped when this limit is exceeded.
+const MAX_CHAT_MESSAGES: usize = 100;
+
 /// Voice chat overlay state
 pub struct VoiceChatOverlayState {
     // Window
@@ -112,6 +116,9 @@ pub struct VoiceChatOverlayState {
     pub agent_scroll_view: Option<usize>,
     pub agent_container: Option<usize>,
     pub agent_bubble_views: Vec<(usize, usize)>,
+    pub agent_input_bar: Option<usize>,
+    pub agent_input_scroll_view: Option<usize>,
+    pub agent_input_text_view: Option<usize>,
     pub agent_input_field: Option<usize>,
     pub agent_send_button: Option<usize>,
 
@@ -123,6 +130,7 @@ pub struct VoiceChatOverlayState {
     pub manual_draft: String,
     pub is_sending: bool,
     pub auto_send_enabled: bool,
+    pub last_target_app: Option<String>,
 
     // Conversation mode (Moshi)
     pub conversation_state: ConversationModeState,
@@ -148,6 +156,9 @@ impl Default for VoiceChatOverlayState {
             agent_scroll_view: None,
             agent_container: None,
             agent_bubble_views: Vec::new(),
+            agent_input_bar: None,
+            agent_input_scroll_view: None,
+            agent_input_text_view: None,
             agent_input_field: None,
             agent_send_button: None,
             active_tab: Tab::Drawer,
@@ -155,8 +166,20 @@ impl Default for VoiceChatOverlayState {
             manual_draft: String::new(),
             is_sending: false,
             auto_send_enabled: true,
+            last_target_app: None,
             conversation_state: ConversationModeState::default(),
             action_handler: None,
+        }
+    }
+}
+
+impl VoiceChatOverlayState {
+    /// Append a message, dropping the oldest if over the cap.
+    pub fn push_message(&mut self, msg: ChatMessage) {
+        self.messages.push(msg);
+        if self.messages.len() > MAX_CHAT_MESSAGES {
+            let excess = self.messages.len() - MAX_CHAT_MESSAGES;
+            self.messages.drain(..excess);
         }
     }
 }

@@ -374,12 +374,14 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
         codescribe::audio::streaming_recorder::StreamingRecorder::with_config(config)?;
 
     let emitter = StreamEmitter::new();
-    recorder.set_delta_callback(Some(Arc::new({
-        let emitter = Arc::clone(&emitter);
-        move |delta: &str| {
-            emitter.emit_delta(delta);
-        }
-    })));
+    recorder.set_delta_callback(Some(Arc::new(
+        codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new({
+            let emitter = Arc::clone(&emitter);
+            move |delta: &str| {
+                emitter.emit_delta(delta);
+            }
+        })),
+    )));
 
     // Live CLI should stream continuously (no VAD-gated buffering).
     recorder.start_with_buffered(language, false).await?;
@@ -410,6 +412,8 @@ async fn run_daemon() -> Result<()> {
 
     #[cfg(target_os = "macos")]
     codescribe::set_dock_icon();
+    #[cfg(target_os = "macos")]
+    codescribe::install_basic_edit_menu();
 
     codescribe::whisper::init().context("Failed to initialize Whisper")?;
     let controller = Arc::new(RecordingController::new());
@@ -697,13 +701,7 @@ impl StreamEmitter {
 }
 
 fn apply_delta_to_string(target: &mut String, delta: &str) {
-    for ch in delta.chars() {
-        if ch == '\u{0008}' {
-            target.pop();
-        } else {
-            target.push(ch);
-        }
-    }
+    codescribe_core::contracts::TranscriptDelta::from_raw(delta).apply(target);
 }
 
 fn sync_hotkey_config(config: &codescribe::config::Config) {
