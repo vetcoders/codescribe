@@ -224,12 +224,8 @@ use std::sync::{Arc, atomic::AtomicU32};
 
 /// Message to VAD worker (fire-and-forget, no response channel)
 enum VadMessage {
-    Predict {
-        samples: Vec<f32>,
-        sample_rate: u32,
-    },
+    Predict { samples: Vec<f32>, sample_rate: u32 },
     Reset,
-    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -344,6 +340,11 @@ impl VadWorker {
     fn reset(&self) {
         let _ = self.sender.try_send(VadMessage::Reset);
     }
+
+    fn shutdown(&self) {
+        let _ = self.sender.try_send(VadMessage::Shutdown);
+        self.initialized.store(false, Ordering::SeqCst);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -448,6 +449,13 @@ pub fn is_speech(samples: &[f32], sample_rate: u32) -> bool {
 pub fn reset() {
     if let Some(worker) = VAD_WORKER.get() {
         worker.reset();
+    }
+}
+
+/// Gracefully stop the VAD worker thread.
+pub fn shutdown() {
+    if let Some(worker) = VAD_WORKER.get() {
+        worker.shutdown();
     }
 }
 

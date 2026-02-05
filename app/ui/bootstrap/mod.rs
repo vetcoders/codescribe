@@ -10,10 +10,7 @@ use dispatch::Queue;
 use lazy_static::lazy_static;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
-use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
-};
+use objc2_app_kit::{NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState};
 use tracing::{info, warn};
 
 use crate::config::{Config, HoldMods, ToggleTrigger};
@@ -22,9 +19,9 @@ use crate::os::hotkeys;
 use crate::tray::{TrayMenuEvent, send_menu_event};
 use crate::ui::bootstrap::handlers::action_handler_class;
 use crate::ui_helpers::{
-    LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button, button_set_action, color_clear,
-    create_checkbox, create_label, create_secure_text_input, create_slider, create_text_input,
-    ns_string, set_text_field_string, ui_colors, ui_tokens, window_close, window_show,
+    LabelConfig, add_subview, button, button_set_action, create_checkbox, create_label,
+    create_secure_text_input, create_slider, create_text_input, ns_string, set_text_field_string,
+    ui_colors, ui_tokens, window_close,
 };
 
 mod handlers;
@@ -32,8 +29,6 @@ mod handlers;
 // Type alias for Objective-C object pointers
 type Id = *mut Object;
 
-const SETTINGS_WIDTH: f64 = 560.0;
-const SETTINGS_HEIGHT: f64 = 420.0;
 const SIDEBAR_WIDTH: f64 = 120.0;
 const TAB_SETUP: usize = 0;
 const _TAB_KEYS: usize = 1;
@@ -160,110 +155,6 @@ pub unsafe fn attach_settings_view(
         state.window = None;
 
         Some(root)
-    }
-}
-
-#[allow(dead_code)]
-fn show_bootstrap_window_impl() {
-    unsafe {
-        let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-
-        if let Some(window_ptr) = state.window {
-            let window = window_ptr as Id;
-            let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
-            window_show(window);
-            let nil: *mut Object = std::ptr::null_mut();
-            let _: () = msg_send![window, makeKeyAndOrderFront: nil];
-            return;
-        }
-
-        let ns_window = Class::get("NSWindow").unwrap();
-        let ns_screen = Class::get("NSScreen").unwrap();
-        let ns_visual = Class::get("NSVisualEffectView").unwrap();
-
-        let main_screen: Id = msg_send![ns_screen, mainScreen];
-        if main_screen.is_null() {
-            warn!("No main screen available for settings window");
-            return;
-        }
-        let visible_frame: core_graphics::geometry::CGRect = msg_send![main_screen, visibleFrame];
-
-        let x = visible_frame.origin.x + (visible_frame.size.width - SETTINGS_WIDTH) / 2.0;
-        let y = visible_frame.origin.y + (visible_frame.size.height - SETTINGS_HEIGHT) / 2.0;
-
-        let frame = core_graphics::geometry::CGRect {
-            origin: core_graphics::geometry::CGPoint { x, y },
-            size: core_graphics::geometry::CGSize {
-                width: SETTINGS_WIDTH,
-                height: SETTINGS_HEIGHT,
-            },
-        };
-
-        let window: Id = msg_send![ns_window, alloc];
-        let style_mask = NSWindowStyleMask::Borderless | NSWindowStyleMask::FullSizeContentView;
-        let backing = NSBackingStoreType::Buffered;
-        let window: Id = msg_send![
-            window,
-            initWithContentRect: frame
-            styleMask: style_mask
-            backing: backing
-            defer: false
-        ];
-
-        let _: () = msg_send![window, setOpaque: false];
-        let _: () = msg_send![window, setBackgroundColor: color_clear()];
-        let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
-        let _: () = msg_send![window, setHasShadow: true];
-        let _: () = msg_send![window, setMovableByWindowBackground: true];
-        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary;
-        let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
-
-        let content_view: Id = msg_send![window, contentView];
-        if content_view.is_null() {
-            warn!("Failed to get content view for settings window");
-            return;
-        }
-
-        // Full-window blur background
-        let blur_frame = core_graphics::geometry::CGRect {
-            origin: core_graphics::geometry::CGPoint { x: 0.0, y: 0.0 },
-            size: core_graphics::geometry::CGSize {
-                width: SETTINGS_WIDTH,
-                height: SETTINGS_HEIGHT,
-            },
-        };
-        let blur_view: Id = msg_send![ns_visual, alloc];
-        let blur_view: Id = msg_send![blur_view, initWithFrame: blur_frame];
-        let _: () = msg_send![blur_view, setMaterial: NSVisualEffectMaterial::HUDWindow];
-        let _: () = msg_send![blur_view, setBlendingMode: NSVisualEffectBlendingMode::BehindWindow];
-        let _: () = msg_send![blur_view, setState: NSVisualEffectState::Active];
-        let _: () = msg_send![blur_view, setWantsLayer: true];
-        let layer: Id = msg_send![blur_view, layer];
-        if !layer.is_null() {
-            let _: () = msg_send![layer, setCornerRadius: 16.0f64];
-            let _: () = msg_send![layer, setMasksToBounds: true];
-        }
-        add_subview(content_view, blur_view);
-
-        let action_handler_class = action_handler_class();
-        let action_handler: Id = msg_send![action_handler_class, new];
-        build_settings_ui(
-            blur_view,
-            SETTINGS_WIDTH,
-            SETTINGS_HEIGHT,
-            action_handler,
-            &mut state,
-        );
-
-        state.window = Some(window as usize);
-        state.root_view = Some(blur_view as usize);
-
-        window_show(window);
-        let nil: *mut Object = std::ptr::null_mut();
-        let _: () = msg_send![window, makeKeyAndOrderFront: nil];
-
-        info!("Settings window shown");
     }
 }
 

@@ -50,6 +50,7 @@ use std::time::{Duration, Instant};
 
 use crate::os::hotkeys;
 use anyhow::Result;
+use codescribe_core::vad;
 use crossbeam_channel::TryRecvError;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -174,6 +175,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
         // Check for programmatic shutdown request
         if is_shutdown_requested() {
             info!("Shutdown flag detected, performing cleanup...");
+            vad::shutdown();
             *control_flow = ControlFlow::Exit;
             return;
         }
@@ -229,6 +231,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
             // Handle Quit specially to exit event loop
             if event.id == menu_ids.quit {
                 info!("Quit requested via menu, exiting...");
+                vad::shutdown();
                 *control_flow = ControlFlow::Exit;
             }
         }

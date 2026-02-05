@@ -103,8 +103,6 @@ libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# candle-coreml = "0.3"
-coreml-rs = "0.5"
 # macOS specific - for better hotkey support if rdev fails
 core-foundation = "0.10"
 core-graphics = "0.25"

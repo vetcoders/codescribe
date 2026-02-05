@@ -266,20 +266,10 @@ impl TtsEngine {
             .reshape((num_codebooks, num_frames))?
             .to_dtype(DType::I64)?;
 
-        // Add batch dimension: [codebooks, frames] -> [batch, codebooks, frames]
-        let codes_tensor = codes_tensor.unsqueeze(0)?;
-
-        // Decode with Mimi
-        let audio = self.mimi.decode(&codes_tensor)?;
-
-        // Extract samples: [batch, channels, samples] -> Vec<f32>
-        let samples: Vec<f32> = audio.squeeze(0)?.squeeze(0)?.to_vec1()?;
-
-        Ok(samples)
+        self.decode_audio_codes(&codes_tensor)
     }
 
     /// Decode RVQ audio codes (Tensor format) to PCM samples using Mimi codec
-    #[allow(dead_code)]
     fn decode_audio_codes(&mut self, codes: &Tensor) -> Result<Vec<f32>> {
         // Add batch dimension if needed: [codebooks, frames] -> [batch, codebooks, frames]
         let codes = if codes.dims().len() == 2 {

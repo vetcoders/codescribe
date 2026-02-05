@@ -134,6 +134,7 @@ pub(crate) struct BufferedEmitter {
     initial_delay_ms: u64,
     typing_speed_cps: f32,
     emit_words_max: usize,
+    correction_prefix_ratio: f64,
     first_output_at: Option<Instant>,
     current_segment: Option<String>,
     current_tokens: Vec<String>,
@@ -161,6 +162,7 @@ impl BufferedEmitter {
             typing_speed_cps: env_f32("CODESCRIBE_TYPING_CPS", DEFAULT_TYPING_CPS).max(5.0),
             emit_words_max: env_usize("CODESCRIBE_EMIT_WORDS_MAX", DEFAULT_EMIT_WORDS_MAX)
                 .clamp(1, 10),
+            correction_prefix_ratio: buffered_correction_prefix_ratio(),
             first_output_at: None,
             current_segment: None,
             current_tokens: Vec::new(),
@@ -177,12 +179,18 @@ impl BufferedEmitter {
         }
     }
 
+    pub(crate) fn note_audio_activity(&mut self) {
+        if self.first_output_at.is_none() {
+            self.first_output_at = Some(Instant::now());
+        }
+    }
+
     pub(crate) fn push_correction(&mut self, corrected: String) {
         if self.emitted_text.is_empty() {
             return;
         }
         // Guard: reject corrections that would rewrite most of the text.
-        // Common-prefix must cover >= 70% of the shorter string.
+        // Common-prefix must cover >= ratio (default: 60%) of the shorter string.
         let prefix_len = self
             .emitted_text
             .chars()
@@ -194,12 +202,13 @@ impl BufferedEmitter {
             .chars()
             .count()
             .min(corrected.chars().count());
-        if min_len > 0 && (prefix_len as f64 / min_len as f64) < 0.70 {
+        if min_len > 0 && (prefix_len as f64 / min_len as f64) < self.correction_prefix_ratio {
             debug!(
-                "Correction rejected: common prefix {}/{} ({:.0}%) < 70%",
+                "Correction rejected: common prefix {}/{} ({:.0}%) < {:.0}%",
                 prefix_len,
                 min_len,
                 prefix_len as f64 / min_len as f64 * 100.0,
+                self.correction_prefix_ratio * 100.0,
             );
             return;
         }
@@ -424,6 +433,8 @@ pub(crate) async fn buffered_transcription_worker(
 ) {
     info!("Buffered transcription worker started");
 
+    let correction_min_utterances = buffered_correction_min_utterances();
+    let correction_min_sec = buffered_correction_min_sec();
     let mut session = SpeechSession::new_utterance(sample_rate);
     let mut vad_stop_emitted = false;
     let mut pipeline = TranscriptionPipeline::new(language);
@@ -438,8 +449,14 @@ pub(crate) async fn buffered_transcription_worker(
     let mut correction_audio_buf: Vec<f32> = Vec::new();
     let mut utterance_count: usize = 0;
     let mut suffix_snapshot = String::new();
+    let mut seen_audio = false;
 
     while let Some(data) = chunk_receiver.recv().await {
+        if !seen_audio {
+            seen_audio = true;
+            let mut guard = emitter.lock().await;
+            guard.note_audio_activity();
+        }
         for event in session.feed(&data, sample_rate) {
             if let SpeechEvent::Utterance(utterance) = event {
                 if !vad_stop_emitted {
@@ -470,7 +487,9 @@ pub(crate) async fn buffered_transcription_worker(
                 utterance_count += 1;
 
                 let audio_duration_s = correction_audio_buf.len() as f32 / sample_rate as f32;
-                if utterance_count >= 3 || audio_duration_s >= 10.0 {
+                if utterance_count >= correction_min_utterances
+                    || audio_duration_s >= correction_min_sec
+                {
                     let audio = std::mem::take(&mut correction_audio_buf);
                     let lang = pipeline.language.clone();
 
@@ -887,6 +906,18 @@ fn env_usize(key: &str, default: usize) -> usize {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(default)
+}
+
+fn buffered_correction_min_utterances() -> usize {
+    env_usize("CODESCRIBE_BUFFERED_CORRECTION_UTTERANCES", 2).clamp(1, 10)
+}
+
+fn buffered_correction_min_sec() -> f32 {
+    env_f32("CODESCRIBE_BUFFERED_CORRECTION_SEC", 6.0).clamp(1.0, 60.0)
+}
+
+fn buffered_correction_prefix_ratio() -> f64 {
+    env_f32("CODESCRIBE_BUFFERED_CORRECTION_PREFIX", 0.60).clamp(0.4, 0.9) as f64
 }
 
 pub(crate) fn stream_chunk_duration_sec() -> f32 {

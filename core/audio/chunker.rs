@@ -190,8 +190,25 @@ impl SpeechSession {
     }
 
     pub fn new_utterance(sample_rate: u32) -> Self {
+        let interim_sec: f32 = std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .or_else(|| {
+                std::env::var("CODESCRIBE_UTTERANCE_INTERIM_SEC")
+                    .ok()
+                    .and_then(|v| v.parse::<f32>().ok())
+            })
+            .unwrap_or(5.0)
+            .clamp(1.0, 30.0);
+        Self::new_utterance_with_interim(sample_rate, interim_sec)
+    }
+
+    fn new_utterance_with_interim(sample_rate: u32, interim_sec: f32) -> Self {
         let config = hardcoded_gate_config();
-        debug!("SpeechSession::new_utterance gate_mode={:?}", config.mode);
+        debug!(
+            "SpeechSession::new_utterance gate_mode={:?} interim={:.2}s",
+            config.mode, interim_sec
+        );
         let vad_sample_rate = vad::VAD_SAMPLE_RATE;
         let output_sample_rate = match config.mode {
             VadGateMode::Supervisor => sample_rate,
@@ -214,12 +231,7 @@ impl SpeechSession {
 
         let max_utterance_samples =
             (config.vad.max_utterance_sec * output_sample_rate as f32) as usize;
-        let interim_sec: f32 = std::env::var("CODESCRIBE_UTTERANCE_INTERIM_SEC")
-            .ok()
-            .and_then(|v| v.parse::<f32>().ok())
-            .unwrap_or(5.0)
-            .clamp(1.0, 30.0);
-        let interim_limit = (interim_sec * output_sample_rate as f32) as usize;
+        let interim_limit = (interim_sec.clamp(1.0, 30.0) * output_sample_rate as f32) as usize;
         let pre_roll_samples = (config.pre_roll_sec * output_sample_rate as f32)
             .round()
             .max(0.0) as usize;
