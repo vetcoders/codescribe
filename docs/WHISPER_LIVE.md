@@ -108,11 +108,11 @@ make download-model   # ensures models/whisper-large-v3-turbo-mlx-q8 exists for 
 make install          # builds + installs an ~888MB binary with embedded model
 ```
 
-### Bundle / DMG (embedded-only)
+### Bundle / DMG (Whisper + Silero only)
 
 ```bash
 make bundle
-make dmg-full
+make dmg-signed
 ```
 
 Notes:

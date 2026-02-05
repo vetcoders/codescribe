@@ -6,7 +6,7 @@
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-formatting test-all \
         demo demo-raw demo-assistive check fix clean help \
-        dmg dmg-signed dmg-full notarize download-model download-e5 \
+        dmg dmg-signed release-full notarize download-model download-e5 \
         hooks
 
 SHELL := /bin/bash
@@ -22,7 +22,7 @@ CODESCRIBE_DISPLAY_NAME ?= CodeScribe
 CODESCRIBE_BUNDLE_ID ?= com.codescribe.app
 CODESCRIBE_MIN_MACOS ?=
 CODESCRIBE_LSUIELEMENT ?= true
-CODESCRIBE_ENTITLEMENTS ?= packaging/entitlements.plist
+CODESCRIBE_ENTITLEMENTS ?= scripts/entitlements.plist
 
 # Test defaults (reference/cloud unless forced local)
 TEST_USE_LOCAL_LLM ?= 0
@@ -351,7 +351,7 @@ help:
 	@echo "Release & Distribution:"
 	@echo "  make dmg             Build DMG (ad-hoc signed)"
 	@echo "  make dmg-signed      Build DMG (Developer ID signed)"
-	@echo "  make dmg-full        Build DMG with embedded model (~888MB)"
+	@echo "  make release-full    Build + sign + notarize DMG (release-ready)"
 	@echo "  make notarize        Notarize DMG with Apple"
 	@echo "  make download-model  Download Whisper model from HF"
 	@echo "  make download-e5     Download E5 embedder model from HF"
@@ -394,8 +394,8 @@ dmg:
 dmg-signed:
 	@./scripts/build-dmg.sh --sign
 
-dmg-full:
-	@./scripts/build-dmg.sh --sign --full
+release-full:
+	@./scripts/build-dmg.sh --sign --notarize
 
 notarize:
 	@if ls CodeScribe_*.dmg 1> /dev/null 2>&1; then \

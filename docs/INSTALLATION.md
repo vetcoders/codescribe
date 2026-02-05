@@ -31,6 +31,8 @@ make install-app      # Copies to /Applications/CodeScribe.app
 ```bash
 make dmg-signed       # Build signed DMG
 make notarize         # Notarize with Apple (requires Developer ID)
+# or one-shot:
+# make release-full    # Build + sign + notarize
 ```
 
 **Result**: `CodeScribe_X.Y.Z.dmg` ready for distribution.

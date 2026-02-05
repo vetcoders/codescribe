@@ -18,12 +18,12 @@ The core innovation is the **Demuxer** - a streaming parser that identifies tagg
 
 ### Current Limitations
 
-| Issue | Impact |
-|-------|--------|
-| Text-only LLM output | User must read responses, breaking voice flow |
-| Single output channel | Cannot generate files AND speak simultaneously |
-| Request-response pattern | No streaming artifacts during generation |
-| Monolithic processing | All output treated identically |
+| Issue                    | Impact                                         |
+| ------------------------ | ---------------------------------------------- |
+| Text-only LLM output     | User must read responses, breaking voice flow  |
+| Single output channel    | Cannot generate files AND speak simultaneously |
+| Request-response pattern | No streaming artifacts during generation       |
+| Monolithic processing    | All output treated identically                 |
 
 ### Target Experience
 
@@ -164,13 +164,13 @@ impl Demuxer {
 
 ### 3.3 Routing Rules
 
-| Tag | Handler | Behavior |
-|-----|---------|----------|
-| `<speak>` | TTS Module | Convert to audio, stream to client |
-| `<artifact>` | File Handler | Generate file, send notification only |
-| `<tool>` | MCP Bridge | Execute tool, inject result into context |
-| `<data>` | UI Handler | Send structured data to client UI |
-| (none) | Context Buffer | Accumulate for conversation history |
+| Tag          | Handler        | Behavior                                 |
+| ------------ | -------------- | ---------------------------------------- |
+| `<speak>`    | TTS Module     | Convert to audio, stream to client       |
+| `<artifact>` | File Handler   | Generate file, send notification only    |
+| `<tool>`     | MCP Bridge     | Execute tool, inject result into context |
+| `<data>`     | UI Handler     | Send structured data to client UI        |
+| (none)       | Context Buffer | Accumulate for conversation history      |
 
 ### 3.4 Concurrency Model
 
@@ -194,14 +194,15 @@ LLM Stream ──┬──► [speak] ──► TTS Queue ──► Audio Out
 
 **Role:** Minimal "dumb terminal" - I/O only.
 
-| Responsibility | Implementation |
-|----------------|----------------|
-| Audio capture | WebAudio API / CoreAudio |
-| Audio playback | WebAudio API / CoreAudio |
-| WebSocket client | Native / Browser |
-| Minimal UI | Status indicator, notifications |
+| Responsibility   | Implementation                  |
+| ---------------- | ------------------------------- |
+| Audio capture    | WebAudio API / CoreAudio        |
+| Audio playback   | WebAudio API / CoreAudio        |
+| WebSocket client | Native / Browser                |
+| Minimal UI       | Status indicator, notifications |
 
 **Why dumb?**
+
 - All intelligence in Qube
 - Client can be browser, native app, or embedded device
 - Easy to replace/upgrade client without touching core logic
@@ -237,11 +238,11 @@ pub struct Session {
 
 **Bridges:**
 
-| Bridge | Input | Output | Latency Target |
-|--------|-------|--------|----------------|
-| Candle (ASR) | Audio f32 chunks | Text tokens | <200ms |
-| Agent (LLM) | Conversation context | Token stream | <500ms first token |
-| TTS | Text chunks | Audio bytes | <300ms |
+| Bridge       | Input                | Output       | Latency Target     |
+| ------------ | -------------------- | ------------ | ------------------ |
+| Candle (ASR) | Audio f32 chunks     | Text tokens  | <200ms             |
+| Agent (LLM)  | Conversation context | Token stream | <500ms first token |
+| TTS          | Text chunks          | Audio bytes  | <300ms             |
 
 ### 4.3 Candle Transformers (ASR)
 
@@ -261,6 +262,7 @@ impl CandleBridge {
 ```
 
 **Streaming Strategy:**
+
 - VAD-based chunking (Silero VAD)
 - Overlapping windows for continuity
 - Partial results with confidence scores
@@ -341,24 +343,24 @@ Rules:
 
 ### 6.1 Confirmed Technologies
 
-| Component | Technology | Status |
-|-----------|------------|--------|
-| ASR | Whisper v3 Turbo (Candle) | ✅ Production |
-| TTS | Moshi/Mimi (Candle) | ✅ Integrated |
-| VAD | Silero VAD (ONNX) | ✅ Production |
-| LLM Interface | OpenAI-compatible API | ✅ Production |
-| WebSocket | tokio-tungstenite | ✅ Available |
-| MCP | rmcp crate | ✅ Available |
+| Component     | Technology                | Status        |
+| ------------- | ------------------------- | ------------- |
+| ASR           | Whisper v3 Turbo (Candle) | ✅ Production |
+| TTS           | Moshi/Mimi (Candle)       | ✅ Integrated |
+| VAD           | Silero VAD (ONNX)         | ✅ Production |
+| LLM Interface | OpenAI-compatible API     | ✅ Production |
+| WebSocket     | tokio-tungstenite         | ✅ Available  |
+| MCP           | rmcp crate                | ✅ Available  |
 
 ### 6.2 To Be Implemented
 
-| Component | Approach | Complexity |
-|-----------|----------|------------|
-| Demuxer | Custom streaming parser | Medium |
-| Session Manager | Actor model (tokio) | Medium |
-| Tag Protocol | Custom XML-like | Low |
-| Audio Codec (WS) | Opus encoding | Medium |
-| Client SDK | TypeScript + Rust | High |
+| Component        | Approach                | Complexity |
+| ---------------- | ----------------------- | ---------- |
+| Demuxer          | Custom streaming parser | Medium     |
+| Session Manager  | Actor model (tokio)     | Medium     |
+| Tag Protocol     | Custom XML-like         | Low        |
+| Audio Codec (WS) | Opus encoding           | Medium     |
+| Client SDK       | TypeScript + Rust       | High       |
 
 ### 6.3 Infrastructure
 
@@ -399,53 +401,53 @@ Rules:
 
 **Target:** <1s end-to-end (user stops speaking → audio response starts)
 
-| Stage | Budget | Risk | Mitigation |
-|-------|--------|------|------------|
-| VAD detection | 100ms | Low | Silero is fast |
-| ASR processing | 200ms | Medium | Stream partial results |
-| LLM first token | 500ms | High | Use fast models, speculative decoding |
-| TTS synthesis | 200ms | Medium | Moshi streaming, pre-buffer |
-| **Total** | **1000ms** | | |
+| Stage           | Budget     | Risk   | Mitigation                            |
+| --------------- | ---------- | ------ | ------------------------------------- |
+| VAD detection   | 100ms      | Low    | Silero is fast                        |
+| ASR processing  | 200ms      | Medium | Stream partial results                |
+| LLM first token | 500ms      | High   | Use fast models, speculative decoding |
+| TTS synthesis   | 200ms      | Medium | Moshi streaming, pre-buffer           |
+| **Total**       | **1000ms** |        |                                       |
 
 **Fallback:** If latency exceeds budget, play "thinking" audio cue.
 
 ### 7.2 Tag Parsing Edge Cases
 
-| Edge Case | Example | Handling |
-|-----------|---------|----------|
-| Nested tags | `<speak><b>bold</b></speak>` | Allow, pass inner tags to handler |
-| Malformed tags | `<speak>unclosed` | Timeout, flush as text |
-| Escaped content | `<speak>&lt;code&gt;</speak>` | XML entity decode |
-| Binary in tags | `<artifact>[binary]</artifact>` | Base64 encode |
-| Interruption mid-tag | `<speak>Hel--[user interrupts]` | Discard partial |
+| Edge Case            | Example                         | Handling                          |
+| -------------------- | ------------------------------- | --------------------------------- |
+| Nested tags          | `<speak><b>bold</b></speak>`    | Allow, pass inner tags to handler |
+| Malformed tags       | `<speak>unclosed`               | Timeout, flush as text            |
+| Escaped content      | `<speak>&lt;code&gt;</speak>`   | XML entity decode                 |
+| Binary in tags       | `<artifact>[binary]</artifact>` | Base64 encode                     |
+| Interruption mid-tag | `<speak>Hel--[user interrupts]` | Discard partial                   |
 
 ### 7.3 Concurrency Hazards
 
-| Hazard | Scenario | Solution |
-|--------|----------|----------|
-| Audio overlap | TTS still playing when new response starts | Interrupt queue, fade out |
-| Tool timeout | MCP tool hangs | Timeout + "still working" speech |
-| Session leak | Client disconnects mid-stream | Cleanup on WS close |
-| Context race | Tool result arrives during generation | Inject at safe points only |
+| Hazard        | Scenario                                   | Solution                         |
+| ------------- | ------------------------------------------ | -------------------------------- |
+| Audio overlap | TTS still playing when new response starts | Interrupt queue, fade out        |
+| Tool timeout  | MCP tool hangs                             | Timeout + "still working" speech |
+| Session leak  | Client disconnects mid-stream              | Cleanup on WS close              |
+| Context race  | Tool result arrives during generation      | Inject at safe points only       |
 
 ### 7.4 Model Memory Pressure
 
 **On Dragon (512GB):**
 
-| Model | VRAM/RAM | Status |
-|-------|----------|--------|
-| Whisper v3 Turbo | ~2GB | OK |
-| Moshi (q8) | ~8GB | OK |
-| LLM (70B q4) | ~40GB | OK |
-| **Headroom** | ~460GB | Comfortable |
+| Model            | VRAM/RAM | Status      |
+| ---------------- | -------- | ----------- |
+| Whisper v3 Turbo | ~2GB     | OK          |
+| Moshi (q8)       | ~8GB     | OK          |
+| LLM (70B q4)     | ~40GB    | OK          |
+| **Headroom**     | ~460GB   | Comfortable |
 
 **On Consumer Hardware:**
 
-| Config | Feasible? | Notes |
-|--------|-----------|-------|
-| 16GB RAM | ⚠️ Tight | Use smaller models, no local LLM |
-| 32GB RAM | ✅ OK | Whisper + Moshi + 7B LLM |
-| 64GB+ RAM | ✅ Great | Full stack locally |
+| Config    | Feasible? | Notes                            |
+| --------- | --------- | -------------------------------- |
+| 16GB RAM  | ⚠️ Tight  | Use smaller models, no local LLM |
+| 32GB RAM  | ✅ OK     | Whisper + Moshi + 7B LLM         |
+| 64GB+ RAM | ✅ Great  | Full stack locally               |
 
 ---
 
@@ -492,12 +494,12 @@ Rules:
 
 ## 9. Success Metrics
 
-| Metric | Target | Measurement |
-|--------|--------|-------------|
-| End-to-end latency | <1000ms p95 | Timestamp traces |
-| ASR accuracy | >95% WER | Test corpus |
-| Tag parse success | >99.9% | Unit tests |
-| Concurrent sessions | 10+ per Qube | Load test |
+| Metric                | Target       | Measurement      |
+| --------------------- | ------------ | ---------------- |
+| End-to-end latency    | <1000ms p95  | Timestamp traces |
+| ASR accuracy          | >95% WER     | Test corpus      |
+| Tag parse success     | >99.9%       | Unit tests       |
+| Concurrent sessions   | 10+ per Qube | Load test        |
 | Client battery impact | <5% increase | Mobile profiling |
 
 ---
@@ -551,4 +553,4 @@ text        = { any_char - '<' }
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
+_Copyright © 2024–2026 VetCoders_

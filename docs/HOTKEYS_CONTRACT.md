@@ -59,14 +59,15 @@ flowchart TB
 **Behavior:** Recording starts on key down, stops on key up
 **VAD:** DISABLED - user has 100% control via key release
 
-| Config | Keys | Use Case |
-|--------|------|----------|
-| `HOLD_MODS=ctrl` | Ctrl | Default, simple |
-| `HOLD_MODS=ctrl_alt` | Ctrl+Option | Avoid conflicts |
-| `HOLD_MODS=ctrl_shift` | Ctrl+Shift | Assistive always |
-| `HOLD_MODS=ctrl_cmd` | Ctrl+Command | macOS power users |
+| Config                 | Keys         | Use Case          |
+| ---------------------- | ------------ | ----------------- |
+| `HOLD_MODS=ctrl`       | Ctrl         | Default, simple   |
+| `HOLD_MODS=ctrl_alt`   | Ctrl+Option  | Avoid conflicts   |
+| `HOLD_MODS=ctrl_shift` | Ctrl+Shift   | Assistive always  |
+| `HOLD_MODS=ctrl_cmd`   | Ctrl+Command | macOS power users |
 
 **Events:**
+
 ```rust
 HotkeyEvent::Hold { action: Down, assistive: false }  // Ctrl only
 HotkeyEvent::Hold { action: Down, assistive: true }   // Ctrl+Shift
@@ -83,13 +84,14 @@ HotkeyEvent::Hold { action: Up, assistive: bool }     // Release
 **Behavior:** First tap starts recording, second tap stops
 **VAD:** ENABLED - ends utterance after `CODESCRIBE_VAD_SILENCE_SEC` seconds of silence (no stop)
 
-| Config | Keys | Mode |
-|--------|------|------|
-| `TOGGLE_TRIGGER=double_option` | Left Option = normal, Right Option = assistive | Default |
-| `TOGGLE_TRIGGER=double_right_option` | Right Option only (assistive) | Minimal |
-| `TOGGLE_TRIGGER=none` | Toggle disabled | Hold-only users |
+| Config                               | Keys                                           | Mode            |
+| ------------------------------------ | ---------------------------------------------- | --------------- |
+| `TOGGLE_TRIGGER=double_option`       | Left Option = normal, Right Option = assistive | Default         |
+| `TOGGLE_TRIGGER=double_right_option` | Right Option only (assistive)                  | Minimal         |
+| `TOGGLE_TRIGGER=none`                | Toggle disabled                                | Hold-only users |
 
 **Events:**
+
 ```rust
 HotkeyEvent::ToggleNormal     // Double-tap Left Option
 HotkeyEvent::ToggleAssistive  // Double-tap Right Option
@@ -104,6 +106,7 @@ HotkeyEvent::ToggleAssistive  // Double-tap Right Option
 **VAD:** Internal to Moshi (turn management)
 
 **Events:**
+
 ```rust
 HotkeyEvent::Conversation { action: Down }  // Start conversation
 HotkeyEvent::Conversation { action: Up }    // End conversation
@@ -149,6 +152,7 @@ stateDiagram-v2
 ```
 
 **States:**
+
 - `IDLE` - Waiting for hotkey
 - `REC_HOLD` - Recording (hold mode, no VAD)
 - `REC_TOGGLE` - Recording (toggle mode, VAD active)
@@ -187,11 +191,11 @@ flowchart LR
     style C_VAD fill:#cce5ff
 ```
 
-| Mode | VAD Segmentation | Reason |
-|------|---------------|--------|
-| **Hold** | ✅ YES | VAD segments utterances; user controls start/stop via key release. |
-| **Toggle** | ✅ YES | Hands-free mode uses utterance boundaries (no stop). |
-| **Conversation** | Internal | Moshi handles turn-taking internally. |
+| Mode             | VAD Segmentation | Reason                                                             |
+| ---------------- | ---------------- | ------------------------------------------------------------------ |
+| **Hold**         | ✅ YES           | VAD segments utterances; user controls start/stop via key release. |
+| **Toggle**       | ✅ YES           | Hands-free mode uses utterance boundaries (no stop).               |
+| **Conversation** | Internal         | Moshi handles turn-taking internally.                              |
 
 ---
 
@@ -199,19 +203,19 @@ flowchart LR
 
 ### Hotkey Configuration
 
-| Variable | Default | Options | Reload |
-|----------|---------|---------|--------|
-| `HOLD_MODS` | `ctrl` | `ctrl`, `ctrl_alt`, `ctrl_shift`, `ctrl_cmd` | RESTART |
-| `HOLD_EXCLUSIVE` | `true` | `true`, `false` | RESTART |
-| `TOGGLE_TRIGGER` | `double_option` | `double_option`, `double_right_option`, `none` | RESTART |
-| `HOLD_START_DELAY_MS` | `150` | 0-1000 | RESTART |
+| Variable              | Default         | Options                                        | Reload  |
+| --------------------- | --------------- | ---------------------------------------------- | ------- |
+| `HOLD_MODS`           | `ctrl`          | `ctrl`, `ctrl_alt`, `ctrl_shift`, `ctrl_cmd`   | RESTART |
+| `HOLD_EXCLUSIVE`      | `true`          | `true`, `false`                                | RESTART |
+| `TOGGLE_TRIGGER`      | `double_option` | `double_option`, `double_right_option`, `none` | RESTART |
+| `HOLD_START_DELAY_MS` | `150`           | 0-1000                                         | RESTART |
 
 ### VAD Configuration
 
-| Variable | Default | Range | Description |
-|----------|---------|-------|-------------|
-| `CODESCRIBE_VAD_THRESHOLD` | `0.35` | 0.1-0.95 | Speech probability threshold |
-| `CODESCRIBE_VAD_SILENCE_SEC` | `2.5` | 0.1-10.0 | Silence before utterance boundary |
+| Variable                     | Default | Range    | Description                       |
+| ---------------------------- | ------- | -------- | --------------------------------- |
+| `CODESCRIBE_VAD_THRESHOLD`   | `0.35`  | 0.1-0.95 | Speech probability threshold      |
+| `CODESCRIBE_VAD_SILENCE_SEC` | `2.5`   | 0.1-10.0 | Silence before utterance boundary |
 
 ---
 
@@ -386,6 +390,7 @@ const DOUBLE_TAP_INTERVAL_MS: u64 = 450;
 ### Exclusive Mode
 
 When `HOLD_EXCLUSIVE=true` (default):
+
 - Ctrl hold and Option tap are mutually exclusive
 - Pressing Option while Ctrl held → discards Option tap sequence
 - Prevents accidental toggle while trying to hold
@@ -394,25 +399,25 @@ When `HOLD_EXCLUSIVE=true` (default):
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Hotkeys don't work | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable CodeScribe |
-| Double-tap too sensitive | Interval too long | Not configurable (450ms hardcoded) |
-| Recording won't stop (hold) | Key stuck in system | Release all modifiers, try again |
-| VAD cuts utterance too early | Threshold too high | Lower `CODESCRIBE_VAD_THRESHOLD` |
+| Symptom                      | Cause                           | Fix                                                           |
+| ---------------------------- | ------------------------------- | ------------------------------------------------------------- |
+| Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable CodeScribe |
+| Double-tap too sensitive     | Interval too long               | Not configurable (450ms hardcoded)                            |
+| Recording won't stop (hold)  | Key stuck in system             | Release all modifiers, try again                              |
+| VAD cuts utterance too early | Threshold too high              | Lower `CODESCRIBE_VAD_THRESHOLD`                              |
 
 ---
 
 ## File Locations
 
-| File | Purpose |
-|------|---------|
-| `app/os/hotkeys.rs` | CGEventTap listener, event detection |
-| `app/controller/mod.rs` | State machine, event handling |
-| `app/controller/types.rs` | State enum |
-| `core/vad/config.rs` | VAD configuration |
-| `core/audio/streaming_recorder.rs` | Silero VAD segmentation |
+| File                               | Purpose                              |
+| ---------------------------------- | ------------------------------------ |
+| `app/os/hotkeys.rs`                | CGEventTap listener, event detection |
+| `app/controller/mod.rs`            | State machine, event handling        |
+| `app/controller/types.rs`          | State enum                           |
+| `core/vad/config.rs`               | VAD configuration                    |
+| `core/audio/streaming_recorder.rs` | Silero VAD segmentation              |
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
+_Copyright © 2024–2026 VetCoders_

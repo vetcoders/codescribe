@@ -35,10 +35,10 @@ make install-app       # Copy to /Applications
 
 On first launch, grant these permissions in **System Settings → Privacy & Security**:
 
-| Permission | Location | Why |
-|------------|----------|-----|
-| **Microphone** | Privacy → Microphone | Record speech |
-| **Accessibility** | Privacy → Accessibility | Global hotkeys |
+| Permission           | Location                   | Why                  |
+| -------------------- | -------------------------- | -------------------- |
+| **Microphone**       | Privacy → Microphone       | Record speech        |
+| **Accessibility**    | Privacy → Accessibility    | Global hotkeys       |
 | **Input Monitoring** | Privacy → Input Monitoring | Detect modifier keys |
 
 > **Tip**: Restart CodeScribe after granting permissions.
@@ -77,22 +77,22 @@ LLM_API_KEY=sk-your-key-here
 
 ### Recording Modes
 
-| Mode | Hotkey | What It Does |
-|------|--------|--------------|
-| **Raw** | Hold `Ctrl` | Fastest, no AI, raw Whisper output |
-| **Assistive** | Hold `Ctrl+Shift` | AI-enhanced, expands/improves text |
-| **Toggle** | Double-tap `Option` | Hands-free, ends utterance on silence |
+| Mode          | Hotkey              | What It Does                          |
+| ------------- | ------------------- | ------------------------------------- |
+| **Raw**       | Hold `Ctrl`         | Fastest, no AI, raw Whisper output    |
+| **Assistive** | Hold `Ctrl+Shift`   | AI-enhanced, expands/improves text    |
+| **Toggle**    | Double-tap `Option` | Hands-free, ends utterance on silence |
 
 ### Visual Feedback
 
 Look at the menu bar icon:
 
-| Icon State | Meaning |
-|------------|---------|
-| Green dot | Ready (idle) |
-| Red dot | Recording |
-| Orange dot | Processing |
-| Red X | Error |
+| Icon State | Meaning      |
+| ---------- | ------------ |
+| Green dot  | Ready (idle) |
+| Red dot    | Recording    |
+| Orange dot | Processing   |
+| Red X      | Error        |
 
 ---
 
@@ -114,16 +114,19 @@ make logs
 ## Troubleshooting
 
 ### Hotkeys don't work
+
 1. Check all three permissions are granted
 2. Restart CodeScribe
 3. Try `codescribe -v` for verbose logging
 
 ### No transcription
+
 1. Check microphone permission
 2. Verify `WHISPER_LANGUAGE` is set (not empty!)
 3. Check logs: `make logs`
 
 ### Error icon appears
+
 ```bash
 # Check logs for details
 tail -50 /tmp/codescribe.log
@@ -139,4 +142,4 @@ tail -50 /tmp/codescribe.log
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
+_Copyright © 2024–2026 VetCoders_

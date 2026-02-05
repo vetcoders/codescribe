@@ -102,7 +102,7 @@ flowchart LR
 ### Znane wzorce korekcyjne
 
 | Whisper raw                    | Correct             | Domena               |
-|--------------------------------|---------------------|----------------------|
+| ------------------------------ | ------------------- | -------------------- |
 | klipy                          | clippy              | Rust tooling         |
 | Locktri, logstri, Log3, LogTee | loctree             | Nasze narzędzie      |
 | Alfaxon                        | Alfaksalon          | Anestezjologia wet.  |
@@ -193,6 +193,7 @@ flowchart LR
 **Kluczowy insight:** Zamknięcie wizyty w Vista WYMAGA przeglądu notatki. To nie jest opcjonalny krok — to jest obowiązkowa część workflow dokumentacji klinicznej.
 
 To oznacza:
+
 - **Każda zamknięta wizyta = verified training pair** (draft vs approved)
 - **Keyword highlighting** (pomysł Moniki, kod istnieje!) podświetla leki, dawki, diagnozy — dokładnie to co wymaga uwagi
 - **Workflow IS the loop** — żaden osobny "quality step" nie jest potrzebny
@@ -214,14 +215,14 @@ To jest różnica między dark patternem a etycznym produktem.
 ### Analogia do Poziomu 1
 
 | Quality Loop (L1)             | SOAP Loop (L3)                   |
-|-------------------------------|----------------------------------|
+| ----------------------------- | -------------------------------- |
 | WAV = raw input               | Transcription = raw input        |
 | Whisper output = hypothesis   | AI SOAP draft = hypothesis       |
 | Reference .txt = ground truth | Vet-approved SOAP = ground truth |
 | WER = metric                  | Clinical accuracy = metric       |
 | Lexicon = correction tool     | SOAP templates = correction tool |
 | Claude = reviewer             | Claude + Vet = reviewer          |
-| Separate loop step            | **Built into workflow**           |
+| Separate loop step            | **Built into workflow**          |
 
 ### Delta jako dane (z taksonomią)
 
@@ -255,16 +256,16 @@ graph TD
     STYLISTIC --> TERMINOLOGY["TERMINOLOGY — synonim, nie zmiana merytoryczna"]
 ```
 
-| Delta Type | Waga w treningu | Przykład |
-|------------|----------------|----------|
-| `DOSAGE` | **Krytyczna** | "10mg/kg" → "3mg/kg" |
-| `DRUG` | **Krytyczna** | "Meloksykam" → "Robenacoxib" (kot z CKD) |
-| `CONTRAINDICATION` | **Krytyczna** | dodanie "p/w u kotów z niewyd. nerek" |
-| `DIAGNOSIS` | Wysoka | "zapalenie" → "ropne zapalenie" |
-| `PLAN` | Wysoka | dodanie "kontrola za 3 dni" |
-| `TERMINOLOGY` | Niska | "Alfaksalon" → "Alfaxan" (marka) |
-| `FORMAT` | Ignorowana | przecinek, nowa linia |
-| `VERBOSITY` | Niska | skrócenie opisu — styl veta |
+| Delta Type         | Waga w treningu | Przykład                                 |
+| ------------------ | --------------- | ---------------------------------------- |
+| `DOSAGE`           | **Krytyczna**   | "10mg/kg" → "3mg/kg"                     |
+| `DRUG`             | **Krytyczna**   | "Meloksykam" → "Robenacoxib" (kot z CKD) |
+| `CONTRAINDICATION` | **Krytyczna**   | dodanie "p/w u kotów z niewyd. nerek"    |
+| `DIAGNOSIS`        | Wysoka          | "zapalenie" → "ropne zapalenie"          |
+| `PLAN`             | Wysoka          | dodanie "kontrola za 3 dni"              |
+| `TERMINOLOGY`      | Niska           | "Alfaksalon" → "Alfaxan" (marka)         |
+| `FORMAT`           | Ignorowana      | przecinek, nowa linia                    |
+| `VERBOSITY`        | Niska           | skrócenie opisu — styl veta              |
 
 ### Reference Quality Tags
 
@@ -273,13 +274,13 @@ graph TD
 
 Każda zaakceptowana notatka (reference) dostaje tag:
 
-| Tag | Znaczenie | Wartość treningowa |
-|-----|-----------|-------------------|
-| `CORRECTED_CLINICAL` | Vet zmienił lek/dawkę/diagnozę | **Najwyższa** — uczenie safety |
-| `CORRECTED_STYLE` | Vet zmienił styl/format | Niska — personalizacja, nie klinika |
-| `APPROVED_UNCHANGED` | Vet zaakceptował bez zmian | Pozytywny sygnał — draft był OK |
-| `APPROVED_FAST` | Vet kliknął <3s (może nie czytał) | **Pomijana** — niski confidence |
-| `OVERRIDDEN_SAFETY` | Vet zignorował safety warning | **Flagowana** — wymaga audytu |
+| Tag                  | Znaczenie                         | Wartość treningowa                  |
+| -------------------- | --------------------------------- | ----------------------------------- |
+| `CORRECTED_CLINICAL` | Vet zmienił lek/dawkę/diagnozę    | **Najwyższa** — uczenie safety      |
+| `CORRECTED_STYLE`    | Vet zmienił styl/format           | Niska — personalizacja, nie klinika |
+| `APPROVED_UNCHANGED` | Vet zaakceptował bez zmian        | Pozytywny sygnał — draft był OK     |
+| `APPROVED_FAST`      | Vet kliknął <3s (może nie czytał) | **Pomijana** — niski confidence     |
+| `OVERRIDDEN_SAFETY`  | Vet zignorował safety warning     | **Flagowana** — wymaga audytu       |
 
 ### Klasyfikacja Delta Type (reguły)
 
@@ -301,6 +302,7 @@ flowchart TD
 ```
 
 **High-risk tokens (seed list):**
+
 - Jednostki: `mg`, `kg`, `ml`, `mg/kg`, `µg`, `j.m.`, `IU`
 - Drogi podania: `i.v.`, `s.c.`, `i.m.`, `p.o.`, `per os`, `dożylnie`, `podskórnie`
 - Leki: pattern match z bazy leków (vistakernel drug DB)
@@ -322,11 +324,13 @@ flowchart TD
 > **Override nie jest błędem veta** — to zdarzenie o wysokiej wartości analitycznej.
 
 Może oznaczać:
+
 - **Luka w KB** — safety warning był fałszywy bo baza nie zna wyjątku klinicznego
 - **Wyjątek kliniczny** — vet wie coś czego model nie (np. specyficzny pacjent, toleruje wyższe dawki)
 - **Nowy protokół** — vet stosuje nowszy schemat niż baza
 
 Każdy override generuje:
+
 1. Log z kontekstem (co było flagowane, co vet zostawił, dlaczego — opcjonalna nota)
 2. Ticket do review KB (czy dodać wyjątek? czy update bazy?)
 3. Sygnał do safety modelu: "ten pattern nie jest jednoznacznie błędny"
@@ -447,7 +451,7 @@ graph TD
 ### Zasada: Improvement bez naruszenia prywatności
 
 | Warstwa       | Bez zgody                     | Za zgodą           |
-|---------------|-------------------------------|--------------------|
+| ------------- | ----------------------------- | ------------------ |
 | Cloud lexicon | Rośnie z pracy M&K            | + dane użytkownika |
 | Model updates | Push do wszystkich instalacji | —                  |
 | Safety audit  | Wewnętrzny QA VetCoders       | —                  |
@@ -530,7 +534,7 @@ gantt
 ### Pliki w repo
 
 | Plik                                        | LOC   | Rola                                               |
-|---------------------------------------------|-------|----------------------------------------------------|
+| ------------------------------------------- | ----- | -------------------------------------------------- |
 | `codescribe-core/src/quality_report.rs`     | 1563  | Batch: WAV → transcripts → metrics → report        |
 | `codescribe-core/src/quality_loop.rs`       | ~1200 | Analyze report → regressions → lexicon suggestions |
 | `codescribe-core/src/stream_postprocess.rs` | 663   | Runtime lexicon correction + semantic gate         |
@@ -561,5 +565,5 @@ codescribe loop --daemon --interval 3600 --apply
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
-*Klaudiusz & Maciej — from SyntaxError to Clinical Safety*
+_Copyright © 2024–2026 VetCoders_
+_Klaudiusz & Maciej — from SyntaxError to Clinical Safety_

@@ -31,6 +31,8 @@ make install-app      # Copies to /Applications/CodeScribe.app
 ```bash
 make dmg-signed       # Build signed DMG
 make notarize         # Notarize with Apple (requires Developer ID)
+# or one-shot:
+# make release-full    # Build + sign + notarize
 ```
 
 **Result**: `CodeScribe_X.Y.Z.dmg` ready for distribution.
@@ -115,22 +117,24 @@ CodeScribe.app/
 
 ### Info.plist Keys
 
-| Key | Value | Purpose |
-|-----|-------|---------|
-| CFBundleIdentifier | io.loctree.codescribe | Unique app identifier |
-| CFBundleIconFile | AppIcon | Points to AppIcon.icns |
-| CFBundleExecutable | codescribe | Main binary name |
-| LSMinimumSystemVersion | 14.0 | Requires macOS Sonoma+ |
-| NSMicrophoneUsageDescription | ... | Microphone permission prompt |
+| Key                          | Value                 | Purpose                      |
+| ---------------------------- | --------------------- | ---------------------------- |
+| CFBundleIdentifier           | io.loctree.codescribe | Unique app identifier        |
+| CFBundleIconFile             | AppIcon               | Points to AppIcon.icns       |
+| CFBundleExecutable           | codescribe            | Main binary name             |
+| LSMinimumSystemVersion       | 14.0                  | Requires macOS Sonoma+       |
+| NSMicrophoneUsageDescription | ...                   | Microphone permission prompt |
 
 ## Icons
 
 ### Tray Icon
+
 - **Source**: `assets/icon.png` (embedded via `include_bytes!`)
 - **Location in code**: `src/tray/icons.rs`
 - **Size**: 44x44 pixels (Retina), 22x22 logical
 
 ### Dock Icon
+
 - **For CLI**: Programmatically set via `set_dock_icon()` in `src/ui.rs`
 - **For Bundle**: Uses `CFBundleIconFile` from Info.plist pointing to `AppIcon.icns`
 - **Source**: `assets/AppIcon.icns`
@@ -162,33 +166,37 @@ flowchart LR
 
 Grant in **System Settings > Privacy & Security**:
 
-| Permission | Purpose | When Prompted |
-|------------|---------|---------------|
-| Microphone | Audio recording | First recording attempt |
-| Accessibility | Global hotkeys, paste | First hotkey press |
-| Input Monitoring | Keyboard event capture | First hotkey press |
+| Permission       | Purpose                | When Prompted           |
+| ---------------- | ---------------------- | ----------------------- |
+| Microphone       | Audio recording        | First recording attempt |
+| Accessibility    | Global hotkeys, paste  | First hotkey press      |
+| Input Monitoring | Keyboard event capture | First hotkey press      |
 
 ## Troubleshooting
 
 ### Empty Dock Icon
+
 - **CLI mode**: `set_dock_icon()` should set it programmatically
 - **Bundle mode**: Check that `Info.plist` exists and has `CFBundleIconFile`
 - **Verify**: `plutil -lint /Applications/CodeScribe.app/Contents/Info.plist`
 
 ### Empty Tray Icon
+
 - Check that `assets/icon.png` exists and is valid PNG
 - Rebuild with `cargo build --release`
 
 ### Config Not Loading
+
 - Check `~/.codescribe/.env` exists
 - Verify syntax: `cat ~/.codescribe/.env`
 - Check logs: `codescribe -v` for verbose output
 
 ### Hotkeys Not Working
+
 - Grant Accessibility permission
 - Grant Input Monitoring permission
 - Restart the application after granting
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
+_Copyright © 2024–2026 VetCoders_

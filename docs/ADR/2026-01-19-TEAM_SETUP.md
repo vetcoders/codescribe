@@ -37,7 +37,7 @@ Grant in: System Settings > Privacy & Security
 ## Hotkeys
 
 | Key                        | Action                                  | AI Mode            |
-|----------------------------|-----------------------------------------|--------------------|
+| -------------------------- | --------------------------------------- | ------------------ |
 | Hold **Ctrl**              | Record → paste raw transcript           | ALWAYS RAW (no AI) |
 | Hold **Ctrl+Shift**        | Record → AI assistant response          | ALWAYS Assistive   |
 | Double-tap **Option**      | Toggle recording (hands-free)           | Respects AI toggle |
@@ -62,7 +62,7 @@ Grant in: System Settings > Privacy & Security
 - **Zero I/O:** Model loads from memory directly to Metal.
 
 **Developer note (Build Time):**
-You still need the model files locally to *build* the app (because they are `include_bytes!`-ed into the binary).
+You still need the model files locally to _build_ the app (because they are `include_bytes!`-ed into the binary).
 
 ```bash
 make download-model  # Required for build
@@ -178,4 +178,5 @@ For full CI, configure a self-hosted macOS runner (Dragon recommended).
 - If using local STT: confirm the app is using the embedded engine (default in release builds)
 
 ---
-*Copyright © 2024–2026 VetCoders*
+
+_Copyright © 2024–2026 VetCoders_

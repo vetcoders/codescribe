@@ -2,12 +2,12 @@
 
 ## System Requirements
 
-| Requirement | Minimum | Recommended |
-|-------------|---------|-------------|
-| macOS | 13.0 (Ventura) | 14.0+ (Sonoma) |
-| Chip | Apple Silicon or Intel with Metal | Apple Silicon (M1/M2/M3) |
-| RAM | 8 GB | 16 GB |
-| Disk | 1 GB | 2 GB |
+| Requirement | Minimum                           | Recommended              |
+| ----------- | --------------------------------- | ------------------------ |
+| macOS       | 13.0 (Ventura)                    | 14.0+ (Sonoma)           |
+| Chip        | Apple Silicon or Intel with Metal | Apple Silicon (M1/M2/M3) |
+| RAM         | 8 GB                              | 16 GB                    |
+| Disk        | 1 GB                              | 2 GB                     |
 
 ---
 
@@ -53,11 +53,11 @@ You'll see the CodeScribe icon appear in your menu bar. It starts black (idle).
 
 CodeScribe needs these permissions to function:
 
-| Permission | Why | How to Grant |
-|------------|-----|--------------|
-| **Microphone** | Record your speech | System Settings → Privacy & Security → Microphone |
-| **Accessibility** | Global hotkeys, paste text | System Settings → Privacy & Security → Accessibility |
-| **Input Monitoring** | Detect modifier keys | System Settings → Privacy & Security → Input Monitoring |
+| Permission           | Why                        | How to Grant                                            |
+| -------------------- | -------------------------- | ------------------------------------------------------- |
+| **Microphone**       | Record your speech         | System Settings → Privacy & Security → Microphone       |
+| **Accessibility**    | Global hotkeys, paste text | System Settings → Privacy & Security → Accessibility    |
+| **Input Monitoring** | Detect modifier keys       | System Settings → Privacy & Security → Input Monitoring |
 
 > **Tip**: If hotkeys don't work, check that CodeScribe is enabled in all three permission categories.
 
@@ -72,11 +72,13 @@ codescribe --version
 ```
 
 Expected output:
+
 ```
 CodeScribe 0.7.x
 ```
 
 Test transcription:
+
 ```bash
 # Record 5 seconds of audio and transcribe
 codescribe transcribe --record 5
@@ -99,6 +101,7 @@ CodeScribe stores configuration in:
 ```
 
 Create default config:
+
 ```bash
 codescribe --config
 ```
@@ -108,11 +111,13 @@ codescribe --config
 ## Updating
 
 ### Homebrew
+
 ```bash
 brew upgrade codescribe
 ```
 
 ### Manual
+
 Download new version from Releases and replace the old app.
 
 ---
@@ -120,14 +125,16 @@ Download new version from Releases and replace the old app.
 ## Uninstalling
 
 ### Homebrew
+
 ```bash
 brew uninstall codescribe
 ```
 
 ### Manual
+
 1. Delete `/Applications/CodeScribe.app`
 2. Optionally remove config: `rm -rf ~/.codescribe`
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
+_Copyright © 2024–2026 VetCoders_

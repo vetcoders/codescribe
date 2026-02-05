@@ -9,7 +9,7 @@ DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_NAME}"
 BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.codescribe.app}"
 MIN_MACOS="${CODESCRIBE_MIN_MACOS:-}"
 LSUIELEMENT="${CODESCRIBE_LSUIELEMENT:-true}"
-ENTITLEMENTS="${CODESCRIBE_ENTITLEMENTS:-$ROOT_DIR/packaging/entitlements.plist}"
+ENTITLEMENTS="${CODESCRIBE_ENTITLEMENTS:-$ROOT_DIR/scripts/entitlements.plist}"
 IDENTITY="${CODESCRIBE_CODESIGN_IDENTITY:-}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
 
@@ -21,9 +21,6 @@ APP_PATH="$ROOT_DIR/bundle/${APP_NAME}.app"
 SIGN=0
 NOTARIZE=0
 NO_EMBED=0
-FULL=0
-EMBED_TTS=0
-EMBED_E5=0
 
 usage() {
   cat <<EOF
@@ -35,9 +32,6 @@ Options:
   --identity <name>   Override codesign identity
   --entitlements <p>  Entitlements plist path (default: $ENTITLEMENTS)
   --no-embed          Disable all model embedding (CODESCRIBE_NO_EMBED=1)
-  --full              Embed Whisper (default) + TTS + E5 (CODESCRIBE_EMBED_TTS/E5)
-  --embed-tts         Embed TTS model (CODESCRIBE_EMBED_TTS=1)
-  --embed-e5          Embed E5 model (CODESCRIBE_EMBED_E5=1)
 EOF
 }
 
@@ -48,18 +42,10 @@ while [[ $# -gt 0 ]]; do
     --identity) IDENTITY="$2"; shift 2;;
     --entitlements) ENTITLEMENTS="$2"; shift 2;;
     --no-embed) NO_EMBED=1; shift 1;;
-    --full) FULL=1; shift 1;;
-    --embed-tts) EMBED_TTS=1; shift 1;;
-    --embed-e5) EMBED_E5=1; shift 1;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1;;
   esac
 done
-
-if [[ "$FULL" -eq 1 ]]; then
-  EMBED_TTS=1
-  EMBED_E5=1
-fi
 
 BUILD_ENV=(env)
 if [[ "$NO_EMBED" -eq 1 ]]; then
@@ -67,12 +53,7 @@ if [[ "$NO_EMBED" -eq 1 ]]; then
 else
   BUILD_ENV+=(-u CODESCRIBE_NO_EMBED)
 fi
-if [[ "$EMBED_TTS" -eq 1 ]]; then
-  BUILD_ENV+=(CODESCRIBE_EMBED_TTS=1)
-fi
-if [[ "$EMBED_E5" -eq 1 ]]; then
-  BUILD_ENV+=(CODESCRIBE_EMBED_E5=1)
-fi
+BUILD_ENV+=(-u CODESCRIBE_EMBED_TTS -u CODESCRIBE_EMBED_E5)
 
 echo "=== Build DMG ==="
 echo "App: $APP_NAME"

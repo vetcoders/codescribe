@@ -22,6 +22,7 @@ Common issues and solutions for CodeScribe.
 **Symptoms**: Nothing happens when opening the app.
 
 **Solutions**:
+
 1. Check Activity Monitor for running `codescribe` process
 2. Kill any zombie processes: `pkill -9 codescribe`
 3. Try launching from Terminal: `codescribe -v`
@@ -32,6 +33,7 @@ Common issues and solutions for CodeScribe.
 **Symptoms**: App launches but no icon appears.
 
 **Solutions**:
+
 1. Check if icon is hidden behind notch (MacBook Pro)
 2. Use Bartender or similar to reveal hidden icons
 3. Run `codescribe` from Terminal to confirm it's running
@@ -41,6 +43,7 @@ Common issues and solutions for CodeScribe.
 **Symptoms**: Icon stays gray, no response to hotkeys.
 
 **Solutions**:
+
 1. First launch takes 5-10 seconds - wait
 2. Check RAM usage (Whisper needs ~2GB)
 3. Restart if stuck more than 30 seconds
@@ -56,11 +59,13 @@ Common issues and solutions for CodeScribe.
 **Solutions**:
 
 1. **Check Accessibility**:
+
    - System Settings → Privacy & Security → Accessibility
    - Ensure CodeScribe is in the list and enabled
    - If present but not working, remove and re-add
 
 2. **Check Input Monitoring**:
+
    - System Settings → Privacy & Security → Input Monitoring
    - Enable CodeScribe
 
@@ -77,10 +82,12 @@ Common issues and solutions for CodeScribe.
 **Solutions**:
 
 1. **Check Microphone permission**:
+
    - System Settings → Privacy & Security → Microphone
    - Enable CodeScribe
 
 2. **Check audio input**:
+
    - System Settings → Sound → Input
    - Verify correct microphone selected
    - Speak and check input level meter
@@ -110,11 +117,13 @@ Common issues and solutions for CodeScribe.
 **Symptoms**: Recording completes but transcript is blank.
 
 **Causes**:
+
 - Microphone not picking up audio
 - Audio too quiet
 - Wrong input device
 
 **Solutions**:
+
 1. Speak louder/closer to mic
 2. Check System Settings → Sound → Input level
 3. Test with: `codescribe transcribe --record 5 -v`
@@ -126,11 +135,13 @@ Common issues and solutions for CodeScribe.
 **Solutions**:
 
 1. **Environment**:
+
    - Reduce background noise
    - Use headset microphone
    - Speak at moderate pace
 
 2. **Language setting**:
+
    - Set correct language: `WHISPER_LANGUAGE=en`
    - Whisper auto-detects but explicit is better
 
@@ -144,6 +155,7 @@ Common issues and solutions for CodeScribe.
 **Symptoms**: Code-switching or multilingual speech garbled.
 
 **Solutions**:
+
 - Set primary language explicitly
 - Avoid switching languages mid-sentence
 - Use AI formatting to fix mixed content
@@ -159,12 +171,15 @@ Common issues and solutions for CodeScribe.
 **Solutions**:
 
 1. **Check API configuration**:
+
    ```bash
    cat ~/.codescribe/.env | grep LLM
    ```
+
    Verify `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL` are set.
 
 2. **Test API connectivity**:
+
    ```bash
    curl $LLM_ENDPOINT/models -H "Authorization: Bearer $LLM_API_KEY"
    ```
@@ -179,6 +194,7 @@ Common issues and solutions for CodeScribe.
 **Symptoms**: Long delay before AI response appears.
 
 **Solutions**:
+
 1. Enable streaming: `LLM_USE_STREAMING=1`
 2. Use faster model (gpt-4o-mini vs gpt-4)
 3. Check network connection
@@ -189,6 +205,7 @@ Common issues and solutions for CodeScribe.
 **Symptoms**: Getting raw text even with AI enabled.
 
 **Solutions**:
+
 1. Check `AI_FORMATTING_ENABLED=1` in config
 2. Remember: Hold mode (Ctrl only) = always raw
 3. Use Ctrl+Shift for forced AI, or Double Option for toggle
@@ -204,6 +221,7 @@ Common issues and solutions for CodeScribe.
 **Causes**: Whisper transcription is GPU-intensive.
 
 **Solutions**:
+
 1. This is normal during transcription
 2. Should drop after recording stops
 3. If persistent, restart CodeScribe
@@ -215,6 +233,7 @@ Common issues and solutions for CodeScribe.
 **Normal**: Whisper model needs ~2GB.
 
 **If excessive (>4GB)**:
+
 1. Restart CodeScribe
 2. Check for memory leaks with Activity Monitor
 3. Report issue with `codescribe -v` logs
@@ -238,22 +257,22 @@ codescribe -v
 
 ### Important log messages
 
-| Message | Meaning |
-|---------|---------|
-| `Whisper engine initialized` | Model loaded successfully |
-| `Recording started` | Microphone activated |
-| `Transcription complete` | Whisper finished processing |
-| `AI formatting applied` | AI cleaned up text |
-| `Text pasted successfully` | Clipboard + paste worked |
+| Message                      | Meaning                     |
+| ---------------------------- | --------------------------- |
+| `Whisper engine initialized` | Model loaded successfully   |
+| `Recording started`          | Microphone activated        |
+| `Transcription complete`     | Whisper finished processing |
+| `AI formatting applied`      | AI cleaned up text          |
+| `Text pasted successfully`   | Clipboard + paste worked    |
 
 ### Error patterns
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `Failed to initialize Whisper` | Model not found | Reinstall CodeScribe |
-| `Microphone access denied` | Permission missing | Grant in System Settings |
-| `Backend unavailable` | Health check failed | Check LLM configuration |
-| `Empty transcript` | No audio captured | Check microphone |
+| Error                          | Cause               | Fix                      |
+| ------------------------------ | ------------------- | ------------------------ |
+| `Failed to initialize Whisper` | Model not found     | Reinstall CodeScribe     |
+| `Microphone access denied`     | Permission missing  | Grant in System Settings |
+| `Backend unavailable`          | Health check failed | Check LLM configuration  |
+| `Empty transcript`             | No audio captured   | Check microphone         |
 
 ---
 
@@ -290,6 +309,7 @@ If troubleshooting doesn't solve your issue:
 3. **Open issue**: [GitHub Issues](https://github.com/VetCoders/CodeScribe/issues)
 
 Include in your report:
+
 - macOS version (System Settings → General → About)
 - Chip (M1/M2/M3/Intel)
 - CodeScribe version (`codescribe --version`)
@@ -298,4 +318,4 @@ Include in your report:
 
 ---
 
-*Copyright © 2024–2026 VetCoders*
+_Copyright © 2024–2026 VetCoders_
