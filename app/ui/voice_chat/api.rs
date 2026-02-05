@@ -8,6 +8,7 @@ use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use std::path::PathBuf;
+use std::sync::TryLockError;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, info, warn};
 
@@ -385,7 +386,17 @@ pub fn is_conversation_active() -> bool {
 // ═══════════════════════════════════════════════════════════
 
 pub fn update_active_tab_impl(tab: Tab) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    // This can be called from AppKit callbacks where re-entrancy is possible (nested run loops,
+    // live resize, etc.). If we're already holding OVERLAY_STATE on the main thread, a blocking
+    // lock here would deadlock and freeze the app ("Application Not Responding").
+    let mut state = match OVERLAY_STATE.try_lock() {
+        Ok(s) => s,
+        Err(TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(TryLockError::WouldBlock) => {
+            warn!("update_active_tab_impl: OVERLAY_STATE busy; skipping tab switch");
+            return;
+        }
+    };
     update_active_tab_locked(&mut state, tab);
 }
 
@@ -513,7 +524,11 @@ fn update_shortcuts_panel_locked(state: &mut VoiceChatOverlayState) {
 ///
 /// Without this, long messages can look clipped until the next message arrives.
 pub(super) fn reflow_agent_after_resize_impl() {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = match OVERLAY_STATE.try_lock() {
+        Ok(s) => s,
+        Err(TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(TryLockError::WouldBlock) => return,
+    };
     if state.active_tab != Tab::Agent {
         return;
     }
@@ -524,7 +539,11 @@ pub(super) fn reflow_agent_after_resize_impl() {
 
 /// Lightweight layout pass for window resizing (keeps inputs/footers aligned).
 pub(super) fn reflow_overlay_after_resize_impl() {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = match OVERLAY_STATE.try_lock() {
+        Ok(s) => s,
+        Err(TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(TryLockError::WouldBlock) => return,
+    };
     reflow_footer_controls_locked(&mut state);
     resize_agent_input_locked(&mut state);
 }
@@ -1713,7 +1732,11 @@ Tools (optional): `brew install poppler ocrmypdf tesseract-lang`.)\n",
 ///
 /// Keeps it compact by default, and grows it when the user types/pastes longer messages.
 pub fn resize_agent_input_to_draft() {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = match OVERLAY_STATE.try_lock() {
+        Ok(s) => s,
+        Err(TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(TryLockError::WouldBlock) => return,
+    };
     resize_agent_input_locked(&mut state);
 }
 
