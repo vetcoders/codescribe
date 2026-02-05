@@ -44,9 +44,9 @@ use crate::ui_helpers::{
     LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style,
     color_clear, color_label, color_secondary_label, create_button,
     create_flipped_vertical_stack_view, create_glass_effect_view, create_label,
-    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
-    ns_string, set_button_symbol, set_focus_ring, set_hidden, set_tooltip,
-    set_visual_effect_blending, set_visual_effect_material, set_visual_effect_state,
+    create_scrollable_text_view, create_vertical_stack_view, glass_effect_supported,
+    layout_region_frame_for_view, ns_string, set_button_symbol, set_focus_ring, set_hidden,
+    set_tooltip, set_visual_effect_blending, set_visual_effect_material, set_visual_effect_state,
     style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
 };
 
@@ -283,7 +283,9 @@ fn show_voice_chat_overlay_impl() {
             ),
             &CGSize::new(content_bounds.size.width.max(0.0), header_height),
         );
-        let header_bg: Id = if let Some(container_cls) = Class::get("NSGlassEffectContainerView") {
+        let header_bg: Id = if glass_effect_supported()
+            && let Some(container_cls) = Class::get("NSGlassEffectContainerView")
+        {
             let container: Id = msg_send![container_cls, alloc];
             let container: Id = msg_send![container, initWithFrame: header_frame];
             let _: () = msg_send![container, setWantsLayer: true];
