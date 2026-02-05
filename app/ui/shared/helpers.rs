@@ -13,7 +13,7 @@ use crate::os::clipboard;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
-use objc::runtime::{Class, Object};
+use objc::runtime::{Class, Object, class_getInstanceMethod, object_getClass};
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{
     NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
@@ -427,7 +427,8 @@ fn insets_from_frame(bounds: CGRect, frame: CGRect) -> NSEdgeInsets {
 /// Create a glass effect view if available, otherwise fallback to NSVisualEffectView.
 pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial) -> Id {
     unsafe {
-        if let Some(glass_cls) = Class::get("NSGlassEffectView") {
+        if std::env::var("CODESCRIBE_DISABLE_GLASS").is_err() && glass_effect_supported() {
+            let glass_cls = Class::get("NSGlassEffectView").unwrap();
             let view: Id = msg_send![glass_cls, alloc];
             let view: Id = msg_send![view, initWithFrame: frame];
             set_visual_effect_material(view, material);
@@ -448,16 +449,32 @@ pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial)
     }
 }
 
+pub fn glass_effect_supported() -> bool {
+    let Some(glass_cls) = Class::get("NSGlassEffectView") else {
+        return false;
+    };
+    unsafe {
+        let material = class_getInstanceMethod(glass_cls, sel!(setMaterial:));
+        let blending = class_getInstanceMethod(glass_cls, sel!(setBlendingMode:));
+        let state = class_getInstanceMethod(glass_cls, sel!(setState:));
+        !material.is_null() && !blending.is_null() && !state.is_null()
+    }
+}
+
 /// # Safety
 /// `view` must be a valid `NSVisualEffectView`/`NSGlassEffectView` instance.
 pub unsafe fn set_visual_effect_material(view: Id, material: NSVisualEffectMaterial) {
     if view.is_null() {
         return;
     }
-    let supports_material: bool = msg_send![view, respondsToSelector: sel!(setMaterial:)];
-    if supports_material {
-        let _: () = msg_send![view, setMaterial: material];
+    let cls = unsafe { object_getClass(view as *const Object) };
+    if cls.is_null() {
+        return;
     }
+    if unsafe { class_getInstanceMethod(cls, sel!(setMaterial:)) }.is_null() {
+        return;
+    }
+    let _: () = msg_send![view, setMaterial: material];
 }
 
 /// # Safety
@@ -466,10 +483,14 @@ pub unsafe fn set_visual_effect_blending(view: Id, blending: NSVisualEffectBlend
     if view.is_null() {
         return;
     }
-    let supports_blend: bool = msg_send![view, respondsToSelector: sel!(setBlendingMode:)];
-    if supports_blend {
-        let _: () = msg_send![view, setBlendingMode: blending];
+    let cls = unsafe { object_getClass(view as *const Object) };
+    if cls.is_null() {
+        return;
     }
+    if unsafe { class_getInstanceMethod(cls, sel!(setBlendingMode:)) }.is_null() {
+        return;
+    }
+    let _: () = msg_send![view, setBlendingMode: blending];
 }
 
 /// # Safety
@@ -478,10 +499,14 @@ pub unsafe fn set_visual_effect_state(view: Id, state: NSVisualEffectState) {
     if view.is_null() {
         return;
     }
-    let supports_state: bool = msg_send![view, respondsToSelector: sel!(setState:)];
-    if supports_state {
-        let _: () = msg_send![view, setState: state];
+    let cls = unsafe { object_getClass(view as *const Object) };
+    if cls.is_null() {
+        return;
     }
+    if unsafe { class_getInstanceMethod(cls, sel!(setState:)) }.is_null() {
+        return;
+    }
+    let _: () = msg_send![view, setState: state];
 }
 
 // ============================================================================

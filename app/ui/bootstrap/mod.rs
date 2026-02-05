@@ -168,12 +168,14 @@ pub unsafe fn attach_settings_view(
     frame: core_graphics::geometry::CGRect,
 ) -> Option<Id> {
     unsafe {
-        let config = {
+        let (config, existing_root) = {
             let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            state.config_cache.clone().unwrap_or_else(Config::load)
+            (
+                state.config_cache.clone().unwrap_or_else(Config::load),
+                state.root_view,
+            )
         };
-        let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(root_ptr) = state.root_view {
+        if let Some(root_ptr) = existing_root {
             let root = root_ptr as Id;
             let _: () = msg_send![root, setFrame: frame];
             let _: () = msg_send![
@@ -207,17 +209,29 @@ pub unsafe fn attach_settings_view(
 
         let action_handler_class = action_handler_class();
         let action_handler: Id = msg_send![action_handler_class, new];
-        build_settings_ui(
+        let built_state = build_settings_ui(
             root,
             frame.size.width,
             frame.size.height,
             action_handler,
-            &mut state,
             &config,
         );
 
+        let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.root_view = Some(root as usize);
         state.window = None;
+        state.step_labels = built_state.step_labels;
+        state.tab_buttons = built_state.tab_buttons;
+        state.content_views = built_state.content_views;
+        state.active_tab = built_state.active_tab;
+        state.keys_hold_popup = built_state.keys_hold_popup;
+        state.keys_toggle_popup = built_state.keys_toggle_popup;
+        state.keys_preset_popup = built_state.keys_preset_popup;
+        state.keys_exclusive_checkbox = built_state.keys_exclusive_checkbox;
+        state.config_cache = built_state.config_cache;
+        state.permission_labels = built_state.permission_labels;
+        state.quality_daemon_checkbox = built_state.quality_daemon_checkbox;
+        state.completion_view = built_state.completion_view;
 
         Some(root)
     }
@@ -275,9 +289,12 @@ pub(super) fn refresh_permission_indicators() {
     let names = ["Mic", "Accessibility", "Input"];
 
     Queue::main().exec_async(move || unsafe {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let labels = {
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.permission_labels
+        };
         for (i, granted) in perms.iter().enumerate() {
-            if let Some(label_ptr) = state.permission_labels[i] {
+            if let Some(label_ptr) = labels[i] {
                 let label = label_ptr as Id;
                 let dot = if *granted { "\u{25CF}" } else { "\u{25CB}" }; // ● vs ○
                 let text = format!("{} {}", dot, names[i]);
@@ -294,12 +311,12 @@ unsafe fn build_settings_ui(
     settings_width: f64,
     settings_height: f64,
     action_handler: Id,
-    state: &mut BootstrapState,
     config: &Config,
-) {
+) -> BootstrapState {
     unsafe {
         use core_graphics::geometry::{CGPoint, CGRect, CGSize};
         let ns_view = Class::get("NSView").unwrap();
+        let mut state = BootstrapState::default();
 
         let settings_width = settings_width.max(SIDEBAR_WIDTH + 240.0);
         let settings_height = settings_height.max(280.0);
@@ -627,7 +644,7 @@ unsafe fn build_settings_ui(
         add_subview(root_view, completion);
 
         // --- Keys tab (index 1) ---
-        let keys_view = build_keys_tab(action_handler, content_frame, config);
+        let keys_view = build_keys_tab(action_handler, content_frame, config, &mut state);
         let _: () = msg_send![keys_view, setHidden: true];
         add_subview(root_view, keys_view);
 
@@ -650,6 +667,9 @@ unsafe fn build_settings_ui(
         state.permission_labels = perm_labels;
         state.quality_daemon_checkbox = Some(quality_check as usize);
         state.completion_view = Some(completion as usize);
+        state.config_cache = Some(config.clone());
+
+        state
     }
 }
 
@@ -774,15 +794,22 @@ pub(super) fn handle_hotkey_done() {
 pub(super) fn handle_finish() {
     // Show "All set!" completion view, then close after a brief delay.
     Queue::main().exec_async(|| unsafe {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(setup_ptr) = state.content_views[0] {
+        let (setup_ptr, tab_buttons, completion_ptr) = {
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.content_views[0],
+                state.tab_buttons,
+                state.completion_view,
+            )
+        };
+        if let Some(setup_ptr) = setup_ptr {
             let _: () = msg_send![setup_ptr as Id, setHidden: true];
         }
         // Hide sidebar tabs too
-        for ptr in state.tab_buttons.iter().flatten() {
+        for ptr in tab_buttons.iter().flatten() {
             let _: () = msg_send![*ptr as Id, setHidden: true];
         }
-        if let Some(completion_ptr) = state.completion_view {
+        if let Some(completion_ptr) = completion_ptr {
             let _: () = msg_send![completion_ptr as Id, setHidden: false];
         }
     });
@@ -797,24 +824,33 @@ pub(super) fn handle_finish() {
 
 pub fn hide_bootstrap_overlay() {
     Queue::main().exec_async(|| unsafe {
-        let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(window_ptr) = state.window.take() {
+        let (window_ptr, root_ptr) = {
+            let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let window_ptr = state.window.take();
+            if window_ptr.is_some() {
+                state.root_view = None;
+                state.step_labels = [None, None, None];
+                state.tab_buttons = [None, None, None];
+                state.content_views = [None, None, None];
+                state.keys_hold_popup = None;
+                state.keys_toggle_popup = None;
+                state.keys_preset_popup = None;
+                state.keys_exclusive_checkbox = None;
+                state.permission_labels = [None, None, None];
+                state.quality_daemon_checkbox = None;
+                state.completion_view = None;
+                (window_ptr, None)
+            } else {
+                (None, state.root_view)
+            }
+        };
+
+        if let Some(window_ptr) = window_ptr {
             window_close(window_ptr as Id);
-            state.root_view = None;
-            state.step_labels = [None, None, None];
-            state.tab_buttons = [None, None, None];
-            state.content_views = [None, None, None];
-            state.keys_hold_popup = None;
-            state.keys_toggle_popup = None;
-            state.keys_preset_popup = None;
-            state.keys_exclusive_checkbox = None;
-            state.permission_labels = [None, None, None];
-            state.quality_daemon_checkbox = None;
-            state.completion_view = None;
             return;
         }
 
-        if let Some(root_ptr) = state.root_view {
+        if let Some(root_ptr) = root_ptr {
             let _: () = msg_send![root_ptr as Id, setHidden: true];
         }
     });
@@ -882,6 +918,7 @@ unsafe fn build_keys_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
     config: &Config,
+    state: &mut BootstrapState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     unsafe {
@@ -1049,13 +1086,10 @@ unsafe fn build_keys_tab(
         button_set_action(delay_slider, action_handler, sel!(onDelayChanged:));
         add_subview(container, delay_slider);
 
-        {
-            let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            state.keys_hold_popup = Some(hold_popup as usize);
-            state.keys_toggle_popup = Some(toggle_popup as usize);
-            state.keys_preset_popup = Some(preset_popup as usize);
-            state.keys_exclusive_checkbox = Some(modes_check as usize);
-        }
+        state.keys_hold_popup = Some(hold_popup as usize);
+        state.keys_toggle_popup = Some(toggle_popup as usize);
+        state.keys_preset_popup = Some(preset_popup as usize);
+        state.keys_exclusive_checkbox = Some(modes_check as usize);
 
         container
     } // unsafe
