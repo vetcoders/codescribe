@@ -30,12 +30,28 @@ category = "vad"
 description = "Speech probability threshold (0.0-1.0). Lower = more sensitive"
 range = "0.1-0.95"
 
+[vars.CODESCRIBE_VAD_SENSITIVITY]
+default = "-1.0"
+type = "f32"
+reload = "restart"
+category = "vad"
+description = "Simple sensitivity (0-1). -1 disables and uses explicit threshold"
+range = "0.0-1.0"
+
 [vars.CODESCRIBE_VAD_SILENCE_SEC]
 default = "2.5"
 type = "f32"
 reload = "restart"
 category = "vad"
 description = "Silence duration (seconds) before utterance flush"
+range = "0.1-10.0"
+
+[vars.CODESCRIBE_VAD_MAX_SILENCE_SEC]
+default = "1.2"
+type = "f32"
+reload = "restart"
+category = "vad"
+description = "Max silence duration before ending speech (advanced override)"
 range = "0.1-10.0"
 
 [vars.CODESCRIBE_VAD_MIN_SPEECH_SEC]
@@ -84,6 +100,13 @@ reload = "restart"
 category = "vad"
 description = "Shortcut for CODESCRIBE_VAD_GATE_MODE=iter"
 
+[vars.VAD_PRESET]
+default = ""
+type = "string"
+reload = "restart"
+category = "vad"
+description = "Legacy preset name (sensitive|balanced|conservative) for VAD"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Audio / Recording
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -94,6 +117,13 @@ type = "string"
 reload = "restart"
 category = "audio"
 description = "Audio input device name (empty = system default)"
+
+[vars.AUTO_SILENCE]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "audio"
+description = "Enable silence auto-stop in recorder"
 
 [vars.BEEP_ON_START]
 default = "1"
@@ -193,6 +223,60 @@ reload = "hot"
 category = "streaming"
 description = "Force embeddings in tests (override test bypass)"
 
+[vars.CODESCRIBE_STREAM_LEXICON]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "streaming"
+description = "Apply lexicon post-processing to streaming output"
+
+[vars.CODESCRIBE_STRIP_TRAILING_SMILEY_D]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "streaming"
+description = "Strip trailing ':D' hallucinations from streaming output"
+
+[vars.CODESCRIBE_BUFFERED_CORRECTION_UTTERANCES]
+default = "2"
+type = "usize"
+reload = "hot"
+category = "streaming"
+description = "Minimum utterances before buffered correction pass"
+range = "1-10"
+
+[vars.CODESCRIBE_BUFFERED_CORRECTION_SEC]
+default = "6.0"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Minimum elapsed seconds before buffered correction pass"
+range = "1.0-60.0"
+
+[vars.CODESCRIBE_BUFFERED_CORRECTION_PREFIX]
+default = "0.60"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Prefix ratio required to accept buffered correction"
+range = "0.4-0.9"
+
+[vars.CODESCRIBE_BUFFERED_INTERIM_SEC]
+default = "5.0"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Interim emission cadence for buffered mode (sec)"
+range = "1.0-30.0"
+
+[vars.CODESCRIBE_UTTERANCE_INTERIM_SEC]
+default = "5.0"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Legacy interim cadence for utterance mode (sec)"
+range = "1.0-30.0"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -259,6 +343,13 @@ type = "string"
 reload = "restart"
 category = "stt"
 description = "Cloud STT API key"
+
+[vars.CODESCRIBE_LOCAL_STT_FINAL_PASS]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Run final-pass local STT on full audio (overrides streaming output)"
 
 [vars.CODESCRIBE_HF_CACHE]
 default = ""
@@ -480,6 +571,20 @@ reload = "restart"
 category = "hotkeys"
 description = "Toggle recording trigger"
 
+[vars.HOTKEY_DOUBLE_TAP_LEFT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "hotkeys"
+description = "Legacy left double-tap toggle (superseded by TOGGLE_TRIGGER)"
+
+[vars.HOTKEY_DOUBLE_TAP_RIGHT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "hotkeys"
+description = "Legacy right double-tap toggle (superseded by TOGGLE_TRIGGER)"
+
 [vars.HOLD_START_DELAY_MS]
 default = "800"
 type = "u64"
@@ -590,6 +695,27 @@ reload = "restart"
 category = "storage"
 description = "Save audio files with transcripts"
 
+[vars.QUICK_NOTES_ENABLED]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "storage"
+description = "Enable Quick Notes (dictation saved to daily note)"
+
+[vars.QUICK_NOTES_SAVE_ONLY]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "storage"
+description = "Quick Notes save-only mode (skip auto-paste)"
+
+[vars.CODESCRIBE_NOTES_DIR]
+default = ""
+type = "string"
+reload = "restart"
+category = "storage"
+description = "Override notes directory for Quick Notes"
+
 [vars.CODESCRIBE_DATA_DIR]
 default = ""
 type = "string"
@@ -628,6 +754,13 @@ type = "bool"
 reload = "restart"
 category = "quality"
 description = "Enable background quality daemon (codescribe-loop)"
+
+[vars.CODESCRIBE_AUTOSTART_QUALITY_DAEMON]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "quality"
+description = "Auto-start quality daemon on app launch"
 
 [vars.CODESCRIBE_LOOP_USE_CLOUD_STT]
 default = "0"
@@ -739,6 +872,20 @@ reload = "restart"
 category = "debug"
 description = "Rust logging filter"
 
+[vars.LOG_LEVEL]
+default = "info"
+type = "string"
+reload = "restart"
+category = "debug"
+description = "Legacy logging filter (used if RUST_LOG is unset)"
+
+[vars.CODESCRIBE_UI_TESTS]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "debug"
+description = "Enable AppKit/UI tests gated by CODESCRIBE_UI_TESTS"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ASSISTIVE CONTEXT CAPTURE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -756,3 +903,24 @@ type = "u64"
 reload = "restart"
 category = "assistive"
 description = "Delay in ms after Cmd+C before reading clipboard (macOS timing)"
+
+[vars.CODESCRIBE_ATTACH_PDF_PAGES]
+default = "3"
+type = "usize"
+reload = "restart"
+category = "assistive"
+description = "Max PDF pages to extract for attachments"
+
+[vars.CODESCRIBE_ATTACH_PDF_OCR]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "assistive"
+description = "Enable OCR fallback for PDF attachments"
+
+[vars.CODESCRIBE_ATTACH_PDF_OCR_LANG]
+default = "pol+eng"
+type = "string"
+reload = "restart"
+category = "assistive"
+description = "OCR language(s) for PDF attachments (tesseract)"

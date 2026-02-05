@@ -50,6 +50,7 @@ struct BootstrapState {
     keys_toggle_popup: Option<usize>,
     keys_preset_popup: Option<usize>,
     keys_exclusive_checkbox: Option<usize>,
+    config_cache: Option<Config>,
 }
 
 lazy_static! {
@@ -84,8 +85,14 @@ pub fn schedule_bootstrap() {
 }
 
 pub fn show_bootstrap_overlay() {
-    Queue::main().exec_async(|| {
-        show_bootstrap_overlay_impl();
+    std::thread::spawn(|| {
+        let config = Config::load();
+        Queue::main().exec_async(move || {
+            let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.config_cache = Some(config);
+            drop(state);
+            show_bootstrap_overlay_impl();
+        });
     });
 }
 
@@ -108,6 +115,10 @@ pub unsafe fn attach_settings_view(
     frame: core_graphics::geometry::CGRect,
 ) -> Option<Id> {
     unsafe {
+        let config = {
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.config_cache.clone().unwrap_or_else(Config::load)
+        };
         let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(root_ptr) = state.root_view {
             let root = root_ptr as Id;
@@ -149,6 +160,7 @@ pub unsafe fn attach_settings_view(
             frame.size.height,
             action_handler,
             &mut state,
+            &config,
         );
 
         state.root_view = Some(root as usize);
@@ -164,6 +176,7 @@ unsafe fn build_settings_ui(
     settings_height: f64,
     action_handler: Id,
     state: &mut BootstrapState,
+    config: &Config,
 ) {
     unsafe {
         let ns_view = Class::get("NSView").unwrap();
@@ -379,7 +392,6 @@ unsafe fn build_settings_ui(
         });
         add_subview(setup_view, llm_section);
 
-        let config = Config::load();
         let llm_endpoint_val = config.llm_endpoint.as_deref().unwrap_or("");
         let llm_endpoint_field = create_text_input(
             core_graphics::geometry::CGRect::new(
@@ -440,12 +452,12 @@ unsafe fn build_settings_ui(
         add_subview(setup_view, skip_btn);
 
         // --- Keys tab (index 1) ---
-        let keys_view = build_keys_tab(action_handler, content_frame);
+        let keys_view = build_keys_tab(action_handler, content_frame, config);
         let _: () = msg_send![keys_view, setHidden: true];
         add_subview(root_view, keys_view);
 
         // --- Audio tab (index 2) ---
-        let audio_view = build_audio_tab(action_handler, content_frame);
+        let audio_view = build_audio_tab(action_handler, content_frame, config);
         let _: () = msg_send![audio_view, setHidden: true];
         add_subview(root_view, audio_view);
 
@@ -620,6 +632,7 @@ pub fn reset_embedded_bootstrap_state() {
         return;
     }
     state.root_view = None;
+    state.config_cache = None;
     state.step_labels = [None, None, None];
     state.tab_buttons = [None, None, None];
     state.content_views = [None, None, None];
@@ -667,7 +680,11 @@ fn mark_keys_preset_custom() {
 // Keys tab
 // ============================================================================
 
-unsafe fn build_keys_tab(action_handler: Id, frame: core_graphics::geometry::CGRect) -> Id {
+unsafe fn build_keys_tab(
+    action_handler: Id,
+    frame: core_graphics::geometry::CGRect,
+    config: &Config,
+) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     unsafe {
         let ns_view = Class::get("NSView").unwrap();
@@ -693,8 +710,6 @@ unsafe fn build_keys_tab(action_handler: Id, frame: core_graphics::geometry::CGR
         });
         add_subview(container, title);
         y -= 36.0;
-
-        let config = Config::load();
 
         // Preset dropdown
         let preset_label = create_label(LabelConfig {
@@ -823,7 +838,7 @@ unsafe fn build_keys_tab(action_handler: Id, frame: core_graphics::geometry::CGR
         });
         add_subview(container, delay_label);
 
-        let delay_ms = Config::load().hold_start_delay_ms as f64;
+        let delay_ms = config.hold_start_delay_ms as f64;
         let delay_slider = create_slider(
             CGRect::new(
                 &CGPoint::new(pad + 124.0, y),
@@ -852,7 +867,11 @@ unsafe fn build_keys_tab(action_handler: Id, frame: core_graphics::geometry::CGR
 // Audio tab
 // ============================================================================
 
-unsafe fn build_audio_tab(action_handler: Id, frame: core_graphics::geometry::CGRect) -> Id {
+unsafe fn build_audio_tab(
+    action_handler: Id,
+    frame: core_graphics::geometry::CGRect,
+    config: &Config,
+) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     unsafe {
         let ns_view = Class::get("NSView").unwrap();
@@ -896,7 +915,6 @@ unsafe fn build_audio_tab(action_handler: Id, frame: core_graphics::geometry::CG
         ];
         let _: () = msg_send![lang_popup, addItemWithTitle: ns_string("Polish (pl)")];
         let _: () = msg_send![lang_popup, addItemWithTitle: ns_string("English (en)")];
-        let config = Config::load();
         let lang_idx: isize = match config.whisper_language.as_str() {
             "pl" => 0,
             "en" => 1,

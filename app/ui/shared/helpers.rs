@@ -107,7 +107,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.92)
+            with_alpha(base, 0.86)
         }
     }
 
@@ -115,7 +115,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, separatorColor];
-            with_alpha(base, 0.8)
+            with_alpha(base, 0.92)
         }
     }
 
@@ -734,7 +734,7 @@ pub unsafe fn set_segment_symbol(control: Id, segment: isize, symbol_name: &str)
 /// # Safety
 /// `button` must be a valid NSButton instance.
 pub unsafe fn style_toolbar_icon_button(button: Id) {
-    let _: () = msg_send![button, setBezelStyle: button_style::SHADOWLESS_SQUARE];
+    let _: () = msg_send![button, setBezelStyle: button_style::INLINE];
     let responds_bordered: bool = msg_send![button, respondsToSelector: sel!(setBordered:)];
     if responds_bordered {
         let _: () = msg_send![button, setBordered: false];
@@ -746,7 +746,7 @@ pub unsafe fn style_toolbar_icon_button(button: Id) {
     let responds_shows_border: bool =
         msg_send![button, respondsToSelector: sel!(setShowsBorderOnlyWhileMouseInside:)];
     if responds_shows_border {
-        let _: () = msg_send![button, setShowsBorderOnlyWhileMouseInside: true];
+        let _: () = msg_send![button, setShowsBorderOnlyWhileMouseInside: false];
     }
     let responds_image_position: bool =
         msg_send![button, respondsToSelector: sel!(setImagePosition:)];
@@ -777,8 +777,7 @@ pub unsafe fn set_tab_button_active(button: Id, active: bool) {
     }
     let responds_state: bool = msg_send![button, respondsToSelector: sel!(setState:)];
     if responds_state {
-        let state: isize = if active { 1 } else { 0 };
-        let _: () = msg_send![button, setState: state];
+        let _: () = msg_send![button, setState: 0_isize];
     }
 }
 
