@@ -11,10 +11,7 @@ use dispatch::Queue;
 use lazy_static::lazy_static;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
-use objc2_app_kit::{
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSWindowCollectionBehavior,
-};
+use objc2_app_kit::{NSVisualEffectMaterial, NSWindowCollectionBehavior};
 use tracing::{info, warn};
 
 use crate::config::{Config, HoldMods, ToggleTrigger};
@@ -24,9 +21,9 @@ use crate::tray::{TrayMenuEvent, send_menu_event};
 use crate::ui::bootstrap::handlers::{action_handler_class, window_delegate_class};
 use crate::ui_helpers::{
     LabelConfig, add_subview, button, button_set_action, create_checkbox, create_floating_window,
-    create_label, create_secure_text_input, create_slider, create_text_input, ns_string,
-    set_text_field_string, set_visual_effect_blending, set_visual_effect_material,
-    set_visual_effect_state, ui_colors, ui_tokens, window_close, window_content_view, window_show,
+    create_glass_effect_view, create_label, create_secure_text_input, create_slider,
+    create_text_input, ns_string, set_text_field_string, ui_colors, ui_tokens, window_close,
+    window_content_view, window_show,
 };
 
 mod handlers;
@@ -204,13 +201,7 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
             return Some(root);
         }
 
-        let ns_visual = Class::get("NSVisualEffectView").unwrap();
-        let root: Id = msg_send![ns_visual, alloc];
-        let root: Id = msg_send![root, initWithFrame: frame];
-        set_visual_effect_material(root, NSVisualEffectMaterial::WindowBackground);
-        set_visual_effect_blending(root, NSVisualEffectBlendingMode::BehindWindow);
-        set_visual_effect_state(root, NSVisualEffectState::Active);
-        let _: () = msg_send![root, setWantsLayer: true];
+        let root: Id = create_glass_effect_view(frame, NSVisualEffectMaterial::WindowBackground);
         let _: () = msg_send![
             root,
             setAutoresizingMask: 2_isize | 16_isize // NSViewWidthSizable | NSViewHeightSizable

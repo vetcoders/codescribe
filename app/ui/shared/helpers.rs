@@ -452,15 +452,7 @@ pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial)
 }
 
 pub fn glass_effect_supported() -> bool {
-    let Some(glass_cls) = Class::get("NSGlassEffectView") else {
-        return false;
-    };
-    unsafe {
-        let material = class_getInstanceMethod(glass_cls, sel!(setMaterial:));
-        let blending = class_getInstanceMethod(glass_cls, sel!(setBlendingMode:));
-        let state = class_getInstanceMethod(glass_cls, sel!(setState:));
-        !material.is_null() && !blending.is_null() && !state.is_null()
-    }
+    Class::get("NSGlassEffectView").is_some()
 }
 
 /// # Safety

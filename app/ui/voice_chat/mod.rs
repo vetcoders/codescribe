@@ -246,16 +246,12 @@ fn show_voice_chat_overlay_impl() {
         let content_view: Id = msg_send![window, contentView];
 
         let ns_visual = Class::get("NSVisualEffectView").unwrap();
-        let blur_view: Id = msg_send![ns_visual, alloc];
         let blur_frame = CGRect::new(
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
         );
-        let blur_view: Id = msg_send![blur_view, initWithFrame: blur_frame];
-        set_visual_effect_material(blur_view, NSVisualEffectMaterial::WindowBackground);
-        set_visual_effect_blending(blur_view, NSVisualEffectBlendingMode::BehindWindow);
-        set_visual_effect_state(blur_view, NSVisualEffectState::Active);
-        let _: () = msg_send![blur_view, setWantsLayer: true];
+        let blur_view: Id =
+            create_glass_effect_view(blur_frame, NSVisualEffectMaterial::WindowBackground);
         let _: () = msg_send![
             blur_view,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
