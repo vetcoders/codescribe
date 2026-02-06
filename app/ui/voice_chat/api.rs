@@ -13,7 +13,6 @@ use tracing::{debug, info, warn};
 
 use chrono::{DateTime, Local};
 
-use crate::os::hotkeys::{get_hold_mods, get_toggle_trigger};
 use crate::ui::shared::status::status_from_detail;
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, LabelConfig, add_subview, button_set_action, button_style,
@@ -26,7 +25,6 @@ use crate::ui_helpers::{
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
-use super::shortcuts_lines;
 use super::state::{
     ChatMessage, ChatRole, ConversationModeState, DrawerEntry, OVERLAY_STATE, SEND_CALLBACK, Tab,
     TranscriptionMode, VoiceChatOverlayState,
@@ -526,8 +524,9 @@ fn reflow_footer_controls_locked(state: &mut VoiceChatOverlayState) {
 
         let footer_height = ui_tokens::FOOTER_HEIGHT;
         let footer_base_y = content_bounds.origin.y;
-        let search_x = content_bounds.origin.x;
-        let search_w = content_bounds.size.width.max(160.0);
+        let content_pad = ui_tokens::EDGE_PADDING;
+        let search_x = content_bounds.origin.x + content_pad;
+        let search_w = (content_bounds.size.width - content_pad * 2.0).max(160.0);
 
         if let Some(label_ptr) = state.search_label {
             let label = label_ptr as Id;
@@ -547,7 +546,6 @@ fn reflow_footer_controls_locked(state: &mut VoiceChatOverlayState) {
             let _: () = msg_send![field, setFrame: frame];
         }
 
-        let content_pad = ui_tokens::EDGE_PADDING;
         let header_height = ui_tokens::HEADER_HEIGHT;
         let content_gap = ui_tokens::CONTENT_GAP;
         let content_frame = CGRect::new(

@@ -428,6 +428,7 @@ unsafe fn build_settings_ui(
         let secondary = crate::ui_helpers::color_secondary_label();
         let mut y = content_h - 20.0;
         let mono_font = crate::ui_helpers::monospace_font(ui_tokens::SMALL_FONT_SIZE);
+        let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
 
         // ── Permission indicators ────────────────────────────────────
         let perms = check_permissions();
@@ -526,7 +527,7 @@ unsafe fn build_settings_ui(
             "Endpoint (e.g. https://api.openai.com/v1/responses)",
             llm_endpoint_val,
         );
-        let _: () = msg_send![llm_endpoint_field, setFont: mono_font];
+        let _: () = msg_send![llm_endpoint_field, setFont: mono_font_input];
         button_set_action(
             llm_endpoint_field,
             action_handler,
@@ -542,7 +543,7 @@ unsafe fn build_settings_ui(
             "Model (e.g. gpt-4.1-mini)",
             &llm_model_val,
         );
-        let _: () = msg_send![llm_model_field, setFont: mono_font];
+        let _: () = msg_send![llm_model_field, setFont: mono_font_input];
         button_set_action(llm_model_field, action_handler, sel!(onLlmModelChanged:));
         add_subview(setup_view, llm_model_field);
         state.llm_model_field = Some(llm_model_field as usize);
@@ -552,7 +553,7 @@ unsafe fn build_settings_ui(
             CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
             "API Key (stored in Keychain)",
         );
-        let _: () = msg_send![llm_key_field, setFont: mono_font];
+        let _: () = msg_send![llm_key_field, setFont: mono_font_input];
         button_set_action(llm_key_field, action_handler, sel!(onLlmKeyChanged:));
         add_subview(setup_view, llm_key_field);
         state.llm_key_field = Some(llm_key_field as usize);
@@ -576,7 +577,7 @@ unsafe fn build_settings_ui(
             "Endpoint (e.g. https://api.openai.com/v1/responses)",
             &assist_endpoint_val,
         );
-        let _: () = msg_send![assist_endpoint_field, setFont: mono_font];
+        let _: () = msg_send![assist_endpoint_field, setFont: mono_font_input];
         button_set_action(
             assist_endpoint_field,
             action_handler,
@@ -592,7 +593,7 @@ unsafe fn build_settings_ui(
             "Model (e.g. gpt-5.2)",
             &assist_model_val,
         );
-        let _: () = msg_send![assist_model_field, setFont: mono_font];
+        let _: () = msg_send![assist_model_field, setFont: mono_font_input];
         button_set_action(
             assist_model_field,
             action_handler,
@@ -606,7 +607,7 @@ unsafe fn build_settings_ui(
             CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
             "API Key (stored in Keychain)",
         );
-        let _: () = msg_send![assist_key_field, setFont: mono_font];
+        let _: () = msg_send![assist_key_field, setFont: mono_font_input];
         button_set_action(
             assist_key_field,
             action_handler,
@@ -1584,7 +1585,7 @@ pub(super) extern "C" fn on_save_api_settings(
     _cmd: objc::runtime::Sel,
     _sender: Id,
 ) {
-    let (llm_endpoint, llm_model, llm_key, assist_endpoint, assist_model, assist_key) = unsafe {
+    let (llm_endpoint, llm_model, llm_key, assist_endpoint, assist_model, assist_key) = {
         let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
         (
             state.llm_endpoint_field,
@@ -1596,7 +1597,7 @@ pub(super) extern "C" fn on_save_api_settings(
         )
     };
 
-    let mut config = Config::load();
+    let config = Config::load();
     unsafe {
         if let Some(ptr) = llm_endpoint {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);

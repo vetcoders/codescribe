@@ -1440,12 +1440,19 @@ unsafe fn markdown_attributed_string(text: &str, font: Id) -> Option<Id> {
     let text_ns = ns_string(text);
     let options = markdown_options_with_base_font(font).unwrap_or(std::ptr::null_mut::<Object>());
 
+    // initWithMarkdown: expects NSData, not NSString
+    let utf8_encoding: usize = 4; // NSUTF8StringEncoding
+    let text_data: Id = msg_send![text_ns, dataUsingEncoding: utf8_encoding];
+    if text_data.is_null() {
+        return None;
+    }
+
     let supports_with_error: bool = msg_send![ns_attr, instancesRespondToSelector: sel!(initWithMarkdown:options:baseURL:error:)];
     if supports_with_error {
         let obj: Id = msg_send![ns_attr, alloc];
         let obj: Id = msg_send![
             obj,
-            initWithMarkdown: text_ns
+            initWithMarkdown: text_data
             options: options
             baseURL: std::ptr::null::<Object>()
             error: std::ptr::null_mut::<*mut Object>()
@@ -1461,7 +1468,7 @@ unsafe fn markdown_attributed_string(text: &str, font: Id) -> Option<Id> {
         let obj: Id = msg_send![ns_attr, alloc];
         let obj: Id = msg_send![
             obj,
-            initWithMarkdown: text_ns
+            initWithMarkdown: text_data
             options: options
             baseURL: std::ptr::null::<Object>()
         ];

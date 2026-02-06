@@ -37,7 +37,6 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::config::{HoldMods, ToggleTrigger};
-use crate::os::hotkeys::{get_hold_mods, get_toggle_trigger};
 
 use crate::ui_helpers::{
     LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style,
@@ -69,6 +68,7 @@ const NSVIEW_MAX_Y_MARGIN: isize = 32;
 const CACORNER_MIN_X_MIN_Y: u64 = 1 << 0;
 const CACORNER_MAX_X_MIN_Y: u64 = 1 << 1;
 
+#[allow(dead_code)]
 pub(super) fn shortcuts_lines(hold: HoldMods, toggle: ToggleTrigger) -> (String, String) {
     let hold_line = match hold {
         HoldMods::Fn => "Hold Fn — record • Fn+Shift — selection • Fn+Cmd — chat",
@@ -835,7 +835,7 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![agent_scroll, setDocumentView: agent_container];
         add_subview(content_view, agent_scroll);
 
-        // Drawer footer (search + shortcuts helper)
+        // Drawer footer (search)
         let search_x = content_frame.origin.x;
         let search_w = content_frame.size.width.max(160.0);
         let footer_base_y = content_bounds.origin.y;
