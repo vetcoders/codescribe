@@ -56,6 +56,8 @@ struct BootstrapState {
     keys_toggle_popup: Option<usize>,
     keys_preset_popup: Option<usize>,
     keys_exclusive_checkbox: Option<usize>,
+    hold_delay_value_label: Option<usize>,
+    double_tap_value_label: Option<usize>,
     config_cache: Option<Config>,
     // Onboarding additions
     permission_labels: [Option<usize>; 3], // Mic, Accessibility, Input Monitoring
@@ -889,9 +891,17 @@ pub(super) fn handle_bootstrap_window_closed() {
     state.keys_toggle_popup = None;
     state.keys_preset_popup = None;
     state.keys_exclusive_checkbox = None;
+    state.hold_delay_value_label = None;
+    state.double_tap_value_label = None;
     state.permission_labels = [None, None, None];
     state.quality_daemon_checkbox = None;
     state.completion_view = None;
+    state.llm_endpoint_field = None;
+    state.llm_model_field = None;
+    state.llm_key_field = None;
+    state.assistive_endpoint_field = None;
+    state.assistive_model_field = None;
+    state.assistive_key_field = None;
     state.config_cache = None;
 }
 
@@ -910,9 +920,17 @@ pub fn hide_bootstrap_overlay() {
                 state.keys_toggle_popup = None;
                 state.keys_preset_popup = None;
                 state.keys_exclusive_checkbox = None;
+                state.hold_delay_value_label = None;
+                state.double_tap_value_label = None;
                 state.permission_labels = [None, None, None];
                 state.quality_daemon_checkbox = None;
                 state.completion_view = None;
+                state.llm_endpoint_field = None;
+                state.llm_model_field = None;
+                state.llm_key_field = None;
+                state.assistive_endpoint_field = None;
+                state.assistive_model_field = None;
+                state.assistive_key_field = None;
                 (window_ptr, None)
             } else {
                 (None, state.root_view)
@@ -946,9 +964,17 @@ pub fn reset_embedded_bootstrap_state() {
     state.keys_toggle_popup = None;
     state.keys_preset_popup = None;
     state.keys_exclusive_checkbox = None;
+    state.hold_delay_value_label = None;
+    state.double_tap_value_label = None;
     state.permission_labels = [None, None, None];
     state.quality_daemon_checkbox = None;
     state.completion_view = None;
+    state.llm_endpoint_field = None;
+    state.llm_model_field = None;
+    state.llm_key_field = None;
+    state.assistive_endpoint_field = None;
+    state.assistive_model_field = None;
+    state.assistive_key_field = None;
 }
 
 fn update_step_status(index: usize, text: &str) {
@@ -1156,11 +1182,11 @@ unsafe fn build_keys_tab(
         add_subview(container, delay_label);
 
         let delay_ms = config.hold_start_delay_ms as f64;
+        let value_w = 60.0;
+        let value_gap = 8.0;
+        let slider_w = (content_w - 124.0 - value_gap - value_w).max(120.0);
         let delay_slider = create_slider(
-            CGRect::new(
-                &CGPoint::new(pad + 124.0, y),
-                &CGSize::new(content_w - 124.0, 20.0),
-            ),
+            CGRect::new(&CGPoint::new(pad + 124.0, y), &CGSize::new(slider_w, 20.0)),
             200.0,
             1500.0,
             delay_ms,
@@ -1168,10 +1194,65 @@ unsafe fn build_keys_tab(
         button_set_action(delay_slider, action_handler, sel!(onDelayChanged:));
         add_subview(container, delay_slider);
 
+        let delay_value = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(pad + 124.0 + slider_w + value_gap, y - 1.0),
+                &CGSize::new(value_w, 20.0),
+            ),
+            text: format!("{} ms", delay_ms.round() as u64),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, delay_value);
+        y -= 36.0;
+
+        // Double-tap interval slider
+        let double_tap_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(160.0, 20.0)),
+            text: "Double-tap interval (ms):".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, double_tap_label);
+
+        let double_tap_ms = config.double_tap_interval_ms as f64;
+        let double_tap_slider_w = (content_w - 164.0 - value_gap - value_w).max(120.0);
+        let double_tap_slider = create_slider(
+            CGRect::new(
+                &CGPoint::new(pad + 164.0, y),
+                &CGSize::new(double_tap_slider_w, 20.0),
+            ),
+            100.0,
+            450.0,
+            double_tap_ms,
+        );
+        button_set_action(
+            double_tap_slider,
+            action_handler,
+            sel!(onDoubleTapIntervalChanged:),
+        );
+        add_subview(container, double_tap_slider);
+
+        let double_tap_value = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(pad + 164.0 + double_tap_slider_w + value_gap, y - 1.0),
+                &CGSize::new(value_w, 20.0),
+            ),
+            text: format!("{} ms", double_tap_ms.round() as u64),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, double_tap_value);
+
         state.keys_hold_popup = Some(hold_popup as usize);
         state.keys_toggle_popup = Some(toggle_popup as usize);
         state.keys_preset_popup = Some(preset_popup as usize);
         state.keys_exclusive_checkbox = Some(modes_check as usize);
+        state.hold_delay_value_label = Some(delay_value as usize);
+        state.double_tap_value_label = Some(double_tap_value as usize);
 
         container
     } // unsafe
@@ -1644,6 +1725,35 @@ pub(super) extern "C" fn on_delay_changed(_this: &Object, _cmd: objc::runtime::S
         info!("Settings: hold delay -> {}ms", ms);
         let config = Config::load();
         let _ = config.save_to_env("HOLD_START_DELAY_MS", &ms.to_string());
+        let label_ptr = {
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.hold_delay_value_label
+        };
+        if let Some(ptr) = label_ptr {
+            set_text_field_string(ptr as Id, &format!("{ms} ms"));
+        }
+    }
+}
+
+pub(super) extern "C" fn on_double_tap_interval_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let value: f64 = msg_send![sender, doubleValue];
+        let ms = value.round() as u64;
+        info!("Settings: double-tap interval -> {}ms", ms);
+        let config = Config::load();
+        let _ = config.save_to_env("DOUBLE_TAP_INTERVAL_MS", &ms.to_string());
+        hotkeys::set_double_tap_interval_ms(ms);
+        let label_ptr = {
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.double_tap_value_label
+        };
+        if let Some(ptr) = label_ptr {
+            set_text_field_string(ptr as Id, &format!("{ms} ms"));
+        }
     }
 }
 

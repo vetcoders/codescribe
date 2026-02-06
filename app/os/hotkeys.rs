@@ -28,7 +28,7 @@
 
 use crate::config::{HoldMods, ToggleTrigger};
 use crossbeam_channel::Sender;
-use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 // --- Global HoldMods Configuration ---
@@ -108,10 +108,25 @@ pub fn set_exclusive_mode(enabled: bool) {
     tracing::info!("Hotkey exclusive mode set to: {}", enabled);
 }
 
+// --- Double-tap interval setting ---
+
+/// Atomic storage for double-tap interval (milliseconds)
+static DOUBLE_TAP_INTERVAL_MS: AtomicU64 = AtomicU64::new(200);
+
+/// Set the double-tap interval (ms). Clamped to safe bounds.
+pub fn set_double_tap_interval_ms(ms: u64) {
+    let clamped = ms.clamp(100, 450);
+    DOUBLE_TAP_INTERVAL_MS.store(clamped, AtomicOrdering::SeqCst);
+    tracing::info!("Double-tap interval set to: {}ms", clamped);
+}
+
+/// Get the current double-tap interval (ms).
+pub fn get_double_tap_interval_ms() -> u64 {
+    DOUBLE_TAP_INTERVAL_MS.load(AtomicOrdering::SeqCst)
+}
+
 // --- Constants ---
 
-/// Double-tap interval for toggle detection (milliseconds)
-const DOUBLE_TAP_INTERVAL_MS: u64 = 150;
 /// Max press duration for a "tap" gesture (milliseconds)
 const TAP_MAX_MS: u64 = 220;
 
@@ -359,7 +374,7 @@ mod macos {
     ) {
         let now = Instant::now();
         if let Some(previous) = *last_tap
-            && now.duration_since(previous) <= Duration::from_millis(DOUBLE_TAP_INTERVAL_MS)
+            && now.duration_since(previous) <= Duration::from_millis(get_double_tap_interval_ms())
         {
             let _ = tx.send(event);
             *last_tap = None;
@@ -1206,5 +1221,15 @@ mod tests {
 
         // Reset to default
         set_hold_mods(HoldMods::Fn);
+    }
+
+    #[test]
+    fn test_double_tap_interval_get_set() {
+        set_double_tap_interval_ms(200);
+        assert_eq!(get_double_tap_interval_ms(), 200);
+        set_double_tap_interval_ms(50);
+        assert_eq!(get_double_tap_interval_ms(), 100);
+        set_double_tap_interval_ms(999);
+        assert_eq!(get_double_tap_interval_ms(), 450);
     }
 }

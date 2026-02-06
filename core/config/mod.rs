@@ -46,6 +46,7 @@ mod tests {
         assert_eq!(config.whisper_language, Language::Polish); // Polish is default
         assert_eq!(config.ai_max_tokens, 0); // 0 = no limit (API decides)
         assert!(!config.ai_formatting_enabled);
+        assert_eq!(config.double_tap_interval_ms, 200);
         assert_eq!(config.toggle_silence_sec, 5.0);
         assert_eq!(config.local_model, models::DEFAULT_MODEL);
     }

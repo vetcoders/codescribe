@@ -130,6 +130,7 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
             hotkeys::set_hold_mods(config.hold_mods);
             hotkeys::set_toggle_trigger(config.toggle_trigger);
             hotkeys::set_exclusive_mode(config.hold_exclusive);
+            hotkeys::set_double_tap_interval_ms(config.double_tap_interval_ms);
 
             controller.set_config(config).await;
             IpcResponse::Ok
@@ -328,6 +329,11 @@ fn persist_config(config: &Config) -> Result<()> {
     put(
         "HOLD_START_DELAY_MS",
         config.hold_start_delay_ms.to_string(),
+        &mut env_vars,
+    );
+    put(
+        "DOUBLE_TAP_INTERVAL_MS",
+        config.double_tap_interval_ms.to_string(),
         &mut env_vars,
     );
     put(

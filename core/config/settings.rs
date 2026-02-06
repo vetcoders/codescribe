@@ -24,6 +24,8 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold_start_delay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub double_tap_interval_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub toggle_silence_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
@@ -158,6 +160,7 @@ impl UserSettings {
     pub fn set_u64(&mut self, key: &str, value: u64) {
         match key {
             "HOLD_START_DELAY_MS" => self.hold_start_delay_ms = Some(value),
+            "DOUBLE_TAP_INTERVAL_MS" => self.double_tap_interval_ms = Some(value),
             other => {
                 warn!("Unknown u64 setting key: {other}");
                 return;

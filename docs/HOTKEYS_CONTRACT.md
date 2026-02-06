@@ -363,7 +363,7 @@ sequenceDiagram
     participant Detector as HotkeyDetector
     participant State as TapState
 
-    Note over User,State: DOUBLE_TAP_INTERVAL_MS = 450
+    Note over User,State: DOUBLE_TAP_INTERVAL_MS = 200
 
     User->>Detector: Option DOWN (t=0ms)
     Detector->>State: first_tap_time = now()
@@ -371,8 +371,8 @@ sequenceDiagram
     User->>Detector: Option UP (t=50ms)
     Detector->>State: waiting_second_tap = true
 
-    User->>Detector: Option DOWN (t=200ms)
-    Detector->>State: Check: 200ms < 450ms ✓
+    User->>Detector: Option DOWN (t=180ms)
+    Detector->>State: Check: 180ms < 200ms ✓
 
     User->>Detector: Option UP (t=250ms)
     Detector->>Detector: TRIGGER! ToggleNormal
@@ -381,7 +381,7 @@ sequenceDiagram
 ```
 
 ```rust
-const DOUBLE_TAP_INTERVAL_MS: u64 = 450;
+const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 // Sequence: Press → Release → Press → Release (within interval)
 // Only the SECOND release triggers ToggleNormal/ToggleAssistive
@@ -402,7 +402,7 @@ When `HOLD_EXCLUSIVE=true` (default):
 | Symptom                      | Cause                           | Fix                                                           |
 | ---------------------------- | ------------------------------- | ------------------------------------------------------------- |
 | Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable CodeScribe |
-| Double-tap too sensitive     | Interval too long               | Not configurable (450ms hardcoded)                            |
+| Double-tap too sensitive     | Interval too short              | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
 | Recording won't stop (hold)  | Key stuck in system             | Release all modifiers, try again                              |
 | VAD cuts utterance too early | Threshold too high              | Lower `CODESCRIBE_VAD_THRESHOLD`                              |
 

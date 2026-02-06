@@ -228,6 +228,10 @@ pub struct Config {
     #[serde(default = "default_hold_start_delay_ms")]
     pub hold_start_delay_ms: u64,
 
+    /// Double-tap interval for toggle detection (milliseconds)
+    #[serde(default = "default_double_tap_interval_ms")]
+    pub double_tap_interval_ms: u64,
+
     /// Silence duration (seconds) before sending a toggle utterance
     #[serde(default = "default_toggle_silence_sec")]
     pub toggle_silence_sec: f32,
@@ -367,6 +371,7 @@ impl Default for Config {
             hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
             toggle_trigger: ToggleTrigger::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),
+            double_tap_interval_ms: default_double_tap_interval_ms(),
             toggle_silence_sec: default_toggle_silence_sec(),
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
@@ -420,6 +425,9 @@ impl Config {
 
         // Clamp toggle silence to a reasonable range
         self.toggle_silence_sec = self.toggle_silence_sec.clamp(0.5, 30.0);
+
+        // Clamp double-tap interval to safe bounds
+        self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);
 
         // Validate badge size
         if self.hold_badge_size < 8 || self.hold_badge_size > 64 {

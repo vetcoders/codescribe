@@ -75,6 +75,11 @@ impl Config {
         {
             self.hold_start_delay_ms = ms;
         }
+        if let Ok(val) = std::env::var("DOUBLE_TAP_INTERVAL_MS")
+            && let Ok(ms) = val.parse()
+        {
+            self.double_tap_interval_ms = ms;
+        }
         if let Ok(val) = std::env::var("TOGGLE_SILENCE_SEC")
             && let Ok(sec) = val.parse()
         {
@@ -262,6 +267,11 @@ impl Config {
         {
             self.hold_start_delay_ms = v;
         }
+        if std::env::var("DOUBLE_TAP_INTERVAL_MS").is_err()
+            && let Some(v) = settings.double_tap_interval_ms
+        {
+            self.double_tap_interval_ms = v;
+        }
         if std::env::var("TOGGLE_SILENCE_SEC").is_err()
             && let Some(v) = settings.toggle_silence_sec
         {
@@ -383,6 +393,7 @@ impl Config {
             "WHISPER_LANGUAGE"
                 | "HOLD_MODS"
                 | "HOLD_START_DELAY_MS"
+                | "DOUBLE_TAP_INTERVAL_MS"
                 | "TOGGLE_SILENCE_SEC"
                 | "HOLD_EXCLUSIVE"
                 | "AI_FORMATTING_ENABLED"
@@ -404,6 +415,11 @@ impl Config {
             // Route to appropriate setter based on value type
             match key {
                 "HOLD_START_DELAY_MS" => {
+                    if let Ok(v) = value.parse::<u64>() {
+                        settings.set_u64(key, v);
+                    }
+                }
+                "DOUBLE_TAP_INTERVAL_MS" => {
                     if let Ok(v) = value.parse::<u64>() {
                         settings.set_u64(key, v);
                     }

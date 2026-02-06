@@ -877,6 +877,7 @@ fn sync_hotkey_config(config: &codescribe::config::Config) {
     codescribe::os::hotkeys::set_hold_mods(config.hold_mods);
     codescribe::os::hotkeys::set_toggle_trigger(config.toggle_trigger);
     codescribe::os::hotkeys::set_exclusive_mode(config.hold_exclusive);
+    codescribe::os::hotkeys::set_double_tap_interval_ms(config.double_tap_interval_ms);
 }
 
 async fn dispatch_hotkey_event(

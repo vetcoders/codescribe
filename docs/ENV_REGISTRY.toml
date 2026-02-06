@@ -592,6 +592,13 @@ reload = "restart"
 category = "hotkeys"
 description = "Delay before hold recording starts (ms)"
 
+[vars.DOUBLE_TAP_INTERVAL_MS]
+default = "200"
+type = "u64"
+reload = "hot"
+category = "hotkeys"
+description = "Double-tap interval for toggle detection (ms)"
+
 [vars.TOGGLE_SILENCE_SEC]
 default = "5.0"
 type = "f32"
