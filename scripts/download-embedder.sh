@@ -1,40 +1,23 @@
 #!/bin/bash
-# CodeScribe Model Download Script
-# Downloads whisper-large-v3-turbo-mlx-q8 from HuggingFace
+# CodeScribe Embedder Download Script
+# Downloads paraphrase-multilingual-MiniLM-L12-v2 (or override) from HuggingFace
 #
 # Prerequisites:
-#   - HF_TOKEN environment variable (for gated models)
 #   - hf CLI installed: pip install huggingface_hub[cli]
 #
 # Usage:
-#   HF_TOKEN=hf_xxx ./scripts/download-model.sh
-#   ./scripts/download-model.sh  # Uses cached token from `hf auth login`
+#   HF_TOKEN=hf_xxx ./scripts/download-embedder.sh
+#   CODESCRIBE_EMBEDDER_REPO=your/repo ./scripts/download-embedder.sh
 #
 # Created by M&K (c)2026 VetCoders
 
 set -euo pipefail
 
-# Configuration
-DEFAULT_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
-MODEL_REPO="${CODESCRIBE_EMBED_MODEL:-$DEFAULT_REPO}"
-
-# If CODESCRIBE_EMBED_MODEL points to a local path, skip download.
-if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" ]] && [[ -d "${CODESCRIBE_EMBED_MODEL}" ]]; then
-    if [[ -f "${CODESCRIBE_EMBED_MODEL}/config.json" ]]; then
-        echo "✓ Whisper model found at ${CODESCRIBE_EMBED_MODEL} (local path). Skipping download."
-        exit 0
-    fi
-fi
-
-# If override isn't an HF repo, fall back to default repo.
-if [[ "$MODEL_REPO" != */* ]]; then
-    MODEL_REPO="$DEFAULT_REPO"
-fi
-
+MODEL_REPO="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
 MODEL_NAME="${MODEL_REPO##*/}"
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  CodeScribe Model Download"
+echo "  CodeScribe Embedder Download"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Model:  ${MODEL_NAME}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
@@ -47,7 +30,7 @@ if ! command -v hf &> /dev/null; then
     pip install -q huggingface_hub[cli]
 fi
 
-# Check authentication
+# Check authentication (if needed)
 echo ""
 if [ -n "${HF_TOKEN:-}" ]; then
     echo "▶ Using HF_TOKEN from environment"
@@ -57,7 +40,7 @@ elif hf auth whoami &>/dev/null; then
 else
     echo "⚠ No HuggingFace authentication found"
     echo ""
-    echo "  For gated models, you need to authenticate:"
+    echo "  If the model is gated, you need to authenticate:"
     echo "    1. Create token at https://huggingface.co/settings/tokens"
     echo "    2. Run: hf auth login"
     echo "    3. Or set: export HF_TOKEN=hf_xxx"
@@ -71,7 +54,7 @@ fi
 
 # Download model
 echo ""
-echo "▶ Downloading model (HF cache)..."
+echo "▶ Downloading embedder (HF cache)..."
 echo "  This may take a few minutes..."
 echo ""
 
@@ -83,5 +66,5 @@ echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Location: HF cache (use: hf cache ls)"
 echo ""
-echo "  Model ready for use with CodeScribe."
+echo "  Embedder ready for use with CodeScribe."
 echo "───────────────────────────────────────────────────────────"

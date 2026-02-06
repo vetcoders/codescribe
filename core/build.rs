@@ -242,6 +242,35 @@ fn main() {
             // Debug build → skip embedding (use runtime loading)
             println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
         }
+
+        // Summary (single line for build logs)
+        let whisper_summary = if should_embed_whisper {
+            "embedded"
+        } else if no_embed {
+            "disabled"
+        } else if !model_exists {
+            "missing"
+        } else {
+            "external"
+        };
+        let embedder_summary = if !no_embed && embedder_model_exists {
+            "embedded"
+        } else if no_embed {
+            "disabled"
+        } else {
+            "missing"
+        };
+        let tts_summary = if embed_tts && tts_model_exists && mimi_weights_path.exists() {
+            "embedded"
+        } else if embed_tts {
+            "missing"
+        } else {
+            "disabled"
+        };
+        println!(
+            "cargo:warning=Embedding summary: Whisper={}; Silero=embedded; Embedder={}; TTS={}",
+            whisper_summary, embedder_summary, tts_summary
+        );
     }
 }
 

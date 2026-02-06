@@ -6,7 +6,7 @@
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-formatting test-all \
         demo demo-raw demo-assistive check fix clean help \
-        dmg dmg-signed release-full notarize download-model download-e5 \
+        dmg dmg-signed release-full notarize download-model download-e5 download-embedder ensure-models \
         hooks
 
 SHELL := /bin/bash
@@ -61,6 +61,7 @@ release:
 
 install:
 	@echo "Installing CodeScribe (with embedded model)..."
+	@./scripts/ensure-models.sh
 	@cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
@@ -68,6 +69,7 @@ install:
 
 install-no-embed:
 	@echo "Installing CodeScribe (no embedded model)..."
+	@./scripts/ensure-models.sh
 	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
@@ -82,7 +84,7 @@ config:
 	fi
 	@$(EDITOR) ~/.codescribe/.env
 
-bundle: release
+bundle: ensure-models release
 	@echo "Creating macOS app bundle..."
 	@mkdir -p bundle/$(CODESCRIBE_APP_NAME).app/Contents/{MacOS,Resources}
 	@cp target/release/codescribe bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/
@@ -356,6 +358,8 @@ help:
 	@echo "  make notarize        Notarize DMG with Apple"
 	@echo "  make download-model  Download Whisper model from HF"
 	@echo "  make download-e5     Download E5 embedder model from HF"
+	@echo "  make download-embedder Download MiniLM embedder from HF"
+	@echo "  make ensure-models   Download Whisper+MiniLM if missing from cache"
 	@echo ""
 	@echo "Run:"
 	@echo "  make start           Start CodeScribe"
@@ -411,3 +415,9 @@ download-model:
 
 download-e5:
 	@./scripts/download-e5.sh
+
+download-embedder:
+	@./scripts/download-embedder.sh
+
+ensure-models:
+	@./scripts/ensure-models.sh
