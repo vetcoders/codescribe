@@ -1680,14 +1680,17 @@ impl RecordingController {
         }
 
         // 1. Try Streaming Result (Local)
-        if use_local_stt && raw_text_opt.is_none() {
+        if raw_text_opt.is_none() {
             if !streaming_text.trim().is_empty() {
+                if !use_local_stt {
+                    warn!("Using streaming transcript fallback (USE_LOCAL_STT=0)");
+                }
                 info!(
                     "Using streaming transcription result ({} chars)",
                     streaming_text.len()
                 );
                 raw_text_opt = Some(streaming_text);
-            } else {
+            } else if use_local_stt {
                 warn!("Streaming returned empty text");
             }
         }

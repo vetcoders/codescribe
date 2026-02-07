@@ -30,7 +30,22 @@ impl Config {
         // Load .env file if it exists (power-user overrides only)
         // In production, .env doesn't exist — regular users use settings.json
         let env_path = Self::env_path();
+        let pre_env_use_local_stt = std::env::var("USE_LOCAL_STT").ok();
+        let mut env_use_local_stt: Option<bool> = None;
         if env_path.exists() {
+            if let Ok(vars) = Self::parse_env_file(&env_path)
+                && let Some(raw) = vars.get("USE_LOCAL_STT")
+            {
+                let normalized = raw.trim().to_lowercase();
+                env_use_local_stt = match normalized.as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => {
+                        warn!("Ignoring invalid USE_LOCAL_STT value in .env: {raw}");
+                        None
+                    }
+                };
+            }
             // Migrate legacy keys inside existing .env (power users only)
             Self::migrate_env_legacy_keys();
             let _ = dotenvy::from_path(&env_path);
@@ -50,6 +65,16 @@ impl Config {
 
         // Override with environment variables (.env + runtime; highest priority)
         config.load_from_env();
+        if let Some(v) = env_use_local_stt {
+            config.use_local_stt = v;
+        } else {
+            if pre_env_use_local_stt.is_some() {
+                warn!(
+                    "Ignoring USE_LOCAL_STT from runtime environment; only ~/.codescribe/.env can disable local STT"
+                );
+            }
+            config.use_local_stt = true;
+        }
         config.sanitize();
         config
     }

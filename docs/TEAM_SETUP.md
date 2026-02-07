@@ -36,13 +36,13 @@ Grant in: System Settings > Privacy & Security
 
 ## Hotkeys
 
-| Key                        | Action                                  | AI Mode            |
-| -------------------------- | --------------------------------------- | ------------------ |
-| Hold **Fn**                | Record → paste raw transcript           | ALWAYS RAW (no AI) |
-| Hold **Fn+Shift**          | Record → AI assistant response          | ALWAYS Assistive   |
-| Hold **Fn+Cmd**            | Send selection + transcript             | Assistive (selection) |
-| Double-tap **Left Option** | Hands‑free toggle (normal)              | Respects AI toggle |
-| Double-tap **Right Option**| Hands‑free toggle (assistive)           | Assistive          |
+| Key                         | Action                         | AI Mode               |
+| --------------------------- | ------------------------------ | --------------------- |
+| Hold **Fn**                 | Record → paste raw transcript  | ALWAYS RAW (no AI)    |
+| Hold **Fn+Shift**           | Record → AI assistant response | ALWAYS Assistive      |
+| Hold **Fn+Cmd**             | Send selection + transcript    | Assistive (selection) |
+| Double-tap **Left Option**  | Hands‑free toggle (normal)     | Respects AI toggle    |
+| Double-tap **Right Option** | Hands‑free toggle (assistive)  | Assistive             |
 
 ### Mode Behavior
 

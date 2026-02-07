@@ -17,8 +17,8 @@ const BUILTIN_LEXICONS: &[(&str, &str)] = &[
     ),
     ("veterinary", include_str!("../../assets/veterinary.jsonl")),
 ];
-const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.93;
-const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
+const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.90;
+const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.20;
 const MAX_EMBED_CHARS: usize = 512;
 const MAX_DROPS_IN_ROW: u8 = 2;
 
@@ -246,6 +246,10 @@ impl SemanticGate {
             return None;
         }
 
+        // Avoid truncation affecting gate decisions; if it's too long, skip embedding.
+        if text.chars().count() > MAX_EMBED_CHARS {
+            return None;
+        }
         let input = truncate_for_embedding(text);
         match crate::embedder::embed(&input) {
             Ok(vec) => Some(vec),

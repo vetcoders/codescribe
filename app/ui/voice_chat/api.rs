@@ -651,7 +651,20 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
 /// Minimum interval between layout passes during streaming (prevents main-thread saturation).
 const DELTA_LAYOUT_THROTTLE: Duration = Duration::from_millis(50);
 
-fn apply_delta_and_layout(state: &mut VoiceChatOverlayState) {
+fn resolve_delta_index(state: &VoiceChatOverlayState, requested: Option<usize>) -> Option<usize> {
+    if let Some(idx) = requested
+        && idx < state.messages.len()
+        && idx < state.agent_bubble_views.len()
+    {
+        return Some(idx);
+    }
+    if !state.messages.is_empty() && state.agent_bubble_views.len() == state.messages.len() {
+        return Some(state.messages.len() - 1);
+    }
+    None
+}
+
+fn apply_delta_and_layout(state: &mut VoiceChatOverlayState, updated_index: Option<usize>) {
     let now = Instant::now();
     let should_layout = state
         .last_layout_time
@@ -660,54 +673,64 @@ fn apply_delta_and_layout(state: &mut VoiceChatOverlayState) {
     if should_layout {
         state.last_layout_time = Some(now);
         state.layout_pending = false;
-        if !try_update_last_message_view_in_place(state) {
+        state.pending_delta_index = None;
+        let index = resolve_delta_index(state, updated_index);
+        if !index
+            .map(|idx| try_update_message_view_in_place(state, idx))
+            .unwrap_or(false)
+        {
             update_chat_view_with_state(state, false);
         }
-    } else if !state.layout_pending {
-        // Schedule a deferred layout so the last delta is always rendered.
-        state.layout_pending = true;
-        let remaining =
-            DELTA_LAYOUT_THROTTLE - now.duration_since(state.last_layout_time.unwrap_or(now));
-        let millis = remaining.as_millis().max(5) as u64;
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(millis));
-            Queue::main().exec_async(|| {
-                let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-                if state.layout_pending {
-                    state.layout_pending = false;
-                    state.last_layout_time = Some(Instant::now());
-                    if !try_update_last_message_view_in_place(&mut state) {
-                        update_chat_view_with_state(&mut state, false);
+    } else {
+        state.pending_delta_index = updated_index;
+        if !state.layout_pending {
+            // Schedule a deferred layout so the latest delta is always rendered.
+            state.layout_pending = true;
+            let remaining =
+                DELTA_LAYOUT_THROTTLE - now.duration_since(state.last_layout_time.unwrap_or(now));
+            let millis = remaining.as_millis().max(5) as u64;
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(millis));
+                Queue::main().exec_async(|| {
+                    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    if state.layout_pending {
+                        state.layout_pending = false;
+                        state.last_layout_time = Some(Instant::now());
+                        let index = resolve_delta_index(&state, state.pending_delta_index);
+                        state.pending_delta_index = None;
+                        if !index
+                            .map(|idx| try_update_message_view_in_place(&mut state, idx))
+                            .unwrap_or(false)
+                        {
+                            update_chat_view_with_state(&mut state, false);
+                        }
                     }
-                }
+                });
             });
-        });
+        }
     }
-    // else: layout already pending, delta text is in state — will be picked up
 }
 
 fn append_voice_chat_user_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
-    ensure_streaming_user_message(&mut state);
-    if let Some(last) = state.messages.last_mut() {
-        codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta)
-            .apply(&mut last.text);
-        last.is_streaming = true;
+    let idx = get_or_create_streaming_message_index(&mut state, ChatRole::User);
+    if let Some(msg) = state.messages.get_mut(idx) {
+        codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta).apply(&mut msg.text);
+        msg.is_streaming = true;
     }
-    apply_delta_and_layout(&mut state);
+    apply_delta_and_layout(&mut state, Some(idx));
 }
 
 fn append_voice_chat_assistant_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
-    ensure_streaming_assistant_message(&mut state);
-    if let Some(last) = state.messages.last_mut() {
-        codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta)
-            .apply(&mut last.text);
-        last.is_streaming = true;
+    let idx = get_or_create_streaming_message_index(&mut state, ChatRole::Assistant);
+    if let Some(msg) = state.messages.get_mut(idx) {
+        codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta).apply(&mut msg.text);
+        msg.is_streaming = true;
     }
-    apply_delta_and_layout(&mut state);
+    apply_delta_and_layout(&mut state, Some(idx));
 }
 
 fn display_text_for_message(message: &ChatMessage) -> String {
@@ -827,30 +850,31 @@ unsafe fn sync_agent_document_view_size(state: &VoiceChatOverlayState, max_width
     }
 }
 
-fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> bool {
+fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index: usize) -> bool {
     unsafe {
         // If the view list doesn't match messages, a full rebuild is safer.
         if state.agent_bubble_views.len() != state.messages.len() {
             return false;
         }
+        if index >= state.messages.len() {
+            return false;
+        }
 
-        let Some(last_message) = state.messages.last() else {
-            return false;
-        };
-        let Some((bubble_ptr, label_ptr)) = state.agent_bubble_views.last().copied() else {
-            return false;
-        };
+        let message = &state.messages[index];
+        let (bubble_ptr, label_ptr) = state.agent_bubble_views[index];
 
         let container = bubble_ptr as Id;
         let label = label_ptr as Id;
-        update_bubble_text(label, &last_message.text, last_message.is_streaming);
-        let display_text = display_text_for_message(last_message);
+        update_bubble_text(label, &message.text, message.is_streaming);
+        let display_text = display_text_for_message(message);
         resize_bubble_container_for_text(container, label, &display_text);
         let max_width = agent_max_width(state);
         sync_agent_document_view_size(state, max_width);
 
         // Keep the latest message in view while streaming.
-        if let Some(scroll_view_ptr) = state.agent_scroll_view {
+        if index + 1 == state.agent_bubble_views.len()
+            && let Some(scroll_view_ptr) = state.agent_scroll_view
+        {
             let _ = scroll_view_ptr;
             let bounds: CGRect = msg_send![container, bounds];
             // Scroll to the bottom edge of the bubble; if the bubble is taller than the viewport,
@@ -866,11 +890,22 @@ fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> b
 fn finalize_user_message_impl(text: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
-    ensure_streaming_user_message(&mut state);
-    if let Some(last) = state.messages.last_mut() {
-        last.text = text.to_string();
-        last.is_streaming = false;
-        last.is_error = false;
+    let idx = last_message_index(&state, ChatRole::User).unwrap_or_else(|| {
+        let mode = message_mode_label(&state);
+        state.messages.push(ChatMessage {
+            role: ChatRole::User,
+            text: String::new(),
+            is_streaming: false,
+            is_error: false,
+            timestamp: SystemTime::now(),
+            mode: Some(mode),
+        });
+        state.messages.len() - 1
+    });
+    if let Some(msg) = state.messages.get_mut(idx) {
+        msg.text = text.to_string();
+        msg.is_streaming = false;
+        msg.is_error = false;
     }
     update_chat_view_with_state(&mut state, true);
 }
@@ -894,11 +929,22 @@ fn finalize_user_message_state_only_impl() {
 fn finalize_assistant_message_impl(text: &str, is_error: bool) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
-    ensure_streaming_assistant_message(&mut state);
-    if let Some(last) = state.messages.last_mut() {
-        last.text = text.to_string();
-        last.is_streaming = false;
-        last.is_error = is_error;
+    let idx = last_message_index(&state, ChatRole::Assistant).unwrap_or_else(|| {
+        let mode = message_mode_label(&state);
+        state.messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            text: String::new(),
+            is_streaming: false,
+            is_error,
+            timestamp: SystemTime::now(),
+            mode: Some(mode),
+        });
+        state.messages.len() - 1
+    });
+    if let Some(msg) = state.messages.get_mut(idx) {
+        msg.text = text.to_string();
+        msg.is_streaming = false;
+        msg.is_error = is_error;
     }
     state.is_sending = false;
     update_chat_view_with_state(&mut state, true);
@@ -1095,40 +1141,32 @@ pub(super) fn discard_last_message_impl() {
     }
 }
 
-fn ensure_streaming_assistant_message(state: &mut VoiceChatOverlayState) {
-    let needs_new = state
-        .messages
-        .last()
-        .is_none_or(|msg| msg.role != ChatRole::Assistant || !msg.is_streaming);
-    if needs_new {
-        let mode = message_mode_label(state);
-        state.messages.push(ChatMessage {
-            role: ChatRole::Assistant,
-            text: String::new(),
-            is_streaming: true,
-            is_error: false,
-            timestamp: SystemTime::now(),
-            mode: Some(mode),
-        });
-    }
+fn last_message_index(state: &VoiceChatOverlayState, role: ChatRole) -> Option<usize> {
+    state.messages.iter().rposition(|msg| msg.role == role)
 }
 
-fn ensure_streaming_user_message(state: &mut VoiceChatOverlayState) {
-    let needs_new = state
+fn get_or_create_streaming_message_index(
+    state: &mut VoiceChatOverlayState,
+    role: ChatRole,
+) -> usize {
+    if let Some(idx) = state
         .messages
-        .last()
-        .is_none_or(|msg| msg.role != ChatRole::User || !msg.is_streaming);
-    if needs_new {
-        let mode = message_mode_label(state);
-        state.messages.push(ChatMessage {
-            role: ChatRole::User,
-            text: String::new(),
-            is_streaming: true,
-            is_error: false,
-            timestamp: SystemTime::now(),
-            mode: Some(mode),
-        });
+        .iter()
+        .rposition(|msg| msg.role == role && msg.is_streaming)
+    {
+        return idx;
     }
+
+    let mode = message_mode_label(state);
+    state.messages.push(ChatMessage {
+        role,
+        text: String::new(),
+        is_streaming: true,
+        is_error: false,
+        timestamp: SystemTime::now(),
+        mode: Some(mode),
+    });
+    state.messages.len() - 1
 }
 
 pub(super) fn update_chat_view_with_state(

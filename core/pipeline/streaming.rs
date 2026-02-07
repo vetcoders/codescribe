@@ -24,8 +24,8 @@ use tracing::{debug, error, info, warn};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const DEFAULT_CHUNK_DURATION_SEC: f32 = 15.0;
-const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for context
+const DEFAULT_CHUNK_DURATION_SEC: f32 = 3.0;
+const DEFAULT_OVERLAP_RATIO: f32 = 0.2; // 20% overlap for context
 const DEFAULT_BUFFER_DELAY_MS: u64 = 3000;
 const DEFAULT_TYPING_CPS: f32 = 30.0;
 const DEFAULT_EMIT_WORDS_MAX: usize = 3;

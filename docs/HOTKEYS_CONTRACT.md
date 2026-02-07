@@ -54,13 +54,13 @@ flowchart TB
 **Behavior:** Recording starts on key down, stops on key up
 **VAD:** DISABLED - user has 100% control via key release
 
-| Config                 | Keys          | Use Case                          |
-| ---------------------- | ------------- | --------------------------------- |
-| `HOLD_MODS=fn`         | Fn            | **Default** (best for terminals)  |
-| `HOLD_MODS=ctrl`       | Ctrl          | Legacy / terminal-heavy users     |
-| `HOLD_MODS=ctrl_alt`   | Ctrl+Option   | Legacy power-combo preset         |
-| `HOLD_MODS=ctrl_shift` | Ctrl+Shift    | Assistive always (legacy)         |
-| `HOLD_MODS=ctrl_cmd`   | Ctrl+Command  | macOS power users (legacy)        |
+| Config                 | Keys         | Use Case                         |
+| ---------------------- | ------------ | -------------------------------- |
+| `HOLD_MODS=fn`         | Fn           | **Default** (best for terminals) |
+| `HOLD_MODS=ctrl`       | Ctrl         | Legacy / terminal-heavy users    |
+| `HOLD_MODS=ctrl_alt`   | Ctrl+Option  | Legacy power-combo preset        |
+| `HOLD_MODS=ctrl_shift` | Ctrl+Shift   | Assistive always (legacy)        |
+| `HOLD_MODS=ctrl_cmd`   | Ctrl+Command | macOS power users (legacy)       |
 
 **Events:**
 
@@ -192,14 +192,14 @@ flowchart LR
 
 ### Hotkey Configuration
 
-| Variable              | Default         | Options                                        | Reload  |
-| --------------------- | --------------- | ---------------------------------------------- | ------- |
-| `HOLD_MODS`           | `fn`            | `fn`, `ctrl`, `ctrl_alt`, `ctrl_shift`, `ctrl_cmd` | RESTART |
-| `HOLD_EXCLUSIVE`      | `true`          | `true`, `false`                                | RESTART |
-| `TOGGLE_TRIGGER`      | `double_option` | `double_option`, `double_lalt`, `double_ralt`, `none` | RESTART |
-| `HOLD_START_DELAY_MS` | `800`           | 0-1000                                         | RESTART |
-| `DOUBLE_TAP_INTERVAL_MS` | `200`        | 100-450                                        | RESTART |
-| `TOGGLE_SILENCE_SEC`  | `5.0`           | 0.5-10.0                                       | RESTART |
+| Variable                 | Default         | Options                                               | Reload  |
+| ------------------------ | --------------- | ----------------------------------------------------- | ------- |
+| `HOLD_MODS`              | `fn`            | `fn`, `ctrl`, `ctrl_alt`, `ctrl_shift`, `ctrl_cmd`    | RESTART |
+| `HOLD_EXCLUSIVE`         | `true`          | `true`, `false`                                       | RESTART |
+| `TOGGLE_TRIGGER`         | `double_option` | `double_option`, `double_lalt`, `double_ralt`, `none` | RESTART |
+| `HOLD_START_DELAY_MS`    | `800`           | 0-1000                                                | RESTART |
+| `DOUBLE_TAP_INTERVAL_MS` | `200`           | 100-450                                               | RESTART |
+| `TOGGLE_SILENCE_SEC`     | `5.0`           | 0.5-10.0                                              | RESTART |
 
 ### VAD Configuration
 

@@ -177,6 +177,7 @@ pub struct VoiceChatOverlayState {
     // Throttling: last time we ran a layout pass for streaming deltas
     pub last_layout_time: Option<Instant>,
     pub layout_pending: bool,
+    pub pending_delta_index: Option<usize>,
 }
 
 impl Default for VoiceChatOverlayState {
@@ -238,6 +239,7 @@ impl Default for VoiceChatOverlayState {
             action_handler: None,
             last_layout_time: None,
             layout_pending: false,
+            pending_delta_index: None,
         }
     }
 }

@@ -8,17 +8,17 @@
 
 ### Recording Modes
 
-| Feature                          | Status | Files                       |
-| -------------------------------- | ------ | --------------------------- |
-| Hold Mode (Fn = Raw)             | ✅     | `app/controller/`, `app/os/hotkeys.rs` |
-| Assistive Mode (Fn+Shift = AI)   | ✅     | `app/controller/`, `app/os/hotkeys.rs` |
-| Toggle Mode (Double Option)      | ✅     | `app/controller/`, `app/os/hotkeys.rs` |
-| VAD Auto-Stop (5s silence)       | ✅     | `audio/recorder.rs`         |
+| Feature                        | Status | Files                                  |
+| ------------------------------ | ------ | -------------------------------------- |
+| Hold Mode (Fn = Raw)           | ✅     | `app/controller/`, `app/os/hotkeys.rs` |
+| Assistive Mode (Fn+Shift = AI) | ✅     | `app/controller/`, `app/os/hotkeys.rs` |
+| Toggle Mode (Double Option)    | ✅     | `app/controller/`, `app/os/hotkeys.rs` |
+| VAD Auto-Stop (5s silence)     | ✅     | `audio/recorder.rs`                    |
 
 ### Voice Chat UI (Mission Control)
 
-| Feature                       | Status | Files                       |
-| ----------------------------- | ------ | --------------------------- |
+| Feature                       | Status | Files                           |
+| ----------------------------- | ------ | ------------------------------- |
 | Split panel layout (60/40)    | ✅     | `app/ui/voice_chat/mod.rs`      |
 | Chat bubbles (user/assistant) | ✅     | `app/ui/voice_chat/mod.rs`      |
 | Streaming AI responses        | ✅     | `app/ui/voice_chat/api.rs`      |
@@ -29,15 +29,15 @@
 
 ### Infrastructure
 
-| Feature                                | Status | Files                         |
-| -------------------------------------- | ------ | ----------------------------- |
-| Embedded Whisper model (~888MB)        | ✅     | `core/stt/whisper/embedded.rs`         |
-| Streaming transcription (Whisper Live) | ✅     | `core/audio/streaming_recorder.rs`     |
-| IPC Server (Unix socket)               | ✅     | `app/ipc/server.rs`                    |
-| Quality Loop (self-improvement)        | ✅     | `core/quality/quality_loop.rs`         |
-| Quality Reports (batch analysis)       | ✅     | `core/quality/quality_report.rs`       |
-| CodeScribe Core separation             | ✅     | `core/`                                |
-| Tray app with submenus                 | ✅     | `app/ui/tray/`                         |
+| Feature                                | Status | Files                              |
+| -------------------------------------- | ------ | ---------------------------------- |
+| Embedded Whisper model (~888MB)        | ✅     | `core/stt/whisper/embedded.rs`     |
+| Streaming transcription (Whisper Live) | ✅     | `core/audio/streaming_recorder.rs` |
+| IPC Server (Unix socket)               | ✅     | `app/ipc/server.rs`                |
+| Quality Loop (self-improvement)        | ✅     | `core/quality/quality_loop.rs`     |
+| Quality Reports (batch analysis)       | ✅     | `core/quality/quality_report.rs`   |
+| CodeScribe Core separation             | ✅     | `core/`                            |
+| Tray app with submenus                 | ✅     | `app/ui/tray/`                     |
 
 ---
 

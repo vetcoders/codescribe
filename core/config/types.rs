@@ -393,7 +393,7 @@ impl Default for Config {
             history_enabled: default_history_enabled(),
             quick_notes_enabled: false,
             quick_notes_save_only: false,
-            use_local_stt: false,
+            use_local_stt: true,
             local_model: default_local_model(),
             stt_endpoint: None,
             llm_endpoint: None,
