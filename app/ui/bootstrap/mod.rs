@@ -1675,36 +1675,41 @@ pub(super) extern "C" fn on_save_api_settings(
         )
     };
 
-    let config = Config::load();
+    let mut entries: Vec<(&str, String)> = Vec::new();
     unsafe {
         if let Some(ptr) = llm_endpoint {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
-            let _ = config.save_to_env("LLM_ENDPOINT", value.trim());
+            entries.push(("LLM_ENDPOINT", value.trim().to_string()));
         }
         if let Some(ptr) = llm_model {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
-            let _ = config.save_to_env("LLM_MODEL", value.trim());
+            entries.push(("LLM_MODEL", value.trim().to_string()));
         }
         if let Some(ptr) = llm_key {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
             if !value.trim().is_empty() {
-                let _ = config.save_to_env("LLM_API_KEY", value.trim());
+                entries.push(("LLM_API_KEY", value.trim().to_string()));
             }
         }
         if let Some(ptr) = assist_endpoint {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
-            let _ = config.save_to_env("LLM_ASSISTIVE_ENDPOINT", value.trim());
+            entries.push(("LLM_ASSISTIVE_ENDPOINT", value.trim().to_string()));
         }
         if let Some(ptr) = assist_model {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
-            let _ = config.save_to_env("LLM_ASSISTIVE_MODEL", value.trim());
+            entries.push(("LLM_ASSISTIVE_MODEL", value.trim().to_string()));
         }
         if let Some(ptr) = assist_key {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
             if !value.trim().is_empty() {
-                let _ = config.save_to_env("LLM_ASSISTIVE_API_KEY", value.trim());
+                entries.push(("LLM_ASSISTIVE_API_KEY", value.trim().to_string()));
             }
         }
+    }
+    if !entries.is_empty() {
+        let config = Config::load();
+        let borrowed: Vec<(&str, &str)> = entries.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let _ = config.save_to_env_many(&borrowed);
     }
     info!("Settings: API settings saved");
 }

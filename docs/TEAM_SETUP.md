@@ -38,24 +38,25 @@ Grant in: System Settings > Privacy & Security
 
 | Key                        | Action                                  | AI Mode            |
 | -------------------------- | --------------------------------------- | ------------------ |
-| Hold **Ctrl**              | Record → paste raw transcript           | ALWAYS RAW (no AI) |
-| Hold **Ctrl+Shift**        | Record → AI assistant response          | ALWAYS Assistive   |
-| Double-tap **Option**      | Toggle recording (hands-free)           | Respects AI toggle |
-| Triple-tap **Option**      | Toggle AI Formatting on/off             | Shows toast        |
-| **Shift** during Ctrl hold | Upgrade to Assistive mode mid-recording | —                  |
+| Hold **Fn**                | Record → paste raw transcript           | ALWAYS RAW (no AI) |
+| Hold **Fn+Shift**          | Record → AI assistant response          | ALWAYS Assistive   |
+| Hold **Fn+Cmd**            | Send selection + transcript             | Assistive (selection) |
+| Double-tap **Left Option** | Hands‑free toggle (normal)              | Respects AI toggle |
+| Double-tap **Right Option**| Hands‑free toggle (assistive)           | Assistive          |
 
 ### Mode Behavior
 
-- **RAW mode (Ctrl)**: Fast dictation. Transcript is pasted as-is (only local repetition cleanup).
+- **RAW mode (Fn)**: Fast dictation. Transcript is pasted as-is (only local repetition cleanup).
   Ignores AI_FORMATTING_ENABLED setting.
 - **Toggle mode (Double Option)**: Respects the AI Formatting toggle. If enabled, sends to AI
   for formatting. If disabled, pastes raw.
-- **Assistive mode (Ctrl+Shift)**: Full AI assistant. Model can answer questions, expand ideas,
+- **Assistive mode (Fn+Shift)**: Full AI assistant. Model can answer questions, expand ideas,
   or pass through dictation based on detected intent (KURIER/ASYSTENT system).
 
 ## Model
 
 **Strictly Embedded (Release Policy)**: `whisper-large-v3-turbo-mlx-q8` (~888MB)
+**Embedded Embedder**: `paraphrase-multilingual-MiniLM-L12-v2` (for semantic gating)
 
 - **Zero Exceptions:** Release binaries ALWAYS contain the model.
 - **No external files:** We never bundle `Resources/models/*`.
@@ -108,12 +109,12 @@ WHISPER_LANGUAGE=pl
 # AI formatting (optional) - separate providers for formatting vs assistive
 AI_FORMATTING_ENABLED=1
 
-# Formatting mode (fast, cheap) - for Ctrl Hold with AI toggle
+# Formatting mode (fast, cheap) - used by RAW / formatting paths
 LLM_FORMATTING_ENDPOINT=https://api.libraxis.cloud/v1/responses
 LLM_FORMATTING_MODEL=gpt-5-mini
 LLM_FORMATTING_API_KEY=sk-xxx
 
-# Assistive mode (smart) - for Ctrl+Shift Hold
+# Assistive mode (smart) - for Fn+Shift (chat) and assistive toggle
 LLM_ASSISTIVE_ENDPOINT=https://api.libraxis.cloud/v1/responses
 LLM_ASSISTIVE_MODEL=gpt-5.2
 LLM_ASSISTIVE_API_KEY=sk-xxx

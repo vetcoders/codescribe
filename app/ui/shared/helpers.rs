@@ -429,12 +429,44 @@ fn insets_from_frame(bounds: CGRect, frame: CGRect) -> NSEdgeInsets {
 /// Create a glass effect view if available, otherwise fallback to NSVisualEffectView.
 pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial) -> Id {
     unsafe {
-        if std::env::var("CODESCRIBE_DISABLE_GLASS").is_err() && glass_effect_supported() {
+        let glass_allowed =
+            std::env::var("CODESCRIBE_DISABLE_GLASS").is_err() && glass_effect_supported();
+        if glass_allowed {
+            if let Some(container_cls) = Class::get("NSGlassEffectContainerView") {
+                let container: Id = msg_send![container_cls, alloc];
+                let container: Id = msg_send![container, initWithFrame: frame];
+                let _: () = msg_send![container, setWantsLayer: true];
+                let layer: Id = msg_send![container, layer];
+                if !layer.is_null() {
+                    let clear = color_clear();
+                    let cg: Id = msg_send![clear, CGColor];
+                    let _: () = msg_send![layer, setBackgroundColor: cg];
+                }
+
+                let glass_cls = Class::get("NSGlassEffectView").unwrap();
+                let glass: Id = msg_send![glass_cls, alloc];
+                let glass_frame = CGRect::new(
+                    &CGPoint::new(0.0, 0.0),
+                    &CGSize::new(frame.size.width, frame.size.height),
+                );
+                let glass: Id = msg_send![glass, initWithFrame: glass_frame];
+                set_visual_effect_material(glass, material);
+                set_visual_effect_blending(glass, NSVisualEffectBlendingMode::WithinWindow);
+                set_visual_effect_state(glass, NSVisualEffectState::Active);
+                let _: () = msg_send![glass, setWantsLayer: true];
+                let _: () = msg_send![
+                    glass,
+                    setAutoresizingMask: 2_isize | 16_isize // NSViewWidthSizable | NSViewHeightSizable
+                ];
+                add_subview(container, glass);
+                return container;
+            }
+
             let glass_cls = Class::get("NSGlassEffectView").unwrap();
             let view: Id = msg_send![glass_cls, alloc];
             let view: Id = msg_send![view, initWithFrame: frame];
             set_visual_effect_material(view, material);
-            set_visual_effect_blending(view, NSVisualEffectBlendingMode::BehindWindow);
+            set_visual_effect_blending(view, NSVisualEffectBlendingMode::WithinWindow);
             set_visual_effect_state(view, NSVisualEffectState::Active);
             let _: () = msg_send![view, setWantsLayer: true];
             return view;
@@ -444,7 +476,7 @@ pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial)
         let view: Id = msg_send![visual_cls, alloc];
         let view: Id = msg_send![view, initWithFrame: frame];
         set_visual_effect_material(view, material);
-        set_visual_effect_blending(view, NSVisualEffectBlendingMode::BehindWindow);
+        set_visual_effect_blending(view, NSVisualEffectBlendingMode::WithinWindow);
         set_visual_effect_state(view, NSVisualEffectState::Active);
         let _: () = msg_send![view, setWantsLayer: true];
         view
@@ -452,7 +484,14 @@ pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial)
 }
 
 pub fn glass_effect_supported() -> bool {
-    Class::get("NSGlassEffectView").is_some()
+    let Some(cls) = Class::get("NSGlassEffectView") else {
+        return false;
+    };
+    unsafe {
+        !class_getInstanceMethod(cls, sel!(setMaterial:)).is_null()
+            && !class_getInstanceMethod(cls, sel!(setBlendingMode:)).is_null()
+            && !class_getInstanceMethod(cls, sel!(setState:)).is_null()
+    }
 }
 
 /// # Safety

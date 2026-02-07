@@ -120,7 +120,16 @@ impl TranscriptionPipeline {
         let processed = self.postprocessor.process(&stripped)?;
 
         let suffix_len = 50;
-        let start = processed.len().saturating_sub(suffix_len);
+        let mut start = processed.len();
+        let mut iter = processed.char_indices().rev();
+        for _ in 0..suffix_len {
+            if let Some((idx, _)) = iter.next() {
+                start = idx;
+            } else {
+                start = 0;
+                break;
+            }
+        }
         self.last_suffix = processed[start..].to_string();
 
         Some(processed)

@@ -14,6 +14,9 @@ Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez Code
 - **(REBUILD NEEDED)** – wymaga przebudowania binarki.
 
 > Źródło prawdy: zmienne używane w kodzie (runtime + build + testy). Nie ma tu żadnych „nowych” envów.
+>
+> **Uwaga:** GUI zapisuje „regularne” ustawienia do `~/Library/Application Support/CodeScribe/settings.json`,
+> a sekrety trafiają do **macOS Keychain**. `.env` jest tylko dla power‑userów i override’ów.
 
 ---
 
@@ -23,13 +26,15 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 
 **Hotkeys / UI / zachowanie podstawowe**
 
-- `HOLD_MODS` – domyślnie `ctrl` (RESTART NEEDED)
+- `HOLD_MODS` – domyślnie `fn` (RESTART NEEDED)
 - `HOLD_EXCLUSIVE` – domyślnie `1` (RESTART NEEDED)
 - `TOGGLE_TRIGGER` – domyślnie `double_option` (RESTART NEEDED)
 - `HOLD_START_DELAY_MS` – domyślnie `800` (RESTART NEEDED)
+- `DOUBLE_TAP_INTERVAL_MS` – domyślnie `200` (RESTART NEEDED)
+- `TOGGLE_SILENCE_SEC` – domyślnie `5.0` (RESTART NEEDED)
 - `SHOW_TRAY_GLYPH` – domyślnie `1` (RESTART NEEDED)
 - `HOLD_INDICATOR` – domyślnie `1` (RESTART NEEDED)
-- `HOLD_BADGE_SIZE` – domyślnie `12` (RESTART NEEDED)
+- `HOLD_BADGE_SIZE` – domyślnie `8` (RESTART NEEDED)
 - `HOLD_BADGE_OFFSET_X` – domyślnie `10` (RESTART NEEDED)
 - `HOLD_BADGE_OFFSET_Y` – domyślnie `-10` (RESTART NEEDED)
 - `OVERLAY_POSITION_MODE` – domyślnie `snapped_top_right` (RESTART NEEDED)
@@ -38,7 +43,7 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 
 - `BEEP_ON_START` – domyślnie `1` (RESTART NEEDED)
 - `SOUND_NAME` – domyślnie `Tink` (RESTART NEEDED)
-- `SOUND_VOLUME` – domyślnie `1.0` (RESTART NEEDED)
+- `SOUND_VOLUME` – domyślnie `0.25` (RESTART NEEDED)
 
 **Audio / silence**
 
@@ -51,9 +56,9 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 
 **Streaming (chunky)**
 
-- `CODESCRIBE_STREAM_CHUNK_SEC` – domyślnie `15.0` (HOT RELOADED)
-- `CODESCRIBE_STREAM_OVERLAP_RATIO` – domyślnie `0.25` (HOT RELOADED)
-- `CODESCRIBE_BUFFERED_STREAM` – domyślnie `0` (HOT RELOADED)
+- `CODESCRIBE_STREAM_CHUNK_SEC` – domyślnie `3.0` (HOT RELOADED)
+- `CODESCRIBE_STREAM_OVERLAP_RATIO` – domyślnie `0.2` (HOT RELOADED)
+- `CODESCRIBE_BUFFERED_STREAM` – domyślnie `1` (HOT RELOADED)
 - `CODESCRIBE_BUFFER_DELAY_MS` – domyślnie `3000` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` – domyślnie `30` (HOT RELOADED)
 - `CODESCRIBE_EMIT_WORDS_MAX` – max słów na tick (buffered), domyślnie `3` (HOT RELOADED)
@@ -190,6 +195,8 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `HOLD_EXCLUSIVE` (RESTART NEEDED)
 - `TOGGLE_TRIGGER` (RESTART NEEDED)
 - `HOLD_START_DELAY_MS` (RESTART NEEDED)
+- `DOUBLE_TAP_INTERVAL_MS` (RESTART NEEDED)
+- `TOGGLE_SILENCE_SEC` (RESTART NEEDED)
 
 ### UI / Overlay / Feedback
 

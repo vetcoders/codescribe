@@ -618,7 +618,7 @@ fn show_voice_chat_overlay_impl() {
             )
         ];
         set_visual_effect_material(sidebar_view, NSVisualEffectMaterial::Sidebar);
-        set_visual_effect_blending(sidebar_view, NSVisualEffectBlendingMode::BehindWindow);
+        set_visual_effect_blending(sidebar_view, NSVisualEffectBlendingMode::WithinWindow);
         set_visual_effect_state(sidebar_view, NSVisualEffectState::Active);
         let _: () = msg_send![sidebar_view, setWantsLayer: true];
         let sidebar_layer: Id = msg_send![sidebar_view, layer];
@@ -683,7 +683,7 @@ fn show_voice_chat_overlay_impl() {
             let _: () = msg_send![split_view, setVertical: true];
         }
         add_subview(blur_view, split_view);
-        // Ensure header stays on top of content.
+        // Ensure header glass + controls stay above the split view content.
         add_subview(blur_view, header_bg);
         add_subview(blur_view, header_controls);
 

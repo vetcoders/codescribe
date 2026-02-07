@@ -468,6 +468,145 @@ impl Config {
         Ok(())
     }
 
+    /// Save multiple configuration values in a single batch.
+    ///
+    /// This reduces repeated settings.json writes and .env rewrites, and
+    /// minimizes redundant work when updating several fields at once.
+    pub fn save_to_env_many(&self, entries: &[(&str, &str)]) -> anyhow::Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut settings: Option<super::settings::UserSettings> = None;
+        let mut env_vars: Option<HashMap<String, String>> = None;
+        let mut env_path: Option<PathBuf> = None;
+
+        for (key, value) in entries {
+            // API keys → Keychain
+            if super::keychain::KEYCHAIN_ACCOUNTS.contains(key) {
+                super::keychain::save_key(key, value)?;
+                unsafe { std::env::set_var(key, value) };
+                continue;
+            }
+
+            // Regular-user fields → settings.json
+            let is_regular = matches!(
+                *key,
+                "WHISPER_LANGUAGE"
+                    | "HOLD_MODS"
+                    | "HOLD_START_DELAY_MS"
+                    | "DOUBLE_TAP_INTERVAL_MS"
+                    | "TOGGLE_SILENCE_SEC"
+                    | "HOLD_EXCLUSIVE"
+                    | "AI_FORMATTING_ENABLED"
+                    | "CODESCRIBE_BUFFERED_STREAM"
+                    | "BEEP_ON_START"
+                    | "SOUND_VOLUME"
+                    | "VAD_PRESET"
+                    | "LLM_ENDPOINT"
+                    | "LLM_MODEL"
+                    | "LLM_ASSISTIVE_ENDPOINT"
+                    | "LLM_ASSISTIVE_MODEL"
+                    | "TOGGLE_TRIGGER"
+                    | "HOTKEY_DOUBLE_TAP_LEFT"
+                    | "HOTKEY_DOUBLE_TAP_RIGHT"
+            );
+
+            if is_regular {
+                let settings_ref = settings.get_or_insert_with(super::settings::UserSettings::load);
+                match *key {
+                    "WHISPER_LANGUAGE" => {
+                        settings_ref.whisper_language = Some((*value).to_string())
+                    }
+                    "HOLD_MODS" => settings_ref.hold_mods = Some((*value).to_string()),
+                    "TOGGLE_TRIGGER" => settings_ref.toggle_trigger = Some((*value).to_string()),
+                    "LLM_ENDPOINT" => settings_ref.llm_endpoint = Some((*value).to_string()),
+                    "LLM_MODEL" => settings_ref.llm_model = Some((*value).to_string()),
+                    "LLM_ASSISTIVE_ENDPOINT" => {
+                        settings_ref.llm_assistive_endpoint = Some((*value).to_string())
+                    }
+                    "LLM_ASSISTIVE_MODEL" => {
+                        settings_ref.llm_assistive_model = Some((*value).to_string())
+                    }
+                    "VAD_PRESET" => settings_ref.vad_preset = Some((*value).to_string()),
+                    "HOLD_START_DELAY_MS" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            settings_ref.hold_start_delay_ms = Some(v);
+                        }
+                    }
+                    "DOUBLE_TAP_INTERVAL_MS" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            settings_ref.double_tap_interval_ms = Some(v);
+                        }
+                    }
+                    "TOGGLE_SILENCE_SEC" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.toggle_silence_sec = Some(v);
+                        }
+                    }
+                    "SOUND_VOLUME" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.sound_volume = Some(v);
+                        }
+                    }
+                    "AI_FORMATTING_ENABLED" => {
+                        settings_ref.ai_formatting_enabled =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "CODESCRIBE_BUFFERED_STREAM" => {
+                        settings_ref.buffered_stream =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "BEEP_ON_START" => {
+                        settings_ref.beep_on_start =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "HOLD_EXCLUSIVE" => {
+                        settings_ref.hold_exclusive =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "HOTKEY_DOUBLE_TAP_LEFT" => {
+                        settings_ref.double_tap_left =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "HOTKEY_DOUBLE_TAP_RIGHT" => {
+                        settings_ref.double_tap_right =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    _ => {}
+                }
+                unsafe { std::env::set_var(key, value) };
+                continue;
+            }
+
+            // Power-user fields → .env file
+            let path = env_path.get_or_insert_with(Self::env_path).clone();
+            let vars_ref = env_vars.get_or_insert_with(|| {
+                if path.exists() {
+                    Self::parse_env_file(&path).unwrap_or_default()
+                } else {
+                    HashMap::new()
+                }
+            });
+            vars_ref.insert((*key).to_string(), (*value).to_string());
+            unsafe { std::env::set_var(key, value) };
+        }
+
+        if let Some(settings) = settings
+            && let Err(e) = settings.save()
+        {
+            warn!("Failed to save settings batch: {e}");
+        }
+        if let (Some(path), Some(vars)) = (env_path, env_vars) {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            Self::write_env_file(&path, &vars)?;
+        }
+
+        Ok(())
+    }
+
     /// Parse .env file into HashMap.
     pub fn parse_env_file(path: &PathBuf) -> anyhow::Result<HashMap<String, String>> {
         // Path comes from Config::env_path() which is hardcoded to ~/.codescribe/.env
