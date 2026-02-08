@@ -132,7 +132,7 @@ fn handle_copy_hotkeys_cheatsheet() {
 
     let mut text = format!(
         "CodeScribe hotkeys\n\
-
+\n\
 - Hands-off (RAW): {hands_off}\n\
 - Hold-to-talk (RAW): {base_raw} (hold)\n"
     );
