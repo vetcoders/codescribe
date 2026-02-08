@@ -42,7 +42,7 @@ fn test_hold_mods_persists() {
 
     // Load default config
     let config = Config::load();
-    assert_eq!(config.hold_mods, HoldMods::Ctrl, "Default should be Ctrl");
+    assert_eq!(config.hold_mods, HoldMods::Fn, "Default should be Fn");
 
     // Change to CtrlShift and save
     config
@@ -215,6 +215,7 @@ fn test_all_hold_mods_variants() {
     let _tmp = setup_test_env();
 
     let variants = [
+        ("fn", HoldMods::Fn),
         ("ctrl", HoldMods::Ctrl),
         ("ctrl_alt", HoldMods::CtrlAlt),
         ("ctrl_shift", HoldMods::CtrlShift),

@@ -54,7 +54,9 @@ pub use ui::{
 
 #[cfg(target_os = "macos")]
 pub use ui::bootstrap::{
-    hide_bootstrap_overlay, schedule_bootstrap, should_show_bootstrap, show_bootstrap_overlay,
+    hide_bootstrap_overlay, hide_settings_window, schedule_bootstrap, schedule_settings_window,
+    should_show_bootstrap, should_show_settings_onboarding, show_bootstrap_overlay,
+    show_settings_window,
 };
 
 #[cfg(target_os = "macos")]

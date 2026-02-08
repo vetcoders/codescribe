@@ -568,8 +568,8 @@ extern "C" fn on_tab_agent(_this: &Object, _cmd: Sel, _sender: Id) {
 }
 
 extern "C" fn on_tab_settings(_this: &Object, _cmd: Sel, _sender: Id) {
-    update_active_tab_impl(Tab::Settings);
-    info!("Tab changed to: {:?}", Tab::Settings);
+    crate::show_bootstrap_overlay();
+    info!("Settings window opened");
 }
 
 extern "C" fn on_copy_last_response(_this: &Object, _cmd: Sel, _sender: Id) {

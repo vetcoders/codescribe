@@ -75,7 +75,7 @@ pub enum TrayMenuEvent {
     /// User clicked Quit - clean shutdown
     Quit,
 
-    /// Run onboarding (bootstrap) flow
+    /// Open Settings window (onboarding flow)
     RunOnboarding,
 
     // Hold Hotkeys submenu
@@ -121,13 +121,9 @@ pub enum VadPreset {
 /// Hotkeys menu items that need runtime updates.
 pub struct HotkeysMenuItems {
     pub hold_summary: MenuItem,
-    pub hold_ctrl: CheckMenuItem,
-    pub hold_ctrl_alt: CheckMenuItem,
-    pub hold_ctrl_shift: CheckMenuItem,
-    pub hold_ctrl_cmd: CheckMenuItem,
+    pub toggle_summary: MenuItem,
     pub toggle_assistive: CheckMenuItem,
     pub toggle_dictation: CheckMenuItem,
-    pub toggle_label: MenuItem,
 }
 
 /// Notes menu items that need runtime updates.
@@ -164,10 +160,6 @@ pub struct MenuIds {
     pub hotkeys_toggle_dictation: MenuId,
     pub hotkeys_reset: MenuId,
     pub hotkeys_copy_cheatsheet: MenuId,
-    pub hotkeys_hold_ctrl: MenuId,
-    pub hotkeys_hold_ctrl_alt: MenuId,
-    pub hotkeys_hold_ctrl_shift: MenuId,
-    pub hotkeys_hold_ctrl_cmd: MenuId,
 
     // Quality
     pub quality_open_report: MenuId,

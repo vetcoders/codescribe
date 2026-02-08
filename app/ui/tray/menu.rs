@@ -262,10 +262,6 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let hotkeys_toggle_dictation_id = hold_ids.toggle_dictation;
     let hotkeys_reset_id = hold_ids.reset;
     let hotkeys_copy_cheatsheet_id = hold_ids.copy_cheatsheet;
-    let hotkeys_hold_ctrl_id = hold_ids.hold_ctrl;
-    let hotkeys_hold_ctrl_alt_id = hold_ids.hold_ctrl_alt;
-    let hotkeys_hold_ctrl_shift_id = hold_ids.hold_ctrl_shift;
-    let hotkeys_hold_ctrl_cmd_id = hold_ids.hold_ctrl_cmd;
 
     Ok((
         menu,
@@ -289,10 +285,6 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             hotkeys_toggle_dictation: hotkeys_toggle_dictation_id,
             hotkeys_reset: hotkeys_reset_id,
             hotkeys_copy_cheatsheet: hotkeys_copy_cheatsheet_id,
-            hotkeys_hold_ctrl: hotkeys_hold_ctrl_id,
-            hotkeys_hold_ctrl_alt: hotkeys_hold_ctrl_alt_id,
-            hotkeys_hold_ctrl_shift: hotkeys_hold_ctrl_shift_id,
-            hotkeys_hold_ctrl_cmd: hotkeys_hold_ctrl_cmd_id,
             // Quality
             quality_open_report: quality_open_report_id,
             // Models

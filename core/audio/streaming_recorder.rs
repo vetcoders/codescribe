@@ -19,6 +19,8 @@ pub struct StreamingRecorder {
     transcription_handle: Option<JoinHandle<()>>,
     sample_rate: u32,
     delta_callback: Option<Arc<dyn DeltaSink>>,
+    utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    utterance_silence_sec: Option<f32>,
 }
 
 impl StreamingRecorder {
@@ -32,6 +34,8 @@ impl StreamingRecorder {
             transcription_handle: None,
             sample_rate,
             delta_callback: None,
+            utterance_callback: None,
+            utterance_silence_sec: None,
         })
     }
 
@@ -45,11 +49,21 @@ impl StreamingRecorder {
             transcription_handle: None,
             sample_rate,
             delta_callback: None,
+            utterance_callback: None,
+            utterance_silence_sec: None,
         })
     }
 
     pub fn set_delta_callback(&mut self, callback: Option<Arc<dyn DeltaSink>>) {
         self.delta_callback = callback;
+    }
+
+    pub fn set_utterance_callback(&mut self, callback: Option<Arc<dyn Fn(String) + Send + Sync>>) {
+        self.utterance_callback = callback;
+    }
+
+    pub fn set_utterance_silence_sec(&mut self, silence_sec: Option<f32>) {
+        self.utterance_silence_sec = silence_sec;
     }
 
     pub async fn start(&mut self, language: Option<String>) -> Result<()> {
@@ -95,6 +109,8 @@ impl StreamingRecorder {
         let transcript_buffer = self.transcript_buffer.clone();
         let log_path = stream_log_path();
         let delta_callback = self.delta_callback.clone();
+        let utterance_callback = self.utterance_callback.clone();
+        let utterance_silence_sec = self.utterance_silence_sec;
         self.transcription_handle = Some(tokio::spawn(async move {
             if use_buffered_stream {
                 buffered_transcription_worker(
@@ -103,6 +119,8 @@ impl StreamingRecorder {
                     actual_sample_rate,
                     language,
                     delta_callback,
+                    utterance_callback,
+                    utterance_silence_sec,
                     None, // vad_stop_callback — not used in app context
                     log_path,
                 )

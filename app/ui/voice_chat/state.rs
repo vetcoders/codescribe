@@ -119,7 +119,6 @@ pub struct VoiceChatOverlayState {
     pub tab_settings_button: Option<usize>,
     pub favorites_button: Option<usize>,
     pub close_button: Option<usize>,
-    pub settings_view: Option<usize>,
 
     // Drawer tab
     pub drawer_scroll_view: Option<usize>,
@@ -128,9 +127,6 @@ pub struct VoiceChatOverlayState {
     pub drawer_edge_effect: Option<usize>,
     pub search_field: Option<usize>,
     pub search_label: Option<usize>,
-    pub help_panel: Option<usize>,
-    pub help_hold_label: Option<usize>,
-    pub help_toggle_label: Option<usize>,
     pub drawer_favorites_only: bool,
     pub favorites: HashSet<String>,
 
@@ -181,6 +177,7 @@ pub struct VoiceChatOverlayState {
     // Throttling: last time we ran a layout pass for streaming deltas
     pub last_layout_time: Option<Instant>,
     pub layout_pending: bool,
+    pub pending_delta_index: Option<usize>,
 }
 
 impl Default for VoiceChatOverlayState {
@@ -204,16 +201,12 @@ impl Default for VoiceChatOverlayState {
             tab_settings_button: None,
             favorites_button: None,
             close_button: None,
-            settings_view: None,
             drawer_scroll_view: None,
             drawer_container: None,
             drawer_entries: Vec::new(),
             drawer_edge_effect: None,
             search_field: None,
             search_label: None,
-            help_panel: None,
-            help_hold_label: None,
-            help_toggle_label: None,
             drawer_favorites_only: false,
             favorites: HashSet::new(),
             agent_scroll_view: None,
@@ -246,6 +239,7 @@ impl Default for VoiceChatOverlayState {
             action_handler: None,
             last_layout_time: None,
             layout_pending: false,
+            pending_delta_index: None,
         }
     }
 }

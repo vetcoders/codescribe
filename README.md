@@ -60,7 +60,7 @@ flowchart TB
 
 > **Note:** The diagram above shows the **target architecture** with Tauri GUI (Voice Lab / Teacher / Settings). Current release is a **native macOS tray app** (without Tauri), and the Lab UI is **future-only**. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for current implementation details.
 
-> **Status:** current release (see `Cargo.toml`) — **Strictly Embedded Model** (~888MB binary, zero exceptions) + _Whisper Live_ (streaming transcription).
+> **Status:** current release (see `Cargo.toml`) — **Embedded Whisper + MiniLM** + _Whisper Live_ (streaming transcription) + tiered settings (settings.json + Keychain).
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/BACKLOG.md`](docs/BACKLOG.md) | [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md)
 
@@ -81,12 +81,12 @@ LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1-mini
 LLM_API_KEY=sk-proj-xxx
 
-# Formatting mode overrides (Ctrl hold - cleanup only)
+# Formatting mode overrides (Hold Fn - cleanup only)
 LLM_FORMATTING_ENDPOINT=https://api.libraxis.cloud/v1/responses
 LLM_FORMATTING_MODEL=gpt-4.1-mini
 LLM_FORMATTING_API_KEY=vista-xxx
 
-# Assistive mode overrides (Ctrl+Shift - AI augmentation)
+# Assistive mode overrides (Fn+Shift - AI augmentation)
 LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
 LLM_ASSISTIVE_MODEL=gpt-4.1
 LLM_ASSISTIVE_API_KEY=sk-proj-xxx
@@ -106,7 +106,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 - **CLI Suite** — `codescribe`, `codescribe-quality`, `codescribe-loop`
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
-- **Global Hotkeys** — Hold Ctrl or double-tap Option to record
+- **Global Hotkeys** — Hold Fn (default) or double‑tap Option to record
 - **Provider Separation** — Different LLM providers for formatting vs assistive mode
 - **AI Formatting** — Optional post-processing via Responses API
 - **Slug Filenames** — Transcripts named with first 3 words for easy identification
@@ -124,7 +124,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 | HTTP Client      | reqwest                           | LLM API calls              |
 | API Format       | openai-harmony                    | Responses API support      |
 | Security         | cap-std                           | Path safety hardening      |
-| Embeddings       | candle-transformers (E5)          | Local vector utilities     |
+| Embeddings       | candle-transformers (MiniLM)      | Local semantic gating      |
 
 ## Installation
 
@@ -141,10 +141,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Download Whisper model (required for embedding)
-make download-model
-
-# Install CLI (~888MB with embedded model)
+# Install CLI (embedded Whisper + MiniLM)
 make install
 
 # Verify installation
@@ -155,8 +152,9 @@ codescribe --version
 
 ```bash
 make build              # Debug build (external model)
-make release            # Release build (embedded model)
-make install            # Install with embedded model (~888MB)
+make release            # Release build (embedded Whisper + MiniLM)
+make install            # Install CLI with embedded models
+make install-app        # Build + install macOS .app (auto-downloads models if missing)
 make install-no-embed   # Dev-only: install without embedding (needs CODESCRIBE_MODEL_PATH)
 ```
 
@@ -179,12 +177,28 @@ codescribe transcribe -l pl audio.m4a
 codescribe transcribe -f audio.mp3  # with AI formatting
 ```
 
+## Default Hotkeys (macOS)
+
+- **Hold Fn** → RAW dictation (fast, no AI)
+- **Hold Fn+Shift** → Assistive chat
+- **Hold Fn+Cmd** → Selection + transcript
+- **Double‑tap Left Option** → hands‑off toggle (normal)
+- **Double‑tap Right Option** → hands‑off toggle (assistive)
+
+Toggle mode auto‑sends after `TOGGLE_SILENCE_SEC` (default 5s) but keeps recording until the next double‑tap.
+
+## Settings & Secrets
+
+- GUI settings: `~/Library/Application Support/CodeScribe/settings.json`
+- API keys: macOS Keychain (`com.vetcoders.codescribe`)
+- Power‑user overrides: `~/.codescribe/.env`
+
 ## How It Works
 
 ```mermaid
 flowchart TD
     A[Hotkey Press] --> B{Mode?}
-    B -->|Hold Ctrl| C[Start Recording]
+    B -->|Hold Fn| C[Start Recording]
     B -->|Double Option| C
     C --> D[Recording]
   D -->|live chunks| E[Whisper STT (streaming)]
@@ -204,8 +218,9 @@ flowchart TD
 
 | Mode                  | Trigger                   | Description                                    |
 | --------------------- | ------------------------- | ---------------------------------------------- |
-| **Hold-to-talk**      | Hold `Ctrl` (800ms delay) | Release to transcribe + paste (raw transcript) |
-| **Hold Assistive**    | Hold `Ctrl+Shift`         | AI augmentation mode                           |
+| **Hold-to-talk**      | Hold `Fn` (800ms delay)   | Release to transcribe + paste (raw transcript) |
+| **Hold Assistive**    | Hold `Fn+Shift`           | AI augmentation mode                           |
+| **Hold Selection**    | Hold `Fn+Cmd`             | Send selection + transcript to assistant       |
 | **Toggle Formatting** | Double-tap `Left Option`  | AI-formatted version of speech                 |
 | **Toggle Assistive**  | Double-tap `Right Option` | Augmented AI response                          |
 
@@ -213,10 +228,10 @@ See [`docs/BACKLOG.md`](docs/BACKLOG.md) for detailed mode descriptions and futu
 
 ## Configuration
 
-Config file: `~/.codescribe/.env`
+GUI settings live in `settings.json`, secrets in Keychain, and power‑user overrides in `~/.codescribe/.env`.
 
 ```bash
-# Create/edit config
+# Open config helper (creates ~/.codescribe/.env if missing)
 make config
 ```
 

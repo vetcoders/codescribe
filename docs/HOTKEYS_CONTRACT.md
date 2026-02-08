@@ -20,13 +20,11 @@ flowchart TB
     subgraph Detection["🔍 Event Detection"]
         HoldGesture["check_hold_gesture()"]
         ToggleGesture["check_toggle_gesture()"]
-        ConvGesture["check_conversation_gesture()"]
     end
 
-    subgraph Events["📨 HotkeyEvent"]
-        HoldEvent["Hold { Down/Up, assistive }"]
+    subgraph Events["📨 HotkeyInput"]
+        HoldEvent["Hold { Down/Up, hold_mode }"]
         ToggleEvent["ToggleNormal / ToggleAssistive"]
-        ConvEvent["Conversation { Down/Up }"]
     end
 
     subgraph Controller["🎛️ RecordingController"]
@@ -40,11 +38,8 @@ flowchart TB
 
     HoldGesture --> HoldEvent
     ToggleGesture --> ToggleEvent
-    ConvGesture --> ConvEvent
-
     HoldEvent --> Handler
     ToggleEvent --> Handler
-    ConvEvent --> Handler
 
     Handler --> StateMachine
 ```
@@ -59,60 +54,54 @@ flowchart TB
 **Behavior:** Recording starts on key down, stops on key up
 **VAD:** DISABLED - user has 100% control via key release
 
-| Config                 | Keys         | Use Case          |
-| ---------------------- | ------------ | ----------------- |
-| `HOLD_MODS=ctrl`       | Ctrl         | Default, simple   |
-| `HOLD_MODS=ctrl_alt`   | Ctrl+Option  | Avoid conflicts   |
-| `HOLD_MODS=ctrl_shift` | Ctrl+Shift   | Assistive always  |
-| `HOLD_MODS=ctrl_cmd`   | Ctrl+Command | macOS power users |
+| Config                 | Keys         | Use Case                         |
+| ---------------------- | ------------ | -------------------------------- |
+| `HOLD_MODS=fn`         | Fn           | **Default** (best for terminals) |
+| `HOLD_MODS=ctrl`       | Ctrl         | Legacy / terminal-heavy users    |
+| `HOLD_MODS=ctrl_alt`   | Ctrl+Option  | Legacy power-combo preset        |
+| `HOLD_MODS=ctrl_shift` | Ctrl+Shift   | Assistive always (legacy)        |
+| `HOLD_MODS=ctrl_cmd`   | Ctrl+Command | macOS power users (legacy)       |
 
 **Events:**
 
 ```rust
-HotkeyEvent::Hold { action: Down, assistive: false }  // Ctrl only
-HotkeyEvent::Hold { action: Down, assistive: true }   // Ctrl+Shift
-HotkeyEvent::Hold { action: Up, assistive: bool }     // Release
+HotkeyInput { key_type: Hold, action: Down, hold_mode: Raw }         // Fn only
+HotkeyInput { key_type: Hold, action: Down, hold_mode: Chat }        // Fn+Shift
+HotkeyInput { key_type: Hold, action: Down, hold_mode: Selection }   // Fn+Cmd
+HotkeyInput { key_type: Hold, action: Up,   hold_mode: <current> }   // Release
 ```
 
-**Assistive upgrade:** If user presses Shift while holding Ctrl, mode upgrades to assistive (AI augmentation) mid-recording.
+**Mode modifiers (default Fn):** Shift → Chat, Cmd → Selection (while holding Fn).
 
 ---
 
 ### 2. Toggle Mode (Hands-Free)
 
-**Trigger:** Double-tap Option key within 450ms
-**Behavior:** First tap starts recording, second tap stops
-**VAD:** ENABLED - ends utterance after `CODESCRIBE_VAD_SILENCE_SEC` seconds of silence (no stop)
+**Trigger:** Double-tap Option key within `DOUBLE_TAP_INTERVAL_MS` (default **200ms**, range 100–450ms)
+**Behavior:** First tap starts recording, second tap toggles send/stop
+**VAD:** ENABLED – auto‑sends on `TOGGLE_SILENCE_SEC` of silence (default 5s) without stopping recording
 
-| Config                               | Keys                                           | Mode            |
-| ------------------------------------ | ---------------------------------------------- | --------------- |
-| `TOGGLE_TRIGGER=double_option`       | Left Option = normal, Right Option = assistive | Default         |
-| `TOGGLE_TRIGGER=double_right_option` | Right Option only (assistive)                  | Minimal         |
-| `TOGGLE_TRIGGER=none`                | Toggle disabled                                | Hold-only users |
+| Config                         | Keys                                           | Mode            |
+| ------------------------------ | ---------------------------------------------- | --------------- |
+| `TOGGLE_TRIGGER=double_option` | Left Option = normal, Right Option = assistive | Default         |
+| `TOGGLE_TRIGGER=double_lalt`   | Left Option only                               | Minimal         |
+| `TOGGLE_TRIGGER=double_ralt`   | Right Option only (assistive)                  | Minimal         |
+| `TOGGLE_TRIGGER=none`          | Toggle disabled                                | Hold-only users |
 
 **Events:**
 
 ```rust
-HotkeyEvent::ToggleNormal     // Double-tap Left Option
-HotkeyEvent::ToggleAssistive  // Double-tap Right Option
+HotkeyInput { key_type: Toggle, action: Press, assistive: false } // Left Option
+HotkeyInput { key_type: Toggle, action: Press, assistive: true }  // Right Option
 ```
 
 ---
 
-### 3. Conversation Mode (Moshi Full-Duplex)
+### 3. Conversation Mode (Moshi Full‑Duplex) — experimental
 
-**Trigger:** Ctrl+Option hold
-**Behavior:** Full-duplex audio - mic → Moshi LM → speaker simultaneously
-**VAD:** Internal to Moshi (turn management)
-
-**Events:**
-
-```rust
-HotkeyEvent::Conversation { action: Down }  // Start conversation
-HotkeyEvent::Conversation { action: Up }    // End conversation
-```
-
-**Note:** Requires Moshi models at `~/.codescribe/models/moshiko-q8/`. If unavailable, silently skipped (no spam).
+Conversation mode exists in the controller, but **has no default hotkey binding** in the current release.
+If you wire a custom trigger, it runs full‑duplex audio (mic → Moshi → speaker) and uses Moshi’s internal
+turn‑taking. Requires Moshi models at `~/.codescribe/models/moshiko-q8/`.
 
 ---
 
@@ -122,16 +111,16 @@ HotkeyEvent::Conversation { action: Up }    // End conversation
 stateDiagram-v2
     [*] --> IDLE
 
-    IDLE --> REC_HOLD : Hold Down<br/>(Ctrl pressed)
+    IDLE --> REC_HOLD : Hold Down<br/>(Fn pressed)
     IDLE --> REC_TOGGLE : Toggle<br/>(Double-tap Option)
-    IDLE --> CONVERSATION : Conversation Down<br/>(Ctrl+Option)
+    IDLE --> CONVERSATION : Conversation Down<br/>(custom binding)
 
-    REC_HOLD --> BUSY : Hold Up<br/>(Ctrl released)
+    REC_HOLD --> BUSY : Hold Up<br/>(Fn released)
     REC_HOLD --> REC_HOLD : Shift pressed<br/>(upgrade to assistive)
 
     REC_TOGGLE --> BUSY : Toggle again
 
-    CONVERSATION --> IDLE : Conversation Up<br/>(Ctrl+Option released)
+    CONVERSATION --> IDLE : Conversation Up
 
     BUSY --> IDLE : Processing complete<br/>(paste to app)
 
@@ -203,19 +192,21 @@ flowchart LR
 
 ### Hotkey Configuration
 
-| Variable              | Default         | Options                                        | Reload  |
-| --------------------- | --------------- | ---------------------------------------------- | ------- |
-| `HOLD_MODS`           | `ctrl`          | `ctrl`, `ctrl_alt`, `ctrl_shift`, `ctrl_cmd`   | RESTART |
-| `HOLD_EXCLUSIVE`      | `true`          | `true`, `false`                                | RESTART |
-| `TOGGLE_TRIGGER`      | `double_option` | `double_option`, `double_right_option`, `none` | RESTART |
-| `HOLD_START_DELAY_MS` | `150`           | 0-1000                                         | RESTART |
+| Variable                 | Default         | Options                                               | Reload  |
+| ------------------------ | --------------- | ----------------------------------------------------- | ------- |
+| `HOLD_MODS`              | `fn`            | `fn`, `ctrl`, `ctrl_alt`, `ctrl_shift`, `ctrl_cmd`    | RESTART |
+| `HOLD_EXCLUSIVE`         | `true`          | `true`, `false`                                       | RESTART |
+| `TOGGLE_TRIGGER`         | `double_option` | `double_option`, `double_lalt`, `double_ralt`, `none` | RESTART |
+| `HOLD_START_DELAY_MS`    | `800`           | 0-1000                                                | RESTART |
+| `DOUBLE_TAP_INTERVAL_MS` | `200`           | 100-450                                               | RESTART |
+| `TOGGLE_SILENCE_SEC`     | `5.0`           | 0.5-10.0                                              | RESTART |
 
 ### VAD Configuration
 
 | Variable                     | Default | Range    | Description                       |
 | ---------------------------- | ------- | -------- | --------------------------------- |
-| `CODESCRIBE_VAD_THRESHOLD`   | `0.35`  | 0.1-0.95 | Speech probability threshold      |
-| `CODESCRIBE_VAD_SILENCE_SEC` | `2.5`   | 0.1-10.0 | Silence before utterance boundary |
+| `CODESCRIBE_VAD_THRESHOLD`   | `0.5`   | 0.1-0.95 | Speech probability threshold      |
+| `CODESCRIBE_VAD_SILENCE_SEC` | `1.2`   | 0.1-10.0 | Silence before utterance boundary |
 
 ---
 
@@ -234,10 +225,10 @@ sequenceDiagram
     participant Whisper
     participant App as Active App
 
-    User->>CGEventTap: Press Ctrl
+    User->>CGEventTap: Press Fn
     CGEventTap->>HotkeyDetector: kCGEventFlagsChanged
     HotkeyDetector->>HotkeyDetector: check_hold_gesture()
-    HotkeyDetector->>Controller: HotkeyEvent::Hold { Down, assistive: false }
+    HotkeyDetector->>Controller: HotkeyInput { Hold Down, Raw }
 
     rect rgb(200, 255, 200)
         Note over Controller: State: IDLE → REC_HOLD
@@ -246,9 +237,9 @@ sequenceDiagram
         Whisper-->>Controller: Live transcription deltas
     end
 
-    User->>CGEventTap: Release Ctrl
+    User->>CGEventTap: Release Fn
     CGEventTap->>HotkeyDetector: kCGEventFlagsChanged
-    HotkeyDetector->>Controller: HotkeyEvent::Hold { Up, assistive }
+    HotkeyDetector->>Controller: HotkeyInput { Hold Up, <current> }
 
     rect rgb(255, 230, 200)
         Note over Controller: State: REC_HOLD → BUSY
@@ -274,8 +265,8 @@ sequenceDiagram
 
     User->>CGEventTap: Double-tap Left Option
     CGEventTap->>HotkeyDetector: kCGEventFlagsChanged (x4)
-    HotkeyDetector->>HotkeyDetector: check_toggle_gesture()<br/>Press→Release→Press→Release < 450ms
-    HotkeyDetector->>Controller: HotkeyEvent::ToggleNormal
+    HotkeyDetector->>HotkeyDetector: check_toggle_gesture()<br/>Press→Release→Press→Release < DOUBLE_TAP_INTERVAL_MS
+    HotkeyDetector->>Controller: HotkeyInput { Toggle, assistive=false }
 
     rect rgb(200, 255, 200)
         Note over Controller: State: IDLE → REC_TOGGLE
@@ -285,59 +276,22 @@ sequenceDiagram
         end
     end
 
-    alt User double-taps again
+    alt User double-taps again (stop)
         User->>HotkeyDetector: Double-tap Option
         HotkeyDetector->>Controller: ToggleNormal
-    else VAD detects silence
-        VAD->>Recorder: Utterance boundary (no stop)
-    end
-
-    rect rgb(255, 230, 200)
         Note over Controller: State: REC_TOGGLE → BUSY
         Controller->>Whisper: Finalize + format
         Note over Controller: State: BUSY → IDLE
+    else Silence > TOGGLE_SILENCE_SEC
+        VAD->>Recorder: Utterance boundary (auto-send, recording continues)
+        Note over Controller: State stays REC_TOGGLE
     end
 ```
 
-### Conversation Mode (Moshi Full-Duplex)
+### Conversation Mode (Moshi Full‑Duplex)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant User
-    participant CGEventTap
-    participant Controller as RecordingController
-    participant Moshi as ConversationEngine
-    participant Speaker as AudioPlayer
-
-    User->>CGEventTap: Hold Ctrl+Option
-    CGEventTap->>Controller: HotkeyEvent::Conversation { Down }
-
-    rect rgb(200, 230, 255)
-        Note over Controller: State: IDLE → CONVERSATION
-        Controller->>Moshi: Start full-duplex
-
-        par Parallel Audio Streams
-            loop User Audio Stream
-                User->>Moshi: Mic audio (48kHz→24kHz)
-                Moshi->>Moshi: VAD + Mimi encode
-            end
-        and Model Audio Stream
-            loop Model Response
-                Moshi->>Moshi: Helium LM + Mimi decode
-                Moshi->>Speaker: Audio (24kHz)
-                Speaker->>User: 🔊 Playback
-            end
-        end
-
-        Note over Moshi: Turn-taking managed internally
-    end
-
-    User->>CGEventTap: Release Ctrl+Option
-    CGEventTap->>Controller: HotkeyEvent::Conversation { Up }
-    Controller->>Moshi: Stop
-    Note over Controller: State: CONVERSATION → IDLE
-```
+Conversation mode is available in the controller but **not bound to a default hotkey** in the current release.
+Wire it manually if you need full‑duplex audio (mic → Moshi → speaker).
 
 ---
 
@@ -363,7 +317,7 @@ sequenceDiagram
     participant Detector as HotkeyDetector
     participant State as TapState
 
-    Note over User,State: DOUBLE_TAP_INTERVAL_MS = 450
+    Note over User,State: DOUBLE_TAP_INTERVAL_MS = 200
 
     User->>Detector: Option DOWN (t=0ms)
     Detector->>State: first_tap_time = now()
@@ -371,8 +325,8 @@ sequenceDiagram
     User->>Detector: Option UP (t=50ms)
     Detector->>State: waiting_second_tap = true
 
-    User->>Detector: Option DOWN (t=200ms)
-    Detector->>State: Check: 200ms < 450ms ✓
+    User->>Detector: Option DOWN (t=180ms)
+    Detector->>State: Check: 180ms < 200ms ✓
 
     User->>Detector: Option UP (t=250ms)
     Detector->>Detector: TRIGGER! ToggleNormal
@@ -381,7 +335,7 @@ sequenceDiagram
 ```
 
 ```rust
-const DOUBLE_TAP_INTERVAL_MS: u64 = 450;
+const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 // Sequence: Press → Release → Press → Release (within interval)
 // Only the SECOND release triggers ToggleNormal/ToggleAssistive
@@ -391,9 +345,8 @@ const DOUBLE_TAP_INTERVAL_MS: u64 = 450;
 
 When `HOLD_EXCLUSIVE=true` (default):
 
-- Ctrl hold and Option tap are mutually exclusive
-- Pressing Option while Ctrl held → discards Option tap sequence
-- Prevents accidental toggle while trying to hold
+- Option taps are ignored if Option is part of an unrelated hold combo
+- Prevents accidental toggle while trying to hold legacy Ctrl-based combos
 
 ---
 
@@ -402,7 +355,7 @@ When `HOLD_EXCLUSIVE=true` (default):
 | Symptom                      | Cause                           | Fix                                                           |
 | ---------------------------- | ------------------------------- | ------------------------------------------------------------- |
 | Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable CodeScribe |
-| Double-tap too sensitive     | Interval too long               | Not configurable (450ms hardcoded)                            |
+| Double-tap too sensitive     | Interval too short              | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
 | Recording won't stop (hold)  | Key stuck in system             | Release all modifiers, try again                              |
 | VAD cuts utterance too early | Threshold too high              | Lower `CODESCRIBE_VAD_THRESHOLD`                              |
 

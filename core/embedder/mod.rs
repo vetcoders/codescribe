@@ -1,8 +1,8 @@
-//! Text Embedder module - semantic embeddings using E5 (offline).
+//! Text Embedder module - semantic embeddings using MiniLM (offline).
 //!
 //! Provides semantic text embeddings for RAG, similarity search, and context matching.
-//! Uses a local/embedded multilingual-e5-large model (no runtime downloads by default).
-//! Override with `CODESCRIBE_EMBEDDER_REPO=intfloat/multilingual-e5-small` (HF cache).
+//! Uses a local/embedded paraphrase-multilingual-MiniLM-L12-v2 model (no runtime downloads by default).
+//! Override with `CODESCRIBE_EMBEDDER_REPO=sentence-transformers/...` (HF cache).
 //!
 //! ## Quick Start
 //!
@@ -13,7 +13,7 @@
 //! embedder::init()?;
 //!
 //! // Embed text
-//! let vec = embedder::embed("Hello world")?;  // Vec<f32>, 1024 dims
+//! let vec = embedder::embed("Hello world")?;  // Vec<f32>, 384 dims
 //!
 //! // Batch embedding
 //! let vecs = embedder::embed_batch(&["query 1", "query 2"])?;
@@ -31,8 +31,8 @@ pub mod singleton;
 pub use engine::{EmbedderConfig, EmbedderEngine};
 pub use singleton::{embed, embed_batch, init, is_initialized, similarity};
 
-/// Default embedding dimension for E5 models
-pub const EMBEDDING_DIM: usize = 1024;
+/// Default embedding dimension for MiniLM-L12-v2
+pub const EMBEDDING_DIM: usize = 384;
 
 /// Default model directory name (for local/embedded builds)
-pub const DEFAULT_MODEL: &str = "e5-large";
+pub const DEFAULT_MODEL: &str = "minilm-l12-v2";

@@ -664,8 +664,18 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
                 loop {
                     thread::sleep(Duration::from_millis(update_interval));
 
-                    let (window_ptr, config, should_pulse) = {
-                        let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    // Snapshot state without blocking the main thread. Never hold the lock
+                    // during AX queries (get_badge_position), which can be slow or stall.
+                    let (window_ptr, config, should_pulse, last_position) = {
+                        use std::sync::TryLockError;
+                        let state = match BADGE_STATE.try_lock() {
+                            Ok(state) => state,
+                            Err(TryLockError::Poisoned(err)) => err.into_inner(),
+                            Err(TryLockError::WouldBlock) => {
+                                // Skip this tick if the state is busy; avoid blocking UI.
+                                continue;
+                            }
+                        };
                         if !state.timer_running {
                             break;
                         }
@@ -673,6 +683,7 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
                             state.window,
                             state.config.clone(),
                             state.config.mode.should_pulse(),
+                            state.last_position,
                         )
                     };
 
@@ -690,11 +701,9 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
 
                     // Check if cursor actually moved (hysteresis: skip if < 2px)
                     let (new_x, new_y) = get_badge_position();
-                    let position_changed = {
-                        let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
-                        let (lx, ly) = state.last_position;
-                        lx.is_nan() || (new_x - lx).abs() > 2.0 || (new_y - ly).abs() > 2.0
-                    };
+                    let (lx, ly) = last_position;
+                    let position_changed =
+                        lx.is_nan() || (new_x - lx).abs() > 2.0 || (new_y - ly).abs() > 2.0;
 
                     // Skip main-thread dispatch entirely when nothing visual changed
                     if !position_changed && !should_pulse {
@@ -706,17 +715,17 @@ fn show_hold_badge_impl(config: HoldBadgeConfig) {
 
                     // Position and opacity updates need main thread
                     Queue::main().exec_async(move || {
-                        let still_current = {
-                            let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
-                            state.timer_running && state.window == Some(window_ptr)
-                        };
-                        if !still_current {
-                            return;
-                        }
-
-                        // Update cached position
+                        // Ensure state is still valid; do not block UI if busy.
                         {
-                            let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                            use std::sync::TryLockError;
+                            let mut state = match BADGE_STATE.try_lock() {
+                                Ok(state) => state,
+                                Err(TryLockError::Poisoned(err)) => err.into_inner(),
+                                Err(TryLockError::WouldBlock) => return,
+                            };
+                            if !state.timer_running || state.window != Some(window_ptr) {
+                                return;
+                            }
                             state.last_position = (new_x, new_y);
                         }
 

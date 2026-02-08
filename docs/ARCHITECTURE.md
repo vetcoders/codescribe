@@ -8,17 +8,18 @@
 flowchart TB
     %% High-level packaging / layers
 
-    subgraph APP[codescribe crate - bin/daemon]
+    subgraph APP[app/ (macOS app)]
         direction LR
-        HK[hotkeys.rs]
+        HK[os/hotkeys.rs]
         CTRL[controller/]
         IPC_SERVER[ipc/server.rs]
-        TRAY[tray/]
-        OVERLAY[voice_chat_ui/]
+        TRAY[ui/tray/]
+        OVERLAY[ui/voice_chat/]
+        BOOTSTRAP[ui/bootstrap/]
 
-        subgraph CORE[codescribe-core crate]
+        subgraph CORE[core/ (portable)]
             direction LR
-            WH[whisper/]
+            WH[stt/whisper/]
             CO[config/]
             AU[audio/]
             IPC_CORE[ipc types]
@@ -30,8 +31,8 @@ flowchart TB
     WH --> MODEL[Whisper Model\nlarge-v3-turbo\nmlx-q8 ~888MB\nembedded in bin]
 
     subgraph TOOLS[Quality & CLI Tools]
-        CLI[codescribe-quality]
-        LOOP[codescribe-loop]
+        CLI[bin/codescribe_quality]
+        LOOP[bin/codescribe_loop]
     end
 
     APP -.-> TOOLS
@@ -53,8 +54,8 @@ flowchart TB
        │                            │ _ui/         │      │ _overlay.rs  │
        │                            └──────────────┘      └──────────────┘
        │
-  Ctrl hold → Raw mode (no AI)
-  Ctrl+Shift hold → Assistive mode (AI)
+  Fn hold → Raw mode (no AI)
+  Fn+Shift hold → Assistive mode (AI)
   Double Option → Toggle mode (respects AI setting)
 ```
 
@@ -66,15 +67,15 @@ flowchart TB
 ├─────────────────────────────────────┬───────────────────────────┤
 │ LEFT PANEL (60%)                    │ RIGHT PANEL (40%)         │
 │                                     │                           │
-│ Chat bubbles (NSStackView)          │ [Transcriptions][Settings]│
+│ Chat bubbles (NSStackView)          │ [Drawer][Transcription]   │
 │ ┌─────────────────────────────┐     │                           │
 │ │ User message (blue, right)  │     │ Draft files list          │
 │ └─────────────────────────────┘     │ [Format] [Copy] [Augment] │
 │       ┌─────────────────────────┐   │                           │
-│       │ AI response (gray,left) │   │ Settings toggles          │
-│       └─────────────────────────┘   │ [Edit Config] [Edit Prompt]│
+│       │ AI response (gray,left) │   │ Agent tab + tools          │
+│       └─────────────────────────┘   │ Settings button → window   │
 │                                     │                           │
-│ [Auto] [📎] [Input...] [Send]       │                           │
+│ [Attach] [Input...] [Send]          │                           │
 └─────────────────────────────────────┴───────────────────────────┘
 ```
 
@@ -82,42 +83,29 @@ flowchart TB
 
 ```
 CodeScribe/
-├── codescribe-core/              # Core library (portable, no macOS deps)
-│   └── src/
-│       ├── whisper/              # Embedded + singleton Whisper engine
-│       │   ├── engine.rs         # Transcription logic
-│       │   ├── singleton.rs      # Global instance (lazy init)
-│       │   └── embedded.rs       # Model bytes (include_bytes!)
-│       ├── audio/                # Recorder + StreamingRecorder
-│       │   ├── recorder.rs       # cpal audio capture
-│       │   └── streaming_recorder.rs  # Live transcription
-│       ├── config/               # Configuration management
-│       ├── stream_postprocess.rs # Semantic gating for live chunks
-│       ├── quality_loop.rs       # Self-improvement loop
-│       ├── quality_report.rs     # Batch quality reports
-│       └── ipc/                  # IPC types
+├── core/                         # Core library (portable, no macOS deps)
+│   ├── stt/whisper/              # Embedded Whisper engine
+│   ├── audio/                    # Recorder + StreamingRecorder
+│   ├── vad/                      # Silero VAD
+│   ├── config/                   # Tiered config + defaults
+│   ├── llm/                      # Responses API client
+│   ├── pipeline/                 # Streaming + postprocess
+│   ├── embedder/                 # MiniLM embedder
+│   └── quality/                  # Quality loop + reports
 │
-├── src/                          # codescribe crate (macOS-specific)
-│   ├── main.rs                   # CLI entry (daemon/transcribe)
-│   ├── lib.rs                    # Library exports
-│   │
+├── app/                          # macOS app (AppKit, hotkeys, tray)
 │   ├── controller/               # Recording state machine
-│   │   ├── mod.rs                # RecordingController impl
-│   │   ├── types.rs              # State, HotkeyInput, etc.
-│   │   ├── helpers.rs            # Session state, callbacks
-│   │   └── tests.rs              # Controller tests
-│   │
-│   ├── voice_chat_ui/            # Voice Chat Overlay (Mission Control)
-│   │   ├── mod.rs                # UI creation (AppKit)
-│   │   ├── state.rs              # VoiceChatOverlayState
-│   │   ├── handlers.rs           # Objective-C callbacks
-│   │   └── api.rs                # Public API functions
-│   │
-│   ├── tray/                     # System tray menu
-│   │   ├── mod.rs                # Tray setup
-│   │   ├── menu.rs               # Menu creation
-│   │   ├── handlers.rs           # Menu actions
-│   │   ├── icons.rs              # Icon generation
+│   ├── os/                       # Hotkeys, permissions, clipboard
+│   └── ui/
+│       ├── voice_chat/           # Overlay UI
+│       ├── bootstrap/            # Settings window + onboarding
+│       ├── tray/                 # Menu bar UI
+│       └── shared/               # UI helpers/tokens
+│
+├── bin/                          # CLI binaries
+├── tests/                        # Integration/E2E tests
+├── assets/                       # Icons + packaged assets
+├── scripts/                      # Release + tooling scripts
 │   │   └── types.rs              # MenuIds, TrayMenuEvent
 │   │
 │   ├── hotkeys.rs                # CGEventTap handler
@@ -156,7 +144,7 @@ CodeScribe/
 ### Controller State Machine
 
 ```rust
-// src/controller/types.rs
+// app/controller/types.rs
 pub enum State {
     Idle,      // Ready for input
     RecHold,   // Recording (hold mode)
@@ -167,19 +155,20 @@ pub enum State {
 
 State transitions:
 
-- `Idle` + Ctrl down → (800ms delay) → `RecHold`
+- `Idle` + Fn down → (800ms delay) → `RecHold`
 - `Idle` + Double Option → `RecToggle`
-- `RecHold` + Ctrl up → `Busy` → `Idle`
+- `RecHold` + Fn up → `Busy` → `Idle`
 - `RecToggle` + Double Option → `Busy` → `Idle`
-- `RecToggle` + 5s silence (VAD) → `Busy` → `Idle`
+- `RecToggle` + 5s silence (VAD) → auto‑send (stays `RecToggle`)
 
 ### Mode Determination
 
 ```rust
-// src/controller/mod.rs - handle_hotkey_event()
+// app/controller/mod.rs - handle_hotkey_event()
 match (hotkey, flags) {
-    (Hold, no_shift)  => force_raw = true,   // Ctrl: always raw
-    (Hold, shift)     => assistive = true,   // Ctrl+Shift: always AI
+    (Hold, no_shift)  => force_raw = true,   // Fn: always raw
+    (Hold, shift)     => assistive = true,   // Fn+Shift: chat
+    (Hold, cmd)       => selection = true,  // Fn+Cmd: selection mode
     (Toggle, force_ai)=> force_ai = true,    // Left Option x2: force AI
     (Toggle, _)       => /* respects AI_FORMATTING_ENABLED */
 }

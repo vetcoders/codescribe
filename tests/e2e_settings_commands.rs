@@ -42,7 +42,7 @@ fn test_get_config_defaults() {
     let config = Config::load();
 
     // Verify defaults match what Settings UI expects
-    assert_eq!(config.hold_mods, HoldMods::Ctrl, "Default hold_mods");
+    assert_eq!(config.hold_mods, HoldMods::Fn, "Default hold_mods");
     assert_eq!(
         config.toggle_trigger,
         ToggleTrigger::DoubleOption,
@@ -164,11 +164,11 @@ fn test_invalid_hold_mods_fallback() {
 
     let config = Config::load();
 
-    // Should fallback to default (Ctrl)
+    // Should fallback to default (Fn)
     assert_eq!(
         config.hold_mods,
-        HoldMods::Ctrl,
-        "Invalid value should fallback to Ctrl"
+        HoldMods::Fn,
+        "Invalid value should fallback to Fn"
     );
 }
 
@@ -274,6 +274,7 @@ fn test_all_hold_mods_variants() {
     let _tmp = setup_test_env();
 
     let variants = [
+        ("fn", HoldMods::Fn),
         ("ctrl", HoldMods::Ctrl),
         ("ctrl_alt", HoldMods::CtrlAlt),
         ("ctrl_shift", HoldMods::CtrlShift),

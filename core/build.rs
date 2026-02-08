@@ -3,12 +3,12 @@
 //! Exports embedded model data and configuration.
 //! Generates embedded_model_data.rs and embedded_tts_data.rs in OUT_DIR for release builds.
 //!
-//! Release builds EMBED Whisper + Silero VAD by default (zero-dependency distribution).
+//! Release builds EMBED Whisper + Silero VAD + MiniLM embedder by default (zero-dependency distribution).
 //! Opt-out with CODESCRIBE_NO_EMBED=1 to skip all embedding.
-//! Additional models (TTS, E5) require opt-in via CODESCRIBE_EMBED_TTS / CODESCRIBE_EMBED_E5.
+//! TTS requires opt-in via CODESCRIBE_EMBED_TTS.
 //!
-//! ⚠ Binary > 3GB causes dylib crash on macOS — Whisper (~888MB) + Silero (~2MB) = safe.
-//!   Adding E5 (~1.1GB) is OK. Adding TTS on top may exceed limit — test before shipping!
+//! ⚠ Binary > 3GB causes dylib crash on macOS — Whisper (~888MB) + Silero (~2MB) + MiniLM (~224MB) = safe.
+//!   Adding TTS on top may exceed limit — test before shipping!
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -25,10 +25,10 @@ const DEFAULT_TTS_MODEL_NAME: &str = "csm-1b";
 const DEFAULT_TTS_REPO: &str = "sesame/csm-1b";
 const DEFAULT_MIMI_REPO: &str = "kyutai/mimi";
 
-/// Default E5 embedder model to embed (base = ~1.1GB, good balance)
-/// Override with CODESCRIBE_EMBEDDER_REPO for e5-large (~2.3GB) or e5-small (~470MB)
-const DEFAULT_E5_MODEL_NAME: &str = "e5-base";
-const DEFAULT_E5_REPO: &str = "intfloat/multilingual-e5-base";
+/// Default embedder model — MiniLM multilingual (~224MB fp16, always embedded like Silero)
+/// Override with CODESCRIBE_EMBEDDER_REPO for alternative models
+const DEFAULT_EMBEDDER_MODEL_NAME: &str = "minilm-l12-v2";
+const DEFAULT_EMBEDDER_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
@@ -37,7 +37,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_TTS");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
-    println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_E5");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBEDDER_REPO");
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
@@ -127,46 +126,47 @@ fn main() {
             );
         }
 
-        // E5 embedder embedding (opt-in only, runtime loading from HF cache is default)
-        // Enable with CODESCRIBE_EMBED_E5=1 (warning: large models may cause dyld issues)
-        let embed_e5 = env_flag("CODESCRIBE_EMBED_E5", false) && !no_embed;
-        let e5_repo = env::var("CODESCRIBE_EMBEDDER_REPO")
+        // MiniLM embedder — always embedded (like Silero), ~224MB fp16
+        // Skip only with CODESCRIBE_NO_EMBED=1
+        let embedder_repo = env::var("CODESCRIBE_EMBEDDER_REPO")
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| DEFAULT_E5_REPO.to_string());
-        let e5_model_path =
-            resolve_e5_embed_model_path(&manifest_dir, DEFAULT_E5_MODEL_NAME, &e5_repo);
-        let e5_dest_path = Path::new(&out_dir).join("embedded_e5_data.rs");
-        let e5_model_exists = e5_model_path.join("config.json").exists()
-            && e5_model_path.join("tokenizer.json").exists()
-            && e5_model_path.join("model.safetensors").exists();
+            .unwrap_or_else(|| DEFAULT_EMBEDDER_REPO.to_string());
+        let embedder_model_path =
+            resolve_embedder_model_path(&manifest_dir, DEFAULT_EMBEDDER_MODEL_NAME, &embedder_repo);
+        let embedder_dest_path = Path::new(&out_dir).join("embedded_embedder_data.rs");
+        let embedder_model_exists = embedder_model_path.join("config.json").exists()
+            && embedder_model_path.join("tokenizer.json").exists()
+            && embedder_model_path.join("model.safetensors").exists();
 
-        if embed_e5 && e5_model_exists {
+        if !no_embed && embedder_model_exists {
             println!(
-                "cargo:warning=Embedding E5 model from: {}",
-                e5_model_path.display()
+                "cargo:warning=Embedding MiniLM model from: {}",
+                embedder_model_path.display()
             );
-            let e5_content = format!(
+            let embedder_content = format!(
                 r#"
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
                 pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
                 pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
                 "#,
-                e5_model_path.join("config.json").display(),
-                e5_model_path.join("tokenizer.json").display(),
-                e5_model_path.join("model.safetensors").display(),
+                embedder_model_path.join("config.json").display(),
+                embedder_model_path.join("tokenizer.json").display(),
+                embedder_model_path.join("model.safetensors").display(),
             );
-            fs::write(&e5_dest_path, e5_content).expect("Failed to write embedded_e5_data.rs");
-            println!("cargo:rustc-cfg=embed_e5");
-        } else if embed_e5 && !e5_model_exists {
+            fs::write(&embedder_dest_path, embedder_content)
+                .expect("Failed to write embedded_embedder_data.rs");
+            println!("cargo:rustc-cfg=embed_embedder");
+        } else if !no_embed && !embedder_model_exists {
             println!(
-                "cargo:warning=E5 model not found at: {}",
-                e5_model_path.display()
+                "cargo:warning=Embedder model not found at: {}",
+                embedder_model_path.display()
             );
-            println!("cargo:warning=Download with: hf download {}", e5_repo);
-        } else if !embed_e5 {
-            println!("cargo:warning=E5 embedding disabled (set CODESCRIBE_EMBED_E5=1 to embed)");
+            println!(
+                "cargo:warning=Download with: huggingface-cli download {}",
+                embedder_repo
+            );
         }
 
         // Silero VAD — always embedded from repo (2.3MB, non-negotiable)
@@ -242,6 +242,35 @@ fn main() {
             // Debug build → skip embedding (use runtime loading)
             println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
         }
+
+        // Summary (single line for build logs)
+        let whisper_summary = if should_embed_whisper {
+            "embedded"
+        } else if no_embed {
+            "disabled"
+        } else if !model_exists {
+            "missing"
+        } else {
+            "external"
+        };
+        let embedder_summary = if !no_embed && embedder_model_exists {
+            "embedded"
+        } else if no_embed {
+            "disabled"
+        } else {
+            "missing"
+        };
+        let tts_summary = if embed_tts && tts_model_exists && mimi_weights_path.exists() {
+            "embedded"
+        } else if embed_tts {
+            "missing"
+        } else {
+            "disabled"
+        };
+        println!(
+            "cargo:warning=Embedding summary: Whisper={}; Silero=embedded; Embedder={}; TTS={}",
+            whisper_summary, embedder_summary, tts_summary
+        );
     }
 }
 
@@ -299,7 +328,7 @@ fn resolve_tts_embed_model_path(
     resolve_embed_model_path(manifest_dir, embed_model)
 }
 
-fn resolve_e5_embed_model_path(manifest_dir: &str, embed_model: &str, repo: &str) -> PathBuf {
+fn resolve_embedder_model_path(manifest_dir: &str, embed_model: &str, repo: &str) -> PathBuf {
     if let Some(snapshot) = find_hf_snapshot(repo) {
         return snapshot;
     }

@@ -30,7 +30,22 @@ impl Config {
         // Load .env file if it exists (power-user overrides only)
         // In production, .env doesn't exist — regular users use settings.json
         let env_path = Self::env_path();
+        let pre_env_use_local_stt = std::env::var("USE_LOCAL_STT").ok();
+        let mut env_use_local_stt: Option<bool> = None;
         if env_path.exists() {
+            if let Ok(vars) = Self::parse_env_file(&env_path)
+                && let Some(raw) = vars.get("USE_LOCAL_STT")
+            {
+                let normalized = raw.trim().to_lowercase();
+                env_use_local_stt = match normalized.as_str() {
+                    "1" | "true" | "yes" | "on" => Some(true),
+                    "0" | "false" | "no" | "off" => Some(false),
+                    _ => {
+                        warn!("Ignoring invalid USE_LOCAL_STT value in .env: {raw}");
+                        None
+                    }
+                };
+            }
             // Migrate legacy keys inside existing .env (power users only)
             Self::migrate_env_legacy_keys();
             let _ = dotenvy::from_path(&env_path);
@@ -50,6 +65,16 @@ impl Config {
 
         // Override with environment variables (.env + runtime; highest priority)
         config.load_from_env();
+        if let Some(v) = env_use_local_stt {
+            config.use_local_stt = v;
+        } else {
+            if pre_env_use_local_stt.is_some() {
+                warn!(
+                    "Ignoring USE_LOCAL_STT from runtime environment; only ~/.codescribe/.env can disable local STT"
+                );
+            }
+            config.use_local_stt = true;
+        }
         config.sanitize();
         config
     }
@@ -74,6 +99,16 @@ impl Config {
             && let Ok(ms) = val.parse()
         {
             self.hold_start_delay_ms = ms;
+        }
+        if let Ok(val) = std::env::var("DOUBLE_TAP_INTERVAL_MS")
+            && let Ok(ms) = val.parse()
+        {
+            self.double_tap_interval_ms = ms;
+        }
+        if let Ok(val) = std::env::var("TOGGLE_SILENCE_SEC")
+            && let Ok(sec) = val.parse()
+        {
+            self.toggle_silence_sec = sec;
         }
 
         // Language
@@ -257,6 +292,16 @@ impl Config {
         {
             self.hold_start_delay_ms = v;
         }
+        if std::env::var("DOUBLE_TAP_INTERVAL_MS").is_err()
+            && let Some(v) = settings.double_tap_interval_ms
+        {
+            self.double_tap_interval_ms = v;
+        }
+        if std::env::var("TOGGLE_SILENCE_SEC").is_err()
+            && let Some(v) = settings.toggle_silence_sec
+        {
+            self.toggle_silence_sec = v;
+        }
         if std::env::var("HOLD_EXCLUSIVE").is_err()
             && let Some(v) = settings.hold_exclusive
         {
@@ -315,10 +360,14 @@ impl Config {
             unsafe { std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", if v { "1" } else { "0" }) };
         }
         // Buffered stream (read from env at runtime)
-        if std::env::var("CODESCRIBE_BUFFERED_STREAM").is_err()
-            && let Some(v) = settings.buffered_stream
-        {
-            unsafe { std::env::set_var("CODESCRIBE_BUFFERED_STREAM", if v { "1" } else { "0" }) };
+        if std::env::var("CODESCRIBE_BUFFERED_STREAM").is_err() {
+            let enabled = settings.buffered_stream.unwrap_or(true);
+            unsafe {
+                std::env::set_var(
+                    "CODESCRIBE_BUFFERED_STREAM",
+                    if enabled { "1" } else { "0" },
+                )
+            };
         }
     }
 
@@ -369,6 +418,8 @@ impl Config {
             "WHISPER_LANGUAGE"
                 | "HOLD_MODS"
                 | "HOLD_START_DELAY_MS"
+                | "DOUBLE_TAP_INTERVAL_MS"
+                | "TOGGLE_SILENCE_SEC"
                 | "HOLD_EXCLUSIVE"
                 | "AI_FORMATTING_ENABLED"
                 | "CODESCRIBE_BUFFERED_STREAM"
@@ -393,7 +444,17 @@ impl Config {
                         settings.set_u64(key, v);
                     }
                 }
+                "DOUBLE_TAP_INTERVAL_MS" => {
+                    if let Ok(v) = value.parse::<u64>() {
+                        settings.set_u64(key, v);
+                    }
+                }
                 "SOUND_VOLUME" => {
+                    if let Ok(v) = value.parse::<f32>() {
+                        settings.set_f32(key, v);
+                    }
+                }
+                "TOGGLE_SILENCE_SEC" => {
                     if let Ok(v) = value.parse::<f32>() {
                         settings.set_f32(key, v);
                     }
@@ -429,6 +490,145 @@ impl Config {
         env_vars.insert(key.to_string(), value.to_string());
         Self::write_env_file(&env_path, &env_vars)?;
         unsafe { std::env::set_var(key, value) };
+        Ok(())
+    }
+
+    /// Save multiple configuration values in a single batch.
+    ///
+    /// This reduces repeated settings.json writes and .env rewrites, and
+    /// minimizes redundant work when updating several fields at once.
+    pub fn save_to_env_many(&self, entries: &[(&str, &str)]) -> anyhow::Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut settings: Option<super::settings::UserSettings> = None;
+        let mut env_vars: Option<HashMap<String, String>> = None;
+        let mut env_path: Option<PathBuf> = None;
+
+        for (key, value) in entries {
+            // API keys → Keychain
+            if super::keychain::KEYCHAIN_ACCOUNTS.contains(key) {
+                super::keychain::save_key(key, value)?;
+                unsafe { std::env::set_var(key, value) };
+                continue;
+            }
+
+            // Regular-user fields → settings.json
+            let is_regular = matches!(
+                *key,
+                "WHISPER_LANGUAGE"
+                    | "HOLD_MODS"
+                    | "HOLD_START_DELAY_MS"
+                    | "DOUBLE_TAP_INTERVAL_MS"
+                    | "TOGGLE_SILENCE_SEC"
+                    | "HOLD_EXCLUSIVE"
+                    | "AI_FORMATTING_ENABLED"
+                    | "CODESCRIBE_BUFFERED_STREAM"
+                    | "BEEP_ON_START"
+                    | "SOUND_VOLUME"
+                    | "VAD_PRESET"
+                    | "LLM_ENDPOINT"
+                    | "LLM_MODEL"
+                    | "LLM_ASSISTIVE_ENDPOINT"
+                    | "LLM_ASSISTIVE_MODEL"
+                    | "TOGGLE_TRIGGER"
+                    | "HOTKEY_DOUBLE_TAP_LEFT"
+                    | "HOTKEY_DOUBLE_TAP_RIGHT"
+            );
+
+            if is_regular {
+                let settings_ref = settings.get_or_insert_with(super::settings::UserSettings::load);
+                match *key {
+                    "WHISPER_LANGUAGE" => {
+                        settings_ref.whisper_language = Some((*value).to_string())
+                    }
+                    "HOLD_MODS" => settings_ref.hold_mods = Some((*value).to_string()),
+                    "TOGGLE_TRIGGER" => settings_ref.toggle_trigger = Some((*value).to_string()),
+                    "LLM_ENDPOINT" => settings_ref.llm_endpoint = Some((*value).to_string()),
+                    "LLM_MODEL" => settings_ref.llm_model = Some((*value).to_string()),
+                    "LLM_ASSISTIVE_ENDPOINT" => {
+                        settings_ref.llm_assistive_endpoint = Some((*value).to_string())
+                    }
+                    "LLM_ASSISTIVE_MODEL" => {
+                        settings_ref.llm_assistive_model = Some((*value).to_string())
+                    }
+                    "VAD_PRESET" => settings_ref.vad_preset = Some((*value).to_string()),
+                    "HOLD_START_DELAY_MS" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            settings_ref.hold_start_delay_ms = Some(v);
+                        }
+                    }
+                    "DOUBLE_TAP_INTERVAL_MS" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            settings_ref.double_tap_interval_ms = Some(v);
+                        }
+                    }
+                    "TOGGLE_SILENCE_SEC" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.toggle_silence_sec = Some(v);
+                        }
+                    }
+                    "SOUND_VOLUME" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.sound_volume = Some(v);
+                        }
+                    }
+                    "AI_FORMATTING_ENABLED" => {
+                        settings_ref.ai_formatting_enabled =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "CODESCRIBE_BUFFERED_STREAM" => {
+                        settings_ref.buffered_stream =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "BEEP_ON_START" => {
+                        settings_ref.beep_on_start =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "HOLD_EXCLUSIVE" => {
+                        settings_ref.hold_exclusive =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "HOTKEY_DOUBLE_TAP_LEFT" => {
+                        settings_ref.double_tap_left =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    "HOTKEY_DOUBLE_TAP_RIGHT" => {
+                        settings_ref.double_tap_right =
+                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    }
+                    _ => {}
+                }
+                unsafe { std::env::set_var(key, value) };
+                continue;
+            }
+
+            // Power-user fields → .env file
+            let path = env_path.get_or_insert_with(Self::env_path).clone();
+            let vars_ref = env_vars.get_or_insert_with(|| {
+                if path.exists() {
+                    Self::parse_env_file(&path).unwrap_or_default()
+                } else {
+                    HashMap::new()
+                }
+            });
+            vars_ref.insert((*key).to_string(), (*value).to_string());
+            unsafe { std::env::set_var(key, value) };
+        }
+
+        if let Some(settings) = settings
+            && let Err(e) = settings.save()
+        {
+            warn!("Failed to save settings batch: {e}");
+        }
+        if let (Some(path), Some(vars)) = (env_path, env_vars) {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            Self::write_env_file(&path, &vars)?;
+        }
+
         Ok(())
     }
 

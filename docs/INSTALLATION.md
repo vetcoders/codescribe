@@ -7,8 +7,11 @@ This document describes the installation methods, configuration paths, and how t
 ### Method 1: CLI Install (Recommended for Development)
 
 ```bash
-make download-model   # Download Whisper model (required for embedding)
-make install          # Build and install to ~/.cargo/bin/
+# If models are not cached yet:
+make download-model   # Download Whisper (for embedding)
+
+# Install CLI (~embedded Whisper + MiniLM)
+make install
 ```
 
 **Result**: Binary `codescribe` installed to `~/.cargo/bin/` (~888MB with embedded model).
@@ -19,7 +22,7 @@ make install          # Build and install to ~/.cargo/bin/
 
 ```bash
 make bundle           # Creates bundle/CodeScribe.app
-make install-app      # Copies to /Applications/CodeScribe.app
+make install-app      # Copies to /Applications/CodeScribe.app (auto-caches models)
 ```
 
 **Result**: Standard macOS .app bundle in `/Applications/`.
@@ -41,11 +44,15 @@ make notarize         # Notarize with Apple (requires Developer ID)
 
 ### Config Directory
 
-All configuration is stored in:
+Configuration is **tiered**:
 
 ```
+~/Library/Application Support/CodeScribe/
+├── settings.json     # GUI-managed settings (regular-user tier)
+└── ...               # app data
+
 ~/.codescribe/
-├── .env              # Main configuration file
+├── .env              # Power-user overrides (optional)
 ├── prompts/          # Custom AI prompts
 │   ├── formatting.txt
 │   └── assistive.txt
@@ -54,13 +61,16 @@ All configuration is stored in:
 └── repo_path         # Path to source repo (set during install)
 ```
 
+**Secrets** (API keys) are stored in **macOS Keychain** under service `com.vetcoders.codescribe`.
+
 ### Environment Variables (.env)
 
-The application loads configuration from `~/.codescribe/.env` using these priorities:
+The application loads configuration with these priorities:
 
 1. **Environment variables** (highest priority)
-2. **~/.codescribe/.env** (main config file)
-3. **Default values** (fallback)
+2. **~/.codescribe/.env** (power-user overrides)
+3. **settings.json** (GUI-managed defaults)
+4. **Built-in defaults** (fallback)
 
 ```mermaid
 flowchart TD
@@ -68,15 +78,11 @@ flowchart TD
     B -->|Set| C[Use ENV value]
     B -->|Not set| D{Check ~/.codescribe/.env}
     D -->|Exists| E[Load with dotenvy]
-    D -->|Missing| F[Create from template]
-    F --> G{Find template}
-    G -->|Bundle| H[../Resources/.env.example]
-    G -->|Repo| I[.env.example in repo root]
-    G -->|None| J[Generate minimal .env]
-    E --> K[Apply defaults for missing keys]
-    H --> K
-    I --> K
-    J --> K
+    D -->|Missing| F[Skip .env]
+    E --> KC[Load Keychain secrets]
+    F --> KC
+    KC --> S[Load settings.json]
+    S --> K[Apply defaults for missing keys]
     C --> L[Config Ready]
     K --> L
 ```
@@ -88,9 +94,11 @@ flowchart TD
 WHISPER_LANGUAGE=pl              # pl | en | de | fr
 USE_LOCAL_STT=1                  # 1 = embedded Whisper
 
-# Hotkeys
-HOLD_MODS=ctrl                   # ctrl | ctrl_alt | ctrl_shift
-TOGGLE_TRIGGER=double_option     # double_option | none
+# Hotkeys (defaults)
+HOLD_MODS=fn                     # fn | ctrl | ctrl_alt | ctrl_shift | ctrl_cmd
+TOGGLE_TRIGGER=double_option     # double_option | double_lalt | double_ralt | none
+DOUBLE_TAP_INTERVAL_MS=200       # 100–450
+TOGGLE_SILENCE_SEC=5.0
 
 # AI Formatting
 AI_FORMATTING_ENABLED=1

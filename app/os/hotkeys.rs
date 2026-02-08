@@ -28,22 +28,23 @@
 
 use crate::config::{HoldMods, ToggleTrigger};
 use crossbeam_channel::Sender;
-use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 // --- Global HoldMods Configuration ---
 
 /// Atomic storage for current HoldMods setting
-/// Values: 0=Ctrl, 1=CtrlAlt, 2=CtrlShift, 3=CtrlCmd
+/// Values: 0=Fn, 1=Ctrl, 2=CtrlAlt, 3=CtrlShift, 4=CtrlCmd
 static HOLD_MODS: AtomicU8 = AtomicU8::new(0);
 
 /// Set the hold modifier combination for hold-to-talk
 pub fn set_hold_mods(mods: HoldMods) {
     let value = match mods {
-        HoldMods::Ctrl => 0,
-        HoldMods::CtrlAlt => 1,
-        HoldMods::CtrlShift => 2,
-        HoldMods::CtrlCmd => 3,
+        HoldMods::Fn => 0,
+        HoldMods::Ctrl => 1,
+        HoldMods::CtrlAlt => 2,
+        HoldMods::CtrlShift => 3,
+        HoldMods::CtrlCmd => 4,
     };
     HOLD_MODS.store(value, AtomicOrdering::SeqCst);
     tracing::info!("HoldMods set to {:?}", mods);
@@ -52,11 +53,12 @@ pub fn set_hold_mods(mods: HoldMods) {
 /// Get the current hold modifier combination
 pub fn get_hold_mods() -> HoldMods {
     match HOLD_MODS.load(AtomicOrdering::SeqCst) {
-        0 => HoldMods::Ctrl,
-        1 => HoldMods::CtrlAlt,
-        2 => HoldMods::CtrlShift,
-        3 => HoldMods::CtrlCmd,
-        _ => HoldMods::Ctrl, // fallback
+        0 => HoldMods::Fn,
+        1 => HoldMods::Ctrl,
+        2 => HoldMods::CtrlAlt,
+        3 => HoldMods::CtrlShift,
+        4 => HoldMods::CtrlCmd,
+        _ => HoldMods::Fn, // fallback
     }
 }
 
@@ -106,10 +108,25 @@ pub fn set_exclusive_mode(enabled: bool) {
     tracing::info!("Hotkey exclusive mode set to: {}", enabled);
 }
 
+// --- Double-tap interval setting ---
+
+/// Atomic storage for double-tap interval (milliseconds)
+static DOUBLE_TAP_INTERVAL_MS: AtomicU64 = AtomicU64::new(200);
+
+/// Set the double-tap interval (ms). Clamped to safe bounds.
+pub fn set_double_tap_interval_ms(ms: u64) {
+    let clamped = ms.clamp(100, 450);
+    DOUBLE_TAP_INTERVAL_MS.store(clamped, AtomicOrdering::SeqCst);
+    tracing::info!("Double-tap interval set to: {}ms", clamped);
+}
+
+/// Get the current double-tap interval (ms).
+pub fn get_double_tap_interval_ms() -> u64 {
+    DOUBLE_TAP_INTERVAL_MS.load(AtomicOrdering::SeqCst)
+}
+
 // --- Constants ---
 
-/// Double-tap interval for toggle detection (milliseconds)
-const DOUBLE_TAP_INTERVAL_MS: u64 = 450;
 /// Max press duration for a "tap" gesture (milliseconds)
 const TAP_MAX_MS: u64 = 220;
 
@@ -140,9 +157,13 @@ pub enum HoldMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyEvent {
     /// Hold gesture detected (press/release configured modifier combo)
-    Hold { action: HoldAction, mode: HoldMode },
+    Hold {
+        action: HoldAction,
+        mode: HoldMode,
+        force_ai: bool,
+    },
     /// Modifier change while hold is active (e.g., add/remove Shift/Cmd).
-    HoldUpdate { mode: HoldMode },
+    HoldUpdate { mode: HoldMode, force_ai: bool },
     /// Normal toggle gesture (double-tap left Option)
     ToggleNormal,
     /// Raw toggle gesture (double-tap Ctrl)
@@ -235,6 +256,7 @@ mod macos {
     const K_CG_EVENT_FLAG_MASK_SHIFT: CGEventFlags = 0x00020000;
     const K_CG_EVENT_FLAG_MASK_ALTERNATE: CGEventFlags = 0x00080000; // Option key
     const K_CG_EVENT_FLAG_MASK_COMMAND: CGEventFlags = 0x00100000;
+    const K_CG_EVENT_FLAG_MASK_SECONDARY_FN: CGEventFlags = 0x00800000;
 
     // CGEventField for keycode
     const K_CG_KEYBOARD_EVENT_KEYCODE: CGEventField = 9;
@@ -245,6 +267,7 @@ mod macos {
     // macOS virtual keycodes for Control keys
     const K_VK_CONTROL: i64 = 59; // Left Control
     const K_VK_RIGHT_CONTROL: i64 = 62; // Right Control
+    const K_VK_FUNCTION: i64 = 63; // Fn (Globe)
 
     // CGEventTap constants
     const K_CG_SESSION_EVENT_TAP: u32 = 1;
@@ -299,6 +322,8 @@ mod macos {
         hold_active_ts: Option<Instant>,
         /// Current hold mode derived from Shift/Cmd state
         hold_mode: HoldMode,
+        /// Whether hold should force AI formatting (Ctrl+Option in CtrlAlt mode)
+        hold_force_ai: bool,
         /// Hold event already sent (prevent duplicates)
         hold_event_sent: bool,
         /// Last left Option tap timestamp
@@ -327,6 +352,7 @@ mod macos {
                 hold_active: false,
                 hold_active_ts: None,
                 hold_mode: HoldMode::Raw,
+                hold_force_ai: false,
                 hold_event_sent: false,
                 last_left_tap_ts: None,
                 last_right_tap_ts: None,
@@ -348,7 +374,7 @@ mod macos {
     ) {
         let now = Instant::now();
         if let Some(previous) = *last_tap
-            && now.duration_since(previous) <= Duration::from_millis(DOUBLE_TAP_INTERVAL_MS)
+            && now.duration_since(previous) <= Duration::from_millis(get_double_tap_interval_ms())
         {
             let _ = tx.send(event);
             *last_tap = None;
@@ -361,6 +387,7 @@ mod macos {
     /// Check if the configured hold combo is currently pressed
     /// Returns combo_active
     fn check_hold_combo(
+        fn_key: bool,
         ctrl: bool,
         shift: bool,
         option: bool,
@@ -369,7 +396,8 @@ mod macos {
     ) -> bool {
         // If Option is pressed but it's not part of the configured hold combo,
         // treat it as "not a hold" to avoid conflicts with Option double-tap toggles.
-        if option && !matches!(hold_mods, HoldMods::CtrlAlt) {
+        // For CtrlAlt, Option is optional and used as a formatting modifier.
+        if option && !matches!(hold_mods, HoldMods::CtrlAlt | HoldMods::Fn) {
             return false;
         }
 
@@ -381,8 +409,9 @@ mod macos {
         // pressing Shift while holding Ctrl would look like "Hold Up", causing rapid
         // start/stop thrashing and, in worst cases, system-level freezes (event tap churn).
         match hold_mods {
+            HoldMods::Fn => fn_key,
             HoldMods::Ctrl => ctrl,
-            HoldMods::CtrlAlt => ctrl && option,
+            HoldMods::CtrlAlt => ctrl,
             HoldMods::CtrlShift => ctrl && shift,
             HoldMods::CtrlCmd => ctrl && cmd,
         }
@@ -403,7 +432,7 @@ mod macos {
                 HoldMode::Raw
             }
             HoldMods::CtrlAlt => {
-                // Ctrl+Option is specific enough — Shift/Cmd can safely modify
+                // Ctrl is base; Shift/Cmd modify mode.
                 if cmd {
                     HoldMode::Selection
                 } else if shift {
@@ -412,6 +441,23 @@ mod macos {
                     HoldMode::Raw
                 }
             }
+            HoldMods::Fn => {
+                // Fn is base; Shift/Cmd modify mode.
+                if shift {
+                    HoldMode::Chat
+                } else if cmd {
+                    HoldMode::Selection
+                } else {
+                    HoldMode::Raw
+                }
+            }
+        }
+    }
+
+    fn compute_hold_force_ai(option: bool, shift: bool, cmd: bool, hold_mods: HoldMods) -> bool {
+        match hold_mods {
+            HoldMods::CtrlAlt => option && !shift && !cmd,
+            _ => false,
         }
     }
 
@@ -444,12 +490,23 @@ mod macos {
             let flags = unsafe { CGEventGetFlags(event) };
             let ctrl_held = (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0;
             let option_held = (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0;
+            let shift_held = (flags & K_CG_EVENT_FLAG_MASK_SHIFT) != 0;
+            let cmd_held = (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0;
+            let fn_held = (flags & K_CG_EVENT_FLAG_MASK_SECONDARY_FN) != 0;
+            let hold_mods = get_hold_mods();
+            let base_held = match hold_mods {
+                HoldMods::Fn => fn_held,
+                HoldMods::Ctrl => ctrl_held,
+                HoldMods::CtrlAlt => ctrl_held,
+                HoldMods::CtrlShift => ctrl_held && shift_held,
+                HoldMods::CtrlCmd => ctrl_held && cmd_held,
+            };
 
-            // If Ctrl is held and hold gesture is in the delay window (~800ms)
-            // → cancel the hold gesture by sending Hold Up (Ctrl+K, Ctrl+C, etc.)
+            // If base hold is active and within delay window (~800ms),
+            // cancel the hold gesture to avoid hijacking normal shortcuts.
             // After delay, recording has started - don't cancel on key presses
-            const HOLD_DELAY_MS: u64 = 850; // Slightly longer than controller's 800ms
-            if ctrl_held && state.hold_active {
+            const HOLD_DELAY_MS: u64 = 800; // Align with controller default hold delay
+            if base_held && state.hold_active {
                 let in_delay_window = state
                     .hold_active_ts
                     .map(|ts| ts.elapsed() < Duration::from_millis(HOLD_DELAY_MS))
@@ -457,15 +514,17 @@ mod macos {
 
                 if in_delay_window {
                     tracing::info!(
-                        "Key pressed during Ctrl hold delay - canceling (Ctrl+key combo detected)"
+                        "Key pressed during hold delay - canceling (modifier combo detected)"
                     );
                     // Send Hold Up to cancel the pending hold in controller
                     let _ = state.tx.send(HotkeyEvent::Hold {
                         action: HoldAction::Up,
                         mode: state.hold_mode,
+                        force_ai: state.hold_force_ai,
                     });
                     state.hold_active = false;
                     state.hold_active_ts = None;
+                    state.hold_force_ai = false;
                     state.hold_event_sent = false;
                     state.key_pressed_during_modifier = true;
                 } else {
@@ -503,13 +562,14 @@ mod macos {
 
         // Debug: log every modifier event
         tracing::debug!(
-            "CGEventTap: flags=0x{:X} keycode={} (ctrl={}, shift={}, opt={}, cmd={})",
+            "CGEventTap: flags=0x{:X} keycode={} (ctrl={}, shift={}, opt={}, cmd={}, fn={})",
             flags,
             keycode,
             (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0,
             (flags & K_CG_EVENT_FLAG_MASK_SHIFT) != 0,
             (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0,
-            (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0
+            (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0,
+            (flags & K_CG_EVENT_FLAG_MASK_SECONDARY_FN) != 0
         );
 
         // Check current modifier states
@@ -517,11 +577,13 @@ mod macos {
         let shift_now = (flags & K_CG_EVENT_FLAG_MASK_SHIFT) != 0;
         let option_now = (flags & K_CG_EVENT_FLAG_MASK_ALTERNATE) != 0;
         let cmd_now = (flags & K_CG_EVENT_FLAG_MASK_COMMAND) != 0;
+        let fn_now = (flags & K_CG_EVENT_FLAG_MASK_SECONDARY_FN) != 0;
 
         // Determine if this is specifically the right Option key
         let is_right_option = keycode == K_VK_RIGHT_OPTION;
         let is_option_key = keycode == K_VK_OPTION || keycode == K_VK_RIGHT_OPTION;
         let is_ctrl_key = keycode == K_VK_CONTROL || keycode == K_VK_RIGHT_CONTROL;
+        let is_fn_key = keycode == K_VK_FUNCTION;
 
         // Get current settings
         let hold_mods = get_hold_mods();
@@ -535,9 +597,10 @@ mod macos {
             // Otherwise Ctrl+shortcuts (Ctrl+K/C/V) keep firing recordings in the background.
             false
         } else {
-            check_hold_combo(ctrl_now, shift_now, option_now, cmd_now, hold_mods)
+            check_hold_combo(fn_now, ctrl_now, shift_now, option_now, cmd_now, hold_mods)
         };
         let mode_now = compute_hold_mode(shift_now, cmd_now, hold_mods);
+        let force_ai_now = compute_hold_force_ai(option_now, shift_now, cmd_now, hold_mods);
 
         // Detect hold combo activation/deactivation
         if combo_active && !state.hold_active {
@@ -545,6 +608,7 @@ mod macos {
             state.hold_active = true;
             state.hold_active_ts = Some(Instant::now());
             state.hold_mode = mode_now;
+            state.hold_force_ai = force_ai_now;
             state.hold_event_sent = false;
 
             tracing::debug!(
@@ -556,12 +620,18 @@ mod macos {
             let _ = state.tx.send(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: state.hold_mode,
+                force_ai: state.hold_force_ai,
             });
             state.hold_event_sent = true;
-        } else if combo_active && state.hold_active && mode_now != state.hold_mode {
+        } else if combo_active
+            && state.hold_active
+            && (mode_now != state.hold_mode || force_ai_now != state.hold_force_ai)
+        {
             state.hold_mode = mode_now;
+            state.hold_force_ai = force_ai_now;
             let _ = state.tx.send(HotkeyEvent::HoldUpdate {
                 mode: state.hold_mode,
+                force_ai: state.hold_force_ai,
             });
         } else if !combo_active && state.hold_active {
             // Hold combo just deactivated
@@ -577,9 +647,11 @@ mod macos {
                 let _ = state.tx.send(HotkeyEvent::Hold {
                     action: HoldAction::Up,
                     mode: state.hold_mode,
+                    force_ai: state.hold_force_ai,
                 });
             }
             state.hold_active_ts = None;
+            state.hold_force_ai = false;
         }
 
         let normal_toggle_enabled = matches!(
@@ -671,7 +743,7 @@ mod macos {
             // - hold combo was/is active or other modifiers held
             // - a key was pressed while Option was held (Option+Arrow is a combo, not a tap)
             let hold_mods_block_toggle = match hold_mods {
-                HoldMods::CtrlAlt => false, // Option is part of hold combo, don't block
+                HoldMods::CtrlAlt => ctrl_now || state.hold_active,
                 _ => ctrl_now || cmd_now || state.hold_active,
             };
 
@@ -706,8 +778,13 @@ mod macos {
         }
 
         // Reset key_pressed flag when all modifiers released (after processing).
-        if !ctrl_now && !option_now && !cmd_now {
+        if !ctrl_now && !option_now && !cmd_now && !fn_now {
             state.key_pressed_during_modifier = false;
+        }
+
+        if matches!(hold_mods, HoldMods::Fn) && is_fn_key {
+            // Swallow Fn events to avoid the system emoji picker.
+            return std::ptr::null_mut();
         }
 
         event
@@ -870,6 +947,14 @@ mod macos {
             let prev = EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst);
             EXCLUSIVE_MODE.store(false, AtomicOrdering::SeqCst);
 
+            // Fn base with Shift/Cmd modifiers
+            assert_eq!(compute_hold_mode(false, false, HoldMods::Fn), HoldMode::Raw);
+            assert_eq!(compute_hold_mode(true, false, HoldMods::Fn), HoldMode::Chat);
+            assert_eq!(
+                compute_hold_mode(false, true, HoldMods::Fn),
+                HoldMode::Selection
+            );
+
             // Ctrl-only ignores Shift/Cmd modifiers
             assert_eq!(
                 compute_hold_mode(true, false, HoldMods::Ctrl),
@@ -912,6 +997,7 @@ mod macos {
             let prev = EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst);
             EXCLUSIVE_MODE.store(true, AtomicOrdering::SeqCst);
 
+            assert_eq!(compute_hold_mode(true, true, HoldMods::Fn), HoldMode::Raw);
             assert_eq!(
                 compute_hold_mode(true, true, HoldMods::CtrlAlt),
                 HoldMode::Raw
@@ -1113,7 +1199,11 @@ mod tests {
 
     #[test]
     fn test_hold_mods_get_set() {
-        // Test default
+        // Test Fn
+        set_hold_mods(HoldMods::Fn);
+        assert_eq!(get_hold_mods(), HoldMods::Fn);
+
+        // Test Ctrl
         set_hold_mods(HoldMods::Ctrl);
         assert_eq!(get_hold_mods(), HoldMods::Ctrl);
 
@@ -1130,6 +1220,16 @@ mod tests {
         assert_eq!(get_hold_mods(), HoldMods::CtrlCmd);
 
         // Reset to default
-        set_hold_mods(HoldMods::Ctrl);
+        set_hold_mods(HoldMods::Fn);
+    }
+
+    #[test]
+    fn test_double_tap_interval_get_set() {
+        set_double_tap_interval_ms(200);
+        assert_eq!(get_double_tap_interval_ms(), 200);
+        set_double_tap_interval_ms(50);
+        assert_eq!(get_double_tap_interval_ms(), 100);
+        set_double_tap_interval_ms(999);
+        assert_eq!(get_double_tap_interval_ms(), 450);
     }
 }

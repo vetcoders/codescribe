@@ -13,7 +13,8 @@ mod state;
 pub use api::{
     add_voice_chat_error_message, add_voice_chat_user_message, append_transcription_delta,
     append_voice_chat_assistant_delta, append_voice_chat_user_delta, clear_transcription_text,
-    clear_voice_chat_text, filter_drawer, hide_voice_chat_overlay, is_auto_send_enabled,
+    clear_voice_chat_text, filter_drawer, finalize_voice_chat_assistant_message,
+    finalize_voice_chat_user_message, hide_voice_chat_overlay, is_auto_send_enabled,
     is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,
     request_settings_tab_on_open, reset_voice_chat_activity, send_voice_chat_draft,
     set_transcription_text, set_voice_chat_send_callback, set_voice_chat_sending,
@@ -37,8 +38,6 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::config::{HoldMods, ToggleTrigger};
-use crate::os::hotkeys::{get_hold_mods, get_toggle_trigger};
-use crate::ui::bootstrap;
 
 use crate::ui_helpers::{
     LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style,
@@ -70,10 +69,14 @@ const NSVIEW_MAX_Y_MARGIN: isize = 32;
 const CACORNER_MIN_X_MIN_Y: u64 = 1 << 0;
 const CACORNER_MAX_X_MIN_Y: u64 = 1 << 1;
 
+#[allow(dead_code)]
 pub(super) fn shortcuts_lines(hold: HoldMods, toggle: ToggleTrigger) -> (String, String) {
     let hold_line = match hold {
+        HoldMods::Fn => "Hold Fn — record • Fn+Shift — chat • Fn+Cmd — selection",
         HoldMods::Ctrl => "Hold Ctrl — record",
-        HoldMods::CtrlAlt => "Hold Ctrl+Option — record",
+        HoldMods::CtrlAlt => {
+            "Hold Ctrl — record • Ctrl+Option — format • Ctrl+Shift — chat • Ctrl+Cmd — selection"
+        }
         HoldMods::CtrlShift => "Hold Ctrl+Shift — record",
         HoldMods::CtrlCmd => "Hold Ctrl+Cmd — record",
     };
@@ -221,6 +224,8 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![window, setOpaque: false];
         let _: () = msg_send![window, setBackgroundColor: color_clear()];
         let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
+        // Keep the window instance alive even after close; we manage lifecycle explicitly.
+        let _: () = msg_send![window, setReleasedWhenClosed: false];
         let _: () = msg_send![window, setContentMinSize: CGSize::new(380.0, 360.0)];
         // Prevent "infinite" resizing; cap at the current screen's visible frame.
         let ns_screen = Class::get("NSScreen").unwrap();
@@ -241,16 +246,12 @@ fn show_voice_chat_overlay_impl() {
         let content_view: Id = msg_send![window, contentView];
 
         let ns_visual = Class::get("NSVisualEffectView").unwrap();
-        let blur_view: Id = msg_send![ns_visual, alloc];
         let blur_frame = CGRect::new(
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
         );
-        let blur_view: Id = msg_send![blur_view, initWithFrame: blur_frame];
-        set_visual_effect_material(blur_view, NSVisualEffectMaterial::WindowBackground);
-        set_visual_effect_blending(blur_view, NSVisualEffectBlendingMode::BehindWindow);
-        set_visual_effect_state(blur_view, NSVisualEffectState::Active);
-        let _: () = msg_send![blur_view, setWantsLayer: true];
+        let blur_view: Id =
+            create_glass_effect_view(blur_frame, NSVisualEffectMaterial::WindowBackground);
         let _: () = msg_send![
             blur_view,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
@@ -283,22 +284,8 @@ fn show_voice_chat_overlay_impl() {
             ),
             &CGSize::new(content_bounds.size.width.max(0.0), header_height),
         );
-        let header_bg: Id = if glass_effect_supported()
-            && let Some(container_cls) = Class::get("NSGlassEffectContainerView")
-        {
-            let container: Id = msg_send![container_cls, alloc];
-            let container: Id = msg_send![container, initWithFrame: header_frame];
-            let _: () = msg_send![container, setWantsLayer: true];
-
-            let glass_frame = CGRect::new(
-                &CGPoint::new(0.0, 0.0),
-                &CGSize::new(header_frame.size.width, header_height),
-            );
-            let glass: Id = create_glass_effect_view(glass_frame, NSVisualEffectMaterial::Titlebar);
-            let _: () =
-                msg_send![glass, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE];
-            add_subview(container, glass);
-            container
+        let header_bg: Id = if glass_effect_supported() {
+            create_glass_effect_view(header_frame, NSVisualEffectMaterial::Titlebar)
         } else {
             create_glass_effect_view(header_frame, NSVisualEffectMaterial::HeaderView)
         };
@@ -318,10 +305,15 @@ fn show_voice_chat_overlay_impl() {
             }
             let _: () = msg_send![header_layer, setMasksToBounds: true];
         }
-        add_subview(blur_view, header_bg);
-
-        let title_x = header_frame.origin.x + ui_tokens::EDGE_PADDING_TIGHT;
-        let title_y = header_frame.origin.y + ((header_height - 20.0) / 2.0).max(0.0);
+        let header_controls: Id = msg_send![Class::get("NSView").unwrap(), alloc];
+        let header_controls: Id = msg_send![header_controls, initWithFrame: header_frame];
+        let _: () = msg_send![header_controls, setWantsLayer: true];
+        let _: () = msg_send![
+            header_controls,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN
+        ];
+        let title_x = ui_tokens::EDGE_PADDING_TIGHT;
+        let title_y = ((header_height - 20.0) / 2.0).max(0.0);
         // Give the tab control more room to avoid truncation ("Dr..." / "A...").
         let title_w = ui_tokens::TITLE_LABEL_WIDTH;
         let title_label = create_label(LabelConfig {
@@ -338,16 +330,16 @@ fn show_voice_chat_overlay_impl() {
             title_label,
             setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
-        add_subview(blur_view, title_label);
+        add_subview(header_controls, title_label);
 
         // Header right-side controls (right-aligned, consistent spacing).
         let btn_w = ui_tokens::HEADER_BUTTON_SIZE;
         let btn_h = ui_tokens::HEADER_BUTTON_SIZE;
         let gap = ui_tokens::HEADER_BUTTON_GAP;
         let right_pad = ui_tokens::EDGE_PADDING_TIGHT;
-        let header_btn_y = header_frame.origin.y + ((header_height - btn_h) / 2.0).max(0.0);
+        let header_btn_y = ((header_height - btn_h) / 2.0).max(0.0);
 
-        let mut x = header_frame.origin.x + header_frame.size.width - right_pad - btn_w;
+        let mut x = header_frame.size.width - right_pad - btn_w;
         let close_button_x = x;
         x -= gap + btn_w;
         let more_button_x = x;
@@ -384,7 +376,7 @@ fn show_voice_chat_overlay_impl() {
             setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
         set_focus_ring(tab_drawer_button);
-        add_subview(blur_view, tab_drawer_button);
+        add_subview(header_controls, tab_drawer_button);
 
         let tab_transcription_button = create_button(
             CGRect::new(
@@ -407,7 +399,7 @@ fn show_voice_chat_overlay_impl() {
             setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
         set_focus_ring(tab_transcription_button);
-        add_subview(blur_view, tab_transcription_button);
+        add_subview(header_controls, tab_transcription_button);
 
         let tab_agent_button = create_button(
             CGRect::new(
@@ -426,7 +418,7 @@ fn show_voice_chat_overlay_impl() {
             setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
         set_focus_ring(tab_agent_button);
-        add_subview(blur_view, tab_agent_button);
+        add_subview(header_controls, tab_agent_button);
 
         let tab_settings_button = create_button(
             CGRect::new(
@@ -445,12 +437,11 @@ fn show_voice_chat_overlay_impl() {
             setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
         set_focus_ring(tab_settings_button);
-        add_subview(blur_view, tab_settings_button);
+        add_subview(header_controls, tab_settings_button);
 
         // Status pill (global status: Idle / Listening / Processing / Error).
         let status_pill_h = ui_tokens::STATUS_PILL_HEIGHT;
-        let status_pill_y =
-            header_frame.origin.y + ((header_height - status_pill_h) / 2.0).max(0.0);
+        let status_pill_y = ((header_height - status_pill_h) / 2.0).max(0.0);
         let status_pill_frame = CGRect::new(
             &CGPoint::new(status_pill_x, status_pill_y),
             &CGSize::new(status_pill_w, status_pill_h),
@@ -505,7 +496,7 @@ fn show_voice_chat_overlay_impl() {
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN
         ];
         add_subview(status_pill, status_label);
-        add_subview(blur_view, status_pill);
+        add_subview(header_controls, status_pill);
 
         let export_button = create_button(
             CGRect::new(
@@ -526,7 +517,7 @@ fn show_voice_chat_overlay_impl() {
             export_button,
             setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
-        add_subview(blur_view, export_button);
+        add_subview(header_controls, export_button);
 
         // Drawer favorites filter (hearts on/off)
         let favorites_button = create_button(
@@ -549,7 +540,7 @@ fn show_voice_chat_overlay_impl() {
             favorites_button,
             setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
-        add_subview(blur_view, favorites_button);
+        add_subview(header_controls, favorites_button);
 
         let more_button = create_button(
             CGRect::new(
@@ -570,7 +561,7 @@ fn show_voice_chat_overlay_impl() {
             more_button,
             setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
-        add_subview(blur_view, more_button);
+        add_subview(header_controls, more_button);
 
         let close_button = create_button(
             CGRect::new(
@@ -591,7 +582,7 @@ fn show_voice_chat_overlay_impl() {
             close_button,
             setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
-        add_subview(blur_view, close_button);
+        add_subview(header_controls, close_button);
 
         // Drawer/Agent split view (system sidebar glass)
         let content_gap = ui_tokens::CONTENT_GAP;
@@ -627,7 +618,7 @@ fn show_voice_chat_overlay_impl() {
             )
         ];
         set_visual_effect_material(sidebar_view, NSVisualEffectMaterial::Sidebar);
-        set_visual_effect_blending(sidebar_view, NSVisualEffectBlendingMode::BehindWindow);
+        set_visual_effect_blending(sidebar_view, NSVisualEffectBlendingMode::WithinWindow);
         set_visual_effect_state(sidebar_view, NSVisualEffectState::Active);
         let _: () = msg_send![sidebar_view, setWantsLayer: true];
         let sidebar_layer: Id = msg_send![sidebar_view, layer];
@@ -692,11 +683,9 @@ fn show_voice_chat_overlay_impl() {
             let _: () = msg_send![split_view, setVertical: true];
         }
         add_subview(blur_view, split_view);
-
-        let settings_view = bootstrap::attach_settings_view(blur_view, content_frame);
-        if let Some(settings_view) = settings_view {
-            set_hidden(settings_view, true);
-        }
+        // Ensure header glass + controls stay above the split view content.
+        add_subview(blur_view, header_bg);
+        add_subview(blur_view, header_controls);
 
         let inner_pad = ui_tokens::EDGE_PADDING_TIGHT;
         let drawer_frame = CGRect::new(
@@ -851,12 +840,9 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![agent_scroll, setDocumentView: agent_container];
         add_subview(content_view, agent_scroll);
 
-        // Drawer footer (search + shortcuts helper)
-        let help_panel_w = ui_tokens::HELP_PANEL_WIDTH;
-        let help_panel_h = footer_height - ui_tokens::FOOTER_INSET;
-        let help_panel_x = content_frame.origin.x + content_frame.size.width - help_panel_w;
+        // Drawer footer (search)
         let search_x = content_frame.origin.x;
-        let search_w = (help_panel_x - gap - search_x).max(160.0);
+        let search_w = content_frame.size.width.max(160.0);
         let footer_base_y = content_bounds.origin.y;
 
         let search_label = create_label(LabelConfig {
@@ -895,77 +881,6 @@ fn show_voice_chat_overlay_impl() {
         ];
         set_focus_ring(search_field);
         add_subview(blur_view, search_field);
-
-        let help_panel: Id = msg_send![Class::get("NSView").unwrap(), alloc];
-        let help_frame = CGRect::new(
-            &CGPoint::new(help_panel_x, footer_base_y + 6.0),
-            &CGSize::new(help_panel_w, help_panel_h),
-        );
-        let help_panel: Id = msg_send![help_panel, initWithFrame: help_frame];
-        let _: () = msg_send![help_panel, setWantsLayer: true];
-        let help_layer: Id = msg_send![help_panel, layer];
-        if !help_layer.is_null() {
-            let bg = ui_colors::panel_bg();
-            let cg: Id = msg_send![bg, CGColor];
-            let _: () = msg_send![help_layer, setBackgroundColor: cg];
-            let _: () = msg_send![help_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
-        }
-        let _: () = msg_send![
-            help_panel,
-            setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MAX_Y_MARGIN
-        ];
-        add_subview(blur_view, help_panel);
-        // Default hidden; only visible on Agent tab.
-        set_hidden(help_panel, true);
-
-        let (hold_line, toggle_line) = shortcuts_lines(get_hold_mods(), get_toggle_trigger());
-
-        let help_title = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(10.0, help_panel_h - 18.0),
-                &CGSize::new(help_panel_w - 20.0, 14.0),
-            ),
-            text: "Shortcuts".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: color_label(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        add_subview(help_panel, help_title);
-
-        let hold_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(10.0, help_panel_h - 34.0),
-                &CGSize::new(help_panel_w - 20.0, 12.0),
-            ),
-            text: hold_line.clone(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            bold: false,
-            text_color: color_secondary_label(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        add_subview(help_panel, hold_label);
-
-        let toggle_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(10.0, help_panel_h - 48.0),
-                &CGSize::new(help_panel_w - 20.0, 12.0),
-            ),
-            text: toggle_line.clone(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            bold: false,
-            text_color: color_secondary_label(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        add_subview(help_panel, toggle_label);
-        let shortcuts_tip = format!("{hold_line}\n{toggle_line}");
-        set_tooltip(help_panel, &shortcuts_tip);
 
         // Agent input bar
         let drop_target_cls = drop_target_view_class();
@@ -1064,7 +979,7 @@ fn show_voice_chat_overlay_impl() {
         set_hidden(transcription_scroll, true);
 
         // Phase 3 — store widget pointers into state (short lock scope).
-        let (has_messages, desired_tab, status_text) = {
+        let (has_messages, desired_tab, status_text, open_settings) = {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.window = Some(window as usize);
             state.window_delegate = Some(window_delegate as usize);
@@ -1084,15 +999,11 @@ fn show_voice_chat_overlay_impl() {
             state.tab_settings_button = Some(tab_settings_button as usize);
             state.favorites_button = Some(favorites_button as usize);
             state.close_button = Some(close_button as usize);
-            state.settings_view = settings_view.map(|view| view as usize);
             state.drawer_scroll_view = Some(drawer_scroll as usize);
             state.drawer_container = Some(drawer_container as usize);
             state.drawer_edge_effect = Some(drawer_edge_effect as usize);
             state.search_field = Some(search_field as usize);
             state.search_label = Some(search_label as usize);
-            state.help_panel = Some(help_panel as usize);
-            state.help_hold_label = Some(hold_label as usize);
-            state.help_toggle_label = Some(toggle_label as usize);
             state.agent_scroll_view = Some(agent_scroll as usize);
             state.agent_container = Some(agent_container as usize);
             state.agent_input_bar = Some(input_bar as usize);
@@ -1110,15 +1021,26 @@ fn show_voice_chat_overlay_impl() {
             state.active_tab = pending_tab.unwrap_or(Tab::Drawer);
 
             let has_messages = !state.messages.is_empty();
+            let mut open_settings = false;
             let desired_tab = if let Some(tab) = pending_tab {
-                tab
+                if tab == Tab::Settings {
+                    open_settings = true;
+                    if has_messages {
+                        Tab::Agent
+                    } else {
+                        Tab::Drawer
+                    }
+                } else {
+                    tab
+                }
             } else if has_messages {
                 Tab::Agent
             } else {
                 state.active_tab
             };
+            state.active_tab = desired_tab;
             let status_text = state.status_text.clone();
-            (has_messages, desired_tab, status_text)
+            (has_messages, desired_tab, status_text, open_settings)
         }; // OVERLAY_STATE released — safe to perform AppKit window operations.
 
         // Phase 4 — show window (no lock held; avoids nested-runloop deadlock).
@@ -1137,6 +1059,13 @@ fn show_voice_chat_overlay_impl() {
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(250));
             Queue::main().exec_async(move || {
+                let expected = {
+                    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    state.window
+                };
+                if expected != Some(window_ptr) {
+                    return;
+                }
                 let ns_window = Class::get("NSWindow").unwrap();
                 let window = window_ptr as Id;
                 let is_window: bool = msg_send![window, isKindOfClass: ns_window];
@@ -1152,6 +1081,9 @@ fn show_voice_chat_overlay_impl() {
         api::refresh_drawer();
         api::update_voice_chat_status(&status_text);
         update_active_tab_impl(desired_tab);
+        if open_settings {
+            crate::show_bootstrap_overlay();
+        }
         if has_messages || matches!(desired_tab, Tab::Agent) {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             api::update_chat_view_with_state(&mut state, true);

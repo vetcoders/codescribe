@@ -28,7 +28,7 @@ pub struct Turn {
     /// Duration of the turn
     pub duration: Duration,
 
-    /// Embedding vector (from E5) for semantic search
+    /// Embedding vector (from MiniLM) for semantic search
     pub embedding: Option<Vec<f32>>,
 }
 

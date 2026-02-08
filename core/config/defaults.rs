@@ -6,6 +6,14 @@ pub fn default_hold_start_delay_ms() -> u64 {
     800
 }
 
+pub fn default_double_tap_interval_ms() -> u64 {
+    200
+}
+
+pub fn default_toggle_silence_sec() -> f32 {
+    5.0
+}
+
 // Token limits removed - API decides. Tokens are cheap, lost notes are not.
 pub fn default_ai_max_tokens() -> i32 {
     0 // 0 = no limit

@@ -1,6 +1,6 @@
-//! Embedder Engine - offline E5 embeddings via Candle BERT.
+//! Embedder Engine - offline MiniLM embeddings via Candle BERT.
 //!
-//! Provides text embeddings using a local/embedded multilingual-e5-large model.
+//! Provides text embeddings using a local/embedded paraphrase-multilingual-MiniLM-L12-v2 model (fp16).
 //! No runtime downloads; model must be embedded or present on disk.
 //!
 //! Created by M&K (c)2026 VetCoders
@@ -18,7 +18,7 @@ use super::embedded;
 use crate::{hf_cache, safe_path};
 
 const DEFAULT_MAX_LENGTH: usize = 512;
-const DEFAULT_E5_REPO: &str = "intfloat/multilingual-e5-large";
+const DEFAULT_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
 const ENV_EMBEDDER_REPO: &str = "CODESCRIBE_EMBEDDER_REPO";
 
 /// Configuration for the embedder
@@ -64,7 +64,7 @@ impl EmbedderConfig {
     }
 }
 
-/// Text embedding engine using Candle BERT (E5)
+/// Text embedding engine using Candle BERT (MiniLM)
 pub struct EmbedderEngine {
     model: BertModel,
     tokenizer: Tokenizer,
@@ -107,12 +107,12 @@ impl EmbedderEngine {
     }
 
     fn from_embedded(
-        embedded: &embedded::EmbeddedE5,
+        embedded: &embedded::EmbeddedModel,
         device: Device,
         max_length: Option<usize>,
     ) -> Result<Self> {
         let config: BertConfig = serde_json::from_slice(embedded.config)
-            .context("Failed to parse embedded E5 config")?;
+            .context("Failed to parse embedded model config")?;
         let tokenizer = Tokenizer::from_bytes(embedded.tokenizer)
             .map_err(|e| anyhow!("Failed to load embedded tokenizer: {}", e))?;
 
@@ -120,10 +120,10 @@ impl EmbedderEngine {
 
         let dtype = device.bf16_default_to_f32();
         let tensors = candle_core::safetensors::load_buffer(embedded.weights, &Device::Cpu)
-            .context("Failed to deserialize embedded E5 weights")?;
+            .context("Failed to deserialize embedded model weights")?;
         let tensors = move_tensors_to_device(tensors, &device, dtype)?;
         let vb = VarBuilder::from_tensors(tensors, dtype, &device);
-        let model = BertModel::load(vb, &config).context("Failed to load E5 model")?;
+        let model = BertModel::load(vb, &config).context("Failed to load embedder model")?;
 
         info!(
             "Embedder initialized from embedded model (device: {:?}, dim={})",
@@ -154,7 +154,7 @@ impl EmbedderEngine {
         let config_str = safe_path::safe_read_to_string(&config_path)
             .with_context(|| format!("Failed to read {}", config_path.display()))?;
         let config: BertConfig =
-            serde_json::from_str(&config_str).context("Failed to parse E5 config.json")?;
+            serde_json::from_str(&config_str).context("Failed to parse embedder config.json")?;
 
         let tokenizer_str = safe_path::safe_read_to_string(&tokenizer_path)
             .with_context(|| format!("Failed to read {}", tokenizer_path.display()))?;
@@ -166,9 +166,9 @@ impl EmbedderEngine {
         let dtype = device.bf16_default_to_f32();
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[&weights_path], dtype, &device)
-                .context("Failed to load E5 weights")?
+                .context("Failed to load embedder weights")?
         };
-        let model = BertModel::load(vb, &config).context("Failed to load E5 model")?;
+        let model = BertModel::load(vb, &config).context("Failed to load embedder model")?;
 
         info!(
             "Embedder initialized from path: {} (device: {:?}, dim={})",
@@ -185,9 +185,7 @@ impl EmbedderEngine {
         })
     }
 
-    /// Embed a single text (query)
-    ///
-    /// For queries (search), the text is prefixed with "query: "
+    /// Embed a single text
     pub fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
         let vecs = self.embed_batch(&[text])?;
         vecs.into_iter()
@@ -196,8 +194,6 @@ impl EmbedderEngine {
     }
 
     /// Embed a passage (document) for indexing
-    ///
-    /// Passages are prefixed with "passage: " for optimal retrieval
     pub fn embed_passage(&mut self, text: &str) -> Result<Vec<f32>> {
         let vecs = self.embed_passages(&[text])?;
         vecs.into_iter()
@@ -205,15 +201,15 @@ impl EmbedderEngine {
             .ok_or_else(|| anyhow!("No embedding generated"))
     }
 
-    /// Embed multiple texts at once (queries)
+    /// Embed multiple texts at once
     pub fn embed_batch(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        let inputs: Vec<String> = texts.iter().map(|t| format!("query: {}", t)).collect();
+        let inputs: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
         self.embed_internal(&inputs)
     }
 
-    /// Embed multiple passages at once (documents)
+    /// Embed multiple passages at once
     pub fn embed_passages(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        let inputs: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();
+        let inputs: Vec<String> = texts.iter().map(|t| t.to_string()).collect();
         self.embed_internal(&inputs)
     }
 
@@ -231,6 +227,9 @@ impl EmbedderEngine {
 
         let pooled = mean_pool(&outputs, &attention_mask)?;
         let normalized = l2_normalize(&pooled)?;
+        // Ensure f32 on CPU before extraction — Metal may keep tensors in bf16/f16
+        let normalized = normalized.to_dtype(DType::F32)?;
+        let normalized = normalized.to_device(&Device::Cpu)?;
         normalized
             .to_vec2::<f32>()
             .context("Failed to convert embeddings to Vec")
@@ -285,7 +284,7 @@ fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -
             return Ok(snapshot);
         }
     } else if let Some(snapshot) = hf_cache::find_snapshot_with_any(
-        DEFAULT_E5_REPO,
+        DEFAULT_REPO,
         &["config.json", "tokenizer.json"],
         &["model.safetensors", "model_optimized.onnx"],
     ) {
@@ -293,8 +292,8 @@ fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -
     }
 
     Err(anyhow!(
-        "E5 model not found. Run: hf download {} (uses cache) or set CODESCRIBE_EMBEDDER_PATH / {}",
-        repo_override.unwrap_or(DEFAULT_E5_REPO),
+        "Embedder model not found. Run: hf download {} (uses cache) or set CODESCRIBE_EMBEDDER_PATH / {}",
+        repo_override.unwrap_or(DEFAULT_REPO),
         ENV_EMBEDDER_REPO
     ))
 }

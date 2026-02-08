@@ -51,11 +51,11 @@ flowchart TD
     CB --> ROUTE
 
     ROUTE --> CHECK
-    CHECK -->|Ctrl+Shift\nassistive| ASSIST_DELTA
+    CHECK -->|Fn+Shift\nassistive| ASSIST_DELTA
     ASSIST_DELTA --> ASSIST_APPLY
     ASSIST_APPLY --> AGENT_TAB
 
-    CHECK -->|Ctrl hold / toggle\nnon-assistive| TRANS_DELTA
+    CHECK -->|Fn hold / toggle\nnon-assistive| TRANS_DELTA
     TRANS_DELTA --> TRANS_APPLY
     TRANS_APPLY --> TRANS_TAB
     CHECK -->|non-assistive| OVERLAY_DELTA
@@ -223,14 +223,18 @@ The router checks the current session mode:
 ```rust
 pub fn route_transcription_delta(delta: &str) {
     if is_assistive_session() {
-        // Ctrl+Shift → AI chat mode
+        // Fn+Shift → AI chat mode
         voice_chat_ui::append_voice_chat_user_delta(delta);
     } else {
-        // Ctrl hold / toggle → dictation mode
+        // Fn hold / toggle → dictation mode
         voice_chat_ui::append_transcription_delta(delta);
     }
 }
 ```
+
+**Toggle nuance:** In hands‑off (toggle) mode, each silence boundary (see `TOGGLE_SILENCE_SEC`)
+produces an **append** into the same user/assistant bubble. Recording continues until the user
+double‑taps Option again.
 
 ---
 

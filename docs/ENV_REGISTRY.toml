@@ -551,11 +551,11 @@ description = "Override path to TTS model directory"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 [vars.HOLD_MODS]
-default = "ctrl"
+default = "fn"
 type = "string"
 reload = "restart"
 category = "hotkeys"
-description = "Hold modifier keys (ctrl|ctrl_alt|ctrl_shift|ctrl_cmd)"
+description = "Hold modifier keys (fn|ctrl|ctrl_alt|ctrl_shift|ctrl_cmd)"
 
 [vars.HOLD_EXCLUSIVE]
 default = "1"
@@ -591,6 +591,20 @@ type = "u64"
 reload = "restart"
 category = "hotkeys"
 description = "Delay before hold recording starts (ms)"
+
+[vars.DOUBLE_TAP_INTERVAL_MS]
+default = "200"
+type = "u64"
+reload = "hot"
+category = "hotkeys"
+description = "Double-tap interval for toggle detection (ms)"
+
+[vars.TOGGLE_SILENCE_SEC]
+default = "5.0"
+type = "f32"
+reload = "restart"
+category = "hotkeys"
+description = "Silence duration before sending a toggle utterance (seconds)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UI / Overlay
@@ -658,6 +672,13 @@ type = "i64"
 reload = "restart"
 category = "ui"
 description = "Custom overlay Y position (when mode=custom)"
+
+[vars.CODESCRIBE_DISABLE_GLASS]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "ui"
+description = "Disable glass effects (force NSVisualEffectView fallback)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Clipboard

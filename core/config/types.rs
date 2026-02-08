@@ -12,6 +12,7 @@ use super::defaults::*;
 #[serde(rename_all = "snake_case")]
 pub enum HoldMods {
     #[default]
+    Fn,
     Ctrl,
     CtrlAlt,
     CtrlShift,
@@ -21,6 +22,7 @@ pub enum HoldMods {
 impl HoldMods {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Fn => "fn",
             Self::Ctrl => "ctrl",
             Self::CtrlAlt => "ctrl_alt",
             Self::CtrlShift => "ctrl_shift",
@@ -31,6 +33,7 @@ impl HoldMods {
     /// Human-readable label for menu display
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Fn => "Fn",
             Self::Ctrl => "Ctrl",
             Self::CtrlAlt => "Ctrl+Option",
             Self::CtrlShift => "Ctrl+Shift",
@@ -44,6 +47,7 @@ impl FromStr for HoldMods {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "fn" | "globe" => Ok(Self::Fn),
             "ctrl" => Ok(Self::Ctrl),
             "ctrl_alt" | "ctrl+alt" => Ok(Self::CtrlAlt),
             "ctrl_shift" | "ctrl+shift" => Ok(Self::CtrlShift),
@@ -224,6 +228,14 @@ pub struct Config {
     #[serde(default = "default_hold_start_delay_ms")]
     pub hold_start_delay_ms: u64,
 
+    /// Double-tap interval for toggle detection (milliseconds)
+    #[serde(default = "default_double_tap_interval_ms")]
+    pub double_tap_interval_ms: u64,
+
+    /// Silence duration (seconds) before sending a toggle utterance
+    #[serde(default = "default_toggle_silence_sec")]
+    pub toggle_silence_sec: f32,
+
     // ===== Language =====
     /// Whisper language preference
     #[serde(default)]
@@ -359,6 +371,8 @@ impl Default for Config {
             hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
             toggle_trigger: ToggleTrigger::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),
+            double_tap_interval_ms: default_double_tap_interval_ms(),
+            toggle_silence_sec: default_toggle_silence_sec(),
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
             transcript_send_mode: TranscriptSendMode::default(),
@@ -379,7 +393,7 @@ impl Default for Config {
             history_enabled: default_history_enabled(),
             quick_notes_enabled: false,
             quick_notes_save_only: false,
-            use_local_stt: false,
+            use_local_stt: true,
             local_model: default_local_model(),
             stt_endpoint: None,
             llm_endpoint: None,
@@ -408,6 +422,12 @@ impl Config {
 
         // Clamp sound volume
         self.sound_volume = self.sound_volume.clamp(0.0, 1.0);
+
+        // Clamp toggle silence to a reasonable range
+        self.toggle_silence_sec = self.toggle_silence_sec.clamp(0.5, 30.0);
+
+        // Clamp double-tap interval to safe bounds
+        self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);
 
         // Validate badge size
         if self.hold_badge_size < 8 || self.hold_badge_size > 64 {

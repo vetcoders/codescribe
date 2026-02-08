@@ -137,7 +137,7 @@ fn run_roundtrip(input: &str, language: &str, play_audio: bool) -> Result<()> {
         let emb_input = codescribe_core::embedder::embed(input)?;
         let emb_output = codescribe_core::embedder::embed(&transcribed)?;
         let emb_sim = codescribe_core::embedder::similarity(&emb_input, &emb_output);
-        log_result("Semantic (E5):", &format!("{:.1}%", emb_sim * 100.0));
+        log_result("Semantic:", &format!("{:.1}%", emb_sim * 100.0));
     }
 
     // Verdict
@@ -272,11 +272,11 @@ fn main() -> Result<()> {
     let start = Instant::now();
     if codescribe_core::embedder::init().is_ok() {
         log_result(
-            "E5:",
+            "Embedder:",
             &format!("ready ({:.2}s)", start.elapsed().as_secs_f32()),
         );
     } else {
-        log_result("E5:", "not available (word similarity only)");
+        log_result("Embedder:", "not available (word similarity only)");
     }
     println!();
 

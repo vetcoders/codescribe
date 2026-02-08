@@ -190,21 +190,28 @@ impl SpeechSession {
     }
 
     pub fn new_utterance(sample_rate: u32) -> Self {
-        let interim_sec: f32 = std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC")
-            .ok()
-            .and_then(|v| v.parse::<f32>().ok())
-            .or_else(|| {
-                std::env::var("CODESCRIBE_UTTERANCE_INTERIM_SEC")
-                    .ok()
-                    .and_then(|v| v.parse::<f32>().ok())
-            })
-            .unwrap_or(5.0)
-            .clamp(1.0, 30.0);
-        Self::new_utterance_with_interim(sample_rate, interim_sec)
+        let interim_sec = utterance_interim_sec();
+        Self::new_utterance_with_interim_and_silence(sample_rate, interim_sec, None)
     }
 
-    fn new_utterance_with_interim(sample_rate: u32, interim_sec: f32) -> Self {
-        let config = hardcoded_gate_config();
+    pub fn new_utterance_with_silence(sample_rate: u32, max_silence_sec: f32) -> Self {
+        let interim_sec = utterance_interim_sec();
+        Self::new_utterance_with_interim_and_silence(
+            sample_rate,
+            interim_sec,
+            Some(max_silence_sec),
+        )
+    }
+
+    fn new_utterance_with_interim_and_silence(
+        sample_rate: u32,
+        interim_sec: f32,
+        max_silence_sec: Option<f32>,
+    ) -> Self {
+        let mut config = hardcoded_gate_config();
+        if let Some(sec) = max_silence_sec {
+            config.vad.max_silence_duration_sec = sec.clamp(0.1, 10.0);
+        }
         debug!(
             "SpeechSession::new_utterance gate_mode={:?} interim={:.2}s",
             config.mode, interim_sec
@@ -827,6 +834,19 @@ impl SpeechSession {
         }
         self.raw_buffer_start = keep_from;
     }
+}
+
+fn utterance_interim_sec() -> f32 {
+    std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .or_else(|| {
+            std::env::var("CODESCRIBE_UTTERANCE_INTERIM_SEC")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+        })
+        .unwrap_or(5.0)
+        .clamp(1.0, 30.0)
 }
 
 // ═══════════════════════════════════════════════════════════

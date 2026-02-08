@@ -24,8 +24,8 @@ use tracing::{debug, error, info, warn};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const DEFAULT_CHUNK_DURATION_SEC: f32 = 15.0;
-const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for context
+const DEFAULT_CHUNK_DURATION_SEC: f32 = 3.0;
+const DEFAULT_OVERLAP_RATIO: f32 = 0.2; // 20% overlap for context
 const DEFAULT_BUFFER_DELAY_MS: u64 = 3000;
 const DEFAULT_TYPING_CPS: f32 = 30.0;
 const DEFAULT_EMIT_WORDS_MAX: usize = 3;
@@ -120,7 +120,16 @@ impl TranscriptionPipeline {
         let processed = self.postprocessor.process(&stripped)?;
 
         let suffix_len = 50;
-        let start = processed.len().saturating_sub(suffix_len);
+        let mut start = processed.len();
+        let mut iter = processed.char_indices().rev();
+        for _ in 0..suffix_len {
+            if let Some((idx, _)) = iter.next() {
+                start = idx;
+            } else {
+                start = 0;
+                break;
+            }
+        }
         self.last_suffix = processed[start..].to_string();
 
         Some(processed)
@@ -422,12 +431,15 @@ pub(crate) async fn transcription_worker(
     info!("Transcription worker finished");
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn buffered_transcription_worker(
     mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
     transcript_buffer: Arc<Mutex<String>>,
     sample_rate: u32,
     language: Option<String>,
     delta_callback: Option<Arc<dyn DeltaSink>>,
+    utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    utterance_silence_sec: Option<f32>,
     vad_stop_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     stream_log_path: Option<std::path::PathBuf>,
 ) {
@@ -435,7 +447,11 @@ pub(crate) async fn buffered_transcription_worker(
 
     let correction_min_utterances = buffered_correction_min_utterances();
     let correction_min_sec = buffered_correction_min_sec();
-    let mut session = SpeechSession::new_utterance(sample_rate);
+    let mut session = if let Some(sec) = utterance_silence_sec {
+        SpeechSession::new_utterance_with_silence(sample_rate, sec)
+    } else {
+        SpeechSession::new_utterance(sample_rate)
+    };
     let mut vad_stop_emitted = false;
     let mut pipeline = TranscriptionPipeline::new(language);
     let emitter = Arc::new(Mutex::new(BufferedEmitter::new(
@@ -478,9 +494,17 @@ pub(crate) async fn buffered_transcription_worker(
                 )
                 .await;
 
-                if let Err(e) = result {
-                    error!("Buffered transcription failed: {}", e);
-                    continue;
+                match result {
+                    Ok(Some(cleaned)) => {
+                        if let Some(callback) = &utterance_callback {
+                            callback(cleaned);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        error!("Buffered transcription failed: {}", e);
+                        continue;
+                    }
                 }
 
                 correction_audio_buf.extend_from_slice(&audio_copy);
@@ -526,16 +550,25 @@ pub(crate) async fn buffered_transcription_worker(
         }
     }
 
-    if let Some(SpeechEvent::Utterance(utterance)) = session.flush()
-        && let Err(e) = handle_utterance(
+    if let Some(SpeechEvent::Utterance(utterance)) = session.flush() {
+        match handle_utterance(
             utterance,
             session.output_sample_rate(),
             &mut pipeline,
             &emitter,
         )
         .await
-    {
-        error!("Final buffered transcription failed: {}", e);
+        {
+            Ok(Some(cleaned)) => {
+                if let Some(callback) = &utterance_callback {
+                    callback(cleaned);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                error!("Final buffered transcription failed: {}", e);
+            }
+        }
     }
 
     if !vad_stop_emitted && let Some(callback) = &vad_stop_callback {
@@ -781,6 +814,8 @@ pub async fn transcribe_buffered_samples(
         transcript_buffer.clone(),
         sample_rate,
         language,
+        None,
+        None,
         None,
         None,
         None,

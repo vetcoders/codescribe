@@ -13,10 +13,12 @@ LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
 WHISPER_LANGUAGE=pl
 
 # === Hotkeys ===
-HOLD_MODS=ctrl
+HOLD_MODS=fn
 HOLD_EXCLUSIVE=1
-TOGGLE_TRIGGER=none
+TOGGLE_TRIGGER=double_option
 HOLD_START_DELAY_MS=800
+DOUBLE_TAP_INTERVAL_MS=200
+TOGGLE_SILENCE_SEC=5.0
 
 # === Overlay / UI ===
 OVERLAY_POSITION_MODE=snapped_top_right
@@ -28,12 +30,11 @@ HOLD_BADGE_OFFSET_Y=-10
 
 # Two reasonable configurations (choose 1)
 
-## ✅ B) "Live preview" (recommended default)
-# Shows live deltas in the small overlay while holding Ctrl.
-CODESCRIBE_BUFFERED_STREAM=0
-CODESCRIBE_STREAM_CHUNK_SEC=2.0
-CODESCRIBE_STREAM_OVERLAP_RATIO=0.25
-# (optional) keep these for experimentation / smoother feel:
+## ✅ A) "Hands-off stable" (buffered, less jitter) — recommended default
+# Emits at end-of-utterance with a small delay; can feel more stable but is not "live".
+CODESCRIBE_BUFFERED_STREAM=1
+CODESCRIBE_STREAM_CHUNK_SEC=3.0
+CODESCRIBE_STREAM_OVERLAP_RATIO=0.2
 # CODESCRIBE_BUFFER_DELAY_MS=1800
 # CODESCRIBE_TYPING_CPS=35
 # CODESCRIBE_EMIT_WORDS_MAX=3
@@ -54,11 +55,12 @@ CODESCRIBE_STREAM_NOVELTY=0.20
 
 # ---------------------------------------------------------------------------
 
-## ✅ A) "Hands-off stable" (buffered, less jitter)
-# Emits at end-of-utterance with a small delay; can feel more stable but is not "live".
-# CODESCRIBE_BUFFERED_STREAM=1
-# CODESCRIBE_STREAM_CHUNK_SEC=3.0
-# CODESCRIBE_STREAM_OVERLAP_RATIO=0.2
+## ✅ B) "Live preview" (faster updates)
+# Shows live deltas in the small overlay while holding the hotkey.
+# CODESCRIBE_BUFFERED_STREAM=0
+# CODESCRIBE_STREAM_CHUNK_SEC=2.0
+# CODESCRIBE_STREAM_OVERLAP_RATIO=0.25
+# (optional) keep these for experimentation / smoother feel:
 # CODESCRIBE_BUFFER_DELAY_MS=1800
 # CODESCRIBE_TYPING_CPS=35
 # CODESCRIBE_EMIT_WORDS_MAX=3

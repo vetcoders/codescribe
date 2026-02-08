@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// Silero VAD v5 ONNX model URL.
+/// Silero VAD v6 ONNX model URL.
 pub const SILERO_VAD_URL: &str =
     "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
 

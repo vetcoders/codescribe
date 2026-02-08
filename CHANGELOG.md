@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.14] – 2026-02-07
+
+### Added
+
+- **Settings window (Bootstrap)** with tiered config (settings.json) + Keychain-backed API keys.
+- **Fn-first hotkeys** (Globe/Fn as default hold modifier) with Shift/Cmd modifiers for Chat/Selection.
+- **Configurable double‑tap interval** and **toggle silence auto‑send** (hands‑off UX).
+- **MiniLM embedder** (paraphrase‑multilingual‑MiniLM‑L12‑v2) embedded by default for lightweight semantic gating.
+- **Model caching in `make install-app`** (Whisper + embedder auto‑download if missing).
+
+### Changed
+
+- **Default hotkeys** → Hold `Fn` + double‑tap `Option` (left=normal, right=assistive).
+- **Buffered streaming default** for smoother live transcription display.
+- **Token limits default to 0** (API decides) to avoid truncation.
+
+### Fixed
+
+- **UTF‑8 slicing panic** in streaming overlap (diacritics/emoji safe).
+- **Toggle streaming append** now keeps a single bubble per session (no spam bubbles).
+- **Overlay header controls** restored on top of split view.
+- **Bootstrap deadlocks** removed by shortening lock scopes during UI build.
+
 ## [v0.7.2-dev] – 2026-01-20
 
 ### Added

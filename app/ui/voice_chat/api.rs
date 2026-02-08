@@ -13,7 +13,6 @@ use tracing::{debug, info, warn};
 
 use chrono::{DateTime, Local};
 
-use crate::os::hotkeys::{get_hold_mods, get_toggle_trigger};
 use crate::ui::shared::status::status_from_detail;
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, LabelConfig, add_subview, button_set_action, button_style,
@@ -26,7 +25,6 @@ use crate::ui_helpers::{
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
-use super::shortcuts_lines;
 use super::state::{
     ChatMessage, ChatRole, ConversationModeState, DrawerEntry, OVERLAY_STATE, SEND_CALLBACK, Tab,
     TranscriptionMode, VoiceChatOverlayState,
@@ -75,6 +73,13 @@ pub fn set_voice_chat_user_text(text: &str) {
     });
 }
 
+/// Finalize the latest user message without changing its text.
+pub fn finalize_voice_chat_user_message() {
+    Queue::main().exec_async(|| {
+        finalize_user_message_state_only_impl();
+    });
+}
+
 /// Append a delta to the assistant response (streaming)
 pub fn append_voice_chat_assistant_delta(delta: &str) {
     let delta_owned = delta.to_string();
@@ -88,6 +93,13 @@ pub fn set_voice_chat_text(text: &str) {
     let text_owned = text.to_string();
     Queue::main().exec_async(move || {
         finalize_assistant_message_impl(&text_owned, false);
+    });
+}
+
+/// Finalize the latest assistant message without changing its text.
+pub fn finalize_voice_chat_assistant_message() {
+    Queue::main().exec_async(|| {
+        finalize_assistant_message_state_only_impl(false);
     });
 }
 
@@ -270,15 +282,14 @@ pub fn show_transcription_tab() {
 /// Switch to Settings tab programmatically
 pub fn show_settings_tab() {
     Queue::main().exec_async(|| {
-        update_active_tab_impl(Tab::Settings);
+        crate::show_bootstrap_overlay();
     });
 }
 
 /// Request Settings tab to be shown the next time the overlay is created.
 /// This is used when routing tray "Settings" to the overlay before it exists.
 pub fn request_settings_tab_on_open() {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.pending_tab = Some(Tab::Settings);
+    crate::show_bootstrap_overlay();
 }
 
 /// Append a delta (streaming token) to the transcription preview.
@@ -385,12 +396,19 @@ pub fn is_conversation_active() -> bool {
 // ═══════════════════════════════════════════════════════════
 
 pub fn update_active_tab_impl(tab: Tab) {
+    if tab == Tab::Settings {
+        crate::show_bootstrap_overlay();
+        return;
+    }
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     update_active_tab_locked(&mut state, tab);
 }
 
 fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
     unsafe {
+        if tab == Tab::Settings {
+            return;
+        }
         state.active_tab = tab;
 
         if let Some(button) = state.tab_drawer_button {
@@ -403,32 +421,31 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
             crate::ui_helpers::set_tab_button_active(button as Id, tab == Tab::Agent);
         }
         if let Some(button) = state.tab_settings_button {
-            crate::ui_helpers::set_tab_button_active(button as Id, tab == Tab::Settings);
+            crate::ui_helpers::set_tab_button_active(button as Id, false);
         }
 
         let show_drawer = tab == Tab::Drawer;
         let show_transcription = tab == Tab::Transcription;
         let show_agent = tab == Tab::Agent;
-        let show_settings = tab == Tab::Settings;
 
         if let Some(sidebar_item) = state.split_sidebar_item {
             let item = sidebar_item as Id;
             let responds: bool = msg_send![item, respondsToSelector: sel!(setCollapsed:)];
             if responds {
-                let _: () = msg_send![item, setCollapsed: show_agent || show_settings];
+                let _: () = msg_send![item, setCollapsed: show_agent];
             }
         }
         if let Some(content_item) = state.split_content_item {
             let item = content_item as Id;
             let responds: bool = msg_send![item, respondsToSelector: sel!(setCollapsed:)];
             if responds {
-                let _: () = msg_send![item, setCollapsed: !show_agent || show_settings];
+                let _: () = msg_send![item, setCollapsed: !show_agent];
             }
         }
         if let Some(split_controller) = state.split_view_controller {
             let split_view: Id = msg_send![split_controller as Id, view];
             if !split_view.is_null() {
-                crate::ui_helpers::set_hidden(split_view, show_settings);
+                crate::ui_helpers::set_hidden(split_view, false);
             }
         }
         if let Some(drawer_view) = state.drawer_scroll_view {
@@ -442,12 +459,6 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         }
         if let Some(favorites_button) = state.favorites_button {
             crate::ui_helpers::set_hidden(favorites_button as Id, !show_drawer);
-        }
-        if let Some(help_panel) = state.help_panel {
-            crate::ui_helpers::set_hidden(help_panel as Id, !show_agent);
-        }
-        if let Some(settings_view) = state.settings_view {
-            crate::ui_helpers::set_hidden(settings_view as Id, !show_settings);
         }
         if let Some(edge) = state.drawer_edge_effect {
             crate::ui_helpers::set_hidden(edge as Id, !show_drawer);
@@ -473,7 +484,6 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
 
         if show_agent {
             resize_agent_input_locked(state);
-            update_shortcuts_panel_locked(state);
         }
 
         // When switching to Agent, make sure the input field can actually receive text.
@@ -490,22 +500,6 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         }
 
         update_transcription_placeholder(state);
-    }
-}
-
-fn update_shortcuts_panel_locked(state: &mut VoiceChatOverlayState) {
-    let (hold_line, toggle_line) = shortcuts_lines(get_hold_mods(), get_toggle_trigger());
-    unsafe {
-        if let Some(label) = state.help_hold_label {
-            set_text_field_string(label as Id, &hold_line);
-        }
-        if let Some(label) = state.help_toggle_label {
-            set_text_field_string(label as Id, &toggle_line);
-        }
-        if let Some(panel) = state.help_panel {
-            let tip = format!("{hold_line}\n{toggle_line}");
-            set_tooltip(panel as Id, &tip);
-        }
     }
 }
 
@@ -544,12 +538,9 @@ fn reflow_footer_controls_locked(state: &mut VoiceChatOverlayState) {
 
         let footer_height = ui_tokens::FOOTER_HEIGHT;
         let footer_base_y = content_bounds.origin.y;
-        let gap = ui_tokens::CONTENT_GAP;
-        let help_panel_w = ui_tokens::HELP_PANEL_WIDTH;
-        let help_panel_h = footer_height - ui_tokens::FOOTER_INSET;
-        let help_panel_x = content_bounds.origin.x + content_bounds.size.width - help_panel_w;
-        let search_x = content_bounds.origin.x;
-        let search_w = (help_panel_x - gap - search_x).max(160.0);
+        let content_pad = ui_tokens::EDGE_PADDING;
+        let search_x = content_bounds.origin.x + content_pad;
+        let search_w = (content_bounds.size.width - content_pad * 2.0).max(160.0);
 
         if let Some(label_ptr) = state.search_label {
             let label = label_ptr as Id;
@@ -569,16 +560,6 @@ fn reflow_footer_controls_locked(state: &mut VoiceChatOverlayState) {
             let _: () = msg_send![field, setFrame: frame];
         }
 
-        if let Some(panel_ptr) = state.help_panel {
-            let panel = panel_ptr as Id;
-            let frame = CGRect::new(
-                &CGPoint::new(help_panel_x, footer_base_y + 6.0),
-                &CGSize::new(help_panel_w, help_panel_h),
-            );
-            let _: () = msg_send![panel, setFrame: frame];
-        }
-
-        let content_pad = ui_tokens::EDGE_PADDING;
         let header_height = ui_tokens::HEADER_HEIGHT;
         let content_gap = ui_tokens::CONTENT_GAP;
         let content_frame = CGRect::new(
@@ -598,11 +579,6 @@ fn reflow_footer_controls_locked(state: &mut VoiceChatOverlayState) {
             if !split_view.is_null() {
                 let _: () = msg_send![split_view, setFrame: content_frame];
             }
-        }
-
-        if let Some(settings_ptr) = state.settings_view {
-            let settings_view = settings_ptr as Id;
-            let _: () = msg_send![settings_view, setFrame: content_frame];
         }
     }
 }
@@ -675,7 +651,20 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
 /// Minimum interval between layout passes during streaming (prevents main-thread saturation).
 const DELTA_LAYOUT_THROTTLE: Duration = Duration::from_millis(50);
 
-fn apply_delta_and_layout(state: &mut VoiceChatOverlayState) {
+fn resolve_delta_index(state: &VoiceChatOverlayState, requested: Option<usize>) -> Option<usize> {
+    if let Some(idx) = requested
+        && idx < state.messages.len()
+        && idx < state.agent_bubble_views.len()
+    {
+        return Some(idx);
+    }
+    if !state.messages.is_empty() && state.agent_bubble_views.len() == state.messages.len() {
+        return Some(state.messages.len() - 1);
+    }
+    None
+}
+
+fn apply_delta_and_layout(state: &mut VoiceChatOverlayState, updated_index: Option<usize>) {
     let now = Instant::now();
     let should_layout = state
         .last_layout_time
@@ -684,54 +673,64 @@ fn apply_delta_and_layout(state: &mut VoiceChatOverlayState) {
     if should_layout {
         state.last_layout_time = Some(now);
         state.layout_pending = false;
-        if !try_update_last_message_view_in_place(state) {
+        state.pending_delta_index = None;
+        let index = resolve_delta_index(state, updated_index);
+        if !index
+            .map(|idx| try_update_message_view_in_place(state, idx))
+            .unwrap_or(false)
+        {
             update_chat_view_with_state(state, false);
         }
-    } else if !state.layout_pending {
-        // Schedule a deferred layout so the last delta is always rendered.
-        state.layout_pending = true;
-        let remaining =
-            DELTA_LAYOUT_THROTTLE - now.duration_since(state.last_layout_time.unwrap_or(now));
-        let millis = remaining.as_millis().max(5) as u64;
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(millis));
-            Queue::main().exec_async(|| {
-                let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-                if state.layout_pending {
-                    state.layout_pending = false;
-                    state.last_layout_time = Some(Instant::now());
-                    if !try_update_last_message_view_in_place(&mut state) {
-                        update_chat_view_with_state(&mut state, false);
+    } else {
+        state.pending_delta_index = updated_index;
+        if !state.layout_pending {
+            // Schedule a deferred layout so the latest delta is always rendered.
+            state.layout_pending = true;
+            let remaining =
+                DELTA_LAYOUT_THROTTLE - now.duration_since(state.last_layout_time.unwrap_or(now));
+            let millis = remaining.as_millis().max(5) as u64;
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(millis));
+                Queue::main().exec_async(|| {
+                    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    if state.layout_pending {
+                        state.layout_pending = false;
+                        state.last_layout_time = Some(Instant::now());
+                        let index = resolve_delta_index(&state, state.pending_delta_index);
+                        state.pending_delta_index = None;
+                        if !index
+                            .map(|idx| try_update_message_view_in_place(&mut state, idx))
+                            .unwrap_or(false)
+                        {
+                            update_chat_view_with_state(&mut state, false);
+                        }
                     }
-                }
+                });
             });
-        });
+        }
     }
-    // else: layout already pending, delta text is in state — will be picked up
 }
 
 fn append_voice_chat_user_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
-    ensure_streaming_user_message(&mut state);
-    if let Some(last) = state.messages.last_mut() {
-        codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta)
-            .apply(&mut last.text);
-        last.is_streaming = true;
+    let idx = get_or_create_streaming_message_index(&mut state, ChatRole::User);
+    if let Some(msg) = state.messages.get_mut(idx) {
+        codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta).apply(&mut msg.text);
+        msg.is_streaming = true;
     }
-    apply_delta_and_layout(&mut state);
+    apply_delta_and_layout(&mut state, Some(idx));
 }
 
 fn append_voice_chat_assistant_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
-    ensure_streaming_assistant_message(&mut state);
-    if let Some(last) = state.messages.last_mut() {
-        codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta)
-            .apply(&mut last.text);
-        last.is_streaming = true;
+    let idx = get_or_create_streaming_message_index(&mut state, ChatRole::Assistant);
+    if let Some(msg) = state.messages.get_mut(idx) {
+        codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta).apply(&mut msg.text);
+        msg.is_streaming = true;
     }
-    apply_delta_and_layout(&mut state);
+    apply_delta_and_layout(&mut state, Some(idx));
 }
 
 fn display_text_for_message(message: &ChatMessage) -> String {
@@ -851,30 +850,31 @@ unsafe fn sync_agent_document_view_size(state: &VoiceChatOverlayState, max_width
     }
 }
 
-fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> bool {
+fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index: usize) -> bool {
     unsafe {
         // If the view list doesn't match messages, a full rebuild is safer.
         if state.agent_bubble_views.len() != state.messages.len() {
             return false;
         }
+        if index >= state.messages.len() {
+            return false;
+        }
 
-        let Some(last_message) = state.messages.last() else {
-            return false;
-        };
-        let Some((bubble_ptr, label_ptr)) = state.agent_bubble_views.last().copied() else {
-            return false;
-        };
+        let message = &state.messages[index];
+        let (bubble_ptr, label_ptr) = state.agent_bubble_views[index];
 
         let container = bubble_ptr as Id;
         let label = label_ptr as Id;
-        update_bubble_text(label, &last_message.text, last_message.is_streaming);
-        let display_text = display_text_for_message(last_message);
+        update_bubble_text(label, &message.text, message.is_streaming);
+        let display_text = display_text_for_message(message);
         resize_bubble_container_for_text(container, label, &display_text);
         let max_width = agent_max_width(state);
         sync_agent_document_view_size(state, max_width);
 
         // Keep the latest message in view while streaming.
-        if let Some(scroll_view_ptr) = state.agent_scroll_view {
+        if index + 1 == state.agent_bubble_views.len()
+            && let Some(scroll_view_ptr) = state.agent_scroll_view
+        {
             let _ = scroll_view_ptr;
             let bounds: CGRect = msg_send![container, bounds];
             // Scroll to the bottom edge of the bubble; if the bubble is taller than the viewport,
@@ -890,11 +890,38 @@ fn try_update_last_message_view_in_place(state: &mut VoiceChatOverlayState) -> b
 fn finalize_user_message_impl(text: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
-    ensure_streaming_user_message(&mut state);
-    if let Some(last) = state.messages.last_mut() {
-        last.text = text.to_string();
+    let idx = last_message_index(&state, ChatRole::User).unwrap_or_else(|| {
+        let mode = message_mode_label(&state);
+        state.messages.push(ChatMessage {
+            role: ChatRole::User,
+            text: String::new(),
+            is_streaming: false,
+            is_error: false,
+            timestamp: SystemTime::now(),
+            mode: Some(mode),
+        });
+        state.messages.len() - 1
+    });
+    if let Some(msg) = state.messages.get_mut(idx) {
+        msg.text = text.to_string();
+        msg.is_streaming = false;
+        msg.is_error = false;
+    }
+    update_chat_view_with_state(&mut state, true);
+}
+
+fn finalize_user_message_state_only_impl() {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(last) = state
+        .messages
+        .iter_mut()
+        .rev()
+        .find(|msg| msg.role == ChatRole::User)
+    {
         last.is_streaming = false;
         last.is_error = false;
+    } else {
+        return;
     }
     update_chat_view_with_state(&mut state, true);
 }
@@ -902,11 +929,40 @@ fn finalize_user_message_impl(text: &str) {
 fn finalize_assistant_message_impl(text: &str, is_error: bool) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
-    ensure_streaming_assistant_message(&mut state);
-    if let Some(last) = state.messages.last_mut() {
-        last.text = text.to_string();
+    let idx = last_message_index(&state, ChatRole::Assistant).unwrap_or_else(|| {
+        let mode = message_mode_label(&state);
+        state.messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            text: String::new(),
+            is_streaming: false,
+            is_error,
+            timestamp: SystemTime::now(),
+            mode: Some(mode),
+        });
+        state.messages.len() - 1
+    });
+    if let Some(msg) = state.messages.get_mut(idx) {
+        msg.text = text.to_string();
+        msg.is_streaming = false;
+        msg.is_error = is_error;
+    }
+    state.is_sending = false;
+    update_chat_view_with_state(&mut state, true);
+    update_send_button_with_state(&mut state);
+}
+
+fn finalize_assistant_message_state_only_impl(is_error: bool) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(last) = state
+        .messages
+        .iter_mut()
+        .rev()
+        .find(|msg| msg.role == ChatRole::Assistant)
+    {
         last.is_streaming = false;
         last.is_error = is_error;
+    } else {
+        return;
     }
     state.is_sending = false;
     update_chat_view_with_state(&mut state, true);
@@ -1085,40 +1141,32 @@ pub(super) fn discard_last_message_impl() {
     }
 }
 
-fn ensure_streaming_assistant_message(state: &mut VoiceChatOverlayState) {
-    let needs_new = state
-        .messages
-        .last()
-        .is_none_or(|msg| msg.role != ChatRole::Assistant || !msg.is_streaming);
-    if needs_new {
-        let mode = message_mode_label(state);
-        state.messages.push(ChatMessage {
-            role: ChatRole::Assistant,
-            text: String::new(),
-            is_streaming: true,
-            is_error: false,
-            timestamp: SystemTime::now(),
-            mode: Some(mode),
-        });
-    }
+fn last_message_index(state: &VoiceChatOverlayState, role: ChatRole) -> Option<usize> {
+    state.messages.iter().rposition(|msg| msg.role == role)
 }
 
-fn ensure_streaming_user_message(state: &mut VoiceChatOverlayState) {
-    let needs_new = state
+fn get_or_create_streaming_message_index(
+    state: &mut VoiceChatOverlayState,
+    role: ChatRole,
+) -> usize {
+    if let Some(idx) = state
         .messages
-        .last()
-        .is_none_or(|msg| msg.role != ChatRole::User || !msg.is_streaming);
-    if needs_new {
-        let mode = message_mode_label(state);
-        state.messages.push(ChatMessage {
-            role: ChatRole::User,
-            text: String::new(),
-            is_streaming: true,
-            is_error: false,
-            timestamp: SystemTime::now(),
-            mode: Some(mode),
-        });
+        .iter()
+        .rposition(|msg| msg.role == role && msg.is_streaming)
+    {
+        return idx;
     }
+
+    let mode = message_mode_label(state);
+    state.messages.push(ChatMessage {
+        role,
+        text: String::new(),
+        is_streaming: true,
+        is_error: false,
+        timestamp: SystemTime::now(),
+        mode: Some(mode),
+    });
+    state.messages.len() - 1
 }
 
 pub(super) fn update_chat_view_with_state(
@@ -1979,15 +2027,11 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.tab_settings_button = None;
     state.favorites_button = None;
     state.close_button = None;
-    state.settings_view = None;
     state.drawer_scroll_view = None;
     state.drawer_container = None;
     state.drawer_edge_effect = None;
     state.search_field = None;
     state.search_label = None;
-    state.help_panel = None;
-    state.help_hold_label = None;
-    state.help_toggle_label = None;
     state.agent_scroll_view = None;
     state.agent_container = None;
     state.agent_bubble_views.clear();
@@ -2008,7 +2052,6 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.is_sending = false;
     state.manual_draft.clear();
     state.conversation_state = ConversationModeState::Inactive;
-    crate::ui::bootstrap::reset_embedded_bootstrap_state();
 }
 
 fn refresh_drawer_impl() {
@@ -2441,7 +2484,7 @@ mod tests {
     fn update_active_tab_handles_settings_without_views() {
         let mut state = VoiceChatOverlayState::default();
         update_active_tab_locked(&mut state, Tab::Settings);
-        assert_eq!(state.active_tab, Tab::Settings);
+        assert_eq!(state.active_tab, Tab::Drawer);
 
         update_active_tab_locked(&mut state, Tab::Drawer);
         assert_eq!(state.active_tab, Tab::Drawer);

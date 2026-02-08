@@ -3,7 +3,7 @@
 //! Tests the ACTUAL components used by CodeScribe:
 //! - TTS (CSM) → audio generation
 //! - STT (Whisper) → transcription
-//! - Embedder (E5) → semantic similarity
+//! - Embedder (MiniLM) → semantic similarity
 //!
 //! Pattern: Text → TTS → audio → STT → text → compare
 //!
@@ -314,14 +314,14 @@ fn test_tts_embedded_model_works() -> Result<()> {
 }
 
 #[test]
-fn test_e5_embedded_model_works() -> Result<()> {
+fn test_embedded_model_works() -> Result<()> {
     if !should_run() {
         eprintln!("Skipping: set CODESCRIBE_E2E_ROUNDTRIP=1 to run");
         return Ok(());
     }
 
     let embedded = codescribe_core::embedder::embedded::is_embedded_available();
-    eprintln!("E5 embedded model available: {}", embedded);
+    eprintln!("Embedded model available: {}", embedded);
 
     codescribe_core::embedder::init()?;
 
@@ -340,7 +340,7 @@ fn test_e5_embedded_model_works() -> Result<()> {
     eprintln!("Embedding L2 norm: {:.4}", norm);
     assert!(
         (norm - 1.0).abs() < 0.1,
-        "E5 embeddings should be normalized. Got norm: {:.4}",
+        "Embeddings should be normalized. Got norm: {:.4}",
         norm
     );
 

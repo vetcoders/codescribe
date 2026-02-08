@@ -536,7 +536,7 @@ impl Drop for Recorder {
 
 // --- helper functions ---
 
-// Note: RMS-based silence detection replaced with WebRTC VAD (see vad module)
+// Note: RMS-based silence detection replaced with Silero VAD (see vad module)
 
 /// Write audio samples to a WAV file.
 fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u16) -> Result<()> {
@@ -565,7 +565,7 @@ fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u
 mod tests {
     use super::*;
 
-    // Note: RMS tests removed - now using WebRTC VAD (see vad module tests)
+    // Note: RMS tests removed - now using Silero VAD (see vad module tests)
 
     #[test]
     fn test_recorder_config_default() {
