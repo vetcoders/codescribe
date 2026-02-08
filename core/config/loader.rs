@@ -182,6 +182,9 @@ impl Config {
         if let Ok(val) = std::env::var("BEEP_ON_START") {
             self.beep_on_start = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
+        if let Ok(val) = std::env::var("AGENT_ENTER_SENDS") {
+            self.agent_enter_sends = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
         if let Ok(val) = std::env::var("SOUND_NAME") {
             self.sound_name = val;
         }

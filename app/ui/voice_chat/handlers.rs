@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Once;
 use tracing::{debug, info};
 
+use crate::config::Config;
 use crate::ui::bootstrap;
 use crate::ui_helpers::{
     clamp_overlay_position, get_text_field_string, ns_string, set_hidden, set_text_field_string,
@@ -159,6 +160,10 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onMoreMenu:),
                 on_more_menu as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onShowShortcuts:),
+                on_show_shortcuts as extern "C" fn(&Object, Sel, Id),
             );
             // NSTextView delegate (auto-resize input bar as content grows/shrinks).
             decl.add_method(
@@ -814,6 +819,20 @@ extern "C" fn on_export_assistant_save(_this: &Object, _cmd: Sel, _sender: Id) {
     }
 }
 
+extern "C" fn on_show_shortcuts(_this: &Object, _cmd: Sel, _sender: Id) {
+    let config = Config::load();
+    let (hold, toggle) = super::shortcuts_lines(config.hold_mods, config.toggle_trigger);
+    unsafe {
+        let ns_alert = Class::get("NSAlert").unwrap();
+        let alert: Id = msg_send![ns_alert, new];
+        let _: () = msg_send![alert, setMessageText: ns_string("Keyboard Shortcuts")];
+        let _: () =
+            msg_send![alert, setInformativeText: ns_string(&format!("{}\n{}", hold, toggle))];
+        let _: () = msg_send![alert, setAlertStyle: 1_isize]; // NSAlertStyleInformational
+        let _: () = msg_send![alert, runModal];
+    }
+}
+
 extern "C" fn on_more_menu(this: &Object, _cmd: Sel, sender: Id) {
     unsafe {
         let ns_menu = Class::get("NSMenu").unwrap();
@@ -855,6 +874,20 @@ extern "C" fn on_more_menu(this: &Object, _cmd: Sel, sender: Id) {
         let _: () = msg_send![paste_last, setTarget: target];
         let _: () = msg_send![menu, addItem: paste_last];
 
+        let sep2: Id = msg_send![ns_menu_item, separatorItem];
+        let _: () = msg_send![menu, addItem: sep2];
+
+        let shortcuts_item: Id = msg_send![ns_menu_item, alloc];
+        let shortcuts_item: Id = msg_send![
+            shortcuts_item,
+            initWithTitle: ns_string("Keyboard Shortcuts")
+            action: sel!(onShowShortcuts:)
+            keyEquivalent: ns_string("?")
+        ];
+        let _: () = msg_send![shortcuts_item, setTarget: target];
+        let _: () = msg_send![shortcuts_item, setKeyEquivalentModifierMask: (1u64 << 20)];
+        let _: () = msg_send![menu, addItem: shortcuts_item];
+
         // Pop up anchored at the button.
         let bounds: CGRect = msg_send![sender, bounds];
         let location = CGPoint::new(0.0, bounds.size.height);
@@ -874,6 +907,9 @@ extern "C" fn on_text_did_change(_this: &Object, _cmd: Sel, _notification: Id) {
 }
 
 /// NSTextView delegate: intercept Enter to send, allow Shift+Enter for newline.
+/// Respects `agent_enter_sends` config:
+///   true  → Enter sends, Shift+Enter newline (default / Discord-style)
+///   false → Enter newline, Cmd+Enter sends   (Mail / Messages-style)
 extern "C" fn on_do_command_by_selector(
     _this: &Object,
     _cmd: Sel,
@@ -881,24 +917,30 @@ extern "C" fn on_do_command_by_selector(
     selector: Sel,
 ) -> bool {
     if selector == sel!(insertNewline:) {
-        // Check if Shift is held → allow newline insertion.
-        let shift_held = unsafe {
+        let (shift_held, cmd_held) = unsafe {
             let ns_app = Class::get("NSApplication").unwrap();
             let app: Id = msg_send![ns_app, sharedApplication];
             let event: Id = msg_send![app, currentEvent];
             if event.is_null() {
-                false
+                (false, false)
             } else {
                 let flags: u64 = msg_send![event, modifierFlags];
                 // NSEventModifierFlagShift = 1 << 17
-                (flags & (1 << 17)) != 0
+                // NSEventModifierFlagCommand = 1 << 20
+                ((flags & (1 << 17)) != 0, (flags & (1 << 20)) != 0)
             }
         };
-        if shift_held {
-            return false; // Let NSTextView insert a newline.
+        let config = Config::load();
+        let should_send = if config.agent_enter_sends {
+            !shift_held // Enter sends, Shift+Enter newline
+        } else {
+            cmd_held // Cmd+Enter sends, Enter newline
+        };
+        if should_send {
+            send_draft_message_impl();
+            return true; // Handled: send message.
         }
-        send_draft_message_impl();
-        return true; // Handled: don't insert newline.
+        return false; // Let NSTextView insert a newline.
     }
     false // All other commands: default behaviour.
 }

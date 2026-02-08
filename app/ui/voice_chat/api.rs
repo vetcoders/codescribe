@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use chrono::{DateTime, Local};
 
-use crate::ui::shared::status::status_from_detail;
+use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, LabelConfig, add_subview, button_set_action, button_style,
     color_label, color_rgba, color_secondary_label, create_bubble_view, create_button,
@@ -632,6 +632,28 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
                     color_rgba(palette.dot.0, palette.dot.1, palette.dot.2, palette.dot.3);
                 let cg: Id = msg_send![dot_color, CGColor];
                 let _: () = msg_send![dot_layer, setBackgroundColor: cg];
+                // Pulse animation for Listening state
+                let pulse_key = ns_string("pulse");
+                if state.status_kind == UiStatus::Listening {
+                    let existing: Id = msg_send![dot_layer, animationForKey: pulse_key];
+                    if existing.is_null() {
+                        let ca_anim = Class::get("CABasicAnimation").unwrap();
+                        let anim: Id =
+                            msg_send![ca_anim, animationWithKeyPath: ns_string("opacity")];
+                        let from_val: Id =
+                            msg_send![Class::get("NSNumber").unwrap(), numberWithFloat: 1.0f32];
+                        let to_val: Id =
+                            msg_send![Class::get("NSNumber").unwrap(), numberWithFloat: 0.3f32];
+                        let _: () = msg_send![anim, setFromValue: from_val];
+                        let _: () = msg_send![anim, setToValue: to_val];
+                        let _: () = msg_send![anim, setDuration: 0.8f64];
+                        let _: () = msg_send![anim, setAutoreverses: true];
+                        let _: () = msg_send![anim, setRepeatCount: f32::INFINITY];
+                        let _: () = msg_send![dot_layer, addAnimation: anim forKey: pulse_key];
+                    }
+                } else {
+                    let _: () = msg_send![dot_layer, removeAnimationForKey: pulse_key];
+                }
             }
         }
 
@@ -1183,6 +1205,20 @@ pub(super) fn update_chat_view_with_state(
 
         // Size bubbles to the current visible content width (supports resizable overlay).
         let max_width = agent_max_width(state);
+
+        // Empty state CTA when no messages exist yet.
+        if state.messages.is_empty() {
+            let empty_label = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(max_width, 60.0)),
+                text: "Start a conversation\nPress hotkey to record \u{2022} Type to send"
+                    .to_string(),
+                font_size: 13.0,
+                text_color: color_secondary_label(),
+                ..Default::default()
+            });
+            let _: () = msg_send![empty_label, setAlignment: 1_isize]; // NSTextAlignmentCenter
+            stack_view_add(container, empty_label);
+        }
 
         let mut last_bubble: Option<Id> = None;
         for (index, message) in state.messages.iter().enumerate() {
@@ -2250,7 +2286,7 @@ fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: &str) {
 
         let visible = filtered_drawer_entries(state, query);
         for (index, entry) in visible.iter() {
-            let card = create_drawer_card(entry, *index, state.action_handler);
+            let card = create_drawer_card(entry, *index, state.action_handler, query);
             stack_view_add(container, card);
         }
 
@@ -2492,7 +2528,12 @@ mod tests {
     }
 }
 
-fn create_drawer_card(entry: &DrawerEntry, index: usize, handler: Option<usize>) -> Id {
+fn create_drawer_card(
+    entry: &DrawerEntry,
+    index: usize,
+    handler: Option<usize>,
+    query: &str,
+) -> Id {
     unsafe {
         let ns_view = Class::get("NSView").unwrap();
         let frame = core_graphics::geometry::CGRect::new(
@@ -2507,6 +2548,22 @@ fn create_drawer_card(entry: &DrawerEntry, index: usize, handler: Option<usize>)
         let subtitle = format!("{} • {}", mode_label(entry.mode), entry.path.display());
         let preview = entry.preview.clone();
         let card = create_card_view(frame, &title, &subtitle, &preview);
+        // Highlight matching query text in the preview field (last NSTextField subview).
+        if !query.is_empty() {
+            let subviews: Id = msg_send![card, subviews];
+            let count: usize = msg_send![subviews, count];
+            // The preview field is typically the 3rd text field added (index 2).
+            // Walk subviews in reverse to find it (last NSTextField before action buttons).
+            for i in (0..count).rev() {
+                let subview: Id = msg_send![subviews, objectAtIndex: i];
+                let responds: bool =
+                    msg_send![subview, respondsToSelector: sel!(attributedStringValue)];
+                if responds {
+                    apply_search_highlight(subview, &preview, query);
+                    break;
+                }
+            }
+        }
 
         let actions_container: Id = msg_send![ns_view, alloc];
         let actions_frame = core_graphics::geometry::CGRect::new(
@@ -2552,6 +2609,41 @@ fn create_drawer_card(entry: &DrawerEntry, index: usize, handler: Option<usize>)
     }
 }
 
+/// NSRange for Objective-C attributed string APIs.
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct NSRange {
+    location: usize,
+    length: usize,
+}
+
+/// Apply search-term highlighting to a text field by bolding matching ranges.
+unsafe fn apply_search_highlight(field: Id, text: &str, query: &str) {
+    let ns_mut_attr = Class::get("NSMutableAttributedString").unwrap();
+    let ns_font_cls = Class::get("NSFont").unwrap();
+    let text_ns = ns_string(text);
+    let attr_str: Id = msg_send![ns_mut_attr, alloc];
+    let attr_str: Id = msg_send![attr_str, initWithString: text_ns];
+    let bold_font: Id = msg_send![ns_font_cls, boldSystemFontOfSize: ui_tokens::BODY_FONT_SIZE];
+    let font_key = ns_string("NSFont");
+    let query_lower = query.to_lowercase();
+    let text_lower = text.to_lowercase();
+    let mut start = 0;
+    while let Some(pos) = text_lower[start..].find(&query_lower) {
+        let abs_pos = start + pos;
+        let range = NSRange {
+            location: abs_pos,
+            length: query_lower.len(),
+        };
+        let _: () = msg_send![attr_str, addAttribute: font_key value: bold_font range: range];
+        // Also set highlight color for visibility.
+        let highlight = color_rgba(255.0, 210.0, 0.0, 0.3);
+        let bg_key = ns_string("NSBackgroundColor");
+        let _: () = msg_send![attr_str, addAttribute: bg_key value: highlight range: range];
+        start = abs_pos + query_lower.len();
+    }
+    let _: () = msg_send![field, setAttributedStringValue: attr_str];
+}
 fn entry_type_label(entry: &DrawerEntry) -> &'static str {
     if entry.is_ai_formatted { "AI" } else { "Tt" }
 }

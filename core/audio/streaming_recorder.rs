@@ -674,7 +674,9 @@ mod tests {
             let speech_samples: usize = events
                 .iter()
                 .map(|e| match e {
-                    SpeechEvent::Utterance(s) | SpeechEvent::Chunk(s) => s.len(),
+                    SpeechEvent::Utterance(s)
+                    | SpeechEvent::UtteranceFinal(s)
+                    | SpeechEvent::Chunk(s) => s.len(),
                 })
                 .sum();
             let speech_sec = speech_samples as f32 / sample_rate as f32;

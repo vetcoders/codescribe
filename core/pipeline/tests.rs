@@ -247,3 +247,6 @@ mod pipeline_integration {
         );
     }
 }
+
+// Additional regression-focused tests live in a separate file to minimize conflicts.
+mod regressions;

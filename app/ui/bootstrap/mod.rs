@@ -1525,7 +1525,15 @@ unsafe fn build_audio_tab(
         button_set_action(beep_check, action_handler, sel!(onBeepToggled:));
         add_subview(container, beep_check);
         y -= 34.0;
-
+        // Agent: Enter to send toggle
+        let enter_check = create_checkbox(
+            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 20.0)),
+            "Enter to send (⌘⏎ for newline)",
+            config.agent_enter_sends,
+        );
+        button_set_action(enter_check, action_handler, sel!(onEnterSendToggled:));
+        add_subview(container, enter_check);
+        y -= 34.0;
         // Sound volume slider
         let vol_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
@@ -1912,6 +1920,19 @@ pub(super) extern "C" fn on_beep_toggled(_this: &Object, _cmd: objc::runtime::Se
     }
 }
 
+pub(super) extern "C" fn on_enter_send_toggled(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let state: isize = msg_send![sender, state];
+        let enabled = state == 1;
+        info!("Settings: agent enter sends -> {}", enabled);
+        let config = Config::load();
+        let _ = config.save_to_env("AGENT_ENTER_SENDS", if enabled { "1" } else { "0" });
+    }
+}
 pub(super) extern "C" fn on_volume_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];

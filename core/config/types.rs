@@ -358,6 +358,11 @@ pub struct Config {
     #[serde(default)]
     pub start_at_login: bool,
 
+    // ===== Agent =====
+    /// When true, Enter sends the message (Shift+Enter for newline).
+    /// When false, Enter inserts newline (Cmd+Enter sends).
+    #[serde(default = "default_agent_enter_sends")]
+    pub agent_enter_sends: bool,
     // ===== Debugging =====
     /// Whether to dump raw audio files to logs/audio directory
     #[serde(default = "default_dump_audio_logs")]
@@ -402,6 +407,7 @@ impl Default for Config {
             restore_clipboard: default_restore_clipboard(),
             restore_clipboard_delay_ms: default_restore_clipboard_delay_ms(),
             start_at_login: false,
+            agent_enter_sends: default_agent_enter_sends(),
             dump_audio_logs: default_dump_audio_logs(),
         }
     }

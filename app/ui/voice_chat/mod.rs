@@ -208,7 +208,10 @@ fn show_voice_chat_overlay_impl() {
         let window: Id = msg_send![overlay_window_class, alloc];
         let style_mask = NSWindowStyleMask::Borderless
             | NSWindowStyleMask::FullSizeContentView
-            | NSWindowStyleMask::Resizable;
+            | NSWindowStyleMask::Resizable
+            | NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Miniaturizable
+            | NSWindowStyleMask::Closable;
         let backing = NSBackingStoreType::Buffered;
         let window: Id = msg_send![
             window,
@@ -291,7 +294,8 @@ fn show_voice_chat_overlay_impl() {
         let header_bg: Id = if glass_effect_supported() {
             create_glass_effect_view(header_frame, NSVisualEffectMaterial::Titlebar)
         } else {
-            create_glass_effect_view(header_frame, NSVisualEffectMaterial::HeaderView)
+            // HUDWindow provides consistent opacity across OS versions (pre-macOS 14).
+            create_glass_effect_view(header_frame, NSVisualEffectMaterial::HUDWindow)
         };
         let _: () = msg_send![
             header_bg,
@@ -322,7 +326,8 @@ fn show_voice_chat_overlay_impl() {
             header_controls,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
         ];
-        let title_x = ui_tokens::EDGE_PADDING_TIGHT;
+        // Reserve space for standard macOS traffic-light buttons (~60px).
+        let title_x = ui_tokens::EDGE_PADDING_TIGHT + 60.0;
         let title_y = ((header_height - 20.0) / 2.0).max(0.0);
         // Give the tab control more room to avoid truncation ("Dr..." / "A...").
         let title_w = ui_tokens::TITLE_LABEL_WIDTH;
@@ -362,8 +367,8 @@ fn show_voice_chat_overlay_impl() {
         let right_cluster_start_x = export_button_x;
         let tab_x = title_x + title_w + 10.0;
         let status_pill_w = ui_tokens::STATUS_PILL_WIDTH;
-        let tab_btn_w = (btn_w - 2.0).max(24.0);
-        let tab_gap = (gap - 2.0).max(6.0);
+        let tab_btn_w = 60.0;
+        let tab_gap = 4.0;
         let tab_cluster_w = tab_btn_w * 4.0 + tab_gap * 3.0;
         let status_pill_x =
             (right_cluster_start_x - gap - status_pill_w).max(tab_x + tab_cluster_w + tab_gap);
@@ -692,6 +697,8 @@ fn show_voice_chat_overlay_impl() {
         if responds_vertical {
             let _: () = msg_send![split_view, setVertical: true];
         }
+        // Use thin divider style with adequate contrast for glass-effect windows.
+        let _: () = msg_send![split_view, setDividerStyle: 1_isize]; // NSSplitViewDividerStyleThin
         add_subview(blur_view, split_view);
         // Ensure header glass + controls stay above the split view content.
         add_subview(blur_view, header_bg);

@@ -277,6 +277,22 @@ category = "streaming"
 description = "Legacy interim cadence for utterance mode (sec)"
 range = "1.0-30.0"
 
+[vars.CODESCRIBE_BUFFERED_SILENCE_SEC]
+default = ""
+type = "f32"
+reload = "restart"
+category = "streaming"
+description = "Override silence duration before utterance flush in buffered mode (sec)"
+range = "0.1-10.0"
+
+[vars.CODESCRIBE_UTTERANCE_SILENCE_SEC]
+default = ""
+type = "f32"
+reload = "restart"
+category = "streaming"
+description = "Legacy override silence duration before utterance flush in utterance mode (sec)"
+range = "0.1-10.0"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -945,3 +961,12 @@ type = "string"
 reload = "restart"
 category = "assistive"
 description = "OCR language(s) for PDF attachments (tesseract)"
+
+# Agent / Chat input behavior
+
+[vars.AGENT_ENTER_SENDS]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "assistive"
+description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."

@@ -49,7 +49,7 @@ pub mod ui_tokens {
     pub const HEADER_BUTTON_SIZE: f64 = 28.0;
     pub const HEADER_BUTTON_GAP: f64 = 8.0;
     pub const HELP_PANEL_WIDTH: f64 = 150.0;
-    pub const FOOTER_INSET: f64 = 8.0;
+    pub const FOOTER_INSET: f64 = 16.0;
     pub const AGENT_INPUT_HEIGHT: f64 = 44.0;
     pub const CONTENT_GAP: f64 = 10.0;
     pub const SIDEBAR_MIN_WIDTH: f64 = 200.0;
@@ -1553,9 +1553,7 @@ fn markdown_preserve_single_newlines(text: &str) -> String {
 
         if in_fence {
             out.push_str(line);
-            if !is_last {
-                out.push('\n');
-            } else if line.is_empty() {
+            if !is_last || line.is_empty() {
                 out.push('\n');
             }
             continue;
@@ -1776,7 +1774,16 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             msg_send![cell, cellSizeForBounds: measure_bounds]
         };
         let text_height = measured.height.ceil().max(line_height);
-        let bubble_height = text_height + padding_top + padding_bottom;
+        // Cap bubble height at 400px to prevent extremely tall bubbles for long code blocks.
+        // When capped, we wrap the text label in a scroll view below.
+        let max_bubble_content_height = 400.0;
+        let capped = text_height > max_bubble_content_height;
+        let effective_text_height = if capped {
+            max_bubble_content_height
+        } else {
+            text_height
+        };
+        let bubble_height = effective_text_height + padding_top + padding_bottom;
         let container_height = bubble_height + meta_height + meta_spacing;
 
         // Container view (for alignment)
@@ -1838,12 +1845,36 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             }
         }
 
-        // Update label frame to the final measured height.
+        // Update label frame to the final measured height (full, uncapped).
         let text_frame = CGRect::new(
             &CGPoint::new(padding_x, padding_top),
             &CGSize::new(text_layout_width.max(1.0), text_height),
         );
         let _: () = msg_send![text_label, setFrame: text_frame];
+        // When content overflows the cap, wrap in a scroll view for vertical scrolling.
+        if capped {
+            let ns_scroll_view = Class::get("NSScrollView").unwrap();
+            let scroll_frame = CGRect::new(
+                &CGPoint::new(padding_x, padding_top),
+                &CGSize::new(text_layout_width.max(1.0), effective_text_height),
+            );
+            let scroll: Id = msg_send![ns_scroll_view, alloc];
+            let scroll: Id = msg_send![scroll, initWithFrame: scroll_frame];
+            let _: () = msg_send![scroll, setHasVerticalScroller: true];
+            let _: () = msg_send![scroll, setHasHorizontalScroller: false];
+            let _: () = msg_send![scroll, setDrawsBackground: false];
+            let _: () = msg_send![scroll, setBorderType: 0_isize]; // NSNoBorder
+            // Re-position label at origin for scroll document view.
+            let doc_frame = CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(text_layout_width.max(1.0), text_height),
+            );
+            let _: () = msg_send![text_label, setFrame: doc_frame];
+            let _: () = msg_send![scroll, setDocumentView: text_label];
+            add_subview(bubble, scroll);
+        } else {
+            add_subview(bubble, text_label);
+        }
 
         // Metadata (role/time/mode) above the bubble.
         if let Some(meta) = config.metadata.as_ref() {
@@ -1876,8 +1907,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         }
 
         // Assemble hierarchy
-        let _: () = msg_send![bubble, addSubview: text_label];
-
+        // (text_label already added to bubble above — directly or via scroll wrapper)
         // Add Copy button if message_index is provided
         if let (Some(msg_index), Some(target)) = (config.message_index, config.copy_action_target) {
             let ns_button = Class::get("NSButton").unwrap();

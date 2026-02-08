@@ -29,6 +29,8 @@ use crate::stt::whisper::embedded;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
+const AI_LOG_PREVIEW_CHARS: usize = 80;
+
 #[derive(Debug, Clone)]
 pub struct QualityReportConfig {
     pub input_dir: PathBuf,
@@ -190,18 +192,27 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     ensure_model_path()?;
     whisper::init().context("Failed to init Whisper")?;
 
-    // Resume: skip pairs that already have artifacts (both .ai.txt and .reference.txt)
+    // Resume: skip pairs that already have artifacts.
+    //
+    // Note: daemon mode sets `skip_formatting=true`, so `.ai.txt` is not created.
+    // Use a `.done` marker (and a raw+reference fallback) so resume works in all modes.
     let total_before = pairs.len();
     let pairs: Vec<_> = pairs
         .into_iter()
         .filter(|pair| {
-            let ai_artifact = artifacts_dir.join(format!("{}.ai.txt", pair.id));
-            let ref_artifact = artifacts_dir.join(format!("{}.reference.txt", pair.id));
-            if ai_artifact.exists() && ref_artifact.exists() {
+            let done_artifact = artifacts_dir.join(format!("{}.done", pair.id));
+            if done_artifact.exists() {
                 info!("[RESUME] Skipping already-processed: {}", pair.id);
                 false
             } else {
-                true
+                let raw_artifact = artifacts_dir.join(format!("{}.raw.txt", pair.id));
+                let ref_artifact = artifacts_dir.join(format!("{}.reference.txt", pair.id));
+                if raw_artifact.exists() && ref_artifact.exists() {
+                    info!("[RESUME] Skipping already-processed (legacy): {}", pair.id);
+                    false
+                } else {
+                    true
+                }
             }
         })
         .collect();
@@ -419,8 +430,8 @@ async fn process_pair(
             id,
             post_text.len(),
             ai_result.len(),
-            &post_text[..post_text.len().min(80)],
-            &ai_result[..ai_result.len().min(80)]
+            preview_for_log(post_text, AI_LOG_PREVIEW_CHARS),
+            preview_for_log(&ai_result, AI_LOG_PREVIEW_CHARS)
         );
         Some(ai_result)
     } else {
@@ -583,6 +594,12 @@ fn write_artifacts(
             text,
         )?;
     }
+    // Resume marker: created even when some optional artifacts (AI/cloud) are missing.
+    safe_write_bounded(
+        &artifacts_dir.join(format!("{id}.done")),
+        output_root,
+        "done\n",
+    )?;
     Ok(())
 }
 
@@ -1458,6 +1475,10 @@ fn resolve_output_root(path: &Path, root: &Path) -> Result<PathBuf> {
     fs::create_dir_all(&prepared)?;
     safe_canonicalize_bounded(&prepared, root)
         .with_context(|| format!("Output dir must stay within {}", root.display()))
+}
+
+fn preview_for_log(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
 }
 
 fn normalize_for_eval(text: &str) -> (Vec<String>, String) {
