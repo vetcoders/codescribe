@@ -30,6 +30,11 @@ pub const NS_FLOATING_WINDOW_LEVEL: i64 = 3;
 pub const NS_STATUS_WINDOW_LEVEL: i64 = 25;
 pub const NS_NORMAL_WINDOW_LEVEL: i64 = 0;
 
+/// Focus ring constants
+pub const NS_FOCUS_RING_TYPE_DEFAULT: i64 = 0;
+pub const NS_FOCUS_RING_TYPE_NONE: i64 = 1;
+pub const NS_FOCUS_RING_TYPE_EXTERIOR: i64 = 2;
+
 // ============================================================================
 // UI Tokens (shared sizes/spacing; aligned to Settings)
 // ============================================================================
@@ -72,9 +77,6 @@ pub mod ui_tokens {
     pub const EMPTY_STATE_BUTTON_WIDTH: f64 = 140.0;
     pub const EMPTY_STATE_BUTTON_GAP: f64 = 12.0;
 }
-
-pub const NS_FOCUS_RING_TYPE_EXTERIOR: i64 = 1;
-pub const NS_FOCUS_RING_TYPE_NONE: i64 = 2;
 
 // ============================================================================
 // Color Helpers

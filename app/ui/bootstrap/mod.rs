@@ -746,7 +746,7 @@ unsafe fn build_settings_ui(
         );
         button_set_action(clear_assist_btn, action_handler, sel!(onClearAssistiveKey:));
         add_subview(setup_view, clear_assist_btn);
-        y -= 20.0;
+        y -= 40.0;
 
         let save_btn = button(
             CGRect::new(
@@ -757,7 +757,7 @@ unsafe fn build_settings_ui(
         );
         button_set_action(save_btn, action_handler, sel!(onSaveApiSettings:));
         add_subview(setup_view, save_btn);
-        y -= 34.0;
+        y -= 44.0;
 
         // ── Quality daemon toggle ────────────────────────────────────
         let quality_on = std::env::var("CODESCRIBE_AUTOSTART_QUALITY_DAEMON")
