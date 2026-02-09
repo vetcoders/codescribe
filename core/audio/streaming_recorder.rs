@@ -211,8 +211,6 @@ impl StreamingRecorder {
     }
 }
 
-// Note: calculate_rms_db removed - now using vad::speech_probability for voice detection
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,7 +583,7 @@ mod tests {
         );
     }
 
-    /// Run VAD v5 on real WAV files and report segmentation quality.
+    /// Run VAD on real WAV files and report segmentation quality.
     #[test]
     fn test_vad_supervisor_segments_real_audio() {
         let corpus_dir =

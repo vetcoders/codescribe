@@ -45,7 +45,6 @@ pub struct Resampler {
 }
 
 impl Resampler {
-    /// Create resampler for given input sample rate
     pub fn new(input_rate: u32) -> Self {
         let ratio = VAD_SAMPLE_RATE as f32 / input_rate as f32;
         Self {
@@ -54,8 +53,7 @@ impl Resampler {
         }
     }
 
-    /// Resample audio to 16kHz (linear interpolation)
-    /// Returns owned Vec (avoids lifetime complexity)
+    /// Resample audio to 16kHz (linear interpolation).
     pub fn resample(&mut self, samples: &[f32]) -> Vec<f32> {
         if (self.ratio - 1.0).abs() < 0.001 {
             // No resampling needed - return copy
@@ -119,7 +117,6 @@ impl SileroVad {
         })
     }
 
-    /// Set input sample rate (enables automatic resampling)
     pub fn set_input_sample_rate(&mut self, rate: u32) {
         if rate != VAD_SAMPLE_RATE {
             self.resampler = Some(Resampler::new(rate));
@@ -216,7 +213,6 @@ impl SileroVad {
         self.context.fill(0.0);
     }
 
-    /// Get current threshold
     pub fn threshold(&self) -> f32 {
         self.config.threshold
     }
@@ -372,7 +368,6 @@ static INIT_LOCK: Mutex<()> = Mutex::new(());
 static MODEL_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 static VAD_CONFIG: OnceLock<VadConfig> = OnceLock::new();
 
-/// Initialize VAD with model path
 pub fn init(model_path: &Path) -> Result<()> {
     init_with_config(model_path, VadConfig::default())
 }
@@ -420,7 +415,6 @@ pub fn init_with_config(model_path: &Path, config: VadConfig) -> Result<()> {
     }
 }
 
-/// Check if VAD is initialized
 pub fn is_initialized() -> bool {
     VAD_WORKER
         .get()
@@ -451,7 +445,6 @@ pub fn speech_probability(samples: &[f32], sample_rate: u32) -> f32 {
     }
 }
 
-/// Check if audio contains speech
 pub fn is_speech(samples: &[f32], sample_rate: u32) -> bool {
     let threshold = VAD_CONFIG.get().map(|c| c.threshold).unwrap_or(0.5);
     speech_probability(samples, sample_rate) > threshold
