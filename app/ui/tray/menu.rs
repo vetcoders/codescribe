@@ -20,7 +20,6 @@ use codescribe_core::vad;
 
 use crate::config::Config;
 use crate::tray::state::NOTES_MENU_ITEMS;
-use crate::tray::submenus::build_hold_hotkeys_submenu;
 use crate::tray::types::{MenuIds, NotesMenuItems};
 
 // Thread-local storage for menu items that need dynamic updates
@@ -63,13 +62,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     // 5. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 6. Hotkeys (promoted to root level)
-    let (hold_hotkeys_menu, hold_ids) = build_hold_hotkeys_submenu()?;
-    menu.append(&hold_hotkeys_menu)?;
-
-    menu.append(&PredefinedMenuItem::separator())?;
-
-    // 7. Prompts submenu
+    // 6. Prompts submenu
     let prompts_menu = Submenu::new("Edit prompts…", true);
     let open_assistive_prompt_item = MenuItem::new("Assistive…", true, None);
     let open_assistive_prompt_id = open_assistive_prompt_item.id().clone();
@@ -202,8 +195,6 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let quit_id = quit_item.id().clone();
     menu.append(&quit_item)?;
 
-    let hotkeys_copy_cheatsheet_id = hold_ids.copy_cheatsheet;
-
     Ok((
         menu,
         MenuIds {
@@ -221,8 +212,6 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             help: help_id,
             about: about_id,
             quit: quit_id,
-            // Hotkeys submenu
-            hotkeys_copy_cheatsheet: hotkeys_copy_cheatsheet_id,
             // Quality
             quality_open_report: quality_open_report_id,
             // Models

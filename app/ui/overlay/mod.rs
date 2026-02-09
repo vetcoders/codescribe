@@ -9,7 +9,7 @@
 //! Use this for: Ctrl hold (raw), Left ⌥⌥ toggle (normal)
 //! For AI modes (Chat/Selection, Option toggles), use voice_chat_ui instead.
 //!
-//! Design: macOS Tahoe-style with NSVisualEffectView (HudWindow material)
+//! Design: macOS Tahoe Liquid Glass (NSVisualEffectView, HudWindow material)
 
 // Allow unexpected cfgs from objc crate's msg_send! macro
 // Allow unused API methods - they're part of the public interface for future use
@@ -32,8 +32,8 @@ use tracing::{debug, info, warn};
 use crate::ui::shared::status::status_from_detail;
 use crate::ui_helpers::{
     add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position,
-    create_button, set_hidden, set_text, set_visual_effect_blending, set_visual_effect_material,
-    set_visual_effect_state, ui_colors, window_close, window_set_alpha, window_show,
+    create_button, create_glass_effect_view_with, set_hidden, set_text, ui_colors, window_close,
+    window_set_alpha, window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -569,7 +569,6 @@ fn show_transcription_overlay_impl() {
         let ns_text_field_class = Class::get("NSTextField");
         let ns_screen_class = Class::get("NSScreen");
         let ns_string_class = Class::get("NSString");
-        let ns_visual_effect_view_class = Class::get("NSVisualEffectView");
         let ns_color_class = Class::get("NSColor");
         let ns_progress_class = Class::get("NSProgressIndicator");
         let ns_tracking_area_class = Class::get("NSTrackingArea");
@@ -579,7 +578,6 @@ fn show_transcription_overlay_impl() {
             || ns_text_field_class.is_none()
             || ns_screen_class.is_none()
             || ns_string_class.is_none()
-            || ns_visual_effect_view_class.is_none()
             || ns_color_class.is_none()
             || ns_progress_class.is_none()
             || ns_tracking_area_class.is_none()
@@ -592,7 +590,6 @@ fn show_transcription_overlay_impl() {
         let ns_text_field = ns_text_field_class.unwrap();
         let ns_screen = ns_screen_class.unwrap();
         let ns_string = ns_string_class.unwrap();
-        let ns_visual_effect_view = ns_visual_effect_view_class.unwrap();
         let ns_color = ns_color_class.unwrap();
         let ns_progress = ns_progress_class.unwrap();
         let ns_tracking_area = ns_tracking_area_class.unwrap();
@@ -696,34 +693,17 @@ fn show_transcription_overlay_impl() {
             return;
         }
 
-        // === NSVisualEffectView for macOS Tahoe-style blur ===
-        let blur_frame = CGRect {
-            origin: CGPoint { x: 0.0, y: 0.0 },
-            size: CGSize {
-                width: window_width,
-                height: window_height,
-            },
-        };
-
-        let blur_view: Id = msg_send![ns_visual_effect_view, alloc];
-        let blur_view: Id = msg_send![blur_view, initWithFrame: blur_frame];
-
-        // HudWindow material (13) - perfect for floating overlays
-        let material = NSVisualEffectMaterial::HUDWindow;
-        set_visual_effect_material(blur_view, material);
-
-        // BehindWindow blending for true vibrancy
-        let blending = NSVisualEffectBlendingMode::BehindWindow;
-        set_visual_effect_blending(blur_view, blending);
-
-        // Always active (don't dim when window loses focus)
-        let effect_state = NSVisualEffectState::Active;
-        set_visual_effect_state(blur_view, effect_state);
-
-        // Enable layer-backed view for corner radius
-        let _: () = msg_send![blur_view, setWantsLayer: true];
-
-        // Set corner radius on the layer
+        // === Tahoe Liquid Glass blur ===
+        let blur_frame = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(window_width, window_height),
+        );
+        let blur_view: Id = create_glass_effect_view_with(
+            blur_frame,
+            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectBlendingMode::BehindWindow,
+            NSVisualEffectState::Active,
+        );
         let layer: Id = msg_send![blur_view, layer];
         if !layer.is_null() {
             let _: () = msg_send![layer, setCornerRadius: corner_radius];

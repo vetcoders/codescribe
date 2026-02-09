@@ -46,7 +46,7 @@ pub mod ui_tokens {
     pub const MICRO_FONT_SIZE: f64 = 10.0;
 
     pub const HEADER_HEIGHT: f64 = 44.0;
-    pub const FOOTER_HEIGHT: f64 = 56.0;
+    pub const FOOTER_HEIGHT: f64 = 40.0;
     pub const EDGE_PADDING: f64 = 16.0;
     pub const EDGE_PADDING_TIGHT: f64 = 12.0;
 
@@ -54,9 +54,9 @@ pub mod ui_tokens {
     pub const HEADER_BUTTON_SIZE: f64 = 28.0;
     pub const HEADER_BUTTON_GAP: f64 = 8.0;
     pub const HELP_PANEL_WIDTH: f64 = 150.0;
-    pub const FOOTER_INSET: f64 = 16.0;
+    pub const FOOTER_INSET: f64 = 4.0;
     pub const AGENT_INPUT_HEIGHT: f64 = 44.0;
-    pub const CONTENT_GAP: f64 = 10.0;
+    pub const CONTENT_GAP: f64 = 4.0;
     pub const SIDEBAR_MIN_WIDTH: f64 = 200.0;
     pub const SIDEBAR_MAX_WIDTH: f64 = 320.0;
 
@@ -290,7 +290,7 @@ pub fn color_secondary_label() -> Id {
     }
 }
 
-/// Prefer layout region guides (newer AppKit) or safe-area guides if available, then fall back.
+/// Layout insets for a view using Tahoe's layoutRegionGuides API.
 ///
 /// # Safety
 /// `view` must be a valid `NSView` instance.
@@ -301,25 +301,10 @@ pub unsafe fn layout_insets_for_view(view: Id) -> NSEdgeInsets {
         return insets_from_frame(bounds, frame);
     }
 
-    let responds_guide: bool =
-        unsafe { msg_send![view, respondsToSelector: sel!(safeAreaLayoutGuide)] };
-    if responds_guide {
-        let guide: Id = unsafe { msg_send![view, safeAreaLayoutGuide] };
-        if let Some(frame) = unsafe { layout_guide_frame(guide) } {
-            return insets_from_frame(bounds, frame);
-        }
-    }
-
-    let responds_insets: bool =
-        unsafe { msg_send![view, respondsToSelector: sel!(safeAreaInsets)] };
-    if responds_insets {
-        return unsafe { msg_send![view, safeAreaInsets] };
-    }
-
-    NSEdgeInsets::default()
+    unsafe { msg_send![view, safeAreaInsets] }
 }
 
-/// Best-effort layout region frame for a view.
+/// Layout region frame for a view (Tahoe layoutRegionGuides → contentLayoutGuide).
 ///
 /// # Safety
 /// `view` must be a valid `NSView` instance.
@@ -328,81 +313,27 @@ pub unsafe fn layout_region_frame_for_view(view: Id) -> Option<CGRect> {
     unsafe { layout_guide_frame(guide) }
 }
 
-/// Best-effort layout region guide for a view.
+/// Layout region guide using Tahoe's layoutRegionGuides API.
 ///
 /// # Safety
 /// `view` must be a valid `NSView` instance.
 pub unsafe fn layout_region_guide_for_view(view: Id) -> Option<Id> {
-    let responds_guides: bool =
-        unsafe { msg_send![view, respondsToSelector: sel!(layoutRegionGuides)] };
-    if responds_guides {
-        let guides: Id = unsafe { msg_send![view, layoutRegionGuides] };
-        if !guides.is_null() {
-            let responds_content: bool =
-                unsafe { msg_send![guides, respondsToSelector: sel!(contentLayoutGuide)] };
-            if responds_content {
-                let guide: Id = unsafe { msg_send![guides, contentLayoutGuide] };
-                if !guide.is_null() {
-                    return Some(guide);
-                }
-            }
-
-            let responds_safe: bool =
-                unsafe { msg_send![guides, respondsToSelector: sel!(safeAreaLayoutGuide)] };
-            if responds_safe {
-                let guide: Id = unsafe { msg_send![guides, safeAreaLayoutGuide] };
-                if !guide.is_null() {
-                    return Some(guide);
-                }
-            }
+    let guides: Id = unsafe { msg_send![view, layoutRegionGuides] };
+    if !guides.is_null() {
+        let guide: Id = unsafe { msg_send![guides, contentLayoutGuide] };
+        if !guide.is_null() {
+            return Some(guide);
         }
-    }
-
-    let responds_region: bool = unsafe { msg_send![view, respondsToSelector: sel!(layoutRegion)] };
-    if !responds_region {
-        let responds_safe: bool =
-            unsafe { msg_send![view, respondsToSelector: sel!(safeAreaLayoutGuide)] };
-        if responds_safe {
-            let guide: Id = unsafe { msg_send![view, safeAreaLayoutGuide] };
-            if !guide.is_null() {
-                return Some(guide);
-            }
-        }
-        return None;
-    }
-
-    let region: Id = unsafe { msg_send![view, layoutRegion] };
-    if region.is_null() {
-        return None;
-    }
-
-    let responds_content: bool =
-        unsafe { msg_send![region, respondsToSelector: sel!(contentLayoutGuide)] };
-    if responds_content {
-        let guide: Id = unsafe { msg_send![region, contentLayoutGuide] };
+        let guide: Id = unsafe { msg_send![guides, safeAreaLayoutGuide] };
         if !guide.is_null() {
             return Some(guide);
         }
     }
-
-    let responds_safe: bool =
-        unsafe { msg_send![region, respondsToSelector: sel!(safeAreaLayoutGuide)] };
-    if responds_safe {
-        let guide: Id = unsafe { msg_send![region, safeAreaLayoutGuide] };
-        if !guide.is_null() {
-            return Some(guide);
-        }
-    }
-
     None
 }
 
 unsafe fn layout_guide_frame(guide: Id) -> Option<CGRect> {
     if guide.is_null() {
-        return None;
-    }
-    let responds_frame: bool = unsafe { msg_send![guide, respondsToSelector: sel!(layoutFrame)] };
-    if !responds_frame {
         return None;
     }
     let frame: CGRect = unsafe { msg_send![guide, layoutFrame] };
@@ -428,69 +359,66 @@ fn insets_from_frame(bounds: CGRect, frame: CGRect) -> NSEdgeInsets {
     }
 }
 
-/// Create a glass effect view if available, otherwise fallback to NSVisualEffectView.
-pub fn create_glass_effect_view_with(
-    frame: CGRect,
-    material: NSVisualEffectMaterial,
-    blending: NSVisualEffectBlendingMode,
-    state: NSVisualEffectState,
-) -> Id {
+/// Check whether Tahoe's `NSGlassEffectView` class is usable.
+///
+/// On macOS 26 Tahoe, `NSGlassEffectView` is a direct `NSView` subclass
+/// (NOT `NSVisualEffectView`). It does not respond to `setMaterial:`,
+/// `setBlendingMode:`, or `setState:` — it uses `setStyle:` and
+/// `setTintColor:` instead.  This function returns `false` on current
+/// Tahoe 26.3 beta because the glass API is not yet public.
+pub fn glass_effect_supported() -> bool {
+    let Some(cls) = Class::get("NSGlassEffectView") else {
+        return false;
+    };
     unsafe {
-        let glass_allowed =
-            std::env::var("CODESCRIBE_DISABLE_GLASS").is_err() && glass_effect_supported();
-        if glass_allowed {
-            if let Some(container_cls) = Class::get("NSGlassEffectContainerView") {
-                let container: Id = msg_send![container_cls, alloc];
-                let container: Id = msg_send![container, initWithFrame: frame];
-                let _: () = msg_send![container, setWantsLayer: true];
-                let layer: Id = msg_send![container, layer];
-                if !layer.is_null() {
-                    let clear = color_clear();
-                    let cg: Id = msg_send![clear, CGColor];
-                    let _: () = msg_send![layer, setBackgroundColor: cg];
-                }
-
-                let glass_cls = Class::get("NSGlassEffectView").unwrap();
-                let glass: Id = msg_send![glass_cls, alloc];
-                let glass_frame = CGRect::new(
-                    &CGPoint::new(0.0, 0.0),
-                    &CGSize::new(frame.size.width, frame.size.height),
-                );
-                let glass: Id = msg_send![glass, initWithFrame: glass_frame];
-                set_visual_effect_material(glass, material);
-                set_visual_effect_blending(glass, blending);
-                set_visual_effect_state(glass, state);
-                let _: () = msg_send![glass, setWantsLayer: true];
-                let _: () = msg_send![
-                    glass,
-                    setAutoresizingMask: 2_isize | 16_isize // NSViewWidthSizable | NSViewHeightSizable
-                ];
-                add_subview(container, glass);
-                return container;
-            }
-
-            let glass_cls = Class::get("NSGlassEffectView").unwrap();
-            let view: Id = msg_send![glass_cls, alloc];
-            let view: Id = msg_send![view, initWithFrame: frame];
-            set_visual_effect_material(view, material);
-            set_visual_effect_blending(view, blending);
-            set_visual_effect_state(view, state);
-            let _: () = msg_send![view, setWantsLayer: true];
-            return view;
-        }
-
-        let visual_cls = Class::get("NSVisualEffectView").unwrap();
-        let view: Id = msg_send![visual_cls, alloc];
-        let view: Id = msg_send![view, initWithFrame: frame];
-        set_visual_effect_material(view, material);
-        set_visual_effect_blending(view, blending);
-        set_visual_effect_state(view, state);
-        let _: () = msg_send![view, setWantsLayer: true];
-        view
+        !class_getInstanceMethod(cls, sel!(setMaterial:)).is_null()
+            && !class_getInstanceMethod(cls, sel!(setBlendingMode:)).is_null()
+            && !class_getInstanceMethod(cls, sel!(setState:)).is_null()
     }
 }
 
-/// Create a glass effect view if available, otherwise fallback to NSVisualEffectView.
+// ── Safe NSVisualEffectView subclass ─────────────────────────────────
+// macOS 26 Tahoe beta: AppKit internally calls `layoutRegionGuides` on
+// NSVisualEffectView during layout, but the method is missing →
+// -[NSVisualEffectView layoutRegionGuides]: unrecognized selector.
+// We register a thin subclass once that adds a stub returning nil so
+// ObjC nil-messaging silently eats any further calls.
+
+static CS_VEV_INIT: Once = Once::new();
+static mut CS_VEV_CLASS: *const Class = std::ptr::null();
+
+fn safe_visual_effect_view_class() -> *const Class {
+    unsafe {
+        CS_VEV_INIT.call_once(|| {
+            let superclass = Class::get("NSVisualEffectView").unwrap();
+            let has_layout_guides: bool =
+                !class_getInstanceMethod(superclass, sel!(layoutRegionGuides)).is_null();
+
+            if has_layout_guides {
+                CS_VEV_CLASS = superclass;
+            } else {
+                let mut decl = ClassDecl::new("CSVisualEffectView", superclass)
+                    .expect("Failed to declare CSVisualEffectView");
+
+                extern "C" fn layout_region_guides(_this: &Object, _cmd: Sel) -> Id {
+                    std::ptr::null_mut()
+                }
+
+                decl.add_method(
+                    sel!(layoutRegionGuides),
+                    layout_region_guides as extern "C" fn(&Object, Sel) -> Id,
+                );
+                CS_VEV_CLASS = decl.register();
+            }
+        });
+        CS_VEV_CLASS
+    }
+}
+
+/// Create a vibrancy effect view.
+///
+/// Uses `safe_visual_effect_view_class()` which adds a `layoutRegionGuides`
+/// stub on Tahoe 26 beta to prevent the internal AppKit crash.
 pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial) -> Id {
     create_glass_effect_view_with(
         frame,
@@ -500,14 +428,22 @@ pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial)
     )
 }
 
-pub fn glass_effect_supported() -> bool {
-    let Some(cls) = Class::get("NSGlassEffectView") else {
-        return false;
-    };
+/// Create a vibrancy effect view with explicit blending and state.
+pub fn create_glass_effect_view_with(
+    frame: CGRect,
+    material: NSVisualEffectMaterial,
+    blending: NSVisualEffectBlendingMode,
+    state: NSVisualEffectState,
+) -> Id {
     unsafe {
-        !class_getInstanceMethod(cls, sel!(setMaterial:)).is_null()
-            && !class_getInstanceMethod(cls, sel!(setBlendingMode:)).is_null()
-            && !class_getInstanceMethod(cls, sel!(setState:)).is_null()
+        let cls = safe_visual_effect_view_class();
+        let view: Id = msg_send![cls, alloc];
+        let view: Id = msg_send![view, initWithFrame: frame];
+        set_visual_effect_material(view, material);
+        set_visual_effect_blending(view, blending);
+        set_visual_effect_state(view, state);
+        let _: () = msg_send![view, setWantsLayer: true];
+        view
     }
 }
 
@@ -837,10 +773,8 @@ pub unsafe fn style_toolbar_icon_button(button: Id) {
     if responds_bordered {
         let _: () = msg_send![button, setBordered: false];
     }
-    let responds_transparent: bool = msg_send![button, respondsToSelector: sel!(setTransparent:)];
-    if responds_transparent {
-        let _: () = msg_send![button, setTransparent: true];
-    }
+    // NOTE: Do NOT set transparent=true — it hides the button image entirely.
+    // setBordered=false + setImagePosition=NSImageOnly is sufficient for borderless icons.
     let responds_shows_border: bool =
         msg_send![button, respondsToSelector: sel!(setShowsBorderOnlyWhileMouseInside:)];
     if responds_shows_border {

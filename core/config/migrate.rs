@@ -43,8 +43,8 @@ pub fn migrate_if_needed() {
     if let Ok(v) = std::env::var("LLM_ASSISTIVE_MODEL") {
         settings.llm_assistive_model = Some(v);
     }
-    if let Ok(v) = std::env::var("VAD_PRESET") {
-        settings.vad_preset = Some(v);
+    if let Ok(v) = std::env::var("FORMATTING_LEVEL") {
+        settings.formatting_level = Some(v);
     }
 
     // Migrate boolean settings

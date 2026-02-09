@@ -5,16 +5,11 @@ use muda::MenuId;
 use std::process::Command;
 use tracing::{debug, info};
 
-use crate::config::{Config, HoldMods, ToggleTrigger};
+use crate::config::Config;
 use crate::os::clipboard;
 use crate::os::permissions;
 use crate::tray::state::{NOTES_MENU_ITEMS, send_menu_event};
 use crate::tray::types::{MenuIds, TrayMenuEvent};
-
-#[cfg(target_os = "macos")]
-fn notify(title: &str, message: &str) {
-    crate::os::notifications::notify(title, message);
-}
 
 /// Handle menu item click and send appropriate event
 /// Note: Settings handlers removed - settings now in Chat Overlay Settings tab
@@ -59,10 +54,6 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     } else if event_id == &menu_ids.notes_open_today {
         handle_open_today_note();
     }
-    // Hotkeys submenu
-    else if event_id == &menu_ids.hotkeys_copy_cheatsheet {
-        handle_copy_hotkeys_cheatsheet();
-    }
     // Quality - Open Report
     else if event_id == &menu_ids.quality_open_report {
         handle_open_quality_report();
@@ -71,90 +62,6 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     } else {
         debug!("Unknown menu event id: {:?}", event_id);
     }
-}
-
-fn base_hold_cheatsheet_label(hold_mods: HoldMods) -> &'static str {
-    match hold_mods {
-        HoldMods::Fn => "Fn",
-        HoldMods::Ctrl => "Ctrl",
-        HoldMods::CtrlAlt => "Ctrl+Option",
-        HoldMods::CtrlShift => "Ctrl+Shift",
-        HoldMods::CtrlCmd => "Ctrl+Command",
-    }
-}
-
-fn hands_off_cheatsheet_label(trigger: ToggleTrigger) -> &'static str {
-    match trigger {
-        ToggleTrigger::DoubleCtrl => "Double Ctrl (RAW)",
-        ToggleTrigger::DoubleLeftOption => "Left Option (normal)",
-        ToggleTrigger::DoubleRightOption => "Right Option (assistive)",
-        ToggleTrigger::DoubleOption => "Option keys (left=format, right=assistive)",
-        ToggleTrigger::None => "OFF",
-    }
-}
-
-fn handle_copy_hotkeys_cheatsheet() {
-    let cfg = Config::load();
-
-    let base = base_hold_cheatsheet_label(cfg.hold_mods);
-    let hands_off = hands_off_cheatsheet_label(cfg.toggle_trigger);
-
-    let (base_raw, format_ai, talk_ai, sel_ai) = match cfg.hold_mods {
-        HoldMods::CtrlAlt => {
-            let raw = "Ctrl".to_string();
-            let format_ai = Some("Ctrl+Option".to_string());
-            let talk_ai = if cfg.hold_exclusive {
-                "Ctrl (Shift/Cmd modes disabled)".to_string()
-            } else {
-                "Ctrl+Shift".to_string()
-            };
-            let sel_ai = if cfg.hold_exclusive {
-                "Ctrl (Shift/Cmd modes disabled)".to_string()
-            } else {
-                "Ctrl+Command".to_string()
-            };
-            (raw, format_ai, talk_ai, sel_ai)
-        }
-        _ => {
-            let talk_ai = if cfg.hold_exclusive {
-                format!("{base} (Shift/Cmd modes disabled)")
-            } else {
-                format!("{base}+Shift")
-            };
-            let sel_ai = if cfg.hold_exclusive {
-                format!("{base} (Shift/Cmd modes disabled)")
-            } else {
-                format!("{base}+Command")
-            };
-            (base.to_string(), None, talk_ai, sel_ai)
-        }
-    };
-
-    let mut text = format!(
-        "CodeScribe hotkeys\n\
-\n\
-- Hands-off (RAW): {hands_off}\n\
-- Hold-to-talk (RAW): {base_raw} (hold)\n"
-    );
-
-    if let Some(format_ai) = format_ai {
-        text.push_str(&format!("- Format with AI: {format_ai} (hold)\n"));
-    }
-
-    text.push_str(&format!(
-        "- Talk to AI: {talk_ai} (hold)\n\
-- Selected text → AI: {sel_ai} (hold)\n"
-    ));
-
-    if let Err(e) = clipboard::set_clipboard(&text) {
-        info!("Failed to copy hotkeys cheatsheet: {}", e);
-        #[cfg(target_os = "macos")]
-        notify("CodeScribe", &format!("Copy failed: {e}"));
-        return;
-    }
-
-    #[cfg(target_os = "macos")]
-    notify("CodeScribe", "Copied hotkeys cheatsheet");
 }
 
 /// Copy last transcript to clipboard

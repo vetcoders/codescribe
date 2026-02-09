@@ -30,8 +30,7 @@ use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSVisualEffectMaterial, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use std::thread;
 use std::time::Duration;
@@ -43,9 +42,8 @@ use crate::ui_helpers::{
     LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style,
     color_clear, color_label, color_secondary_label, create_button,
     create_flipped_vertical_stack_view, create_glass_effect_view, create_label,
-    create_scrollable_text_view, create_vertical_stack_view, glass_effect_supported,
-    layout_region_frame_for_view, ns_string, set_button_symbol, set_focus_ring, set_hidden,
-    set_tooltip, set_visual_effect_blending, set_visual_effect_material, set_visual_effect_state,
+    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
+    ns_string, set_button_symbol, set_focus_ring, set_hidden, set_tooltip,
     style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
 };
 
@@ -245,7 +243,6 @@ fn show_voice_chat_overlay_impl() {
 
         let content_view: Id = msg_send![window, contentView];
 
-        let ns_visual = Class::get("NSVisualEffectView").unwrap();
         let blur_frame = CGRect::new(
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
@@ -284,12 +281,8 @@ fn show_voice_chat_overlay_impl() {
             ),
             &CGSize::new(content_bounds.size.width.max(0.0), header_height),
         );
-        let header_bg: Id = if glass_effect_supported() {
-            create_glass_effect_view(header_frame, NSVisualEffectMaterial::Titlebar)
-        } else {
-            // HUDWindow provides consistent opacity across OS versions (pre-macOS 14).
-            create_glass_effect_view(header_frame, NSVisualEffectMaterial::HUDWindow)
-        };
+        let header_bg: Id =
+            create_glass_effect_view(header_frame, NSVisualEffectMaterial::Titlebar);
         let _: () = msg_send![
             header_bg,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN
@@ -298,12 +291,8 @@ fn show_voice_chat_overlay_impl() {
         if !header_layer.is_null() {
             let radius = ui_tokens::CORNER_RADIUS_LG;
             let _: () = msg_send![header_layer, setCornerRadius: radius];
-            let responds_masked: bool =
-                msg_send![header_layer, respondsToSelector: sel!(setMaskedCorners:)];
-            if responds_masked {
-                let corners = CACORNER_MIN_X_MIN_Y | CACORNER_MAX_X_MIN_Y;
-                let _: () = msg_send![header_layer, setMaskedCorners: corners];
-            }
+            let corners = CACORNER_MIN_X_MIN_Y | CACORNER_MAX_X_MIN_Y;
+            let _: () = msg_send![header_layer, setMaskedCorners: corners];
             let _: () = msg_send![header_layer, setMasksToBounds: true];
         }
         let header_controls: Id = msg_send![Class::get("NSView").unwrap(), alloc];
@@ -639,18 +628,12 @@ fn show_voice_chat_overlay_impl() {
 
         let sidebar_controller: Id = msg_send![ns_view_controller, alloc];
         let sidebar_controller: Id = msg_send![sidebar_controller, init];
-        let sidebar_view: Id = msg_send![ns_visual, alloc];
-        let sidebar_view: Id = msg_send![
-            sidebar_view,
-            initWithFrame: CGRect::new(
-                &CGPoint::new(0.0, 0.0),
-                &CGSize::new(content_frame.size.width, content_frame.size.height),
-            )
-        ];
-        set_visual_effect_material(sidebar_view, NSVisualEffectMaterial::Sidebar);
-        set_visual_effect_blending(sidebar_view, NSVisualEffectBlendingMode::WithinWindow);
-        set_visual_effect_state(sidebar_view, NSVisualEffectState::Active);
-        let _: () = msg_send![sidebar_view, setWantsLayer: true];
+        let sidebar_frame = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(content_frame.size.width, content_frame.size.height),
+        );
+        let sidebar_view: Id =
+            create_glass_effect_view(sidebar_frame, NSVisualEffectMaterial::Sidebar);
         let sidebar_layer: Id = msg_send![sidebar_view, layer];
         if !sidebar_layer.is_null() {
             let _: () = msg_send![sidebar_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
@@ -711,20 +694,6 @@ fn show_voice_chat_overlay_impl() {
         let responds_vertical: bool = msg_send![split_view, respondsToSelector: sel!(setVertical:)];
         if responds_vertical {
             let _: () = msg_send![split_view, setVertical: true];
-        }
-        // Use thin divider style with adequate contrast for glass-effect windows.
-        let responds_divider: bool =
-            msg_send![split_view, respondsToSelector: sel!(setDividerStyle:)];
-        if responds_divider {
-            let _: () = msg_send![split_view, setDividerStyle: 1_isize]; // NSSplitViewDividerStyleThin
-        }
-        let responds_divider_color: bool =
-            msg_send![split_view, respondsToSelector: sel!(setDividerColor:)];
-        if responds_divider_color {
-            let ns_color = Class::get("NSColor").unwrap();
-            let base: Id = msg_send![ns_color, separatorColor];
-            let color: Id = msg_send![base, colorWithAlphaComponent: 0.45f64];
-            let _: () = msg_send![split_view, setDividerColor: color];
         }
         add_subview(blur_view, split_view);
         // Ensure header glass + controls stay above the split view content.

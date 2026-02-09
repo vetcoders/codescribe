@@ -36,7 +36,7 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_volume: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vad_preset: Option<String>,
+    pub formatting_level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,7 +126,7 @@ impl UserSettings {
             "LLM_MODEL" => self.llm_model = Some(value.to_owned()),
             "LLM_ASSISTIVE_ENDPOINT" => self.llm_assistive_endpoint = Some(value.to_owned()),
             "LLM_ASSISTIVE_MODEL" => self.llm_assistive_model = Some(value.to_owned()),
-            "VAD_PRESET" => self.vad_preset = Some(value.to_owned()),
+            "FORMATTING_LEVEL" => self.formatting_level = Some(value.to_owned()),
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;

@@ -453,17 +453,11 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
 
         if let Some(sidebar_item) = state.split_sidebar_item {
             let item = sidebar_item as Id;
-            let responds: bool = msg_send![item, respondsToSelector: sel!(setCollapsed:)];
-            if responds {
-                let _: () = msg_send![item, setCollapsed: show_agent];
-            }
+            let _: () = msg_send![item, setCollapsed: show_agent];
         }
         if let Some(content_item) = state.split_content_item {
             let item = content_item as Id;
-            let responds: bool = msg_send![item, respondsToSelector: sel!(setCollapsed:)];
-            if responds {
-                let _: () = msg_send![item, setCollapsed: !show_agent];
-            }
+            let _: () = msg_send![item, setCollapsed: !show_agent];
         }
         if let Some(split_controller) = state.split_view_controller {
             let split_view: Id = msg_send![split_controller as Id, view];

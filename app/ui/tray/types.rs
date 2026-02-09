@@ -95,13 +95,6 @@ pub enum TrayMenuEvent {
     SetQuickNotesSaveOnly(bool),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VadPreset {
-    Sensitive,
-    Balanced,
-    Conservative,
-}
-
 // ============================================================================
 // Menu Item Storage Structs
 // ============================================================================
@@ -134,9 +127,6 @@ pub struct MenuIds {
     pub help: MenuId,
     pub about: MenuId,
     pub quit: MenuId,
-
-    // Hotkeys submenu
-    pub hotkeys_copy_cheatsheet: MenuId,
 
     // Quality
     pub quality_open_report: MenuId,

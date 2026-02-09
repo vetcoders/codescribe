@@ -1504,28 +1504,35 @@ unsafe fn build_audio_tab(
         add_subview(container, fmt_desc);
         y -= 34.0;
 
-        // VAD sensitivity dropdown
-        let vad_label = create_label(LabelConfig {
+        // Formatting level dropdown
+        let fmt_level_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 18.0)),
-            text: "VAD sensitivity:".to_string(),
+            text: "Formatting level:".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
         });
-        add_subview(container, vad_label);
+        add_subview(container, fmt_level_label);
 
-        let vad_popup: Id = msg_send![ns_popup, alloc];
-        let vad_popup: Id = msg_send![vad_popup, initWithFrame:
+        let fmt_popup: Id = msg_send![ns_popup, alloc];
+        let fmt_popup: Id = msg_send![fmt_popup, initWithFrame:
             CGRect::new(&CGPoint::new(pad + 124.0, y - 2.0), &CGSize::new(240.0, 24.0))
             pullsDown: false
         ];
-        let _: () = msg_send![vad_popup, addItemWithTitle: ns_string("Balanced")];
-        let _: () = msg_send![vad_popup, addItemWithTitle: ns_string("Aggressive (less silence)")];
-        let _: () =
-            msg_send![vad_popup, addItemWithTitle: ns_string("Conservative (more context)")];
-        let _: () = msg_send![vad_popup, selectItemAtIndex: 0_isize];
-        button_set_action(vad_popup, action_handler, sel!(onVadPresetChanged:));
-        add_subview(container, vad_popup);
+        let _: () = msg_send![fmt_popup, addItemWithTitle: ns_string("Raw")];
+        let _: () = msg_send![fmt_popup, addItemWithTitle: ns_string("Medium")];
+        let _: () = msg_send![fmt_popup, addItemWithTitle: ns_string("Creative")];
+        // Pre-select based on current setting
+        let current_level = std::env::var("FORMATTING_LEVEL").unwrap_or_default();
+        let sel_idx: isize = match current_level.as_str() {
+            "raw" => 0,
+            "medium" => 1,
+            "creative" => 2,
+            _ => 1, // default to Medium
+        };
+        let _: () = msg_send![fmt_popup, selectItemAtIndex: sel_idx];
+        button_set_action(fmt_popup, action_handler, sel!(onFormattingLevelChanged:));
+        add_subview(container, fmt_popup);
         y -= 38.0;
 
         // Buffered streaming toggle
@@ -1754,22 +1761,22 @@ pub(super) extern "C" fn on_formatting_toggled(
     }
 }
 
-pub(super) extern "C" fn on_vad_preset_changed(
+pub(super) extern "C" fn on_formatting_level_changed(
     _this: &Object,
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
     unsafe {
         let idx: isize = msg_send![sender, indexOfSelectedItem];
-        let preset = match idx {
-            0 => "balanced",
-            1 => "aggressive",
-            2 => "conservative",
-            _ => "balanced",
+        let level = match idx {
+            0 => "raw",
+            1 => "medium",
+            2 => "creative",
+            _ => "medium",
         };
-        info!("Settings: VAD preset -> {}", preset);
+        info!("Settings: Formatting level -> {}", level);
         let config = Config::load();
-        let _ = config.save_to_env("VAD_PRESET", preset);
+        let _ = config.save_to_env("FORMATTING_LEVEL", level);
     }
 }
 

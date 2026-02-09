@@ -41,7 +41,6 @@ mod handlers;
 mod icons;
 mod menu;
 mod state;
-mod submenus;
 mod types;
 
 use std::sync::OnceLock;
@@ -62,7 +61,7 @@ pub use menu::update_silero_vad_label;
 pub use menu::{toggle_ai_formatting, update_quality_label};
 pub use state::send_menu_event;
 pub use state::{menu_event_receiver, update_tray_status};
-pub use types::{MenuIds, TrayMenuEvent, TrayStatus, VadPreset};
+pub use types::{MenuIds, TrayMenuEvent, TrayStatus};
 
 // ============================================================================
 // Shutdown Management

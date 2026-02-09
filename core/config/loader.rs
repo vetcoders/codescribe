@@ -428,7 +428,7 @@ impl Config {
                 | "CODESCRIBE_BUFFERED_STREAM"
                 | "BEEP_ON_START"
                 | "SOUND_VOLUME"
-                | "VAD_PRESET"
+                | "FORMATTING_LEVEL"
                 | "LLM_ENDPOINT"
                 | "LLM_MODEL"
                 | "LLM_ASSISTIVE_ENDPOINT"
@@ -530,7 +530,7 @@ impl Config {
                     | "CODESCRIBE_BUFFERED_STREAM"
                     | "BEEP_ON_START"
                     | "SOUND_VOLUME"
-                    | "VAD_PRESET"
+                    | "FORMATTING_LEVEL"
                     | "LLM_ENDPOINT"
                     | "LLM_MODEL"
                     | "LLM_ASSISTIVE_ENDPOINT"
@@ -556,7 +556,9 @@ impl Config {
                     "LLM_ASSISTIVE_MODEL" => {
                         settings_ref.llm_assistive_model = Some((*value).to_string())
                     }
-                    "VAD_PRESET" => settings_ref.vad_preset = Some((*value).to_string()),
+                    "FORMATTING_LEVEL" => {
+                        settings_ref.formatting_level = Some((*value).to_string())
+                    }
                     "HOLD_START_DELAY_MS" => {
                         if let Ok(v) = value.parse::<u64>() {
                             settings_ref.hold_start_delay_ms = Some(v);
