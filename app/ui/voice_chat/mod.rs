@@ -67,7 +67,6 @@ const NSVIEW_MAX_Y_MARGIN: isize = 32;
 const CACORNER_MIN_X_MIN_Y: u64 = 1 << 0;
 const CACORNER_MAX_X_MIN_Y: u64 = 1 << 1;
 
-#[allow(dead_code)]
 pub(super) fn shortcuts_lines(hold: HoldMods, toggle: ToggleTrigger) -> (String, String) {
     let hold_line = match hold {
         HoldMods::Fn => "Hold Fn — record • Fn+Shift — chat • Fn+Cmd — selection",

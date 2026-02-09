@@ -2,7 +2,8 @@ use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::pipeline::contracts::DeltaSink;
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::pipeline::streaming::{
-    buffered_transcription_worker, env_bool_default, stream_log_path, transcription_worker,
+    BufferedWorkerConfig, buffered_transcription_worker, env_bool_default, stream_log_path,
+    transcription_worker,
 };
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -126,13 +127,15 @@ impl StreamingRecorder {
                 buffered_transcription_worker(
                     rx,
                     transcript_buffer,
-                    actual_sample_rate,
-                    language,
-                    delta_callback,
-                    utterance_callback,
-                    utterance_silence_sec,
-                    None, // vad_stop_callback — not used in app context
-                    log_path,
+                    BufferedWorkerConfig {
+                        sample_rate: actual_sample_rate,
+                        language,
+                        delta_callback,
+                        utterance_callback,
+                        utterance_silence_sec,
+                        vad_stop_callback: None,
+                        stream_log_path: log_path,
+                    },
                 )
                 .await;
             } else {

@@ -26,6 +26,16 @@ use tracing::{debug, trace, warn};
 use crate::vad;
 
 // ═══════════════════════════════════════════════════════════
+// Constants
+// ═══════════════════════════════════════════════════════════
+
+/// Minimum peak speech probability to consider a buffer "speech-like"
+/// when VAD's `iter_state` never fired `Start`. Used for:
+/// - **flush fallback**: emitting buffered audio instead of dropping it,
+/// - **retention**: keeping ≥1s of raw audio for the fallback path.
+const FALLBACK_PROB: f32 = 0.25;
+
+// ═══════════════════════════════════════════════════════════
 // Public types
 // ═══════════════════════════════════════════════════════════
 
@@ -529,7 +539,7 @@ impl SpeechSession {
         // unbounded growth. When VAD saw speech-like signal but never triggered
         // Start, retain enough audio for the flush fallback path (>= 1s).
         if self.segment_start.is_none() && self.pending_end.is_none() {
-            let retain = if self.max_speech_prob >= 0.25 {
+            let retain = if self.max_speech_prob >= FALLBACK_PROB {
                 // Keep at least 1s of audio for the flush fallback.
                 (self.raw_sample_rate as usize).max(self.pre_roll_raw)
             } else {
@@ -563,7 +573,6 @@ impl SpeechSession {
             }
             // VAD never triggered Start — but if we saw speech-like signal,
             // emit raw buffer as degraded fallback instead of dropping.
-            const FALLBACK_PROB: f32 = 0.25;
             let fallback_min_samples = self.raw_sample_rate as usize / 2; // 0.5s at any rate
             let available = self.raw_cursor.saturating_sub(self.raw_buffer_start);
             if self.max_speech_prob >= FALLBACK_PROB && available > fallback_min_samples {
@@ -857,18 +866,6 @@ impl SpeechSession {
     #[cfg(test)]
     pub fn raw_buffer_len(&self) -> usize {
         self.raw_buffer.len()
-    }
-
-    /// Peak speech probability seen (test-only accessor).
-    #[cfg(test)]
-    pub fn max_speech_prob(&self) -> f32 {
-        self.max_speech_prob
-    }
-
-    /// Raw buffer start offset (test-only accessor).
-    #[cfg(test)]
-    pub fn raw_buffer_start(&self) -> usize {
-        self.raw_buffer_start
     }
 
     /// Minimum silence duration (in VAD sample-rate samples) before ending a segment

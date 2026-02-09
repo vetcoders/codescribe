@@ -43,6 +43,20 @@ use crate::pipeline::contracts::{DeltaSink, TranscriptDelta};
 #[deprecated(note = "Use Arc<dyn DeltaSink> directly")]
 pub type StreamDeltaCallback = Arc<dyn DeltaSink>;
 
+// ── Buffered worker parameters ───────────────────────────────────────────────
+
+/// Groups optional configuration for [`buffered_transcription_worker`]
+/// so the function signature stays under clippy's argument limit.
+pub(crate) struct BufferedWorkerConfig {
+    pub sample_rate: u32,
+    pub language: Option<String>,
+    pub delta_callback: Option<Arc<dyn DeltaSink>>,
+    pub utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    pub utterance_silence_sec: Option<f32>,
+    pub vad_stop_callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub stream_log_path: Option<std::path::PathBuf>,
+}
+
 // ── Hallucination filter ─────────────────────────────────────────────────────
 
 const WHISPER_HALLUCINATIONS: &[&str] = &[
@@ -510,18 +524,20 @@ pub(crate) async fn transcription_worker(
     info!("Transcription worker finished");
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn buffered_transcription_worker(
     mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
     transcript_buffer: Arc<Mutex<String>>,
-    sample_rate: u32,
-    language: Option<String>,
-    delta_callback: Option<Arc<dyn DeltaSink>>,
-    utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
-    utterance_silence_sec: Option<f32>,
-    vad_stop_callback: Option<Arc<dyn Fn() + Send + Sync>>,
-    stream_log_path: Option<std::path::PathBuf>,
+    config: BufferedWorkerConfig,
 ) {
+    let BufferedWorkerConfig {
+        sample_rate,
+        language,
+        delta_callback,
+        utterance_callback,
+        utterance_silence_sec,
+        vad_stop_callback,
+        stream_log_path,
+    } = config;
     info!("Buffered transcription worker started");
 
     let correction_min_utterances = buffered_correction_min_utterances();
@@ -914,13 +930,15 @@ pub async fn transcribe_buffered_samples(
     let worker = tokio::spawn(buffered_transcription_worker(
         rx,
         transcript_buffer.clone(),
-        sample_rate,
-        language,
-        None,
-        None,
-        None,
-        None,
-        None,
+        BufferedWorkerConfig {
+            sample_rate,
+            language,
+            delta_callback: None,
+            utterance_callback: None,
+            utterance_silence_sec: None,
+            vad_stop_callback: None,
+            stream_log_path: None,
+        },
     ));
 
     for chunk in samples.chunks(chunk_size) {

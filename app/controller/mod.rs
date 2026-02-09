@@ -1335,23 +1335,23 @@ impl RecordingController {
         let assistant_needs_separator = self.toggle_assistant_has_text.load(Ordering::SeqCst);
 
         let result = self
-            .process_transcript_text_pipeline(
+            .process_transcript_text_pipeline(types::TranscriptPipelineParams {
                 raw_text,
-                chrono::Local::now(),
-                is_assistive,
+                recording_timestamp: chrono::Local::now(),
+                assistive: is_assistive,
                 hold_mode,
                 force_raw,
                 force_ai,
                 config,
                 language_opt,
-                raw_save_enabled(),
-                None,
-                None,
-                None,
-                true,
+                raw_save_enabled: raw_save_enabled(),
+                audio_path: None,
+                cloud_text_opt: None,
+                cloud_handle: None,
+                append_mode: true,
                 user_needs_separator,
                 assistant_needs_separator,
-            )
+            })
             .await;
 
         if *self.state.read().await == State::RecToggle {
@@ -1725,7 +1725,7 @@ impl RecordingController {
         info!("Raw transcript captured ({} chars)", raw_text.len());
 
         let language_opt = Some(language.as_str().to_string());
-        self.process_transcript_text_pipeline(
+        self.process_transcript_text_pipeline(types::TranscriptPipelineParams {
             raw_text,
             recording_timestamp,
             assistive,
@@ -1738,32 +1738,34 @@ impl RecordingController {
             audio_path,
             cloud_text_opt,
             cloud_handle,
-            false,
-            false,
-            false,
-        )
+            append_mode: false,
+            user_needs_separator: false,
+            assistant_needs_separator: false,
+        })
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn process_transcript_text_pipeline(
         &self,
-        raw_text: String,
-        recording_timestamp: chrono::DateTime<chrono::Local>,
-        assistive: bool,
-        hold_mode: HoldMode,
-        force_raw: bool,
-        force_ai: bool,
-        config: Config,
-        language_opt: Option<String>,
-        raw_save_enabled: bool,
-        audio_path: Option<ValidatedAudioPath>,
-        cloud_text_opt: Option<String>,
-        cloud_handle: Option<JoinHandle<Result<String>>>,
-        append_mode: bool,
-        user_needs_separator: bool,
-        assistant_needs_separator: bool,
+        p: types::TranscriptPipelineParams,
     ) -> Result<()> {
+        let types::TranscriptPipelineParams {
+            raw_text,
+            recording_timestamp,
+            assistive,
+            hold_mode,
+            force_raw,
+            force_ai,
+            config,
+            language_opt,
+            raw_save_enabled,
+            audio_path,
+            cloud_text_opt,
+            cloud_handle,
+            append_mode,
+            user_needs_separator,
+            assistant_needs_separator,
+        } = p;
         let language_opt = language_opt.as_deref();
 
         // ALWAYS-ON: Final post-processing pass (lexicon + cleanup + semantic gate)
