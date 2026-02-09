@@ -1434,6 +1434,98 @@ fn markdown_options_with_base_font(font: Id) -> Option<Id> {
     }
 }
 
+/// NSRange for Objective-C attributed string APIs.
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct NSRange {
+    location: usize,
+    length: usize,
+}
+
+// NSFontTraitMask bits (subset).
+const NS_ITALIC_FONT_MASK: u64 = 1 << 0;
+const NS_BOLD_FONT_MASK: u64 = 1 << 1;
+
+/// Normalize per-range font attributes to stay within the provided base font family.
+///
+/// AppKit's Markdown parser may introduce different font families for inline `code` spans or
+/// emphasis runs. We want consistent typography inside bubbles, while preserving bold/italic
+/// traits and point sizes.
+///
+/// Returns an attributed string instance (possibly mutable) that is safe to set on
+/// `NSTextField.setAttributedStringValue:`.
+unsafe fn normalize_attributed_string_fonts(attr: Id, base_font: Id) -> Id {
+    if attr.is_null() || base_font.is_null() {
+        return attr;
+    }
+
+    let mutable: Id = msg_send![attr, mutableCopy];
+    if mutable.is_null() {
+        return attr;
+    }
+
+    let len: usize = msg_send![mutable, length];
+    if len == 0 {
+        return mutable;
+    }
+
+    let Some(ns_font_manager) = Class::get("NSFontManager") else {
+        return mutable;
+    };
+    let fm: Id = msg_send![ns_font_manager, sharedFontManager];
+    if fm.is_null() {
+        return mutable;
+    }
+
+    let font_key = ns_string("NSFont");
+    let mut idx: usize = 0;
+    while idx < len {
+        let mut effective = NSRange {
+            location: 0,
+            length: 0,
+        };
+        let cur_font: Id = msg_send![
+            mutable,
+            attribute: font_key
+            atIndex: idx
+            effectiveRange: &mut effective
+        ];
+        if effective.length == 0 {
+            idx += 1;
+            continue;
+        }
+
+        if !cur_font.is_null() {
+            let traits: u64 = msg_send![fm, traitsOfFont: cur_font];
+            let desired_traits = traits & (NS_ITALIC_FONT_MASK | NS_BOLD_FONT_MASK);
+
+            let cur_size: f64 = msg_send![cur_font, pointSize];
+            let base_size: f64 = msg_send![base_font, pointSize];
+
+            let mut new_font: Id = base_font;
+            if (cur_size - base_size).abs() > 0.05 {
+                let sized: Id = msg_send![fm, convertFont: base_font toSize: cur_size];
+                if !sized.is_null() {
+                    new_font = sized;
+                }
+            }
+            if desired_traits != 0 {
+                let converted: Id =
+                    msg_send![fm, convertFont: new_font toHaveTrait: desired_traits];
+                if !converted.is_null() {
+                    new_font = converted;
+                }
+            }
+
+            let _: () = msg_send![mutable, addAttribute: font_key value: new_font range: effective];
+        }
+
+        idx = effective.location + effective.length;
+    }
+
+    mutable
+}
+
 unsafe fn markdown_attributed_string(text: &str, font: Id) -> Option<Id> {
     let ns_attr = Class::get("NSAttributedString")?;
     let text_ns = ns_string(text);
@@ -1457,7 +1549,7 @@ unsafe fn markdown_attributed_string(text: &str, font: Id) -> Option<Id> {
             error: std::ptr::null_mut::<*mut Object>()
         ];
         if !obj.is_null() {
-            return Some(obj);
+            return Some(unsafe { normalize_attributed_string_fonts(obj, font) });
         }
     }
 
@@ -1472,7 +1564,7 @@ unsafe fn markdown_attributed_string(text: &str, font: Id) -> Option<Id> {
             baseURL: std::ptr::null::<Object>()
         ];
         if !obj.is_null() {
-            return Some(obj);
+            return Some(unsafe { normalize_attributed_string_fonts(obj, font) });
         }
     }
 
@@ -1654,7 +1746,9 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let _: () = msg_send![text_label, setTextColor: text_color];
 
         let _: () = msg_send![text_label, setFont: font];
-        if !apply_markdown_to_text_field(text_label, &display_text, font) {
+        let allow_markdown = !config.is_streaming
+            && matches!(config.role, BubbleRole::Assistant | BubbleRole::System);
+        if !(allow_markdown && apply_markdown_to_text_field(text_label, &display_text, font)) {
             let _: () = msg_send![text_label, setStringValue: text_str];
         }
         let _: () = msg_send![text_label, setLineBreakMode: 0_isize]; // NSLineBreakByWordWrapping
@@ -1860,7 +1954,13 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
 /// Update bubble text (for streaming updates)
 /// # Safety
 /// `text_label` must be a valid `NSTextField` instance.
-pub unsafe fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool) {
+pub unsafe fn update_bubble_text(
+    text_label: Id,
+    text: &str,
+    role: BubbleRole,
+    is_streaming: bool,
+    is_error: bool,
+) {
     unsafe {
         let display_text = if is_streaming && text.is_empty() {
             "• • •".to_string()
@@ -1870,17 +1970,28 @@ pub unsafe fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool)
             text.to_string()
         };
 
+        let allow_markdown =
+            !is_streaming && matches!(role, BubbleRole::Assistant | BubbleRole::System);
         let font: Id = msg_send![text_label, font];
-        if !apply_markdown_to_text_field(text_label, &display_text, font) {
+        if !(allow_markdown && apply_markdown_to_text_field(text_label, &display_text, font)) {
             let text_str = ns_string(&display_text);
             let _: () = msg_send![text_label, setStringValue: text_str];
         }
 
-        // Update text color based on streaming state (assistant defaults)
-        let text_color: Id = if is_streaming {
-            ui_colors::bubble_streaming_text()
+        let text_color: Id = if is_error {
+            ui_colors::bubble_error_text()
         } else {
-            ui_colors::bubble_text()
+            match role {
+                BubbleRole::User => ui_colors::bubble_text(),
+                BubbleRole::Assistant => {
+                    if is_streaming {
+                        ui_colors::bubble_streaming_text()
+                    } else {
+                        ui_colors::bubble_text()
+                    }
+                }
+                BubbleRole::System => ui_colors::bubble_text(),
+            }
         };
         let _: () = msg_send![text_label, setTextColor: text_color];
     }

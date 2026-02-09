@@ -821,7 +821,18 @@ fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index: us
 
         let container = bubble_ptr as Id;
         let label = label_ptr as Id;
-        update_bubble_text(label, &message.text, message.is_streaming);
+        let bubble_role = match message.role {
+            ChatRole::User => BubbleRole::User,
+            ChatRole::Assistant => BubbleRole::Assistant,
+            ChatRole::System => BubbleRole::System,
+        };
+        update_bubble_text(
+            label,
+            &message.text,
+            bubble_role,
+            message.is_streaming,
+            message.is_error,
+        );
         let display_text = display_text_for_message(message);
         resize_bubble_container_for_text(container, label, &display_text);
         let max_width = agent_max_width(state);
