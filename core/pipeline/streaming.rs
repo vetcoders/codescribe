@@ -483,6 +483,7 @@ pub(crate) async fn transcription_session(
     let mut utterance_id: u64 = 0;
     let mut total_utterances: u64 = 0;
     let mut semantic_gate_drops: u64 = 0;
+    let mut corrections_applied: u64 = 0;
     let mut vad_started = false;
 
     // Accumulate text for the current "run" of utterances (between corrections).
@@ -587,13 +588,15 @@ pub(crate) async fn transcription_session(
                     Ok(Ok(raw)) => {
                         if let Some(cleaned) = pipeline.postprocess(&raw) {
                             let previous_text = accumulated_text.clone();
-                            // Build the corrected full text by replacing what was accumulated.
                             preview_rev += 1;
+                            corrections_applied += 1;
                             event_sink.on_event(&EngineEvent::Correction {
                                 rev: preview_rev,
                                 text: cleaned.clone(),
                                 previous_text,
                             });
+                            // Update accumulated_text so next Preview builds on corrected state.
+                            accumulated_text = cleaned;
                         } else if !current_suffix.is_empty() {
                             pipeline.last_suffix = current_suffix;
                         }
@@ -745,7 +748,7 @@ pub(crate) async fn transcription_session(
         dropped_audio_chunks: dropped_utterances,
         hallucination_drops: pipeline.hallucination_drops,
         semantic_gate_drops,
-        corrections_applied: 0,
+        corrections_applied,
         total_utterances,
     });
 

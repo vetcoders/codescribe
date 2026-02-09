@@ -109,7 +109,7 @@ pub fn raw_save_enabled() -> bool {
 // Event-based routing (new pipeline)
 // ═══════════════════════════════════════════════════════════
 
-use codescribe_core::pipeline::contracts::{EngineEvent, EventSink};
+use codescribe_core::pipeline::contracts::{EngineEvent, EventSink, TranscriptDelta};
 use tracing::{debug, info, warn};
 
 /// Routes `EngineEvent`s to the appropriate UI based on session state.
@@ -124,6 +124,8 @@ pub struct ControllerEventRouter {
     utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// Optional callback when VAD first detects speech.
     vad_stop_callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Last preview text — used to compute deltas for append_*_delta functions.
+    last_preview: std::sync::Mutex<String>,
 }
 
 impl ControllerEventRouter {
@@ -131,6 +133,7 @@ impl ControllerEventRouter {
         Self {
             utterance_callback: None,
             vad_stop_callback: None,
+            last_preview: std::sync::Mutex::new(String::new()),
         }
     }
 
@@ -155,15 +158,23 @@ impl EventSink for ControllerEventRouter {
                 }
             }
             EngineEvent::Preview { text, .. } => {
-                // Route preview to the active overlay (assistive or transcription).
-                // Use TranscriptDelta::from_diff to compute minimal delta from full text.
-                if is_assistive_session() {
-                    crate::voice_chat_ui::append_voice_chat_user_delta(text);
-                } else {
-                    crate::transcription_overlay::append_transcription_delta(text);
+                // Compute minimal BACKSPACE-encoded delta from full preview text.
+                let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(td) = TranscriptDelta::from_diff(&last, text) {
+                    if is_assistive_session() {
+                        crate::voice_chat_ui::append_voice_chat_user_delta(&td.delta);
+                    } else {
+                        crate::transcription_overlay::append_transcription_delta(&td.delta);
+                    }
+                    *last = text.clone();
                 }
             }
             EngineEvent::Correction { text, .. } => {
+                // Reset last_preview so next Preview diffs from the corrected text.
+                {
+                    let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
+                    *last = text.clone();
+                }
                 // Corrections update the overlay with the corrected full text.
                 if is_assistive_session() {
                     crate::voice_chat_ui::set_voice_chat_user_text(text);

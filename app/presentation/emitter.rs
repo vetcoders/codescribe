@@ -28,6 +28,8 @@ pub struct PresentationEmitter {
     /// Optional callback for VAD stop detection.
     vad_stop_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     vad_stop_emitted: std::sync::atomic::AtomicBool,
+    /// Last preview text — used to compute incremental segment for push_segment.
+    last_preview: std::sync::Mutex<String>,
 }
 
 impl PresentationEmitter {
@@ -53,6 +55,7 @@ impl PresentationEmitter {
             utterance_callback: None,
             vad_stop_callback: None,
             vad_stop_emitted: std::sync::atomic::AtomicBool::new(false),
+            last_preview: std::sync::Mutex::new(String::new()),
         }
     }
 
@@ -92,16 +95,32 @@ impl EventSink for PresentationEmitter {
                 }
             }
             EngineEvent::Preview { text, .. } => {
-                // Push as segment to the buffered emitter for typing animation.
-                // The emitter handles tokenization and paced output.
-                let emitter = self.emitter.clone();
-                let text = text.clone();
-                tokio::spawn(async move {
-                    let mut guard = emitter.lock().await;
-                    guard.push_segment(text);
-                });
+                // Compute only the new suffix since last preview and push
+                // that as incremental segment to the buffered emitter.
+                let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
+                let new_suffix = if text.starts_with(last.as_str()) {
+                    text[last.len()..].to_string()
+                } else {
+                    // Text changed structure (shouldn't happen for Preview, but be safe)
+                    text.clone()
+                };
+                *last = text.clone();
+                drop(last);
+
+                if !new_suffix.trim().is_empty() {
+                    let emitter = self.emitter.clone();
+                    tokio::spawn(async move {
+                        let mut guard = emitter.lock().await;
+                        guard.push_segment(new_suffix);
+                    });
+                }
             }
             EngineEvent::Correction { text, .. } => {
+                // Reset last_preview to corrected text so next Preview diffs correctly.
+                {
+                    let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
+                    *last = text.clone();
+                }
                 let emitter = self.emitter.clone();
                 let text = text.clone();
                 tokio::spawn(async move {
