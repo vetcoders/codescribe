@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use std::sync::Once;
 use tracing::{debug, info};
 
+use codescribe_core::attachment::{Attachment, AttachmentSource, AttachmentStore};
+
 use crate::config::Config;
 use crate::ui::bootstrap;
 use crate::ui_helpers::{
@@ -21,8 +23,8 @@ use super::api::{
     clear_overlay_state, clear_voice_chat_text_impl, commit_last_user_message_impl,
     discard_last_message_impl, filter_drawer, handle_card_copy, handle_card_delete,
     handle_card_edit, handle_card_favorite, reflow_agent_after_resize_impl,
-    reflow_overlay_after_resize_impl, send_draft_message_impl, toggle_drawer_favorites_only_impl,
-    update_active_tab_impl, update_attach_button_ui,
+    reflow_overlay_after_resize_impl, render_attachment_chips, send_draft_message_impl,
+    toggle_drawer_favorites_only_impl, update_active_tab_impl, update_attach_button_ui,
 };
 use super::state::{ChatRole, OVERLAY_STATE, Tab};
 
@@ -160,6 +162,36 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onShowShortcuts:),
                 on_show_shortcuts as extern "C" fn(&Object, Sel, Id),
+            );
+            // Connector actions (GitHub, URL)
+            decl.add_method(
+                sel!(onAttachGitHub:),
+                on_attach_github as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onAttachURL:),
+                on_attach_url as extern "C" fn(&Object, Sel, Id),
+            );
+            // Attachment chip actions
+            decl.add_method(
+                sel!(onChipClick:),
+                on_chip_click as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onChipRemove:),
+                on_chip_remove as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onChipPreview:),
+                on_chip_preview as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onChipReveal:),
+                on_chip_reveal as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onChipCopyPath:),
+                on_chip_copy_path as extern "C" fn(&Object, Sel, Id),
             );
             // NSTextView delegate (auto-resize input bar as content grows/shrinks).
             decl.add_method(
@@ -346,17 +378,20 @@ extern "C" fn on_perform_drag_operation(_this: &Object, _cmd: Sel, dragging_info
         let (btn_ptr, count, names) = {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             for p in paths {
-                if !state.attached_files.contains(&p) {
-                    state.attached_files.push(p);
+                if !state.attachments.iter().any(|a| a.same_path(&p)) {
+                    state
+                        .attachments
+                        .push(Attachment::from_path(p, AttachmentSource::DragDrop));
                 }
             }
-            state.attached_files_last_sent = None;
+            state.attachments_last_sent = None;
+            render_attachment_chips(&mut state);
             let names: Vec<String> = state
-                .attached_files
+                .attachments
                 .iter()
-                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .map(|a| a.display_name.clone())
                 .collect();
-            (state.agent_attach_button, state.attached_files.len(), names)
+            (state.agent_attach_button, state.attachments.len(), names)
         };
         update_attach_button_ui(btn_ptr, count, names);
         true
@@ -397,9 +432,29 @@ extern "C" fn on_attach_menu(this: &Object, _cmd: Sel, sender: Id) {
         let _: () = msg_send![attach, setTarget: target];
         let _: () = msg_send![menu, addItem: attach];
 
+        let github: Id = msg_send![ns_menu_item, alloc];
+        let github: Id = msg_send![
+            github,
+            initWithTitle: ns_string("Attach from GitHub…")
+            action: sel!(onAttachGitHub:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![github, setTarget: target];
+        let _: () = msg_send![menu, addItem: github];
+
+        let url: Id = msg_send![ns_menu_item, alloc];
+        let url: Id = msg_send![
+            url,
+            initWithTitle: ns_string("Attach from URL…")
+            action: sel!(onAttachURL:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![url, setTarget: target];
+        let _: () = msg_send![menu, addItem: url];
+
         let count = {
             let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            state.attached_files.len()
+            state.attachments.len()
         };
         if count > 0 {
             let sep: Id = msg_send![ns_menu_item, separatorItem];
@@ -439,17 +494,20 @@ extern "C" fn on_attach_pick(_this: &Object, _cmd: Sel, _sender: Id) {
     let (btn_ptr, count, names) = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         for p in picked {
-            if !state.attached_files.contains(&p) {
-                state.attached_files.push(p);
+            if !state.attachments.iter().any(|a| a.same_path(&p)) {
+                state
+                    .attachments
+                    .push(Attachment::from_path(p, AttachmentSource::FilePicker));
             }
         }
-        state.attached_files_last_sent = None;
+        state.attachments_last_sent = None;
+        render_attachment_chips(&mut state);
         let names: Vec<String> = state
-            .attached_files
+            .attachments
             .iter()
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .map(|a| a.display_name.clone())
             .collect();
-        (state.agent_attach_button, state.attached_files.len(), names)
+        (state.agent_attach_button, state.attachments.len(), names)
     };
     update_attach_button_ui(btn_ptr, count, names);
 }
@@ -457,8 +515,9 @@ extern "C" fn on_attach_pick(_this: &Object, _cmd: Sel, _sender: Id) {
 extern "C" fn on_attach_clear(_this: &Object, _cmd: Sel, _sender: Id) {
     let (btn_ptr, count, names) = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.attached_files.clear();
-        state.attached_files_last_sent = None;
+        state.attachments.clear();
+        state.attachments_last_sent = None;
+        render_attachment_chips(&mut state);
         (state.agent_attach_button, 0, Vec::new())
     };
     update_attach_button_ui(btn_ptr, count, names);
@@ -892,6 +951,365 @@ extern "C" fn on_more_menu(this: &Object, _cmd: Sel, sender: Id) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════
+// Connector Handlers (GitHub, URL)
+// ═══════════════════════════════════════════════════════════
+
+/// Show an input dialog and fetch a file from GitHub, adding it as an attachment.
+extern "C" fn on_attach_github(_this: &Object, _cmd: Sel, _sender: Id) {
+    let input = show_text_input_dialog(
+        "Attach from GitHub",
+        "Enter a GitHub file URL or spec:\n\
+         \u{2022} https://github.com/owner/repo/blob/branch/path\n\
+         \u{2022} owner/repo@branch:path/to/file",
+        "https://github.com/...",
+    );
+    let Some(input) = input else { return };
+    let input = input.trim().to_string();
+    if input.is_empty() {
+        return;
+    }
+
+    let Some(gh_ref) = codescribe_core::connectors::github::parse_github_ref(&input) else {
+        show_error_alert(
+            "Invalid GitHub reference",
+            &format!("Could not parse: {input}"),
+        );
+        return;
+    };
+
+    // Fetch in background thread, then add attachment on main thread.
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                let msg = format!("Failed to start async runtime: {e}");
+                Queue::main().exec_async(move || show_error_alert("GitHub Fetch Error", &msg));
+                return;
+            }
+        };
+        let result = rt.block_on(async {
+            let token = codescribe_core::connectors::github::load_github_token();
+            codescribe_core::connectors::github::fetch_github_blob(&gh_ref, token.as_deref()).await
+        });
+        match result {
+            Ok((data, filename)) => {
+                match codescribe_core::attachment::AttachmentStore::save_fetched(
+                    &data, &filename, "gh",
+                ) {
+                    Ok(path) => {
+                        Queue::main().exec_async(move || {
+                            let (btn_ptr, count, names) = {
+                                let mut state =
+                                    OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                                state.attachments.push(Attachment::from_path(
+                                    path,
+                                    AttachmentSource::Connector("github".into()),
+                                ));
+                                state.attachments_last_sent = None;
+                                render_attachment_chips(&mut state);
+                                let names: Vec<String> = state
+                                    .attachments
+                                    .iter()
+                                    .map(|a| a.display_name.clone())
+                                    .collect();
+                                (state.agent_attach_button, state.attachments.len(), names)
+                            };
+                            update_attach_button_ui(btn_ptr, count, names);
+                        });
+                    }
+                    Err(e) => {
+                        let msg = format!("Failed to save: {e}");
+                        Queue::main()
+                            .exec_async(move || show_error_alert("GitHub Fetch Error", &msg));
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                Queue::main().exec_async(move || show_error_alert("GitHub Fetch Error", &msg));
+            }
+        }
+    });
+}
+
+/// Show an input dialog and fetch content from a URL, adding it as an attachment.
+extern "C" fn on_attach_url(_this: &Object, _cmd: Sel, _sender: Id) {
+    let input = show_text_input_dialog(
+        "Attach from URL",
+        "Enter a URL to fetch as attachment context:",
+        "https://...",
+    );
+    let Some(input) = input else { return };
+    let input = input.trim().to_string();
+    if input.is_empty() {
+        return;
+    }
+    if !codescribe_core::connectors::web::looks_like_url(&input) {
+        show_error_alert("Invalid URL", "URL must start with http:// or https://");
+        return;
+    }
+
+    // Fetch in background thread, then add attachment on main thread.
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                let msg = format!("Failed to start async runtime: {e}");
+                Queue::main().exec_async(move || show_error_alert("URL Fetch Error", &msg));
+                return;
+            }
+        };
+        let result = rt.block_on(codescribe_core::connectors::web::fetch_url_as_text(&input));
+        match result {
+            Ok((text, title)) => {
+                let display_name = if title.is_empty() {
+                    "webpage.txt".to_string()
+                } else {
+                    format!("{}.txt", title.chars().take(40).collect::<String>())
+                };
+                match codescribe_core::attachment::AttachmentStore::save_fetched(
+                    text.as_bytes(),
+                    &display_name,
+                    "url",
+                ) {
+                    Ok(path) => {
+                        Queue::main().exec_async(move || {
+                            let (btn_ptr, count, names) = {
+                                let mut state =
+                                    OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                                let att = Attachment::with_kind(
+                                    path,
+                                    codescribe_core::attachment::AttachmentKind::UrlSnapshot,
+                                    AttachmentSource::Connector("web".into()),
+                                );
+                                state.attachments.push(att);
+                                state.attachments_last_sent = None;
+                                render_attachment_chips(&mut state);
+                                let names: Vec<String> = state
+                                    .attachments
+                                    .iter()
+                                    .map(|a| a.display_name.clone())
+                                    .collect();
+                                (state.agent_attach_button, state.attachments.len(), names)
+                            };
+                            update_attach_button_ui(btn_ptr, count, names);
+                        });
+                    }
+                    Err(e) => {
+                        let msg = format!("Failed to save: {e}");
+                        Queue::main().exec_async(move || show_error_alert("URL Fetch Error", &msg));
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                Queue::main().exec_async(move || show_error_alert("URL Fetch Error", &msg));
+            }
+        }
+    });
+}
+
+/// Show a modal text input dialog using NSAlert with an accessory NSTextField.
+/// Returns the entered text, or None if the user cancelled.
+fn show_text_input_dialog(title: &str, message: &str, placeholder: &str) -> Option<String> {
+    unsafe {
+        let ns_alert = Class::get("NSAlert").unwrap();
+        let alert: Id = msg_send![ns_alert, new];
+        let _: () = msg_send![alert, setMessageText: ns_string(title)];
+        let _: () = msg_send![alert, setInformativeText: ns_string(message)];
+        let _: () = msg_send![alert, addButtonWithTitle: ns_string("OK")];
+        let _: () = msg_send![alert, addButtonWithTitle: ns_string("Cancel")];
+        let _: () = msg_send![alert, setAlertStyle: 1_isize]; // NSAlertStyleInformational
+
+        // Add a text field as accessory view.
+        let ns_text_field = Class::get("NSTextField").unwrap();
+        let field: Id = msg_send![ns_text_field, alloc];
+        let field_frame = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(300.0, 24.0),
+        );
+        let field: Id = msg_send![field, initWithFrame: field_frame];
+        let _: () = msg_send![field, setPlaceholderString: ns_string(placeholder)];
+        let _: () = msg_send![alert, setAccessoryView: field];
+
+        // Make the text field first responder so it's focused.
+        let window: Id = msg_send![alert, window];
+        let _: () = msg_send![window, setInitialFirstResponder: field];
+
+        // NSModalResponseOK (first button) = 1000
+        let response: isize = msg_send![alert, runModal];
+        if response != 1000 {
+            return None;
+        }
+        let text: Id = msg_send![field, stringValue];
+        if text.is_null() {
+            return None;
+        }
+        let c_str: *const i8 = msg_send![text, UTF8String];
+        if c_str.is_null() {
+            return None;
+        }
+        let s = std::ffi::CStr::from_ptr(c_str)
+            .to_string_lossy()
+            .to_string();
+        Some(s)
+    }
+}
+
+/// Show a simple error alert.
+fn show_error_alert(title: &str, message: &str) {
+    unsafe {
+        let ns_alert = Class::get("NSAlert").unwrap();
+        let alert: Id = msg_send![ns_alert, new];
+        let _: () = msg_send![alert, setMessageText: ns_string(title)];
+        let _: () = msg_send![alert, setInformativeText: ns_string(message)];
+        let _: () = msg_send![alert, setAlertStyle: 2_isize]; // NSAlertStyleCritical
+        let _: () = msg_send![alert, runModal];
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Attachment Chip Handlers
+// ═══════════════════════════════════════════════════════════
+
+/// Chip body click → show context menu with Preview / Remove / Reveal / Copy Path.
+extern "C" fn on_chip_click(_this: &Object, _cmd: Sel, sender: Id) {
+    let index: isize = unsafe { msg_send![sender, tag] };
+    let index = index.max(0) as usize;
+
+    unsafe {
+        let ns_menu = Class::get("NSMenu").unwrap();
+        let ns_menu_item = Class::get("NSMenuItem").unwrap();
+        let menu: Id = msg_send![ns_menu, new];
+        let handler = {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.action_handler
+        };
+        let Some(handler_ptr) = handler else { return };
+        let target = handler_ptr as Id;
+
+        let preview: Id = msg_send![ns_menu_item, alloc];
+        let preview: Id = msg_send![
+            preview,
+            initWithTitle: ns_string("Preview (QuickLook)")
+            action: sel!(onChipPreview:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![preview, setTarget: target];
+        let _: () = msg_send![preview, setTag: index as isize];
+        let _: () = msg_send![menu, addItem: preview];
+
+        let remove: Id = msg_send![ns_menu_item, alloc];
+        let remove: Id = msg_send![
+            remove,
+            initWithTitle: ns_string("Remove")
+            action: sel!(onChipRemove:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![remove, setTarget: target];
+        let _: () = msg_send![remove, setTag: index as isize];
+        let _: () = msg_send![menu, addItem: remove];
+
+        let sep: Id = msg_send![ns_menu_item, separatorItem];
+        let _: () = msg_send![menu, addItem: sep];
+
+        let reveal: Id = msg_send![ns_menu_item, alloc];
+        let reveal: Id = msg_send![
+            reveal,
+            initWithTitle: ns_string("Reveal in Finder")
+            action: sel!(onChipReveal:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![reveal, setTarget: target];
+        let _: () = msg_send![reveal, setTag: index as isize];
+        let _: () = msg_send![menu, addItem: reveal];
+
+        let copy_path: Id = msg_send![ns_menu_item, alloc];
+        let copy_path: Id = msg_send![
+            copy_path,
+            initWithTitle: ns_string("Copy Path")
+            action: sel!(onChipCopyPath:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![copy_path, setTarget: target];
+        let _: () = msg_send![copy_path, setTag: index as isize];
+        let _: () = msg_send![menu, addItem: copy_path];
+
+        // Pop up at mouse location.
+        let ns_event = Class::get("NSEvent").unwrap();
+        let location: CGPoint = msg_send![ns_event, mouseLocation];
+        let _: bool = msg_send![
+            menu,
+            popUpMenuPositioningItem: std::ptr::null_mut::<Object>()
+            atLocation: location
+            inView: std::ptr::null_mut::<Object>()
+        ];
+    }
+}
+
+extern "C" fn on_chip_remove(_this: &Object, _cmd: Sel, sender: Id) {
+    let index: isize = unsafe { msg_send![sender, tag] };
+    let index = index.max(0) as usize;
+    super::api::remove_attachment_at(index);
+}
+
+extern "C" fn on_chip_preview(_this: &Object, _cmd: Sel, sender: Id) {
+    let index: isize = unsafe { msg_send![sender, tag] };
+    let index = index.max(0) as usize;
+    let path = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.attachments.get(index).map(|a| a.path.clone())
+    };
+    if let Some(path) = path {
+        // Use macOS QuickLook for native preview.
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("qlmanage")
+                .arg("-p")
+                .arg(&path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        });
+    }
+}
+
+extern "C" fn on_chip_reveal(_this: &Object, _cmd: Sel, sender: Id) {
+    let index: isize = unsafe { msg_send![sender, tag] };
+    let index = index.max(0) as usize;
+    let path = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.attachments.get(index).map(|a| a.path.clone())
+    };
+    if let Some(path) = path {
+        let _ = std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn();
+    }
+}
+
+extern "C" fn on_chip_copy_path(_this: &Object, _cmd: Sel, sender: Id) {
+    let index: isize = unsafe { msg_send![sender, tag] };
+    let index = index.max(0) as usize;
+    let path = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .attachments
+            .get(index)
+            .map(|a| a.path.display().to_string())
+    };
+    if let Some(path) = path {
+        copy_to_clipboard(&path);
+    }
+}
+
 extern "C" fn on_text_did_change(_this: &Object, _cmd: Sel, _notification: Id) {
     // Runs on main thread. Keep lightweight and only re-layout when height changes.
     super::api::resize_agent_input_to_draft();
@@ -907,6 +1325,17 @@ extern "C" fn on_do_command_by_selector(
     _text_view: Id,
     selector: Sel,
 ) -> bool {
+    // ── Cmd+V paste interception ──
+    // Intercept paste: to handle file URLs and standalone images as attachments.
+    // Text paste (with or without accompanying image) falls through to default.
+    if selector == sel!(paste:) {
+        let handled = unsafe { try_paste_as_attachment() };
+        if handled {
+            return true;
+        }
+        return false; // default NSTextView paste
+    }
+
     if selector == sel!(insertNewline:) {
         let (shift_held, cmd_held) = unsafe {
             let ns_app = Class::get("NSApplication").unwrap();
@@ -934,6 +1363,152 @@ extern "C" fn on_do_command_by_selector(
         return false; // Let NSTextView insert a newline.
     }
     false // All other commands: default behaviour.
+}
+
+// ═══════════════════════════════════════════════════════════
+// Paste-as-attachment
+// ═══════════════════════════════════════════════════════════
+
+/// Check the general pasteboard and, if it contains file URLs or a standalone image
+/// (no accompanying text), treat the paste as an attachment instead of text insertion.
+///
+/// Returns `true` when the paste was consumed as an attachment (caller should suppress
+/// the default NSTextView paste), or `false` to let the default paste proceed.
+///
+/// # Safety
+/// Must be called on the main thread. Uses Objective-C messaging.
+unsafe fn try_paste_as_attachment() -> bool {
+    let ns_pasteboard = Class::get("NSPasteboard").unwrap();
+    let pasteboard: Id = msg_send![ns_pasteboard, generalPasteboard];
+
+    // 1. File URLs → always treat as attachments
+    let file_paths = extract_paths_from_pasteboard(pasteboard);
+    if !file_paths.is_empty() {
+        let (btn_ptr, count, names) = {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            for p in file_paths {
+                if !state.attachments.iter().any(|a| a.same_path(&p)) {
+                    state
+                        .attachments
+                        .push(Attachment::from_path(p, AttachmentSource::Clipboard));
+                }
+            }
+            state.attachments_last_sent = None;
+            render_attachment_chips(&mut state);
+            let names: Vec<String> = state
+                .attachments
+                .iter()
+                .map(|a| a.display_name.clone())
+                .collect();
+            (state.agent_attach_button, state.attachments.len(), names)
+        };
+        update_attach_button_ui(btn_ptr, count, names);
+        debug!("Paste intercepted: {} file(s) attached", count);
+        return true;
+    }
+
+    // 2. Check for image data WITHOUT accompanying text
+    let has_image = unsafe { pasteboard_has_type(pasteboard, "public.tiff") }
+        || unsafe { pasteboard_has_type(pasteboard, "public.png") };
+    let has_text = unsafe { pasteboard_has_type(pasteboard, "public.utf8-plain-text") };
+
+    if has_image && !has_text {
+        // Read PNG data from pasteboard (try PNG first, then TIFF→PNG conversion)
+        if let Some(image_data) = unsafe { read_image_from_pasteboard(pasteboard) } {
+            match AttachmentStore::save_clipboard_image(&image_data, "png") {
+                Ok(path) => {
+                    let (btn_ptr, count, names) = {
+                        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                        state
+                            .attachments
+                            .push(Attachment::from_path(path, AttachmentSource::Clipboard));
+                        state.attachments_last_sent = None;
+                        render_attachment_chips(&mut state);
+                        let names: Vec<String> = state
+                            .attachments
+                            .iter()
+                            .map(|a| a.display_name.clone())
+                            .collect();
+                        (state.agent_attach_button, state.attachments.len(), names)
+                    };
+                    update_attach_button_ui(btn_ptr, count, names);
+                    debug!("Paste intercepted: clipboard image saved as attachment");
+                    return true;
+                }
+                Err(e) => {
+                    info!("Failed to save clipboard image: {e}");
+                    // Fall through to default paste
+                }
+            }
+        }
+    }
+
+    // 3. Text paste (with or without image) → default behaviour
+    false
+}
+
+/// Check if the pasteboard contains a given UTI type.
+///
+/// # Safety
+/// Requires main thread and valid pasteboard pointer.
+unsafe fn pasteboard_has_type(pasteboard: Id, uti: &str) -> bool {
+    let ns_array = Class::get("NSArray").unwrap();
+    let type_str = ns_string(uti);
+    let types: Id = msg_send![ns_array, arrayWithObject: type_str];
+    let available: Id = msg_send![pasteboard, availableTypeFromArray: types];
+    !available.is_null()
+}
+
+/// Read image data from the pasteboard as PNG bytes.
+///
+/// Tries `public.png` first. Falls back to `public.tiff` and converts to PNG
+/// via `NSBitmapImageRep`.
+///
+/// # Safety
+/// Requires main thread and valid pasteboard pointer.
+unsafe fn read_image_from_pasteboard(pasteboard: Id) -> Option<Vec<u8>> {
+    // Try PNG first
+    let png_type = ns_string("public.png");
+    let png_data: Id = msg_send![pasteboard, dataForType: png_type];
+    if !png_data.is_null() {
+        let length: usize = msg_send![png_data, length];
+        let bytes: *const u8 = msg_send![png_data, bytes];
+        if !bytes.is_null() && length > 0 {
+            return Some(unsafe { std::slice::from_raw_parts(bytes, length) }.to_vec());
+        }
+    }
+
+    // Fallback: TIFF → convert to PNG via NSBitmapImageRep
+    let tiff_type = ns_string("public.tiff");
+    let tiff_data: Id = msg_send![pasteboard, dataForType: tiff_type];
+    if tiff_data.is_null() {
+        return None;
+    }
+
+    let ns_bitmap = Class::get("NSBitmapImageRep")?;
+    let rep: Id = msg_send![ns_bitmap, imageRepWithData: tiff_data];
+    if rep.is_null() {
+        return None;
+    }
+
+    // NSBitmapImageFileType.png = 4
+    let png_file_type: usize = 4;
+    let nil: Id = std::ptr::null_mut();
+    let result: Id = msg_send![
+        rep,
+        representationUsingType: png_file_type
+        properties: nil
+    ];
+    if result.is_null() {
+        return None;
+    }
+
+    let length: usize = msg_send![result, length];
+    let bytes: *const u8 = msg_send![result, bytes];
+    if bytes.is_null() || length == 0 {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(bytes, length) }.to_vec())
 }
 
 // ═══════════════════════════════════════════════════════════

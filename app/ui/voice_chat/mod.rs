@@ -891,6 +891,43 @@ fn show_voice_chat_overlay_impl() {
         ];
         let _: () = msg_send![input_bar, addSubview: agent_send_button];
 
+        // Attachment chip strip (horizontal, above input bar, hidden when empty).
+        let chip_strip_height = 36.0f64;
+        let chip_strip_y = ui_tokens::FOOTER_INSET + agent_input_height + ui_tokens::CONTENT_GAP;
+        let chip_strip_frame = CGRect::new(
+            &CGPoint::new(inner_pad, chip_strip_y),
+            &CGSize::new(
+                (content_frame.size.width - inner_pad * 2.0).max(0.0),
+                chip_strip_height,
+            ),
+        );
+        let ns_scroll_cls = Class::get("NSScrollView").unwrap();
+        let chip_scroll: Id = msg_send![ns_scroll_cls, alloc];
+        let chip_scroll: Id = msg_send![chip_scroll, initWithFrame: chip_strip_frame];
+        let _: () = msg_send![chip_scroll, setHasVerticalScroller: false];
+        let _: () = msg_send![chip_scroll, setHasHorizontalScroller: false];
+        let _: () = msg_send![chip_scroll, setDrawsBackground: false];
+        let _: () = msg_send![
+            chip_scroll,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN
+        ];
+        // Horizontal stack view as document view
+        let ns_stack_cls = Class::get("NSStackView").unwrap();
+        let chip_stack: Id = msg_send![ns_stack_cls, alloc];
+        let stack_inner = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(chip_strip_frame.size.width, chip_strip_height),
+        );
+        let chip_stack: Id = msg_send![chip_stack, initWithFrame: stack_inner];
+        // NSUserInterfaceLayoutOrientationHorizontal = 0
+        let _: () = msg_send![chip_stack, setOrientation: 0i64];
+        let _: () = msg_send![chip_stack, setSpacing: 6.0f64];
+        // NSLayoutAttributeLeading alignment = gravity top
+        let _: () = msg_send![chip_stack, setAlignment: 7i64]; // NSLayoutAttributeTop
+        let _: () = msg_send![chip_scroll, setDocumentView: chip_stack];
+        set_hidden(chip_scroll, true);
+        add_subview(content_view, chip_scroll);
+
         // Initial visibility
         set_hidden(agent_scroll, true);
         set_hidden(input_bar, true);
@@ -929,6 +966,7 @@ fn show_voice_chat_overlay_impl() {
             state.agent_input_field = None;
             state.agent_attach_button = Some(agent_attach_button as usize);
             state.agent_send_button = Some(agent_send_button as usize);
+            state.attachment_chip_strip = Some(chip_scroll as usize);
             state.action_handler = Some(action_handler as usize);
             let pending_tab = state.pending_tab.take();
             state.active_tab = pending_tab.unwrap_or(Tab::Drawer);

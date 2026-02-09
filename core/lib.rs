@@ -28,8 +28,10 @@
 // Core modules (namespaced)
 // ═══════════════════════════════════════════════════════════
 
+pub mod attachment;
 pub mod audio;
 pub mod config;
+pub mod connectors;
 pub mod conversation;
 pub mod demux;
 pub mod embedder;

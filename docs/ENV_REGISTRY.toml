@@ -446,6 +446,13 @@ reload = "restart"
 category = "llm"
 description = "Max tokens for assistive LLM (0 = no limit)"
 
+[vars.FORMATTING_LEVEL]
+default = "medium"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "AI formatting level: raw, medium, or creative"
+
 [vars.LLM_ENDPOINT]
 default = ""
 type = "string"

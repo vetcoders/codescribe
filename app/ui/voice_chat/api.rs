@@ -13,6 +13,8 @@ use tracing::{debug, info, warn};
 
 use chrono::{DateTime, Local};
 
+use codescribe_core::attachment::Attachment;
+
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, LabelConfig, add_subview, button_set_action, button_style,
@@ -958,8 +960,9 @@ pub(super) fn clear_voice_chat_text_impl() {
         state.messages.clear();
         state.manual_draft.clear();
         state.is_sending = false;
-        state.attached_files.clear();
-        state.attached_files_last_sent = None;
+        state.attachments.clear();
+        state.attachments_last_sent = None;
+        render_attachment_chips_locked(&mut state);
         let btn_ptr = state.agent_attach_button;
 
         if let Some(input_view) = state.agent_input_text_view {
@@ -993,7 +996,7 @@ pub fn send_draft_message_impl() {
         }
 
         let attachments_to_send = attachment_should_include_locked(&state);
-        if let Some((fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
+        if let Some((_fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
             let mode = message_mode_label(&state);
             state.messages.push(ChatMessage {
                 role: ChatRole::System,
@@ -1003,7 +1006,7 @@ pub fn send_draft_message_impl() {
                 timestamp: SystemTime::now(),
                 mode: Some(mode),
             });
-            state.attached_files_last_sent = Some(*fingerprint);
+            // Fingerprint committed below, only after confirming send callback exists.
         }
 
         let mode = message_mode_label(&state);
@@ -1030,7 +1033,12 @@ pub fn send_draft_message_impl() {
     };
 
     if let (Some(handler), draft, attachments_to_send) = callback {
-        if let Some((_fingerprint, paths, _summary)) = attachments_to_send {
+        if let Some((fingerprint, paths, _summary)) = attachments_to_send {
+            // Commit fingerprint now that we know the handler exists.
+            {
+                let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                state.attachments_last_sent = Some(fingerprint);
+            }
             std::thread::spawn(move || {
                 let block = build_attachments_block(&paths);
                 let payload = if block.is_empty() {
@@ -1063,7 +1071,7 @@ pub(super) fn commit_last_user_message_impl() {
         }
         let text = last_message.text.clone();
         let attachments_to_send = attachment_should_include_locked(&state);
-        if let Some((fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
+        if let Some((_fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
             let mode = message_mode_label(&state);
             state.messages.push(ChatMessage {
                 role: ChatRole::System,
@@ -1073,7 +1081,7 @@ pub(super) fn commit_last_user_message_impl() {
                 timestamp: SystemTime::now(),
                 mode: Some(mode),
             });
-            state.attached_files_last_sent = Some(*fingerprint);
+            // Fingerprint committed below, only after confirming send callback exists.
         }
         state.is_sending = true;
         update_chat_view_with_state(&mut state, true);
@@ -1083,7 +1091,12 @@ pub(super) fn commit_last_user_message_impl() {
     };
 
     if let (Some(handler), text, attachments_to_send) = callback {
-        if let Some((_fingerprint, paths, _summary)) = attachments_to_send {
+        if let Some((fingerprint, paths, _summary)) = attachments_to_send {
+            // Commit fingerprint now that we know the handler exists.
+            {
+                let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                state.attachments_last_sent = Some(fingerprint);
+            }
             std::thread::spawn(move || {
                 let block = build_attachments_block(&paths);
                 let payload = if block.is_empty() {
@@ -1271,22 +1284,20 @@ pub(super) fn update_attach_button_ui(
 fn attachment_should_include_locked(
     state: &VoiceChatOverlayState,
 ) -> Option<(u64, Vec<std::path::PathBuf>, String)> {
-    if state.attached_files.is_empty() {
+    if state.attachments.is_empty() {
         return None;
     }
-    let fingerprint = attachment_fingerprint(&state.attached_files);
-    if state.attached_files_last_sent == Some(fingerprint) {
+    let fingerprint = attachment_fingerprint(&state.attachments);
+    if state.attachments_last_sent == Some(fingerprint) {
         return None;
     }
-    let summary = attachment_summary(&state.attached_files);
-    Some((fingerprint, state.attached_files.clone(), summary))
+    let summary = attachment_summary(&state.attachments);
+    let paths = Attachment::paths(&state.attachments);
+    Some((fingerprint, paths, summary))
 }
 
-fn attachment_summary(paths: &[std::path::PathBuf]) -> String {
-    let mut names: Vec<String> = paths
-        .iter()
-        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .collect();
+fn attachment_summary(attachments: &[Attachment]) -> String {
+    let mut names: Vec<String> = attachments.iter().map(|a| a.display_name.clone()).collect();
     names.sort();
     if names.len() <= 3 {
         names.join(", ")
@@ -1295,17 +1306,134 @@ fn attachment_summary(paths: &[std::path::PathBuf]) -> String {
     }
 }
 
-fn attachment_fingerprint(paths: &[std::path::PathBuf]) -> u64 {
+fn attachment_fingerprint(attachments: &[Attachment]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for p in paths {
-        p.hash(&mut hasher);
-        if let Ok(meta) = std::fs::metadata(p) {
+    for a in attachments {
+        a.path.hash(&mut hasher);
+        if let Ok(meta) = std::fs::metadata(&a.path) {
             meta.len().hash(&mut hasher);
             meta.modified().ok().hash(&mut hasher);
         }
     }
     hasher.finish()
+}
+
+// ═══════════════════════════════════════════════════════════
+// Attachment Chip Strip
+// ═══════════════════════════════════════════════════════════
+
+const CHIP_STRIP_HEIGHT: f64 = 36.0;
+
+/// Remove an attachment by index, re-render chips, update button.
+pub fn remove_attachment_at(index: usize) {
+    let (btn_ptr, count, names) = {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if index < state.attachments.len() {
+            state.attachments.remove(index);
+            state.attachments_last_sent = None;
+        }
+        let names: Vec<String> = state
+            .attachments
+            .iter()
+            .map(|a| a.display_name.clone())
+            .collect();
+        render_attachment_chips_locked(&mut state);
+        (state.agent_attach_button, state.attachments.len(), names)
+    };
+    update_attach_button_ui(btn_ptr, count, names);
+}
+
+/// Rebuild chip strip views from current attachments.
+/// Must be called from the main thread.
+pub(super) fn render_attachment_chips(state: &mut VoiceChatOverlayState) {
+    render_attachment_chips_locked(state);
+}
+
+fn render_attachment_chips_locked(state: &mut VoiceChatOverlayState) {
+    unsafe {
+        let Some(strip_ptr) = state.attachment_chip_strip else {
+            return;
+        };
+        let strip = strip_ptr as Id;
+
+        // Get the stack view (document view of the scroll view).
+        let stack: Id = msg_send![strip, documentView];
+        if stack.is_null() {
+            return;
+        }
+
+        // Clear existing chips.
+        let arranged: Id = msg_send![stack, arrangedSubviews];
+        let old_count: usize = msg_send![arranged, count];
+        for i in (0..old_count).rev() {
+            let view: Id = msg_send![arranged, objectAtIndex: i];
+            let _: () = msg_send![stack, removeArrangedSubview: view];
+            let _: () = msg_send![view, removeFromSuperview];
+        }
+
+        let has_attachments = !state.attachments.is_empty();
+        let handler_ptr = state.action_handler.unwrap_or(0) as Id;
+
+        if has_attachments {
+            let mut total_width = 0.0f64;
+            for (idx, attachment) in state.attachments.iter().enumerate() {
+                let chip = create_chip_view(idx, &attachment.chip_label(20), handler_ptr);
+                let _: () = msg_send![stack, addArrangedSubview: chip];
+                let chip_frame: CGRect = msg_send![chip, frame];
+                total_width += chip_frame.size.width + 6.0;
+            }
+            // Size the stack view to fit all chips (enables horizontal scrolling).
+            let strip_frame: CGRect = msg_send![strip, frame];
+            let stack_frame = CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(total_width.max(strip_frame.size.width), CHIP_STRIP_HEIGHT),
+            );
+            let _: () = msg_send![stack, setFrame: stack_frame];
+        }
+
+        // Show/hide the strip.
+        let currently_hidden: bool = msg_send![strip, isHidden];
+        if currently_hidden == has_attachments {
+            let _: () = msg_send![strip, setHidden: !has_attachments];
+        }
+    }
+    // Reflow layout to account for chip strip height change.
+    resize_agent_input_locked(state);
+}
+
+/// Create a single chip view: a styled button with the attachment name.
+///
+/// # Safety
+/// Requires main thread.
+unsafe fn create_chip_view(index: usize, label: &str, handler: Id) -> Id {
+    let ns_button = Class::get("NSButton").unwrap();
+
+    // Measure text width (approximate: 7px per char + padding).
+    let text_width = (label.chars().count() as f64 * 7.0).clamp(40.0, 180.0);
+    let chip_width = text_width + 24.0; // padding
+
+    let frame = CGRect::new(&CGPoint::new(0.0, 4.0), &CGSize::new(chip_width, 28.0));
+    let btn: Id = msg_send![ns_button, alloc];
+    let btn: Id = msg_send![btn, initWithFrame: frame];
+    let _: () = msg_send![btn, setTitle: ns_string(label)];
+    // NSBezelStyleInline = 15 (compact rounded)
+    let _: () = msg_send![btn, setBezelStyle: 15i64];
+    let _: () = msg_send![btn, setControlSize: 1i64]; // NSControlSizeSmall
+    let ns_font = Class::get("NSFont").unwrap();
+    let font: Id = msg_send![ns_font, systemFontOfSize: 11.0f64];
+    let _: () = msg_send![btn, setFont: font];
+    let _: () = msg_send![btn, setTag: index as isize];
+    let _: () = msg_send![btn, setTarget: handler];
+    let _: () = msg_send![btn, setAction: sel!(onChipClick:)];
+    let _: () = msg_send![btn, setTranslatesAutoresizingMaskIntoConstraints: false];
+
+    // Height constraint.
+    let height_anchor: Id = msg_send![btn, heightAnchor];
+    let constraint: Id = msg_send![height_anchor, constraintEqualToConstant: 28.0f64];
+    let _: () = msg_send![constraint, setActive: true];
+
+    btn
 }
 
 fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
@@ -1856,7 +1984,16 @@ fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
         let current_bar: CGRect = msg_send![input_bar, frame];
         let height_same = (current_bar.size.height - desired_h).abs() < 0.5;
         let width_same = (current_bar.size.width - bar_width).abs() < 0.5;
-        if height_same && width_same {
+        // Do not early-return when chip strip visibility may have changed.
+        let chip_strip_stable = if let Some(strip_ptr) = state.attachment_chip_strip {
+            let strip = strip_ptr as Id;
+            let is_hidden: bool = msg_send![strip, isHidden];
+            let should_hide = state.attachments.is_empty();
+            is_hidden == should_hide
+        } else {
+            true
+        };
+        if height_same && width_same && chip_strip_stable {
             return;
         }
 
@@ -1887,10 +2024,29 @@ fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
         );
         let _: () = msg_send![send_btn, setFrame: send_frame];
 
-        // Resize Agent scroll view so it doesn't overlap with input.
+        // Position chip strip above input bar and resize agent scroll view.
+        let chip_strip_extra = if let Some(strip_ptr) = state.attachment_chip_strip {
+            let strip = strip_ptr as Id;
+            let strip_visible: bool = !msg_send![strip, isHidden];
+            if strip_visible {
+                let strip_y = footer_inset + desired_h + input_gap;
+                let strip_frame = CGRect::new(
+                    &CGPoint::new(pad, strip_y),
+                    &CGSize::new(bar_width, CHIP_STRIP_HEIGHT),
+                );
+                let _: () = msg_send![strip, setFrame: strip_frame];
+                CHIP_STRIP_HEIGHT + input_gap
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        // Resize Agent scroll view so it doesn't overlap with input + chips.
         if let Some(agent_scroll_ptr) = state.agent_scroll_view {
             let agent_scroll = agent_scroll_ptr as Id;
-            let bottom = footer_inset + desired_h + input_gap;
+            let bottom = footer_inset + desired_h + input_gap + chip_strip_extra;
             let top = content_height - gap;
             let new_agent_frame = CGRect::new(
                 &CGPoint::new(pad, bottom),
@@ -2024,8 +2180,9 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.agent_input_field = None;
     state.agent_attach_button = None;
     state.agent_send_button = None;
-    state.attached_files.clear();
-    state.attached_files_last_sent = None;
+    state.attachments.clear();
+    state.attachments_last_sent = None;
+    state.attachment_chip_strip = None;
     state.active_tab = Tab::Drawer;
     state.pending_tab = None;
     state.is_sending = false;

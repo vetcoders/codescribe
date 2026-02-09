@@ -21,6 +21,7 @@ pub const KEYCHAIN_ACCOUNTS: &[&str] = &[
     "STT_API_KEY",
     "LLM_FORMATTING_API_KEY",
     "LLM_ASSISTIVE_API_KEY",
+    "GITHUB_TOKEN",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
