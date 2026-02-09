@@ -19,7 +19,7 @@ use crate::ui_helpers::{
     color_label, color_rgba, color_secondary_label, create_bubble_view, create_button,
     create_card_view, create_label, get_text_field_string, get_text_view_string,
     layout_region_frame_for_view, list_draft_files, ns_string, open_file_in_editor,
-    resize_bubble_container_for_text, set_button_symbol, set_hidden, set_text_field_string,
+    resize_bubble_container_for_text, set_button_symbol, set_text_field_string,
     set_text_view_string, set_tooltip, stack_view_add, stack_view_clear, ui_colors, ui_tokens,
     update_bubble_text, window_set_alpha, window_show,
 };
@@ -287,20 +287,6 @@ pub fn show_drawer_tab() {
     });
 }
 
-/// Switch to Transcription tab programmatically
-pub fn show_transcription_tab() {
-    Queue::main().exec_async(|| {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if state.window.is_none() {
-            state.pending_tab = Some(Tab::Transcription);
-            state.active_tab = Tab::Transcription;
-            return;
-        }
-        drop(state);
-        update_active_tab_impl(Tab::Transcription);
-    });
-}
-
 /// Switch to Settings tab programmatically
 pub fn show_settings_tab() {
     Queue::main().exec_async(|| {
@@ -312,69 +298,6 @@ pub fn show_settings_tab() {
 /// This is used when routing tray "Settings" to the overlay before it exists.
 pub fn request_settings_tab_on_open() {
     crate::show_bootstrap_overlay();
-}
-
-/// Append a delta (streaming token) to the transcription preview.
-pub fn append_transcription_delta(delta: &str) {
-    let delta_owned = delta.to_string();
-    Queue::main().exec_async(move || {
-        append_transcription_delta_impl(&delta_owned);
-    });
-}
-
-fn append_transcription_delta_impl(delta: &str) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta)
-        .apply(&mut state.transcription_text);
-    if let Some(text_view) = state.transcription_text_view {
-        unsafe { set_text_view_string(text_view as Id, &state.transcription_text) };
-    }
-    update_transcription_placeholder(&mut state);
-}
-
-/// Set the full transcription text (used for final-pass replacement).
-pub fn set_transcription_text(text: &str) {
-    let text_owned = text.to_string();
-    Queue::main().exec_async(move || {
-        set_transcription_text_impl(&text_owned);
-    });
-}
-
-fn set_transcription_text_impl(text: &str) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.transcription_text = text.to_string();
-    if let Some(text_view) = state.transcription_text_view {
-        unsafe { set_text_view_string(text_view as Id, &state.transcription_text) };
-    }
-    update_transcription_placeholder(&mut state);
-}
-
-/// Clear the transcription preview text.
-pub fn clear_transcription_text() {
-    Queue::main().exec_async(|| {
-        clear_transcription_text_impl();
-    });
-}
-
-fn clear_transcription_text_impl() {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.transcription_text.clear();
-    if let Some(text_view) = state.transcription_text_view {
-        unsafe { set_text_view_string(text_view as Id, "") };
-    }
-    update_transcription_placeholder(&mut state);
-}
-
-fn is_transcription_empty(state: &VoiceChatOverlayState) -> bool {
-    state.transcription_text.trim().is_empty()
-}
-
-fn update_transcription_placeholder(state: &mut VoiceChatOverlayState) {
-    let Some(view_ptr) = state.transcription_placeholder else {
-        return;
-    };
-    let should_show = state.active_tab == Tab::Transcription && is_transcription_empty(state);
-    unsafe { set_hidden(view_ptr as Id, !should_show) };
 }
 
 /// Set the target app name to re-activate for paste actions.
@@ -437,9 +360,6 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         if let Some(button) = state.tab_drawer_button {
             crate::ui_helpers::set_tab_button_active(button as Id, tab == Tab::Drawer);
         }
-        if let Some(button) = state.tab_transcription_button {
-            crate::ui_helpers::set_tab_button_active(button as Id, tab == Tab::Transcription);
-        }
         if let Some(button) = state.tab_agent_button {
             crate::ui_helpers::set_tab_button_active(button as Id, tab == Tab::Agent);
         }
@@ -448,7 +368,6 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         }
 
         let show_drawer = tab == Tab::Drawer;
-        let show_transcription = tab == Tab::Transcription;
         let show_agent = tab == Tab::Agent;
 
         if let Some(sidebar_item) = state.split_sidebar_item {
@@ -479,12 +398,6 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         }
         if let Some(edge) = state.drawer_edge_effect {
             crate::ui_helpers::set_hidden(edge as Id, !show_drawer);
-        }
-        if let Some(trans_view) = state.transcription_scroll_view {
-            crate::ui_helpers::set_hidden(trans_view as Id, !show_transcription);
-        }
-        if let Some(edge) = state.transcription_edge_effect {
-            crate::ui_helpers::set_hidden(edge as Id, !show_transcription);
         }
         if let Some(agent_view) = state.agent_scroll_view {
             crate::ui_helpers::set_hidden(agent_view as Id, !show_agent);
@@ -521,8 +434,6 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
                 let _: bool = msg_send![window, makeFirstResponder: input_ptr as Id];
             }
         }
-
-        update_transcription_placeholder(state);
     }
 }
 
@@ -2084,7 +1995,6 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.status_pill_label = None;
     state.status_pill_dot = None;
     state.tab_drawer_button = None;
-    state.tab_transcription_button = None;
     state.tab_agent_button = None;
     state.tab_settings_button = None;
     state.favorites_button = None;
@@ -2105,10 +2015,6 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.agent_send_button = None;
     state.attached_files.clear();
     state.attached_files_last_sent = None;
-    state.transcription_scroll_view = None;
-    state.transcription_text_view = None;
-    state.transcription_placeholder = None;
-    state.transcription_edge_effect = None;
     state.active_tab = Tab::Drawer;
     state.pending_tab = None;
     state.is_sending = false;
@@ -2507,14 +2413,6 @@ mod tests {
         assert_eq!(filtered_drawer_entries(&state, "hello").len(), 1);
         state.drawer_favorites_only = true;
         assert_eq!(filtered_drawer_entries(&state, "").len(), 1);
-    }
-
-    #[test]
-    fn transcription_empty_detection() {
-        let mut state = VoiceChatOverlayState::default();
-        assert!(is_transcription_empty(&state));
-        state.transcription_text = "hi".to_string();
-        assert!(!is_transcription_empty(&state));
     }
 
     #[test]

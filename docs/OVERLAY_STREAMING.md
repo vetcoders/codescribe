@@ -227,7 +227,7 @@ pub fn route_transcription_delta(delta: &str) {
         voice_chat_ui::append_voice_chat_user_delta(delta);
     } else {
         // Fn hold / toggle → dictation mode
-        voice_chat_ui::append_transcription_delta(delta);
+        transcription_overlay::append_transcription_delta(delta);
     }
 }
 ```
@@ -242,18 +242,12 @@ double‑taps Option again.
 
 ### Non-assistive mode (dictation)
 
-Delta arrives at **two UI targets** simultaneously:
+Delta arrives at the **Floating Overlay**:
 
-1. **Transcription Tab** (`voice_chat/api.rs:266-272`)
-
-   - `apply_delta_with_backspace(&mut state.transcription_text, delta)`
-   - Updates NSTextView in the Transcription tab of the voice chat panel.
-
-2. **Floating Overlay** (`overlay/mod.rs:960-964`)
-   - `apply_delta_with_backspace(&mut state.accumulated_text, delta)`
-   - Updates the always-on-top transparent overlay window.
-   - Auto-resizes to fit text content.
-   - Auto-hides after 5 seconds of inactivity (with hover guard).
+- `apply_delta_with_backspace(&mut state.accumulated_text, delta)` (`app/ui/overlay/mod.rs`)
+- Updates the always-on-top transparent overlay window.
+- Auto-resizes to fit text content.
+- Auto-hides after 5 seconds of inactivity (with hover guard).
 
 ### Assistive mode (AI chat)
 
@@ -327,7 +321,7 @@ Displayed text (String, visible in overlay)
 | `app/controller/mod.rs`            | ~1200 | Recording state machine, callback wiring                    |
 | `app/controller/helpers.rs`        | ~100  | Delta routing by session mode                               |
 | `app/ui/overlay/mod.rs`            | ~1200 | Floating overlay window (Cocoa/AppKit)                      |
-| `app/ui/voice_chat/api.rs`         | ~500  | Voice chat panel API, transcription tab                     |
+| `app/ui/voice_chat/api.rs`         | ~500  | Voice chat panel API (drawer/agent/settings)                |
 
 ---
 

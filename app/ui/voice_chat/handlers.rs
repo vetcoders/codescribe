@@ -69,10 +69,6 @@ pub fn action_handler_class() -> *const Class {
                 on_tab_drawer as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabTranscription:),
-                on_tab_transcription as extern "C" fn(&Object, Sel, Id),
-            );
-            decl.add_method(
                 sel!(onTabAgent:),
                 on_tab_agent as extern "C" fn(&Object, Sel, Id),
             );
@@ -560,11 +556,6 @@ extern "C" fn on_window_did_resize(_this: &Object, _cmd: Sel, _notification: Id)
 extern "C" fn on_tab_drawer(_this: &Object, _cmd: Sel, _sender: Id) {
     update_active_tab_impl(Tab::Drawer);
     info!("Tab changed to: {:?}", Tab::Drawer);
-}
-
-extern "C" fn on_tab_transcription(_this: &Object, _cmd: Sel, _sender: Id) {
-    update_active_tab_impl(Tab::Transcription);
-    info!("Tab changed to: {:?}", Tab::Transcription);
 }
 
 extern "C" fn on_tab_agent(_this: &Object, _cmd: Sel, _sender: Id) {

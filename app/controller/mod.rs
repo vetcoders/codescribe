@@ -403,11 +403,9 @@ impl RecordingController {
                                 set_assistive_session(false);
                                 self.opened_voice_chat_overlay_for_transcription
                                     .store(false, Ordering::SeqCst);
-                                crate::hide_transcription_overlay();
-                                crate::show_voice_chat_overlay();
-                                crate::voice_chat_ui::show_transcription_tab();
-                                crate::voice_chat_ui::clear_transcription_text();
-                                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                                crate::show_transcription_overlay();
+                                crate::enter_recording_mode();
+                                crate::clear_transcription_text();
                             }
                         }
                         HoldMode::Chat => {
@@ -1104,14 +1102,10 @@ impl RecordingController {
                         .unwrap_or_default()
                         .frontmost_app,
                 );
-                // Non-assistive: live dictation preview in unified overlay
-                let was_visible = crate::voice_chat_ui::is_voice_chat_overlay_visible();
-                opened_overlay_for_transcription.store(!was_visible, Ordering::SeqCst);
-                crate::hide_transcription_overlay();
-                crate::show_voice_chat_overlay();
-                crate::voice_chat_ui::show_transcription_tab();
-                crate::voice_chat_ui::clear_transcription_text();
-                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                opened_overlay_for_transcription.store(false, Ordering::SeqCst);
+                crate::show_transcription_overlay();
+                crate::enter_recording_mode();
+                crate::clear_transcription_text();
             }
 
             // Transition to REC_HOLD
@@ -1271,15 +1265,11 @@ impl RecordingController {
                     .unwrap_or_default()
                     .frontmost_app,
             );
-            // Non-assistive: live dictation preview in unified overlay
-            let was_visible = crate::voice_chat_ui::is_voice_chat_overlay_visible();
             self.opened_voice_chat_overlay_for_transcription
-                .store(!was_visible, Ordering::SeqCst);
-            crate::hide_transcription_overlay();
-            crate::show_voice_chat_overlay();
-            crate::voice_chat_ui::show_transcription_tab();
-            crate::voice_chat_ui::clear_transcription_text();
-            crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                .store(false, Ordering::SeqCst);
+            crate::show_transcription_overlay();
+            crate::enter_recording_mode();
+            crate::clear_transcription_text();
         }
 
         // Transition to REC_TOGGLE
@@ -1520,7 +1510,12 @@ impl RecordingController {
                         if opened {
                             crate::voice_chat_ui::hide_voice_chat_overlay();
                         }
-                        crate::hide_transcription_overlay();
+                        if cfg.quick_notes_enabled && cfg.quick_notes_save_only {
+                            crate::hide_transcription_overlay();
+                        } else {
+                            crate::enter_decision_mode();
+                            crate::schedule_auto_hide();
+                        }
                     }
                 }
             }
@@ -2215,9 +2210,9 @@ impl RecordingController {
             mode_label
         );
         if !assistive {
-            // Keep the unified overlay's transcription preview in sync with what we will paste/save.
+            // Keep the ephemeral transcription overlay in sync with what we will paste/save.
             // This makes it easier to understand differences between streaming preview and final-pass output.
-            crate::voice_chat_ui::set_transcription_text(&formatted_text);
+            crate::set_transcription_text(&formatted_text);
         }
 
         // Quick Notes: optionally save to daily note file (dictation-only).

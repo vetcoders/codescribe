@@ -55,7 +55,6 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Drawer,
-    Transcription,
     Agent,
     Settings,
 }
@@ -114,7 +113,6 @@ pub struct VoiceChatOverlayState {
     pub status_pill_label: Option<usize>,
     pub status_pill_dot: Option<usize>,
     pub tab_drawer_button: Option<usize>,
-    pub tab_transcription_button: Option<usize>,
     pub tab_agent_button: Option<usize>,
     pub tab_settings_button: Option<usize>,
     pub favorites_button: Option<usize>,
@@ -145,13 +143,6 @@ pub struct VoiceChatOverlayState {
     pub attached_files: Vec<PathBuf>,
     /// Fingerprint of the last attachment set that was sent to the assistant.
     pub attached_files_last_sent: Option<u64>,
-
-    // Transcription tab (one-overlay mode)
-    pub transcription_scroll_view: Option<usize>,
-    pub transcription_text_view: Option<usize>,
-    pub transcription_placeholder: Option<usize>,
-    pub transcription_edge_effect: Option<usize>,
-    pub transcription_text: String,
 
     // Active tab
     pub active_tab: Tab,
@@ -197,7 +188,6 @@ impl Default for VoiceChatOverlayState {
             status_pill_label: None,
             status_pill_dot: None,
             tab_drawer_button: None,
-            tab_transcription_button: None,
             tab_agent_button: None,
             tab_settings_button: None,
             favorites_button: None,
@@ -222,11 +212,6 @@ impl Default for VoiceChatOverlayState {
             agent_send_button: None,
             attached_files: Vec::new(),
             attached_files_last_sent: None,
-            transcription_scroll_view: None,
-            transcription_text_view: None,
-            transcription_placeholder: None,
-            transcription_edge_effect: None,
-            transcription_text: String::new(),
             active_tab: Tab::Drawer,
             pending_tab: None,
             messages: Vec::new(),

@@ -2,8 +2,8 @@
 //!
 //! This module provides a floating overlay window with:
 //! - Drawer tab: clipboard-style transcription cards
-//! - Transcription tab: live transcription preview for raw dictation
 //! - Agent tab: chat bubbles with streaming LLM responses
+//! - Settings: routes to settings window/onboarding
 
 mod api;
 mod handlers;
@@ -11,16 +11,16 @@ mod state;
 
 // Re-export public API
 pub use api::{
-    add_voice_chat_error_message, add_voice_chat_user_message, append_transcription_delta,
-    append_voice_chat_assistant_delta, append_voice_chat_user_delta, clear_transcription_text,
-    clear_voice_chat_text, filter_drawer, finalize_voice_chat_assistant_message,
-    finalize_voice_chat_user_message, hide_voice_chat_overlay, is_auto_send_enabled,
-    is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,
-    request_settings_tab_on_open, reset_voice_chat_activity, send_voice_chat_draft,
-    set_transcription_text, set_voice_chat_send_callback, set_voice_chat_sending,
-    set_voice_chat_target_app, set_voice_chat_text, set_voice_chat_user_text, show_agent_tab,
-    show_drawer_tab, show_settings_tab, show_transcription_tab, update_conversation_state,
-    update_drawer_after_save, update_voice_chat_context_summary, update_voice_chat_status,
+    add_voice_chat_error_message, add_voice_chat_user_message, append_voice_chat_assistant_delta,
+    append_voice_chat_user_delta, clear_voice_chat_text, filter_drawer,
+    finalize_voice_chat_assistant_message, finalize_voice_chat_user_message,
+    hide_voice_chat_overlay, is_auto_send_enabled, is_conversation_active,
+    is_voice_chat_overlay_visible, refresh_drawer, request_settings_tab_on_open,
+    reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_send_callback,
+    set_voice_chat_sending, set_voice_chat_target_app, set_voice_chat_text,
+    set_voice_chat_user_text, show_agent_tab, show_drawer_tab, show_settings_tab,
+    update_conversation_state, update_drawer_after_save, update_voice_chat_context_summary,
+    update_voice_chat_status,
 };
 pub use state::{ConversationModeState, VoiceChatOverlayConfig};
 
@@ -352,7 +352,7 @@ fn show_voice_chat_overlay_impl() {
         let status_pill_w = ui_tokens::STATUS_PILL_WIDTH;
         let tab_btn_w = (btn_w - 2.0).max(24.0);
         let tab_gap = (gap - 2.0).max(6.0);
-        let tab_cluster_w = tab_btn_w * 4.0 + tab_gap * 3.0;
+        let tab_cluster_w = tab_btn_w * 3.0 + tab_gap * 2.0;
         let status_pill_x =
             (right_cluster_start_x - gap - status_pill_w).max(tab_x + tab_cluster_w + tab_gap);
         let tab_cluster_x = tab_x;
@@ -376,32 +376,9 @@ fn show_voice_chat_overlay_impl() {
         set_focus_ring(tab_drawer_button);
         add_subview(header_controls, tab_drawer_button);
 
-        let tab_transcription_button = create_button(
-            CGRect::new(
-                &CGPoint::new(tab_cluster_x + tab_btn_w + tab_gap, header_btn_y),
-                &CGSize::new(tab_btn_w, btn_h),
-            ),
-            "",
-            button_style::INLINE,
-        );
-        let _ = set_button_symbol(tab_transcription_button, "waveform");
-        style_toolbar_icon_button(tab_transcription_button);
-        button_set_action(
-            tab_transcription_button,
-            action_handler,
-            sel!(onTabTranscription:),
-        );
-        set_tooltip(tab_transcription_button, "Transcription");
-        let _: () = msg_send![
-            tab_transcription_button,
-            setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
-        ];
-        set_focus_ring(tab_transcription_button);
-        add_subview(header_controls, tab_transcription_button);
-
         let tab_agent_button = create_button(
             CGRect::new(
-                &CGPoint::new(tab_cluster_x + (tab_btn_w + tab_gap) * 2.0, header_btn_y),
+                &CGPoint::new(tab_cluster_x + (tab_btn_w + tab_gap) * 1.0, header_btn_y),
                 &CGSize::new(tab_btn_w, btn_h),
             ),
             "",
@@ -420,7 +397,7 @@ fn show_voice_chat_overlay_impl() {
 
         let tab_settings_button = create_button(
             CGRect::new(
-                &CGPoint::new(tab_cluster_x + (tab_btn_w + tab_gap) * 3.0, header_btn_y),
+                &CGPoint::new(tab_cluster_x + (tab_btn_w + tab_gap) * 2.0, header_btn_y),
                 &CGSize::new(tab_btn_w, btn_h),
             ),
             "",
@@ -747,78 +724,6 @@ fn show_voice_chat_overlay_impl() {
         ];
         add_subview(sidebar_view, drawer_edge_effect);
 
-        // Transcription scroll view (live dictation preview)
-        let (transcription_scroll, transcription_text_view) =
-            create_scrollable_text_view(drawer_frame, false);
-        let _: () = msg_send![
-            transcription_scroll,
-            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
-        ];
-        let ns_font = Class::get("NSFont").unwrap();
-        let text_font: Id = msg_send![ns_font, systemFontOfSize: ui_tokens::BODY_FONT_SIZE];
-        let _: () = msg_send![transcription_text_view, setFont: text_font];
-        let _: () = msg_send![transcription_text_view, setRichText: false];
-        let _: () = msg_send![transcription_text_view, setEditable: false];
-        let _: () = msg_send![transcription_text_view, setSelectable: true];
-        add_subview(sidebar_view, transcription_scroll);
-
-        let transcription_edge_frame = CGRect::new(
-            &CGPoint::new(
-                drawer_frame.origin.x,
-                drawer_frame.origin.y + drawer_frame.size.height - 18.0,
-            ),
-            &CGSize::new(drawer_frame.size.width, 18.0),
-        );
-        let transcription_edge_effect = create_scroll_edge_effect(transcription_edge_frame);
-        let _: () = msg_send![
-            transcription_edge_effect,
-            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN
-        ];
-        set_hidden(transcription_edge_effect, true);
-        add_subview(sidebar_view, transcription_edge_effect);
-
-        // Transcription empty-state placeholder
-        let placeholder_view: Id = msg_send![Class::get("NSView").unwrap(), alloc];
-        let placeholder_view: Id = msg_send![placeholder_view, initWithFrame: drawer_frame];
-        let _: () = msg_send![placeholder_view, setWantsLayer: true];
-        let _: () = msg_send![
-            placeholder_view,
-            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
-        ];
-
-        let placeholder_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(0.0, drawer_frame.size.height / 2.0 + 12.0),
-                &CGSize::new(drawer_frame.size.width, 20.0),
-            ),
-            text: "Press hotkey to start".to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
-            bold: true,
-            text_color: color_secondary_label(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        let _: () = msg_send![placeholder_label, setAlignment: 1_isize];
-        add_subview(placeholder_view, placeholder_label);
-
-        let ns_progress = Class::get("NSProgressIndicator").unwrap();
-        let line_w = ui_tokens::PLACEHOLDER_LINE_WIDTH;
-        let line_h = ui_tokens::PLACEHOLDER_LINE_HEIGHT;
-        let line_x = (drawer_frame.size.width - line_w) / 2.0;
-        let line_y = drawer_frame.size.height / 2.0 - 6.0;
-        let line_frame = CGRect::new(&CGPoint::new(line_x, line_y), &CGSize::new(line_w, line_h));
-        let line: Id = msg_send![ns_progress, alloc];
-        let line: Id = msg_send![line, initWithFrame: line_frame];
-        let _: () = msg_send![line, setIndeterminate: true];
-        let _: () = msg_send![line, setStyle: 0_isize]; // NSProgressIndicatorStyleBar
-        let _: () = msg_send![line, setDisplayedWhenStopped: false];
-        let _: () = msg_send![line, startAnimation: std::ptr::null::<Object>()];
-        add_subview(placeholder_view, line);
-
-        set_hidden(placeholder_view, true);
-        add_subview(sidebar_view, placeholder_view);
-
         // Agent scroll view + stack
         let agent_scroll_frame_bottom = agent_input_height + inner_pad + content_gap;
         let agent_scroll_frame_top = (content_frame.size.height - inner_pad).max(0.0);
@@ -989,7 +894,6 @@ fn show_voice_chat_overlay_impl() {
         // Initial visibility
         set_hidden(agent_scroll, true);
         set_hidden(input_bar, true);
-        set_hidden(transcription_scroll, true);
 
         // Phase 3 — store widget pointers into state (short lock scope).
         let (has_messages, desired_tab, status_text, open_settings) = {
@@ -1007,7 +911,6 @@ fn show_voice_chat_overlay_impl() {
             state.status_pill_label = Some(status_label as usize);
             state.status_pill_dot = Some(dot as usize);
             state.tab_drawer_button = Some(tab_drawer_button as usize);
-            state.tab_transcription_button = Some(tab_transcription_button as usize);
             state.tab_agent_button = Some(tab_agent_button as usize);
             state.tab_settings_button = Some(tab_settings_button as usize);
             state.favorites_button = Some(favorites_button as usize);
@@ -1026,10 +929,6 @@ fn show_voice_chat_overlay_impl() {
             state.agent_input_field = None;
             state.agent_attach_button = Some(agent_attach_button as usize);
             state.agent_send_button = Some(agent_send_button as usize);
-            state.transcription_scroll_view = Some(transcription_scroll as usize);
-            state.transcription_text_view = Some(transcription_text_view as usize);
-            state.transcription_placeholder = Some(placeholder_view as usize);
-            state.transcription_edge_effect = Some(transcription_edge_effect as usize);
             state.action_handler = Some(action_handler as usize);
             let pending_tab = state.pending_tab.take();
             state.active_tab = pending_tab.unwrap_or(Tab::Drawer);
