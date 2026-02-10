@@ -77,6 +77,14 @@ impl StreamingRecorder {
         self.utterance_silence_sec = silence_sec;
     }
 
+    /// Returns a cloned handle to the transcript buffer.
+    ///
+    /// Used by `ControllerEventRouter` to update the buffer as previews arrive,
+    /// so `stop()` returns the accumulated text.
+    pub fn transcript_buffer_handle(&self) -> Arc<Mutex<String>> {
+        self.transcript_buffer.clone()
+    }
+
     /// Set the event sink for the new unified pipeline.
     ///
     /// When set, `start_event_session()` uses `transcription_session` instead

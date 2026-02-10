@@ -126,6 +126,11 @@ pub struct ControllerEventRouter {
     vad_start_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Last preview text — used to compute deltas for append_*_delta functions.
     last_preview: std::sync::Mutex<String>,
+    /// Handle to StreamingRecorder's transcript_buffer — updated on Preview/UtteranceFinal
+    /// so that `stop()` returns accumulated text instead of empty string.
+    transcript_buffer: Option<Arc<tokio::sync::Mutex<String>>>,
+    /// Accumulated finalized text from previous utterances (multi-utterance sessions).
+    finalized_prefix: std::sync::Mutex<String>,
 }
 
 impl ControllerEventRouter {
@@ -134,6 +139,8 @@ impl ControllerEventRouter {
             utterance_callback: None,
             vad_start_callback: None,
             last_preview: std::sync::Mutex::new(String::new()),
+            transcript_buffer: None,
+            finalized_prefix: std::sync::Mutex::new(String::new()),
         }
     }
 
@@ -145,6 +152,11 @@ impl ControllerEventRouter {
     #[allow(dead_code)]
     pub fn with_vad_start_callback(mut self, cb: Arc<dyn Fn() + Send + Sync>) -> Self {
         self.vad_start_callback = Some(cb);
+        self
+    }
+
+    pub fn with_transcript_buffer(mut self, buf: Arc<tokio::sync::Mutex<String>>) -> Self {
+        self.transcript_buffer = Some(buf);
         self
     }
 }
@@ -167,6 +179,22 @@ impl EventSink for ControllerEventRouter {
                         crate::transcription_overlay::append_transcription_delta(&td.delta);
                     }
                     *last = text.clone();
+                }
+                // Update transcript_buffer so stop() returns accumulated text.
+                if let Some(buf) = &self.transcript_buffer {
+                    let prefix = self
+                        .finalized_prefix
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    let full = if prefix.is_empty() {
+                        text.clone()
+                    } else {
+                        format!("{} {}", prefix, text)
+                    };
+                    if let Ok(mut guard) = buf.try_lock() {
+                        *guard = full;
+                    }
                 }
             }
             EngineEvent::Correction { text, .. } => {
@@ -197,11 +225,30 @@ impl EventSink for ControllerEventRouter {
                     let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
                     last.clear();
                 }
-                if let Some(cb) = &self.utterance_callback {
-                    let payload = text.trim();
-                    if !payload.is_empty() {
-                        cb(payload.to_string());
+                // Accumulate finalized text across utterance boundaries.
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    let mut prefix = self
+                        .finalized_prefix
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if prefix.is_empty() {
+                        *prefix = trimmed.to_string();
+                    } else {
+                        prefix.push(' ');
+                        prefix.push_str(trimmed);
                     }
+                    // Write finalized text to transcript_buffer.
+                    if let Some(buf) = &self.transcript_buffer
+                        && let Ok(mut guard) = buf.try_lock()
+                    {
+                        *guard = prefix.clone();
+                    }
+                }
+                if let Some(cb) = &self.utterance_callback
+                    && !trimmed.is_empty()
+                {
+                    cb(trimmed.to_string());
                 }
             }
             EngineEvent::Drop { kind, text, reason } => {

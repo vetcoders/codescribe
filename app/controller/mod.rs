@@ -1046,7 +1046,9 @@ impl RecordingController {
             if use_event_pipeline {
                 // Event-based pipeline: Preview streams directly into overlay.
                 // Hold mode has no utterance callback — text is collected on key-up.
-                let router = Arc::new(helpers::ControllerEventRouter::new());
+                let tb = rec.transcript_buffer_handle();
+                let router =
+                    Arc::new(helpers::ControllerEventRouter::new().with_transcript_buffer(tb));
                 rec.set_event_sink(Some(router));
 
                 if !cfg!(test)
@@ -1213,9 +1215,11 @@ impl RecordingController {
             let expected_session = new_session_id.clone();
             let is_assistive_session = is_assistive;
 
+            let tb = recorder.transcript_buffer_handle();
             let router = Arc::new(
-                helpers::ControllerEventRouter::new().with_utterance_callback(Arc::new(
-                    move |text: String| {
+                helpers::ControllerEventRouter::new()
+                    .with_transcript_buffer(tb)
+                    .with_utterance_callback(Arc::new(move |text: String| {
                         let controller = controller.clone();
                         let expected_session = expected_session.clone();
                         tokio::spawn(async move {
@@ -1232,8 +1236,7 @@ impl RecordingController {
                                 warn!("Toggle utterance processing failed: {}", e);
                             }
                         });
-                    },
-                )),
+                    })),
             );
 
             recorder.set_event_sink(Some(router));
