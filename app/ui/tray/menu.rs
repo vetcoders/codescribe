@@ -20,30 +20,14 @@ use codescribe_core::vad;
 
 use crate::config::Config;
 use crate::tray::state::NOTES_MENU_ITEMS;
-use crate::tray::submenus::build_hold_hotkeys_submenu;
-use crate::tray::types::{MenuIds, NotesMenuItems, VadPreset};
+use crate::tray::types::{MenuIds, NotesMenuItems};
 
 // Thread-local storage for menu items that need dynamic updates
 thread_local! {
     pub static STATUS_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
     pub static QUALITY_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
     pub static SILERO_VAD_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
-    pub static VAD_PRESET_MENU_ITEMS: RefCell<Option<VadPresetMenuItems>> = const { RefCell::new(None) };
 }
-
-struct VadPresetMenuItems {
-    sensitive: CheckMenuItem,
-    balanced: CheckMenuItem,
-    conservative: CheckMenuItem,
-}
-
-const PRESET_SENSITIVE_THRESHOLD: f32 = 0.35;
-const PRESET_BALANCED_THRESHOLD: f32 = 0.5;
-const PRESET_CONSERVATIVE_THRESHOLD: f32 = 0.7;
-
-const PRESET_SENSITIVE_SILENCE_SEC: f32 = 1.8;
-const PRESET_BALANCED_SILENCE_SEC: f32 = 1.2;
-const PRESET_CONSERVATIVE_SILENCE_SEC: f32 = 0.8;
 
 /// Build the tray menu
 ///
@@ -78,13 +62,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     // 5. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 6. Hotkeys (promoted to root level)
-    let (hold_hotkeys_menu, hold_ids) = build_hold_hotkeys_submenu()?;
-    menu.append(&hold_hotkeys_menu)?;
-
-    menu.append(&PredefinedMenuItem::separator())?;
-
-    // 7. Prompts submenu
+    // 6. Prompts submenu
     let prompts_menu = Submenu::new("Edit prompts…", true);
     let open_assistive_prompt_item = MenuItem::new("Assistive…", true, None);
     let open_assistive_prompt_id = open_assistive_prompt_item.id().clone();
@@ -189,47 +167,6 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         *cell.borrow_mut() = Some(silero_vad_item);
     });
 
-    // VAD presets submenu (radio-ish checkboxes)
-    let vad_preset_menu = Submenu::new("VAD preset", true);
-    let active = current_vad_preset();
-
-    let sensitive = CheckMenuItem::new(
-        "Sensitive (less chopping, quiet speech)",
-        true,
-        active == Some(VadPreset::Sensitive),
-        None,
-    );
-    let vad_preset_sensitive_id = sensitive.id().clone();
-    vad_preset_menu.append(&sensitive)?;
-
-    let balanced = CheckMenuItem::new(
-        "Balanced (default)",
-        true,
-        active == Some(VadPreset::Balanced),
-        None,
-    );
-    let vad_preset_balanced_id = balanced.id().clone();
-    vad_preset_menu.append(&balanced)?;
-
-    let conservative = CheckMenuItem::new(
-        "Conservative (noisy room, may cut more)",
-        true,
-        active == Some(VadPreset::Conservative),
-        None,
-    );
-    let vad_preset_conservative_id = conservative.id().clone();
-    vad_preset_menu.append(&conservative)?;
-
-    VAD_PRESET_MENU_ITEMS.with(|cell| {
-        *cell.borrow_mut() = Some(VadPresetMenuItems {
-            sensitive,
-            balanced,
-            conservative,
-        });
-    });
-
-    diagnostics_menu.append(&vad_preset_menu)?;
-
     menu.append(&diagnostics_menu)?;
 
     menu.append(&PredefinedMenuItem::separator())?;
@@ -258,11 +195,6 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let quit_id = quit_item.id().clone();
     menu.append(&quit_item)?;
 
-    let hotkeys_toggle_assistive_id = hold_ids.toggle_assistive;
-    let hotkeys_toggle_dictation_id = hold_ids.toggle_dictation;
-    let hotkeys_reset_id = hold_ids.reset;
-    let hotkeys_copy_cheatsheet_id = hold_ids.copy_cheatsheet;
-
     Ok((
         menu,
         MenuIds {
@@ -280,20 +212,10 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             help: help_id,
             about: about_id,
             quit: quit_id,
-            // Hotkeys submenu
-            hotkeys_toggle_assistive: hotkeys_toggle_assistive_id,
-            hotkeys_toggle_dictation: hotkeys_toggle_dictation_id,
-            hotkeys_reset: hotkeys_reset_id,
-            hotkeys_copy_cheatsheet: hotkeys_copy_cheatsheet_id,
             // Quality
             quality_open_report: quality_open_report_id,
             // Models
             silero_vad_install: silero_vad_install_id,
-            // VAD presets
-            vad_preset_sensitive: vad_preset_sensitive_id,
-            vad_preset_balanced: vad_preset_balanced_id,
-            vad_preset_conservative: vad_preset_conservative_id,
-
             // Notes
             notes_toggle_quick_notes: notes_toggle_quick_notes_id,
             notes_toggle_save_only: notes_toggle_save_only_id,
@@ -344,57 +266,6 @@ pub fn update_quality_label() {
             item.set_text(&label);
         }
     });
-}
-
-pub fn update_vad_preset_checks() {
-    let active = current_vad_preset();
-    VAD_PRESET_MENU_ITEMS.with(|cell| {
-        let borrowed = cell.borrow();
-        let Some(items) = borrowed.as_ref() else {
-            return;
-        };
-
-        items
-            .sensitive
-            .set_checked(active == Some(VadPreset::Sensitive));
-        items
-            .balanced
-            .set_checked(active == Some(VadPreset::Balanced));
-        items
-            .conservative
-            .set_checked(active == Some(VadPreset::Conservative));
-    });
-}
-
-fn current_vad_preset() -> Option<VadPreset> {
-    let threshold = std::env::var("CODESCRIBE_VAD_THRESHOLD")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(PRESET_BALANCED_THRESHOLD);
-    let silence = std::env::var("CODESCRIBE_VAD_MAX_SILENCE_SEC")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(PRESET_BALANCED_SILENCE_SEC);
-
-    const EPS: f32 = 0.05;
-
-    if (threshold - PRESET_SENSITIVE_THRESHOLD).abs() <= EPS
-        && (silence - PRESET_SENSITIVE_SILENCE_SEC).abs() <= EPS
-    {
-        return Some(VadPreset::Sensitive);
-    }
-    if (threshold - PRESET_BALANCED_THRESHOLD).abs() <= EPS
-        && (silence - PRESET_BALANCED_SILENCE_SEC).abs() <= EPS
-    {
-        return Some(VadPreset::Balanced);
-    }
-    if (threshold - PRESET_CONSERVATIVE_THRESHOLD).abs() <= EPS
-        && (silence - PRESET_CONSERVATIVE_SILENCE_SEC).abs() <= EPS
-    {
-        return Some(VadPreset::Conservative);
-    }
-
-    None
 }
 
 fn silero_vad_label() -> String {

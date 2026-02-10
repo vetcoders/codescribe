@@ -30,6 +30,11 @@ pub const NS_FLOATING_WINDOW_LEVEL: i64 = 3;
 pub const NS_STATUS_WINDOW_LEVEL: i64 = 25;
 pub const NS_NORMAL_WINDOW_LEVEL: i64 = 0;
 
+/// Focus ring constants
+pub const NS_FOCUS_RING_TYPE_DEFAULT: i64 = 0;
+pub const NS_FOCUS_RING_TYPE_NONE: i64 = 1;
+pub const NS_FOCUS_RING_TYPE_EXTERIOR: i64 = 2;
+
 // ============================================================================
 // UI Tokens (shared sizes/spacing; aligned to Settings)
 // ============================================================================
@@ -41,7 +46,7 @@ pub mod ui_tokens {
     pub const MICRO_FONT_SIZE: f64 = 10.0;
 
     pub const HEADER_HEIGHT: f64 = 44.0;
-    pub const FOOTER_HEIGHT: f64 = 56.0;
+    pub const FOOTER_HEIGHT: f64 = 40.0;
     pub const EDGE_PADDING: f64 = 16.0;
     pub const EDGE_PADDING_TIGHT: f64 = 12.0;
 
@@ -49,9 +54,9 @@ pub mod ui_tokens {
     pub const HEADER_BUTTON_SIZE: f64 = 28.0;
     pub const HEADER_BUTTON_GAP: f64 = 8.0;
     pub const HELP_PANEL_WIDTH: f64 = 150.0;
-    pub const FOOTER_INSET: f64 = 8.0;
+    pub const FOOTER_INSET: f64 = 4.0;
     pub const AGENT_INPUT_HEIGHT: f64 = 44.0;
-    pub const CONTENT_GAP: f64 = 10.0;
+    pub const CONTENT_GAP: f64 = 4.0;
     pub const SIDEBAR_MIN_WIDTH: f64 = 200.0;
     pub const SIDEBAR_MAX_WIDTH: f64 = 320.0;
 
@@ -72,9 +77,6 @@ pub mod ui_tokens {
     pub const EMPTY_STATE_BUTTON_WIDTH: f64 = 140.0;
     pub const EMPTY_STATE_BUTTON_GAP: f64 = 12.0;
 }
-
-pub const NS_FOCUS_RING_TYPE_EXTERIOR: i64 = 1;
-pub const NS_FOCUS_RING_TYPE_NONE: i64 = 2;
 
 // ============================================================================
 // Color Helpers
@@ -288,7 +290,7 @@ pub fn color_secondary_label() -> Id {
     }
 }
 
-/// Prefer layout region guides (newer AppKit) or safe-area guides if available, then fall back.
+/// Layout insets for a view using Tahoe's layoutRegionGuides API.
 ///
 /// # Safety
 /// `view` must be a valid `NSView` instance.
@@ -299,25 +301,10 @@ pub unsafe fn layout_insets_for_view(view: Id) -> NSEdgeInsets {
         return insets_from_frame(bounds, frame);
     }
 
-    let responds_guide: bool =
-        unsafe { msg_send![view, respondsToSelector: sel!(safeAreaLayoutGuide)] };
-    if responds_guide {
-        let guide: Id = unsafe { msg_send![view, safeAreaLayoutGuide] };
-        if let Some(frame) = unsafe { layout_guide_frame(guide) } {
-            return insets_from_frame(bounds, frame);
-        }
-    }
-
-    let responds_insets: bool =
-        unsafe { msg_send![view, respondsToSelector: sel!(safeAreaInsets)] };
-    if responds_insets {
-        return unsafe { msg_send![view, safeAreaInsets] };
-    }
-
-    NSEdgeInsets::default()
+    unsafe { msg_send![view, safeAreaInsets] }
 }
 
-/// Best-effort layout region frame for a view.
+/// Layout region frame for a view (Tahoe layoutRegionGuides → contentLayoutGuide).
 ///
 /// # Safety
 /// `view` must be a valid `NSView` instance.
@@ -326,81 +313,27 @@ pub unsafe fn layout_region_frame_for_view(view: Id) -> Option<CGRect> {
     unsafe { layout_guide_frame(guide) }
 }
 
-/// Best-effort layout region guide for a view.
+/// Layout region guide using Tahoe's layoutRegionGuides API.
 ///
 /// # Safety
 /// `view` must be a valid `NSView` instance.
 pub unsafe fn layout_region_guide_for_view(view: Id) -> Option<Id> {
-    let responds_guides: bool =
-        unsafe { msg_send![view, respondsToSelector: sel!(layoutRegionGuides)] };
-    if responds_guides {
-        let guides: Id = unsafe { msg_send![view, layoutRegionGuides] };
-        if !guides.is_null() {
-            let responds_content: bool =
-                unsafe { msg_send![guides, respondsToSelector: sel!(contentLayoutGuide)] };
-            if responds_content {
-                let guide: Id = unsafe { msg_send![guides, contentLayoutGuide] };
-                if !guide.is_null() {
-                    return Some(guide);
-                }
-            }
-
-            let responds_safe: bool =
-                unsafe { msg_send![guides, respondsToSelector: sel!(safeAreaLayoutGuide)] };
-            if responds_safe {
-                let guide: Id = unsafe { msg_send![guides, safeAreaLayoutGuide] };
-                if !guide.is_null() {
-                    return Some(guide);
-                }
-            }
+    let guides: Id = unsafe { msg_send![view, layoutRegionGuides] };
+    if !guides.is_null() {
+        let guide: Id = unsafe { msg_send![guides, contentLayoutGuide] };
+        if !guide.is_null() {
+            return Some(guide);
         }
-    }
-
-    let responds_region: bool = unsafe { msg_send![view, respondsToSelector: sel!(layoutRegion)] };
-    if !responds_region {
-        let responds_safe: bool =
-            unsafe { msg_send![view, respondsToSelector: sel!(safeAreaLayoutGuide)] };
-        if responds_safe {
-            let guide: Id = unsafe { msg_send![view, safeAreaLayoutGuide] };
-            if !guide.is_null() {
-                return Some(guide);
-            }
-        }
-        return None;
-    }
-
-    let region: Id = unsafe { msg_send![view, layoutRegion] };
-    if region.is_null() {
-        return None;
-    }
-
-    let responds_content: bool =
-        unsafe { msg_send![region, respondsToSelector: sel!(contentLayoutGuide)] };
-    if responds_content {
-        let guide: Id = unsafe { msg_send![region, contentLayoutGuide] };
+        let guide: Id = unsafe { msg_send![guides, safeAreaLayoutGuide] };
         if !guide.is_null() {
             return Some(guide);
         }
     }
-
-    let responds_safe: bool =
-        unsafe { msg_send![region, respondsToSelector: sel!(safeAreaLayoutGuide)] };
-    if responds_safe {
-        let guide: Id = unsafe { msg_send![region, safeAreaLayoutGuide] };
-        if !guide.is_null() {
-            return Some(guide);
-        }
-    }
-
     None
 }
 
 unsafe fn layout_guide_frame(guide: Id) -> Option<CGRect> {
     if guide.is_null() {
-        return None;
-    }
-    let responds_frame: bool = unsafe { msg_send![guide, respondsToSelector: sel!(layoutFrame)] };
-    if !responds_frame {
         return None;
     }
     let frame: CGRect = unsafe { msg_send![guide, layoutFrame] };
@@ -426,63 +359,13 @@ fn insets_from_frame(bounds: CGRect, frame: CGRect) -> NSEdgeInsets {
     }
 }
 
-/// Create a glass effect view if available, otherwise fallback to NSVisualEffectView.
-pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial) -> Id {
-    unsafe {
-        let glass_allowed =
-            std::env::var("CODESCRIBE_DISABLE_GLASS").is_err() && glass_effect_supported();
-        if glass_allowed {
-            if let Some(container_cls) = Class::get("NSGlassEffectContainerView") {
-                let container: Id = msg_send![container_cls, alloc];
-                let container: Id = msg_send![container, initWithFrame: frame];
-                let _: () = msg_send![container, setWantsLayer: true];
-                let layer: Id = msg_send![container, layer];
-                if !layer.is_null() {
-                    let clear = color_clear();
-                    let cg: Id = msg_send![clear, CGColor];
-                    let _: () = msg_send![layer, setBackgroundColor: cg];
-                }
-
-                let glass_cls = Class::get("NSGlassEffectView").unwrap();
-                let glass: Id = msg_send![glass_cls, alloc];
-                let glass_frame = CGRect::new(
-                    &CGPoint::new(0.0, 0.0),
-                    &CGSize::new(frame.size.width, frame.size.height),
-                );
-                let glass: Id = msg_send![glass, initWithFrame: glass_frame];
-                set_visual_effect_material(glass, material);
-                set_visual_effect_blending(glass, NSVisualEffectBlendingMode::WithinWindow);
-                set_visual_effect_state(glass, NSVisualEffectState::Active);
-                let _: () = msg_send![glass, setWantsLayer: true];
-                let _: () = msg_send![
-                    glass,
-                    setAutoresizingMask: 2_isize | 16_isize // NSViewWidthSizable | NSViewHeightSizable
-                ];
-                add_subview(container, glass);
-                return container;
-            }
-
-            let glass_cls = Class::get("NSGlassEffectView").unwrap();
-            let view: Id = msg_send![glass_cls, alloc];
-            let view: Id = msg_send![view, initWithFrame: frame];
-            set_visual_effect_material(view, material);
-            set_visual_effect_blending(view, NSVisualEffectBlendingMode::WithinWindow);
-            set_visual_effect_state(view, NSVisualEffectState::Active);
-            let _: () = msg_send![view, setWantsLayer: true];
-            return view;
-        }
-
-        let visual_cls = Class::get("NSVisualEffectView").unwrap();
-        let view: Id = msg_send![visual_cls, alloc];
-        let view: Id = msg_send![view, initWithFrame: frame];
-        set_visual_effect_material(view, material);
-        set_visual_effect_blending(view, NSVisualEffectBlendingMode::WithinWindow);
-        set_visual_effect_state(view, NSVisualEffectState::Active);
-        let _: () = msg_send![view, setWantsLayer: true];
-        view
-    }
-}
-
+/// Check whether Tahoe's `NSGlassEffectView` class is usable.
+///
+/// On macOS 26 Tahoe, `NSGlassEffectView` is a direct `NSView` subclass
+/// (NOT `NSVisualEffectView`). It does not respond to `setMaterial:`,
+/// `setBlendingMode:`, or `setState:` — it uses `setStyle:` and
+/// `setTintColor:` instead.  This function returns `false` on current
+/// Tahoe 26.3 beta because the glass API is not yet public.
 pub fn glass_effect_supported() -> bool {
     let Some(cls) = Class::get("NSGlassEffectView") else {
         return false;
@@ -491,6 +374,76 @@ pub fn glass_effect_supported() -> bool {
         !class_getInstanceMethod(cls, sel!(setMaterial:)).is_null()
             && !class_getInstanceMethod(cls, sel!(setBlendingMode:)).is_null()
             && !class_getInstanceMethod(cls, sel!(setState:)).is_null()
+    }
+}
+
+// ── Safe NSVisualEffectView subclass ─────────────────────────────────
+// macOS 26 Tahoe beta: AppKit internally calls `layoutRegionGuides` on
+// NSVisualEffectView during layout, but the method is missing →
+// -[NSVisualEffectView layoutRegionGuides]: unrecognized selector.
+// We register a thin subclass once that adds a stub returning nil so
+// ObjC nil-messaging silently eats any further calls.
+
+static CS_VEV_INIT: Once = Once::new();
+static mut CS_VEV_CLASS: *const Class = std::ptr::null();
+
+fn safe_visual_effect_view_class() -> *const Class {
+    unsafe {
+        CS_VEV_INIT.call_once(|| {
+            let superclass = Class::get("NSVisualEffectView").unwrap();
+            let has_layout_guides: bool =
+                !class_getInstanceMethod(superclass, sel!(layoutRegionGuides)).is_null();
+
+            if has_layout_guides {
+                CS_VEV_CLASS = superclass;
+            } else {
+                let mut decl = ClassDecl::new("CSVisualEffectView", superclass)
+                    .expect("Failed to declare CSVisualEffectView");
+
+                extern "C" fn layout_region_guides(_this: &Object, _cmd: Sel) -> Id {
+                    std::ptr::null_mut()
+                }
+
+                decl.add_method(
+                    sel!(layoutRegionGuides),
+                    layout_region_guides as extern "C" fn(&Object, Sel) -> Id,
+                );
+                CS_VEV_CLASS = decl.register();
+            }
+        });
+        CS_VEV_CLASS
+    }
+}
+
+/// Create a vibrancy effect view.
+///
+/// Uses `safe_visual_effect_view_class()` which adds a `layoutRegionGuides`
+/// stub on Tahoe 26 beta to prevent the internal AppKit crash.
+pub fn create_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial) -> Id {
+    create_glass_effect_view_with(
+        frame,
+        material,
+        NSVisualEffectBlendingMode::WithinWindow,
+        NSVisualEffectState::Active,
+    )
+}
+
+/// Create a vibrancy effect view with explicit blending and state.
+pub fn create_glass_effect_view_with(
+    frame: CGRect,
+    material: NSVisualEffectMaterial,
+    blending: NSVisualEffectBlendingMode,
+    state: NSVisualEffectState,
+) -> Id {
+    unsafe {
+        let cls = safe_visual_effect_view_class();
+        let view: Id = msg_send![cls, alloc];
+        let view: Id = msg_send![view, initWithFrame: frame];
+        set_visual_effect_material(view, material);
+        set_visual_effect_blending(view, blending);
+        set_visual_effect_state(view, state);
+        let _: () = msg_send![view, setWantsLayer: true];
+        view
     }
 }
 
@@ -820,10 +773,8 @@ pub unsafe fn style_toolbar_icon_button(button: Id) {
     if responds_bordered {
         let _: () = msg_send![button, setBordered: false];
     }
-    let responds_transparent: bool = msg_send![button, respondsToSelector: sel!(setTransparent:)];
-    if responds_transparent {
-        let _: () = msg_send![button, setTransparent: true];
-    }
+    // NOTE: Do NOT set transparent=true — it hides the button image entirely.
+    // setBordered=false + setImagePosition=NSImageOnly is sufficient for borderless icons.
     let responds_shows_border: bool =
         msg_send![button, respondsToSelector: sel!(setShowsBorderOnlyWhileMouseInside:)];
     if responds_shows_border {
@@ -1071,14 +1022,21 @@ pub fn create_scrollable_text_view(frame: CGRect, editable: bool) -> (Id, Id) {
 // ============================================================================
 
 /// Create a floating overlay window
-pub fn create_floating_window(frame: CGRect, title: &str, transparent_titlebar: bool) -> Id {
+pub fn create_floating_window(
+    frame: CGRect,
+    title: &str,
+    transparent_titlebar: bool,
+    resizable: bool,
+) -> Id {
     unsafe {
         let ns_window = Class::get("NSWindow").unwrap();
 
-        let style = NSWindowStyleMask::Titled
+        let mut style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Miniaturizable
-            | NSWindowStyleMask::Resizable;
+            | NSWindowStyleMask::Miniaturizable;
+        if resizable {
+            style |= NSWindowStyleMask::Resizable;
+        }
 
         let window: Id = msg_send![ns_window, alloc];
         let window: Id = msg_send![
@@ -1462,8 +1420,110 @@ fn markdown_options_with_base_font(font: Id) -> Option<Id> {
         if responds_base && !font.is_null() {
             let _: () = msg_send![options, setBaseFont: font];
         }
+        // Use inlineOnlyPreservingWhitespace so that newline characters are kept
+        // as literal line breaks instead of being collapsed into spaces by the
+        // full CommonMark parser.  Inline formatting (**bold**, `code`, etc.) is
+        // still applied.
+        let responds_syntax: bool =
+            msg_send![options, respondsToSelector: sel!(setInterpretedSyntax:)];
+        if responds_syntax {
+            // 0 = .full, 1 = .inlineOnly, 2 = .inlineOnlyPreservingWhitespace
+            let _: () = msg_send![options, setInterpretedSyntax: 2_isize];
+        }
         Some(options)
     }
+}
+
+/// NSRange for Objective-C attributed string APIs.
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct NSRange {
+    location: usize,
+    length: usize,
+}
+
+// NSFontTraitMask bits (subset).
+const NS_ITALIC_FONT_MASK: u64 = 1 << 0;
+const NS_BOLD_FONT_MASK: u64 = 1 << 1;
+
+/// Normalize per-range font attributes to stay within the provided base font family.
+///
+/// AppKit's Markdown parser may introduce different font families for inline `code` spans or
+/// emphasis runs. We want consistent typography inside bubbles, while preserving bold/italic
+/// traits and point sizes.
+///
+/// Returns an attributed string instance (possibly mutable) that is safe to set on
+/// `NSTextField.setAttributedStringValue:`.
+unsafe fn normalize_attributed_string_fonts(attr: Id, base_font: Id) -> Id {
+    if attr.is_null() || base_font.is_null() {
+        return attr;
+    }
+
+    let mutable: Id = msg_send![attr, mutableCopy];
+    if mutable.is_null() {
+        return attr;
+    }
+
+    let len: usize = msg_send![mutable, length];
+    if len == 0 {
+        return mutable;
+    }
+
+    let Some(ns_font_manager) = Class::get("NSFontManager") else {
+        return mutable;
+    };
+    let fm: Id = msg_send![ns_font_manager, sharedFontManager];
+    if fm.is_null() {
+        return mutable;
+    }
+
+    let font_key = ns_string("NSFont");
+    let mut idx: usize = 0;
+    while idx < len {
+        let mut effective = NSRange {
+            location: 0,
+            length: 0,
+        };
+        let cur_font: Id = msg_send![
+            mutable,
+            attribute: font_key
+            atIndex: idx
+            effectiveRange: &mut effective
+        ];
+        if effective.length == 0 {
+            idx += 1;
+            continue;
+        }
+
+        if !cur_font.is_null() {
+            let traits: u64 = msg_send![fm, traitsOfFont: cur_font];
+            let desired_traits = traits & (NS_ITALIC_FONT_MASK | NS_BOLD_FONT_MASK);
+
+            let cur_size: f64 = msg_send![cur_font, pointSize];
+            let base_size: f64 = msg_send![base_font, pointSize];
+
+            let mut new_font: Id = base_font;
+            if (cur_size - base_size).abs() > 0.05 {
+                let sized: Id = msg_send![fm, convertFont: base_font toSize: cur_size];
+                if !sized.is_null() {
+                    new_font = sized;
+                }
+            }
+            if desired_traits != 0 {
+                let converted: Id =
+                    msg_send![fm, convertFont: new_font toHaveTrait: desired_traits];
+                if !converted.is_null() {
+                    new_font = converted;
+                }
+            }
+
+            let _: () = msg_send![mutable, addAttribute: font_key value: new_font range: effective];
+        }
+
+        idx = effective.location + effective.length;
+    }
+
+    mutable
 }
 
 unsafe fn markdown_attributed_string(text: &str, font: Id) -> Option<Id> {
@@ -1489,7 +1549,7 @@ unsafe fn markdown_attributed_string(text: &str, font: Id) -> Option<Id> {
             error: std::ptr::null_mut::<*mut Object>()
         ];
         if !obj.is_null() {
-            return Some(obj);
+            return Some(unsafe { normalize_attributed_string_fonts(obj, font) });
         }
     }
 
@@ -1504,7 +1564,7 @@ unsafe fn markdown_attributed_string(text: &str, font: Id) -> Option<Id> {
             baseURL: std::ptr::null::<Object>()
         ];
         if !obj.is_null() {
-            return Some(obj);
+            return Some(unsafe { normalize_attributed_string_fonts(obj, font) });
         }
     }
 
@@ -1535,6 +1595,7 @@ pub struct BubbleConfig {
     pub text: String,
     pub role: BubbleRole,
     pub max_width: f64,
+    pub font_size: f64,
     pub is_streaming: bool,
     pub is_error: bool,
     pub metadata: Option<String>,
@@ -1554,7 +1615,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let ns_font = Class::get("NSFont").unwrap();
         let ns_dict = Class::get("NSDictionary").unwrap();
 
-        let font_size = 13.0;
+        let font_size = config.font_size;
         let padding_x = 12.0;
         let padding_top = 10.0;
         let copy_button_height = if config.message_index.is_some() {
@@ -1663,6 +1724,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let cell: Id = msg_send![text_label, cell];
         if !cell.is_null() {
             let _: () = msg_send![cell, setWraps: true];
+            let _: () = msg_send![cell, setLineBreakMode: 0_isize]; // NSLineBreakByWordWrapping
             let _: () = msg_send![cell, setScrollable: false];
         }
 
@@ -1685,7 +1747,9 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let _: () = msg_send![text_label, setTextColor: text_color];
 
         let _: () = msg_send![text_label, setFont: font];
-        if !apply_markdown_to_text_field(text_label, &display_text, font) {
+        let allow_markdown = !config.is_streaming
+            && matches!(config.role, BubbleRole::Assistant | BubbleRole::System);
+        if !(allow_markdown && apply_markdown_to_text_field(text_label, &display_text, font)) {
             let _: () = msg_send![text_label, setStringValue: text_str];
         }
         let _: () = msg_send![text_label, setLineBreakMode: 0_isize]; // NSLineBreakByWordWrapping
@@ -1777,6 +1841,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             &CGSize::new(text_layout_width.max(1.0), text_height),
         );
         let _: () = msg_send![text_label, setFrame: text_frame];
+        add_subview(bubble, text_label);
 
         // Metadata (role/time/mode) above the bubble.
         if let Some(meta) = config.metadata.as_ref() {
@@ -1809,8 +1874,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         }
 
         // Assemble hierarchy
-        let _: () = msg_send![bubble, addSubview: text_label];
-
+        // (text_label already added to bubble above — directly or via scroll wrapper)
         // Add Copy button if message_index is provided
         if let (Some(msg_index), Some(target)) = (config.message_index, config.copy_action_target) {
             let ns_button = Class::get("NSButton").unwrap();
@@ -1891,7 +1955,13 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
 /// Update bubble text (for streaming updates)
 /// # Safety
 /// `text_label` must be a valid `NSTextField` instance.
-pub unsafe fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool) {
+pub unsafe fn update_bubble_text(
+    text_label: Id,
+    text: &str,
+    role: BubbleRole,
+    is_streaming: bool,
+    is_error: bool,
+) {
     unsafe {
         let display_text = if is_streaming && text.is_empty() {
             "• • •".to_string()
@@ -1901,17 +1971,28 @@ pub unsafe fn update_bubble_text(text_label: Id, text: &str, is_streaming: bool)
             text.to_string()
         };
 
+        let allow_markdown =
+            !is_streaming && matches!(role, BubbleRole::Assistant | BubbleRole::System);
         let font: Id = msg_send![text_label, font];
-        if !apply_markdown_to_text_field(text_label, &display_text, font) {
+        if !(allow_markdown && apply_markdown_to_text_field(text_label, &display_text, font)) {
             let text_str = ns_string(&display_text);
             let _: () = msg_send![text_label, setStringValue: text_str];
         }
 
-        // Update text color based on streaming state (assistant defaults)
-        let text_color: Id = if is_streaming {
-            ui_colors::bubble_streaming_text()
+        let text_color: Id = if is_error {
+            ui_colors::bubble_error_text()
         } else {
-            ui_colors::bubble_text()
+            match role {
+                BubbleRole::User => ui_colors::bubble_text(),
+                BubbleRole::Assistant => {
+                    if is_streaming {
+                        ui_colors::bubble_streaming_text()
+                    } else {
+                        ui_colors::bubble_text()
+                    }
+                }
+                BubbleRole::System => ui_colors::bubble_text(),
+            }
         };
         let _: () = msg_send![text_label, setTextColor: text_color];
     }

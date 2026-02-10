@@ -21,9 +21,19 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use tokio::time::Instant;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::vad;
+
+// ═══════════════════════════════════════════════════════════
+// Constants
+// ═══════════════════════════════════════════════════════════
+
+/// Minimum peak speech probability to consider a buffer "speech-like"
+/// when VAD's `iter_state` never fired `Start`. Used for:
+/// - **flush fallback**: emitting buffered audio instead of dropping it,
+/// - **retention**: keeping ≥1s of raw audio for the fallback path.
+const FALLBACK_PROB: f32 = 0.25;
 
 // ═══════════════════════════════════════════════════════════
 // Public types
@@ -31,7 +41,12 @@ use crate::vad;
 
 pub(crate) enum SpeechEvent {
     Chunk(Vec<f32>),
+    /// Interim utterance slice emitted during long continuous speech to keep streaming responsive.
     Utterance(Vec<f32>),
+    /// Final utterance slice emitted when VAD determines the segment ended (or on flush).
+    ///
+    /// Consumers can use this to distinguish "preview" from "commit" boundaries.
+    UtteranceFinal(Vec<f32>),
 }
 
 pub(crate) enum SpeechMode {
@@ -104,6 +119,14 @@ pub(crate) struct SpeechSession {
     vad_frames_total: u64,
     vad_frames_speech: u64,
     last_vad_heartbeat: Instant,
+    /// Peak speech probability seen across this session (for flush fallback).
+    max_speech_prob: f32,
+    /// Speech probability at the last VAD boundary (Start or End).
+    last_boundary_prob: f32,
+    /// Wall-clock instant when this session was created.
+    session_start: Instant,
+    /// Set to true if `flush()` used the fallback path (VAD never fired Start).
+    last_flush_fallback: bool,
 }
 
 impl SpeechSession {
@@ -186,6 +209,10 @@ impl SpeechSession {
             vad_frames_total: 0,
             vad_frames_speech: 0,
             last_vad_heartbeat: Instant::now(),
+            max_speech_prob: 0.0,
+            last_boundary_prob: 0.0,
+            session_start: Instant::now(),
+            last_flush_fallback: false,
         }
     }
 
@@ -208,7 +235,7 @@ impl SpeechSession {
         interim_sec: f32,
         max_silence_sec: Option<f32>,
     ) -> Self {
-        let mut config = hardcoded_gate_config();
+        let mut config = hardcoded_utterance_gate_config();
         if let Some(sec) = max_silence_sec {
             config.vad.max_silence_duration_sec = sec.clamp(0.1, 10.0);
         }
@@ -292,6 +319,10 @@ impl SpeechSession {
             vad_frames_total: 0,
             vad_frames_speech: 0,
             last_vad_heartbeat: Instant::now(),
+            max_speech_prob: 0.0,
+            last_boundary_prob: 0.0,
+            session_start: Instant::now(),
+            last_flush_fallback: false,
         }
     }
 
@@ -315,7 +346,13 @@ impl SpeechSession {
         while self.vad_resample_buf.len() >= vad::CHUNK_SIZE {
             let frame: Vec<f32> = self.vad_resample_buf.drain(..vad::CHUNK_SIZE).collect();
             let speech_prob = match self.vad.as_mut() {
-                Some(vad) => vad.predict(&frame).unwrap_or(0.0),
+                Some(vad) => match vad.predict(&frame) {
+                    Ok(prob) => prob,
+                    Err(e) => {
+                        warn!("VAD predict error (assuming speech): {e}");
+                        1.0
+                    }
+                },
                 None => 1.0,
             };
             self.update_vad_heartbeat(speech_prob);
@@ -383,7 +420,13 @@ impl SpeechSession {
         while self.vad_resample_buf.len() >= vad::CHUNK_SIZE {
             let frame: Vec<f32> = self.vad_resample_buf.drain(..vad::CHUNK_SIZE).collect();
             let speech_prob = match self.vad.as_mut() {
-                Some(vad) => vad.predict(&frame).unwrap_or(0.0),
+                Some(vad) => match vad.predict(&frame) {
+                    Ok(prob) => prob,
+                    Err(e) => {
+                        warn!("VAD predict error in supervisor (assuming speech): {e}");
+                        1.0
+                    }
+                },
                 None => 1.0,
             };
             self.update_vad_heartbeat(speech_prob);
@@ -427,6 +470,7 @@ impl SpeechSession {
                     .saturating_sub(self.pre_roll_raw);
                 self.segment_start = Some(raw_start);
                 self.last_emit_raw = raw_start;
+                self.last_boundary_prob = speech_prob;
             }
 
             if let Some(end_sample) = end_event {
@@ -434,6 +478,7 @@ impl SpeechSession {
                     .vad_to_raw_index(end_sample)
                     .saturating_add(self.speech_pad_raw);
                 self.pending_end = Some(raw_end);
+                self.last_boundary_prob = speech_prob;
             }
 
             if let Some(iter_state) = self.iter_state.as_ref() {
@@ -496,7 +541,7 @@ impl SpeechSession {
             {
                 match self.mode {
                     SpeechMode::Stream { .. } => events.push(SpeechEvent::Chunk(chunk)),
-                    SpeechMode::Utterance { .. } => events.push(SpeechEvent::Utterance(chunk)),
+                    SpeechMode::Utterance { .. } => events.push(SpeechEvent::UtteranceFinal(chunk)),
                 }
             }
             self.pending_end = None;
@@ -504,10 +549,17 @@ impl SpeechSession {
             self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
         }
 
-        // Safety net: when no segment is active, cap raw_buffer to pre-roll size.
-        // This prevents unbounded growth during silence or when VAD never fires Start.
+        // Safety net: when no segment is active, cap raw_buffer to prevent
+        // unbounded growth. When VAD saw speech-like signal but never triggered
+        // Start, retain enough audio for the flush fallback path (>= 1s).
         if self.segment_start.is_none() && self.pending_end.is_none() {
-            self.trim_raw_buffer(self.raw_cursor.saturating_sub(self.pre_roll_raw));
+            let retain = if self.max_speech_prob >= FALLBACK_PROB {
+                // Keep at least 1s of audio for the flush fallback.
+                (self.raw_sample_rate as usize).max(self.pre_roll_raw)
+            } else {
+                self.pre_roll_raw
+            };
+            self.trim_raw_buffer(self.raw_cursor.saturating_sub(retain));
         }
 
         events
@@ -529,11 +581,31 @@ impl SpeechSession {
                     );
                     return Some(match self.mode {
                         SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
-                        SpeechMode::Utterance { .. } => SpeechEvent::Utterance(chunk),
+                        SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
                     });
                 }
             }
-            // VAD never triggered Start — no speech detected, intentionally drop.
+            // VAD never triggered Start — but if we saw speech-like signal,
+            // emit raw buffer as degraded fallback instead of dropping.
+            let fallback_min_samples = self.raw_sample_rate as usize / 2; // 0.5s at any rate
+            let available = self.raw_cursor.saturating_sub(self.raw_buffer_start);
+            if self.max_speech_prob >= FALLBACK_PROB && available > fallback_min_samples {
+                let start = self.raw_buffer_start;
+                let end = self.raw_cursor;
+                if let Some(chunk) = self.raw_slice(start, end) {
+                    warn!(
+                        "Supervisor flush: VAD never triggered Start, but max_prob={:.3} — emitting {} samples as fallback",
+                        self.max_speech_prob,
+                        chunk.len()
+                    );
+                    self.last_flush_fallback = true;
+                    return Some(match self.mode {
+                        SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
+                        SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
+                    });
+                }
+            }
+            // Truly no speech detected.
             return None;
         }
         if self.pending_samples.is_empty() {
@@ -570,11 +642,12 @@ impl SpeechSession {
         self.last_append_at = Instant::now();
         match self.mode {
             SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
-            SpeechMode::Utterance { .. } => SpeechEvent::Utterance(chunk),
+            SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
         }
     }
 
     fn update_vad_heartbeat(&mut self, speech_prob: f32) {
+        self.max_speech_prob = self.max_speech_prob.max(speech_prob);
         self.vad_frames_total = self.vad_frames_total.saturating_add(1);
         if speech_prob >= self.threshold {
             self.vad_frames_speech = self.vad_frames_speech.saturating_add(1);
@@ -751,6 +824,43 @@ impl SpeechSession {
         self.output_sample_rate
     }
 
+    /// Speech probability at the last VAD Start/End boundary.
+    pub(crate) fn boundary_prob(&self) -> f32 {
+        self.last_boundary_prob
+    }
+
+    /// Milliseconds elapsed since session creation (wall-clock).
+    pub(crate) fn session_elapsed_ms(&self) -> u64 {
+        self.session_start.elapsed().as_millis() as u64
+    }
+
+    /// Whether the last `flush()` used the fallback path (VAD never fired Start).
+    pub(crate) fn was_flush_fallback(&self) -> bool {
+        self.last_flush_fallback
+    }
+
+    /// Peak speech probability observed across the entire session.
+    pub(crate) fn peak_speech_prob(&self) -> f32 {
+        self.max_speech_prob
+    }
+
+    /// Override VAD threshold (test-only). Set impossibly high to prevent
+    /// VadIterState from firing Start, exercising the flush fallback path.
+    #[cfg(test)]
+    pub fn set_vad_threshold_for_test(&mut self, threshold: f32) {
+        self.threshold = threshold;
+        if let Some(iter_state) = self.iter_state.as_mut() {
+            iter_state.params.threshold = threshold;
+        }
+    }
+
+    /// Override max_speech_prob (test-only). Simulates VAD having seen
+    /// speech-like signal without requiring real speech audio.
+    #[cfg(test)]
+    pub fn set_max_speech_prob_for_test(&mut self, prob: f32) {
+        self.max_speech_prob = prob;
+    }
+
     /// Current absolute raw sample cursor position (test-only accessor).
     #[cfg(test)]
     pub fn raw_cursor(&self) -> usize {
@@ -791,6 +901,13 @@ impl SpeechSession {
     #[cfg(test)]
     pub fn raw_buffer_len(&self) -> usize {
         self.raw_buffer.len()
+    }
+
+    /// Minimum silence duration (in VAD sample-rate samples) before ending a segment
+    /// (test-only accessor).
+    #[cfg(test)]
+    pub fn min_silence_samples(&self) -> usize {
+        self.min_silence_samples
     }
 
     fn vad_to_raw_index(&self, vad_index: usize) -> usize {
@@ -845,8 +962,20 @@ fn utterance_interim_sec() -> f32 {
                 .ok()
                 .and_then(|v| v.parse::<f32>().ok())
         })
-        .unwrap_or(5.0)
+        .unwrap_or(3.0)
         .clamp(1.0, 30.0)
+}
+
+fn utterance_silence_sec_override() -> Option<f32> {
+    std::env::var("CODESCRIBE_BUFFERED_SILENCE_SEC")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .or_else(|| {
+            std::env::var("CODESCRIBE_UTTERANCE_SILENCE_SEC")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+        })
+        .map(|v| v.clamp(0.1, 10.0))
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -865,7 +994,9 @@ pub(crate) fn hardcoded_gate_config() -> GateConfig {
         vad_cfg.min_speech_duration_sec = 0.05;
     }
     // Short silence tolerance for streaming chunk boundaries.
-    if std::env::var("CODESCRIBE_VAD_SILENCE_SEC").is_err() {
+    if std::env::var("CODESCRIBE_VAD_SILENCE_SEC").is_err()
+        && std::env::var("CODESCRIBE_VAD_MAX_SILENCE_SEC").is_err()
+    {
         vad_cfg.max_silence_duration_sec = 0.20;
     }
     // Silero reference pre-roll (64ms) for tight boundary padding.
@@ -881,6 +1012,40 @@ pub(crate) fn hardcoded_gate_config() -> GateConfig {
         .and_then(|v| v.parse::<f32>().ok())
         .map(|v| v.clamp(0.0, 2.0))
         .unwrap_or(pre_roll); // default: mirror pre_roll
+
+    GateConfig {
+        vad: vad_cfg,
+        pre_roll_sec: pre_roll,
+        speech_pad_sec: speech_pad,
+        mode: gate_mode_from_env(),
+    }
+}
+
+pub(crate) fn hardcoded_utterance_gate_config() -> GateConfig {
+    // Base from env-aware VadConfig::default() so CODESCRIBE_VAD_* env vars are respected.
+    // Utterance mode intentionally does NOT force streaming silence defaults (0.20s).
+    let mut vad_cfg = vad::VadConfig::default();
+
+    // Keep fast start + tight pre-roll like streaming, unless explicitly overridden.
+    if std::env::var("CODESCRIBE_VAD_MIN_SPEECH_SEC").is_err() {
+        vad_cfg.min_speech_duration_sec = 0.05;
+    }
+    if std::env::var("CODESCRIBE_VAD_PRE_ROLL_SEC").is_err() {
+        vad_cfg.pre_roll_sec = 0.064;
+    }
+
+    // Optional per-utterance override (buffered mode). This is separate from global VAD silence
+    // so streaming can keep short chunking silence while utterances wait longer by default.
+    if let Some(sec) = utterance_silence_sec_override() {
+        vad_cfg.max_silence_duration_sec = sec;
+    }
+
+    let pre_roll = vad_cfg.pre_roll_sec;
+    let speech_pad = std::env::var("CODESCRIBE_VAD_SPEECH_PAD_SEC")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map(|v| v.clamp(0.0, 2.0))
+        .unwrap_or(pre_roll);
 
     GateConfig {
         vad: vad_cfg,
@@ -1104,6 +1269,40 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, prev }
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.prev.as_ref() {
+                    Some(prev) => std::env::set_var(self.key, prev),
+                    None => std::env::remove_var(self.key),
+                };
+            }
+        }
+    }
+
     #[test]
     fn vad_iter_state_basic_lifecycle() {
         let config = GateConfig {
@@ -1181,17 +1380,61 @@ mod tests {
     #[serial]
     fn test_gate_mode_respects_env() {
         // Set env to Iter — constructors must NOT override to Supervisor.
-        // SAFETY: test runs single-threaded (cargo test default); no concurrent env reads.
-        unsafe {
-            std::env::set_var("CODESCRIBE_VAD_GATE_MODE", "iter");
-        }
+        let _g = EnvGuard::set("CODESCRIBE_VAD_GATE_MODE", "iter");
         let stream = SpeechSession::new_stream(16000, 6.0, 1.0);
         assert_eq!(stream.gate_mode(), VadGateMode::Iter);
         let utterance = SpeechSession::new_utterance(16000);
         assert_eq!(utterance.gate_mode(), VadGateMode::Iter);
-        unsafe {
-            std::env::remove_var("CODESCRIBE_VAD_GATE_MODE");
-        }
+        drop(_g);
+    }
+
+    #[test]
+    #[serial]
+    fn utterance_default_silence_is_not_forced_to_stream_default() {
+        // Ensure a clean baseline for this test (do not inherit user shell env).
+        let _g1 = EnvGuard::unset("CODESCRIBE_VAD_SILENCE_SEC");
+        let _g2 = EnvGuard::unset("CODESCRIBE_VAD_MAX_SILENCE_SEC");
+        let _g3 = EnvGuard::unset("CODESCRIBE_UTTERANCE_SILENCE_SEC");
+        let _g4 = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
+
+        let sr = 16000u32;
+
+        let stream = SpeechSession::new_stream(sr, 6.0, 1.0);
+        let utterance = SpeechSession::new_utterance(sr);
+
+        // Stream keeps the short silence default unless user overrides global VAD silence.
+        let stream_expected = (0.20 * vad::VAD_SAMPLE_RATE as f32).round().max(1.0) as usize;
+        assert_eq!(stream.min_silence_samples(), stream_expected);
+
+        // Utterance uses VadConfig::default() silence (env-aware) unless overridden by utterance env.
+        let base = vad::VadConfig::default();
+        let utter_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
+            .round()
+            .max(1.0) as usize;
+        assert_eq!(utterance.min_silence_samples(), utter_expected);
+        assert!(
+            utterance.min_silence_samples() >= stream.min_silence_samples(),
+            "utterance silence should be >= stream silence by default"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn utterance_silence_env_override_does_not_change_stream_default() {
+        let _g1 = EnvGuard::unset("CODESCRIBE_VAD_SILENCE_SEC");
+        let _g2 = EnvGuard::unset("CODESCRIBE_VAD_MAX_SILENCE_SEC");
+        let _g3 = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
+        let _g4 = EnvGuard::set("CODESCRIBE_UTTERANCE_SILENCE_SEC", "0.45");
+
+        let sr = 16000u32;
+        let stream = SpeechSession::new_stream(sr, 6.0, 1.0);
+        let utterance = SpeechSession::new_utterance(sr);
+
+        let stream_expected = (0.20 * vad::VAD_SAMPLE_RATE as f32).round().max(1.0) as usize;
+        assert_eq!(stream.min_silence_samples(), stream_expected);
+
+        let utter_expected = (0.45 * vad::VAD_SAMPLE_RATE as f32).round().max(1.0) as usize;
+        assert_eq!(utterance.min_silence_samples(), utter_expected);
     }
 
     #[test]
@@ -1213,6 +1456,9 @@ mod tests {
 
         let utt = SpeechEvent::Utterance(vec![3.0]);
         assert!(matches!(utt, SpeechEvent::Utterance(v) if v.len() == 1));
+
+        let final_utt = SpeechEvent::UtteranceFinal(vec![4.0, 5.0, 6.0]);
+        assert!(matches!(final_utt, SpeechEvent::UtteranceFinal(v) if v.len() == 3));
     }
 
     /// Verify that raw_buffer is trimmed during long continuous speech in stream mode.
@@ -1277,6 +1523,68 @@ mod tests {
                 "Supervisor stream: {} chunks emitted, max buffer {} samples (limit {})",
                 total_chunks, max_buffer_len, max_expected
             );
+        }
+    }
+
+    /// P0-2: Verify that flush() emits fallback audio when VAD never triggers Start
+    /// but speech-like signal was detected (max_speech_prob >= 0.25).
+    #[test]
+    fn test_supervisor_flush_fallback_emits_when_vad_never_starts() {
+        let sr = 16000u32;
+        let mut session = SpeechSession::new_utterance(sr);
+
+        if session.gate_mode() != VadGateMode::Supervisor {
+            eprintln!("Skipping: gate mode is not Supervisor");
+            return;
+        }
+
+        // Set impossible threshold so VadIterState never fires Start,
+        // simulating edge cases where speech is too soft/short for min_speech.
+        session.set_vad_threshold_for_test(2.0);
+
+        // Feed ~1s of audio. The real Silero model may score synthetic audio
+        // below the fallback threshold, so we inject max_speech_prob directly
+        // to simulate "VAD saw speech but iter_state never triggered Start".
+        let total_samples = sr as usize; // 1s
+        let callback_size = 512usize;
+        for i in 0..(total_samples / callback_size) {
+            let buf: Vec<f32> = (0..callback_size)
+                .map(|j| ((i * callback_size + j) as f32 * 0.01).sin() * 0.5)
+                .collect();
+            let events = session.feed(&buf, sr);
+            // Override max_speech_prob after each feed so the buffer retention
+            // path (which checks max_speech_prob >= 0.25) keeps enough audio.
+            session.set_max_speech_prob_for_test(0.40);
+            // No events expected — threshold too high to trigger Start.
+            assert!(
+                events.is_empty(),
+                "Expected no events with threshold=2.0, got {} at iteration {}",
+                events.len(),
+                i
+            );
+        }
+
+        // Flush should emit fallback audio instead of returning None.
+        let result = session.flush();
+        assert!(
+            result.is_some(),
+            "flush() should return fallback audio when max_speech_prob >= 0.25"
+        );
+        if let Some(SpeechEvent::UtteranceFinal(samples)) = result {
+            let duration = samples.len() as f32 / sr as f32;
+            assert!(
+                duration >= 0.3,
+                "Fallback audio should be >= 0.3s, got {:.3}s ({} samples)",
+                duration,
+                samples.len()
+            );
+            println!(
+                "Flush fallback: emitted {:.3}s ({} samples) from 1.0s input",
+                duration,
+                samples.len()
+            );
+        } else {
+            panic!("Expected UtteranceFinal from flush fallback");
         }
     }
 }

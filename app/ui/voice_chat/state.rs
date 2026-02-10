@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
+use codescribe_core::attachment::Attachment;
+
 use crate::ui::shared::status::UiStatus;
 
 /// Type alias for voice chat send callback
@@ -55,7 +57,6 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Drawer,
-    Transcription,
     Agent,
     Settings,
 }
@@ -114,10 +115,10 @@ pub struct VoiceChatOverlayState {
     pub status_pill_label: Option<usize>,
     pub status_pill_dot: Option<usize>,
     pub tab_drawer_button: Option<usize>,
-    pub tab_transcription_button: Option<usize>,
     pub tab_agent_button: Option<usize>,
     pub tab_settings_button: Option<usize>,
     pub favorites_button: Option<usize>,
+    pub help_button: Option<usize>,
     pub close_button: Option<usize>,
 
     // Drawer tab
@@ -140,17 +141,12 @@ pub struct VoiceChatOverlayState {
     pub agent_input_field: Option<usize>,
     pub agent_attach_button: Option<usize>,
     pub agent_send_button: Option<usize>,
-    /// Files attached as additional context for Agent chat.
-    pub attached_files: Vec<PathBuf>,
-    /// Fingerprint of the last attachment set that was sent to the assistant.
-    pub attached_files_last_sent: Option<u64>,
-
-    // Transcription tab (one-overlay mode)
-    pub transcription_scroll_view: Option<usize>,
-    pub transcription_text_view: Option<usize>,
-    pub transcription_placeholder: Option<usize>,
-    pub transcription_edge_effect: Option<usize>,
-    pub transcription_text: String,
+    /// Attachments (files, images, URLs, GitHub blobs) for Agent chat context.
+    pub attachments: Vec<Attachment>,
+    /// Fingerprint of the last attachment set sent to the assistant.
+    pub attachments_last_sent: Option<u64>,
+    /// Chip strip scroll view (horizontal list of attachment chips above input bar).
+    pub attachment_chip_strip: Option<usize>,
 
     // Active tab
     pub active_tab: Tab,
@@ -178,6 +174,9 @@ pub struct VoiceChatOverlayState {
     pub last_layout_time: Option<Instant>,
     pub layout_pending: bool,
     pub pending_delta_index: Option<usize>,
+
+    // Zoom
+    pub zoom_level: f64,
 }
 
 impl Default for VoiceChatOverlayState {
@@ -196,10 +195,10 @@ impl Default for VoiceChatOverlayState {
             status_pill_label: None,
             status_pill_dot: None,
             tab_drawer_button: None,
-            tab_transcription_button: None,
             tab_agent_button: None,
             tab_settings_button: None,
             favorites_button: None,
+            help_button: None,
             close_button: None,
             drawer_scroll_view: None,
             drawer_container: None,
@@ -218,13 +217,9 @@ impl Default for VoiceChatOverlayState {
             agent_input_field: None,
             agent_attach_button: None,
             agent_send_button: None,
-            attached_files: Vec::new(),
-            attached_files_last_sent: None,
-            transcription_scroll_view: None,
-            transcription_text_view: None,
-            transcription_placeholder: None,
-            transcription_edge_effect: None,
-            transcription_text: String::new(),
+            attachments: Vec::new(),
+            attachments_last_sent: None,
+            attachment_chip_strip: None,
             active_tab: Tab::Drawer,
             pending_tab: None,
             messages: Vec::new(),
@@ -240,6 +235,7 @@ impl Default for VoiceChatOverlayState {
             last_layout_time: None,
             layout_pending: false,
             pending_delta_index: None,
+            zoom_level: 1.0,
         }
     }
 }

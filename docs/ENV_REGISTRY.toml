@@ -71,11 +71,11 @@ description = "Maximum utterance length before force flush"
 range = "1.0-300.0"
 
 [vars.CODESCRIBE_VAD_PRE_ROLL_SEC]
-default = "0.5"
+default = "0.064"
 type = "f32"
 reload = "restart"
 category = "vad"
-description = "Pre-roll buffer (seconds) before speech onset"
+description = "Pre-roll buffer (seconds) before speech onset (~64ms for consonant attacks)"
 range = "0.0-2.0"
 
 [vars.CODESCRIBE_VAD_SPEECH_PAD_SEC]
@@ -87,11 +87,11 @@ description = "Speech padding (seconds) appended after speech offset. Defaults t
 range = "0.0-2.0"
 
 [vars.CODESCRIBE_VAD_GATE_MODE]
-default = "simple"
+default = "supervisor"
 type = "string"
 reload = "restart"
 category = "vad"
-description = "Silero gate mode: simple (default) or iter (vad_iter with temp_end/prev_end)"
+description = "Silero gate mode: supervisor (default, preserves raw sample rate), iter, or simple"
 
 [vars.CODESCRIBE_VAD_ITER]
 default = "0"
@@ -158,12 +158,19 @@ reload = "hot"
 category = "streaming"
 description = "Use buffered streaming mode (smoother output)"
 
+[vars.CODESCRIBE_EVENT_PIPELINE]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "streaming"
+description = "Use the new event-based transcription pipeline (experimental)"
+
 [vars.CODESCRIBE_BUFFER_DELAY_MS]
 default = "3000"
 type = "u64"
 reload = "hot"
 category = "streaming"
-description = "Initial buffer delay in milliseconds"
+description = "Buffer delay in milliseconds (skipped for first emission to give instant feedback)"
 
 [vars.CODESCRIBE_TYPING_CPS]
 default = "30"
@@ -180,11 +187,11 @@ category = "streaming"
 description = "Maximum words emitted per tick (buffered mode)"
 
 [vars.CODESCRIBE_STREAM_CHUNK_SEC]
-default = "15.0"
+default = "3.0"
 type = "f32"
 reload = "hot"
 category = "streaming"
-description = "Streaming chunk duration in seconds"
+description = "Streaming chunk duration in seconds (utterance cadence)"
 range = "0.5-30.0"
 
 [vars.CODESCRIBE_STREAM_OVERLAP_RATIO]
@@ -262,7 +269,7 @@ description = "Prefix ratio required to accept buffered correction"
 range = "0.4-0.9"
 
 [vars.CODESCRIBE_BUFFERED_INTERIM_SEC]
-default = "5.0"
+default = "3.0"
 type = "f32"
 reload = "hot"
 category = "streaming"
@@ -270,12 +277,28 @@ description = "Interim emission cadence for buffered mode (sec)"
 range = "1.0-30.0"
 
 [vars.CODESCRIBE_UTTERANCE_INTERIM_SEC]
-default = "5.0"
+default = "3.0"
 type = "f32"
 reload = "hot"
 category = "streaming"
 description = "Legacy interim cadence for utterance mode (sec)"
 range = "1.0-30.0"
+
+[vars.CODESCRIBE_BUFFERED_SILENCE_SEC]
+default = ""
+type = "f32"
+reload = "restart"
+category = "streaming"
+description = "Override silence duration before utterance flush in buffered mode (sec)"
+range = "0.1-10.0"
+
+[vars.CODESCRIBE_UTTERANCE_SILENCE_SEC]
+default = ""
+type = "f32"
+reload = "restart"
+category = "streaming"
+description = "Legacy override silence duration before utterance flush in utterance mode (sec)"
+range = "0.1-10.0"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
@@ -429,6 +452,13 @@ type = "u64"
 reload = "restart"
 category = "llm"
 description = "Max tokens for assistive LLM (0 = no limit)"
+
+[vars.FORMATTING_LEVEL]
+default = "medium"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "AI formatting level: raw, medium, or creative"
 
 [vars.LLM_ENDPOINT]
 default = ""
@@ -945,3 +975,12 @@ type = "string"
 reload = "restart"
 category = "assistive"
 description = "OCR language(s) for PDF attachments (tesseract)"
+
+# Agent / Chat input behavior
+
+[vars.AGENT_ENTER_SENDS]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "assistive"
+description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."

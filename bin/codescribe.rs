@@ -7,9 +7,8 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use codescribe::config::Config;
 use codescribe::os::hotkeys;
-use codescribe::{ai_formatting, audio, tray, whisper};
+use codescribe::{ai_formatting, audio, whisper};
 use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -481,23 +480,11 @@ async fn run_daemon() -> Result<()> {
                 // for hotkey-related fields and only reload the rest from disk.
                 let mut config = Config::load();
                 match &event_for_async {
-                    tray::TrayMenuEvent::SetHoldMods(mods) => {
-                        config.hold_mods = *mods;
-                    }
-                    tray::TrayMenuEvent::SetToggleTrigger(trigger) => {
-                        config.toggle_trigger = *trigger;
-                    }
-                    tray::TrayMenuEvent::SetHoldExclusive(exclusive) => {
-                        config.hold_exclusive = *exclusive;
-                    }
                     tray::TrayMenuEvent::SetQuickNotesEnabled(enabled) => {
                         config.quick_notes_enabled = *enabled;
                     }
                     tray::TrayMenuEvent::SetQuickNotesSaveOnly(save_only) => {
                         config.quick_notes_save_only = *save_only;
-                    }
-                    tray::TrayMenuEvent::SetVadPreset(preset) => {
-                        apply_vad_preset(&config, *preset);
                     }
                     tray::TrayMenuEvent::InstallSileroVad => {
                         eprintln!("Installing Silero VAD model…");
@@ -636,34 +623,6 @@ fn env_bool(key: &str, default: bool) -> bool {
             matches!(v.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(default)
-}
-
-fn apply_vad_preset(config: &Config, preset: tray::VadPreset) {
-    // NOTE: We set both "simple" and "legacy" keys so that:
-    // - core/vad/config.rs (segmenter) picks it up
-    // - core/audio/recorder.rs (auto-stop) picks it up
-    let (threshold, silence_sec, min_speech_sec, sensitivity) = match preset {
-        tray::VadPreset::Sensitive => (
-            0.35_f32, 1.8_f32, 0.05_f32, // sensitivity ≈ (0.85 - threshold) / 0.65
-            0.77_f32,
-        ),
-        tray::VadPreset::Balanced => (0.5_f32, 1.2_f32, 0.1_f32, 0.54_f32),
-        tray::VadPreset::Conservative => (0.7_f32, 0.8_f32, 0.2_f32, 0.23_f32),
-    };
-
-    let _ = config.save_to_env("CODESCRIBE_VAD_THRESHOLD", &format!("{threshold:.2}"));
-    let _ = config.save_to_env(
-        "CODESCRIBE_VAD_MAX_SILENCE_SEC",
-        &format!("{silence_sec:.2}"),
-    );
-    let _ = config.save_to_env(
-        "CODESCRIBE_VAD_MIN_SPEECH_SEC",
-        &format!("{min_speech_sec:.2}"),
-    );
-
-    // "Simple override" keys used by core/vad/config.rs.
-    let _ = config.save_to_env("CODESCRIBE_VAD_SENSITIVITY", &format!("{sensitivity:.2}"));
-    let _ = config.save_to_env("CODESCRIBE_VAD_SILENCE_SEC", &format!("{silence_sec:.2}"));
 }
 
 fn stop_quality_daemon_if_running() {

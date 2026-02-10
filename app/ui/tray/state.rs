@@ -9,14 +9,13 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use tracing::debug;
 
 use crate::tray::menu::update_status_label;
-use crate::tray::types::{HotkeysMenuItems, NotesMenuItems, TrayMenuEvent, TrayStatus};
+use crate::tray::types::{NotesMenuItems, TrayMenuEvent, TrayStatus};
 
 // ============================================================================
 // Thread-local Menu Item Storage
 // ============================================================================
 
 thread_local! {
-    pub static HOTKEYS_MENU_ITEMS: RefCell<Option<HotkeysMenuItems>> = const { RefCell::new(None) };
     pub static NOTES_MENU_ITEMS: RefCell<Option<NotesMenuItems>> = const { RefCell::new(None) };
 }
 

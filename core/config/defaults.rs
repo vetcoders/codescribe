@@ -67,6 +67,9 @@ pub fn default_restore_clipboard_delay_ms() -> u64 {
     1000
 }
 
+pub fn default_agent_enter_sends() -> bool {
+    true
+}
 pub fn default_dump_audio_logs() -> bool {
     true
 }

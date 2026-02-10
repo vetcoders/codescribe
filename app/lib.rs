@@ -28,6 +28,9 @@ pub mod os;
 pub mod controller;
 
 #[cfg(target_os = "macos")]
+pub mod presentation;
+
+#[cfg(target_os = "macos")]
 pub mod ipc;
 
 #[cfg(target_os = "macos")]

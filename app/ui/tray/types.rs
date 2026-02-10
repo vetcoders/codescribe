@@ -3,14 +3,11 @@
 //! Contains all enums and structs used by the tray system.
 
 use anyhow::Result;
-use muda::{CheckMenuItem, MenuId, MenuItem};
+use muda::{CheckMenuItem, MenuId};
 use tracing::debug;
 use tray_icon::Icon;
 
 use crate::tray::icons::{create_fallback_icon, load_custom_icon};
-
-// Re-export config enums for menu use (single source of truth)
-pub use crate::config::{HoldMods, ToggleTrigger};
 
 /// Status of the CodeScribe system, reflected in tray icon
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,11 +75,6 @@ pub enum TrayMenuEvent {
     /// Open Settings window (onboarding flow)
     RunOnboarding,
 
-    // Hold Hotkeys submenu
-    SetHoldMods(HoldMods),
-    SetToggleTrigger(ToggleTrigger),
-    SetHoldExclusive(bool),
-
     // History (open folder)
     OpenHistoryFolder,
 
@@ -92,7 +84,6 @@ pub enum TrayMenuEvent {
     OpenInputMonitoringSettings,
     ResetInputMonitoringPermission,
     InstallSileroVad,
-    SetVadPreset(VadPreset),
 
     // Prompts
     OpenAssistivePrompt,
@@ -102,29 +93,11 @@ pub enum TrayMenuEvent {
     // Notes
     SetQuickNotesEnabled(bool),
     SetQuickNotesSaveOnly(bool),
-
-    // Hotkeys
-    ResetShortcuts,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VadPreset {
-    Sensitive,
-    Balanced,
-    Conservative,
 }
 
 // ============================================================================
 // Menu Item Storage Structs
 // ============================================================================
-
-/// Hotkeys menu items that need runtime updates.
-pub struct HotkeysMenuItems {
-    pub hold_summary: MenuItem,
-    pub toggle_summary: MenuItem,
-    pub toggle_assistive: CheckMenuItem,
-    pub toggle_dictation: CheckMenuItem,
-}
 
 /// Notes menu items that need runtime updates.
 pub struct NotesMenuItems {
@@ -155,22 +128,11 @@ pub struct MenuIds {
     pub about: MenuId,
     pub quit: MenuId,
 
-    // Hotkeys submenu
-    pub hotkeys_toggle_assistive: MenuId,
-    pub hotkeys_toggle_dictation: MenuId,
-    pub hotkeys_reset: MenuId,
-    pub hotkeys_copy_cheatsheet: MenuId,
-
     // Quality
     pub quality_open_report: MenuId,
 
     // Models
     pub silero_vad_install: MenuId,
-
-    // VAD presets
-    pub vad_preset_sensitive: MenuId,
-    pub vad_preset_balanced: MenuId,
-    pub vad_preset_conservative: MenuId,
 
     // Notes
     pub notes_toggle_quick_notes: MenuId,

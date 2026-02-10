@@ -13,13 +13,15 @@ use tracing::{debug, info, warn};
 
 use chrono::{DateTime, Local};
 
-use crate::ui::shared::status::status_from_detail;
+use codescribe_core::attachment::Attachment;
+
+use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, LabelConfig, add_subview, button_set_action, button_style,
     color_label, color_rgba, color_secondary_label, create_bubble_view, create_button,
     create_card_view, create_label, get_text_field_string, get_text_view_string,
     layout_region_frame_for_view, list_draft_files, ns_string, open_file_in_editor,
-    resize_bubble_container_for_text, set_button_symbol, set_hidden, set_text_field_string,
+    resize_bubble_container_for_text, set_button_symbol, set_text_field_string,
     set_text_view_string, set_tooltip, stack_view_add, stack_view_clear, ui_colors, ui_tokens,
     update_bubble_text, window_set_alpha, window_show,
 };
@@ -261,6 +263,14 @@ pub fn filter_drawer(query: &str) {
 /// Switch to Agent tab programmatically
 pub fn show_agent_tab() {
     Queue::main().exec_async(|| {
+        // If the overlay isn't created yet, defer tab selection until build completes.
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.window.is_none() {
+            state.pending_tab = Some(Tab::Agent);
+            state.active_tab = Tab::Agent;
+            return;
+        }
+        drop(state);
         update_active_tab_impl(Tab::Agent);
     });
 }
@@ -268,14 +278,14 @@ pub fn show_agent_tab() {
 /// Switch to Drawer tab programmatically
 pub fn show_drawer_tab() {
     Queue::main().exec_async(|| {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.window.is_none() {
+            state.pending_tab = Some(Tab::Drawer);
+            state.active_tab = Tab::Drawer;
+            return;
+        }
+        drop(state);
         update_active_tab_impl(Tab::Drawer);
-    });
-}
-
-/// Switch to Transcription tab programmatically
-pub fn show_transcription_tab() {
-    Queue::main().exec_async(|| {
-        update_active_tab_impl(Tab::Transcription);
     });
 }
 
@@ -290,69 +300,6 @@ pub fn show_settings_tab() {
 /// This is used when routing tray "Settings" to the overlay before it exists.
 pub fn request_settings_tab_on_open() {
     crate::show_bootstrap_overlay();
-}
-
-/// Append a delta (streaming token) to the transcription preview.
-pub fn append_transcription_delta(delta: &str) {
-    let delta_owned = delta.to_string();
-    Queue::main().exec_async(move || {
-        append_transcription_delta_impl(&delta_owned);
-    });
-}
-
-fn append_transcription_delta_impl(delta: &str) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta)
-        .apply(&mut state.transcription_text);
-    if let Some(text_view) = state.transcription_text_view {
-        unsafe { set_text_view_string(text_view as Id, &state.transcription_text) };
-    }
-    update_transcription_placeholder(&mut state);
-}
-
-/// Set the full transcription text (used for final-pass replacement).
-pub fn set_transcription_text(text: &str) {
-    let text_owned = text.to_string();
-    Queue::main().exec_async(move || {
-        set_transcription_text_impl(&text_owned);
-    });
-}
-
-fn set_transcription_text_impl(text: &str) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.transcription_text = text.to_string();
-    if let Some(text_view) = state.transcription_text_view {
-        unsafe { set_text_view_string(text_view as Id, &state.transcription_text) };
-    }
-    update_transcription_placeholder(&mut state);
-}
-
-/// Clear the transcription preview text.
-pub fn clear_transcription_text() {
-    Queue::main().exec_async(|| {
-        clear_transcription_text_impl();
-    });
-}
-
-fn clear_transcription_text_impl() {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.transcription_text.clear();
-    if let Some(text_view) = state.transcription_text_view {
-        unsafe { set_text_view_string(text_view as Id, "") };
-    }
-    update_transcription_placeholder(&mut state);
-}
-
-fn is_transcription_empty(state: &VoiceChatOverlayState) -> bool {
-    state.transcription_text.trim().is_empty()
-}
-
-fn update_transcription_placeholder(state: &mut VoiceChatOverlayState) {
-    let Some(view_ptr) = state.transcription_placeholder else {
-        return;
-    };
-    let should_show = state.active_tab == Tab::Transcription && is_transcription_empty(state);
-    unsafe { set_hidden(view_ptr as Id, !should_show) };
 }
 
 /// Set the target app name to re-activate for paste actions.
@@ -409,13 +356,11 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         if tab == Tab::Settings {
             return;
         }
+        let prev_tab = state.active_tab;
         state.active_tab = tab;
 
         if let Some(button) = state.tab_drawer_button {
             crate::ui_helpers::set_tab_button_active(button as Id, tab == Tab::Drawer);
-        }
-        if let Some(button) = state.tab_transcription_button {
-            crate::ui_helpers::set_tab_button_active(button as Id, tab == Tab::Transcription);
         }
         if let Some(button) = state.tab_agent_button {
             crate::ui_helpers::set_tab_button_active(button as Id, tab == Tab::Agent);
@@ -425,22 +370,15 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         }
 
         let show_drawer = tab == Tab::Drawer;
-        let show_transcription = tab == Tab::Transcription;
         let show_agent = tab == Tab::Agent;
 
         if let Some(sidebar_item) = state.split_sidebar_item {
             let item = sidebar_item as Id;
-            let responds: bool = msg_send![item, respondsToSelector: sel!(setCollapsed:)];
-            if responds {
-                let _: () = msg_send![item, setCollapsed: show_agent];
-            }
+            let _: () = msg_send![item, setCollapsed: show_agent];
         }
         if let Some(content_item) = state.split_content_item {
             let item = content_item as Id;
-            let responds: bool = msg_send![item, respondsToSelector: sel!(setCollapsed:)];
-            if responds {
-                let _: () = msg_send![item, setCollapsed: !show_agent];
-            }
+            let _: () = msg_send![item, setCollapsed: !show_agent];
         }
         if let Some(split_controller) = state.split_view_controller {
             let split_view: Id = msg_send![split_controller as Id, view];
@@ -463,12 +401,6 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         if let Some(edge) = state.drawer_edge_effect {
             crate::ui_helpers::set_hidden(edge as Id, !show_drawer);
         }
-        if let Some(trans_view) = state.transcription_scroll_view {
-            crate::ui_helpers::set_hidden(trans_view as Id, !show_transcription);
-        }
-        if let Some(edge) = state.transcription_edge_effect {
-            crate::ui_helpers::set_hidden(edge as Id, !show_transcription);
-        }
         if let Some(agent_view) = state.agent_scroll_view {
             crate::ui_helpers::set_hidden(agent_view as Id, !show_agent);
         }
@@ -483,6 +415,12 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         }
 
         if show_agent {
+            // Populate the Agent view on tab switch so the empty-state CTA is visible.
+            // Important: do this only on transition to Agent; `ensure_agent_tab_visible` can
+            // call `update_active_tab_locked(Tab::Agent)` frequently during streaming.
+            if prev_tab != Tab::Agent {
+                update_chat_view_with_state(state, true);
+            }
             resize_agent_input_locked(state);
         }
 
@@ -498,8 +436,6 @@ fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
                 let _: bool = msg_send![window, makeFirstResponder: input_ptr as Id];
             }
         }
-
-        update_transcription_placeholder(state);
     }
 }
 
@@ -632,6 +568,28 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
                     color_rgba(palette.dot.0, palette.dot.1, palette.dot.2, palette.dot.3);
                 let cg: Id = msg_send![dot_color, CGColor];
                 let _: () = msg_send![dot_layer, setBackgroundColor: cg];
+                // Pulse animation for Listening state
+                let pulse_key = ns_string("pulse");
+                if state.status_kind == UiStatus::Listening {
+                    let existing: Id = msg_send![dot_layer, animationForKey: pulse_key];
+                    if existing.is_null() {
+                        let ca_anim = Class::get("CABasicAnimation").unwrap();
+                        let anim: Id =
+                            msg_send![ca_anim, animationWithKeyPath: ns_string("opacity")];
+                        let from_val: Id =
+                            msg_send![Class::get("NSNumber").unwrap(), numberWithFloat: 1.0f32];
+                        let to_val: Id =
+                            msg_send![Class::get("NSNumber").unwrap(), numberWithFloat: 0.3f32];
+                        let _: () = msg_send![anim, setFromValue: from_val];
+                        let _: () = msg_send![anim, setToValue: to_val];
+                        let _: () = msg_send![anim, setDuration: 0.8f64];
+                        let _: () = msg_send![anim, setAutoreverses: true];
+                        let _: () = msg_send![anim, setRepeatCount: f32::INFINITY];
+                        let _: () = msg_send![dot_layer, addAnimation: anim forKey: pulse_key];
+                    }
+                } else {
+                    let _: () = msg_send![dot_layer, removeAnimationForKey: pulse_key];
+                }
             }
         }
 
@@ -795,9 +753,7 @@ unsafe fn agent_max_width(state: &VoiceChatOverlayState) -> f64 {
         })
         .unwrap_or(390.0);
 
-    width
-        .min(ui_tokens::BUBBLE_MAX_WIDTH)
-        .clamp(240.0, ui_tokens::BUBBLE_MAX_WIDTH)
+    width.max(240.0)
 }
 
 unsafe fn sync_agent_document_view_size(state: &VoiceChatOverlayState, max_width: f64) {
@@ -865,7 +821,18 @@ fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index: us
 
         let container = bubble_ptr as Id;
         let label = label_ptr as Id;
-        update_bubble_text(label, &message.text, message.is_streaming);
+        let bubble_role = match message.role {
+            ChatRole::User => BubbleRole::User,
+            ChatRole::Assistant => BubbleRole::Assistant,
+            ChatRole::System => BubbleRole::System,
+        };
+        update_bubble_text(
+            label,
+            &message.text,
+            bubble_role,
+            message.is_streaming,
+            message.is_error,
+        );
         let display_text = display_text_for_message(message);
         resize_bubble_container_for_text(container, label, &display_text);
         let max_width = agent_max_width(state);
@@ -979,7 +946,9 @@ fn ensure_agent_tab_visible(state: &mut VoiceChatOverlayState) {
         }
 
         // Force Agent tab for any live/assistive messaging.
-        update_active_tab_locked(state, Tab::Agent);
+        if state.active_tab != Tab::Agent {
+            update_active_tab_locked(state, Tab::Agent);
+        }
     }
 }
 
@@ -989,8 +958,9 @@ pub(super) fn clear_voice_chat_text_impl() {
         state.messages.clear();
         state.manual_draft.clear();
         state.is_sending = false;
-        state.attached_files.clear();
-        state.attached_files_last_sent = None;
+        state.attachments.clear();
+        state.attachments_last_sent = None;
+        render_attachment_chips_locked(&mut state);
         let btn_ptr = state.agent_attach_button;
 
         if let Some(input_view) = state.agent_input_text_view {
@@ -1023,8 +993,17 @@ pub fn send_draft_message_impl() {
             return;
         }
 
+        // Check handler BEFORE mutating state to avoid phantom messages
+        // when no connector is registered.
+        let handler_guard = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(handler) = handler_guard.clone() else {
+            // No send handler — leave state untouched so draft remains in input.
+            return;
+        };
+        drop(handler_guard);
+
         let attachments_to_send = attachment_should_include_locked(&state);
-        if let Some((fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
+        if let Some((_fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
             let mode = message_mode_label(&state);
             state.messages.push(ChatMessage {
                 role: ChatRole::System,
@@ -1034,7 +1013,6 @@ pub fn send_draft_message_impl() {
                 timestamp: SystemTime::now(),
                 mode: Some(mode),
             });
-            state.attached_files_last_sent = Some(*fingerprint);
         }
 
         let mode = message_mode_label(&state);
@@ -1056,30 +1034,28 @@ pub fn send_draft_message_impl() {
         resize_agent_input_locked(&mut state);
         update_chat_view_with_state(&mut state, true);
         update_send_button_with_state(&mut state);
-        let handler = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
-        (handler.clone(), draft, attachments_to_send)
+        (handler, draft, attachments_to_send)
     };
 
-    if let (Some(handler), draft, attachments_to_send) = callback {
-        if let Some((_fingerprint, paths, _summary)) = attachments_to_send {
-            std::thread::spawn(move || {
-                let block = build_attachments_block(&paths);
-                let payload = if block.is_empty() {
-                    draft
-                } else {
-                    format!("{draft}\n\n{block}")
-                };
-                // The send callback uses `tokio::spawn`, which requires a runtime handle.
-                // Calling it from an arbitrary background thread can panic (release builds abort).
-                Queue::main().exec_async(move || handler(payload));
-            });
-        } else {
-            handler(draft);
+    let (handler, draft, attachments_to_send) = callback;
+    if let Some((fingerprint, paths, _summary)) = attachments_to_send {
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.attachments_last_sent = Some(fingerprint);
         }
+        std::thread::spawn(move || {
+            let block = build_attachments_block(&paths);
+            let payload = if block.is_empty() {
+                draft
+            } else {
+                format!("{draft}\n\n{block}")
+            };
+            // The send callback uses `tokio::spawn`, which requires a runtime handle.
+            // Calling it from an arbitrary background thread can panic (release builds abort).
+            Queue::main().exec_async(move || handler(payload));
+        });
     } else {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.is_sending = false;
-        update_send_button_with_state(&mut state);
+        handler(draft);
     }
 }
 
@@ -1093,8 +1069,16 @@ pub(super) fn commit_last_user_message_impl() {
             return;
         }
         let text = last_message.text.clone();
+
+        // Check handler BEFORE mutating state to avoid phantom messages.
+        let handler_guard = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(handler) = handler_guard.clone() else {
+            return;
+        };
+        drop(handler_guard);
+
         let attachments_to_send = attachment_should_include_locked(&state);
-        if let Some((fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
+        if let Some((_fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
             let mode = message_mode_label(&state);
             state.messages.push(ChatMessage {
                 role: ChatRole::System,
@@ -1104,33 +1088,30 @@ pub(super) fn commit_last_user_message_impl() {
                 timestamp: SystemTime::now(),
                 mode: Some(mode),
             });
-            state.attached_files_last_sent = Some(*fingerprint);
         }
         state.is_sending = true;
         update_chat_view_with_state(&mut state, true);
         update_send_button_with_state(&mut state);
-        let handler = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
-        (handler.clone(), text, attachments_to_send)
+        (handler, text, attachments_to_send)
     };
 
-    if let (Some(handler), text, attachments_to_send) = callback {
-        if let Some((_fingerprint, paths, _summary)) = attachments_to_send {
-            std::thread::spawn(move || {
-                let block = build_attachments_block(&paths);
-                let payload = if block.is_empty() {
-                    text
-                } else {
-                    format!("{text}\n\n{block}")
-                };
-                Queue::main().exec_async(move || handler(payload));
-            });
-        } else {
-            handler(text);
+    let (handler, text, attachments_to_send) = callback;
+    if let Some((fingerprint, paths, _summary)) = attachments_to_send {
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.attachments_last_sent = Some(fingerprint);
         }
+        std::thread::spawn(move || {
+            let block = build_attachments_block(&paths);
+            let payload = if block.is_empty() {
+                text
+            } else {
+                format!("{text}\n\n{block}")
+            };
+            Queue::main().exec_async(move || handler(payload));
+        });
     } else {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.is_sending = false;
-        update_send_button_with_state(&mut state);
+        handler(text);
     }
 }
 
@@ -1183,6 +1164,22 @@ pub(super) fn update_chat_view_with_state(
 
         // Size bubbles to the current visible content width (supports resizable overlay).
         let max_width = agent_max_width(state);
+        let zoom = state.zoom_level;
+        let base_font = ui_tokens::BODY_FONT_SIZE;
+
+        // Empty state CTA when no messages exist yet.
+        if state.messages.is_empty() {
+            let empty_label = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(max_width, 60.0)),
+                text: "Start a conversation\nPress hotkey to record \u{2022} Type to send"
+                    .to_string(),
+                font_size: base_font * zoom,
+                text_color: color_secondary_label(),
+                ..Default::default()
+            });
+            let _: () = msg_send![empty_label, setAlignment: 1_isize]; // NSTextAlignmentCenter
+            stack_view_add(container, empty_label);
+        }
 
         let mut last_bubble: Option<Id> = None;
         for (index, message) in state.messages.iter().enumerate() {
@@ -1195,6 +1192,7 @@ pub(super) fn update_chat_view_with_state(
                 text: message.text.clone(),
                 role,
                 max_width,
+                font_size: base_font * zoom,
                 is_streaming: message.is_streaming,
                 is_error: message.is_error,
                 metadata: Some(message_metadata(message)),
@@ -1288,22 +1286,20 @@ pub(super) fn update_attach_button_ui(
 fn attachment_should_include_locked(
     state: &VoiceChatOverlayState,
 ) -> Option<(u64, Vec<std::path::PathBuf>, String)> {
-    if state.attached_files.is_empty() {
+    if state.attachments.is_empty() {
         return None;
     }
-    let fingerprint = attachment_fingerprint(&state.attached_files);
-    if state.attached_files_last_sent == Some(fingerprint) {
+    let fingerprint = attachment_fingerprint(&state.attachments);
+    if state.attachments_last_sent == Some(fingerprint) {
         return None;
     }
-    let summary = attachment_summary(&state.attached_files);
-    Some((fingerprint, state.attached_files.clone(), summary))
+    let summary = attachment_summary(&state.attachments);
+    let paths = Attachment::paths(&state.attachments);
+    Some((fingerprint, paths, summary))
 }
 
-fn attachment_summary(paths: &[std::path::PathBuf]) -> String {
-    let mut names: Vec<String> = paths
-        .iter()
-        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .collect();
+fn attachment_summary(attachments: &[Attachment]) -> String {
+    let mut names: Vec<String> = attachments.iter().map(|a| a.display_name.clone()).collect();
     names.sort();
     if names.len() <= 3 {
         names.join(", ")
@@ -1312,17 +1308,134 @@ fn attachment_summary(paths: &[std::path::PathBuf]) -> String {
     }
 }
 
-fn attachment_fingerprint(paths: &[std::path::PathBuf]) -> u64 {
+fn attachment_fingerprint(attachments: &[Attachment]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for p in paths {
-        p.hash(&mut hasher);
-        if let Ok(meta) = std::fs::metadata(p) {
+    for a in attachments {
+        a.path.hash(&mut hasher);
+        if let Ok(meta) = std::fs::metadata(&a.path) {
             meta.len().hash(&mut hasher);
             meta.modified().ok().hash(&mut hasher);
         }
     }
     hasher.finish()
+}
+
+// ═══════════════════════════════════════════════════════════
+// Attachment Chip Strip
+// ═══════════════════════════════════════════════════════════
+
+const CHIP_STRIP_HEIGHT: f64 = 36.0;
+
+/// Remove an attachment by index, re-render chips, update button.
+pub fn remove_attachment_at(index: usize) {
+    let (btn_ptr, count, names) = {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if index < state.attachments.len() {
+            state.attachments.remove(index);
+            state.attachments_last_sent = None;
+        }
+        let names: Vec<String> = state
+            .attachments
+            .iter()
+            .map(|a| a.display_name.clone())
+            .collect();
+        render_attachment_chips_locked(&mut state);
+        (state.agent_attach_button, state.attachments.len(), names)
+    };
+    update_attach_button_ui(btn_ptr, count, names);
+}
+
+/// Rebuild chip strip views from current attachments.
+/// Must be called from the main thread.
+pub(super) fn render_attachment_chips(state: &mut VoiceChatOverlayState) {
+    render_attachment_chips_locked(state);
+}
+
+fn render_attachment_chips_locked(state: &mut VoiceChatOverlayState) {
+    unsafe {
+        let Some(strip_ptr) = state.attachment_chip_strip else {
+            return;
+        };
+        let strip = strip_ptr as Id;
+
+        // Get the stack view (document view of the scroll view).
+        let stack: Id = msg_send![strip, documentView];
+        if stack.is_null() {
+            return;
+        }
+
+        // Clear existing chips.
+        let arranged: Id = msg_send![stack, arrangedSubviews];
+        let old_count: usize = msg_send![arranged, count];
+        for i in (0..old_count).rev() {
+            let view: Id = msg_send![arranged, objectAtIndex: i];
+            let _: () = msg_send![stack, removeArrangedSubview: view];
+            let _: () = msg_send![view, removeFromSuperview];
+        }
+
+        let has_attachments = !state.attachments.is_empty();
+        let handler_ptr = state.action_handler.unwrap_or(0) as Id;
+
+        if has_attachments {
+            let mut total_width = 0.0f64;
+            for (idx, attachment) in state.attachments.iter().enumerate() {
+                let chip = create_chip_view(idx, &attachment.chip_label(20), handler_ptr);
+                let _: () = msg_send![stack, addArrangedSubview: chip];
+                let chip_frame: CGRect = msg_send![chip, frame];
+                total_width += chip_frame.size.width + 6.0;
+            }
+            // Size the stack view to fit all chips (enables horizontal scrolling).
+            let strip_frame: CGRect = msg_send![strip, frame];
+            let stack_frame = CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(total_width.max(strip_frame.size.width), CHIP_STRIP_HEIGHT),
+            );
+            let _: () = msg_send![stack, setFrame: stack_frame];
+        }
+
+        // Show/hide the strip.
+        let currently_hidden: bool = msg_send![strip, isHidden];
+        if currently_hidden == has_attachments {
+            let _: () = msg_send![strip, setHidden: !has_attachments];
+        }
+    }
+    // Reflow layout to account for chip strip height change.
+    resize_agent_input_locked(state);
+}
+
+/// Create a single chip view: a styled button with the attachment name.
+///
+/// # Safety
+/// Requires main thread.
+unsafe fn create_chip_view(index: usize, label: &str, handler: Id) -> Id {
+    let ns_button = Class::get("NSButton").unwrap();
+
+    // Measure text width (approximate: 7px per char + padding).
+    let text_width = (label.chars().count() as f64 * 7.0).clamp(40.0, 180.0);
+    let chip_width = text_width + 24.0; // padding
+
+    let frame = CGRect::new(&CGPoint::new(0.0, 4.0), &CGSize::new(chip_width, 28.0));
+    let btn: Id = msg_send![ns_button, alloc];
+    let btn: Id = msg_send![btn, initWithFrame: frame];
+    let _: () = msg_send![btn, setTitle: ns_string(label)];
+    // NSBezelStyleInline = 15 (compact rounded)
+    let _: () = msg_send![btn, setBezelStyle: 15i64];
+    let _: () = msg_send![btn, setControlSize: 1i64]; // NSControlSizeSmall
+    let ns_font = Class::get("NSFont").unwrap();
+    let font: Id = msg_send![ns_font, systemFontOfSize: 11.0f64];
+    let _: () = msg_send![btn, setFont: font];
+    let _: () = msg_send![btn, setTag: index as isize];
+    let _: () = msg_send![btn, setTarget: handler];
+    let _: () = msg_send![btn, setAction: sel!(onChipClick:)];
+    let _: () = msg_send![btn, setTranslatesAutoresizingMaskIntoConstraints: false];
+
+    // Height constraint.
+    let height_anchor: Id = msg_send![btn, heightAnchor];
+    let constraint: Id = msg_send![height_anchor, constraintEqualToConstant: 28.0f64];
+    let _: () = msg_send![constraint, setActive: true];
+
+    btn
 }
 
 fn build_attachments_block(paths: &[std::path::PathBuf]) -> String {
@@ -1867,12 +1980,38 @@ fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
 
         let pad = ui_tokens::EDGE_PADDING_TIGHT;
         let gap = ui_tokens::CONTENT_GAP;
+        let input_gap = (gap * 0.5).max(4.0);
         let footer_inset = ui_tokens::FOOTER_INSET;
         let bar_width = (content_width - pad * 2.0).max(120.0);
         let current_bar: CGRect = msg_send![input_bar, frame];
         let height_same = (current_bar.size.height - desired_h).abs() < 0.5;
         let width_same = (current_bar.size.width - bar_width).abs() < 0.5;
-        if height_same && width_same {
+        // Check if agent scroll frame needs updating (e.g. chip strip toggled).
+        // We compare the actual frame origin against the expected bottom rather
+        // than checking visibility flags, because setHidden may have already been
+        // called (by render_attachment_chips_locked) before we get here — making
+        // the visibility flag look "stable" even though the scroll frame hasn't
+        // been adjusted yet.
+        let scroll_needs_reflow = if let Some(agent_scroll_ptr) = state.agent_scroll_view {
+            let agent_scroll = agent_scroll_ptr as Id;
+            let current_frame: CGRect = msg_send![agent_scroll, frame];
+            let strip_extra = if let Some(strip_ptr) = state.attachment_chip_strip {
+                let strip = strip_ptr as Id;
+                let strip_visible: bool = !msg_send![strip, isHidden];
+                if strip_visible {
+                    CHIP_STRIP_HEIGHT + input_gap
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            let expected_bottom = footer_inset + desired_h + input_gap + strip_extra;
+            (current_frame.origin.y - expected_bottom).abs() > 0.5
+        } else {
+            false
+        };
+        if height_same && width_same && !scroll_needs_reflow {
             return;
         }
 
@@ -1903,10 +2042,29 @@ fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
         );
         let _: () = msg_send![send_btn, setFrame: send_frame];
 
-        // Resize Agent scroll view so it doesn't overlap with input.
+        // Position chip strip above input bar and resize agent scroll view.
+        let chip_strip_extra = if let Some(strip_ptr) = state.attachment_chip_strip {
+            let strip = strip_ptr as Id;
+            let strip_visible: bool = !msg_send![strip, isHidden];
+            if strip_visible {
+                let strip_y = footer_inset + desired_h + input_gap;
+                let strip_frame = CGRect::new(
+                    &CGPoint::new(pad, strip_y),
+                    &CGSize::new(bar_width, CHIP_STRIP_HEIGHT),
+                );
+                let _: () = msg_send![strip, setFrame: strip_frame];
+                CHIP_STRIP_HEIGHT + input_gap
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        // Resize Agent scroll view so it doesn't overlap with input + chips.
         if let Some(agent_scroll_ptr) = state.agent_scroll_view {
             let agent_scroll = agent_scroll_ptr as Id;
-            let bottom = footer_inset + desired_h + gap;
+            let bottom = footer_inset + desired_h + input_gap + chip_strip_extra;
             let top = content_height - gap;
             let new_agent_frame = CGRect::new(
                 &CGPoint::new(pad, bottom),
@@ -2022,7 +2180,6 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.status_pill_label = None;
     state.status_pill_dot = None;
     state.tab_drawer_button = None;
-    state.tab_transcription_button = None;
     state.tab_agent_button = None;
     state.tab_settings_button = None;
     state.favorites_button = None;
@@ -2041,12 +2198,9 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.agent_input_field = None;
     state.agent_attach_button = None;
     state.agent_send_button = None;
-    state.attached_files.clear();
-    state.attached_files_last_sent = None;
-    state.transcription_scroll_view = None;
-    state.transcription_text_view = None;
-    state.transcription_placeholder = None;
-    state.transcription_edge_effect = None;
+    state.attachments.clear();
+    state.attachments_last_sent = None;
+    state.attachment_chip_strip = None;
     state.active_tab = Tab::Drawer;
     state.pending_tab = None;
     state.is_sending = false;
@@ -2249,7 +2403,7 @@ fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: &str) {
 
         let visible = filtered_drawer_entries(state, query);
         for (index, entry) in visible.iter() {
-            let card = create_drawer_card(entry, *index, state.action_handler);
+            let card = create_drawer_card(entry, *index, state.action_handler, query);
             stack_view_add(container, card);
         }
 
@@ -2448,14 +2602,6 @@ mod tests {
     }
 
     #[test]
-    fn transcription_empty_detection() {
-        let mut state = VoiceChatOverlayState::default();
-        assert!(is_transcription_empty(&state));
-        state.transcription_text = "hi".to_string();
-        assert!(!is_transcription_empty(&state));
-    }
-
-    #[test]
     fn display_text_for_message_handles_streaming() {
         let streaming_empty = ChatMessage {
             role: ChatRole::Assistant,
@@ -2491,7 +2637,12 @@ mod tests {
     }
 }
 
-fn create_drawer_card(entry: &DrawerEntry, index: usize, handler: Option<usize>) -> Id {
+fn create_drawer_card(
+    entry: &DrawerEntry,
+    index: usize,
+    handler: Option<usize>,
+    query: &str,
+) -> Id {
     unsafe {
         let ns_view = Class::get("NSView").unwrap();
         let frame = core_graphics::geometry::CGRect::new(
@@ -2506,6 +2657,22 @@ fn create_drawer_card(entry: &DrawerEntry, index: usize, handler: Option<usize>)
         let subtitle = format!("{} • {}", mode_label(entry.mode), entry.path.display());
         let preview = entry.preview.clone();
         let card = create_card_view(frame, &title, &subtitle, &preview);
+        // Highlight matching query text in the preview field (last NSTextField subview).
+        if !query.is_empty() {
+            let subviews: Id = msg_send![card, subviews];
+            let count: usize = msg_send![subviews, count];
+            // The preview field is typically the 3rd text field added (index 2).
+            // Walk subviews in reverse to find it (last NSTextField before action buttons).
+            for i in (0..count).rev() {
+                let subview: Id = msg_send![subviews, objectAtIndex: i];
+                let ns_text_field = Class::get("NSTextField").unwrap();
+                let is_text_field: bool = msg_send![subview, isKindOfClass: ns_text_field];
+                if is_text_field {
+                    apply_search_highlight(subview, &preview, query);
+                    break;
+                }
+            }
+        }
 
         let actions_container: Id = msg_send![ns_view, alloc];
         let actions_frame = core_graphics::geometry::CGRect::new(
@@ -2551,6 +2718,69 @@ fn create_drawer_card(entry: &DrawerEntry, index: usize, handler: Option<usize>)
     }
 }
 
+/// NSRange for Objective-C attributed string APIs.
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct NSRange {
+    location: usize,
+    length: usize,
+}
+
+/// Apply search-term highlighting to a text field by bolding matching ranges.
+///
+/// Uses `char_indices()` to safely iterate over Unicode characters, then maps
+/// character offsets to UTF-16 code unit counts for `NSRange` (Cocoa convention).
+unsafe fn apply_search_highlight(field: Id, text: &str, query: &str) {
+    let ns_mut_attr = Class::get("NSMutableAttributedString").unwrap();
+    let ns_font_cls = Class::get("NSFont").unwrap();
+    let text_ns = ns_string(text);
+    let attr_str: Id = msg_send![ns_mut_attr, alloc];
+    let attr_str: Id = msg_send![attr_str, initWithString: text_ns];
+    let bold_font: Id = msg_send![ns_font_cls, boldSystemFontOfSize: ui_tokens::BODY_FONT_SIZE];
+    let font_key = ns_string("NSFont");
+    // Build char-level lowercase for safe matching (no byte-index slicing).
+    let text_chars: Vec<char> = text.chars().collect();
+    let text_lower: Vec<char> = text_chars
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let query_lower: Vec<char> = query
+        .chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
+    if query_lower.is_empty() {
+        // Always set the plain attributed string to clear stale highlights.
+        let _: () = msg_send![field, setAttributedStringValue: attr_str];
+        return;
+    }
+    // Build byte→utf16 offset map at char boundaries for NSRange conversion.
+    let mut char_to_utf16: Vec<usize> = Vec::with_capacity(text_chars.len() + 1);
+    let mut utf16_pos: usize = 0;
+    for ch in &text_chars {
+        char_to_utf16.push(utf16_pos);
+        utf16_pos += ch.len_utf16();
+    }
+    char_to_utf16.push(utf16_pos); // sentinel for end
+    // Slide through char-level arrays to find matches.
+    let mut i = 0;
+    while i + query_lower.len() <= text_lower.len() {
+        if text_lower[i..i + query_lower.len()] == query_lower[..] {
+            let range = NSRange {
+                location: char_to_utf16[i],
+                length: char_to_utf16[i + query_lower.len()] - char_to_utf16[i],
+            };
+            let _: () = msg_send![attr_str, addAttribute: font_key value: bold_font range: range];
+            // NSColor expects 0.0–1.0 for RGBA components.
+            let highlight = color_rgba(1.0, 0.82, 0.0, 0.3);
+            let bg_key = ns_string("NSBackgroundColor");
+            let _: () = msg_send![attr_str, addAttribute: bg_key value: highlight range: range];
+            i += query_lower.len();
+        } else {
+            i += 1;
+        }
+    }
+    let _: () = msg_send![field, setAttributedStringValue: attr_str];
+}
 fn entry_type_label(entry: &DrawerEntry) -> &'static str {
     if entry.is_ai_formatted { "AI" } else { "Tt" }
 }

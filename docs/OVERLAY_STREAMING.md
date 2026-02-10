@@ -12,27 +12,22 @@ flowchart TD
     CPAL[cpal audio callback\ncore/audio/recorder.rs]
     SR[StreamingRecorder\ncore/audio/streaming_recorder.rs]
     RESAMPLE[Resample 48kHz → 16kHz\nvad::Resampler]
-    VAD[Silero VAD v5\ncore/vad/silero_ort.rs\nONNX Runtime · GRU neural net]
+    VAD[Silero VAD v6\ncore/vad/silero_ort.rs\nONNX Runtime · GRU neural net]
     GATE{VAD Gate\nspeech_prob ≥ threshold?}
     DROP[🗑️ Silence discarded]
-    PREROLL[Pre-roll buffer\n~64 samples · catches consonant attacks]
-    PENDING[pending_samples\naccumulated speech audio]
-    CHUNK[SpeechEvent::Chunk\nclean speech audio]
+    PREROLL[Pre-roll buffer\n~64ms · catches consonant attacks]
+    SPEECH[SpeechSession\ncore/audio/chunker.rs\nSupervisor mode]
+    CHUNK[SpeechEvent::Utterance / UtteranceFinal\nclean speech audio segments]
+    WORKER[transcription_session\ncore/pipeline/streaming.rs\nunified pipeline]
     WHISPER[Whisper Engine\ncore/stt/whisper/engine.rs\nMetal GPU · large-v3-turbo-q8]
-    DIFF[Diff vs previous transcript\ntoken-level comparison]
-    DELTA["TranscriptDelta\n&quot;Hello worl\\u{0008}\\u{0008}\\u{0008}\\u{0008}\\u{0008}world&quot;"]
-    CB[delta_callback\nStreamDeltaCallback]
-    ROUTE[route_transcription_delta\napp/controller/helpers.rs:42]
+    POSTPROC[StreamPostProcessor\ncore/pipeline/stream_postprocess.rs\nlexicon + semantic gate]
+    EVENT[EngineEvent\ncore/pipeline/contracts.rs]
+    SINK{EventSink / DeltaSink}
+    ROUTER[ControllerEventRouter\napp/controller/helpers.rs]
+    EMITTER[PresentationEmitter\napp/presentation/emitter.rs]
     CHECK{is_assistive_session?}
-    ASSIST_DELTA[append_voice_chat_user_delta\nvoice_chat/api.rs:57]
-    ASSIST_APPLY[apply_delta_with_backspace\n→ chat bubble text]
-    AGENT_TAB[Agent Tab UI\nstreaming user message]
-    TRANS_DELTA[append_transcription_delta\nvoice_chat/api.rs:259]
-    TRANS_APPLY[apply_delta_with_backspace\n→ transcription_text]
-    TRANS_TAB[Transcription Tab UI\nlive preview]
-    OVERLAY_DELTA[append_transcription_delta\noverlay/mod.rs:953]
-    OVERLAY_APPLY[apply_delta_with_backspace\n→ accumulated_text]
-    OVERLAY_WIN[Floating Overlay Window\nnative Cocoa · always-on-top]
+    ASSIST[Voice Chat bubble\napp/ui/voice_chat/api.rs]
+    OVERLAY[Floating Overlay\napp/ui/overlay/mod.rs]
 
     MIC --> CPAL
     CPAL --> SR
@@ -42,32 +37,24 @@ flowchart TD
     GATE -->|speech| PREROLL
     GATE -->|silence < min_silence| PREROLL
     GATE -->|silence ≥ min_silence| DROP
-    PREROLL --> PENDING
-    PENDING -->|chunk ready| CHUNK
-    CHUNK --> WHISPER
-    WHISPER --> DIFF
-    DIFF --> DELTA
-    DELTA --> CB
-    CB --> ROUTE
-
-    ROUTE --> CHECK
-    CHECK -->|Fn+Shift\nassistive| ASSIST_DELTA
-    ASSIST_DELTA --> ASSIST_APPLY
-    ASSIST_APPLY --> AGENT_TAB
-
-    CHECK -->|Fn hold / toggle\nnon-assistive| TRANS_DELTA
-    TRANS_DELTA --> TRANS_APPLY
-    TRANS_APPLY --> TRANS_TAB
-    CHECK -->|non-assistive| OVERLAY_DELTA
-    OVERLAY_DELTA --> OVERLAY_APPLY
-    OVERLAY_APPLY --> OVERLAY_WIN
+    PREROLL --> SPEECH
+    SPEECH --> CHUNK
+    CHUNK --> WORKER
+    WORKER --> WHISPER
+    WHISPER --> POSTPROC
+    POSTPROC --> EVENT
+    EVENT --> SINK
+    SINK -->|event pipeline| ROUTER
+    SINK -->|legacy| EMITTER
+    ROUTER --> CHECK
+    CHECK -->|assistive| ASSIST
+    CHECK -->|non-assistive| OVERLAY
 
     style DROP fill:#fee,stroke:#c33
     style CHUNK fill:#efe,stroke:#3a3
-    style DELTA fill:#eef,stroke:#33c
-    style OVERLAY_WIN fill:#ffe,stroke:#c93
-    style AGENT_TAB fill:#ffe,stroke:#c93
-    style TRANS_TAB fill:#ffe,stroke:#c93
+    style EVENT fill:#eef,stroke:#33c
+    style OVERLAY fill:#ffe,stroke:#c93
+    style ASSIST fill:#ffe,stroke:#c93
 ```
 
 ---
@@ -87,16 +74,16 @@ The microphone delivers raw PCM f32 samples at the device's native sample rate (
 
 ## Stage 2: VAD Gate (Voice Activity Detection)
 
-| Component         | File                               | Details                               |
-| ----------------- | ---------------------------------- | ------------------------------------- |
-| **Resampler**     | `core/vad/silero_ort.rs`           | Linear interpolation 48kHz → 16kHz    |
-| **SileroVad**     | `core/vad/silero_ort.rs`           | ONNX Runtime, GRU neural network      |
-| **SpeechSession** | `core/audio/streaming_recorder.rs` | State machine for speech segmentation |
+| Component         | File                     | Details                               |
+| ----------------- | ------------------------ | ------------------------------------- |
+| **Resampler**     | `core/vad/silero_ort.rs` | Linear interpolation 48kHz → 16kHz    |
+| **SileroVad**     | `core/vad/silero_ort.rs` | ONNX Runtime, GRU neural network      |
+| **SpeechSession** | `core/audio/chunker.rs`  | State machine for speech segmentation |
 
 ### How it works
 
 1. Raw audio is resampled to **16kHz** (Silero's native rate).
-2. Resampled audio is fed in **512-sample frames** (32ms) to Silero VAD v5.
+2. Resampled audio is fed in **512-sample frames** (32ms) to Silero VAD v6.
 3. Each frame produces a **speech probability** (0.0–1.0).
 4. The VAD gate makes a decision per frame:
 
@@ -119,7 +106,7 @@ silence_counter < min_silence      → keep buffering (might be mid-sentence pau
 
 ### Pre-roll buffer
 
-A 64-sample circular buffer captures audio **before** speech onset. This catches the attack transients of plosive consonants (k, t, p, b) that would otherwise be clipped. When speech begins, the pre-roll is prepended to the speech segment.
+A 64ms circular buffer (~1024 samples at 16kHz) captures audio **before** speech onset. This catches the attack transients of plosive consonants (k, t, p, b) that would otherwise be clipped. When speech begins, the pre-roll is prepended to the speech segment.
 
 ### Three gate modes
 
@@ -137,25 +124,29 @@ The application runs **two independent Silero VAD paths**:
 
 2. **Singleton worker** (`vad::speech_probability()`) — async fire-and-forget via bounded channel (capacity=4). Used by the auto-stop monitor in `main.rs` to detect when the user stops speaking during toggle recording. Returns last computed probability (eventual consistency).
 
+### Flush fallback
+
+When recording stops but VAD never fired `Start` (e.g. speech was too quiet or short for the threshold), `SpeechSession::flush()` checks `max_speech_prob`. If it exceeds `FALLBACK_PROB` (0.25) and at least 0.5s of audio is available, the raw buffer is emitted as a degraded fallback. The engine reports this as `EngineEvent::VadFallback`.
+
 ---
 
 ## Stage 3: Whisper Transcription
 
-| Component            | File                               | Details                       |
-| -------------------- | ---------------------------------- | ----------------------------- |
-| **WhisperEngine**    | `core/stt/whisper/engine.rs`       | Candle + Metal GPU, singleton |
-| **Streaming worker** | `core/audio/streaming_recorder.rs` | Feeds chunks to Whisper       |
+| Component                  | File                           | Details                           |
+| -------------------------- | ------------------------------ | --------------------------------- |
+| **WhisperEngine**          | `core/stt/whisper/engine.rs`   | Candle + Metal GPU, singleton     |
+| **transcription_session**  | `core/pipeline/streaming.rs`   | Unified pipeline (event-based)    |
+| **StreamPostProcessor**    | `core/pipeline/stream_postprocess.rs`   | Lexicon + semantic gate + cleanup |
 
 ### Streaming transcription
 
-Speech chunks from the VAD gate are accumulated in `pending_samples`. When enough audio has accumulated (configurable chunk duration, typically ~4s with ~1s overlap), a `SpeechEvent::Chunk` is emitted.
+Speech segments from the VAD gate arrive as `SpeechEvent::Utterance` (interim) or `SpeechEvent::UtteranceFinal` (boundary). The unified `transcription_session` function:
 
-The streaming worker thread:
-
-1. Receives `SpeechEvent::Chunk` (clean speech, no silence).
+1. Receives utterance audio from `SpeechSession`.
 2. Transcribes with Whisper (Metal GPU acceleration).
-3. Compares new transcript against previous transcript.
-4. Generates a **delta** with backspace corrections.
+3. Post-processes via `StreamPostProcessor` (lexicon correction, hallucination filter, semantic gate).
+4. Emits `EngineEvent::Preview` with accumulated text for the current utterance.
+5. Optionally runs Phase 2 correction (re-transcription of accumulated audio for better accuracy).
 
 ### Anti-repetition
 
@@ -163,16 +154,42 @@ Whisper uses `no_repeat_ngram_size = 5` to suppress the model's tendency to repe
 
 ---
 
-## Stage 4: Delta Generation (Backspace Magic)
+## Stage 4: Engine Events (Intent, not Presentation)
 
-| Component               | File                                  | Details                           |
-| ----------------------- | ------------------------------------- | --------------------------------- |
-| **diff logic**          | `core/audio/streaming_recorder.rs`    | Token-level diff                  |
-| **StreamDeltaCallback** | `core/audio/streaming_recorder.rs:30` | `Arc<dyn Fn(&str) + Send + Sync>` |
+| Component              | File                         | Details                    |
+| ---------------------- | ---------------------------- | -------------------------- |
+| **EngineEvent**        | `core/pipeline/contracts.rs` | Semantic event enum        |
+| **EventSink**          | `core/pipeline/contracts.rs` | Trait for event consumers  |
+| **DeltaSinkAdapter**   | `core/pipeline/sinks.rs`     | EventSink → DeltaSink bridge |
+| **TranscriptDelta**    | `core/pipeline/contracts.rs` | Backspace-encoded delta    |
 
-### How backspace magic works
+### Event types
 
-When Whisper processes overlapping audio chunks, later chunks may **correct** earlier transcription. Instead of replacing the entire text, the system generates a minimal delta:
+The engine emits **semantic events** — it communicates what happened, not how to display it:
+
+| Event              | Meaning                                                    |
+| ------------------ | ---------------------------------------------------------- |
+| `VadStart`         | VAD detected speech start (with `speech_prob` and `ts_ms`) |
+| `VadEnd`           | VAD detected speech end                                    |
+| `VadFallback`      | Flush path used (VAD never fired Start but speech detected)|
+| `Preview`          | Latest transcription of current utterance (full text)      |
+| `Correction`       | Re-transcription improved previous output                  |
+| `UtteranceFinal`   | Complete utterance — VAD-bounded or flush                  |
+| `Drop`             | Content dropped (hallucination, semantic gate)             |
+| `Stats`            | Session-level statistics (emitted on stop/flush)           |
+| `Warning`          | Recoverable error — engine continues                       |
+
+### Preview semantics (contract)
+
+- `Preview.text` is **utterance-local**: full post-processed text for the current utterance only.
+- On each Whisper decode, `text` replaces the previous Preview (not appended). `rev` increments.
+- After `UtteranceFinal`, the engine resets internal state — next Preview starts fresh.
+- **Sinks must track `last_preview`** and compute diffs themselves (e.g. `TranscriptDelta::from_diff`).
+- On `UtteranceFinal`, sinks must reset their diff state.
+
+### Delta generation (backspace magic)
+
+When Whisper processes overlapping audio chunks, later chunks may **correct** earlier transcription. The `TranscriptDelta::from_diff` function generates a minimal delta:
 
 ```
 Previous: "Kubernetes wymaga konfiguracji po zgrze"
@@ -183,58 +200,38 @@ Delta: "\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}PostgreS
        8 backspaces to erase "po zgrze" + new text "PostgreSQL"
 ```
 
-The `\u{0008}` character is ASCII backspace. The UI applies it character-by-character:
-
-```rust
-fn apply_delta_with_backspace(target: &mut String, delta: &str) {
-    for ch in delta.chars() {
-        if ch == '\u{0008}' {
-            target.pop();   // erase last character
-        } else {
-            target.push(ch); // append new character
-        }
-    }
-}
-```
-
-This creates a smooth "self-correcting typewriter" effect in the overlay — the user sees text appear, and occasionally characters erase and rewrite as Whisper refines its understanding.
+The `\u{0008}` character is ASCII backspace. The UI applies it character-by-character via `TranscriptDelta::apply()`.
 
 ---
 
 ## Stage 5: UI Routing
 
-| Component                     | File                           | Details                      |
-| ----------------------------- | ------------------------------ | ---------------------------- |
-| **route_transcription_delta** | `app/controller/helpers.rs:42` | Routes delta by session mode |
-| **RecordingController**       | `app/controller/mod.rs`        | Sets up delta_callback       |
+| Component                     | File                           | Details                          |
+| ----------------------------- | ------------------------------ | -------------------------------- |
+| **ControllerEventRouter**     | `app/controller/helpers.rs`    | Event pipeline: routes by mode   |
+| **PresentationEmitter**       | `app/presentation/emitter.rs`  | Typing animation via BufferedEmitter |
+| **route_transcription_delta** | `app/controller/helpers.rs`    | Legacy: routes delta by mode     |
+
+### Two pipeline paths
+
+**Event pipeline** (`CODESCRIBE_EVENT_PIPELINE=1`):
+- `ControllerEventRouter` implements `EventSink` and routes events to UI.
+- Preview → computes delta via `TranscriptDelta::from_diff` → `append_*_delta`.
+- Correction → delta diff (keeps `is_streaming = true`).
+- UtteranceFinal → utterance callback → AI pipeline (skips user bubble re-write).
+
+**Legacy pipeline** (default):
+- `DeltaSink` callback → `route_transcription_delta` → direct delta append.
+- `utterance_callback` → `handle_toggle_utterance` → full commit path.
 
 ### Session modes
 
-The controller registers the delta callback at recording start (`controller/mod.rs:171-172`):
+The controller checks `is_assistive_session()`:
 
-```rust
-recorder.set_delta_callback(Some(Arc::new(|delta| {
-    route_transcription_delta(delta);
-})));
-```
+- **Assistive** (Fn+Shift hold / toggle-assistive): deltas go to voice chat user bubble.
+- **Non-assistive** (Fn hold / toggle): deltas go to floating overlay.
 
-The router checks the current session mode:
-
-```rust
-pub fn route_transcription_delta(delta: &str) {
-    if is_assistive_session() {
-        // Fn+Shift → AI chat mode
-        voice_chat_ui::append_voice_chat_user_delta(delta);
-    } else {
-        // Fn hold / toggle → dictation mode
-        voice_chat_ui::append_transcription_delta(delta);
-    }
-}
-```
-
-**Toggle nuance:** In hands‑off (toggle) mode, each silence boundary (see `TOGGLE_SILENCE_SEC`)
-produces an **append** into the same user/assistant bubble. Recording continues until the user
-double‑taps Option again.
+**Toggle nuance:** In toggle mode, each VAD silence boundary produces an `UtteranceFinal`. The utterance callback processes each utterance independently (AI formatting, clipboard). In the event pipeline, Preview streams into the user bubble, and the commit path finalizes without re-writing (`skip_user_bubble`). Recording continues until double-tap Option.
 
 ---
 
@@ -242,31 +239,25 @@ double‑taps Option again.
 
 ### Non-assistive mode (dictation)
 
-Delta arrives at **two UI targets** simultaneously:
+Delta arrives at the **Floating Overlay**:
 
-1. **Transcription Tab** (`voice_chat/api.rs:266-272`)
-
-   - `apply_delta_with_backspace(&mut state.transcription_text, delta)`
-   - Updates NSTextView in the Transcription tab of the voice chat panel.
-
-2. **Floating Overlay** (`overlay/mod.rs:960-964`)
-   - `apply_delta_with_backspace(&mut state.accumulated_text, delta)`
-   - Updates the always-on-top transparent overlay window.
-   - Auto-resizes to fit text content.
-   - Auto-hides after 5 seconds of inactivity (with hover guard).
+- `TranscriptDelta::from_raw(delta).apply(&mut state.accumulated_text)` (`app/ui/overlay/mod.rs`)
+- Updates the always-on-top transparent overlay window.
+- Auto-resizes to fit text content.
+- Auto-hides after 5 seconds of inactivity (with hover guard).
 
 ### Assistive mode (AI chat)
 
 Delta arrives at the **Agent Tab**:
 
-- `apply_delta_with_backspace(&mut last.text, delta)` (`voice_chat/api.rs:467`)
+- `TranscriptDelta::from_raw(delta).apply(&mut msg.text)` (`app/ui/voice_chat/api.rs`)
 - Updates the streaming user message bubble.
-- After recording stops, the transcribed text is sent to the LLM.
+- After utterance is complete, the transcribed text is sent to the LLM.
 - LLM response streams back via a separate `delta_callback` into assistant message bubbles.
 
 ### Thread safety
 
-All UI updates are dispatched to the **main thread** via `Queue::main().exec_async()` (Grand Central Dispatch). The delta callback fires from the Whisper worker thread; the GCD dispatch ensures AppKit operations happen on the main thread.
+All UI updates are dispatched to the **main thread** via `Queue::main().exec_async()` (Grand Central Dispatch). The delta callback fires from the pipeline worker thread; the GCD dispatch ensures AppKit operations happen on the main thread.
 
 ---
 
@@ -281,7 +272,7 @@ Silero VAD (per 32ms frame)   ~2ms           ~8ms
 VAD gate decision             <1ms           ~9ms
 Whisper chunk accumulation    ~4000ms        ~4009ms
 Whisper inference (Metal GPU) ~2000-7000ms   ~6000-11000ms
-Delta generation              <1ms           ~6001ms
+PostProcess + delta           <1ms           ~6001ms
 GCD dispatch to main thread   <1ms           ~6002ms
 AppKit text update            <1ms           ~6003ms
 ─────────────────────────────────────────────────────────
@@ -300,34 +291,41 @@ Raw PCM f32 (48kHz)
 PCM f32 (16kHz)
     │ Silero VAD
     ▼
-Speech segments only (silence removed)
-    │ accumulate chunks (~4s + overlap)
+SpeechEvent (speech segments, silence removed)
+    │ transcription_session
     ▼
-SpeechEvent::Chunk (Vec<f32>)
-    │ Whisper inference
+Whisper inference → raw transcript
+    │ StreamPostProcessor (lexicon + semantic gate)
     ▼
-Raw transcript (String)
-    │ diff vs previous
+EngineEvent::Preview { text } (utterance-local)
+    │ EventSink / DeltaSinkAdapter
     ▼
-Delta with backspaces (String containing \u{0008})
-    │ apply_delta_with_backspace
+TranscriptDelta (backspace-encoded diff)
+    │ apply to UI buffer
     ▼
-Displayed text (String, visible in overlay)
+Displayed text (String, visible in overlay/bubble)
 ```
 
 ---
 
 ## Key Source Files
 
-| File                               | LOC   | Role                                                        |
-| ---------------------------------- | ----- | ----------------------------------------------------------- |
-| `core/audio/streaming_recorder.rs` | ~2100 | Pipeline orchestrator, VAD gate, chunking, delta generation |
-| `core/vad/silero_ort.rs`           | ~500  | Silero VAD v5 (ONNX), worker thread, resampler              |
-| `core/stt/whisper/engine.rs`       | ~600  | Whisper singleton, Metal GPU inference                      |
-| `app/controller/mod.rs`            | ~1200 | Recording state machine, callback wiring                    |
-| `app/controller/helpers.rs`        | ~100  | Delta routing by session mode                               |
-| `app/ui/overlay/mod.rs`            | ~1200 | Floating overlay window (Cocoa/AppKit)                      |
-| `app/ui/voice_chat/api.rs`         | ~500  | Voice chat panel API, transcription tab                     |
+| File                               | Role                                                        |
+| ---------------------------------- | ----------------------------------------------------------- |
+| `core/audio/recorder.rs`          | cpal audio capture, device management                       |
+| `core/audio/streaming_recorder.rs`| Pipeline orchestrator, connects recorder to engine          |
+| `core/audio/chunker.rs`           | SpeechSession, VAD gate, Supervisor mode, flush fallback    |
+| `core/vad/silero_ort.rs`          | Silero VAD v6 (ONNX), worker thread, resampler              |
+| `core/stt/whisper/engine.rs`      | Whisper singleton, Metal GPU inference                      |
+| `core/pipeline/contracts.rs`      | EngineEvent, EventSink, DeltaSink, TranscriptDelta          |
+| `core/pipeline/streaming.rs`      | transcription_session (unified), BufferedEmitter             |
+| `core/pipeline/sinks.rs`          | DeltaSinkAdapter, CallbackSink, CollectorEventSink          |
+| `core/pipeline/stream_postprocess.rs`      | Lexicon correction, semantic gate, hallucination filter      |
+| `app/controller/mod.rs`           | Recording state machine, Hold/Toggle orchestration          |
+| `app/controller/helpers.rs`       | ControllerEventRouter, session mode routing                 |
+| `app/presentation/emitter.rs`     | PresentationEmitter (typing animation via BufferedEmitter)  |
+| `app/ui/overlay/mod.rs`           | Floating overlay window (Cocoa/AppKit)                      |
+| `app/ui/voice_chat/api.rs`        | Voice chat panel API (drawer/agent/settings)                |
 
 ---
 

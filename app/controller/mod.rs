@@ -403,11 +403,9 @@ impl RecordingController {
                                 set_assistive_session(false);
                                 self.opened_voice_chat_overlay_for_transcription
                                     .store(false, Ordering::SeqCst);
-                                crate::hide_transcription_overlay();
-                                crate::show_voice_chat_overlay();
-                                crate::voice_chat_ui::show_transcription_tab();
-                                crate::voice_chat_ui::clear_transcription_text();
-                                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                                crate::show_transcription_overlay();
+                                crate::enter_recording_mode();
+                                crate::clear_transcription_text();
                             }
                         }
                         HoldMode::Chat => {
@@ -1039,7 +1037,29 @@ impl RecordingController {
                 info!("VAD callback: setting vad_triggered flag");
                 vad_flag.store(true, Ordering::SeqCst);
             });
-            if !cfg!(test)
+
+            let use_event_pipeline = std::env::var("CODESCRIBE_EVENT_PIPELINE")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
+            if use_event_pipeline {
+                // Event-based pipeline: Preview streams directly into overlay.
+                // Hold mode has no utterance callback — text is collected on key-up.
+                let tb = rec.transcript_buffer_handle();
+                let router =
+                    Arc::new(helpers::ControllerEventRouter::new().with_transcript_buffer(tb));
+                rec.set_event_sink(Some(router));
+
+                if !cfg!(test)
+                    && let Err(e) = rec
+                        .start_event_session(Some(language.as_str().to_string()))
+                        .await
+                {
+                    error!("Failed to start event session: {}", e);
+                    return;
+                }
+            } else if !cfg!(test)
                 && let Err(e) = rec.start(Some(language.as_str().to_string())).await
             {
                 error!("Failed to start recorder: {}", e);
@@ -1104,14 +1124,10 @@ impl RecordingController {
                         .unwrap_or_default()
                         .frontmost_app,
                 );
-                // Non-assistive: live dictation preview in unified overlay
-                let was_visible = crate::voice_chat_ui::is_voice_chat_overlay_visible();
-                opened_overlay_for_transcription.store(!was_visible, Ordering::SeqCst);
-                crate::hide_transcription_overlay();
-                crate::show_voice_chat_overlay();
-                crate::voice_chat_ui::show_transcription_tab();
-                crate::voice_chat_ui::clear_transcription_text();
-                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                opened_overlay_for_transcription.store(false, Ordering::SeqCst);
+                crate::show_transcription_overlay();
+                crate::enter_recording_mode();
+                crate::clear_transcription_text();
             }
 
             // Transition to REC_HOLD
@@ -1188,35 +1204,85 @@ impl RecordingController {
         recorder.recorder.set_on_vad_stop(|| {});
         recorder.set_utterance_silence_sec(Some(toggle_silence_sec));
 
-        let controller = OVERLAY_CONTROLLER.get().cloned();
-        let expected_session = new_session_id.clone();
-        let is_assistive_session = is_assistive;
-        recorder.set_utterance_callback(Some(Arc::new(move |text: String| {
-            let controller = controller.clone();
-            let expected_session = expected_session.clone();
-            tokio::spawn(async move {
-                if let Some(controller) = controller
-                    && let Err(e) = controller
-                        .handle_toggle_utterance(text, expected_session, is_assistive_session)
-                        .await
-                {
-                    warn!("Toggle utterance processing failed: {}", e);
-                }
-            });
-        })));
+        let use_event_pipeline = std::env::var("CODESCRIBE_EVENT_PIPELINE")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
 
-        // Set streaming callback for overlay updates (routed by session mode)
-        recorder.set_delta_callback(Some(Arc::new(
-            codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|text: &str| {
-                route_transcription_delta(text);
-            })),
-        )));
+        if use_event_pipeline {
+            // New event-based pipeline: ControllerEventRouter handles all routing.
+            let controller = OVERLAY_CONTROLLER.get().cloned();
+            let expected_session = new_session_id.clone();
+            let is_assistive_session = is_assistive;
 
-        // Skip actual audio stream in tests (no CoreAudio device needed)
-        if !cfg!(test) {
-            recorder
-                .start_with_buffered(Some(language.as_str().to_string()), true)
-                .await?;
+            let tb = recorder.transcript_buffer_handle();
+            let router = Arc::new(
+                helpers::ControllerEventRouter::new()
+                    .with_transcript_buffer(tb)
+                    .with_utterance_callback(Arc::new(move |text: String| {
+                        let controller = controller.clone();
+                        let expected_session = expected_session.clone();
+                        tokio::spawn(async move {
+                            if let Some(controller) = controller
+                                && let Err(e) = controller
+                                    .handle_toggle_utterance(
+                                        text,
+                                        expected_session,
+                                        is_assistive_session,
+                                        true, // skip_user_bubble: Preview already streams into bubble
+                                    )
+                                    .await
+                            {
+                                warn!("Toggle utterance processing failed: {}", e);
+                            }
+                        });
+                    })),
+            );
+
+            recorder.set_event_sink(Some(router));
+
+            if !cfg!(test) {
+                recorder
+                    .start_event_session(Some(language.as_str().to_string()))
+                    .await?;
+            }
+        } else {
+            // Legacy pipeline: separate delta_callback + utterance_callback
+            let controller = OVERLAY_CONTROLLER.get().cloned();
+            let expected_session = new_session_id.clone();
+            let is_assistive_session = is_assistive;
+            recorder.set_utterance_callback(Some(Arc::new(move |text: String| {
+                let controller = controller.clone();
+                let expected_session = expected_session.clone();
+                tokio::spawn(async move {
+                    if let Some(controller) = controller
+                        && let Err(e) = controller
+                            .handle_toggle_utterance(
+                                text,
+                                expected_session,
+                                is_assistive_session,
+                                true, // skip_user_bubble: delta_callback already streams into bubble
+                            )
+                            .await
+                    {
+                        warn!("Toggle utterance processing failed: {}", e);
+                    }
+                });
+            })));
+
+            // Set streaming callback for overlay updates (routed by session mode)
+            recorder.set_delta_callback(Some(Arc::new(
+                codescribe_core::pipeline::sinks::CallbackSink::new(Arc::new(|text: &str| {
+                    route_transcription_delta(text);
+                })),
+            )));
+
+            // Skip actual audio stream in tests (no CoreAudio device needed)
+            if !cfg!(test) {
+                recorder
+                    .start_with_buffered(Some(language.as_str().to_string()), true)
+                    .await?;
+            }
         }
 
         // Play start beep if enabled
@@ -1271,15 +1337,11 @@ impl RecordingController {
                     .unwrap_or_default()
                     .frontmost_app,
             );
-            // Non-assistive: live dictation preview in unified overlay
-            let was_visible = crate::voice_chat_ui::is_voice_chat_overlay_visible();
             self.opened_voice_chat_overlay_for_transcription
-                .store(!was_visible, Ordering::SeqCst);
-            crate::hide_transcription_overlay();
-            crate::show_voice_chat_overlay();
-            crate::voice_chat_ui::show_transcription_tab();
-            crate::voice_chat_ui::clear_transcription_text();
-            crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                .store(false, Ordering::SeqCst);
+            crate::show_transcription_overlay();
+            crate::enter_recording_mode();
+            crate::clear_transcription_text();
         }
 
         // Transition to REC_TOGGLE
@@ -1294,6 +1356,7 @@ impl RecordingController {
         raw_text: String,
         expected_session: String,
         is_assistive: bool,
+        skip_user_bubble: bool,
     ) -> Result<()> {
         if raw_text.trim().is_empty() {
             if is_assistive {
@@ -1345,23 +1408,24 @@ impl RecordingController {
         let assistant_needs_separator = self.toggle_assistant_has_text.load(Ordering::SeqCst);
 
         let result = self
-            .process_transcript_text_pipeline(
+            .process_transcript_text_pipeline(types::TranscriptPipelineParams {
                 raw_text,
-                chrono::Local::now(),
-                is_assistive,
+                recording_timestamp: chrono::Local::now(),
+                assistive: is_assistive,
                 hold_mode,
                 force_raw,
                 force_ai,
                 config,
                 language_opt,
-                raw_save_enabled(),
-                None,
-                None,
-                None,
-                true,
+                raw_save_enabled: raw_save_enabled(),
+                audio_path: None,
+                cloud_text_opt: None,
+                cloud_handle: None,
+                append_mode: true,
                 user_needs_separator,
                 assistant_needs_separator,
-            )
+                skip_user_bubble,
+            })
             .await;
 
         if *self.state.read().await == State::RecToggle {
@@ -1520,7 +1584,12 @@ impl RecordingController {
                         if opened {
                             crate::voice_chat_ui::hide_voice_chat_overlay();
                         }
-                        crate::hide_transcription_overlay();
+                        if cfg.quick_notes_enabled && cfg.quick_notes_save_only {
+                            crate::hide_transcription_overlay();
+                        } else {
+                            crate::enter_decision_mode();
+                            crate::schedule_auto_hide();
+                        }
                     }
                 }
             }
@@ -1730,7 +1799,7 @@ impl RecordingController {
         info!("Raw transcript captured ({} chars)", raw_text.len());
 
         let language_opt = Some(language.as_str().to_string());
-        self.process_transcript_text_pipeline(
+        self.process_transcript_text_pipeline(types::TranscriptPipelineParams {
             raw_text,
             recording_timestamp,
             assistive,
@@ -1743,32 +1812,36 @@ impl RecordingController {
             audio_path,
             cloud_text_opt,
             cloud_handle,
-            false,
-            false,
-            false,
-        )
+            append_mode: false,
+            user_needs_separator: false,
+            assistant_needs_separator: false,
+            skip_user_bubble: false,
+        })
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn process_transcript_text_pipeline(
         &self,
-        raw_text: String,
-        recording_timestamp: chrono::DateTime<chrono::Local>,
-        assistive: bool,
-        hold_mode: HoldMode,
-        force_raw: bool,
-        force_ai: bool,
-        config: Config,
-        language_opt: Option<String>,
-        raw_save_enabled: bool,
-        audio_path: Option<ValidatedAudioPath>,
-        cloud_text_opt: Option<String>,
-        cloud_handle: Option<JoinHandle<Result<String>>>,
-        append_mode: bool,
-        user_needs_separator: bool,
-        assistant_needs_separator: bool,
+        p: types::TranscriptPipelineParams,
     ) -> Result<()> {
+        let types::TranscriptPipelineParams {
+            raw_text,
+            recording_timestamp,
+            assistive,
+            hold_mode,
+            force_raw,
+            force_ai,
+            config,
+            language_opt,
+            raw_save_enabled,
+            audio_path,
+            cloud_text_opt,
+            cloud_handle,
+            append_mode,
+            user_needs_separator,
+            assistant_needs_separator,
+            skip_user_bubble,
+        } = p;
         let language_opt = language_opt.as_deref();
 
         // ALWAYS-ON: Final post-processing pass (lexicon + cleanup + semantic gate)
@@ -1833,9 +1906,14 @@ impl RecordingController {
             );
 
             if chat_active {
-                // Finalize the streaming user draft into a bubble
                 crate::show_voice_chat_overlay();
-                if append_mode {
+                if skip_user_bubble {
+                    // Event pipeline: Preview already streamed text into the bubble.
+                    // Just finalize the user message (stop streaming indicator)
+                    // without re-writing the text.
+                    crate::voice_chat_ui::finalize_voice_chat_user_message();
+                    self.toggle_user_has_text.store(true, Ordering::SeqCst);
+                } else if append_mode {
                     if user_needs_separator {
                         crate::voice_chat_ui::append_voice_chat_user_delta("\n\n");
                     }
@@ -2215,9 +2293,9 @@ impl RecordingController {
             mode_label
         );
         if !assistive {
-            // Keep the unified overlay's transcription preview in sync with what we will paste/save.
+            // Keep the ephemeral transcription overlay in sync with what we will paste/save.
             // This makes it easier to understand differences between streaming preview and final-pass output.
-            crate::voice_chat_ui::set_transcription_text(&formatted_text);
+            crate::set_transcription_text(&formatted_text);
         }
 
         // Quick Notes: optionally save to daily note file (dictation-only).

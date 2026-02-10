@@ -131,3 +131,28 @@ pub struct HotkeyInput {
     pub force_raw: bool,
     pub force_ai: bool,
 }
+
+/// Parameters for the transcript text pipeline.
+///
+/// Groups all inputs for `process_transcript_text_pipeline` to avoid
+/// a 16-argument function signature.
+pub struct TranscriptPipelineParams {
+    pub raw_text: String,
+    pub recording_timestamp: chrono::DateTime<chrono::Local>,
+    pub assistive: bool,
+    pub hold_mode: crate::os::hotkeys::HoldMode,
+    pub force_raw: bool,
+    pub force_ai: bool,
+    pub config: crate::config::Config,
+    pub language_opt: Option<String>,
+    pub raw_save_enabled: bool,
+    pub audio_path: Option<ValidatedAudioPath>,
+    pub cloud_text_opt: Option<String>,
+    pub cloud_handle: Option<tokio::task::JoinHandle<anyhow::Result<String>>>,
+    pub append_mode: bool,
+    pub user_needs_separator: bool,
+    pub assistant_needs_separator: bool,
+    /// When true, skip writing to the user bubble in the commit path.
+    /// Used by event pipeline where Preview already streams into the bubble.
+    pub skip_user_bubble: bool,
+}
