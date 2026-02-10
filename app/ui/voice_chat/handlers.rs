@@ -2,7 +2,7 @@
 //!
 //! Contains Objective-C class registration and action handler functions.
 
-use core_graphics::geometry::{CGPoint, CGRect};
+use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
@@ -12,6 +12,7 @@ use std::sync::Once;
 use tracing::{debug, info};
 
 use codescribe_core::attachment::{Attachment, AttachmentSource, AttachmentStore};
+use codescribe_core::config::UserSettings;
 
 use crate::config::Config;
 use crate::ui::bootstrap;
@@ -260,6 +261,10 @@ pub fn overlay_window_class() -> *const Class {
                 sel!(canBecomeMainWindow),
                 can_become_main_window as extern "C" fn(&Object, Sel) -> bool,
             );
+            decl.add_method(
+                sel!(performKeyEquivalent:),
+                perform_key_equivalent as extern "C" fn(&Object, Sel, Id) -> bool,
+            );
             let cls = decl.register();
             OVERLAY_WINDOW_CLASS = cls;
         });
@@ -404,6 +409,82 @@ extern "C" fn can_become_key_window(_this: &Object, _cmd: Sel) -> bool {
 
 extern "C" fn can_become_main_window(_this: &Object, _cmd: Sel) -> bool {
     true
+}
+
+extern "C" fn perform_key_equivalent(_this: &Object, _cmd: Sel, event: Id) -> bool {
+    unsafe {
+        let flags: u64 = msg_send![event, modifierFlags];
+        let has_cmd = (flags & (1 << 20)) != 0; // NSEventModifierFlagCommand
+        if !has_cmd {
+            return false;
+        }
+
+        let chars: Id = msg_send![event, charactersIgnoringModifiers];
+        if chars.is_null() {
+            return false;
+        }
+        let c_str: *const i8 = msg_send![chars, UTF8String];
+        if c_str.is_null() {
+            return false;
+        }
+        let key = std::ffi::CStr::from_ptr(c_str).to_string_lossy();
+
+        match key.as_ref() {
+            "=" | "+" => {
+                adjust_chat_zoom(0.125);
+                true
+            }
+            "-" => {
+                adjust_chat_zoom(-0.125);
+                true
+            }
+            "0" => {
+                set_chat_zoom(1.0);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Monotonic generation counter for zoom save debounce.
+static ZOOM_SAVE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn adjust_chat_zoom(delta: f64) {
+    let zoom = {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.zoom_level = (state.zoom_level + delta).clamp(0.75, 2.0);
+        state.zoom_level
+    };
+    reflow_agent_after_resize_impl();
+    schedule_zoom_save(zoom);
+}
+
+fn set_chat_zoom(level: f64) {
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.zoom_level = level;
+    }
+    reflow_agent_after_resize_impl();
+    schedule_zoom_save(level);
+}
+
+/// Debounced save: waits 500ms, then saves only if no newer zoom change occurred.
+fn schedule_zoom_save(zoom: f64) {
+    let generation = ZOOM_SAVE_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if ZOOM_SAVE_GEN.load(std::sync::atomic::Ordering::Relaxed) != generation {
+            return; // newer zoom change supersedes
+        }
+        let mut settings = UserSettings::load();
+        settings.chat_zoom = if (zoom - 1.0).abs() < 0.01 {
+            None
+        } else {
+            Some(zoom)
+        };
+        let _ = settings.save();
+    });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -586,7 +667,7 @@ extern "C" fn on_window_did_end_live_resize(_this: &Object, _cmd: Sel, notificat
         if !window.is_null() {
             clamp_overlay_window_to_visible(window);
 
-            // Cap max size to the current screen's visible frame (handles space/screen changes).
+            // Cap max size: width 1000px, height = screen visible height.
             let ns_screen = Class::get("NSScreen").unwrap();
             let mut screen: Id = msg_send![window, screen];
             if screen.is_null() {
@@ -594,7 +675,9 @@ extern "C" fn on_window_did_end_live_resize(_this: &Object, _cmd: Sel, notificat
             }
             if !screen.is_null() {
                 let visible: CGRect = msg_send![screen, visibleFrame];
-                let _: () = msg_send![window, setContentMaxSize: visible.size];
+                let max_w = visible.size.width.min(1000.0);
+                let _: () =
+                    msg_send![window, setContentMaxSize: CGSize::new(max_w, visible.size.height)];
             }
         }
 

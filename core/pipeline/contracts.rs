@@ -273,6 +273,7 @@ pub enum EngineEvent {
         dropped_audio_chunks: u64,
         hallucination_drops: u64,
         semantic_gate_drops: u64,
+        filtered_empty_drops: u64,
         corrections_applied: u64,
         total_utterances: u64,
     },
@@ -487,6 +488,7 @@ mod tests {
             dropped_audio_chunks: 2,
             hallucination_drops: 3,
             semantic_gate_drops: 1,
+            filtered_empty_drops: 0,
             corrections_applied: 4,
             total_utterances: 10,
         };

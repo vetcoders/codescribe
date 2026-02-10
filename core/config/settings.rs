@@ -49,6 +49,8 @@ pub struct UserSettings {
     pub double_tap_left: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub double_tap_right: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_zoom: Option<f64>,
 }
 
 impl UserSettings {

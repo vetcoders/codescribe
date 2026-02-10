@@ -224,12 +224,15 @@ fn show_voice_chat_overlay_impl() {
         // Keep the window instance alive even after close; we manage lifecycle explicitly.
         let _: () = msg_send![window, setReleasedWhenClosed: false];
         let _: () = msg_send![window, setContentMinSize: CGSize::new(380.0, 360.0)];
-        // Prevent "infinite" resizing; cap at the current screen's visible frame.
+        // Cap at sensible max: width 1000px (chat bubbles don't need more),
+        // height = screen visible height (scrolling handles overflow).
         let ns_screen = Class::get("NSScreen").unwrap();
         let screen: Id = msg_send![ns_screen, mainScreen];
         if !screen.is_null() {
             let visible: CGRect = msg_send![screen, visibleFrame];
-            let _: () = msg_send![window, setContentMaxSize: visible.size];
+            let max_w = visible.size.width.min(1000.0);
+            let _: () =
+                msg_send![window, setContentMaxSize: CGSize::new(max_w, visible.size.height)];
         }
         // Make sure the overlay shows up even when the user is in a fullscreen Space.
         let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
@@ -671,6 +674,14 @@ fn show_voice_chat_overlay_impl() {
         if responds_vertical {
             let _: () = msg_send![split_view, setVertical: true];
         }
+        // Divider polish: thin (1pt) + subtle separator color.
+        // NSSplitViewDividerStyleThin = 1
+        let _: () = msg_send![split_view, setDividerStyle: 1_isize];
+        let ns_color = Class::get("NSColor").unwrap();
+        let divider_color: Id = msg_send![ns_color, separatorColor];
+        if !divider_color.is_null() {
+            let _: () = msg_send![split_view, setDividerColor: divider_color];
+        }
         add_subview(blur_view, split_view);
         // Ensure header glass + controls stay above the split view content.
         add_subview(blur_view, header_bg);
@@ -967,6 +978,10 @@ fn show_voice_chat_overlay_impl() {
             state.agent_send_button = Some(agent_send_button as usize);
             state.attachment_chip_strip = Some(chip_scroll as usize);
             state.action_handler = Some(action_handler as usize);
+            // Restore persisted zoom level from settings.json.
+            if let Some(zoom) = codescribe_core::config::UserSettings::load().chat_zoom {
+                state.zoom_level = zoom.clamp(0.75, 2.0);
+            }
             let pending_tab = state.pending_tab.take();
             state.active_tab = pending_tab.unwrap_or(Tab::Drawer);
 

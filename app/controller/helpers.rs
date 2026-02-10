@@ -123,7 +123,7 @@ pub struct ControllerEventRouter {
     /// Optional callback for completed utterances (Toggle mode sends immediately).
     utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// Optional callback when VAD first detects speech.
-    vad_stop_callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    vad_start_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Last preview text — used to compute deltas for append_*_delta functions.
     last_preview: std::sync::Mutex<String>,
 }
@@ -132,7 +132,7 @@ impl ControllerEventRouter {
     pub fn new() -> Self {
         Self {
             utterance_callback: None,
-            vad_stop_callback: None,
+            vad_start_callback: None,
             last_preview: std::sync::Mutex::new(String::new()),
         }
     }
@@ -143,8 +143,8 @@ impl ControllerEventRouter {
     }
 
     #[allow(dead_code)]
-    pub fn with_vad_stop_callback(mut self, cb: Arc<dyn Fn() + Send + Sync>) -> Self {
-        self.vad_stop_callback = Some(cb);
+    pub fn with_vad_start_callback(mut self, cb: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.vad_start_callback = Some(cb);
         self
     }
 }
@@ -153,7 +153,7 @@ impl EventSink for ControllerEventRouter {
     fn on_event(&self, event: &EngineEvent) {
         match event {
             EngineEvent::VadStart { .. } => {
-                if let Some(cb) = &self.vad_stop_callback {
+                if let Some(cb) = &self.vad_start_callback {
                     cb();
                 }
             }
@@ -215,15 +215,17 @@ impl EventSink for ControllerEventRouter {
             EngineEvent::Stats {
                 hallucination_drops,
                 semantic_gate_drops,
+                filtered_empty_drops,
                 corrections_applied,
                 total_utterances,
                 dropped_audio_chunks,
             } => {
                 info!(
-                    "Session stats: utterances={}, hallucinations={}, semantic_gate={}, corrections={}, dropped_chunks={}",
+                    "Session stats: utterances={}, hallucinations={}, semantic_gate={}, filtered_empty={}, corrections={}, dropped_chunks={}",
                     total_utterances,
                     hallucination_drops,
                     semantic_gate_drops,
+                    filtered_empty_drops,
                     corrections_applied,
                     dropped_audio_chunks,
                 );

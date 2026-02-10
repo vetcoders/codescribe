@@ -26,8 +26,8 @@ pub struct PresentationEmitter {
     /// Optional callback for completed utterances (used by Toggle mode).
     utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// Optional callback for VAD stop detection.
-    vad_stop_callback: Option<Arc<dyn Fn() + Send + Sync>>,
-    vad_stop_emitted: std::sync::atomic::AtomicBool,
+    vad_start_callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    vad_start_emitted: std::sync::atomic::AtomicBool,
     /// Last preview text — used to compute incremental segment for push_segment.
     last_preview: std::sync::Mutex<String>,
 }
@@ -53,8 +53,8 @@ impl PresentationEmitter {
             emitter,
             emitter_handle,
             utterance_callback: None,
-            vad_stop_callback: None,
-            vad_stop_emitted: std::sync::atomic::AtomicBool::new(false),
+            vad_start_callback: None,
+            vad_start_emitted: std::sync::atomic::AtomicBool::new(false),
             last_preview: std::sync::Mutex::new(String::new()),
         }
     }
@@ -63,8 +63,8 @@ impl PresentationEmitter {
         self.utterance_callback = cb;
     }
 
-    pub fn set_vad_stop_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
-        self.vad_stop_callback = cb;
+    pub fn set_vad_start_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
+        self.vad_start_callback = cb;
     }
 
     /// Signal the emitter to finish and wait for the tick loop to complete.
@@ -87,9 +87,9 @@ impl EventSink for PresentationEmitter {
         match event {
             EngineEvent::VadStart { .. } => {
                 if !self
-                    .vad_stop_emitted
+                    .vad_start_emitted
                     .swap(true, std::sync::atomic::Ordering::SeqCst)
-                    && let Some(cb) = &self.vad_stop_callback
+                    && let Some(cb) = &self.vad_start_callback
                 {
                     cb();
                 }
@@ -155,15 +155,17 @@ impl EventSink for PresentationEmitter {
             EngineEvent::Stats {
                 hallucination_drops,
                 semantic_gate_drops,
+                filtered_empty_drops,
                 corrections_applied,
                 total_utterances,
                 dropped_audio_chunks,
             } => {
                 info!(
-                    "Session stats: utterances={}, hallucinations={}, semantic_gate={}, corrections={}, dropped_chunks={}",
+                    "Session stats: utterances={}, hallucinations={}, semantic_gate={}, filtered_empty={}, corrections={}, dropped_chunks={}",
                     total_utterances,
                     hallucination_drops,
                     semantic_gate_drops,
+                    filtered_empty_drops,
                     corrections_applied,
                     dropped_audio_chunks,
                 );

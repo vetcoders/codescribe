@@ -213,7 +213,7 @@ impl StreamingRecorder {
                         delta_callback,
                         utterance_callback,
                         utterance_silence_sec,
-                        vad_stop_callback: None,
+                        vad_start_callback: None,
                         stream_log_path: log_path,
                     },
                 )

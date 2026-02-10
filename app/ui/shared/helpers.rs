@@ -1595,6 +1595,7 @@ pub struct BubbleConfig {
     pub text: String,
     pub role: BubbleRole,
     pub max_width: f64,
+    pub font_size: f64,
     pub is_streaming: bool,
     pub is_error: bool,
     pub metadata: Option<String>,
@@ -1614,7 +1615,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let ns_font = Class::get("NSFont").unwrap();
         let ns_dict = Class::get("NSDictionary").unwrap();
 
-        let font_size = 13.0;
+        let font_size = config.font_size;
         let padding_x = 12.0;
         let padding_top = 10.0;
         let copy_button_height = if config.message_index.is_some() {

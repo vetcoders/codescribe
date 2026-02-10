@@ -53,7 +53,7 @@ pub(crate) struct BufferedWorkerConfig {
     pub delta_callback: Option<Arc<dyn DeltaSink>>,
     pub utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
     pub utterance_silence_sec: Option<f32>,
-    pub vad_stop_callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub vad_start_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     pub stream_log_path: Option<std::path::PathBuf>,
 }
 
@@ -484,7 +484,8 @@ pub(crate) async fn transcription_session(
     let mut preview_rev: u64 = 0;
     let mut utterance_id: u64 = 0;
     let mut total_utterances: u64 = 0;
-    let mut semantic_gate_drops: u64 = 0;
+    let semantic_gate_drops: u64 = 0;
+    let mut filtered_empty_drops: u64 = 0;
     let mut corrections_applied: u64 = 0;
     let mut vad_started = false;
 
@@ -692,7 +693,7 @@ pub(crate) async fn transcription_session(
                                 });
                             }
                             Err(PostprocessDrop::FilteredEmpty) => {
-                                semantic_gate_drops += 1;
+                                filtered_empty_drops += 1;
                                 event_sink.on_event(&EngineEvent::Drop {
                                     kind: DropKind::FilteredEmpty,
                                     text: raw_text.clone(),
@@ -800,6 +801,7 @@ pub(crate) async fn transcription_session(
         dropped_audio_chunks: dropped_utterances,
         hallucination_drops: pipeline.hallucination_drops,
         semantic_gate_drops,
+        filtered_empty_drops,
         corrections_applied,
         total_utterances,
     });
@@ -812,8 +814,8 @@ pub(crate) async fn transcription_session(
     }
 
     info!(
-        "Transcription session finished: {} utterances, {} hallucination drops, {} semantic gate drops",
-        total_utterances, pipeline.hallucination_drops, semantic_gate_drops
+        "Transcription session finished: {} utterances, {} hallucination drops, {} semantic gate drops, {} filtered empty drops",
+        total_utterances, pipeline.hallucination_drops, semantic_gate_drops, filtered_empty_drops
     );
 }
 
@@ -962,7 +964,7 @@ pub(crate) async fn buffered_transcription_worker(
         delta_callback,
         utterance_callback,
         utterance_silence_sec,
-        vad_stop_callback,
+        vad_start_callback,
         stream_log_path,
     } = config;
     info!("Buffered transcription worker started");
@@ -975,7 +977,7 @@ pub(crate) async fn buffered_transcription_worker(
         SpeechSession::new_utterance(sample_rate)
     };
     let output_sample_rate = session.output_sample_rate();
-    let mut vad_stop_emitted = false;
+    let mut vad_start_emitted = false;
     let mut pipeline = TranscriptionPipeline::new(language);
     let emitter = Arc::new(Mutex::new(BufferedEmitter::new(
         transcript_buffer.clone(),
@@ -1040,11 +1042,11 @@ pub(crate) async fn buffered_transcription_worker(
                                 _ => continue,
                             };
 
-                            if !vad_stop_emitted {
-                                if let Some(callback) = &vad_stop_callback {
+                            if !vad_start_emitted {
+                                if let Some(callback) = &vad_start_callback {
                                     callback();
                                 }
-                                vad_stop_emitted = true;
+                                vad_start_emitted = true;
                             }
 
                             if pending_utterances.len() >= MAX_PENDING_UTTERANCES {
@@ -1184,7 +1186,7 @@ pub(crate) async fn buffered_transcription_worker(
         }
     }
 
-    if !vad_stop_emitted && let Some(callback) = &vad_stop_callback {
+    if !vad_start_emitted && let Some(callback) = &vad_start_callback {
         callback();
     }
 
@@ -1368,7 +1370,7 @@ pub async fn transcribe_buffered_samples(
             delta_callback: None,
             utterance_callback: None,
             utterance_silence_sec: None,
-            vad_stop_callback: None,
+            vad_start_callback: None,
             stream_log_path: None,
         },
     ));

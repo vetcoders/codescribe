@@ -174,6 +174,9 @@ pub struct VoiceChatOverlayState {
     pub last_layout_time: Option<Instant>,
     pub layout_pending: bool,
     pub pending_delta_index: Option<usize>,
+
+    // Zoom
+    pub zoom_level: f64,
 }
 
 impl Default for VoiceChatOverlayState {
@@ -232,6 +235,7 @@ impl Default for VoiceChatOverlayState {
             last_layout_time: None,
             layout_pending: false,
             pending_delta_index: None,
+            zoom_level: 1.0,
         }
     }
 }

@@ -318,6 +318,7 @@ mod tests {
             dropped_audio_chunks: 0,
             hallucination_drops: 1,
             semantic_gate_drops: 0,
+            filtered_empty_drops: 0,
             corrections_applied: 0,
             total_utterances: 0,
         });

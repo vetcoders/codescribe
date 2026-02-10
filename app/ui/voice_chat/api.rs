@@ -753,9 +753,7 @@ unsafe fn agent_max_width(state: &VoiceChatOverlayState) -> f64 {
         })
         .unwrap_or(390.0);
 
-    width
-        .min(ui_tokens::BUBBLE_MAX_WIDTH)
-        .clamp(240.0, ui_tokens::BUBBLE_MAX_WIDTH)
+    width.max(240.0)
 }
 
 unsafe fn sync_agent_document_view_size(state: &VoiceChatOverlayState, max_width: f64) {
@@ -1166,6 +1164,8 @@ pub(super) fn update_chat_view_with_state(
 
         // Size bubbles to the current visible content width (supports resizable overlay).
         let max_width = agent_max_width(state);
+        let zoom = state.zoom_level;
+        let base_font = ui_tokens::BODY_FONT_SIZE;
 
         // Empty state CTA when no messages exist yet.
         if state.messages.is_empty() {
@@ -1173,7 +1173,7 @@ pub(super) fn update_chat_view_with_state(
                 frame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(max_width, 60.0)),
                 text: "Start a conversation\nPress hotkey to record \u{2022} Type to send"
                     .to_string(),
-                font_size: 13.0,
+                font_size: base_font * zoom,
                 text_color: color_secondary_label(),
                 ..Default::default()
             });
@@ -1192,6 +1192,7 @@ pub(super) fn update_chat_view_with_state(
                 text: message.text.clone(),
                 role,
                 max_width,
+                font_size: base_font * zoom,
                 is_streaming: message.is_streaming,
                 is_error: message.is_error,
                 metadata: Some(message_metadata(message)),
