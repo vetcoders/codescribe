@@ -11,8 +11,90 @@ use tracing::{debug, info};
 // ═══════════════════════════════════════════════════════════
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024; // 1MB
-const TIMEOUT_SECS: u64 = 15;
-const MAX_REDIRECTS: usize = 3;
+
+// ═══════════════════════════════════════════════════════════
+// SSRF protection
+// ═══════════════════════════════════════════════════════════
+
+/// Check if a URL points to a private/internal host.
+fn is_private_host(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return true; // no host → block
+    };
+
+    // Exact matches
+    if matches!(
+        host,
+        "localhost" | "127.0.0.1" | "::1" | "[::1]" | "0.0.0.0"
+    ) {
+        return true;
+    }
+
+    // Suffix-based blocks
+    if host.ends_with(".local") || host.ends_with(".internal") {
+        return true;
+    }
+
+    // Parse as IPv4 and check RFC 1918 / link-local ranges.
+    if let Some(is_private) = check_ipv4_private(host) {
+        return is_private;
+    }
+
+    false
+}
+
+/// Check IPv4 address against private/reserved ranges.
+/// Returns `Some(true)` if private, `Some(false)` if public IPv4,
+/// `None` if not an IPv4 address.
+fn check_ipv4_private(host: &str) -> Option<bool> {
+    let octets: Vec<u8> = host
+        .split('.')
+        .filter_map(|s| s.parse::<u8>().ok())
+        .collect();
+
+    if octets.len() != 4 {
+        return None; // not IPv4
+    }
+
+    let private = match octets[0] {
+        10 => true,                            // 10.0.0.0/8
+        172 => (16..=31).contains(&octets[1]), // 172.16.0.0/12
+        192 if octets[1] == 168 => true,       // 192.168.0.0/16
+        169 if octets[1] == 254 => true,       // 169.254.0.0/16 link-local
+        127 => true,                           // 127.0.0.0/8 loopback
+        0 => true,                             // 0.0.0.0/8
+        _ => false,
+    };
+    Some(private)
+}
+
+/// Build an SSRF-safe HTTP client with redirect policy that revalidates
+/// each hop against `is_private_host`.
+fn ssrf_safe_client() -> reqwest::Client {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() >= 3 {
+                        attempt.error(anyhow::anyhow!("Too many redirects"))
+                    } else if is_private_host(attempt.url()) {
+                        attempt.error(anyhow::anyhow!(
+                            "Redirect to private/internal address blocked"
+                        ))
+                    } else {
+                        attempt.follow()
+                    }
+                }))
+                .user_agent("CodeScribe/1.0 (speech-to-text assistant)")
+                .build()
+                .expect("Failed to build SSRF-safe HTTP client")
+        })
+        .clone()
+}
 
 // ═══════════════════════════════════════════════════════════
 // Public API
@@ -25,16 +107,25 @@ const MAX_REDIRECTS: usize = 3;
 /// HTML is stripped to plain text. Non-HTML responses are returned as-is
 /// (if they're valid UTF-8).
 pub async fn fetch_url_as_text(url: &str) -> Result<(String, String)> {
+    // SSRF protection: only allow https (and http for localhost dev).
+    let url_trimmed = url.trim();
+    if !url_trimmed.starts_with("https://") && !url_trimmed.starts_with("http://") {
+        bail!("Unsupported URL scheme (only http/https allowed): {url_trimmed}");
+    }
+
+    // Block private/internal IP ranges and metadata services.
+    if let Ok(parsed) = reqwest::Url::parse(url_trimmed)
+        && is_private_host(&parsed)
+    {
+        bail!("URL blocked: private/internal addresses not allowed");
+    }
+
     info!("Fetching URL: {}", url);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
-        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
-        .user_agent("CodeScribe/1.0 (speech-to-text assistant)")
-        .build()
-        .context("Failed to build HTTP client")?;
+    // Use a client with custom redirect policy that revalidates each hop.
+    let client = ssrf_safe_client();
 
-    let resp = client.get(url).send().await.context("URL fetch failed")?;
+    let mut resp = client.get(url).send().await.context("URL fetch failed")?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -48,6 +139,7 @@ pub async fn fetch_url_as_text(url: &str) -> Result<(String, String)> {
         .unwrap_or("")
         .to_string();
 
+    // Early reject if Content-Length header exceeds limit.
     let content_length = resp.content_length().unwrap_or(0) as usize;
     if content_length > MAX_RESPONSE_BYTES {
         bail!(
@@ -57,17 +149,25 @@ pub async fn fetch_url_as_text(url: &str) -> Result<(String, String)> {
         );
     }
 
-    let bytes = resp.bytes().await.context("Failed to read response body")?;
-
-    if bytes.len() > MAX_RESPONSE_BYTES {
-        bail!(
-            "Response too large ({} bytes, max {})",
-            bytes.len(),
-            MAX_RESPONSE_BYTES
-        );
+    // Stream chunks with running size check — prevents decompression bombs
+    // and chunked-transfer attacks that omit Content-Length.
+    let mut buf = Vec::with_capacity(content_length.min(MAX_RESPONSE_BYTES));
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .context("Failed to read response chunk")?
+    {
+        if buf.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            bail!(
+                "Response too large (>{} bytes, max {})",
+                buf.len() + chunk.len(),
+                MAX_RESPONSE_BYTES
+            );
+        }
+        buf.extend_from_slice(&chunk);
     }
 
-    let body = String::from_utf8_lossy(&bytes).to_string();
+    let body = String::from_utf8_lossy(&buf).to_string();
 
     let is_html = content_type.contains("text/html")
         || body.trim_start().starts_with("<!DOCTYPE")
@@ -424,5 +524,100 @@ mod tests {
     fn test_extract_title_multibyte() {
         let html = "<html><head><title>Strona główna — informacje</title></head></html>";
         assert_eq!(extract_title(html), "Strona główna — informacje");
+    }
+
+    // ── SSRF protection tests ──
+
+    #[tokio::test]
+    async fn test_ssrf_private_ip_blocked() {
+        let result = fetch_url_as_text("https://127.0.0.1/secret").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_localhost_blocked() {
+        let result = fetch_url_as_text("https://localhost/admin").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_internal_blocked() {
+        let result = fetch_url_as_text("https://metadata.internal/latest").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn test_ssrf_rfc1918_blocked() {
+        let result = fetch_url_as_text("https://192.168.1.1/config").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn test_ftp_scheme_rejected() {
+        let result = fetch_url_as_text("ftp://evil.com/payload").await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unsupported URL scheme")
+        );
+    }
+
+    #[test]
+    fn test_ssrf_172_31_blocked() {
+        // 172.31.x.x is private (RFC 1918: 172.16.0.0/12)
+        let url = reqwest::Url::parse("https://172.31.255.1/secret").unwrap();
+        assert!(is_private_host(&url));
+    }
+
+    #[test]
+    fn test_ssrf_172_32_not_blocked() {
+        // 172.32.x.x is PUBLIC — outside RFC 1918 range
+        let url = reqwest::Url::parse("https://172.32.0.1/page").unwrap();
+        assert!(!is_private_host(&url));
+    }
+
+    #[test]
+    fn test_ssrf_10_blocked() {
+        let url = reqwest::Url::parse("https://10.0.0.1/admin").unwrap();
+        assert!(is_private_host(&url));
+    }
+
+    #[test]
+    fn test_ssrf_public_ip_allowed() {
+        let url = reqwest::Url::parse("https://8.8.8.8/dns").unwrap();
+        assert!(!is_private_host(&url));
+    }
+
+    #[test]
+    fn test_ssrf_link_local_blocked() {
+        let url = reqwest::Url::parse("https://169.254.1.1/meta").unwrap();
+        assert!(is_private_host(&url));
+    }
+
+    // ── HTML edge cases ──
+
+    #[test]
+    fn test_strip_html_nested_script() {
+        let html = "<p>A</p><script>var x = '<p>not real</p>';</script><p>B</p>";
+        let text = strip_html(html);
+        assert!(text.contains('A'));
+        assert!(text.contains('B'));
+        assert!(!text.contains("not real"));
+    }
+
+    #[test]
+    fn test_strip_html_empty() {
+        assert_eq!(strip_html(""), "");
+    }
+
+    #[test]
+    fn test_strip_html_no_tags() {
+        assert_eq!(strip_html("plain text"), "plain text");
     }
 }

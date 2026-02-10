@@ -127,7 +127,41 @@ fn parse_github_spec(spec: &str) -> Option<GitHubRef> {
 // ═══════════════════════════════════════════════════════════
 
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024; // 10MB
-const TIMEOUT_SECS: u64 = 30;
+
+/// Percent-encode a path segment for use in GitHub API URLs.
+/// Allows alphanumeric, `-`, `_`, `.`, `/` (path separators); encodes everything else.
+fn percent_encode_path(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{b:02X}"));
+            }
+        }
+    }
+    out
+}
+
+/// Percent-encode a query parameter value (stricter: no `/`).
+fn percent_encode_param(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{b:02X}"));
+            }
+        }
+    }
+    out
+}
 
 /// Fetch raw file content from GitHub.
 ///
@@ -135,16 +169,15 @@ const TIMEOUT_SECS: u64 = 30;
 pub async fn fetch_github_blob(gh: &GitHubRef, token: Option<&str>) -> Result<(Vec<u8>, String)> {
     let url = format!(
         "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
-        gh.owner, gh.repo, gh.path, gh.git_ref
+        percent_encode_param(&gh.owner),
+        percent_encode_param(&gh.repo),
+        percent_encode_path(&gh.path),
+        percent_encode_param(&gh.git_ref),
     );
 
     info!("Fetching GitHub blob: {}", gh);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
-        .user_agent("CodeScribe/1.0 (github.com/VetCoders/CodeScribe)")
-        .build()
-        .context("Failed to build HTTP client")?;
+    let client = super::shared_client();
 
     let mut req = client
         .get(&url)
@@ -154,14 +187,21 @@ pub async fn fetch_github_blob(gh: &GitHubRef, token: Option<&str>) -> Result<(V
         req = req.header("Authorization", format!("Bearer {t}"));
     }
 
-    let resp = req.send().await.context("GitHub API request failed")?;
+    let mut resp = req.send().await.context("GitHub API request failed")?;
 
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        bail!("GitHub API error {status}: {body}");
+        // Log full body for diagnostics but don't expose in user-facing error
+        // (body may contain tokens or attacker-controlled content).
+        debug!(
+            "GitHub API error body: {}",
+            body.chars().take(500).collect::<String>()
+        );
+        bail!("GitHub API error {status} for {}", gh);
     }
 
+    // Early reject if Content-Length header exceeds limit.
     let content_length = resp.content_length().unwrap_or(0) as usize;
     if content_length > MAX_RESPONSE_BYTES {
         bail!(
@@ -171,22 +211,27 @@ pub async fn fetch_github_blob(gh: &GitHubRef, token: Option<&str>) -> Result<(V
         );
     }
 
-    let bytes = resp
-        .bytes()
+    // Stream chunks with running size check — prevents decompression bombs.
+    let mut buf = Vec::with_capacity(content_length.min(MAX_RESPONSE_BYTES));
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .context("Failed to read GitHub response")?;
-    if bytes.len() > MAX_RESPONSE_BYTES {
-        bail!(
-            "GitHub blob too large ({} bytes, max {})",
-            bytes.len(),
-            MAX_RESPONSE_BYTES
-        );
+        .context("Failed to read GitHub response chunk")?
+    {
+        if buf.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            bail!(
+                "GitHub blob too large (>{} bytes, max {})",
+                buf.len() + chunk.len(),
+                MAX_RESPONSE_BYTES
+            );
+        }
+        buf.extend_from_slice(&chunk);
     }
 
     let filename = gh.path.rsplit('/').next().unwrap_or(&gh.path).to_string();
 
-    debug!("Fetched GitHub blob: {} ({} bytes)", filename, bytes.len());
-    Ok((bytes.to_vec(), filename))
+    debug!("Fetched GitHub blob: {} ({} bytes)", filename, buf.len());
+    Ok((buf, filename))
 }
 
 /// Load GitHub token from Keychain (if available).
@@ -287,5 +332,38 @@ mod tests {
             path: "src/lib.rs".into(),
         };
         assert_eq!(gh.to_string(), "owner/repo@main:src/lib.rs");
+    }
+
+    #[test]
+    fn test_percent_encode_param_safe() {
+        assert_eq!(percent_encode_param("VetCoders"), "VetCoders");
+        assert_eq!(percent_encode_param("my-repo_v2"), "my-repo_v2");
+    }
+
+    #[test]
+    fn test_percent_encode_param_special() {
+        assert_eq!(percent_encode_param("a/b"), "a%2Fb");
+        assert_eq!(percent_encode_param("a b"), "a%20b");
+        assert_eq!(percent_encode_param("ref@{0}"), "ref%40%7B0%7D");
+    }
+
+    #[test]
+    fn test_percent_encode_path_preserves_slashes() {
+        assert_eq!(percent_encode_path("src/lib.rs"), "src/lib.rs");
+        assert_eq!(
+            percent_encode_path("path with spaces/file.rs"),
+            "path%20with%20spaces/file.rs"
+        );
+    }
+
+    #[test]
+    fn test_injection_attempt_encoded() {
+        // Path traversal attempt
+        let encoded = percent_encode_param("../../etc/passwd");
+        assert!(!encoded.contains('/'));
+        // Query injection
+        let encoded = percent_encode_param("main?token=leaked");
+        assert!(!encoded.contains('?'));
+        assert!(!encoded.contains('='));
     }
 }

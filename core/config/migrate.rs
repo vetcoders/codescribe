@@ -79,6 +79,12 @@ pub fn migrate_if_needed() {
         settings.sound_volume = Some(n);
     }
 
+    if let Ok(v) = std::env::var("DOUBLE_TAP_INTERVAL_MS")
+        && let Ok(n) = v.parse::<u64>()
+    {
+        settings.double_tap_interval_ms = Some(n);
+    }
+
     // Save settings.json
     if let Err(e) = settings.save() {
         tracing::warn!("Migration: failed to save settings.json: {e}");

@@ -1463,6 +1463,8 @@ unsafe fn normalize_attributed_string_fonts(attr: Id, base_font: Id) -> Id {
     if mutable.is_null() {
         return attr;
     }
+    // Release original — we now own the mutable copy exclusively.
+    let _: () = msg_send![attr, release];
 
     let len: usize = msg_send![mutable, length];
     if len == 0 {
@@ -1585,6 +1587,9 @@ unsafe fn apply_markdown_to_text_field(text_label: Id, text: &str, font: Id) -> 
     };
     if let Some(attr) = unsafe { markdown_attributed_string(text, font) } {
         let _: () = msg_send![text_label, setAttributedStringValue: attr];
+        // Balance the +1 from mutableCopy inside normalize_attributed_string_fonts.
+        // setAttributedStringValue: retains its own copy.
+        let _: () = msg_send![attr, release];
         return true;
     }
     false
@@ -1973,7 +1978,23 @@ pub unsafe fn update_bubble_text(
 
         let allow_markdown =
             !is_streaming && matches!(role, BubbleRole::Assistant | BubbleRole::System);
-        let font: Id = msg_send![text_label, font];
+        // Always create a fresh monospace font instead of reading from the label.
+        // After markdown parsing, text_label.font may return a system font from
+        // the first attributed range, causing cascading degradation on subsequent updates.
+        let label_font: Id = msg_send![text_label, font];
+        let font_size: f64 = if label_font.is_null() {
+            13.0
+        } else {
+            msg_send![label_font, pointSize]
+        };
+        let ns_font_cls = Class::get("NSFont").unwrap();
+        let jb_name = ns_string("JetBrainsMono-Regular");
+        let jb_font: Id = msg_send![ns_font_cls, fontWithName: jb_name size: font_size];
+        let font: Id = if jb_font.is_null() {
+            msg_send![ns_font_cls, monospacedSystemFontOfSize: font_size weight: 0.0f64]
+        } else {
+            jb_font
+        };
         if !(allow_markdown && apply_markdown_to_text_field(text_label, &display_text, font)) {
             let text_str = ns_string(&display_text);
             let _: () = msg_send![text_label, setStringValue: text_str];

@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use ndarray::ArrayD;
 use ort::session::Session;
 use ort::value::Value;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use super::config::VadConfig;
 use crate::hf_cache;
@@ -474,7 +474,7 @@ pub fn default_model_path() -> PathBuf {
     if let Ok(manager) = crate::config::models::ModelManager::new() {
         let candidate = manager.models_dir().join(SILERO_VAD_FILE);
         if candidate.exists() {
-            debug!("Using Silero VAD from models dir: {}", candidate.display());
+            trace!("Using Silero VAD from models dir: {}", candidate.display());
             return candidate;
         }
     }
@@ -483,7 +483,7 @@ pub fn default_model_path() -> PathBuf {
     if let Some(snapshot) = hf_cache::find_snapshot(SILERO_VAD_REPO, &[SILERO_VAD_FILE]) {
         let model_path = snapshot.join(SILERO_VAD_FILE);
         if model_path.exists() {
-            debug!("Using Silero VAD from HF cache: {}", model_path.display());
+            trace!("Using Silero VAD from HF cache: {}", model_path.display());
             return model_path;
         }
     }

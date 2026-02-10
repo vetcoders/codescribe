@@ -48,6 +48,18 @@ pub fn route_transcription_delta(delta: &str) {
     }
 }
 
+/// DeltaSink that routes deltas to the active UI overlay.
+///
+/// Uses `is_assistive_session()` to decide: chat bubble vs transcription overlay.
+/// Plugs into `PresentationEmitter` → `BufferedEmitter` → delta chain.
+pub struct RoutingDeltaSink;
+
+impl codescribe_core::pipeline::contracts::DeltaSink for RoutingDeltaSink {
+    fn apply(&self, delta: &codescribe_core::pipeline::contracts::TranscriptDelta) {
+        route_transcription_delta(&delta.delta);
+    }
+}
+
 /// Setup the voice chat send callback with config
 pub fn setup_voice_chat_send_callback(config: Arc<RwLock<Config>>) {
     let callback_config = Arc::clone(&config);
@@ -119,6 +131,7 @@ use tracing::{debug, info, warn};
 ///
 /// Hold mode: buffers previews, emits final on stop.
 /// Toggle mode: routes utterances immediately.
+#[allow(dead_code)]
 pub struct ControllerEventRouter {
     /// Optional callback for completed utterances (Toggle mode sends immediately).
     utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
@@ -133,6 +146,7 @@ pub struct ControllerEventRouter {
     finalized_prefix: std::sync::Mutex<String>,
 }
 
+#[allow(dead_code)]
 impl ControllerEventRouter {
     pub fn new() -> Self {
         Self {
@@ -208,15 +222,31 @@ impl EventSink for ControllerEventRouter {
                     debug!("Ignoring Correction with empty last_preview (post-final)");
                     return;
                 }
-                if is_assistive_session() {
-                    if let Some(td) = TranscriptDelta::from_diff(&last, text) {
+                if let Some(td) = TranscriptDelta::from_diff(&last, text) {
+                    if is_assistive_session() {
                         crate::voice_chat_ui::append_voice_chat_user_delta(&td.delta);
+                    } else {
+                        // Non-assistive overlay: use delta to keep chain consistent.
+                        crate::transcription_overlay::append_transcription_delta(&td.delta);
                     }
-                } else {
-                    // Non-assistive overlay: simple full replace is fine.
-                    crate::set_transcription_text(text);
                 }
                 *last = text.clone();
+                // Update transcript_buffer with corrected text.
+                if let Some(buf) = &self.transcript_buffer {
+                    let prefix = self
+                        .finalized_prefix
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    let full = if prefix.is_empty() {
+                        text.clone()
+                    } else {
+                        format!("{} {}", prefix, text)
+                    };
+                    if let Ok(mut guard) = buf.try_lock() {
+                        *guard = full;
+                    }
+                }
             }
             EngineEvent::UtteranceFinal { text, .. } => {
                 // Reset last_preview — engine clears accumulated_text on utterance boundary,

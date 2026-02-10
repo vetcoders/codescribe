@@ -9,7 +9,6 @@
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::dedup::{dedup_chunk_overlap, strip_suffix_overlap};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
-use crate::stt::whisper;
 use crate::stt::whisper::singleton::engine as get_engine;
 use anyhow::{Result, anyhow};
 use chrono::SecondsFormat;
@@ -491,6 +490,8 @@ pub(crate) async fn transcription_session(
 
     // Accumulate text for the current "run" of utterances (between corrections).
     let mut accumulated_text = String::new();
+    // Track last raw Whisper output for final flush UtteranceFinal.
+    let mut last_raw_text = String::new();
 
     // Track audio position for UtteranceFinal timestamps (seconds).
     let mut utterance_start_s: f32 = 0.0;
@@ -657,6 +658,7 @@ pub(crate) async fn transcription_session(
 
                 match result {
                     Ok(Ok(raw_text)) => {
+                        last_raw_text = raw_text.clone();
                         if utterance_count == 0 && correction_audio_buf.is_empty() {
                             suffix_snapshot = pipeline.last_suffix.clone();
                         }
@@ -708,7 +710,8 @@ pub(crate) async fn transcription_session(
                             let final_text = accumulated_text.trim().to_string();
                             let end_ts = utterance_start_s
                                 + utterance_audio_samples as f32 / output_sample_rate as f32;
-                            if !final_text.is_empty() {
+                            let had_content = !final_text.is_empty();
+                            if had_content {
                                 event_sink.on_event(&EngineEvent::UtteranceFinal {
                                     utterance_id,
                                     text: final_text,
@@ -722,7 +725,9 @@ pub(crate) async fn transcription_session(
                             utterance_start_s = end_ts;
                             utterance_audio_samples = 0;
 
-                            if vad_started {
+                            // Only emit VadEnd if UtteranceFinal was emitted — avoids
+                            // spurious VadEnd without preceding UtteranceFinal.
+                            if vad_started && had_content {
                                 event_sink.on_event(&EngineEvent::VadEnd {
                                     speech_prob: session.boundary_prob(),
                                     ts_ms: session.session_elapsed_ms(),
@@ -752,6 +757,10 @@ pub(crate) async fn transcription_session(
                                 pipeline.last_suffix = suffix_snapshot.clone();
                                 correction_current_suffix = Some(current_suffix);
 
+                                // Abort stale correction task to prevent task leak + suffix corruption.
+                                if let Some(old) = correction_in_flight.take() {
+                                    old.abort();
+                                }
                                 correction_in_flight = Some(spawn_utterance_transcription(
                                     audio,
                                     output_sample_rate,
@@ -790,7 +799,7 @@ pub(crate) async fn transcription_session(
         event_sink.on_event(&EngineEvent::UtteranceFinal {
             utterance_id,
             text: remaining,
-            raw_text: String::new(),
+            raw_text: last_raw_text,
             start_ts: utterance_start_s,
             end_ts,
         });
@@ -1156,6 +1165,10 @@ pub(crate) async fn buffered_transcription_worker(
                                 pipeline.last_suffix = suffix_snapshot.clone();
                                 correction_current_suffix = Some(current_suffix);
 
+                                // Abort stale correction task to prevent task leak.
+                                if let Some(old) = correction_in_flight.take() {
+                                    old.abort();
+                                }
                                 correction_in_flight = Some(spawn_utterance_transcription(
                                     audio,
                                     output_sample_rate,
@@ -1239,7 +1252,16 @@ fn spawn_utterance_transcription(
     language: Option<String>,
 ) -> tokio::task::JoinHandle<Result<String>> {
     tokio::task::spawn_blocking(move || {
-        whisper::transcribe(&samples, sample_rate, language.as_deref())
+        // Use try_lock to avoid blocking-pool saturation when corrections
+        // pile up faster than the engine can process them.  If the engine
+        // is already busy (main transcription or a previous correction),
+        // we bail immediately — the next correction cycle will pick up
+        // the accumulated audio.
+        let engine_mutex = get_engine()?;
+        let mut engine = engine_mutex
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("Whisper engine busy, skipping correction"))?;
+        engine.transcribe_long_with_language(&samples, sample_rate, language.as_deref())
     })
 }
 
@@ -1392,33 +1414,7 @@ pub async fn transcribe_buffered_samples(
 // ── Delta helpers ────────────────────────────────────────────────────────────
 
 pub(crate) fn build_redacted_delta(before: &str, after: &str) -> Option<String> {
-    if before == after {
-        return None;
-    }
-
-    let mut prefix_len = 0usize;
-    let b_iter = before.char_indices();
-    let mut a_iter = after.chars();
-
-    for (idx, b_char) in b_iter {
-        if let Some(a_char) = a_iter.next() {
-            if b_char == a_char {
-                prefix_len = idx + b_char.len_utf8();
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-
-    let removed = before.get(prefix_len..).unwrap_or("").chars().count();
-    let mut delta = String::new();
-    for _ in 0..removed {
-        delta.push('\u{0008}');
-    }
-    delta.push_str(after.get(prefix_len..).unwrap_or(""));
-    Some(delta)
+    crate::pipeline::contracts::TranscriptDelta::from_diff(before, after).map(|td| td.delta)
 }
 
 pub(crate) fn apply_delta_to_string(target: &mut String, delta: &str) {

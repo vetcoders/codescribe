@@ -3,9 +3,9 @@
 //! Converts `EngineEvent`s into user-facing output by delegating to
 //! `BufferedEmitter` (typing animation, delta encoding) from core.
 //!
-//! This is the app-layer replacement for directly coupling the pipeline
-//! to `BufferedEmitter`. The engine says "here's a preview", and this
-//! module decides when/how to show it.
+//! Uses an ordered mpsc channel to guarantee that push_segment,
+//! push_correction and finish arrive in the exact order they were emitted,
+//! eliminating the fire-and-forget tokio::spawn ordering race.
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -16,13 +16,24 @@ use codescribe_core::pipeline::streaming::BufferedEmitter;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
+/// Commands sent through the ordered channel to the emitter worker.
+enum EmitterCmd {
+    PushSegment(String),
+    PushCorrection(String),
+    Finish,
+}
+
 /// Presentation emitter — bridges `EngineEvent`s to `BufferedEmitter`.
 ///
 /// Implements `EventSink` so it can be plugged directly into `transcription_session`.
 /// Internally manages the `BufferedEmitter` tick loop for typing animation.
+///
+/// All mutations to `BufferedEmitter` are serialized through an mpsc channel,
+/// guaranteeing in-order delivery (no fire-and-forget spawn races).
 pub struct PresentationEmitter {
-    emitter: Arc<Mutex<BufferedEmitter>>,
+    cmd_tx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<EmitterCmd>>>,
     emitter_handle: Option<tokio::task::JoinHandle<()>>,
+    cmd_handle: Option<tokio::task::JoinHandle<()>>,
     /// Optional callback for completed utterances (used by Toggle mode).
     utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// Optional callback for VAD stop detection.
@@ -49,9 +60,27 @@ impl PresentationEmitter {
             codescribe_core::pipeline::streaming::emitter_tick_loop(emitter_clone),
         ));
 
+        // Ordered command channel: on_event sends commands, worker processes in FIFO order.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<EmitterCmd>();
+        let emitter_for_cmd = emitter.clone();
+        let cmd_handle = Some(tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                let mut guard = emitter_for_cmd.lock().await;
+                match cmd {
+                    EmitterCmd::PushSegment(text) => guard.push_segment(text),
+                    EmitterCmd::PushCorrection(text) => guard.push_correction(text),
+                    EmitterCmd::Finish => {
+                        guard.finish();
+                        break;
+                    }
+                }
+            }
+        }));
+
         Self {
-            emitter,
+            cmd_tx: std::sync::Mutex::new(Some(tx)),
             emitter_handle,
+            cmd_handle,
             utterance_callback: None,
             vad_start_callback: None,
             vad_start_emitted: std::sync::atomic::AtomicBool::new(false),
@@ -67,17 +96,38 @@ impl PresentationEmitter {
         self.vad_start_callback = cb;
     }
 
-    /// Signal the emitter to finish and wait for the tick loop to complete.
+    /// Signal the emitter to finish and wait for both the command worker
+    /// and the tick loop to complete.
     pub async fn finish(&mut self) {
+        // Send Finish through channel (ordered after all pending pushes).
+        if let Ok(guard) = self.cmd_tx.lock()
+            && let Some(tx) = guard.as_ref()
         {
-            let mut guard = self.emitter.lock().await;
-            guard.finish();
+            let _ = tx.send(EmitterCmd::Finish);
         }
 
+        // Wait for command worker to drain and exit.
+        if let Some(handle) = self.cmd_handle.take()
+            && let Err(e) = handle.await
+        {
+            tracing::error!("Emitter cmd worker failed: {}", e);
+        }
+
+        // Wait for tick loop to finish.
         if let Some(handle) = self.emitter_handle.take()
             && let Err(e) = handle.await
         {
             tracing::error!("Emitter tick loop failed: {}", e);
+        }
+    }
+
+    /// Send a command to the emitter worker (non-blocking, ordered).
+    fn send_cmd(&self, cmd: EmitterCmd) {
+        if let Ok(guard) = self.cmd_tx.lock()
+            && let Some(tx) = guard.as_ref()
+            && tx.send(cmd).is_err()
+        {
+            debug!("Emitter channel closed, dropping command");
         }
     }
 }
@@ -108,11 +158,7 @@ impl EventSink for PresentationEmitter {
                 drop(last);
 
                 if !new_suffix.trim().is_empty() {
-                    let emitter = self.emitter.clone();
-                    tokio::spawn(async move {
-                        let mut guard = emitter.lock().await;
-                        guard.push_segment(new_suffix);
-                    });
+                    self.send_cmd(EmitterCmd::PushSegment(new_suffix));
                 }
             }
             EngineEvent::Correction { text, .. } => {
@@ -124,12 +170,7 @@ impl EventSink for PresentationEmitter {
                 }
                 *last = text.clone();
                 drop(last);
-                let emitter = self.emitter.clone();
-                let text = text.clone();
-                tokio::spawn(async move {
-                    let mut guard = emitter.lock().await;
-                    guard.push_correction(text);
-                });
+                self.send_cmd(EmitterCmd::PushCorrection(text.clone()));
             }
             EngineEvent::UtteranceFinal { text, .. } => {
                 // Reset last_preview — engine clears accumulated_text on utterance boundary.
@@ -169,6 +210,10 @@ impl EventSink for PresentationEmitter {
                     corrections_applied,
                     dropped_audio_chunks,
                 );
+                // Stats is the last event from transcription_session.
+                // Signal BufferedEmitter to finish through the ordered channel,
+                // ensuring all pending pushes are processed first.
+                self.send_cmd(EmitterCmd::Finish);
             }
             EngineEvent::Warning { code, message } => {
                 tracing::warn!("Engine warning [{}]: {}", code, message);

@@ -741,14 +741,35 @@ extern "C" fn on_paste_last_response(_this: &Object, _cmd: Sel, _sender: Id) {
         return;
     };
 
-    std::thread::spawn(move || {
+    // Dispatch to main thread: NSWorkspace and clipboard APIs require main thread.
+    // Using Queue::main ensures proper autorelease pool and thread safety.
+    Queue::main().exec_async(move || {
         #[cfg(target_os = "macos")]
         {
-            if let Some(app) = target_app.as_deref() {
-                let app = app.replace('"', "\\\"");
-                let _ = std::process::Command::new("osascript")
-                    .args(["-e", &format!(r#"tell application "{}" to activate"#, app)])
-                    .status();
+            if let Some(app_name) = target_app.as_deref() {
+                // Activate via NSWorkspace — no shell, no injection surface.
+                unsafe {
+                    let ns_workspace = Class::get("NSWorkspace").unwrap();
+                    let workspace: Id = msg_send![ns_workspace, sharedWorkspace];
+                    let running: Id = msg_send![workspace, runningApplications];
+                    let count: usize = msg_send![running, count];
+                    for i in 0..count {
+                        let app: Id = msg_send![running, objectAtIndex: i];
+                        let name: Id = msg_send![app, localizedName];
+                        if !name.is_null() {
+                            let name_cstr: *const std::ffi::c_char = msg_send![name, UTF8String];
+                            if !name_cstr.is_null() {
+                                let name_str =
+                                    std::ffi::CStr::from_ptr(name_cstr).to_string_lossy();
+                                if name_str == app_name {
+                                    let _: bool = msg_send![app, activateWithOptions: 1u64]; // NSApplicationActivateIgnoringOtherApps
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Brief delay for app activation to complete before pasting.
                 std::thread::sleep(std::time::Duration::from_millis(80));
             }
 
@@ -1616,13 +1637,16 @@ pub fn copy_to_clipboard(text: &str) {
 }
 
 pub fn clear_search_field() {
-    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(search_field) = state.search_field {
+    // Extract pointer under lock, then drop lock BEFORE AppKit calls
+    // to avoid deadlock (AppKit callbacks may re-lock OVERLAY_STATE).
+    let search_field = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.search_field
+    };
+    if let Some(sf) = search_field {
         unsafe {
-            set_text_field_string(search_field as Id, "");
-        }
-        unsafe {
-            set_hidden(search_field as Id, false);
+            set_text_field_string(sf as Id, "");
+            set_hidden(sf as Id, false);
         }
     }
 }

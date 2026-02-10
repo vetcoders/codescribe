@@ -1003,6 +1003,10 @@ pub fn send_draft_message_impl() {
         drop(handler_guard);
 
         let attachments_to_send = attachment_should_include_locked(&state);
+        // Commit fingerprint under same lock to prevent race with concurrent attachment changes.
+        if let Some((fp, _, _)) = attachments_to_send.as_ref() {
+            state.attachments_last_sent = Some(*fp);
+        }
         if let Some((_fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
             let mode = message_mode_label(&state);
             state.messages.push(ChatMessage {
@@ -1038,11 +1042,7 @@ pub fn send_draft_message_impl() {
     };
 
     let (handler, draft, attachments_to_send) = callback;
-    if let Some((fingerprint, paths, _summary)) = attachments_to_send {
-        {
-            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            state.attachments_last_sent = Some(fingerprint);
-        }
+    if let Some((_fingerprint, paths, _summary)) = attachments_to_send {
         std::thread::spawn(move || {
             let block = build_attachments_block(&paths);
             let payload = if block.is_empty() {
@@ -1078,6 +1078,10 @@ pub(super) fn commit_last_user_message_impl() {
         drop(handler_guard);
 
         let attachments_to_send = attachment_should_include_locked(&state);
+        // Commit fingerprint under same lock to prevent race with concurrent attachment changes.
+        if let Some((fp, _, _)) = attachments_to_send.as_ref() {
+            state.attachments_last_sent = Some(*fp);
+        }
         if let Some((_fingerprint, _paths, summary)) = attachments_to_send.as_ref() {
             let mode = message_mode_label(&state);
             state.messages.push(ChatMessage {
@@ -1096,11 +1100,7 @@ pub(super) fn commit_last_user_message_impl() {
     };
 
     let (handler, text, attachments_to_send) = callback;
-    if let Some((fingerprint, paths, _summary)) = attachments_to_send {
-        {
-            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            state.attachments_last_sent = Some(fingerprint);
-        }
+    if let Some((_fingerprint, paths, _summary)) = attachments_to_send {
         std::thread::spawn(move || {
             let block = build_attachments_block(&paths);
             let payload = if block.is_empty() {
@@ -1375,7 +1375,10 @@ fn render_attachment_chips_locked(state: &mut VoiceChatOverlayState) {
         }
 
         let has_attachments = !state.attachments.is_empty();
-        let handler_ptr = state.action_handler.unwrap_or(0) as Id;
+        let handler_ptr = match state.action_handler {
+            Some(p) => p as Id,
+            None => std::ptr::null_mut::<Object>(),
+        };
 
         if has_attachments {
             let mut total_width = 0.0f64;

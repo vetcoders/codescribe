@@ -29,6 +29,7 @@ pub use helpers::{
 };
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 
+use crate::presentation::emitter::PresentationEmitter;
 use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1038,18 +1039,23 @@ impl RecordingController {
                 vad_flag.store(true, Ordering::SeqCst);
             });
 
+            // Set session mode for delta routing BEFORE starting the pipeline,
+            // so the very first deltas route to the correct overlay.
+            set_assistive_session(is_assistive);
+
             let use_event_pipeline = std::env::var("CODESCRIBE_EVENT_PIPELINE")
                 .ok()
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
 
             if use_event_pipeline {
-                // Event-based pipeline: Preview streams directly into overlay.
-                // Hold mode has no utterance callback — text is collected on key-up.
+                // Event-based pipeline: PresentationEmitter routes through BufferedEmitter
+                // (Backspace Magic). Hold mode has no utterance callback — text is collected on key-up.
                 let tb = rec.transcript_buffer_handle();
-                let router =
-                    Arc::new(helpers::ControllerEventRouter::new().with_transcript_buffer(tb));
-                rec.set_event_sink(Some(router));
+                let delta_sink: Arc<dyn codescribe_core::pipeline::contracts::DeltaSink> =
+                    Arc::new(helpers::RoutingDeltaSink);
+                let pe = PresentationEmitter::new(tb, Some(delta_sink), None);
+                rec.set_event_sink(Some(Arc::new(pe)));
 
                 if !cfg!(test)
                     && let Err(e) = rec
@@ -1057,12 +1063,14 @@ impl RecordingController {
                         .await
                 {
                     error!("Failed to start event session: {}", e);
+                    *session_id.write().await = None;
                     return;
                 }
             } else if !cfg!(test)
                 && let Err(e) = rec.start(Some(language.as_str().to_string())).await
             {
                 error!("Failed to start recorder: {}", e);
+                *session_id.write().await = None;
                 return;
             }
 
@@ -1078,9 +1086,6 @@ impl RecordingController {
                 BadgeMode::Hold
             };
             show_badge_for_mode(badge_mode);
-
-            // Set session mode for delta routing
-            set_assistive_session(is_assistive);
 
             if is_assistive {
                 opened_overlay_for_transcription.store(false, Ordering::SeqCst);
@@ -1204,42 +1209,46 @@ impl RecordingController {
         recorder.recorder.set_on_vad_stop(|| {});
         recorder.set_utterance_silence_sec(Some(toggle_silence_sec));
 
+        // Set session mode for delta routing BEFORE starting the pipeline,
+        // so the very first deltas route to the correct overlay.
+        set_assistive_session(is_assistive);
+
         let use_event_pipeline = std::env::var("CODESCRIBE_EVENT_PIPELINE")
             .ok()
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
         if use_event_pipeline {
-            // New event-based pipeline: ControllerEventRouter handles all routing.
+            // Event-based pipeline: PresentationEmitter routes through BufferedEmitter
+            // (Backspace Magic). Toggle mode gets utterance callback for auto-send.
             let controller = OVERLAY_CONTROLLER.get().cloned();
             let expected_session = new_session_id.clone();
             let is_assistive_session = is_assistive;
 
             let tb = recorder.transcript_buffer_handle();
-            let router = Arc::new(
-                helpers::ControllerEventRouter::new()
-                    .with_transcript_buffer(tb)
-                    .with_utterance_callback(Arc::new(move |text: String| {
-                        let controller = controller.clone();
-                        let expected_session = expected_session.clone();
-                        tokio::spawn(async move {
-                            if let Some(controller) = controller
-                                && let Err(e) = controller
-                                    .handle_toggle_utterance(
-                                        text,
-                                        expected_session,
-                                        is_assistive_session,
-                                        true, // skip_user_bubble: Preview already streams into bubble
-                                    )
-                                    .await
-                            {
-                                warn!("Toggle utterance processing failed: {}", e);
-                            }
-                        });
-                    })),
-            );
+            let delta_sink: Arc<dyn codescribe_core::pipeline::contracts::DeltaSink> =
+                Arc::new(helpers::RoutingDeltaSink);
+            let mut pe = PresentationEmitter::new(tb, Some(delta_sink), None);
+            pe.set_utterance_callback(Some(Arc::new(move |text: String| {
+                let controller = controller.clone();
+                let expected_session = expected_session.clone();
+                tokio::spawn(async move {
+                    if let Some(controller) = controller
+                        && let Err(e) = controller
+                            .handle_toggle_utterance(
+                                text,
+                                expected_session,
+                                is_assistive_session,
+                                true, // skip_user_bubble: Preview already streams into bubble
+                            )
+                            .await
+                    {
+                        warn!("Toggle utterance processing failed: {}", e);
+                    }
+                });
+            })));
 
-            recorder.set_event_sink(Some(router));
+            recorder.set_event_sink(Some(Arc::new(pe)));
 
             if !cfg!(test) {
                 recorder
@@ -1297,9 +1306,6 @@ impl RecordingController {
             BadgeMode::Toggle
         };
         show_badge_for_mode(badge_mode);
-
-        // Set session mode for delta routing
-        set_assistive_session(is_assistive);
 
         if is_assistive {
             self.opened_voice_chat_overlay_for_transcription

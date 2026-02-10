@@ -675,12 +675,17 @@ fn show_voice_chat_overlay_impl() {
             let _: () = msg_send![split_view, setVertical: true];
         }
         // Divider polish: thin (1pt) + subtle separator color.
-        // NSSplitViewDividerStyleThin = 1
-        let _: () = msg_send![split_view, setDividerStyle: 1_isize];
-        let ns_color = Class::get("NSColor").unwrap();
-        let divider_color: Id = msg_send![ns_color, separatorColor];
-        if !divider_color.is_null() {
-            let _: () = msg_send![split_view, setDividerColor: divider_color];
+        // Guard with respondsToSelector because [splitController view]
+        // may return a plain NSView wrapper rather than NSSplitView.
+        let responds_divider: bool =
+            msg_send![split_view, respondsToSelector: sel!(setDividerStyle:)];
+        if responds_divider {
+            let _: () = msg_send![split_view, setDividerStyle: 1_isize]; // NSSplitViewDividerStyleThin
+            let ns_color = Class::get("NSColor").unwrap();
+            let divider_color: Id = msg_send![ns_color, separatorColor];
+            if !divider_color.is_null() {
+                let _: () = msg_send![split_view, setDividerColor: divider_color];
+            }
         }
         add_subview(blur_view, split_view);
         // Ensure header glass + controls stay above the split view content.
@@ -855,7 +860,13 @@ fn show_voice_chat_overlay_impl() {
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
         ];
         let ns_font = Class::get("NSFont").unwrap();
-        let text_font: Id = msg_send![ns_font, systemFontOfSize: 13.0f64];
+        let jb_name = ns_string("JetBrainsMono-Regular");
+        let jb_font: Id = msg_send![ns_font, fontWithName: jb_name size: 13.0f64];
+        let text_font: Id = if jb_font.is_null() {
+            msg_send![ns_font, monospacedSystemFontOfSize: 13.0f64 weight: 0.0f64]
+        } else {
+            jb_font
+        };
         let _: () = msg_send![agent_input_text_view, setFont: text_font];
         // Plain text: avoid rich text / style surprises when pasting.
         let _: () = msg_send![agent_input_text_view, setRichText: false];

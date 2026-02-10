@@ -423,6 +423,27 @@ mod tests {
         assert_eq!(buf, "Witaj, świecie!");
     }
 
+    #[test]
+    fn delta_from_diff_multibyte_cjk() {
+        let before = "日本語テスト";
+        let after = "日本語テスト結果";
+        let delta = TranscriptDelta::from_diff(before, after).unwrap();
+        let mut buf = before.to_string();
+        delta.apply(&mut buf);
+        assert_eq!(buf, after);
+        assert!(delta.is_append_only());
+    }
+
+    #[test]
+    fn delta_from_diff_emoji_replacement() {
+        let before = "Hello 🌍";
+        let after = "Hello 🌎";
+        let delta = TranscriptDelta::from_diff(before, after).unwrap();
+        let mut buf = before.to_string();
+        delta.apply(&mut buf);
+        assert_eq!(buf, after);
+    }
+
     // ── SpeechUtterance ──
 
     #[test]
