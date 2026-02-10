@@ -1258,7 +1258,7 @@ impl RecordingController {
                                 text,
                                 expected_session,
                                 is_assistive_session,
-                                false,
+                                true, // skip_user_bubble: delta_callback already streams into bubble
                             )
                             .await
                     {

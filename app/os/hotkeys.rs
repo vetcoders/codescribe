@@ -376,6 +376,7 @@ mod macos {
         if let Some(previous) = *last_tap
             && now.duration_since(previous) <= Duration::from_millis(get_double_tap_interval_ms())
         {
+            tracing::info!("Double-tap detected → {:?}", event);
             let _ = tx.send(event);
             *last_tap = None;
             return;
