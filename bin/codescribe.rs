@@ -444,6 +444,10 @@ async fn run_daemon() -> Result<()> {
     #[cfg(target_os = "macos")]
     codescribe::os::permissions::request_all_permissions();
 
+    tokio::task::spawn_blocking(|| {
+        codescribe_core::attachment::AttachmentStore::cleanup_old(7);
+    });
+
     codescribe::whisper::init().context("Failed to initialize Whisper")?;
     let controller = Arc::new(RecordingController::new());
     #[cfg(target_os = "macos")]

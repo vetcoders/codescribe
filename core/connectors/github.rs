@@ -7,6 +7,7 @@
 //! Uses the GitHub Contents API with optional token authentication.
 
 use anyhow::{Context, Result, bail};
+use std::time::Duration;
 use tracing::{debug, info};
 
 // ═══════════════════════════════════════════════════════════
@@ -181,7 +182,8 @@ pub async fn fetch_github_blob(gh: &GitHubRef, token: Option<&str>) -> Result<(V
 
     let mut req = client
         .get(&url)
-        .header("Accept", "application/vnd.github.raw+json");
+        .header("Accept", "application/vnd.github.raw+json")
+        .timeout(Duration::from_secs(30));
 
     if let Some(t) = token {
         req = req.header("Authorization", format!("Bearer {t}"));

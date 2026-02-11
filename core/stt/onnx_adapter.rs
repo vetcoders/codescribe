@@ -51,6 +51,29 @@ const NO_REPEAT_NGRAM_SIZE: usize = 5;
 /// Blank tokens to suppress early (matching candle engine).
 const SUPPRESS_BLANK_TOKENS: [usize; 2] = [220, 50256];
 
+/// Warn once when users set an initial prompt env override while ONNX is active.
+/// ONNX path currently ignores this feature (experimental parity gap vs candle).
+fn warn_if_initial_prompt_ignored() {
+    static WARNED: OnceLock<()> = OnceLock::new();
+
+    for key in [
+        "CODESCRIBE_WHISPER_INITIAL_PROMPT",
+        "WHISPER_INITIAL_PROMPT",
+    ] {
+        if let Ok(prompt) = std::env::var(key)
+            && !prompt.trim().is_empty()
+        {
+            WARNED.get_or_init(|| {
+                warn!(
+                    "{} is set, but ONNX adapter does not support initial_prompt; value is ignored",
+                    key
+                );
+            });
+            break;
+        }
+    }
+}
+
 // ── Resolved token IDs (from tokenizer at init) ─────────────────────────────
 
 /// Token IDs resolved dynamically from tokenizer.json.
@@ -302,6 +325,7 @@ impl OnnxEngine {
         language: Option<&str>,
     ) -> Result<String> {
         ensure!(!samples_16k.is_empty(), "audio is empty");
+        warn_if_initial_prompt_ignored();
 
         // 1. Compute mel spectrogram
         let mel =

@@ -307,31 +307,11 @@ impl AttachmentStore {
             if let Ok(age) = now.duration_since(modified)
                 && age > cutoff
             {
-                // Move to trash instead of permanent delete.
-                // Fallback: rename to .trash suffix if trash crate not available.
                 let path = entry.path();
-                let already_trashed = path
-                    .extension()
-                    .map(|e| e.to_string_lossy().eq_ignore_ascii_case("trash"))
-                    .unwrap_or(false);
-                if already_trashed {
-                    if std::fs::remove_file(&path).is_ok() {
-                        removed += 1;
-                    } else {
-                        tracing::warn!("Attachment cleanup: failed to delete {}", path.display());
-                    }
+                if std::fs::remove_file(&path).is_ok() {
+                    removed += 1;
                 } else {
-                    let trash_path = match path.extension() {
-                        Some(ext) => {
-                            path.with_extension(format!("{}.trash", ext.to_string_lossy()))
-                        }
-                        None => path.with_extension("trash"),
-                    };
-                    if std::fs::rename(&path, &trash_path).is_ok() {
-                        removed += 1;
-                    } else {
-                        tracing::warn!("Attachment cleanup: failed to trash {}", path.display());
-                    }
+                    tracing::warn!("Attachment cleanup: failed to delete {}", path.display());
                 }
             }
         }
@@ -347,7 +327,7 @@ impl AttachmentStore {
 
 /// Sanitize a filename by replacing unsafe characters.
 fn sanitize_filename(name: &str) -> String {
-    let sanitized: String = name
+    let sanitized = name
         .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' {
@@ -356,16 +336,14 @@ fn sanitize_filename(name: &str) -> String {
                 '_'
             }
         })
-        .collect::<String>()
-        .chars()
-        .take(100) // cap length
-        .collect();
+        .collect::<String>();
     // Strip leading dots to prevent hidden files / path traversal.
     let trimmed = sanitized.trim_start_matches('.');
+    let trimmed: String = trimmed.chars().take(100).collect(); // cap length
     if trimmed.is_empty() {
         "attachment".to_string()
     } else {
-        trimmed.to_string()
+        trimmed
     }
 }
 
@@ -467,6 +445,8 @@ mod tests {
         assert_eq!(sanitize_filename("résumé.pdf"), "résumé.pdf");
         assert_eq!(sanitize_filename(".hidden"), "hidden");
         assert_eq!(sanitize_filename("...."), "attachment");
+        let many_dots = format!("{}abc.txt", ".".repeat(120));
+        assert_eq!(sanitize_filename(&many_dots), "abc.txt");
     }
 
     #[test]

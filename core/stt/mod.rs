@@ -3,6 +3,7 @@ pub mod onnx_adapter;
 pub mod whisper;
 
 use crate::pipeline::contracts::TranscriptionAdapter;
+use std::sync::OnceLock;
 
 /// Get the active STT adapter based on `CODESCRIBE_STT_ENGINE` env var.
 ///
@@ -12,12 +13,11 @@ use crate::pipeline::contracts::TranscriptionAdapter;
 /// For ONNX, this calls `onnx_adapter::init()` automatically on first use.
 /// Returns an error if the ONNX model is not available.
 pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
-    match std::env::var("CODESCRIBE_STT_ENGINE").as_deref() {
-        Ok("onnx") => {
-            onnx_adapter::init()?;
-            Ok(Box::new(onnx_adapter::OnnxWhisperAdapter::new()))
-        }
-        _ => Ok(Box::new(adapter::WhisperSingletonAdapter::new())),
+    if is_onnx_engine() {
+        onnx_adapter::init()?;
+        Ok(Box::new(onnx_adapter::OnnxWhisperAdapter::new()))
+    } else {
+        Ok(Box::new(adapter::WhisperSingletonAdapter::new()))
     }
 }
 
@@ -31,7 +31,8 @@ pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
 // Used by `pipeline::streaming` to make the dual-engine switch transparent.
 
 fn is_onnx_engine() -> bool {
-    std::env::var("CODESCRIBE_STT_ENGINE").as_deref() == Ok("onnx")
+    static IS_ONNX_ENGINE: OnceLock<bool> = OnceLock::new();
+    *IS_ONNX_ENGINE.get_or_init(|| std::env::var("CODESCRIBE_STT_ENGINE").as_deref() == Ok("onnx"))
 }
 
 /// Initialize whichever STT engine is active by env.
