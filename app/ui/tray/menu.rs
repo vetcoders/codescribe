@@ -235,20 +235,6 @@ pub fn update_status_label(label: &str) {
     });
 }
 
-/// Toggle AI Formatting and persist to config
-/// Note: Tray menu checkbox removed - settings now in Chat Overlay Settings tab
-pub fn toggle_ai_formatting() -> bool {
-    // Read current state from Config (source of truth)
-    let current_state = Config::load().ai_formatting_enabled;
-    let new_state = !current_state;
-
-    // Persist to config
-    let config = Config::load();
-    let _ = config.save_to_env("AI_FORMATTING_ENABLED", if new_state { "1" } else { "0" });
-
-    new_state
-}
-
 /// Update the quality label in the menu
 /// Call this periodically to reflect daemon state changes
 pub fn update_quality_label() {

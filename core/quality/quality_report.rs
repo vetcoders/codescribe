@@ -24,7 +24,6 @@ use crate::safe_path::{
 };
 use crate::state::conversation::{AiMode, reset_conversation_for_mode};
 use crate::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
-use crate::stt::whisper;
 use crate::stt::whisper::embedded;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -189,8 +188,11 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     fs::create_dir_all(&artifacts_dir)?;
     fs::create_dir_all(&audio_dir)?;
 
-    ensure_model_path()?;
-    whisper::init().context("Failed to init Whisper")?;
+    let use_onnx = std::env::var("CODESCRIBE_STT_ENGINE").as_deref() == Ok("onnx");
+    if !use_onnx {
+        ensure_model_path()?;
+    }
+    crate::stt::init_active_engine().context("Failed to init active STT engine")?;
 
     // Resume: skip pairs that already have artifacts.
     //
@@ -387,7 +389,7 @@ async fn process_pair(
     let duration_secs = samples.len() as f32 / sample_rate as f32;
 
     // Single-pass transcription: engine handles 25s/5s chunking internally
-    let raw = match whisper::transcribe(&samples, sample_rate, config.language.as_deref()) {
+    let raw = match crate::stt::transcribe_long(&samples, sample_rate, config.language.as_deref()) {
         Ok(text) => Some(text),
         Err(e) => {
             errors.push(format!("Raw transcription failed: {}", e));

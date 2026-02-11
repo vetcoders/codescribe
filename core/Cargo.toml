@@ -57,7 +57,7 @@ dotenvy = "0.15"
 # Voice Activity Detection - custom Silero wrapper
 # Model: silero_vad.onnx from https://github.com/snakers4/silero-vad
 # NOTE: ort-download-binaries ensures runtime is available without manual install
-ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "download-binaries", "tls-native"] }
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "download-binaries", "tls-native", "coreml"] }
 
 # Moshi - conversational voice AI (Kyutai Labs)
 moshi = { version = "0.6.4", features = ["metal"] }

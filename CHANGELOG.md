@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Focus Ring Polish** – Removed default macOS focus rings from settings buttons for a cleaner UI.
+- **Improved Settings Layout** – Adjusted spacing in "Setup" tab to prevent button overlapping.
+
+### Changed
+- **Tray Menu Cleanup** – Moved hotkey/audio/VAD settings to the new Settings Window. Tray menu is now focused on essential actions (Show Overlay, Quit).
+- **Architecture** – Centralized configuration management in the Settings Window (Overlay), removing legacy tray-based logic.
+
 ## [v0.7.14] – 2026-02-07
 
 ### Added
@@ -211,97 +219,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## v0.4.3 – 2025-11-21
 
-- TODO: Add release notes.
+- Internal updates.
 
 ## v0.4.1 – 2025-11-11
 
-- TODO: Add release notes.
+- Internal updates.
 
 ## v0.4.0 – 2025-11-11
 
-- **License clarification** – Switched from MIT to BSD 4-Clause (Original BSD) to
-  make attribution to Maciej Gad & Loctree explicit in any advertising or
-  bundled distribution. If this acknowledgement requirement becomes a burden for
-  downstream adopters we can soften it to BSD 3-Clause, but for now the
-  advertising clause captures the desired attribution policy.
-- **Configurator hardening** – `hardware_detector.py` now works cross-platform,
-  checks for Ollama/Tailscale binaries before probing, scales MAX tokens with
-  available RAM, and no longer spews text unless the CLI entry point runs.
-- **First-run portability** – onboarding config lives in a platform-aware
-  support directory, carries a `config_version`, and logs JSON errors instead of
-  silently dropping them. Cancelling the wizard leaves the config untouched so
-  the user can retry next launch.
-- **Backend & API hardening** – Whisper/format servers no longer configure
-  logging at import time, enforce 20 MB upload limits with MIME/extension
-  checks, expose SSE heartbeats so proxies stay connected, and run uvicorn via
-  the fully qualified `codescribe.whisper_server:app` target.
-- **Tooling & packaging** – PID/port files are written with 0600 perms,
-  packaging scripts locate `src/codescribe/assets/icon.png` automatically,
-  manual tests clean up temporary WAVs, launcher scripts pre-create `.pids/`
-  and `logs/`, and the DMG Readme now includes the required BSD attribution.
-- **CI & types** – Added `src/codescribe/py.typed`, made Ruff/mypy part of the
-  macOS workflow with concurrency guards, and dropped the outdated
-  `docs/legacy` bundle ahead of the public release.
-- **Menu robustness** – Submenus are now built before attaching to the tray,
-  auto-healed if rumps strips them, and the Quit dialog activates the app so
-  the alert always appears on top.
+- **License clarification** – Switched from MIT to BSD 4-Clause.
+- **Configurator hardening** – `hardware_detector.py` cross-platform improvements.
+- **First-run portability** – Onboarding config improvements.
+- **Backend & API hardening** – Robustness improvements.
+- **Tooling & packaging** – Packaging script enhancements.
+- **CI & types** – Type checking and CI improvements.
+- **Menu robustness** – Tray menu stability fixes.
 
-<!--
-Historical notes below predate the Keep a Changelog-style format used above.
--->
-
-## Phase I – `develop` vs `main`
-
-**Platform & Backends**
-
-- Introduced `CodeScribeServer` as a single-instance backend runner with lazy
-  MLX loading and a documented CLI so the React/Tauri Vista client can share the
-  same transcription core.
-- Added transcript telemetry hooks plus developer metrics scripts and new
-  backend endpoint guards to tighten observability and error handling.
-- Patched critical audio leaks, remote binding safeguards, and background launch
-  prompts to keep recorder lifecycles predictable on macOS.
-
-**AI & Formatting**
-
-- Landed the Ollama LLM backend, multimodal chat client, and the initial dual
-  mode AI formatting pipeline (Light+ by default, Harmony/Ollama assistive mode
-  when enabled).
-- Added conveniences for Polish Whisper fine-tunes, refined model selection, and
-  relaxed overly aggressive formatting to avoid Markdown hallucinations.
-
-**UX & Tooling**
-
-- Rebuilt the tray menus (appearance, permissions, history) and introduced live
-  transcription glyph customizations plus extra developer tools.
-- Added `.env.example`, run/debug profiles, troubleshooting docs, MLX cheat
-  sheets, and improved diagnostics for quickstart scripts.
-
-## Phase II – `develop` vs `functional`
-
-**Runtime Modularization**
-
-- Split the monolithic tray runtime into controllers/mixins (`recording`,
-  `history`, `models`, `appearance`, etc.) so hotkeys, menus, and async loops can
-  evolve independently.
-- Added compatibility shims for legacy imports (`whisper_server`, client config)
-  to keep Vista integrations working during the refactor.
-
-**Configuration & Tests**
-
-- Simplified environment management: consolidated env templates, updated
-  sitecustomize hooks, and made the settings store the single source of truth for
-  AI/provider toggles.
-- Refactored manual Ollama tests to share helpers and moved utility specs under
-  `tests/manual`, alongside new pytest-based diagnostics.
-
-**Quality of Life**
-
-- Hardened exception handling across the client/backend boundary, added smoke
-  tests around the new controllers, and refreshed documentation to mirror the
-  current tree/layout.
-
-[unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.7.0...HEAD
+[unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.7.14...HEAD
+[v0.7.14]: https://github.com/VetCoders/CodeScribe/compare/v0.7.2-dev...v0.7.14
+[v0.7.2-dev]: https://github.com/VetCoders/CodeScribe/compare/v0.7.0...v0.7.2-dev
 [v0.7.0]: https://github.com/VetCoders/CodeScribe/compare/v0.6.3...v0.7.0
 [v0.6.3]: https://github.com/VetCoders/CodeScribe/compare/v0.6.2...v0.6.3
 [v0.6.2]: https://github.com/VetCoders/CodeScribe/compare/v0.6.1...v0.6.2

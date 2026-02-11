@@ -1238,11 +1238,7 @@ fn spawn_chunk_transcription(
     language: Option<String>,
 ) -> tokio::task::JoinHandle<Result<String>> {
     tokio::task::spawn_blocking(move || {
-        let engine_mutex = get_engine()?;
-        let mut engine_guard = engine_mutex
-            .lock()
-            .map_err(|e| anyhow!("Lock error: {}", e))?;
-        engine_guard.transcribe_with_language(&samples, sample_rate, language.as_deref())
+        crate::stt::transcribe_chunk(&samples, sample_rate, language.as_deref())
     })
 }
 
@@ -1257,11 +1253,7 @@ fn spawn_utterance_transcription(
         // is already busy (main transcription or a previous correction),
         // we bail immediately — the next correction cycle will pick up
         // the accumulated audio.
-        let engine_mutex = get_engine()?;
-        let mut engine = engine_mutex
-            .try_lock()
-            .map_err(|_| anyhow::anyhow!("Whisper engine busy, skipping correction"))?;
-        engine.transcribe_long_with_language(&samples, sample_rate, language.as_deref())
+        crate::stt::try_transcribe_long(&samples, sample_rate, language.as_deref())
     })
 }
 

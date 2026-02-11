@@ -4,7 +4,8 @@
 //! Generates embedded_model_data.rs and embedded_tts_data.rs in OUT_DIR for release builds.
 //!
 //! Release builds EMBED Whisper + Silero VAD + MiniLM embedder by default (zero-dependency distribution).
-//! Opt-out with CODESCRIBE_NO_EMBED=1 to skip all embedding.
+//! Opt-out with CODESCRIBE_NO_EMBED=1 to skip all embedding (except Silero).
+//! Opt-out Whisper only with CODESCRIBE_NO_EMBED_WHISPER=1 (keeps MiniLM + Silero).
 //! TTS requires opt-in via CODESCRIBE_EMBED_TTS.
 //!
 //! ⚠ Binary > 3GB causes dylib crash on macOS — Whisper (~888MB) + Silero (~2MB) + MiniLM (~224MB) = safe.
@@ -35,6 +36,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_MODEL_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED_WHISPER");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_TTS");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBEDDER_REPO");
@@ -42,6 +44,7 @@ fn main() {
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let is_release = profile == "release";
     let no_embed = env::var("CODESCRIBE_NO_EMBED").is_ok();
+    let no_embed_whisper = env::var("CODESCRIBE_NO_EMBED_WHISPER").is_ok();
 
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
         let codescribe_dir = dirs::home_dir()
@@ -195,8 +198,8 @@ fn main() {
         }
 
         // Release builds embed Whisper by default (zero-dependency distribution)
-        // Skip with CODESCRIBE_NO_EMBED=1 or if model not found
-        let should_embed_whisper = is_release && model_exists && !no_embed;
+        // Skip with CODESCRIBE_NO_EMBED=1, CODESCRIBE_NO_EMBED_WHISPER=1, or if model not found
+        let should_embed_whisper = is_release && model_exists && !no_embed && !no_embed_whisper;
 
         if should_embed_whisper {
             // Release + model found → embed it
@@ -222,9 +225,14 @@ fn main() {
                 "cargo:rustc-env=CODESCRIBE_MODEL_DIR={}",
                 model_path.display()
             );
-        } else if is_release && no_embed {
-            // Explicit opt-out
-            println!("cargo:warning=CODESCRIBE_NO_EMBED set - skipping Whisper embedding");
+        } else if is_release && (no_embed || no_embed_whisper) {
+            // Explicit opt-out (global or whisper-only)
+            let reason = if no_embed {
+                "CODESCRIBE_NO_EMBED"
+            } else {
+                "CODESCRIBE_NO_EMBED_WHISPER"
+            };
+            println!("cargo:warning={} set - skipping Whisper embedding", reason);
             println!(
                 "cargo:warning=Binary will require CODESCRIBE_MODEL_PATH or HF cache at runtime"
             );
@@ -246,7 +254,7 @@ fn main() {
         // Summary (single line for build logs)
         let whisper_summary = if should_embed_whisper {
             "embedded"
-        } else if no_embed {
+        } else if no_embed || no_embed_whisper {
             "disabled"
         } else if !model_exists {
             "missing"

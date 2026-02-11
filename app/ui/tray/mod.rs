@@ -57,8 +57,8 @@ use tracing::{debug, info};
 use tray_icon::{TrayIconBuilder, menu::MenuEvent};
 
 // Re-export public API
+pub use menu::update_quality_label;
 pub use menu::update_silero_vad_label;
-pub use menu::{toggle_ai_formatting, update_quality_label};
 pub use state::send_menu_event;
 pub use state::{menu_event_receiver, update_tray_status};
 pub use types::{MenuIds, TrayMenuEvent, TrayStatus};
@@ -118,6 +118,10 @@ pub fn run() -> Result<()> {
 /// - All channels are closed
 pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Result<()> {
     info!("Initializing system tray...");
+
+    // Inject layoutRegionGuides stub into NSVisualEffectView early,
+    // before AppKit creates any internal instances (Tahoe beta workaround).
+    super::shared::helpers::ensure_layout_region_guides_exists();
 
     // Initialize shutdown flag
     SHUTDOWN_REQUESTED.get_or_init(|| std::sync::atomic::AtomicBool::new(false));

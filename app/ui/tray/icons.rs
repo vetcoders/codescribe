@@ -28,7 +28,7 @@ const ICON_SIZE: u32 = 44;
 static SHOW_STATUS_GLYPH: AtomicBool = AtomicBool::new(true);
 
 /// Get whether the status glyph is currently enabled
-pub fn is_status_glyph_enabled() -> bool {
+fn is_status_glyph_enabled() -> bool {
     SHOW_STATUS_GLYPH.load(Ordering::SeqCst)
 }
 
