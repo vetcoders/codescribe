@@ -66,15 +66,26 @@ impl PresentationEmitter {
         let cmd_handle = Some(tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 let mut guard = emitter_for_cmd.lock().await;
-                match cmd {
+                let should_break = matches!(&cmd, EmitterCmd::Finish);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match cmd {
                     EmitterCmd::PushSegment(text) => guard.push_segment(text),
                     EmitterCmd::PushCorrection(text) => guard.push_correction(text),
                     EmitterCmd::Finish => {
                         guard.finish();
-                        break;
                     }
+                }));
+                if result.is_err() {
+                    tracing::error!("Emitter command worker panicked; forcing emitter finish");
+                    guard.finish();
+                    break;
+                }
+                if should_break {
+                    break;
                 }
             }
+            // Ensure tick loop exits even when channel closes unexpectedly.
+            let mut guard = emitter_for_cmd.lock().await;
+            guard.finish();
         }));
 
         Self {
@@ -128,6 +139,22 @@ impl PresentationEmitter {
             && tx.send(cmd).is_err()
         {
             debug!("Emitter channel closed, dropping command");
+        }
+    }
+}
+
+impl Drop for PresentationEmitter {
+    fn drop(&mut self) {
+        // Close command channel first (lets cmd worker exit naturally).
+        if let Ok(mut guard) = self.cmd_tx.lock() {
+            let _ = guard.take();
+        }
+        // Abort detached tasks as a hard stop fallback to avoid leaks.
+        if let Some(handle) = self.cmd_handle.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.emitter_handle.take() {
+            handle.abort();
         }
     }
 }

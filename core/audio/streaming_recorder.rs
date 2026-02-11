@@ -266,6 +266,9 @@ impl StreamingRecorder {
             debug!("Waiting for transcription worker to finish...");
             handle.await.context("Transcription worker failed")?;
         }
+        // Drop event sink after session shutdown so per-session resources
+        // (e.g. PresentationEmitter task handles) can be released promptly.
+        self.event_sink = None;
 
         // 3. Return collected transcript
         let transcript = self.transcript_buffer.lock().await.clone();
@@ -292,6 +295,9 @@ impl StreamingRecorder {
             debug!("Waiting for transcription worker to finish...");
             handle.await.context("Transcription worker failed")?;
         }
+        // Drop event sink after session shutdown so per-session resources
+        // (e.g. PresentationEmitter task handles) can be released promptly.
+        self.event_sink = None;
 
         // 3. Return collected transcript
         let transcript = self.transcript_buffer.lock().await.clone();

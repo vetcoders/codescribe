@@ -291,17 +291,25 @@ impl OnnxEngine {
         language: Option<&str>,
     ) -> Result<String> {
         ensure!(!samples.is_empty(), "audio is empty");
-
-        // 1. Resample to 16kHz
         let samples_16k = audio_loader::resample_to_16k(samples, sample_rate);
+        self.transcribe_internal_16k(&samples_16k, language)
+    }
 
-        // 2. Compute mel spectrogram
+    /// Internal decode path for audio already resampled to 16kHz.
+    fn transcribe_internal_16k(
+        &mut self,
+        samples_16k: &[f32],
+        language: Option<&str>,
+    ) -> Result<String> {
+        ensure!(!samples_16k.is_empty(), "audio is empty");
+
+        // 1. Compute mel spectrogram
         let mel =
-            whisper_audio::audio::pcm_to_mel(&self.whisper_config, &samples_16k, &self.mel_filters);
+            whisper_audio::audio::pcm_to_mel(&self.whisper_config, samples_16k, &self.mel_filters);
         let n_mels = self.whisper_config.num_mel_bins;
         let n_frames = mel.len() / n_mels;
 
-        // 3. Pad or trim mel to exactly ONNX_N_FRAMES (3000).
+        // 2. Pad or trim mel to exactly ONNX_N_FRAMES (3000).
         //    pcm_to_mel pads to multiples of 1500+1500, so variable-length chunks
         //    produce 4500, 6000, etc. ONNX encoder input is fixed [1, 128, 3000].
         let mel = if n_frames == ONNX_N_FRAMES {
@@ -326,7 +334,7 @@ impl OnnxEngine {
             padded
         };
 
-        // 4. Shape mel as [1, num_mel_bins, ONNX_N_FRAMES] for encoder
+        // 3. Shape mel as [1, num_mel_bins, ONNX_N_FRAMES] for encoder
         let mel_array = Array3::from_shape_vec([1, n_mels, ONNX_N_FRAMES], mel)
             .context("Failed to reshape mel spectrogram")?;
 
@@ -491,7 +499,7 @@ impl OnnxEngine {
 
         if samples_16k.len() <= chunk_samples {
             // Short audio — single pass (pad-or-trim handles the rest)
-            let text = self.transcribe_internal(&samples_16k, 16000, language)?;
+            let text = self.transcribe_internal_16k(&samples_16k, language)?;
             return Ok(crate::stt::whisper::dedup_repetitions(&text));
         }
 
@@ -507,7 +515,7 @@ impl OnnxEngine {
                 break;
             }
 
-            let text = self.transcribe_internal(chunk, 16000, language)?;
+            let text = self.transcribe_internal_16k(chunk, language)?;
             if !text.is_empty() {
                 crate::stt::whisper::append_with_overlap_dedup(&mut out, &text);
             }
@@ -549,7 +557,9 @@ impl TranscriptionAdapter for OnnxWhisperAdapter {
         let engine = ENGINE
             .get()
             .context("ONNX Whisper engine not initialized. Call onnx_adapter::init() first.")?;
-        let mut guard = engine.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = engine
+            .lock()
+            .map_err(|e| anyhow!("ONNX engine mutex poisoned: {}", e))?;
 
         let text = guard.transcribe_long(&utterance.samples, utterance.sample_rate, language)?;
 
