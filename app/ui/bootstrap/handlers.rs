@@ -64,6 +64,10 @@ pub fn action_handler_class() -> *const Class {
                 sel!(onTabVoiceLab:),
                 on_tab_voice_lab as extern "C" fn(&Object, Sel, Id),
             );
+            decl.add_method(
+                sel!(onTabEngine:),
+                on_tab_engine as extern "C" fn(&Object, Sel, Id),
+            );
 
             // Keys tab actions
             decl.add_method(
@@ -235,6 +239,10 @@ extern "C" fn on_tab_audio(_this: &Object, _sel: Sel, _sender: Id) {
 
 extern "C" fn on_tab_voice_lab(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(3);
+}
+
+extern "C" fn on_tab_engine(_this: &Object, _sel: Sel, _sender: Id) {
+    switch_tab(4);
 }
 
 extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, _notification: Id) {

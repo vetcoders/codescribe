@@ -36,6 +36,7 @@ const TAB_SETUP: usize = 0;
 const _TAB_KEYS: usize = 1;
 const _TAB_AUDIO: usize = 2;
 const _TAB_VOICE_LAB: usize = 3;
+const _TAB_ENGINE: usize = 4;
 
 const STEP_TEST_MIC: usize = 0;
 const STEP_SHOW_OVERLAY: usize = 1;
@@ -307,8 +308,8 @@ struct BootstrapState {
     window_delegate: Option<usize>,
     root_view: Option<usize>,
     step_labels: [Option<usize>; 3],
-    tab_buttons: [Option<usize>; 4],
-    content_views: [Option<usize>; 4],
+    tab_buttons: [Option<usize>; 5],
+    content_views: [Option<usize>; 5],
     active_tab: usize,
     keys_hold_popup: Option<usize>,
     keys_toggle_popup: Option<usize>,
@@ -748,14 +749,15 @@ unsafe fn build_settings_ui(
         // Since it's a frameless window with titlebar, traffic lights are at top-left.
         // We start buttons a bit lower.
         let tab_start_y = settings_height - 60.0;
-        let tab_names = ["Setup", "Keys", "Audio", "Voice Lab"];
+        let tab_names = ["Setup", "Keys", "Audio", "Voice Lab", "Engine"];
         let tab_sels = [
             sel!(onTabSetup:),
             sel!(onTabKeys:),
             sel!(onTabAudio:),
             sel!(onTabVoiceLab:),
+            sel!(onTabEngine:),
         ];
-        let mut tab_buttons: [Option<usize>; 4] = [None; 4];
+        let mut tab_buttons: [Option<usize>; 5] = [None; 5];
 
         for (i, (name, sel)) in tab_names.iter().zip(tab_sels.iter()).enumerate() {
             let btn_height = 36.0;
@@ -1097,6 +1099,11 @@ unsafe fn build_settings_ui(
         let _: () = msg_send![voice_lab_view, setHidden: true];
         add_subview(content_bg, voice_lab_view);
 
+        // --- Engine tab (index 4) ---
+        let engine_view = build_engine_tab(tab_content_frame);
+        let _: () = msg_send![engine_view, setHidden: true];
+        add_subview(content_bg, engine_view);
+
         // ====================================================================
         // Store state
         // ====================================================================
@@ -1107,6 +1114,7 @@ unsafe fn build_settings_ui(
             Some(keys_view as usize),
             Some(audio_view as usize),
             Some(voice_lab_view as usize),
+            Some(engine_view as usize),
         ];
         state.active_tab = TAB_SETUP;
         state.permission_labels = perm_labels;
@@ -1147,6 +1155,7 @@ unsafe fn create_sidebar_tab_button(
             "Keys" => "keyboard",
             "Audio" => "waveform",
             "Voice Lab" => "waveform.path.ecg",
+            "Engine" => "cpu",
             _ => "circle",
         };
         crate::ui_helpers::set_button_symbol(btn, symbol_name);
@@ -1190,7 +1199,7 @@ pub(super) fn switch_tab(index: usize) {
     Queue::main().exec_async(move || unsafe {
         let (content_views, tab_buttons) = {
             let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            if index >= 4 || state.active_tab == index {
+            if index >= 5 || state.active_tab == index {
                 return;
             }
             state.active_tab = index;
@@ -1299,8 +1308,8 @@ pub(super) fn handle_bootstrap_window_closed() {
     state.window_delegate = None;
     state.root_view = None;
     state.step_labels = [None, None, None];
-    state.tab_buttons = [None, None, None, None];
-    state.content_views = [None, None, None, None];
+    state.tab_buttons = [None, None, None, None, None];
+    state.content_views = [None, None, None, None, None];
     state.keys_hold_popup = None;
     state.keys_toggle_popup = None;
     state.keys_preset_popup = None;
@@ -1330,8 +1339,8 @@ pub fn hide_bootstrap_overlay() {
                 state.window_delegate = None;
                 state.root_view = None;
                 state.step_labels = [None, None, None];
-                state.tab_buttons = [None, None, None, None];
-                state.content_views = [None, None, None, None];
+                state.tab_buttons = [None, None, None, None, None];
+                state.content_views = [None, None, None, None, None];
                 state.keys_hold_popup = None;
                 state.keys_toggle_popup = None;
                 state.keys_preset_popup = None;
@@ -1391,8 +1400,8 @@ pub fn reset_embedded_bootstrap_state() {
     state.window_delegate = None;
     state.config_cache = None;
     state.step_labels = [None, None, None];
-    state.tab_buttons = [None, None, None, None];
-    state.content_views = [None, None, None, None];
+    state.tab_buttons = [None, None, None, None, None];
+    state.content_views = [None, None, None, None, None];
     state.keys_hold_popup = None;
     state.keys_toggle_popup = None;
     state.keys_preset_popup = None;
@@ -2003,6 +2012,183 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
 
         let _: () = msg_send![scroll, setDocumentView: doc_view];
         add_subview(container, scroll);
+        container
+    }
+}
+
+// ============================================================================
+// Engine tab — read-only engine status panel
+// ============================================================================
+
+unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    unsafe {
+        let ns_view = Class::get("NSView").unwrap();
+        let ns_color = Class::get("NSColor").unwrap();
+
+        let container: Id = msg_send![ns_view, alloc];
+        let container: Id = msg_send![container, initWithFrame: frame];
+
+        let pad = ui_tokens::EDGE_PADDING;
+        let content_w = frame.size.width - pad * 2.0;
+        let mut y = frame.size.height - 40.0;
+        let primary = crate::ui_helpers::color_label();
+        let secondary = crate::ui_helpers::color_secondary_label();
+        let mono = crate::ui_helpers::monospace_font(ui_tokens::SMALL_FONT_SIZE);
+
+        // ── Title ──────────────────────────────────────────────
+        let title = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            text: "Engine".to_string(),
+            font_size: ui_tokens::BODY_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, title);
+        y -= 20.0;
+
+        let subtitle = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: "Runtime engine status (read-only)".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, subtitle);
+        y -= 28.0;
+
+        // ── Helper: add a status row (dot + label + mono value) ─
+        let mut add_row = |label_text: &str, value_text: &str, ok: bool| {
+            let dot = if ok { "\u{25CF}" } else { "\u{25CB}" };
+            let dot_color: Id = if ok {
+                msg_send![ns_color, systemGreenColor]
+            } else {
+                msg_send![ns_color, systemOrangeColor]
+            };
+
+            let dot_lbl = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(18.0, 18.0)),
+                text: dot.to_string(),
+                font_size: 14.0,
+                text_color: dot_color,
+                ..Default::default()
+            });
+            add_subview(container, dot_lbl);
+
+            let lbl = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(pad + 20.0, y), &CGSize::new(120.0, 18.0)),
+                text: label_text.to_string(),
+                font_size: ui_tokens::SMALL_FONT_SIZE,
+                bold: true,
+                text_color: primary,
+                ..Default::default()
+            });
+            add_subview(container, lbl);
+
+            let val = create_label(LabelConfig {
+                frame: CGRect::new(
+                    &CGPoint::new(pad + 142.0, y),
+                    &CGSize::new(content_w - 142.0, 18.0),
+                ),
+                text: value_text.to_string(),
+                font_size: ui_tokens::SMALL_FONT_SIZE,
+                text_color: secondary,
+                ..Default::default()
+            });
+            let _: () = msg_send![val, setFont: mono];
+            add_subview(container, val);
+            y -= 28.0;
+        };
+
+        // ── STT Engine ─────────────────────────────────────────
+        let stt_engine =
+            std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
+        let stt_label = match stt_engine.as_str() {
+            "onnx" => "ONNX Runtime (Whisper)",
+            _ => "Candle + Metal GPU",
+        };
+        add_row("STT Engine", stt_label, true);
+
+        // ── Whisper Model ──────────────────────────────────────
+        let whisper_embedded = codescribe_core::stt::whisper::embedded::is_embedded_available();
+        let whisper_status = if whisper_embedded {
+            "Embedded (~894 MB in binary)"
+        } else {
+            let path =
+                std::env::var("CODESCRIBE_MODEL_PATH").unwrap_or_else(|_| "(not set)".to_string());
+            Box::leak(format!("External: {}", path).into_boxed_str())
+        };
+        add_row("Whisper", whisper_status, whisper_embedded);
+
+        // ── VAD (Silero) ───────────────────────────────────────
+        let vad_embedded = codescribe_core::vad::embedded::is_embedded_available();
+        let vad_status = if vad_embedded {
+            "Silero v6 embedded (2.3 MB)"
+        } else {
+            let path = codescribe_core::vad::user_model_path();
+            if path.exists() {
+                Box::leak(format!("Silero v6: {}", path.display()).into_boxed_str())
+            } else {
+                "Not found (will auto-download)"
+            }
+        };
+        add_row(
+            "VAD",
+            vad_status,
+            vad_embedded || codescribe_core::vad::user_model_path().exists(),
+        );
+
+        // ── TTS Engine ─────────────────────────────────────────
+        let tts_embedded = codescribe_core::tts::embedded::is_embedded_available();
+        let tts_status = if tts_embedded {
+            "CSM-1B embedded (~1 GB)"
+        } else {
+            "Not available"
+        };
+        add_row("TTS", tts_status, tts_embedded);
+
+        // ── Embedder ───────────────────────────────────────────
+        let embedder_ready = codescribe_core::embedder::is_initialized();
+        add_row(
+            "Embedder",
+            if embedder_ready {
+                "MiniLM ready"
+            } else {
+                "MiniLM (lazy init)"
+            },
+            true,
+        );
+
+        // ── Separator ──────────────────────────────────────────
+        y -= 4.0;
+        let sep = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 1.0)),
+            text: String::new(),
+            font_size: 1.0,
+            ..Default::default()
+        });
+        let _: () = msg_send![sep, setWantsLayer: true];
+        let layer: Id = msg_send![sep, layer];
+        if !layer.is_null() {
+            let bg: Id = msg_send![ns_color, separatorColor];
+            let cg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg];
+        }
+        add_subview(container, sep);
+        y -= 20.0;
+
+        // ── Env hint ───────────────────────────────────────────
+        let hint = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 14.0)),
+            text: "Switch STT: set CODESCRIBE_STT_ENGINE=onnx in .env".to_string(),
+            font_size: 10.0,
+            text_color: secondary,
+            ..Default::default()
+        });
+        let _: () = msg_send![hint, setFont: mono];
+        add_subview(container, hint);
+
         container
     }
 }
