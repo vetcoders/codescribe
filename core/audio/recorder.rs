@@ -78,8 +78,9 @@ use tracing::{debug, error, info, warn};
 /// - Proper sample accumulation → Silero actually processes audio
 /// - Locally owned → dies with the Recorder
 struct RecorderVad {
-    tx: std::sync::mpsc::SyncSender<Vec<f32>>,
+    tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
     last_prob: Arc<AtomicU32>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RecorderVad {
@@ -99,7 +100,7 @@ impl RecorderVad {
         let writer = Arc::clone(&last_prob);
 
         let config = vad::VadConfig::default();
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("recorder-vad".into())
             .spawn(move || {
                 let mut acc_vad =
@@ -119,7 +120,23 @@ impl RecorderVad {
             })
             .ok()?;
 
-        Some(Self { tx, last_prob })
+        Some(Self {
+            tx: Some(tx),
+            last_prob,
+            thread: Some(handle),
+        })
+    }
+}
+
+impl Drop for RecorderVad {
+    fn drop(&mut self) {
+        // Close channel first so the worker loop can exit before join().
+        drop(self.tx.take());
+        if let Some(handle) = self.thread.take()
+            && handle.join().is_err()
+        {
+            warn!("RecorderVad thread panicked during shutdown");
+        }
     }
 }
 
@@ -390,8 +407,10 @@ impl Recorder {
             .recorder_vad
             .as_ref()
             .map(|rv| Arc::clone(&rv.last_prob));
-        let vad_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>> =
-            self.recorder_vad.as_ref().map(|rv| rv.tx.clone());
+        let vad_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>> = self
+            .recorder_vad
+            .as_ref()
+            .and_then(|rv| rv.tx.as_ref().cloned());
 
         let stream = device
             .build_input_stream(
@@ -533,6 +552,8 @@ impl Recorder {
             info!("Audio stream stopped");
         }
 
+        // Ensure VAD worker is shut down deterministically on every stop().
+        self.recorder_vad = None;
         self.device = None;
         self.is_recording.store(false, Ordering::SeqCst);
 
