@@ -56,6 +56,7 @@ mod tests {
         assert_eq!("ctrl".parse::<HoldMods>(), Ok(HoldMods::Ctrl));
         assert_eq!("ctrl_alt".parse::<HoldMods>(), Ok(HoldMods::CtrlAlt));
         assert_eq!("ctrl+shift".parse::<HoldMods>(), Ok(HoldMods::CtrlShift));
+        assert_eq!("none".parse::<HoldMods>(), Ok(HoldMods::None));
         assert!("invalid".parse::<HoldMods>().is_err());
     }
 

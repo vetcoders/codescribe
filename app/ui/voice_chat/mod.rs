@@ -70,6 +70,7 @@ const CACORNER_MAX_X_MIN_Y: u64 = 1 << 1;
 pub(super) fn shortcuts_lines(hold: HoldMods, toggle: ToggleTrigger) -> (String, String) {
     let hold_line = match hold {
         HoldMods::Fn => "Hold Fn — record • Fn+Shift — chat • Fn+Cmd — selection",
+        HoldMods::None => "Hold-to-talk disabled",
         HoldMods::Ctrl => "Hold Ctrl — record",
         HoldMods::CtrlAlt => {
             "Hold Ctrl — record • Ctrl+Option — format • Ctrl+Shift — chat • Ctrl+Cmd — selection"

@@ -18,6 +18,7 @@
 // - CtrlAlt: Ctrl+Option together
 // - CtrlShift: Ctrl+Shift together
 // - CtrlCmd: Ctrl+Command together
+// - None: hold-to-talk disabled
 //
 // ToggleTrigger options:
 // - DoubleOption: Left Option (normal) + Right Option (assistive)
@@ -34,17 +35,18 @@ use std::time::{Duration, Instant};
 // --- Global HoldMods Configuration ---
 
 /// Atomic storage for current HoldMods setting
-/// Values: 0=Fn, 1=Ctrl, 2=CtrlAlt, 3=CtrlShift, 4=CtrlCmd
+/// Values: 0=Fn, 1=None, 2=Ctrl, 3=CtrlAlt, 4=CtrlShift, 5=CtrlCmd
 static HOLD_MODS: AtomicU8 = AtomicU8::new(0);
 
 /// Set the hold modifier combination for hold-to-talk
 pub fn set_hold_mods(mods: HoldMods) {
     let value = match mods {
         HoldMods::Fn => 0,
-        HoldMods::Ctrl => 1,
-        HoldMods::CtrlAlt => 2,
-        HoldMods::CtrlShift => 3,
-        HoldMods::CtrlCmd => 4,
+        HoldMods::None => 1,
+        HoldMods::Ctrl => 2,
+        HoldMods::CtrlAlt => 3,
+        HoldMods::CtrlShift => 4,
+        HoldMods::CtrlCmd => 5,
     };
     HOLD_MODS.store(value, AtomicOrdering::SeqCst);
     tracing::info!("HoldMods set to {:?}", mods);
@@ -54,10 +56,11 @@ pub fn set_hold_mods(mods: HoldMods) {
 pub fn get_hold_mods() -> HoldMods {
     match HOLD_MODS.load(AtomicOrdering::SeqCst) {
         0 => HoldMods::Fn,
-        1 => HoldMods::Ctrl,
-        2 => HoldMods::CtrlAlt,
-        3 => HoldMods::CtrlShift,
-        4 => HoldMods::CtrlCmd,
+        1 => HoldMods::None,
+        2 => HoldMods::Ctrl,
+        3 => HoldMods::CtrlAlt,
+        4 => HoldMods::CtrlShift,
+        5 => HoldMods::CtrlCmd,
         _ => HoldMods::Fn, // fallback
     }
 }
@@ -411,6 +414,7 @@ mod macos {
         // start/stop thrashing and, in worst cases, system-level freezes (event tap churn).
         match hold_mods {
             HoldMods::Fn => fn_key,
+            HoldMods::None => false,
             HoldMods::Ctrl => ctrl,
             HoldMods::CtrlAlt => ctrl,
             HoldMods::CtrlShift => ctrl && shift,
@@ -427,6 +431,7 @@ mod macos {
         // (e.g. Ctrl+Option). With bare Ctrl hold, Shift/Cmd must be ignored
         // because Ctrl+K, Ctrl+Shift+K etc. are normal terminal shortcuts.
         match hold_mods {
+            HoldMods::None => HoldMode::Raw,
             HoldMods::Ctrl => HoldMode::Raw,
             HoldMods::CtrlShift | HoldMods::CtrlCmd => {
                 // Shift or Cmd is already part of the base combo — no room for modifiers
@@ -497,6 +502,7 @@ mod macos {
             let hold_mods = get_hold_mods();
             let base_held = match hold_mods {
                 HoldMods::Fn => fn_held,
+                HoldMods::None => false,
                 HoldMods::Ctrl => ctrl_held,
                 HoldMods::CtrlAlt => ctrl_held,
                 HoldMods::CtrlShift => ctrl_held && shift_held,
@@ -942,9 +948,15 @@ mod macos {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::sync::Mutex;
+
+        static HOLD_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
         #[test]
         fn compute_hold_mode_respects_modifiers() {
+            let _guard = HOLD_MODE_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev = EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst);
             EXCLUSIVE_MODE.store(false, AtomicOrdering::SeqCst);
 
@@ -995,6 +1007,9 @@ mod macos {
 
         #[test]
         fn compute_hold_mode_exclusive_forces_raw() {
+            let _guard = HOLD_MODE_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev = EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst);
             EXCLUSIVE_MODE.store(true, AtomicOrdering::SeqCst);
 
@@ -1203,6 +1218,10 @@ mod tests {
         // Test Fn
         set_hold_mods(HoldMods::Fn);
         assert_eq!(get_hold_mods(), HoldMods::Fn);
+
+        // Test None (disabled hold)
+        set_hold_mods(HoldMods::None);
+        assert_eq!(get_hold_mods(), HoldMods::None);
 
         // Test Ctrl
         set_hold_mods(HoldMods::Ctrl);

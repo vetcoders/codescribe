@@ -13,6 +13,8 @@
 use core_foundation::base::TCFType;
 #[cfg(target_os = "macos")]
 use core_foundation::string::CFString;
+#[cfg(target_os = "macos")]
+use objc::{msg_send, runtime::Class, sel, sel_impl};
 
 /// Permission status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,14 +124,24 @@ pub fn request_input_monitoring() -> bool {
 /// Check if Microphone permission is granted
 ///
 /// Microphone permission is required for audio recording.
-/// Note: On macOS, the permission is checked when cpal first accesses the microphone.
-/// We return NotDetermined here to indicate it will be requested on first use.
+/// Uses `AVCaptureDevice.authorizationStatusForMediaType("soun")`.
 #[cfg(target_os = "macos")]
 pub fn check_microphone() -> PermissionStatus {
-    // AVCaptureDevice requires AVFoundation framework which isn't linked by default
-    // Microphone permission will be requested automatically when cpal accesses the mic
-    // For now, we just return NotDetermined to indicate it hasn't been checked yet
-    PermissionStatus::NotDetermined
+    unsafe {
+        let Some(av_class) = Class::get("AVCaptureDevice") else {
+            return PermissionStatus::NotDetermined;
+        };
+
+        // AVMediaTypeAudio fourcc
+        let media_type = CFString::new("soun");
+        let status: isize =
+            msg_send![av_class, authorizationStatusForMediaType: media_type.as_concrete_TypeRef()];
+        match status {
+            3 => PermissionStatus::Granted,    // AVAuthorizationStatusAuthorized
+            1 | 2 => PermissionStatus::Denied, // Restricted / Denied
+            _ => PermissionStatus::NotDetermined,
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -140,20 +152,115 @@ pub fn check_microphone() -> PermissionStatus {
 /// Request Microphone permission
 ///
 /// Shows system dialog asking user to grant microphone access.
-/// The callback will be called with the result.
+/// Returns true only when access is already granted.
 #[cfg(target_os = "macos")]
 pub fn request_microphone() -> bool {
-    // For now, we'll just check if we can access the default input device
-    // The actual permission dialog will be triggered when we first try to use the microphone
-    // through cpal
-
-    // Return true to indicate we attempted to request (actual permission granted via cpal)
-    true
+    // This module exposes synchronous APIs only; onboarding will deep-link to
+    // System Settings when the permission isn't granted.
+    check_microphone() == PermissionStatus::Granted
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn request_microphone() -> bool {
     true
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+/// Check screen recording permission status.
+#[cfg(target_os = "macos")]
+pub fn check_screen_recording() -> PermissionStatus {
+    if unsafe { CGPreflightScreenCaptureAccess() } {
+        PermissionStatus::Granted
+    } else {
+        PermissionStatus::NotDetermined
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn check_screen_recording() -> PermissionStatus {
+    PermissionStatus::Granted
+}
+
+/// Request screen recording permission. Returns true when granted.
+#[cfg(target_os = "macos")]
+pub fn request_screen_recording() -> bool {
+    unsafe { CGRequestScreenCaptureAccess() }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn request_screen_recording() -> bool {
+    true
+}
+
+/// Check Full Disk Access permission status.
+#[cfg(target_os = "macos")]
+pub fn check_full_disk_access() -> PermissionStatus {
+    if has_full_disk_access() {
+        PermissionStatus::Granted
+    } else {
+        PermissionStatus::NotDetermined
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn check_full_disk_access() -> PermissionStatus {
+    PermissionStatus::Granted
+}
+
+/// Request Full Disk Access by opening the relevant System Settings pane.
+#[cfg(target_os = "macos")]
+pub fn request_full_disk_access() -> bool {
+    if check_full_disk_access() == PermissionStatus::Granted {
+        return true;
+    }
+    open_privacy_settings("Privacy_AllFiles");
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn request_full_disk_access() -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn has_full_disk_access() -> bool {
+    use std::path::Path;
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    if home.is_empty() {
+        return false;
+    }
+
+    let protected_roots = [
+        Path::new(&home).join("Library/Mail"),
+        Path::new(&home).join("Library/Messages"),
+        Path::new(&home).join("Library/Safari"),
+    ];
+
+    for path in protected_roots {
+        match std::fs::read_dir(&path) {
+            Ok(_) => return true,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return false,
+            Err(_) => continue,
+        }
+    }
+
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn open_privacy_settings(deeplink: &str) {
+    let url = format!(
+        "x-apple.systempreferences:com.apple.preference.security?{}",
+        deeplink
+    );
+    let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
 /// Check all required permissions and log status
@@ -194,7 +301,7 @@ pub fn check_all_permissions() {
             info!("Microphone permission: Granted");
         }
         PermissionStatus::NotDetermined => {
-            info!("Microphone permission: Will be requested on first use");
+            info!("Microphone permission: Not determined");
         }
         PermissionStatus::Denied => {
             warn!("Microphone permission: DENIED - Recording will not work!");
@@ -221,9 +328,11 @@ pub fn request_all_permissions() {
         request_input_monitoring();
     }
 
-    // Microphone permission is requested automatically when we first access the mic
-    // through cpal, so we just log the status
-    check_all_permissions();
+    if check_microphone() != PermissionStatus::Granted {
+        info!(
+            "Microphone permission not granted yet; open System Settings > Privacy & Security > Microphone if needed."
+        );
+    }
 }
 
 pub fn diagnostics_report() -> String {

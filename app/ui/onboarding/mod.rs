@@ -1,0 +1,1488 @@
+mod steps;
+
+use self::steps::{PermissionKind, TOTAL_STEPS, WizardStep, step_for_index};
+use crate::config::{Config, HoldMods, ToggleTrigger, UserSettings, keychain};
+use crate::os::hotkeys;
+use crate::os::permissions::{self, PermissionStatus};
+use crate::ui::shared::helpers::{
+    LabelConfig, add_subview, button, button_set_action, color_label, color_secondary_label,
+    create_glass_effect_view_with, create_label, create_secure_text_input, ns_string, set_hidden,
+    set_text_field_string, window_close, window_show,
+};
+use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+use dispatch::Queue;
+use lazy_static::lazy_static;
+use objc::declare::ClassDecl;
+use objc::runtime::{Class, Object, Sel};
+use objc::{msg_send, sel, sel_impl};
+use objc2_app_kit::{
+    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+    NSWindowButton, NSWindowCollectionBehavior, NSWindowStyleMask,
+};
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::{Mutex, Once};
+use std::thread;
+use std::time::Duration;
+use tracing::{info, warn};
+
+// Type alias for Objective-C object pointers
+pub type Id = *mut Object;
+
+const WINDOW_WIDTH: f64 = 600.0;
+const WINDOW_HEIGHT: f64 = 500.0;
+const FULL_DISK_STEP_INDEX: usize = 5;
+const STATUS_NOT_DETERMINED: &str = "\u{25CB} Not Determined";
+const STATUS_GRANTED: &str = "\u{25CF} Granted";
+const STATUS_DENIED: &str = "\u{2715} Denied";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum LanguageChoice {
+    #[default]
+    English,
+    Polish,
+}
+
+impl LanguageChoice {
+    fn label(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::Polish => "Polish",
+        }
+    }
+
+    fn value(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Polish => "pl",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum HotkeyModeChoice {
+    HoldToTalk,
+    Toggle,
+    #[default]
+    Both,
+}
+
+impl HotkeyModeChoice {
+    fn label(self) -> &'static str {
+        match self {
+            Self::HoldToTalk => "Hold to Talk",
+            Self::Toggle => "Toggle (Double-tap)",
+            Self::Both => "Both",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PermissionUiStatus {
+    #[default]
+    NotDetermined,
+    Granted,
+    Denied,
+}
+
+#[derive(Clone, Copy, Default)]
+struct UiRefs {
+    icon_label: Option<usize>,
+    title_label: Option<usize>,
+    description_label: Option<usize>,
+    status_label: Option<usize>,
+    instruction_label: Option<usize>,
+    step_counter_label: Option<usize>,
+    primary_button: Option<usize>,
+    back_button: Option<usize>,
+    skip_button: Option<usize>,
+    language_view: Option<usize>,
+    language_en_radio: Option<usize>,
+    language_pl_radio: Option<usize>,
+    api_view: Option<usize>,
+    api_key_field: Option<usize>,
+    api_hint_label: Option<usize>,
+    hotkey_view: Option<usize>,
+    hotkey_hold_radio: Option<usize>,
+    hotkey_toggle_radio: Option<usize>,
+    hotkey_both_radio: Option<usize>,
+    summary_view: Option<usize>,
+    summary_permission_labels: [Option<usize>; 5],
+    summary_config_label: Option<usize>,
+}
+
+struct OnboardingState {
+    window: Option<usize>,
+    window_delegate: Option<usize>,
+    action_handler: Option<usize>,
+    step_index: usize,
+    language: LanguageChoice,
+    hotkey_mode: HotkeyModeChoice,
+    requested_permissions: [bool; 5],
+    permission_states: [PermissionUiStatus; 5],
+    scheduled_auto_advance_step: Option<usize>,
+    full_disk_polling: bool,
+    api_key_configured: bool,
+    ui: UiRefs,
+}
+
+impl Default for OnboardingState {
+    fn default() -> Self {
+        Self {
+            window: None,
+            window_delegate: None,
+            action_handler: None,
+            step_index: 0,
+            language: LanguageChoice::default(),
+            hotkey_mode: HotkeyModeChoice::default(),
+            requested_permissions: [false; 5],
+            permission_states: [PermissionUiStatus::NotDetermined; 5],
+            scheduled_auto_advance_step: None,
+            full_disk_polling: false,
+            api_key_configured: false,
+            ui: UiRefs::default(),
+        }
+    }
+}
+
+lazy_static! {
+    static ref ONBOARDING_STATE: Mutex<OnboardingState> = Mutex::new(OnboardingState::default());
+}
+
+static ACTION_HANDLER_INIT: Once = Once::new();
+static mut ACTION_HANDLER_CLASS: *const Class = std::ptr::null();
+static WINDOW_DELEGATE_INIT: Once = Once::new();
+static mut WINDOW_DELEGATE_CLASS: *const Class = std::ptr::null();
+
+const PERMISSION_ORDER: [PermissionKind; 5] = [
+    PermissionKind::Microphone,
+    PermissionKind::Accessibility,
+    PermissionKind::InputMonitoring,
+    PermissionKind::ScreenRecording,
+    PermissionKind::FullDiskAccess,
+];
+
+fn onboarding_done_path() -> PathBuf {
+    Config::config_dir().join("onboarding_done")
+}
+
+pub fn should_show_onboarding() -> bool {
+    !onboarding_done_path().exists()
+}
+
+fn mark_onboarding_done() {
+    let path = onboarding_done_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, "done");
+}
+
+pub fn show_onboarding_wizard() {
+    if !should_show_onboarding() {
+        return;
+    }
+
+    if is_main_thread() {
+        show_onboarding_wizard_impl();
+    } else {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        Queue::main().exec_async(move || {
+            show_onboarding_wizard_impl();
+            let _ = tx.send(());
+        });
+        let _ = rx.recv();
+    }
+}
+
+fn is_main_thread() -> bool {
+    unsafe {
+        let ns_thread = Class::get("NSThread").unwrap();
+        msg_send![ns_thread, isMainThread]
+    }
+}
+
+fn action_handler_class() -> *const Class {
+    unsafe {
+        ACTION_HANDLER_INIT.call_once(|| {
+            let superclass = Class::get("NSObject").expect("NSObject class missing");
+            let mut decl = ClassDecl::new("CodeScribeOnboardingActionHandler", superclass)
+                .expect("Failed to create onboarding action handler class");
+
+            decl.add_method(
+                sel!(onPrimaryAction:),
+                on_primary_action as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onBackAction:),
+                on_back_action as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onSkipAction:),
+                on_skip_action as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onLanguageSelected:),
+                on_language_selected as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onHotkeySelected:),
+                on_hotkey_selected as extern "C" fn(&Object, Sel, Id),
+            );
+
+            ACTION_HANDLER_CLASS = decl.register();
+        });
+
+        ACTION_HANDLER_CLASS
+    }
+}
+
+fn window_delegate_class() -> *const Class {
+    unsafe {
+        WINDOW_DELEGATE_INIT.call_once(|| {
+            let superclass = Class::get("NSObject").expect("NSObject class missing");
+            let mut decl = ClassDecl::new("CodeScribeOnboardingWindowDelegate", superclass)
+                .expect("Failed to create onboarding window delegate class");
+            decl.add_method(
+                sel!(windowWillClose:),
+                on_window_will_close as extern "C" fn(&Object, Sel, Id),
+            );
+            WINDOW_DELEGATE_CLASS = decl.register();
+        });
+
+        WINDOW_DELEGATE_CLASS
+    }
+}
+
+extern "C" fn on_primary_action(_this: &Object, _sel: Sel, _sender: Id) {
+    handle_primary_action();
+}
+
+extern "C" fn on_back_action(_this: &Object, _sel: Sel, _sender: Id) {
+    handle_back_action();
+}
+
+extern "C" fn on_skip_action(_this: &Object, _sel: Sel, _sender: Id) {
+    handle_skip_action();
+}
+
+extern "C" fn on_language_selected(_this: &Object, _sel: Sel, sender: Id) {
+    unsafe {
+        let tag: isize = msg_send![sender, tag];
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.language = if tag == 1 {
+            LanguageChoice::Polish
+        } else {
+            LanguageChoice::English
+        };
+    }
+    render_current_step();
+}
+
+extern "C" fn on_hotkey_selected(_this: &Object, _sel: Sel, sender: Id) {
+    unsafe {
+        let tag: isize = msg_send![sender, tag];
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.hotkey_mode = match tag {
+            1 => HotkeyModeChoice::Toggle,
+            2 => HotkeyModeChoice::Both,
+            _ => HotkeyModeChoice::HoldToTalk,
+        };
+    }
+    render_current_step();
+}
+
+extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, _notification: Id) {
+    let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.window = None;
+    state.window_delegate = None;
+    state.action_handler = None;
+    state.full_disk_polling = false;
+    state.scheduled_auto_advance_step = None;
+    drop(state);
+
+    stop_modal();
+}
+
+fn show_onboarding_wizard_impl() {
+    unsafe {
+        let existing = {
+            let state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.window
+        };
+        if let Some(window_ptr) = existing {
+            let window = window_ptr as Id;
+            let ns_window = Class::get("NSWindow").unwrap();
+            let valid: bool = msg_send![window, isKindOfClass: ns_window];
+            if valid {
+                window_show(window);
+                run_modal_for_window(window);
+                return;
+            }
+        }
+
+        let Some(screen_class) = Class::get("NSScreen") else {
+            warn!("Onboarding: NSScreen class missing");
+            return;
+        };
+        let screen: Id = msg_send![screen_class, mainScreen];
+        if screen.is_null() {
+            warn!("Onboarding: No main screen");
+            return;
+        }
+
+        let visible: CGRect = msg_send![screen, visibleFrame];
+        let origin_x = visible.origin.x + (visible.size.width - WINDOW_WIDTH) * 0.5;
+        let origin_y = visible.origin.y + (visible.size.height - WINDOW_HEIGHT) * 0.5;
+        let frame = CGRect::new(
+            &CGPoint::new(origin_x, origin_y),
+            &CGSize::new(WINDOW_WIDTH, WINDOW_HEIGHT),
+        );
+
+        let ns_window = Class::get("NSWindow").unwrap();
+        let window: Id = msg_send![ns_window, alloc];
+        let style = NSWindowStyleMask::Titled;
+        let window: Id = msg_send![
+            window,
+            initWithContentRect: frame
+            styleMask: style
+            backing: NSBackingStoreType::Buffered
+            defer: false
+        ];
+
+        let _: () = msg_send![window, setTitle: ns_string("Welcome to CodeScribe")];
+        let _: () = msg_send![window, setOpaque: false];
+        let _: () = msg_send![window, setReleasedWhenClosed: false];
+        let _: () = msg_send![window, setMovableByWindowBackground: true];
+        let _: () =
+            msg_send![window, setCollectionBehavior: NSWindowCollectionBehavior::FullScreenNone];
+        let size = CGSize::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+        let _: () = msg_send![window, setContentMinSize: size];
+        let _: () = msg_send![window, setContentMaxSize: size];
+
+        let mini_btn: Id =
+            msg_send![window, standardWindowButton: NSWindowButton::MiniaturizeButton];
+        if !mini_btn.is_null() {
+            let _: () = msg_send![mini_btn, setHidden: true];
+            let _: () = msg_send![mini_btn, setEnabled: false];
+        }
+
+        let zoom_btn: Id = msg_send![window, standardWindowButton: NSWindowButton::ZoomButton];
+        if !zoom_btn.is_null() {
+            let _: () = msg_send![zoom_btn, setHidden: true];
+            let _: () = msg_send![zoom_btn, setEnabled: false];
+        }
+
+        let action_handler_class = action_handler_class();
+        let action_handler: Id = msg_send![action_handler_class, new];
+
+        let delegate_class = window_delegate_class();
+        let window_delegate: Id = msg_send![delegate_class, new];
+        let _: () = msg_send![window, setDelegate: window_delegate];
+
+        let content_view: Id = msg_send![window, contentView];
+        let content_bounds: CGRect = msg_send![content_view, bounds];
+        let background = create_glass_effect_view_with(
+            content_bounds,
+            NSVisualEffectMaterial::WindowBackground,
+            NSVisualEffectBlendingMode::BehindWindow,
+            NSVisualEffectState::Active,
+        );
+        let _: () = msg_send![background, setAutoresizingMask: 2_isize | 16_isize];
+        add_subview(content_view, background);
+
+        let ui = build_onboarding_ui(background, action_handler);
+
+        {
+            let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            *state = OnboardingState {
+                window: Some(window as usize),
+                window_delegate: Some(window_delegate as usize),
+                action_handler: Some(action_handler as usize),
+                step_index: 0,
+                language: initial_language_choice(),
+                hotkey_mode: initial_hotkey_choice(),
+                requested_permissions: [false; 5],
+                permission_states: [PermissionUiStatus::NotDetermined; 5],
+                scheduled_auto_advance_step: None,
+                full_disk_polling: false,
+                api_key_configured: keychain::load_key("LLM_API_KEY")
+                    .map(|k| !k.trim().is_empty())
+                    .unwrap_or(false),
+                ui,
+            };
+            refresh_all_permission_states_locked(&mut state);
+        }
+
+        render_current_step();
+        window_show(window);
+        run_modal_for_window(window);
+
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.full_disk_polling = false;
+        state.scheduled_auto_advance_step = None;
+    }
+}
+
+fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
+    unsafe {
+        let ns_view = Class::get("NSView").unwrap();
+        let mut ui = UiRefs::default();
+
+        let icon_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(250.0, 410.0), &CGSize::new(100.0, 34.0)),
+            text: String::new(),
+            font_size: 24.0,
+            bold: true,
+            text_color: color_label(),
+            ..Default::default()
+        });
+        configure_label(icon_label, true, false);
+        add_subview(root, icon_label);
+        ui.icon_label = Some(icon_label as usize);
+
+        let title_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(60.0, 364.0), &CGSize::new(480.0, 34.0)),
+            text: String::new(),
+            font_size: 24.0,
+            bold: true,
+            text_color: color_label(),
+            ..Default::default()
+        });
+        configure_label(title_label, true, false);
+        add_subview(root, title_label);
+        ui.title_label = Some(title_label as usize);
+
+        let description_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(70.0, 255.0), &CGSize::new(460.0, 96.0)),
+            text: String::new(),
+            font_size: 14.0,
+            text_color: color_secondary_label(),
+            ..Default::default()
+        });
+        configure_label(description_label, true, true);
+        add_subview(root, description_label);
+        ui.description_label = Some(description_label as usize);
+
+        let status_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(185.0, 223.0), &CGSize::new(230.0, 22.0)),
+            text: String::new(),
+            font_size: 13.0,
+            bold: true,
+            text_color: color_secondary_label(),
+            ..Default::default()
+        });
+        configure_label(status_label, true, false);
+        add_subview(root, status_label);
+        ui.status_label = Some(status_label as usize);
+
+        let instruction_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(80.0, 185.0), &CGSize::new(440.0, 34.0)),
+            text: String::new(),
+            font_size: 12.0,
+            text_color: color_secondary_label(),
+            ..Default::default()
+        });
+        configure_label(instruction_label, true, true);
+        add_subview(root, instruction_label);
+        ui.instruction_label = Some(instruction_label as usize);
+
+        let language_view: Id = msg_send![ns_view, alloc];
+        let language_view: Id = msg_send![
+            language_view,
+            initWithFrame: CGRect::new(&CGPoint::new(140.0, 170.0), &CGSize::new(320.0, 88.0))
+        ];
+        add_subview(root, language_view);
+        ui.language_view = Some(language_view as usize);
+
+        let language_en = create_radio_button(
+            CGRect::new(&CGPoint::new(10.0, 52.0), &CGSize::new(300.0, 24.0)),
+            "English",
+            true,
+        );
+        let _: () = msg_send![language_en, setTag: 0_isize];
+        button_set_action(language_en, action_handler, sel!(onLanguageSelected:));
+        add_subview(language_view, language_en);
+        ui.language_en_radio = Some(language_en as usize);
+
+        let language_pl = create_radio_button(
+            CGRect::new(&CGPoint::new(10.0, 22.0), &CGSize::new(300.0, 24.0)),
+            "Polish",
+            false,
+        );
+        let _: () = msg_send![language_pl, setTag: 1_isize];
+        button_set_action(language_pl, action_handler, sel!(onLanguageSelected:));
+        add_subview(language_view, language_pl);
+        ui.language_pl_radio = Some(language_pl as usize);
+
+        let api_view: Id = msg_send![ns_view, alloc];
+        let api_view: Id = msg_send![
+            api_view,
+            initWithFrame: CGRect::new(&CGPoint::new(110.0, 165.0), &CGSize::new(380.0, 92.0))
+        ];
+        add_subview(root, api_view);
+        ui.api_view = Some(api_view as usize);
+
+        let api_key_field = create_secure_text_input(
+            CGRect::new(&CGPoint::new(0.0, 46.0), &CGSize::new(380.0, 28.0)),
+            "Enter your LLM API key",
+        );
+        add_subview(api_view, api_key_field);
+        ui.api_key_field = Some(api_key_field as usize);
+
+        let api_hint = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(0.0, 8.0), &CGSize::new(380.0, 30.0)),
+            text: "Stored securely in macOS Keychain.".to_string(),
+            font_size: 11.0,
+            text_color: color_secondary_label(),
+            ..Default::default()
+        });
+        configure_label(api_hint, true, true);
+        add_subview(api_view, api_hint);
+        ui.api_hint_label = Some(api_hint as usize);
+
+        let hotkey_view: Id = msg_send![ns_view, alloc];
+        let hotkey_view: Id = msg_send![
+            hotkey_view,
+            initWithFrame: CGRect::new(&CGPoint::new(100.0, 146.0), &CGSize::new(400.0, 132.0))
+        ];
+        add_subview(root, hotkey_view);
+        ui.hotkey_view = Some(hotkey_view as usize);
+
+        let hotkey_hold = create_radio_button(
+            CGRect::new(&CGPoint::new(0.0, 90.0), &CGSize::new(390.0, 24.0)),
+            "Hold to Talk (Ctrl+Option)",
+            false,
+        );
+        let _: () = msg_send![hotkey_hold, setTag: 0_isize];
+        button_set_action(hotkey_hold, action_handler, sel!(onHotkeySelected:));
+        add_subview(hotkey_view, hotkey_hold);
+        ui.hotkey_hold_radio = Some(hotkey_hold as usize);
+
+        let hotkey_toggle = create_radio_button(
+            CGRect::new(&CGPoint::new(0.0, 58.0), &CGSize::new(390.0, 24.0)),
+            "Toggle (Double-tap Option)",
+            false,
+        );
+        let _: () = msg_send![hotkey_toggle, setTag: 1_isize];
+        button_set_action(hotkey_toggle, action_handler, sel!(onHotkeySelected:));
+        add_subview(hotkey_view, hotkey_toggle);
+        ui.hotkey_toggle_radio = Some(hotkey_toggle as usize);
+
+        let hotkey_both = create_radio_button(
+            CGRect::new(&CGPoint::new(0.0, 26.0), &CGSize::new(390.0, 24.0)),
+            "Both",
+            true,
+        );
+        let _: () = msg_send![hotkey_both, setTag: 2_isize];
+        button_set_action(hotkey_both, action_handler, sel!(onHotkeySelected:));
+        add_subview(hotkey_view, hotkey_both);
+        ui.hotkey_both_radio = Some(hotkey_both as usize);
+
+        let summary_view: Id = msg_send![ns_view, alloc];
+        let summary_view: Id = msg_send![
+            summary_view,
+            initWithFrame: CGRect::new(&CGPoint::new(112.0, 142.0), &CGSize::new(376.0, 152.0))
+        ];
+        add_subview(root, summary_view);
+        ui.summary_view = Some(summary_view as usize);
+
+        let mut summary_labels: [Option<usize>; 5] = [None; 5];
+        for (idx, permission) in PERMISSION_ORDER.iter().enumerate() {
+            let y = 124.0 - (idx as f64 * 24.0);
+            let label = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(360.0, 20.0)),
+                text: permission.title().to_string(),
+                font_size: 12.0,
+                text_color: color_secondary_label(),
+                ..Default::default()
+            });
+            configure_label(label, false, false);
+            add_subview(summary_view, label);
+            summary_labels[idx] = Some(label as usize);
+        }
+        ui.summary_permission_labels = summary_labels;
+
+        let summary_config = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(360.0, 44.0)),
+            text: String::new(),
+            font_size: 12.0,
+            text_color: color_secondary_label(),
+            ..Default::default()
+        });
+        configure_label(summary_config, false, true);
+        add_subview(summary_view, summary_config);
+        ui.summary_config_label = Some(summary_config as usize);
+
+        let primary_button = button(
+            CGRect::new(&CGPoint::new(468.0, 14.0), &CGSize::new(118.0, 32.0)),
+            "Continue",
+        );
+        button_set_action(primary_button, action_handler, sel!(onPrimaryAction:));
+        add_subview(root, primary_button);
+        ui.primary_button = Some(primary_button as usize);
+
+        let back_button = button(
+            CGRect::new(&CGPoint::new(270.0, 14.0), &CGSize::new(88.0, 32.0)),
+            "Back",
+        );
+        button_set_action(back_button, action_handler, sel!(onBackAction:));
+        add_subview(root, back_button);
+        ui.back_button = Some(back_button as usize);
+
+        let skip_button = button(
+            CGRect::new(&CGPoint::new(364.0, 14.0), &CGSize::new(98.0, 32.0)),
+            "Skip",
+        );
+        button_set_action(skip_button, action_handler, sel!(onSkipAction:));
+        add_subview(root, skip_button);
+        ui.skip_button = Some(skip_button as usize);
+
+        let step_counter = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(18.0, 20.0), &CGSize::new(200.0, 20.0)),
+            text: String::new(),
+            font_size: 12.0,
+            bold: true,
+            text_color: color_secondary_label(),
+            ..Default::default()
+        });
+        configure_label(step_counter, false, false);
+        add_subview(root, step_counter);
+        ui.step_counter_label = Some(step_counter as usize);
+
+        ui
+    }
+}
+
+fn render_current_step() {
+    let (step_index, step, language, hotkey_mode, api_key_configured, permissions, ui) = {
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let step = step_for_index(state.step_index);
+        match step {
+            WizardStep::Permission(kind) => {
+                let idx = kind.index();
+                let requested = state.requested_permissions[idx];
+                state.permission_states[idx] = check_permission_state(kind, requested);
+            }
+            WizardStep::Done => {
+                refresh_all_permission_states_locked(&mut state);
+            }
+            _ => {}
+        }
+
+        (
+            state.step_index,
+            step,
+            state.language,
+            state.hotkey_mode,
+            state.api_key_configured,
+            state.permission_states,
+            state.ui,
+        )
+    };
+
+    set_text_if_present(
+        ui.step_counter_label,
+        &format!("Step {} of {}", step_index + 1, TOTAL_STEPS),
+    );
+
+    set_hidden_if_present(ui.status_label, true);
+    set_hidden_if_present(ui.instruction_label, true);
+    set_hidden_if_present(ui.language_view, true);
+    set_hidden_if_present(ui.api_view, true);
+    set_hidden_if_present(ui.hotkey_view, true);
+    set_hidden_if_present(ui.summary_view, true);
+    set_hidden_if_present(ui.skip_button, true);
+
+    set_hidden_if_present(ui.back_button, step_index == 0);
+
+    sync_language_radios(ui, language);
+    sync_hotkey_radios(ui, hotkey_mode);
+
+    match step {
+        WizardStep::Welcome => {
+            set_text_if_present(ui.icon_label, "WELCOME");
+            set_text_if_present(ui.title_label, "Welcome to CodeScribe");
+            set_text_if_present(
+                ui.description_label,
+                "We will guide you through permissions and setup so CodeScribe works perfectly from first launch.",
+            );
+            set_button_title_if_present(ui.primary_button, "Get Started");
+        }
+        WizardStep::Permission(kind) => {
+            let status = permissions[kind.index()];
+            set_text_if_present(ui.icon_label, kind.icon());
+            set_text_if_present(ui.title_label, kind.title());
+            set_text_if_present(ui.description_label, kind.reason());
+
+            set_hidden_if_present(ui.status_label, false);
+            set_text_if_present(ui.status_label, permission_status_text(status));
+            set_label_color_if_present(ui.status_label, permission_status_color(status));
+
+            if status == PermissionUiStatus::Granted {
+                set_button_title_if_present(ui.primary_button, "Continue");
+                maybe_schedule_auto_advance(step_index);
+            } else if kind == PermissionKind::FullDiskAccess {
+                set_button_title_if_present(ui.primary_button, "Open Settings");
+                set_hidden_if_present(ui.skip_button, false);
+                set_button_title_if_present(
+                    ui.skip_button,
+                    if status == PermissionUiStatus::Denied {
+                        "Continue Anyway"
+                    } else {
+                        "Skip"
+                    },
+                );
+                set_hidden_if_present(ui.instruction_label, false);
+                set_text_if_present(
+                    ui.instruction_label,
+                    "Find CodeScribe in the list and toggle it ON. This step is optional.",
+                );
+            } else {
+                set_button_title_if_present(
+                    ui.primary_button,
+                    if status == PermissionUiStatus::Denied {
+                        "Try Again"
+                    } else {
+                        "Grant Access"
+                    },
+                );
+                if status == PermissionUiStatus::Denied {
+                    set_hidden_if_present(ui.instruction_label, false);
+                    set_text_if_present(
+                        ui.instruction_label,
+                        "This permission is required to continue onboarding.",
+                    );
+                }
+            }
+        }
+        WizardStep::Language => {
+            set_text_if_present(ui.icon_label, "LANG");
+            set_text_if_present(ui.title_label, "Choose Language");
+            set_text_if_present(
+                ui.description_label,
+                "Select the default transcription language. You can change it later in Settings.",
+            );
+            set_hidden_if_present(ui.language_view, false);
+            set_button_title_if_present(ui.primary_button, "Continue");
+        }
+        WizardStep::ApiKey => {
+            set_text_if_present(ui.icon_label, "API");
+            set_text_if_present(ui.title_label, "Add API Key (Optional)");
+            set_text_if_present(
+                ui.description_label,
+                "Use your LLM API key for AI formatting and assistant features.",
+            );
+            set_hidden_if_present(ui.api_view, false);
+            set_button_title_if_present(ui.primary_button, "Save & Continue");
+            set_hidden_if_present(ui.skip_button, false);
+            set_button_title_if_present(ui.skip_button, "Skip (Offline)");
+        }
+        WizardStep::HotkeyMode => {
+            set_text_if_present(ui.icon_label, "HOTKEY");
+            set_text_if_present(ui.title_label, "Choose Hotkey Mode");
+            set_text_if_present(
+                ui.description_label,
+                "Pick how you want to start and stop recording.",
+            );
+            set_hidden_if_present(ui.hotkey_view, false);
+            set_button_title_if_present(ui.primary_button, "Continue");
+        }
+        WizardStep::Done => {
+            set_text_if_present(ui.icon_label, "DONE");
+            set_text_if_present(ui.title_label, "You're All Set");
+            set_text_if_present(
+                ui.description_label,
+                "Review your setup. You can always adjust these settings later.",
+            );
+            set_hidden_if_present(ui.summary_view, false);
+            update_summary_view(ui, permissions, language, api_key_configured, hotkey_mode);
+            set_button_title_if_present(ui.primary_button, "Start CodeScribe");
+        }
+    }
+}
+
+fn handle_primary_action() {
+    let step = {
+        let state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        step_for_index(state.step_index)
+    };
+
+    match step {
+        WizardStep::Welcome => advance_step(),
+        WizardStep::Permission(kind) => handle_permission_primary(kind),
+        WizardStep::Language => {
+            save_language_choice();
+            advance_step();
+        }
+        WizardStep::ApiKey => {
+            if persist_api_key_from_field() {
+                advance_step();
+            }
+        }
+        WizardStep::HotkeyMode => {
+            save_hotkey_mode();
+            advance_step();
+        }
+        WizardStep::Done => finish_onboarding(true),
+    }
+}
+
+fn handle_back_action() {
+    retreat_step();
+}
+
+fn handle_skip_action() {
+    let step = {
+        let state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        step_for_index(state.step_index)
+    };
+
+    match step {
+        WizardStep::Permission(PermissionKind::FullDiskAccess) => {
+            let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.full_disk_polling = false;
+            drop(state);
+            advance_step();
+        }
+        WizardStep::ApiKey => {
+            mark_api_key_skipped();
+            advance_step();
+        }
+        _ => {}
+    }
+}
+
+fn handle_permission_primary(kind: PermissionKind) {
+    let idx = kind.index();
+
+    {
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.permission_states[idx] == PermissionUiStatus::Granted {
+            drop(state);
+            advance_step();
+            return;
+        }
+
+        state.requested_permissions[idx] = true;
+    }
+
+    let _ = request_permission(kind);
+
+    if kind == PermissionKind::FullDiskAccess {
+        start_full_disk_polling();
+    }
+
+    {
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let requested = state.requested_permissions[idx];
+        state.permission_states[idx] = check_permission_state(kind, requested);
+    }
+
+    render_current_step();
+}
+
+fn advance_step() {
+    let mut should_render = false;
+    {
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.step_index + 1 < TOTAL_STEPS {
+            state.step_index += 1;
+            state.scheduled_auto_advance_step = None;
+            if state.step_index != FULL_DISK_STEP_INDEX {
+                state.full_disk_polling = false;
+            }
+            should_render = true;
+        }
+    }
+
+    if should_render {
+        render_current_step();
+    }
+}
+
+fn retreat_step() {
+    let mut should_render = false;
+    {
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.step_index > 0 {
+            state.step_index -= 1;
+            state.scheduled_auto_advance_step = None;
+            if state.step_index != FULL_DISK_STEP_INDEX {
+                state.full_disk_polling = false;
+            }
+            should_render = true;
+        }
+    }
+
+    if should_render {
+        render_current_step();
+    }
+}
+
+fn maybe_schedule_auto_advance(step_index: usize) {
+    let should_schedule = {
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.scheduled_auto_advance_step == Some(step_index) {
+            false
+        } else {
+            state.scheduled_auto_advance_step = Some(step_index);
+            true
+        }
+    };
+
+    if !should_schedule {
+        return;
+    }
+
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(800));
+        Queue::main().exec_async(move || {
+            let mut should_advance = false;
+
+            {
+                let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                if state.step_index == step_index
+                    && let WizardStep::Permission(kind) = step_for_index(step_index)
+                {
+                    let idx = kind.index();
+                    let requested = state.requested_permissions[idx];
+                    let status = check_permission_state(kind, requested);
+                    state.permission_states[idx] = status;
+                    if status == PermissionUiStatus::Granted {
+                        should_advance = true;
+                    }
+                }
+                state.scheduled_auto_advance_step = None;
+            }
+
+            if should_advance {
+                advance_step();
+            } else {
+                render_current_step();
+            }
+        });
+    });
+}
+
+fn start_full_disk_polling() {
+    let should_start = {
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.full_disk_polling {
+            false
+        } else {
+            state.full_disk_polling = true;
+            true
+        }
+    };
+
+    if !should_start {
+        return;
+    }
+
+    thread::spawn(|| {
+        loop {
+            thread::sleep(Duration::from_secs(2));
+
+            let keep_running = {
+                let state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                state.full_disk_polling
+            };
+
+            if !keep_running {
+                break;
+            }
+
+            Queue::main().exec_async(|| {
+                let mut granted = false;
+                let mut should_render = false;
+
+                {
+                    let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    if step_for_index(state.step_index)
+                        == WizardStep::Permission(PermissionKind::FullDiskAccess)
+                    {
+                        let idx = PermissionKind::FullDiskAccess.index();
+                        state.permission_states[idx] =
+                            check_permission_state(PermissionKind::FullDiskAccess, true);
+                        granted = state.permission_states[idx] == PermissionUiStatus::Granted;
+                        if granted {
+                            state.full_disk_polling = false;
+                        }
+                        should_render = true;
+                    } else {
+                        state.full_disk_polling = false;
+                    }
+                }
+
+                if should_render {
+                    render_current_step();
+                }
+                if granted {
+                    maybe_schedule_auto_advance(FULL_DISK_STEP_INDEX);
+                }
+            });
+        }
+    });
+}
+
+fn save_language_choice() {
+    let language = {
+        let state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.language
+    };
+
+    let mut settings = UserSettings::load();
+    settings.set_string("WHISPER_LANGUAGE", language.value());
+    unsafe { std::env::set_var("WHISPER_LANGUAGE", language.value()) };
+    info!("Onboarding: language set to {}", language.value());
+}
+
+fn persist_api_key_from_field() -> bool {
+    let key = {
+        let state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .ui
+            .api_key_field
+            .map(|ptr| get_text_field_string(ptr as Id))
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+
+    if key.is_empty() {
+        mark_api_key_skipped();
+        return true;
+    }
+
+    match keychain::save_key("LLM_API_KEY", &key) {
+        Ok(()) => {
+            unsafe { std::env::set_var("LLM_API_KEY", &key) };
+            let mut settings = UserSettings::load();
+            settings.set_bool("AI_FORMATTING_ENABLED", true);
+            unsafe { std::env::set_var("AI_FORMATTING_ENABLED", "1") };
+
+            let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.api_key_configured = true;
+
+            if let Some(label_ptr) = state.ui.api_hint_label {
+                unsafe {
+                    set_text_field_string(label_ptr as Id, "API key saved to Keychain.");
+                    let green = system_green_color();
+                    let _: () = msg_send![label_ptr as Id, setTextColor: green];
+                }
+            }
+            true
+        }
+        Err(e) => {
+            warn!("Onboarding: failed to save API key: {e}");
+            let state = ONBOARDING_STATE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            if let Some(label_ptr) = state.ui.api_hint_label {
+                unsafe {
+                    set_text_field_string(label_ptr as Id, "Failed to save key. Please try again.");
+                    let red = system_red_color();
+                    let _: () = msg_send![label_ptr as Id, setTextColor: red];
+                }
+            }
+            false
+        }
+    }
+}
+
+fn mark_api_key_skipped() {
+    let mut settings = UserSettings::load();
+    settings.set_bool("AI_FORMATTING_ENABLED", false);
+    unsafe { std::env::set_var("AI_FORMATTING_ENABLED", "0") };
+
+    let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.api_key_configured = false;
+}
+
+fn save_hotkey_mode() {
+    let mode = {
+        let state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.hotkey_mode
+    };
+
+    match mode {
+        HotkeyModeChoice::HoldToTalk => {
+            let mut settings = UserSettings::load();
+            settings.set_string("HOLD_MODS", "ctrl_alt");
+            settings.set_string("TOGGLE_TRIGGER", "none");
+            settings.set_bool("HOTKEY_DOUBLE_TAP_LEFT", false);
+            settings.set_bool("HOTKEY_DOUBLE_TAP_RIGHT", false);
+
+            hotkeys::set_hold_mods(HoldMods::CtrlAlt);
+            hotkeys::set_toggle_trigger(ToggleTrigger::None);
+            unsafe {
+                std::env::set_var("HOLD_MODS", "ctrl_alt");
+                std::env::set_var("TOGGLE_TRIGGER", "none");
+                std::env::set_var("HOTKEY_DOUBLE_TAP_LEFT", "0");
+                std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", "0");
+            }
+        }
+        HotkeyModeChoice::Toggle => {
+            let mut settings = UserSettings::load();
+            settings.set_string("HOLD_MODS", "none");
+            settings.set_string("TOGGLE_TRIGGER", "double_option");
+            settings.set_bool("HOTKEY_DOUBLE_TAP_LEFT", true);
+            settings.set_bool("HOTKEY_DOUBLE_TAP_RIGHT", false);
+
+            hotkeys::set_hold_mods(HoldMods::None);
+            hotkeys::set_toggle_trigger(ToggleTrigger::DoubleOption);
+            unsafe {
+                std::env::set_var("HOLD_MODS", "none");
+                std::env::set_var("TOGGLE_TRIGGER", "double_option");
+                std::env::set_var("HOTKEY_DOUBLE_TAP_LEFT", "1");
+                std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", "0");
+            }
+        }
+        HotkeyModeChoice::Both => {
+            let mut settings = UserSettings::load();
+            settings.set_string("HOLD_MODS", "ctrl_alt");
+            settings.set_string("TOGGLE_TRIGGER", "double_option");
+            settings.set_bool("HOTKEY_DOUBLE_TAP_LEFT", true);
+            settings.set_bool("HOTKEY_DOUBLE_TAP_RIGHT", true);
+
+            hotkeys::set_hold_mods(HoldMods::CtrlAlt);
+            hotkeys::set_toggle_trigger(ToggleTrigger::DoubleOption);
+            unsafe {
+                std::env::set_var("HOLD_MODS", "ctrl_alt");
+                std::env::set_var("TOGGLE_TRIGGER", "double_option");
+                std::env::set_var("HOTKEY_DOUBLE_TAP_LEFT", "1");
+                std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", "1");
+            }
+        }
+    }
+
+    info!("Onboarding: hotkey mode set to {}", mode.label());
+}
+
+fn finish_onboarding(completed: bool) {
+    if completed {
+        mark_onboarding_done();
+    }
+
+    let window_ptr = {
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.full_disk_polling = false;
+        state.scheduled_auto_advance_step = None;
+        state.window.take()
+    };
+
+    stop_modal();
+
+    if let Some(ptr) = window_ptr {
+        unsafe { window_close(ptr as Id) };
+    }
+}
+
+fn stop_modal() {
+    unsafe {
+        let ns_app = Class::get("NSApplication").unwrap();
+        let app: Id = msg_send![ns_app, sharedApplication];
+        let _: () = msg_send![app, stopModal];
+    }
+}
+
+fn run_modal_for_window(window: Id) {
+    unsafe {
+        let ns_app = Class::get("NSApplication").unwrap();
+        let app: Id = msg_send![ns_app, sharedApplication];
+        let _: () = msg_send![app, activateIgnoringOtherApps: true];
+        let _: isize = msg_send![app, runModalForWindow: window];
+    }
+}
+
+fn initial_language_choice() -> LanguageChoice {
+    let settings = UserSettings::load();
+    match settings.whisper_language.as_deref() {
+        Some("pl") => LanguageChoice::Polish,
+        _ => LanguageChoice::English,
+    }
+}
+
+fn initial_hotkey_choice() -> HotkeyModeChoice {
+    let settings = UserSettings::load();
+
+    let hold_raw = settings
+        .hold_mods
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let toggle_raw = settings
+        .toggle_trigger
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let hold_enabled = !hold_raw.is_empty() && hold_raw != "none";
+    let toggle_enabled = if !toggle_raw.is_empty() {
+        toggle_raw != "none"
+    } else {
+        settings.double_tap_left.unwrap_or(false) || settings.double_tap_right.unwrap_or(false)
+    };
+
+    match (hold_enabled, toggle_enabled) {
+        (true, true) => HotkeyModeChoice::Both,
+        (true, false) => HotkeyModeChoice::HoldToTalk,
+        (false, true) => HotkeyModeChoice::Toggle,
+        (false, false) => HotkeyModeChoice::Both,
+    }
+}
+
+fn refresh_all_permission_states_locked(state: &mut OnboardingState) {
+    for kind in PERMISSION_ORDER {
+        let idx = kind.index();
+        state.permission_states[idx] =
+            check_permission_state(kind, state.requested_permissions[idx]);
+    }
+}
+
+fn check_permission_state(kind: PermissionKind, requested: bool) -> PermissionUiStatus {
+    match kind {
+        PermissionKind::Microphone => {
+            map_permission_status(permissions::check_microphone(), requested)
+        }
+        PermissionKind::Accessibility => {
+            map_permission_status(permissions::check_accessibility(), requested)
+        }
+        PermissionKind::InputMonitoring => {
+            map_permission_status(permissions::check_input_monitoring(), requested)
+        }
+        PermissionKind::ScreenRecording => {
+            map_permission_status(permissions::check_screen_recording(), requested)
+        }
+        PermissionKind::FullDiskAccess => {
+            map_permission_status(permissions::check_full_disk_access(), requested)
+        }
+    }
+}
+
+fn map_permission_status(status: PermissionStatus, requested: bool) -> PermissionUiStatus {
+    match status {
+        PermissionStatus::Granted => PermissionUiStatus::Granted,
+        PermissionStatus::Denied => PermissionUiStatus::Denied,
+        PermissionStatus::NotDetermined => {
+            if requested {
+                PermissionUiStatus::Denied
+            } else {
+                PermissionUiStatus::NotDetermined
+            }
+        }
+    }
+}
+
+fn request_permission(kind: PermissionKind) -> bool {
+    match kind {
+        PermissionKind::Microphone => {
+            let result = permissions::request_microphone();
+            if !result {
+                open_privacy_settings("Privacy_Microphone");
+            }
+            result
+        }
+        PermissionKind::Accessibility => permissions::request_accessibility(),
+        PermissionKind::InputMonitoring => permissions::request_input_monitoring(),
+        PermissionKind::ScreenRecording => {
+            let result = permissions::request_screen_recording();
+            if !result {
+                open_privacy_settings("Privacy_ScreenCapture");
+            }
+            result
+        }
+        PermissionKind::FullDiskAccess => permissions::request_full_disk_access(),
+    }
+}
+
+fn open_privacy_settings(deeplink: &str) {
+    let url = format!(
+        "x-apple.systempreferences:com.apple.preference.security?{}",
+        deeplink
+    );
+    let _ = Command::new("open").arg(url).spawn();
+}
+
+fn configure_label(label: Id, centered: bool, multiline: bool) {
+    unsafe {
+        let align = if centered { 2_isize } else { 0_isize };
+        let _: () = msg_send![label, setAlignment: align];
+
+        if multiline {
+            let _: () = msg_send![label, setUsesSingleLineMode: false];
+            let _: () = msg_send![label, setLineBreakMode: 0_isize];
+            let cell: Id = msg_send![label, cell];
+            if !cell.is_null() {
+                let _: () = msg_send![cell, setWraps: true];
+                let _: () = msg_send![cell, setScrollable: false];
+                let _: () = msg_send![cell, setLineBreakMode: 0_isize];
+            }
+        }
+    }
+}
+
+fn create_radio_button(frame: CGRect, title: &str, selected: bool) -> Id {
+    unsafe {
+        let ns_button = Class::get("NSButton").unwrap();
+        let button: Id = msg_send![ns_button, alloc];
+        let button: Id = msg_send![button, initWithFrame: frame];
+        let _: () = msg_send![button, setButtonType: 4_isize]; // NSRadioButton
+        let _: () = msg_send![button, setTitle: ns_string(title)];
+        let _: () = msg_send![button, setState: if selected { 1_isize } else { 0_isize }];
+        button
+    }
+}
+
+fn set_text_if_present(ptr: Option<usize>, text: &str) {
+    unsafe {
+        if let Some(value) = ptr {
+            set_text_field_string(value as Id, text);
+        }
+    }
+}
+
+fn set_button_title_if_present(ptr: Option<usize>, title: &str) {
+    unsafe {
+        if let Some(value) = ptr {
+            let _: () = msg_send![value as Id, setTitle: ns_string(title)];
+        }
+    }
+}
+
+fn set_hidden_if_present(ptr: Option<usize>, hidden: bool) {
+    unsafe {
+        if let Some(value) = ptr {
+            set_hidden(value as Id, hidden);
+        }
+    }
+}
+
+fn set_label_color_if_present(ptr: Option<usize>, color: Id) {
+    unsafe {
+        if let Some(value) = ptr {
+            let _: () = msg_send![value as Id, setTextColor: color];
+        }
+    }
+}
+
+fn sync_language_radios(ui: UiRefs, language: LanguageChoice) {
+    unsafe {
+        if let Some(en) = ui.language_en_radio {
+            let _: () = msg_send![en as Id, setState: if language == LanguageChoice::English { 1_isize } else { 0_isize }];
+        }
+        if let Some(pl) = ui.language_pl_radio {
+            let _: () = msg_send![pl as Id, setState: if language == LanguageChoice::Polish { 1_isize } else { 0_isize }];
+        }
+    }
+}
+
+fn sync_hotkey_radios(ui: UiRefs, mode: HotkeyModeChoice) {
+    unsafe {
+        if let Some(hold) = ui.hotkey_hold_radio {
+            let _: () = msg_send![hold as Id, setState: if mode == HotkeyModeChoice::HoldToTalk { 1_isize } else { 0_isize }];
+        }
+        if let Some(toggle) = ui.hotkey_toggle_radio {
+            let _: () = msg_send![toggle as Id, setState: if mode == HotkeyModeChoice::Toggle { 1_isize } else { 0_isize }];
+        }
+        if let Some(both) = ui.hotkey_both_radio {
+            let _: () = msg_send![both as Id, setState: if mode == HotkeyModeChoice::Both { 1_isize } else { 0_isize }];
+        }
+    }
+}
+
+fn update_summary_view(
+    ui: UiRefs,
+    statuses: [PermissionUiStatus; 5],
+    language: LanguageChoice,
+    api_key_configured: bool,
+    hotkey_mode: HotkeyModeChoice,
+) {
+    for kind in PERMISSION_ORDER {
+        let idx = kind.index();
+        let text = if statuses[idx] == PermissionUiStatus::Granted {
+            format!("\u{2713} {}", kind.title())
+        } else {
+            format!("\u{2715} {}", kind.title())
+        };
+        set_text_if_present(ui.summary_permission_labels[idx], &text);
+
+        let color = if statuses[idx] == PermissionUiStatus::Granted {
+            system_green_color()
+        } else {
+            system_red_color()
+        };
+        set_label_color_if_present(ui.summary_permission_labels[idx], color);
+    }
+
+    let api_status = if api_key_configured {
+        "Configured"
+    } else {
+        "Skipped (Offline mode)"
+    };
+
+    set_text_if_present(
+        ui.summary_config_label,
+        &format!(
+            "Language: {}\nAPI key: {}\nHotkey mode: {}",
+            language.label(),
+            api_status,
+            hotkey_mode.label()
+        ),
+    );
+}
+
+fn permission_status_text(status: PermissionUiStatus) -> &'static str {
+    match status {
+        PermissionUiStatus::NotDetermined => STATUS_NOT_DETERMINED,
+        PermissionUiStatus::Granted => STATUS_GRANTED,
+        PermissionUiStatus::Denied => STATUS_DENIED,
+    }
+}
+
+fn permission_status_color(status: PermissionUiStatus) -> Id {
+    match status {
+        PermissionUiStatus::NotDetermined => system_secondary_color(),
+        PermissionUiStatus::Granted => system_green_color(),
+        PermissionUiStatus::Denied => system_red_color(),
+    }
+}
+
+fn system_green_color() -> Id {
+    unsafe {
+        let ns_color = Class::get("NSColor").unwrap();
+        msg_send![ns_color, systemGreenColor]
+    }
+}
+
+fn system_red_color() -> Id {
+    unsafe {
+        let ns_color = Class::get("NSColor").unwrap();
+        msg_send![ns_color, systemRedColor]
+    }
+}
+
+fn system_secondary_color() -> Id {
+    unsafe {
+        let ns_color = Class::get("NSColor").unwrap();
+        msg_send![ns_color, secondaryLabelColor]
+    }
+}
+
+fn get_text_field_string(field: Id) -> String {
+    unsafe {
+        let value: Id = msg_send![field, stringValue];
+        let c_str: *const std::ffi::c_char = msg_send![value, UTF8String];
+        if c_str.is_null() {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr(c_str)
+            .to_string_lossy()
+            .to_string()
+    }
+}

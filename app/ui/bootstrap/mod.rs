@@ -1448,6 +1448,7 @@ unsafe fn build_keys_tab(
             "Ctrl+Option",
             "Ctrl+Shift",
             "Ctrl+Command",
+            "Disabled (toggle only)",
         ] {
             let ns_title = ns_string(title);
             let _: () = msg_send![hold_popup, addItemWithTitle: ns_title];
@@ -1458,6 +1459,7 @@ unsafe fn build_keys_tab(
             "ctrl_alt" => 2,
             "ctrl_shift" => 3,
             "ctrl_cmd" => 4,
+            "none" => 5,
             _ => 0,
         };
         let _: () = msg_send![hold_popup, selectItemAtIndex: hold_idx];
@@ -2104,6 +2106,7 @@ pub(super) extern "C" fn on_hold_mod_changed(_this: &Object, _cmd: objc::runtime
             2 => ("ctrl_alt", HoldMods::CtrlAlt),
             3 => ("ctrl_shift", HoldMods::CtrlShift),
             4 => ("ctrl_cmd", HoldMods::CtrlCmd),
+            5 => ("none", HoldMods::None),
             _ => ("fn", HoldMods::Fn),
         };
         info!("Settings: hold modifier -> {}", value);

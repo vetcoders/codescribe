@@ -445,9 +445,6 @@ async fn run_daemon() -> Result<()> {
     #[cfg(target_os = "macos")]
     codescribe::install_basic_edit_menu();
 
-    #[cfg(target_os = "macos")]
-    codescribe::os::permissions::request_all_permissions();
-
     tokio::task::spawn_blocking(|| {
         codescribe_core::attachment::AttachmentStore::cleanup_old(7);
     });
@@ -458,6 +455,16 @@ async fn run_daemon() -> Result<()> {
     codescribe::controller::register_overlay_controller(Arc::clone(&controller));
     #[cfg(target_os = "macos")]
     {
+        if codescribe::should_show_onboarding() {
+            codescribe::show_onboarding_wizard();
+            if codescribe::should_show_onboarding() {
+                eprintln!("Onboarding did not complete; aborting daemon startup.");
+                return Ok(());
+            }
+        }
+
+        codescribe::os::permissions::request_all_permissions();
+
         if codescribe::should_show_bootstrap() {
             codescribe::schedule_bootstrap();
         }
