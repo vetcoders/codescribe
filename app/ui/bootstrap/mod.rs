@@ -57,19 +57,15 @@ struct VoiceLabFieldSpec {
     kind: VoiceLabFieldKind,
 }
 
-const VOICE_LAB_FIELDS: [VoiceLabFieldSpec; 22] = [
+// Voice Lab: only fields where user choice actually improves UX.
+// Tuned pipeline internals (chunk_sec, similarity, correction thresholds etc.)
+// stay as env-var escape hatches — their defaults are proven optimal.
+const VOICE_LAB_FIELDS: [VoiceLabFieldSpec; 7] = [
     VoiceLabFieldSpec {
         key: "CODESCRIBE_BUFFERED_STREAM",
         label: "Buffered streaming",
         default_value: "1",
         description: "Smoother, correction-capable streaming mode.",
-        kind: VoiceLabFieldKind::Bool,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_EVENT_PIPELINE",
-        label: "Event pipeline",
-        default_value: "0",
-        description: "Experimental event-based streaming pipeline.",
         kind: VoiceLabFieldKind::Bool,
     },
     VoiceLabFieldSpec {
@@ -94,94 +90,10 @@ const VOICE_LAB_FIELDS: [VoiceLabFieldSpec; 22] = [
         kind: VoiceLabFieldKind::Value,
     },
     VoiceLabFieldSpec {
-        key: "CODESCRIBE_STREAM_CHUNK_SEC",
-        label: "Chunk sec",
-        default_value: "4.0",
-        description: "Streaming chunk duration in seconds.",
-        kind: VoiceLabFieldKind::Value,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_STREAM_OVERLAP_RATIO",
-        label: "Overlap ratio",
-        default_value: "0.25",
-        description: "Overlap ratio between adjacent chunks.",
-        kind: VoiceLabFieldKind::Value,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_STREAM_SIMILARITY",
-        label: "Dedup similarity",
-        default_value: "0.93",
-        description: "Similarity threshold for streaming dedup.",
-        kind: VoiceLabFieldKind::Value,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_STREAM_NOVELTY",
-        label: "Dedup novelty",
-        default_value: "0.12",
-        description: "Novelty threshold for streaming dedup.",
-        kind: VoiceLabFieldKind::Value,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_STREAM_DISABLE_EMBEDDINGS",
-        label: "Disable embedding dedup",
-        default_value: "0",
-        description: "Turn off embedding-based deduplication.",
-        kind: VoiceLabFieldKind::Bool,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_STREAM_FORCE_EMBEDDINGS",
-        label: "Force embeddings",
-        default_value: "0",
-        description: "Force embeddings in test-like scenarios.",
-        kind: VoiceLabFieldKind::Bool,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_STREAM_LEXICON",
-        label: "Lexicon pass",
-        default_value: "0",
-        description: "Apply lexicon cleanup in streaming pass.",
-        kind: VoiceLabFieldKind::Bool,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_STRIP_TRAILING_SMILEY_D",
-        label: "Strip trailing ':D'",
-        default_value: "1",
-        description: "Filter known trailing hallucination.",
-        kind: VoiceLabFieldKind::Bool,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_BUFFERED_CORRECTION_UTTERANCES",
-        label: "Correction min utterances",
-        default_value: "2",
-        description: "Minimum utterances before correction pass.",
-        kind: VoiceLabFieldKind::Value,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_BUFFERED_CORRECTION_SEC",
-        label: "Correction min sec",
-        default_value: "6.0",
-        description: "Minimum elapsed seconds before correction.",
-        kind: VoiceLabFieldKind::Value,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_BUFFERED_CORRECTION_PREFIX",
-        label: "Correction prefix ratio",
-        default_value: "0.60",
-        description: "Required common prefix ratio to accept correction.",
-        kind: VoiceLabFieldKind::Value,
-    },
-    VoiceLabFieldSpec {
         key: "CODESCRIBE_BUFFERED_INTERIM_SEC",
-        label: "Buffered interim sec",
+        label: "Interim cadence (sec)",
         default_value: "3.0",
-        description: "Interim emission cadence for buffered mode.",
-        kind: VoiceLabFieldKind::Value,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_UTTERANCE_INTERIM_SEC",
-        label: "Utterance interim sec",
-        default_value: "3.0",
-        description: "Legacy interim cadence for utterance mode.",
+        description: "How often partial results are shown.",
         kind: VoiceLabFieldKind::Value,
     },
     VoiceLabFieldSpec {
@@ -196,20 +108,6 @@ const VOICE_LAB_FIELDS: [VoiceLabFieldSpec; 22] = [
         label: "Cloud upload cap (MB)",
         default_value: "20",
         description: "Max upload size for cloud STT multipart.",
-        kind: VoiceLabFieldKind::Value,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_STREAM_LOG",
-        label: "Stream debug log",
-        default_value: "0",
-        description: "Enable streaming debug delta log.",
-        kind: VoiceLabFieldKind::Bool,
-    },
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_STREAM_LOG_PATH",
-        label: "Stream log path",
-        default_value: "",
-        description: "Optional custom path for stream debug log.",
         kind: VoiceLabFieldKind::Value,
     },
 ];

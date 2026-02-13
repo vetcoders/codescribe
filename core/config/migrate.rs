@@ -46,6 +46,31 @@ pub fn migrate_if_needed() {
     if let Ok(v) = std::env::var("FORMATTING_LEVEL") {
         settings.formatting_level = Some(v);
     }
+    // Promoted fields (previously .env only)
+    if let Ok(v) = std::env::var("LLM_FORMATTING_ENDPOINT") {
+        settings.llm_formatting_endpoint = Some(v);
+    }
+    if let Ok(v) = std::env::var("LLM_FORMATTING_MODEL") {
+        settings.llm_formatting_model = Some(v);
+    }
+    if let Ok(v) = std::env::var("LOCAL_MODEL") {
+        settings.local_model = Some(v);
+    }
+    if let Ok(v) = std::env::var("STT_ENDPOINT") {
+        settings.stt_endpoint = Some(v);
+    }
+    if let Ok(v) = std::env::var("TRANSCRIPT_SEND_MODE") {
+        settings.transcript_send_mode = Some(v);
+    }
+    if let Ok(v) = std::env::var("AUDIO_INPUT_DEVICE") {
+        settings.audio_input_device = Some(v);
+    }
+    if let Ok(v) = std::env::var("SOUND_NAME") {
+        settings.sound_name = Some(v);
+    }
+    if let Ok(v) = std::env::var("WHISPER_MODEL") {
+        settings.whisper_model = Some(v);
+    }
 
     // Migrate boolean settings
     if let Ok(v) = std::env::var("AI_FORMATTING_ENABLED") {
@@ -66,6 +91,25 @@ pub fn migrate_if_needed() {
     if let Ok(v) = std::env::var("HOTKEY_DOUBLE_TAP_RIGHT") {
         settings.double_tap_right = Some(v == "1" || v.eq_ignore_ascii_case("true"));
     }
+    // Promoted booleans
+    if let Ok(v) = std::env::var("USE_LOCAL_STT") {
+        settings.use_local_stt = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    }
+    if let Ok(v) = std::env::var("HISTORY_ENABLED") {
+        settings.history_enabled = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    }
+    if let Ok(v) = std::env::var("QUICK_NOTES_ENABLED") {
+        settings.quick_notes_enabled = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    }
+    if let Ok(v) = std::env::var("QUICK_NOTES_SAVE_ONLY") {
+        settings.quick_notes_save_only = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    }
+    if let Ok(v) = std::env::var("START_AT_LOGIN") {
+        settings.start_at_login = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    }
+    if let Ok(v) = std::env::var("AGENT_ENTER_SENDS") {
+        settings.agent_enter_sends = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    }
 
     // Migrate numeric settings
     if let Ok(v) = std::env::var("HOLD_START_DELAY_MS")
@@ -78,11 +122,36 @@ pub fn migrate_if_needed() {
     {
         settings.sound_volume = Some(n);
     }
-
     if let Ok(v) = std::env::var("DOUBLE_TAP_INTERVAL_MS")
         && let Ok(n) = v.parse::<u64>()
     {
         settings.double_tap_interval_ms = Some(n);
+    }
+    // Voice Lab survivors
+    if let Ok(v) = std::env::var("CODESCRIBE_BUFFER_DELAY_MS")
+        && let Ok(n) = v.parse::<u64>()
+    {
+        settings.buffer_delay_ms = Some(n);
+    }
+    if let Ok(v) = std::env::var("CODESCRIBE_TYPING_CPS")
+        && let Ok(n) = v.parse::<u64>()
+    {
+        settings.typing_cps = Some(n);
+    }
+    if let Ok(v) = std::env::var("CODESCRIBE_EMIT_WORDS_MAX")
+        && let Ok(n) = v.parse::<u64>()
+    {
+        settings.emit_words_max = Some(n);
+    }
+    if let Ok(v) = std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC")
+        && let Ok(n) = v.parse::<f32>()
+    {
+        settings.buffered_interim_sec = Some(n);
+    }
+    if let Ok(v) = std::env::var("BACKEND_MAX_UPLOAD_MB")
+        && let Ok(n) = v.parse::<u64>()
+    {
+        settings.backend_max_upload_mb = Some(n);
     }
 
     // Save settings.json
