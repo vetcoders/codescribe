@@ -326,7 +326,11 @@ fn show_voice_chat_overlay_impl() {
             header_controls,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
         ];
-        let title_x = ui_tokens::EDGE_PADDING_TIGHT;
+        let title_x = if header_frame.size.width >= 620.0 {
+            ui_tokens::TRAFFIC_LIGHTS_SPACER_WIDTH + 6.0
+        } else {
+            ui_tokens::EDGE_PADDING_TIGHT
+        };
         let title_y = ((header_height - 20.0) / 2.0).max(0.0);
         // Give the tab control more room to avoid truncation ("Dr..." / "A...").
         let title_w = ui_tokens::TITLE_LABEL_WIDTH;

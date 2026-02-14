@@ -20,10 +20,11 @@ use crate::ipc::{IpcCommand, IpcResponse};
 use crate::os::hotkeys;
 use crate::ui::bootstrap::handlers::{action_handler_class, window_delegate_class};
 use crate::ui_helpers::{
-    LabelConfig, add_subview, button, button_set_action, create_checkbox, create_floating_window,
-    create_glass_effect_view_with, create_label, create_secure_text_input, create_slider,
-    create_text_input, ns_string, set_text_field_string, ui_colors, ui_tokens, window_close,
-    window_content_view, window_show,
+    LabelConfig, add_subview, button, button_set_action, button_style, create_button,
+    create_checkbox, create_floating_window, create_glass_effect_view_with, create_label,
+    create_secure_text_input, create_slider, create_text_input, ns_string, set_button_symbol,
+    set_text_field_string, set_tooltip, style_toolbar_icon_button, ui_colors, ui_tokens,
+    window_close, window_content_view, window_show,
 };
 
 mod handlers;
@@ -34,7 +35,7 @@ type Id = *mut Object;
 const SIDEBAR_WIDTH: f64 = 154.0;
 const SETTINGS_WINDOW_WIDTH: f64 = 760.0;
 const SETTINGS_WINDOW_HEIGHT: f64 = 660.0;
-const SETTINGS_HEADER_HEIGHT: f64 = 92.0;
+const SETTINGS_TOPBAR_HEIGHT: f64 = 54.0;
 const SETTINGS_CONTENT_INSET_X: f64 = 20.0;
 const SETTINGS_CONTENT_INSET_Y: f64 = 12.0;
 const TAB_SETUP: usize = 0;
@@ -578,12 +579,115 @@ unsafe fn build_settings_ui(
         let settings_width = settings_width.max(SIDEBAR_WIDTH + 240.0);
         let settings_height = settings_height.max(280.0);
 
+        // ── Unified top toolbar (Vista-style: traffic spacer + center title + right actions) ──
+        let topbar_h = SETTINGS_TOPBAR_HEIGHT
+            .min(settings_height - 160.0)
+            .max(44.0);
+        let body_h = (settings_height - topbar_h).max(220.0);
+        let topbar_frame = CGRect::new(
+            &CGPoint::new(0.0, body_h),
+            &CGSize::new(settings_width, topbar_h),
+        );
+        let topbar_bg = create_glass_effect_view_with(
+            topbar_frame,
+            NSVisualEffectMaterial::Titlebar,
+            objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
+            objc2_app_kit::NSVisualEffectState::Active,
+        );
+        let _: () = msg_send![
+            topbar_bg,
+            setAutoresizingMask: 2_isize | 8_isize // Width | MinYMargin
+        ];
+        let topbar_layer: Id = msg_send![topbar_bg, layer];
+        if !topbar_layer.is_null() {
+            let border = ui_colors::separator();
+            let border: Id = msg_send![border, colorWithAlphaComponent: 0.48f64];
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![topbar_layer, setBorderColor: cg_border];
+            let _: () = msg_send![topbar_layer, setBorderWidth: 1.0f64];
+        }
+        add_subview(root_view, topbar_bg);
+
+        let topbar_controls: Id = msg_send![ns_view, alloc];
+        let topbar_controls: Id = msg_send![
+            topbar_controls,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(settings_width, topbar_h),
+            )
+        ];
+        let _: () = msg_send![topbar_controls, setWantsLayer: true];
+        let _: () = msg_send![
+            topbar_controls,
+            setAutoresizingMask: 2_isize | 16_isize // Width | Height
+        ];
+        add_subview(topbar_bg, topbar_controls);
+
+        let btn_w = ui_tokens::HEADER_BUTTON_SIZE;
+        let btn_h = ui_tokens::HEADER_BUTTON_SIZE;
+        let btn_gap = ui_tokens::HEADER_BUTTON_GAP;
+        let right_pad = ui_tokens::EDGE_PADDING_TIGHT;
+        let btn_y = ((topbar_h - btn_h) * 0.5).max(0.0);
+
+        let overlay_btn_x = settings_width - right_pad - btn_w;
+        let refresh_btn_x = overlay_btn_x - btn_gap - btn_w;
+        let refresh_btn = create_button(
+            CGRect::new(
+                &CGPoint::new(refresh_btn_x, btn_y),
+                &CGSize::new(btn_w, btn_h),
+            ),
+            "",
+            button_style::INLINE,
+        );
+        let _ = set_button_symbol(refresh_btn, "arrow.clockwise");
+        style_toolbar_icon_button(refresh_btn);
+        set_tooltip(refresh_btn, "Refresh permissions");
+        button_set_action(refresh_btn, action_handler, sel!(onRefreshPermissions:));
+        add_subview(topbar_controls, refresh_btn);
+
+        let overlay_btn = create_button(
+            CGRect::new(
+                &CGPoint::new(overlay_btn_x, btn_y),
+                &CGSize::new(btn_w, btn_h),
+            ),
+            "",
+            button_style::INLINE,
+        );
+        let _ = set_button_symbol(overlay_btn, "bubble.left.and.bubble.right");
+        style_toolbar_icon_button(overlay_btn);
+        set_tooltip(overlay_btn, "Show chat overlay");
+        button_set_action(overlay_btn, action_handler, sel!(onShowOverlay:));
+        add_subview(topbar_controls, overlay_btn);
+
+        let title_x = ui_tokens::TRAFFIC_LIGHTS_SPACER_WIDTH + 6.0;
+        let title_label = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(title_x, topbar_h - 30.0),
+                &CGSize::new(260.0, 20.0),
+            ),
+            text: "CodeScribe Settings".to_string(),
+            font_size: 15.0,
+            bold: true,
+            text_color: crate::ui_helpers::color_label(),
+            ..Default::default()
+        });
+        add_subview(topbar_controls, title_label);
+
+        let subtitle_w = (refresh_btn_x - title_x - 12.0).max(180.0);
+        let subtitle_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(title_x, 8.0), &CGSize::new(subtitle_w, 16.0)),
+            text: "Native macOS speech-to-text setup and runtime tuning".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: false,
+            text_color: crate::ui_helpers::color_secondary_label(),
+            ..Default::default()
+        });
+        add_subview(topbar_controls, subtitle_label);
+
         // ── Glass Split Structure ────────────────────────────────────
         // Left: Sidebar (Material: Sidebar)
-        let sidebar_frame = CGRect::new(
-            &CGPoint::new(0.0, 0.0),
-            &CGSize::new(SIDEBAR_WIDTH, settings_height),
-        );
+        let sidebar_frame =
+            CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, body_h));
         let sidebar_bg = create_glass_effect_view_with(
             sidebar_frame,
             NSVisualEffectMaterial::Sidebar,
@@ -599,7 +703,7 @@ unsafe fn build_settings_ui(
         // Right: Content (Material: HUDWindow for richer contrast, aligned with onboarding)
         let content_bg_frame = CGRect::new(
             &CGPoint::new(SIDEBAR_WIDTH, 0.0),
-            &CGSize::new(settings_width - SIDEBAR_WIDTH, settings_height),
+            &CGSize::new(settings_width - SIDEBAR_WIDTH, body_h),
         );
         let content_bg = create_glass_effect_view_with(
             content_bg_frame,
@@ -616,7 +720,7 @@ unsafe fn build_settings_ui(
         let split_divider = create_label(LabelConfig {
             frame: CGRect::new(
                 &CGPoint::new(SIDEBAR_WIDTH - 0.5, 0.0),
-                &CGSize::new(1.0, settings_height),
+                &CGSize::new(1.0, body_h),
             ),
             text: String::new(),
             background_color: Some(ui_colors::separator()),
@@ -625,65 +729,15 @@ unsafe fn build_settings_ui(
         let _: () = msg_send![split_divider, setAlphaValue: 0.52f64];
         add_subview(root_view, split_divider);
 
-        // ── Header (inside Content BG) ───────────────────────────────
-        let header_h = SETTINGS_HEADER_HEIGHT;
         let content_area_w = content_bg_frame.size.width;
-        let content_area_h = settings_height;
-
-        let header_bg = create_glass_effect_view_with(
-            CGRect::new(
-                &CGPoint::new(0.0, content_area_h - header_h),
-                &CGSize::new(content_area_w, header_h),
-            ),
-            NSVisualEffectMaterial::Titlebar,
-            objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
-            objc2_app_kit::NSVisualEffectState::Active,
-        );
-        let _: () = msg_send![header_bg, setAutoresizingMask: 2_isize | 8_isize];
-        let header_layer: Id = msg_send![header_bg, layer];
-        if !header_layer.is_null() {
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.5f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![header_layer, setBorderColor: cg_border];
-            let _: () = msg_send![header_layer, setBorderWidth: 1.0f64];
-        }
-        add_subview(content_bg, header_bg);
-
-        let title_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(30.0, header_h - 40.0),
-                &CGSize::new(content_area_w - 60.0, 26.0),
-            ),
-            text: "Welcome to CodeScribe".to_string(),
-            font_size: 19.0,
-            bold: true,
-            text_color: crate::ui_helpers::color_label(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        add_subview(header_bg, title_label);
-
-        let subtitle_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(30.0, header_h - 60.0),
-                &CGSize::new(content_area_w - 60.0, 18.0),
-            ),
-            text: "Native macOS speech-to-text with AI formatting".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: false,
-            text_color: crate::ui_helpers::color_secondary_label(),
-            ..Default::default()
-        });
-        add_subview(header_bg, subtitle_label);
+        let content_area_h = body_h;
 
         let sidebar_title = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(16.0, settings_height - 38.0),
+                &CGPoint::new(16.0, body_h - 28.0),
                 &CGSize::new(SIDEBAR_WIDTH - 26.0, 20.0),
             ),
-            text: "Settings".to_string(),
+            text: "Onboarding Setup".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: true,
             text_color: crate::ui_helpers::color_label(),
@@ -692,7 +746,7 @@ unsafe fn build_settings_ui(
         add_subview(sidebar_bg, sidebar_title);
 
         // Sidebar tab buttons (inside sidebar_bg)
-        let tab_start_y = settings_height - 88.0;
+        let tab_start_y = body_h - 72.0;
         let tab_names = ["Setup", "Keys", "Audio", "Voice Lab", "Engine"];
         let tab_sels = [
             sel!(onTabSetup:),
@@ -726,7 +780,7 @@ unsafe fn build_settings_ui(
             &CGPoint::new(SETTINGS_CONTENT_INSET_X, SETTINGS_CONTENT_INSET_Y),
             &CGSize::new(
                 (content_area_w - SETTINGS_CONTENT_INSET_X * 2.0).max(240.0),
-                (content_area_h - header_h - SETTINGS_CONTENT_INSET_Y * 2.0).max(220.0),
+                (content_area_h - SETTINGS_CONTENT_INSET_Y * 2.0).max(220.0),
             ),
         );
 

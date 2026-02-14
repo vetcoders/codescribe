@@ -61,6 +61,7 @@ pub mod ui_tokens {
     pub const EDGE_PADDING_TIGHT: f64 = 12.0;
 
     pub const TITLE_LABEL_WIDTH: f64 = 96.0;
+    pub const TRAFFIC_LIGHTS_SPACER_WIDTH: f64 = 80.0;
     pub const HEADER_BUTTON_SIZE: f64 = 28.0;
     pub const HEADER_BUTTON_GAP: f64 = 8.0;
     pub const HELP_PANEL_WIDTH: f64 = 150.0;
