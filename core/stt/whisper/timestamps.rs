@@ -77,19 +77,8 @@ pub fn extract_segments(
         }
     }
 
-    if !current_tokens.is_empty()
-        && let Ok(text) = tokenizer.decode(&current_tokens, true)
-    {
-        let text = text.trim().to_string();
-        if !text.is_empty() {
-            let start = current_start.unwrap_or(0.0);
-            segments.push(TranscriptSegment {
-                text,
-                start_ts: start,
-                end_ts: start,
-            });
-        }
-    }
+    // Deliberately ignore trailing tokens without a closing timestamp.
+    // We only emit "closed" [start, end] spans coming from native timestamp tokens.
 
     let text_tokens: Vec<u32> = all_tokens
         .iter()
@@ -99,4 +88,77 @@ pub fn extract_segments(
     let full_text = tokenizer.decode(&text_tokens, true).unwrap_or_default();
 
     (full_text, segments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokenizers::Tokenizer;
+    use tokenizers::models::wordlevel::WordLevel;
+
+    fn test_tokenizer() -> Tokenizer {
+        let vocab = [
+            ("[UNK]".to_string(), 0_u32),
+            ("hello".to_string(), 1_u32),
+            ("world".to_string(), 2_u32),
+            ("again".to_string(), 3_u32),
+            ("<|0.00|>".to_string(), 1000_u32),
+            ("<|0.02|>".to_string(), 1001_u32),
+            ("<|0.04|>".to_string(), 1002_u32),
+            ("<|30.00|>".to_string(), 1030_u32),
+        ]
+        .into_iter()
+        .collect();
+
+        let model = WordLevel::builder()
+            .vocab(vocab)
+            .unk_token("[UNK]".to_string())
+            .build()
+            .expect("wordlevel tokenizer");
+
+        Tokenizer::new(model)
+    }
+
+    #[test]
+    fn timestamp_range_resolves_from_tokenizer() {
+        let tokenizer = test_tokenizer();
+        let range = TimestampRange::from_tokenizer(&tokenizer).expect("timestamp range");
+        assert_eq!(range.begin, 1000);
+        assert_eq!(range.end_inclusive, 1030);
+        assert!(range.is_timestamp(1005));
+        assert!(!range.is_timestamp(12));
+    }
+
+    #[test]
+    fn extract_segments_parses_closed_spans() {
+        let tokenizer = test_tokenizer();
+        let range = TimestampRange::from_tokenizer(&tokenizer).expect("timestamp range");
+        let tokens = vec![1000, 1, 2, 1002, 3, 1004];
+
+        let (text, segments) = extract_segments(&tokens, &tokenizer, &range);
+
+        assert_eq!(text.trim(), "hello world again");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].text, "hello world");
+        assert_eq!(segments[0].start_ts, 0.0);
+        assert_eq!(segments[0].end_ts, 0.04);
+        assert_eq!(segments[1].text, "again");
+        assert_eq!(segments[1].start_ts, 0.04);
+        assert_eq!(segments[1].end_ts, 0.08);
+    }
+
+    #[test]
+    fn extract_segments_ignores_unclosed_trailing_span() {
+        let tokenizer = test_tokenizer();
+        let range = TimestampRange::from_tokenizer(&tokenizer).expect("timestamp range");
+        let tokens = vec![1000, 1, 1002, 2, 3];
+
+        let (text, segments) = extract_segments(&tokens, &tokenizer, &range);
+
+        assert_eq!(text.trim(), "hello world again");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "hello");
+        assert_eq!(segments[0].start_ts, 0.0);
+        assert_eq!(segments[0].end_ts, 0.04);
+    }
 }

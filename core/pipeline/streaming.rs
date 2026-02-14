@@ -541,6 +541,8 @@ pub(crate) async fn transcription_session(
     // Track last raw Whisper output for final flush UtteranceFinal.
     let mut last_raw_text = String::new();
     let mut last_segments: Vec<TranscriptSegment> = Vec::new();
+    // Accumulate segment timestamps for the current utterance across interim slices.
+    let mut utterance_segments: Vec<TranscriptSegment> = Vec::new();
 
     // Track audio position for UtteranceFinal timestamps (seconds).
     let mut utterance_start_s: f32 = 0.0;
@@ -736,12 +738,21 @@ pub(crate) async fn transcription_session(
                     max_speech_prob: 0.0,
                 });
                 // Track audio duration for timestamp computation.
+                let chunk_start_samples = utterance_audio_samples;
                 utterance_audio_samples += item.audio.len();
+                let chunk_start_ts =
+                    utterance_start_s + chunk_start_samples as f32 / output_sample_rate as f32;
 
                 match result {
                     Ok(Ok(raw_transcript)) => {
                         let raw_text = raw_transcript.text;
-                        let raw_segments = raw_transcript.segments;
+                        let mut raw_segments = raw_transcript.segments;
+                        if !raw_segments.is_empty() {
+                            for segment in &mut raw_segments {
+                                segment.start_ts += chunk_start_ts;
+                                segment.end_ts += chunk_start_ts;
+                            }
+                        }
                         last_raw_text = raw_text.clone();
                         last_segments = raw_segments.clone();
                         if utterance_count == 0 && correction_audio_buf.is_empty() {
@@ -770,6 +781,7 @@ pub(crate) async fn transcription_session(
                                         accumulated_text.push(' ');
                                     }
                                     accumulated_text.push_str(cleaned.trim());
+                                    utterance_segments.extend(raw_segments.clone());
 
                                     event_sink.on_event(&EngineEvent::Preview {
                                         rev: preview_rev,
@@ -822,8 +834,10 @@ pub(crate) async fn transcription_session(
                                     raw_text: raw_text.clone(),
                                     start_ts: utterance_start_s,
                                     end_ts,
-                                    segments: raw_segments,
+                                    segments: std::mem::take(&mut utterance_segments),
                                 });
+                            } else {
+                                utterance_segments.clear();
                             }
                             accumulated_text.clear();
                             // Advance start_ts for next utterance.
@@ -901,13 +915,18 @@ pub(crate) async fn transcription_session(
         utterance_id += 1;
         total_utterances += 1;
         let end_ts = utterance_start_s + utterance_audio_samples as f32 / output_sample_rate as f32;
+        let segments = if utterance_segments.is_empty() {
+            last_segments
+        } else {
+            utterance_segments
+        };
         event_sink.on_event(&EngineEvent::UtteranceFinal {
             utterance_id,
             text: remaining,
             raw_text: last_raw_text,
             start_ts: utterance_start_s,
             end_ts,
-            segments: last_segments,
+            segments,
         });
     }
 

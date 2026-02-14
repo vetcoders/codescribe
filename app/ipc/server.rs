@@ -802,3 +802,122 @@ fn peer_uid(stream: &UnixStream) -> Option<libc::uid_t> {
 fn peer_uid(_stream: &UnixStream) -> Option<libc::uid_t> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
+    use tokio::time::{Duration, timeout};
+
+    async fn write_command(
+        writer: &mut tokio::net::unix::OwnedWriteHalf,
+        cmd: &IpcCommand,
+    ) -> Result<()> {
+        let json = serde_json::to_string(cmd)?;
+        writer.write_all(json.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
+    async fn read_response(
+        reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    ) -> Result<IpcResponse> {
+        let mut line = String::new();
+        let bytes = timeout(Duration::from_secs(1), reader.read_line(&mut line))
+            .await
+            .context("timeout waiting for IPC response")??;
+        anyhow::ensure!(bytes > 0, "IPC connection closed unexpectedly");
+        Ok(serde_json::from_str::<IpcResponse>(&line)?)
+    }
+
+    #[tokio::test]
+    async fn subscribe_streams_state_and_engine_events() {
+        let controller = Arc::new(RecordingController::new());
+        let (client, server) = UnixStream::pair().expect("unix pair");
+
+        let server_controller = Arc::clone(&controller);
+        let server_task =
+            tokio::spawn(async move { handle_client(server, server_controller).await });
+
+        let (reader_half, mut writer_half) = client.into_split();
+        let mut reader = BufReader::new(reader_half);
+
+        write_command(&mut writer_half, &IpcCommand::Subscribe)
+            .await
+            .expect("subscribe command");
+        match read_response(&mut reader)
+            .await
+            .expect("subscribe response")
+        {
+            IpcResponse::Ok => {}
+            other => panic!("expected Ok after Subscribe, got {:?}", other),
+        }
+
+        controller.publish_ipc_event_for_test(IpcEventPayload::StateChange {
+            from: "idle".to_string(),
+            to: "recording".to_string(),
+        });
+        match read_response(&mut reader)
+            .await
+            .expect("state change event response")
+        {
+            IpcResponse::Event(event) => match event.payload {
+                IpcEventPayload::StateChange { from, to } => {
+                    assert_eq!(from, "idle");
+                    assert_eq!(to, "recording");
+                }
+                payload => panic!("expected state_change payload, got {:?}", payload),
+            },
+            other => panic!("expected Event response, got {:?}", other),
+        }
+
+        controller.publish_ipc_event_for_test(IpcEventPayload::Engine(EngineEventWire::Preview {
+            rev: 7,
+            text: "hello".to_string(),
+        }));
+        match read_response(&mut reader)
+            .await
+            .expect("engine event response")
+        {
+            IpcResponse::Event(event) => match event.payload {
+                IpcEventPayload::Engine(EngineEventWire::Preview { rev, text }) => {
+                    assert_eq!(rev, 7);
+                    assert_eq!(text, "hello");
+                }
+                payload => panic!("expected preview engine payload, got {:?}", payload),
+            },
+            other => panic!("expected Event response, got {:?}", other),
+        }
+
+        write_command(&mut writer_half, &IpcCommand::Unsubscribe)
+            .await
+            .expect("unsubscribe command");
+        match read_response(&mut reader)
+            .await
+            .expect("unsubscribe response")
+        {
+            IpcResponse::Ok => {}
+            other => panic!("expected Ok after Unsubscribe, got {:?}", other),
+        }
+
+        controller.publish_ipc_event_for_test(IpcEventPayload::StateChange {
+            from: "recording".to_string(),
+            to: "idle".to_string(),
+        });
+
+        let mut line = String::new();
+        let next = timeout(Duration::from_millis(150), reader.read_line(&mut line)).await;
+        assert!(
+            next.is_err(),
+            "unsubscribed client unexpectedly received an event line: {line:?}"
+        );
+
+        drop(writer_half);
+        let join = timeout(Duration::from_secs(1), server_task)
+            .await
+            .expect("server task timeout")
+            .expect("server task panicked");
+        assert!(join.is_ok(), "server task failed: {join:?}");
+    }
+}

@@ -293,12 +293,32 @@ impl Recorder {
         self.actual_sample_rate
     }
 
+    /// Returns true when the recorder still has an active stream/session.
+    ///
+    /// This is used by higher-level state recovery to detect desyncs where the
+    /// controller thinks it is idle but CoreAudio is still running.
+    pub fn is_active(&self) -> bool {
+        self.is_recording.load(Ordering::SeqCst) || self.stream.is_some()
+    }
+
     /// Starts the audio recording process.
     ///
     /// Clears the buffer, creates and starts a new input stream,
     /// and launches the asynchronous collection task to read audio data.
     pub async fn start(&mut self) -> Result<()> {
-        if self.is_recording.load(Ordering::SeqCst) {
+        let is_recording = self.is_recording.load(Ordering::SeqCst);
+        let has_stream = self.stream.is_some();
+
+        // Self-heal stale atomic flag observed after abrupt stop races:
+        // if there is no live stream, we can safely clear the flag and continue.
+        if is_recording && !has_stream {
+            warn!(
+                "Recorder start: stale is_recording flag detected without active stream; clearing"
+            );
+            self.is_recording.store(false, Ordering::SeqCst);
+        }
+
+        if self.is_recording.load(Ordering::SeqCst) || self.stream.is_some() {
             anyhow::bail!("Recording is already in progress");
         }
 

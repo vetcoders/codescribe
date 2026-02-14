@@ -212,3 +212,56 @@ fn drop_kind_to_wire(kind: &DropKind) -> &'static str {
         DropKind::FilteredEmpty => "filtered_empty",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn must_object(value: Value) -> serde_json::Map<String, Value> {
+        value.as_object().cloned().expect("json object")
+    }
+
+    #[test]
+    fn utterance_final_wire_omits_raw_text() {
+        let event = EngineEvent::UtteranceFinal {
+            utterance_id: 42,
+            text: "hello world".to_string(),
+            raw_text: "SENSITIVE RAW TRANSCRIPT".to_string(),
+            start_ts: 1.0,
+            end_ts: 2.5,
+            segments: vec![TranscriptSegment {
+                text: "hello world".to_string(),
+                start_ts: 1.0,
+                end_ts: 2.5,
+            }],
+        };
+
+        let wire = EngineEventWire::from(&event);
+        let json = serde_json::to_value(&wire).expect("serialize wire event");
+        let obj = must_object(json);
+
+        assert_eq!(
+            obj.get("type").and_then(Value::as_str),
+            Some("utterance_final")
+        );
+        assert!(
+            obj.get("raw_text").is_none(),
+            "raw_text must not leak to IPC"
+        );
+        assert_eq!(obj.get("text").and_then(Value::as_str), Some("hello world"));
+        assert!(obj.get("segments").is_some(), "segments must be present");
+    }
+
+    #[test]
+    fn ipc_event_payload_serialization_is_engine_tagged() {
+        let payload = IpcEventPayload::Engine(EngineEventWire::Preview {
+            rev: 7,
+            text: "preview".to_string(),
+        });
+
+        let value = serde_json::to_value(payload).expect("serialize payload");
+        let obj = must_object(value);
+        assert_eq!(obj.get("event").and_then(Value::as_str), Some("engine"));
+    }
+}

@@ -213,6 +213,14 @@ impl UserSettings {
         fs::create_dir_all(&dir)?;
         let path = Self::settings_path();
         let json = serde_json::to_string_pretty(self)?;
+
+        if let Ok(existing) = fs::read_to_string(&path)
+            && existing == json
+        {
+            debug!("Settings unchanged; skipping save to {}", path.display());
+            return Ok(());
+        }
+
         fs::write(&path, json)?;
         info!("Saved settings to {}", path.display());
         Ok(())

@@ -327,6 +327,14 @@ impl RecordingController {
         self.event_broadcast.subscribe()
     }
 
+    #[cfg(test)]
+    pub(crate) fn publish_ipc_event_for_test(&self, payload: IpcEventPayload) {
+        let _ = self.event_broadcast.send(IpcEvent {
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            payload,
+        });
+    }
+
     async fn set_state(&self, new_state: State) {
         Self::set_state_with_broadcast(&self.state, &self.event_broadcast, new_state).await;
     }
@@ -386,6 +394,36 @@ impl RecordingController {
         }
     }
 
+    fn is_already_in_progress_error(error: &anyhow::Error) -> bool {
+        error
+            .to_string()
+            .contains("Recording is already in progress")
+    }
+
+    async fn recover_stale_recorder_if_idle(&self) {
+        if self.current_state().await != State::Idle {
+            return;
+        }
+
+        let mut recorder = self.recorder.lock().await;
+        if !recorder.recorder.is_active() {
+            return;
+        }
+
+        warn!("Recorder recovery: detected active stream while controller is IDLE; forcing stop");
+        if let Err(e) = recorder.stop_without_saving().await {
+            warn!("Recorder recovery: forced stop failed: {e}");
+        }
+        recorder.set_utterance_callback(None);
+        recorder.set_utterance_silence_sec(None);
+        recorder.set_event_sink(None);
+        drop(recorder);
+
+        *self.session_id.write().await = None;
+        self.assistive_loop_active.store(false, Ordering::SeqCst);
+        set_assistive_session(false);
+    }
+
     /// Handle hotkey event - main entry point for state machine
     ///
     /// # Arguments
@@ -401,6 +439,10 @@ impl RecordingController {
     /// - **Toggle + assistive=true**: force Assistive hands-off
     pub async fn handle_hotkey_event(&self, event: HotkeyInput) -> Result<()> {
         let current_state = self.current_state().await;
+
+        if current_state == State::Idle {
+            self.recover_stale_recorder_if_idle().await;
+        }
 
         debug!(
             "Hotkey event: type={:?} action={:?} assistive={} hold_mode={:?} force_raw={} force_ai={} state={}",
@@ -1048,12 +1090,16 @@ impl RecordingController {
         let vad_flag = Arc::clone(&self.vad_triggered);
         let assistive_context = Arc::clone(&self.assistive_context);
         let event_broadcast = self.event_broadcast.clone();
+        let serial_lock = Arc::clone(&self.serial_lock);
         let opened_overlay_for_transcription =
             Arc::clone(&self.opened_voice_chat_overlay_for_transcription);
 
         let task = tokio::spawn(async move {
             // Wait for the configured delay
             tokio::time::sleep(delay).await;
+
+            // Serialize with other start/stop operations.
+            let _serial_guard = serial_lock.lock().await;
 
             // Check if we're still in IDLE state
             let current_state = *state.read().await;
@@ -1105,23 +1151,64 @@ impl RecordingController {
                 rec.set_event_sink(Some(
                     codescribe_core::pipeline::sinks::FanoutEventSink::pair(pe, ipc_sink),
                 ));
-
-                if !cfg!(test)
-                    && let Err(e) = rec
-                        .start_event_session(Some(language.as_str().to_string()))
-                        .await
-                {
-                    error!("Failed to start event session: {}", e);
-                    *session_id.write().await = None;
-                    return;
-                }
-            } else if !cfg!(test)
-                && let Err(e) = rec.start(Some(language.as_str().to_string())).await
-            {
-                error!("Failed to start recorder: {}", e);
-                *session_id.write().await = None;
-                return;
             }
+            if !cfg!(test) {
+                let start_result = if use_event_pipeline {
+                    rec.start_event_session(Some(language.as_str().to_string()))
+                        .await
+                } else {
+                    rec.start(Some(language.as_str().to_string())).await
+                };
+                if let Err(e) = start_result {
+                    if Self::is_already_in_progress_error(&e) {
+                        warn!("Hold-start hit stale recorder lock; forcing stop and retrying once");
+                        if let Err(stop_err) = rec.stop_without_saving().await {
+                            warn!("Hold-start stale-recorder recovery failed: {stop_err}");
+                        }
+                        rec.set_utterance_callback(None);
+                        rec.set_utterance_silence_sec(None);
+
+                        let retry_result = if use_event_pipeline {
+                            let tb = rec.transcript_buffer_handle();
+                            let delta_sink: Arc<
+                                dyn codescribe_core::pipeline::contracts::DeltaSink,
+                            > = Arc::new(helpers::RoutingDeltaSink);
+                            let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                                Arc::new(PresentationEmitter::new(tb, Some(delta_sink), None));
+                            let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                                Arc::new(helpers::IpcBroadcastSink::new(event_broadcast.clone()));
+                            rec.set_event_sink(Some(
+                                codescribe_core::pipeline::sinks::FanoutEventSink::pair(
+                                    pe, ipc_sink,
+                                ),
+                            ));
+                            rec.start_event_session(Some(language.as_str().to_string()))
+                                .await
+                        } else {
+                            rec.set_event_sink(None);
+                            rec.start(Some(language.as_str().to_string())).await
+                        };
+                        if let Err(retry_err) = retry_result {
+                            error!("Failed to start recorder after recovery: {retry_err}");
+                            *session_id.write().await = None;
+                            set_assistive_session(false);
+                            return;
+                        }
+                    } else {
+                        error!("Failed to start recorder: {e}");
+                        *session_id.write().await = None;
+                        set_assistive_session(false);
+                        return;
+                    }
+                }
+            }
+
+            // Transition to REC_HOLD as soon as recorder starts to avoid IDLE/active races.
+            Self::set_state_with_broadcast(&state, &event_broadcast, State::RecHold).await;
+            info!(
+                "STATE TRANSITION: IDLE → REC_HOLD (assistive={})",
+                is_assistive
+            );
 
             // Play start beep if enabled
             if beep {
@@ -1183,13 +1270,6 @@ impl RecordingController {
                 crate::enter_recording_mode();
                 crate::clear_transcription_text();
             }
-
-            // Transition to REC_HOLD
-            Self::set_state_with_broadcast(&state, &event_broadcast, State::RecHold).await;
-            info!(
-                "STATE TRANSITION: IDLE → REC_HOLD (assistive={})",
-                is_assistive
-            );
         });
 
         *self.hold_start_task.lock().await = Some(task);
@@ -1310,10 +1390,75 @@ impl RecordingController {
                 codescribe_core::pipeline::sinks::FanoutEventSink::pair(pe, ipc_sink),
             ));
 
-            if !cfg!(test) {
-                recorder
+            if !cfg!(test)
+                && let Err(e) = recorder
                     .start_event_session(Some(language.as_str().to_string()))
-                    .await?;
+                    .await
+            {
+                if Self::is_already_in_progress_error(&e) {
+                    warn!("Toggle start hit stale recorder lock; forcing stop and retrying once");
+                    if let Err(stop_err) = recorder.stop_without_saving().await {
+                        warn!("Toggle stale-recorder recovery failed: {stop_err}");
+                    }
+                    recorder.set_utterance_callback(None);
+                    recorder.set_utterance_silence_sec(None);
+
+                    let retry_controller = OVERLAY_CONTROLLER.get().cloned();
+                    let retry_expected_session = new_session_id.clone();
+                    let retry_assistive_session = is_assistive;
+                    let retry_event_broadcast = self.event_broadcast.clone();
+                    let tb = recorder.transcript_buffer_handle();
+                    let delta_sink: Arc<dyn codescribe_core::pipeline::contracts::DeltaSink> =
+                        Arc::new(helpers::RoutingDeltaSink);
+                    let mut retry_pe = PresentationEmitter::new(tb, Some(delta_sink), None);
+                    retry_pe.set_utterance_callback(Some(Arc::new(move |text: String| {
+                        if retry_assistive_session {
+                            crate::voice_chat_ui::finalize_voice_chat_user_message();
+                        }
+                        let controller = retry_controller.clone();
+                        let expected_session = retry_expected_session.clone();
+                        tokio::spawn(async move {
+                            if let Some(controller) = controller
+                                && let Err(e) = controller
+                                    .handle_toggle_utterance(
+                                        text,
+                                        expected_session,
+                                        retry_assistive_session,
+                                        true,
+                                    )
+                                    .await
+                            {
+                                warn!("Toggle utterance processing failed: {}", e);
+                            }
+                        });
+                    })));
+                    let retry_pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                        Arc::new(retry_pe);
+                    let retry_ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                        Arc::new(helpers::IpcBroadcastSink::new(retry_event_broadcast));
+                    recorder.set_event_sink(Some(
+                        codescribe_core::pipeline::sinks::FanoutEventSink::pair(
+                            retry_pe,
+                            retry_ipc_sink,
+                        ),
+                    ));
+                    if let Err(retry_err) = recorder
+                        .start_event_session(Some(language.as_str().to_string()))
+                        .await
+                    {
+                        *self.session_id.write().await = None;
+                        self.assistive_loop_active.store(false, Ordering::SeqCst);
+                        set_assistive_session(false);
+                        return Err(anyhow::anyhow!(
+                            "Failed to start event session after recovery: {retry_err}"
+                        ));
+                    }
+                } else {
+                    *self.session_id.write().await = None;
+                    self.assistive_loop_active.store(false, Ordering::SeqCst);
+                    set_assistive_session(false);
+                    return Err(e);
+                }
             }
         } else {
             // Legacy pipeline: separate delta_callback + utterance_callback
@@ -1351,12 +1496,42 @@ impl RecordingController {
             )));
 
             // Skip actual audio stream in tests (no CoreAudio device needed)
-            if !cfg!(test) {
-                recorder
+            if !cfg!(test)
+                && let Err(e) = recorder
                     .start_with_buffered(Some(language.as_str().to_string()), true)
-                    .await?;
+                    .await
+            {
+                if Self::is_already_in_progress_error(&e) {
+                    warn!("Toggle start hit stale recorder lock; forcing stop and retrying once");
+                    if let Err(stop_err) = recorder.stop_without_saving().await {
+                        warn!("Toggle stale-recorder recovery failed: {stop_err}");
+                    }
+                    recorder.set_utterance_callback(None);
+                    recorder.set_utterance_silence_sec(None);
+                    recorder.set_event_sink(None);
+                    if let Err(retry_err) = recorder
+                        .start_with_buffered(Some(language.as_str().to_string()), true)
+                        .await
+                    {
+                        *self.session_id.write().await = None;
+                        self.assistive_loop_active.store(false, Ordering::SeqCst);
+                        set_assistive_session(false);
+                        return Err(anyhow::anyhow!(
+                            "Failed to start buffered recorder after recovery: {retry_err}"
+                        ));
+                    }
+                } else {
+                    *self.session_id.write().await = None;
+                    self.assistive_loop_active.store(false, Ordering::SeqCst);
+                    set_assistive_session(false);
+                    return Err(e);
+                }
             }
         }
+
+        // Transition to REC_TOGGLE immediately after recorder starts.
+        self.set_state(State::RecToggle).await;
+        info!("STATE TRANSITION: IDLE → REC_TOGGLE (pulsing badge)");
 
         // Play start beep if enabled
         if beep_enabled {
@@ -1413,10 +1588,6 @@ impl RecordingController {
             crate::enter_recording_mode();
             crate::clear_transcription_text();
         }
-
-        // Transition to REC_TOGGLE
-        self.set_state(State::RecToggle).await;
-        info!("STATE TRANSITION: IDLE → REC_TOGGLE (pulsing badge)");
 
         Ok(())
     }
