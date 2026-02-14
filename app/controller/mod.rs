@@ -1991,95 +1991,78 @@ impl RecordingController {
             // Split behavior:
             // - Chat: ignore selection.
             // - Selection: if no selection was captured, we already downgraded to Chat mode.
-            if missing_selection && matches!(effective_hold_mode, HoldMode::Selection) {
-                if chat_active {
-                    crate::voice_chat_ui::set_voice_chat_sending(false);
-                    crate::voice_chat_ui::update_voice_chat_status("No selection");
-                    crate::voice_chat_ui::add_voice_chat_error_message(
-                        "No selected text. Select text first or use Chat mode (Shift).",
-                    );
-                }
-                (
-                    clean_text.clone(),
-                    crate::state::history::TranscriptKind::Raw,
-                    false,
-                )
+            let assistive_input = build_assistive_input(&clean_text, &ctx);
+
+            let lang_str = language_opt.map(String::from);
+
+            // Determine streaming mode from config
+            let transcript_mode = config.transcript_send_mode;
+            let use_streaming = matches!(
+                transcript_mode,
+                crate::config::TranscriptSendMode::Streaming
+            );
+
+            // Callback for streaming AI response to overlay
+            let delta_callback = if use_streaming && chat_active {
+                let needs_prefix = append_mode && assistant_needs_separator;
+                let prefix_sent = Arc::new(AtomicBool::new(false));
+                let assistant_has_text = self.toggle_assistant_has_text.clone();
+                Some(Arc::new(move |text: &str| {
+                    if needs_prefix && !prefix_sent.swap(true, Ordering::SeqCst) {
+                        crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
+                    }
+                    crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
+                    assistant_has_text.store(true, Ordering::SeqCst);
+                }) as Arc<dyn Fn(&str) + Send + Sync>)
             } else {
-                let assistive_input = build_assistive_input(&clean_text, &ctx);
+                None
+            };
 
-                let lang_str = language_opt.map(String::from);
-
-                // Determine streaming mode from config
-                let transcript_mode = config.transcript_send_mode;
-                let use_streaming = matches!(
-                    transcript_mode,
-                    crate::config::TranscriptSendMode::Streaming
-                );
-
-                // Callback for streaming AI response to overlay
-                let delta_callback = if use_streaming && chat_active {
-                    let needs_prefix = append_mode && assistant_needs_separator;
-                    let prefix_sent = Arc::new(AtomicBool::new(false));
-                    let assistant_has_text = self.toggle_assistant_has_text.clone();
-                    Some(Arc::new(move |text: &str| {
-                        if needs_prefix && !prefix_sent.swap(true, Ordering::SeqCst) {
-                            crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
-                        }
-                        crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
-                        assistant_has_text.store(true, Ordering::SeqCst);
-                    }) as Arc<dyn Fn(&str) + Send + Sync>)
-                } else {
-                    None
-                };
-
-                let result = crate::ai_formatting::format_text_with_status(
-                    &assistive_input,
-                    lang_str.as_deref(),
-                    true,
-                    delta_callback,
-                )
-                .await;
-                let kind = match result.status {
-                    crate::ai_formatting::AiFormatStatus::Applied => {
-                        if chat_active {
-                            // Display AI response in overlay
-                            crate::show_voice_chat_overlay();
-                            crate::voice_chat_ui::update_voice_chat_status("AI Response:");
-                            if append_mode {
-                                if assistant_needs_separator {
-                                    crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
-                                }
-                                crate::voice_chat_ui::append_voice_chat_assistant_delta(
-                                    &result.text,
-                                );
-                                self.toggle_assistant_has_text.store(true, Ordering::SeqCst);
-                            } else {
-                                crate::voice_chat_ui::set_voice_chat_text(&result.text);
+            let result = crate::ai_formatting::format_text_with_status(
+                &assistive_input,
+                lang_str.as_deref(),
+                true,
+                delta_callback,
+            )
+            .await;
+            let kind = match result.status {
+                crate::ai_formatting::AiFormatStatus::Applied => {
+                    if chat_active {
+                        // Display AI response in overlay
+                        crate::show_voice_chat_overlay();
+                        crate::voice_chat_ui::update_voice_chat_status("AI Response:");
+                        if append_mode {
+                            if assistant_needs_separator {
+                                crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
                             }
-                            info!(
-                                "Assistive response displayed in overlay ({} chars)",
-                                result.text.len()
-                            );
+                            crate::voice_chat_ui::append_voice_chat_assistant_delta(&result.text);
+                            self.toggle_assistant_has_text.store(true, Ordering::SeqCst);
+                        } else {
+                            crate::voice_chat_ui::set_voice_chat_text(&result.text);
                         }
-                        crate::state::history::TranscriptKind::Ai
+                        info!(
+                            "Assistive response displayed in overlay ({} chars)",
+                            result.text.len()
+                        );
                     }
-                    crate::ai_formatting::AiFormatStatus::Failed => {
-                        if chat_active {
-                            crate::show_voice_chat_overlay();
-                            crate::voice_chat_ui::update_voice_chat_status("AI Failed");
-                            crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
-                        }
-                        crate::state::history::TranscriptKind::AiFailed
+                    crate::state::history::TranscriptKind::Ai
+                }
+                crate::ai_formatting::AiFormatStatus::Failed => {
+                    if chat_active {
+                        crate::show_voice_chat_overlay();
+                        crate::voice_chat_ui::update_voice_chat_status("AI Failed");
+                        crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
                     }
-                    crate::ai_formatting::AiFormatStatus::Skipped => {
-                        if chat_active {
-                            crate::voice_chat_ui::set_voice_chat_sending(false);
-                        }
-                        crate::state::history::TranscriptKind::Raw
+                    crate::state::history::TranscriptKind::AiFailed
+                }
+                crate::ai_formatting::AiFormatStatus::Skipped => {
+                    if chat_active {
+                        crate::voice_chat_ui::set_voice_chat_sending(false);
                     }
-                };
-                (result.text, kind, false)
-            }
+                    crate::state::history::TranscriptKind::Raw
+                }
+            };
+            (result.text, kind, false)
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
             // Post-processed clean_text is used (lexicon + cleanup already applied)

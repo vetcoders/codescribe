@@ -863,8 +863,9 @@ fn show_voice_chat_overlay_impl() {
         // Agent input bar
         let drop_target_cls = drop_target_view_class();
         let input_bar: Id = msg_send![drop_target_cls, alloc];
+        let input_bar_y = (ui_tokens::FOOTER_INSET - 2.0).max(0.0);
         let input_frame = CGRect::new(
-            &CGPoint::new(inner_pad, ui_tokens::FOOTER_INSET),
+            &CGPoint::new(inner_pad, input_bar_y),
             &CGSize::new(
                 (content_frame.size.width - inner_pad * 2.0).max(0.0),
                 agent_input_height,
@@ -883,7 +884,7 @@ fn show_voice_chat_overlay_impl() {
             let color = ui_colors::input_bar_bg();
             let cg_color: Id = msg_send![color, CGColor];
             let _: () = msg_send![input_layer, setBackgroundColor: cg_color];
-            let _: () = msg_send![input_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_LG];
+            let _: () = msg_send![input_layer, setCornerRadius: (agent_input_height * 0.5)];
             let border = ui_colors::input_bar_border();
             let cg_border: Id = msg_send![border, CGColor];
             let _: () = msg_send![input_layer, setBorderColor: cg_border];
@@ -900,9 +901,9 @@ fn show_voice_chat_overlay_impl() {
 
         let input_width = input_frame.size.width;
         let text_area_frame = CGRect::new(
-            &CGPoint::new(12.0, 10.0),
+            &CGPoint::new(14.0, 8.0),
             // Leave room for Attach + Send buttons on the right.
-            &CGSize::new((input_width - 140.0).max(120.0), agent_input_height - 20.0),
+            &CGSize::new((input_width - 144.0).max(120.0), agent_input_height - 16.0),
         );
         let (agent_input_scroll, agent_input_text_view) =
             create_scrollable_text_view(text_area_frame, true);

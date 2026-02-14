@@ -1139,6 +1139,9 @@ pub fn create_floating_window(
         let mut style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable;
+        if transparent_titlebar {
+            style |= NSWindowStyleMask::FullSizeContentView;
+        }
         if resizable {
             style |= NSWindowStyleMask::Resizable;
         }

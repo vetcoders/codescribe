@@ -32,7 +32,7 @@ mod handlers;
 // Type alias for Objective-C object pointers
 type Id = *mut Object;
 
-const SIDEBAR_WIDTH: f64 = 154.0;
+const SIDEBAR_WIDTH: f64 = 204.0;
 const SETTINGS_WINDOW_WIDTH: f64 = 760.0;
 const SETTINGS_WINDOW_HEIGHT: f64 = 660.0;
 const SETTINGS_TOPBAR_HEIGHT: f64 = 54.0;
@@ -391,11 +391,7 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
         if !root_layer.is_null() {
             let _: () = msg_send![root_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_LG];
             let _: () = msg_send![root_layer, setMasksToBounds: true];
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.34f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![root_layer, setBorderColor: cg_border];
-            let _: () = msg_send![root_layer, setBorderWidth: 1.0f64];
+            let _: () = msg_send![root_layer, setBorderWidth: 0.0f64];
         }
         add_subview(parent, root);
 
@@ -600,13 +596,22 @@ unsafe fn build_settings_ui(
         ];
         let topbar_layer: Id = msg_send![topbar_bg, layer];
         if !topbar_layer.is_null() {
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.48f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![topbar_layer, setBorderColor: cg_border];
-            let _: () = msg_send![topbar_layer, setBorderWidth: 1.0f64];
+            let _: () = msg_send![topbar_layer, setBorderWidth: 0.0f64];
         }
         add_subview(root_view, topbar_bg);
+
+        let topbar_divider = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(settings_width, 1.0)),
+            text: String::new(),
+            background_color: Some(ui_colors::separator()),
+            ..Default::default()
+        });
+        let _: () = msg_send![topbar_divider, setAlphaValue: 0.44f64];
+        let _: () = msg_send![
+            topbar_divider,
+            setAutoresizingMask: 2_isize | 8_isize // Width | MinYMargin
+        ];
+        add_subview(topbar_bg, topbar_divider);
 
         let topbar_controls: Id = msg_send![ns_view, alloc];
         let topbar_controls: Id = msg_send![
@@ -625,26 +630,10 @@ unsafe fn build_settings_ui(
 
         let btn_w = ui_tokens::HEADER_BUTTON_SIZE;
         let btn_h = ui_tokens::HEADER_BUTTON_SIZE;
-        let btn_gap = ui_tokens::HEADER_BUTTON_GAP;
         let right_pad = ui_tokens::EDGE_PADDING_TIGHT;
         let btn_y = ((topbar_h - btn_h) * 0.5).max(0.0);
 
         let overlay_btn_x = settings_width - right_pad - btn_w;
-        let refresh_btn_x = overlay_btn_x - btn_gap - btn_w;
-        let refresh_btn = create_button(
-            CGRect::new(
-                &CGPoint::new(refresh_btn_x, btn_y),
-                &CGSize::new(btn_w, btn_h),
-            ),
-            "",
-            button_style::INLINE,
-        );
-        let _ = set_button_symbol(refresh_btn, "arrow.clockwise");
-        style_toolbar_icon_button(refresh_btn);
-        set_tooltip(refresh_btn, "Refresh permissions");
-        button_set_action(refresh_btn, action_handler, sel!(onRefreshPermissions:));
-        add_subview(topbar_controls, refresh_btn);
-
         let overlay_btn = create_button(
             CGRect::new(
                 &CGPoint::new(overlay_btn_x, btn_y),
@@ -663,7 +652,7 @@ unsafe fn build_settings_ui(
         let title_label = create_label(LabelConfig {
             frame: CGRect::new(
                 &CGPoint::new(title_x, topbar_h - 30.0),
-                &CGSize::new(260.0, 20.0),
+                &CGSize::new(280.0, 20.0),
             ),
             text: "CodeScribe Settings".to_string(),
             font_size: 15.0,
@@ -673,7 +662,7 @@ unsafe fn build_settings_ui(
         });
         add_subview(topbar_controls, title_label);
 
-        let subtitle_w = (refresh_btn_x - title_x - 12.0).max(180.0);
+        let subtitle_w = (overlay_btn_x - title_x - 14.0).max(200.0);
         let subtitle_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(title_x, 8.0), &CGSize::new(subtitle_w, 16.0)),
             text: "Native macOS speech-to-text setup and runtime tuning".to_string(),
@@ -726,7 +715,7 @@ unsafe fn build_settings_ui(
             background_color: Some(ui_colors::separator()),
             ..Default::default()
         });
-        let _: () = msg_send![split_divider, setAlphaValue: 0.52f64];
+        let _: () = msg_send![split_divider, setAlphaValue: 0.40f64];
         add_subview(root_view, split_divider);
 
         let content_area_w = content_bg_frame.size.width;
@@ -734,10 +723,10 @@ unsafe fn build_settings_ui(
 
         let sidebar_title = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(16.0, body_h - 28.0),
+                &CGPoint::new(18.0, body_h - 34.0),
                 &CGSize::new(SIDEBAR_WIDTH - 26.0, 20.0),
             ),
-            text: "Onboarding Setup".to_string(),
+            text: "Settings".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: true,
             text_color: crate::ui_helpers::color_label(),
@@ -746,7 +735,7 @@ unsafe fn build_settings_ui(
         add_subview(sidebar_bg, sidebar_title);
 
         // Sidebar tab buttons (inside sidebar_bg)
-        let tab_start_y = body_h - 72.0;
+        let tab_start_y = body_h - 86.0;
         let tab_names = ["Setup", "Keys", "Audio", "Voice Lab", "Engine"];
         let tab_sels = [
             sel!(onTabSetup:),
@@ -1169,27 +1158,29 @@ unsafe fn create_sidebar_tab_button(
             let bg = if active {
                 let ns_color = Class::get("NSColor").unwrap();
                 let accent: Id = msg_send![ns_color, controlAccentColor];
-                let semi: Id = msg_send![accent, colorWithAlphaComponent: 0.2f64];
+                let semi: Id = msg_send![accent, colorWithAlphaComponent: 0.16f64];
                 semi
             } else {
-                let base = ui_colors::panel_bg();
-                msg_send![base, colorWithAlphaComponent: 0.20f64]
+                crate::ui_helpers::color_clear()
             };
             let cg_color: Id = msg_send![bg, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg_color];
-            let _: () = msg_send![layer, setCornerRadius: ui_tokens::CORNER_RADIUS_SM];
-            let border = ui_colors::separator();
-            let border: Id = msg_send![
-                border,
-                colorWithAlphaComponent: if active { 0.56f64 } else { 0.24f64 }
-            ];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![layer, setBorderColor: cg_border];
-            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+            let _: () = msg_send![layer, setCornerRadius: 10.0f64];
+            if active {
+                let ns_color = Class::get("NSColor").unwrap();
+                let accent: Id = msg_send![ns_color, controlAccentColor];
+                let border: Id = msg_send![accent, colorWithAlphaComponent: 0.40f64];
+                let cg_border: Id = msg_send![border, CGColor];
+                let _: () = msg_send![layer, setBorderColor: cg_border];
+                let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+            } else {
+                let _: () = msg_send![layer, setBorderWidth: 0.0f64];
+            }
         }
 
         let tint = if active {
-            crate::ui_helpers::color_label()
+            let ns_color = Class::get("NSColor").unwrap();
+            msg_send![ns_color, controlAccentColor]
         } else {
             crate::ui_helpers::color_secondary_label()
         };
@@ -1232,26 +1223,29 @@ pub(super) fn switch_tab(index: usize) {
                     let bg: Id = if active {
                         let ns_color = Class::get("NSColor").unwrap();
                         let accent: Id = msg_send![ns_color, controlAccentColor];
-                        msg_send![accent, colorWithAlphaComponent: 0.2f64]
+                        msg_send![accent, colorWithAlphaComponent: 0.16f64]
                     } else {
-                        let base = ui_colors::panel_bg();
-                        msg_send![base, colorWithAlphaComponent: 0.20f64]
+                        crate::ui_helpers::color_clear()
                     };
                     let cg_color: Id = msg_send![bg, CGColor];
                     let _: () = msg_send![layer, setBackgroundColor: cg_color];
-                    let _: () = msg_send![layer, setCornerRadius: ui_tokens::CORNER_RADIUS_SM];
-                    let border = ui_colors::separator();
-                    let border: Id = msg_send![
-                        border,
-                        colorWithAlphaComponent: if active { 0.56f64 } else { 0.24f64 }
-                    ];
-                    let cg_border: Id = msg_send![border, CGColor];
-                    let _: () = msg_send![layer, setBorderColor: cg_border];
-                    let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+                    let _: () = msg_send![layer, setCornerRadius: 10.0f64];
+                    if active {
+                        let ns_color = Class::get("NSColor").unwrap();
+                        let accent: Id = msg_send![ns_color, controlAccentColor];
+                        let border: Id = msg_send![accent, colorWithAlphaComponent: 0.40f64];
+                        let cg_border: Id = msg_send![border, CGColor];
+                        let _: () = msg_send![layer, setBorderColor: cg_border];
+                        let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+                    } else {
+                        let _: () = msg_send![layer, setBorderWidth: 0.0f64];
+                    }
                 }
 
                 let tint = if active {
-                    crate::ui_helpers::color_label()
+                    let ns_color = Class::get("NSColor").unwrap();
+                    let accent: Id = msg_send![ns_color, controlAccentColor];
+                    accent
                 } else {
                     crate::ui_helpers::color_secondary_label()
                 };
