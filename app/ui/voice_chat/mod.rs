@@ -863,7 +863,8 @@ fn show_voice_chat_overlay_impl() {
         // Agent input bar
         let drop_target_cls = drop_target_view_class();
         let input_bar: Id = msg_send![drop_target_cls, alloc];
-        let input_bar_y = (ui_tokens::FOOTER_INSET - 2.0).max(0.0);
+        // Sit flush with the footer edge to match native rounded search/input controls.
+        let input_bar_y = (ui_tokens::FOOTER_INSET - 4.0).max(0.0);
         let input_frame = CGRect::new(
             &CGPoint::new(inner_pad, input_bar_y),
             &CGSize::new(
@@ -889,21 +890,18 @@ fn show_voice_chat_overlay_impl() {
             let cg_border: Id = msg_send![border, CGColor];
             let _: () = msg_send![input_layer, setBorderColor: cg_border];
             let _: () = msg_send![input_layer, setBorderWidth: 1.0f64];
-            let shadow = color_secondary_label();
-            let shadow: Id = msg_send![shadow, colorWithAlphaComponent: 0.28f64];
-            let cg_shadow: Id = msg_send![shadow, CGColor];
-            let _: () = msg_send![input_layer, setShadowColor: cg_shadow];
-            let _: () = msg_send![input_layer, setShadowOpacity: 0.9f64];
-            let _: () = msg_send![input_layer, setShadowRadius: 10.0f64];
-            let _: () = msg_send![input_layer, setShadowOffset: CGSize::new(0.0, 2.0)];
+            // Keep the field crisp like native NSSearchField: border-only, no heavy drop shadow.
+            let _: () = msg_send![input_layer, setShadowOpacity: 0.0f64];
+            let _: () = msg_send![input_layer, setShadowRadius: 0.0f64];
+            let _: () = msg_send![input_layer, setShadowOffset: CGSize::new(0.0, 0.0)];
         }
         add_subview(content_view, input_bar);
 
         let input_width = input_frame.size.width;
         let text_area_frame = CGRect::new(
-            &CGPoint::new(14.0, 8.0),
+            &CGPoint::new(14.0, 7.0),
             // Leave room for Attach + Send buttons on the right.
-            &CGSize::new((input_width - 144.0).max(120.0), agent_input_height - 16.0),
+            &CGSize::new((input_width - 144.0).max(120.0), agent_input_height - 14.0),
         );
         let (agent_input_scroll, agent_input_text_view) =
             create_scrollable_text_view(text_area_frame, true);
@@ -920,6 +918,10 @@ fn show_voice_chat_overlay_impl() {
             jb_font
         };
         let _: () = msg_send![agent_input_text_view, setFont: text_font];
+        let _: () = msg_send![
+            agent_input_text_view,
+            setTextContainerInset: CGSize::new(0.0, 4.0)
+        ];
         // Plain text: avoid rich text / style surprises when pasting.
         let _: () = msg_send![agent_input_text_view, setRichText: false];
         let _: () = msg_send![agent_input_text_view, setDelegate: action_handler];

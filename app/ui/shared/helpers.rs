@@ -1156,6 +1156,11 @@ pub fn create_floating_window(
         ];
 
         if transparent_titlebar {
+            // Re-apply FullSizeContentView post-init to avoid AppKit falling back to
+            // separate titlebar/content regions (which visually looks like a duplicate top bar).
+            let current_style: NSWindowStyleMask = msg_send![window, styleMask];
+            let full_style = current_style | NSWindowStyleMask::FullSizeContentView;
+            let _: () = msg_send![window, setStyleMask: full_style];
             let _: () = msg_send![window, setTitleVisibility: 1_isize]; // NSWindowTitleHidden
             let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
         }
