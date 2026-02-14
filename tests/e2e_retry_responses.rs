@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use codescribe::{ai_formatting, state};
-use mockito::Matcher;
 use serde_json::Value;
 use serial_test::serial;
 
@@ -50,7 +49,7 @@ async fn e2e_retry_on_failure_responses_api() {
 
     // Mockito matches mocks in declaration order (FIFO).
     let fail_then_retry = server
-        .mock("POST", Matcher::Any)
+        .mock("POST", "/v1/responses")
         .with_status(500)
         .with_body("boom")
         .expect(1)
@@ -58,7 +57,7 @@ async fn e2e_retry_on_failure_responses_api() {
         .await;
 
     let success_after_retry = server
-        .mock("POST", Matcher::Any)
+        .mock("POST", "/v1/responses")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
@@ -114,7 +113,7 @@ async fn e2e_retry_on_non_streaming_timeout_keeps_previous_response_id() {
     let response_sequence_body = Arc::clone(&response_sequence);
 
     let _timeout_then_retry = server
-        .mock("POST", Matcher::Any)
+        .mock("POST", "/v1/responses")
         .match_request(move |req| {
             let parsed = request_json(req);
             let previous = parsed
@@ -197,7 +196,7 @@ async fn e2e_retry_on_sse_inter_chunk_timeout_keeps_previous_response_id() {
     let seen_sse_flags_timeout = Arc::clone(&seen_sse_flags);
 
     let _stall_then_retry = server
-        .mock("POST", Matcher::Any)
+        .mock("POST", "/v1/responses")
         .match_request(move |req| {
             let parsed = request_json(req);
             let previous = parsed
@@ -228,7 +227,7 @@ async fn e2e_retry_on_sse_inter_chunk_timeout_keeps_previous_response_id() {
         .await;
 
     let success = server
-        .mock("POST", Matcher::Any)
+        .mock("POST", "/v1/responses")
         .match_request(move |req| {
             let parsed = request_json(req);
             let previous = parsed

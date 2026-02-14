@@ -682,8 +682,8 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let description_label = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(content_left + 8.0, 274.0),
-                &CGSize::new(content_width - 16.0, 92.0),
+                &CGPoint::new(content_left + 8.0, 268.0),
+                &CGSize::new(content_width - 16.0, 104.0),
             ),
             text: String::new(),
             font_size: 14.0,
@@ -825,21 +825,25 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.hotkey_both_radio = Some(hotkey_both as usize);
 
         let summary_view: Id = msg_send![ns_view, alloc];
+        const SUMMARY_WIDTH: f64 = 376.0;
+        const SUMMARY_HEIGHT: f64 = 212.0;
         let summary_view: Id = msg_send![
             summary_view,
             initWithFrame: CGRect::new(
-                &CGPoint::new(content_center - 188.0, 146.0),
-                &CGSize::new(376.0, 196.0)
+                &CGPoint::new(content_center - (SUMMARY_WIDTH * 0.5), 146.0),
+                &CGSize::new(SUMMARY_WIDTH, SUMMARY_HEIGHT)
             )
         ];
         add_subview(root, summary_view);
         ui.summary_view = Some(summary_view as usize);
 
         let mut summary_labels: [Option<usize>; 5] = [None; 5];
+        let summary_line_height = 28.0;
+        let summary_top = SUMMARY_HEIGHT - 26.0;
         for (idx, permission) in PERMISSION_ORDER.iter().enumerate() {
-            let y = 166.0 - (idx as f64 * 26.0);
+            let y = summary_top - (idx as f64 * summary_line_height);
             let label = create_label(LabelConfig {
-                frame: CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(360.0, 20.0)),
+                frame: CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(360.0, 22.0)),
                 text: permission.title().to_string(),
                 font_size: 12.0,
                 text_color: color_secondary_label(),
@@ -852,7 +856,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.summary_permission_labels = summary_labels;
 
         let summary_config = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(0.0, 4.0), &CGSize::new(360.0, 50.0)),
+            frame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(360.0, 50.0)),
             text: String::new(),
             font_size: 12.0,
             text_color: color_secondary_label(),
@@ -1134,6 +1138,38 @@ fn handle_permission_primary(kind: PermissionKind) {
 
     // Persist checkpoint before asking TCC in case macOS forces an app restart.
     save_onboarding_progress(step_to_persist);
+
+    if kind == PermissionKind::Microphone {
+        thread::spawn(move || {
+            let _ = request_permission(kind);
+            Queue::main().exec_async(move || {
+                let mut should_render = false;
+                let mut should_schedule = false;
+                {
+                    let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    let requested = state.requested_permissions[idx];
+                    state.permission_states[idx] = check_permission_state(kind, requested);
+                    if state.step_index == step_to_persist {
+                        should_render = true;
+                        if state.permission_states[idx] == PermissionUiStatus::Granted {
+                            should_schedule = true;
+                        }
+                    }
+                }
+
+                if should_render {
+                    render_current_step();
+                }
+                if should_schedule {
+                    maybe_schedule_auto_advance(step_to_persist);
+                }
+            });
+        });
+
+        // Keep UI responsive while system prompt is in flight.
+        render_current_step();
+        return;
+    }
 
     let _ = request_permission(kind);
 
