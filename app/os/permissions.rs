@@ -14,7 +14,13 @@ use core_foundation::base::TCFType;
 #[cfg(target_os = "macos")]
 use core_foundation::string::CFString;
 #[cfg(target_os = "macos")]
+use dispatch::Queue;
+#[cfg(target_os = "macos")]
 use objc::{msg_send, runtime::Class, sel, sel_impl};
+#[cfg(target_os = "macos")]
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
 
 /// Permission status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,28 +155,37 @@ pub fn check_microphone() -> PermissionStatus {
     PermissionStatus::Granted // Not needed on other platforms
 }
 
-/// Request Microphone permission
-///
-/// Shows system dialog asking user to grant microphone access.
-/// Returns true when access is granted.
 #[cfg(target_os = "macos")]
-pub fn request_microphone() -> bool {
-    match check_microphone() {
-        PermissionStatus::Granted => return true,
-        PermissionStatus::Denied => return false,
-        PermissionStatus::NotDetermined => {}
+const MICROPHONE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(target_os = "macos")]
+const MICROPHONE_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg(target_os = "macos")]
+const MAIN_THREAD_DISPATCH_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(target_os = "macos")]
+fn is_main_thread() -> bool {
+    unsafe {
+        if let Some(ns_thread) = Class::get("NSThread") {
+            msg_send![ns_thread, isMainThread]
+        } else {
+            std::thread::current().name() == Some("main")
+        }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn start_microphone_request(callback_tx: Sender<bool>) -> bool {
+    use tracing::warn;
 
     let Some(av_class) = Class::get("AVCaptureDevice") else {
+        warn!("Microphone request failed: AVCaptureDevice class unavailable.");
         return false;
     };
 
     let media_type = CFString::new("soun");
-    let (tx, rx) = std::sync::mpsc::channel();
-
     unsafe {
         let request_block = block::ConcreteBlock::new(move |granted: bool| {
-            let _ = tx.send(granted);
+            let _ = callback_tx.send(granted);
         })
         .copy();
 
@@ -181,8 +196,137 @@ pub fn request_microphone() -> bool {
         ];
     }
 
-    rx.recv_timeout(std::time::Duration::from_secs(60))
-        .unwrap_or_else(|_| check_microphone() == PermissionStatus::Granted)
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn start_microphone_request_on_main_thread(callback_tx: Sender<bool>) -> bool {
+    use tracing::warn;
+
+    if is_main_thread() {
+        return start_microphone_request(callback_tx);
+    }
+
+    let (started_tx, started_rx) = mpsc::channel();
+    Queue::main().exec_async(move || {
+        let started = start_microphone_request(callback_tx);
+        let _ = started_tx.send(started);
+    });
+
+    match started_rx.recv_timeout(MAIN_THREAD_DISPATCH_TIMEOUT) {
+        Ok(started) => started,
+        Err(RecvTimeoutError::Timeout) => {
+            warn!(
+                "Microphone request dispatch timed out waiting for main thread (>{:?}).",
+                MAIN_THREAD_DISPATCH_TIMEOUT
+            );
+            false
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            warn!("Microphone request dispatch failed: main-thread handoff channel closed.");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_microphone_resolution(callback_rx: Receiver<bool>) -> bool {
+    use tracing::{info, warn};
+
+    let started = Instant::now();
+    loop {
+        let elapsed = started.elapsed();
+        if elapsed >= MICROPHONE_REQUEST_TIMEOUT {
+            break;
+        }
+
+        let remaining = MICROPHONE_REQUEST_TIMEOUT - elapsed;
+        let wait_for = remaining.min(MICROPHONE_STATUS_POLL_INTERVAL);
+
+        match callback_rx.recv_timeout(wait_for) {
+            Ok(granted) => {
+                if granted {
+                    info!("Microphone permission granted by system callback.");
+                    return true;
+                }
+
+                let status = check_microphone();
+                if status == PermissionStatus::Granted {
+                    info!("Microphone callback reported false, but status is now Granted.");
+                    return true;
+                }
+
+                warn!(
+                    "Microphone permission denied. Enable CodeScribe in System Settings > Privacy & Security > Microphone."
+                );
+                return false;
+            }
+            Err(RecvTimeoutError::Timeout) => match check_microphone() {
+                PermissionStatus::Granted => {
+                    info!("Microphone permission became Granted while waiting for callback.");
+                    return true;
+                }
+                PermissionStatus::Denied => {
+                    warn!(
+                        "Microphone permission is denied/restricted. Enable CodeScribe in System Settings > Privacy & Security > Microphone."
+                    );
+                    return false;
+                }
+                PermissionStatus::NotDetermined => {}
+            },
+            Err(RecvTimeoutError::Disconnected) => {
+                let status = check_microphone();
+                warn!(
+                    "Microphone callback channel closed before completion (status: {:?}).",
+                    status
+                );
+                return status == PermissionStatus::Granted;
+            }
+        }
+    }
+
+    let status = check_microphone();
+    warn!(
+        "Timed out waiting {:?} for microphone permission result (status: {:?}). Open System Settings > Privacy & Security > Microphone if needed.",
+        MICROPHONE_REQUEST_TIMEOUT, status
+    );
+    status == PermissionStatus::Granted
+}
+
+/// Request Microphone permission
+///
+/// Shows system dialog asking user to grant microphone access.
+/// Returns true when access is granted.
+#[cfg(target_os = "macos")]
+pub fn request_microphone() -> bool {
+    use tracing::{info, warn};
+
+    match check_microphone() {
+        PermissionStatus::Granted => return true,
+        PermissionStatus::Denied => {
+            warn!(
+                "Microphone permission already denied/restricted. Grant access in System Settings > Privacy & Security > Microphone."
+            );
+            return false;
+        }
+        PermissionStatus::NotDetermined => {
+            info!("Microphone permission not determined yet; requesting system prompt.");
+        }
+    }
+
+    if is_main_thread() {
+        info!(
+            "request_microphone() is running on main thread; using bounded polling fallback to avoid hanging on callback delivery."
+        );
+    }
+
+    let (callback_tx, callback_rx) = mpsc::channel();
+    if !start_microphone_request_on_main_thread(callback_tx) {
+        warn!("Microphone permission request could not be started.");
+        return check_microphone() == PermissionStatus::Granted;
+    }
+
+    wait_for_microphone_resolution(callback_rx)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -203,6 +347,8 @@ pub fn check_screen_recording() -> PermissionStatus {
     if unsafe { CGPreflightScreenCaptureAccess() } {
         PermissionStatus::Granted
     } else {
+        // macOS preflight only reports granted/not-granted and does not reliably
+        // distinguish "never requested" from "denied". Keep this conservative.
         PermissionStatus::NotDetermined
     }
 }
@@ -226,11 +372,7 @@ pub fn request_screen_recording() -> bool {
 /// Check Full Disk Access permission status.
 #[cfg(target_os = "macos")]
 pub fn check_full_disk_access() -> PermissionStatus {
-    if has_full_disk_access() {
-        PermissionStatus::Granted
-    } else {
-        PermissionStatus::NotDetermined
-    }
+    full_disk_access_status()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -254,12 +396,12 @@ pub fn request_full_disk_access() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn has_full_disk_access() -> bool {
+fn full_disk_access_status() -> PermissionStatus {
     use std::path::Path;
 
     let home = std::env::var("HOME").unwrap_or_default();
     if home.is_empty() {
-        return false;
+        return PermissionStatus::NotDetermined;
     }
 
     let protected_roots = [
@@ -268,15 +410,23 @@ fn has_full_disk_access() -> bool {
         Path::new(&home).join("Library/Safari"),
     ];
 
+    let mut saw_permission_denied = false;
     for path in protected_roots {
         match std::fs::read_dir(&path) {
-            Ok(_) => return true,
-            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return false,
+            Ok(_) => return PermissionStatus::Granted,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                saw_permission_denied = true;
+            }
             Err(_) => continue,
         }
     }
 
-    false
+    if saw_permission_denied {
+        PermissionStatus::Denied
+    } else {
+        // Could be "not requested yet" or paths absent on this machine.
+        PermissionStatus::NotDetermined
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -326,11 +476,17 @@ pub fn check_all_permissions() {
             info!("Microphone permission: Granted");
         }
         PermissionStatus::NotDetermined => {
-            info!("Microphone permission: Not determined");
+            info!(
+                "Microphone permission: Not determined (macOS prompt may appear on first recording attempt)."
+            );
+            info!(
+                "If recording does not start, open System Settings > Privacy & Security > Microphone and enable CodeScribe."
+            );
         }
         PermissionStatus::Denied => {
             warn!("Microphone permission: DENIED - Recording will not work!");
             warn!("Grant access in: System Settings > Privacy & Security > Microphone");
+            warn!("After enabling access, restart CodeScribe if status does not refresh.");
         }
     }
 }
@@ -355,7 +511,7 @@ pub fn request_all_permissions() {
 
     if check_microphone() != PermissionStatus::Granted {
         info!(
-            "Microphone permission not granted yet; open System Settings > Privacy & Security > Microphone if needed."
+            "Microphone permission not granted yet; CodeScribe will request it when recording starts. If no prompt appears, open System Settings > Privacy & Security > Microphone."
         );
     }
 }

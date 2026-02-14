@@ -69,9 +69,7 @@ pub enum WizardStep {
     Done,
 }
 
-pub const TOTAL_STEPS: usize = 10;
-
-pub const STEP_FLOW: [WizardStep; TOTAL_STEPS] = [
+pub const STEP_FLOW: [WizardStep; 10] = [
     WizardStep::Welcome,
     WizardStep::Permission(PermissionKind::Microphone),
     WizardStep::Permission(PermissionKind::Accessibility),
@@ -83,6 +81,8 @@ pub const STEP_FLOW: [WizardStep; TOTAL_STEPS] = [
     WizardStep::HotkeyMode,
     WizardStep::Done,
 ];
+
+pub const TOTAL_STEPS: usize = STEP_FLOW.len();
 
 pub fn step_for_index(index: usize) -> WizardStep {
     STEP_FLOW.get(index).copied().unwrap_or(WizardStep::Welcome)

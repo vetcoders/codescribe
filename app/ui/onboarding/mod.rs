@@ -20,7 +20,7 @@ use objc2_app_kit::{
 };
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::thread;
@@ -220,8 +220,13 @@ fn acquire_onboarding_lock() -> bool {
         Ok(())
     };
 
-    if try_create().is_ok() {
-        return true;
+    match try_create() {
+        Ok(()) => return true,
+        Err(e) if e.kind() != ErrorKind::AlreadyExists => {
+            warn!("Onboarding: failed to acquire lock: {e}");
+            return false;
+        }
+        Err(_) => {}
     }
 
     let existing_pid = fs::read_to_string(&path)
@@ -236,7 +241,15 @@ fn acquire_onboarding_lock() -> bool {
         return false;
     }
 
-    let _ = fs::remove_file(&path);
+    match fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => {
+            warn!("Onboarding: failed to remove stale lock: {e}");
+            return false;
+        }
+    }
+
     match try_create() {
         Ok(()) => true,
         Err(e) => {
@@ -374,11 +387,25 @@ extern "C" fn on_hotkey_selected(_this: &Object, _sel: Sel, sender: Id) {
     render_current_step();
 }
 
-extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, _notification: Id) {
+extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, notification: Id) {
+    let window_ptr = unsafe {
+        if notification.is_null() {
+            None
+        } else {
+            let window: Id = msg_send![notification, object];
+            if window.is_null() {
+                None
+            } else {
+                Some(window as usize)
+            }
+        }
+    };
+
     let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
     let delegate_ptr = state.window_delegate.take();
     let handler_ptr = state.action_handler.take();
     state.window = None;
+    state.ui = UiRefs::default();
     state.full_disk_polling = false;
     state.scheduled_auto_advance_step = None;
     drop(state);
@@ -388,6 +415,9 @@ extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, _notification: Id)
             let _: () = msg_send![ptr as Id, release];
         }
         if let Some(ptr) = handler_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
+        if let Some(ptr) = window_ptr {
             let _: () = msg_send![ptr as Id, release];
         }
     }
@@ -1226,7 +1256,14 @@ fn save_language_choice() {
     };
 
     let mut settings = UserSettings::load();
-    settings.set_string("WHISPER_LANGUAGE", language.value());
+    settings.whisper_language = Some(language.value().to_string());
+    if let Err(e) = settings.save() {
+        warn!(
+            "Onboarding: failed to persist language {}: {e}",
+            language.value()
+        );
+    }
+
     unsafe { std::env::set_var("WHISPER_LANGUAGE", language.value()) };
     info!("Onboarding: language set to {}", language.value());
 }
@@ -1252,7 +1289,11 @@ fn persist_api_key_from_field() -> bool {
         Ok(()) => {
             unsafe { std::env::set_var("LLM_API_KEY", &key) };
             let mut settings = UserSettings::load();
-            settings.set_bool("AI_FORMATTING_ENABLED", true);
+            settings.ai_formatting_enabled = Some(true);
+            if let Err(e) = settings.save() {
+                warn!("Onboarding: failed to persist AI formatting setting: {e}");
+            }
+
             unsafe { std::env::set_var("AI_FORMATTING_ENABLED", "1") };
 
             let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -1286,7 +1327,11 @@ fn persist_api_key_from_field() -> bool {
 
 fn mark_api_key_skipped() {
     let mut settings = UserSettings::load();
-    settings.set_bool("AI_FORMATTING_ENABLED", false);
+    settings.ai_formatting_enabled = Some(false);
+    if let Err(e) = settings.save() {
+        warn!("Onboarding: failed to persist AI formatting disabled state: {e}");
+    }
+
     unsafe { std::env::set_var("AI_FORMATTING_ENABLED", "0") };
 
     let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -1299,55 +1344,65 @@ fn save_hotkey_mode() {
         state.hotkey_mode
     };
 
-    match mode {
-        HotkeyModeChoice::HoldToTalk => {
-            let mut settings = UserSettings::load();
-            settings.set_string("HOLD_MODS", "ctrl_alt");
-            settings.set_string("TOGGLE_TRIGGER", "none");
-            settings.set_bool("HOTKEY_DOUBLE_TAP_LEFT", false);
-            settings.set_bool("HOTKEY_DOUBLE_TAP_RIGHT", false);
+    let (
+        hold_mods_raw,
+        toggle_trigger_raw,
+        double_tap_left,
+        double_tap_right,
+        hold_mods_runtime,
+        toggle_trigger_runtime,
+    ) = match mode {
+        HotkeyModeChoice::HoldToTalk => (
+            "ctrl_alt",
+            "none",
+            false,
+            false,
+            HoldMods::CtrlAlt,
+            ToggleTrigger::None,
+        ),
+        HotkeyModeChoice::Toggle => (
+            "none",
+            "double_option",
+            true,
+            false,
+            HoldMods::None,
+            ToggleTrigger::DoubleOption,
+        ),
+        HotkeyModeChoice::Both => (
+            "ctrl_alt",
+            "double_option",
+            true,
+            true,
+            HoldMods::CtrlAlt,
+            ToggleTrigger::DoubleOption,
+        ),
+    };
 
-            hotkeys::set_hold_mods(HoldMods::CtrlAlt);
-            hotkeys::set_toggle_trigger(ToggleTrigger::None);
-            unsafe {
-                std::env::set_var("HOLD_MODS", "ctrl_alt");
-                std::env::set_var("TOGGLE_TRIGGER", "none");
-                std::env::set_var("HOTKEY_DOUBLE_TAP_LEFT", "0");
-                std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", "0");
-            }
-        }
-        HotkeyModeChoice::Toggle => {
-            let mut settings = UserSettings::load();
-            settings.set_string("HOLD_MODS", "none");
-            settings.set_string("TOGGLE_TRIGGER", "double_option");
-            settings.set_bool("HOTKEY_DOUBLE_TAP_LEFT", true);
-            settings.set_bool("HOTKEY_DOUBLE_TAP_RIGHT", false);
+    let mut settings = UserSettings::load();
+    settings.hold_mods = Some(hold_mods_raw.to_string());
+    settings.toggle_trigger = Some(toggle_trigger_raw.to_string());
+    settings.double_tap_left = Some(double_tap_left);
+    settings.double_tap_right = Some(double_tap_right);
+    if let Err(e) = settings.save() {
+        warn!(
+            "Onboarding: failed to persist hotkey mode {}: {e}",
+            mode.label()
+        );
+    }
 
-            hotkeys::set_hold_mods(HoldMods::None);
-            hotkeys::set_toggle_trigger(ToggleTrigger::DoubleOption);
-            unsafe {
-                std::env::set_var("HOLD_MODS", "none");
-                std::env::set_var("TOGGLE_TRIGGER", "double_option");
-                std::env::set_var("HOTKEY_DOUBLE_TAP_LEFT", "1");
-                std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", "0");
-            }
-        }
-        HotkeyModeChoice::Both => {
-            let mut settings = UserSettings::load();
-            settings.set_string("HOLD_MODS", "ctrl_alt");
-            settings.set_string("TOGGLE_TRIGGER", "double_option");
-            settings.set_bool("HOTKEY_DOUBLE_TAP_LEFT", true);
-            settings.set_bool("HOTKEY_DOUBLE_TAP_RIGHT", true);
-
-            hotkeys::set_hold_mods(HoldMods::CtrlAlt);
-            hotkeys::set_toggle_trigger(ToggleTrigger::DoubleOption);
-            unsafe {
-                std::env::set_var("HOLD_MODS", "ctrl_alt");
-                std::env::set_var("TOGGLE_TRIGGER", "double_option");
-                std::env::set_var("HOTKEY_DOUBLE_TAP_LEFT", "1");
-                std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", "1");
-            }
-        }
+    hotkeys::set_hold_mods(hold_mods_runtime);
+    hotkeys::set_toggle_trigger(toggle_trigger_runtime);
+    unsafe {
+        std::env::set_var("HOLD_MODS", hold_mods_raw);
+        std::env::set_var("TOGGLE_TRIGGER", toggle_trigger_raw);
+        std::env::set_var(
+            "HOTKEY_DOUBLE_TAP_LEFT",
+            if double_tap_left { "1" } else { "0" },
+        );
+        std::env::set_var(
+            "HOTKEY_DOUBLE_TAP_RIGHT",
+            if double_tap_right { "1" } else { "0" },
+        );
     }
 
     info!("Onboarding: hotkey mode set to {}", mode.label());

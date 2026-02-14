@@ -261,6 +261,20 @@ impl Config {
         }
     }
 
+    /// Set an env var from settings, with basic validation.
+    /// Rejects empty strings and strings longer than 4096 chars.
+    fn safe_set_env(key: &str, value: &str) {
+        if value.is_empty() || value.len() > 4096 {
+            warn!(
+                "Ignoring invalid setting {key}: value length {}",
+                value.len()
+            );
+            return;
+        }
+        // SAFETY: single-threaded config init, no other threads reading env yet.
+        unsafe { std::env::set_var(key, value) };
+    }
+
     /// Apply user settings from JSON (lower priority than .env).
     /// Only applies values that are Some AND not already overridden by env vars.
     fn apply_user_settings(&mut self, settings: &super::settings::UserSettings) {
@@ -320,7 +334,7 @@ impl Config {
             && let Some(ref v) = settings.formatting_level
         {
             // FORMATTING_LEVEL is read from env at runtime (not a Config field).
-            unsafe { std::env::set_var("FORMATTING_LEVEL", v) };
+            Self::safe_set_env("FORMATTING_LEVEL", v);
         }
         // Sound
         if std::env::var("BEEP_ON_START").is_err()
@@ -344,18 +358,18 @@ impl Config {
         {
             // LLM_MODEL is not in Config struct but read from env at runtime
             // Set env var so downstream code picks it up
-            unsafe { std::env::set_var("LLM_MODEL", v) };
+            Self::safe_set_env("LLM_MODEL", v);
         }
         // Assistive LLM (not in Config struct, read from env at runtime)
         if std::env::var("LLM_ASSISTIVE_ENDPOINT").is_err()
             && let Some(ref v) = settings.llm_assistive_endpoint
         {
-            unsafe { std::env::set_var("LLM_ASSISTIVE_ENDPOINT", v) };
+            Self::safe_set_env("LLM_ASSISTIVE_ENDPOINT", v);
         }
         if std::env::var("LLM_ASSISTIVE_MODEL").is_err()
             && let Some(ref v) = settings.llm_assistive_model
         {
-            unsafe { std::env::set_var("LLM_ASSISTIVE_MODEL", v) };
+            Self::safe_set_env("LLM_ASSISTIVE_MODEL", v);
         }
         // Double-tap toggles (read from env at runtime, not in Config struct)
         if std::env::var("HOTKEY_DOUBLE_TAP_LEFT").is_err()
@@ -386,12 +400,12 @@ impl Config {
         if std::env::var("LLM_FORMATTING_ENDPOINT").is_err()
             && let Some(ref v) = settings.llm_formatting_endpoint
         {
-            unsafe { std::env::set_var("LLM_FORMATTING_ENDPOINT", v) };
+            Self::safe_set_env("LLM_FORMATTING_ENDPOINT", v);
         }
         if std::env::var("LLM_FORMATTING_MODEL").is_err()
             && let Some(ref v) = settings.llm_formatting_model
         {
-            unsafe { std::env::set_var("LLM_FORMATTING_MODEL", v) };
+            Self::safe_set_env("LLM_FORMATTING_MODEL", v);
         }
 
         // Local STT
@@ -490,7 +504,7 @@ impl Config {
         if std::env::var("WHISPER_MODEL").is_err()
             && let Some(ref v) = settings.whisper_model
         {
-            unsafe { std::env::set_var("WHISPER_MODEL", v) };
+            Self::safe_set_env("WHISPER_MODEL", v);
         }
         if std::env::var("BACKEND_MAX_UPLOAD_MB").is_err()
             && let Some(v) = settings.backend_max_upload_mb

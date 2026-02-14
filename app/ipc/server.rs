@@ -306,11 +306,13 @@ fn persist_config(config: &Config) -> Result<()> {
 
     let mut updated: Vec<(String, String)> = Vec::new();
     let mut settings: Option<UserSettings> = None;
+    let mut promoted_keys: Vec<String> = Vec::new();
 
     let mut put = |key: &str, value: String, env_vars: &mut HashMap<String, String>| {
         if is_promoted_ipc_setting(key) {
             let settings = settings.get_or_insert_with(UserSettings::load);
             persist_promoted_setting(settings, key, &value);
+            promoted_keys.push(key.to_string());
         } else {
             env_vars.insert(key.to_string(), value.clone());
         }
@@ -471,6 +473,19 @@ fn persist_config(config: &Config) -> Result<()> {
 
     Config::write_env_file(&env_path, &env_vars)?;
 
+    if let Some(settings) = settings
+        && let Err(e) = settings.save()
+    {
+        let settings_path = UserSettings::settings_path();
+        warn!(
+            "IPC SaveConfig failed to persist promoted settings to {} (keys: {}). \
+             Values are applied for this process only and may be lost on restart: {}",
+            settings_path.display(),
+            promoted_keys.join(", "),
+            e
+        );
+    }
+
     for (key, value) in updated {
         // SAFETY: This mirrors Config::save_to_env to keep runtime env in sync.
         unsafe { std::env::set_var(&key, &value) };
@@ -513,26 +528,61 @@ fn is_promoted_ipc_setting(key: &str) -> bool {
 
 fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str) {
     match key {
-        "HOLD_START_DELAY_MS" | "DOUBLE_TAP_INTERVAL_MS" => {
+        "WHISPER_LANGUAGE" => settings.whisper_language = Some(value.to_string()),
+        "HOLD_MODS" => settings.hold_mods = Some(value.to_string()),
+        "TOGGLE_TRIGGER" => settings.toggle_trigger = Some(value.to_string()),
+        "LOCAL_MODEL" => settings.local_model = Some(value.to_string()),
+        "STT_ENDPOINT" => settings.stt_endpoint = Some(value.to_string()),
+        "AUDIO_INPUT_DEVICE" => settings.audio_input_device = Some(value.to_string()),
+        "SOUND_NAME" => settings.sound_name = Some(value.to_string()),
+        "LLM_ENDPOINT" => settings.llm_endpoint = Some(value.to_string()),
+        "HOLD_START_DELAY_MS" => {
             if let Ok(v) = value.parse::<u64>() {
-                settings.set_u64(key, v);
+                settings.hold_start_delay_ms = Some(v);
             }
         }
-        "TOGGLE_SILENCE_SEC" | "SOUND_VOLUME" => {
+        "DOUBLE_TAP_INTERVAL_MS" => {
+            if let Ok(v) = value.parse::<u64>() {
+                settings.double_tap_interval_ms = Some(v);
+            }
+        }
+        "TOGGLE_SILENCE_SEC" => {
             if let Ok(v) = value.parse::<f32>() {
-                settings.set_f32(key, v);
+                settings.toggle_silence_sec = Some(v);
             }
         }
-        "HOLD_EXCLUSIVE"
-        | "AI_FORMATTING_ENABLED"
-        | "BEEP_ON_START"
-        | "USE_LOCAL_STT"
-        | "HISTORY_ENABLED"
-        | "START_AT_LOGIN" => {
-            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
-            settings.set_bool(key, bool_val);
+        "SOUND_VOLUME" => {
+            if let Ok(v) = value.parse::<f32>() {
+                settings.sound_volume = Some(v);
+            }
         }
-        _ => settings.set_string(key, value),
+        "HOLD_EXCLUSIVE" => {
+            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
+            settings.hold_exclusive = Some(bool_val);
+        }
+        "AI_FORMATTING_ENABLED" => {
+            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
+            settings.ai_formatting_enabled = Some(bool_val);
+        }
+        "BEEP_ON_START" => {
+            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
+            settings.beep_on_start = Some(bool_val);
+        }
+        "USE_LOCAL_STT" => {
+            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
+            settings.use_local_stt = Some(bool_val);
+        }
+        "HISTORY_ENABLED" => {
+            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
+            settings.history_enabled = Some(bool_val);
+        }
+        "START_AT_LOGIN" => {
+            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
+            settings.start_at_login = Some(bool_val);
+        }
+        _ => {
+            warn!("IPC promoted setting key is not mapped to UserSettings: {key}");
+        }
     }
 }
 

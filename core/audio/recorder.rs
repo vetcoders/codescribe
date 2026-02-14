@@ -94,7 +94,7 @@ impl RecorderVad {
             return None;
         }
 
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(8);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(128);
         // 0.0 = no speech seen yet (the critical fix)
         let last_prob = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
         let writer = Arc::clone(&last_prob);
@@ -114,7 +114,7 @@ impl RecorderVad {
                 info!("RecorderVad ready (sample_rate={sample_rate}Hz)");
                 for samples in rx {
                     let prob = acc_vad.feed(&samples);
-                    writer.store(prob.to_bits(), Ordering::Relaxed);
+                    writer.store(prob.to_bits(), Ordering::Release);
                 }
                 debug!("RecorderVad thread exiting (channel closed)");
             })
@@ -439,7 +439,7 @@ impl Recorder {
                     // Read latest speech probability from local VAD
                     let speech_prob = vad_prob
                         .as_ref()
-                        .map(|p| f32::from_bits(p.load(Ordering::Relaxed)))
+                        .map(|p| f32::from_bits(p.load(Ordering::Acquire)))
                         .unwrap_or(0.0);
                     let is_silence = speech_prob < speech_threshold;
 

@@ -353,6 +353,48 @@ reload = "restart"
 category = "stt"
 description = "Directory containing all models"
 
+[vars.CODESCRIBE_STT_ENGINE]
+default = "candle"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "STT engine: candle (default) or onnx"
+
+[vars.CODESCRIBE_NO_EMBED_WHISPER]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Disable embedded Whisper model (use external)"
+
+[vars.CODESCRIBE_ONNX_CPU_ONLY]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Force ONNX to use CPU only (no GPU/Metal)"
+
+[vars.CODESCRIBE_ONNX_MODEL_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Custom path to ONNX Whisper model"
+
+[vars.CODESCRIBE_ONNX_QUANT]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "ONNX quantization level (e.g. q4, q8)"
+
+[vars.CODESCRIBE_ONNX_REPO]
+default = "onnx-community/whisper-large-v3-turbo"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "HuggingFace repo for ONNX model download"
+
 [vars.STT_ENDPOINT]
 default = ""
 type = "string"

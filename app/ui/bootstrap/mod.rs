@@ -2009,7 +2009,8 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
         } else {
             let path =
                 std::env::var("CODESCRIBE_MODEL_PATH").unwrap_or_else(|_| "(not set)".to_string());
-            format!("External: {path}")
+            let filename = path.rsplit('/').next().unwrap_or(&path);
+            format!("External: {filename}")
         };
         add_row("Whisper", &whisper_status, whisper_embedded);
 
@@ -2020,7 +2021,11 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
         } else {
             let path = codescribe_core::vad::user_model_path();
             if path.exists() {
-                format!("Silero v6: {}", path.display())
+                let filename = path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy();
+                format!("Silero v6: {filename}")
             } else {
                 "Not found (will auto-download)".to_string()
             }
