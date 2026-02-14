@@ -463,7 +463,8 @@ async fn run_daemon() -> Result<()> {
             }
         }
 
-        codescribe::os::permissions::request_all_permissions();
+        // Onboarding owns permission request timing. Do not trigger prompts on startup.
+        codescribe::os::permissions::check_all_permissions();
 
         if codescribe::should_show_bootstrap() {
             codescribe::schedule_bootstrap();

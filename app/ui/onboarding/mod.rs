@@ -20,6 +20,8 @@ use objc2_app_kit::{
     NSWindowButton, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, Once};
@@ -88,6 +90,7 @@ enum PermissionUiStatus {
 
 #[derive(Clone, Copy, Default)]
 struct UiRefs {
+    sidebar_step_labels: [Option<usize>; TOTAL_STEPS],
     icon_label: Option<usize>,
     title_label: Option<usize>,
     description_label: Option<usize>,
@@ -167,11 +170,97 @@ fn onboarding_done_path() -> PathBuf {
     Config::config_dir().join("onboarding_done")
 }
 
+fn onboarding_progress_path() -> PathBuf {
+    Config::config_dir().join("onboarding_progress")
+}
+
+fn onboarding_lock_path() -> PathBuf {
+    Config::config_dir().join("onboarding_session.lock")
+}
+
+fn load_onboarding_progress() -> usize {
+    let raw = fs::read_to_string(onboarding_progress_path()).ok();
+    let step = raw
+        .as_deref()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    step.min(TOTAL_STEPS.saturating_sub(1))
+}
+
+fn save_onboarding_progress(step_index: usize) {
+    let path = onboarding_progress_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, step_index.to_string());
+}
+
+fn clear_onboarding_progress() {
+    let _ = fs::remove_file(onboarding_progress_path());
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    if result == 0 {
+        return true;
+    }
+
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn acquire_onboarding_lock() -> bool {
+    let path = onboarding_lock_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let pid = std::process::id();
+
+    let try_create = || -> std::io::Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)?;
+        let _ = write!(file, "{pid}");
+        Ok(())
+    };
+
+    if try_create().is_ok() {
+        return true;
+    }
+
+    let existing_pid = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+
+    if existing_pid > 0 && existing_pid != pid && process_is_alive(existing_pid) {
+        warn!(
+            "Onboarding: lock is held by live process pid={existing_pid}, skipping duplicate wizard"
+        );
+        return false;
+    }
+
+    let _ = fs::remove_file(&path);
+    match try_create() {
+        Ok(()) => true,
+        Err(e) => {
+            warn!("Onboarding: failed to acquire lock: {e}");
+            false
+        }
+    }
+}
+
+fn release_onboarding_lock() {
+    let _ = fs::remove_file(onboarding_lock_path());
+}
+
 pub fn should_show_onboarding() -> bool {
     !onboarding_done_path().exists()
 }
 
 fn mark_onboarding_done() {
+    clear_onboarding_progress();
     let path = onboarding_done_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -183,9 +272,13 @@ pub fn show_onboarding_wizard() {
     if !should_show_onboarding() {
         return;
     }
+    if !acquire_onboarding_lock() {
+        return;
+    }
 
     if is_main_thread() {
         show_onboarding_wizard_impl();
+        release_onboarding_lock();
     } else {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         Queue::main().exec_async(move || {
@@ -193,6 +286,7 @@ pub fn show_onboarding_wizard() {
             let _ = tx.send(());
         });
         let _ = rx.recv();
+        release_onboarding_lock();
     }
 }
 
@@ -394,13 +488,15 @@ fn show_onboarding_wizard_impl() {
 
         let ui = build_onboarding_ui(background, action_handler);
 
+        let resume_step = load_onboarding_progress();
+
         {
             let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
             *state = OnboardingState {
                 window: Some(window as usize),
                 window_delegate: Some(window_delegate as usize),
                 action_handler: Some(action_handler as usize),
-                step_index: 0,
+                step_index: resume_step,
                 language: initial_language_choice(),
                 hotkey_mode: initial_hotkey_choice(),
                 requested_permissions: [false; 5],
@@ -414,6 +510,7 @@ fn show_onboarding_wizard_impl() {
             };
             refresh_all_permission_states_locked(&mut state);
         }
+        save_onboarding_progress(resume_step);
 
         render_current_step();
         window_show(window);
@@ -430,8 +527,69 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let ns_view = Class::get("NSView").unwrap();
         let mut ui = UiRefs::default();
 
+        const SIDEBAR_WIDTH: f64 = 188.0;
+        let content_left = SIDEBAR_WIDTH + 20.0;
+        let content_width = WINDOW_WIDTH - content_left - 18.0;
+        let content_center = content_left + (content_width * 0.5);
+
+        let sidebar: Id = msg_send![ns_view, alloc];
+        let sidebar: Id = msg_send![
+            sidebar,
+            initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, WINDOW_HEIGHT))
+        ];
+        let _: () = msg_send![sidebar, setAutoresizingMask: 16_isize]; // NSViewHeightSizable
+        add_subview(root, sidebar);
+
+        let sidebar_title = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(18.0, 460.0),
+                &CGSize::new(SIDEBAR_WIDTH - 28.0, 22.0),
+            ),
+            text: "Onboarding".to_string(),
+            font_size: 13.0,
+            bold: true,
+            text_color: color_label(),
+            ..Default::default()
+        });
+        configure_label(sidebar_title, false, false);
+        add_subview(sidebar, sidebar_title);
+
+        let divider = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(SIDEBAR_WIDTH - 1.0, 0.0),
+                &CGSize::new(1.0, WINDOW_HEIGHT),
+            ),
+            text: String::new(),
+            background_color: Some(system_secondary_color()),
+            ..Default::default()
+        });
+        add_subview(root, divider);
+
+        let mut sidebar_step_labels: [Option<usize>; TOTAL_STEPS] = [None; TOTAL_STEPS];
+        let mut y = 426.0;
+        for slot in &mut sidebar_step_labels {
+            let label = create_label(LabelConfig {
+                frame: CGRect::new(
+                    &CGPoint::new(18.0, y),
+                    &CGSize::new(SIDEBAR_WIDTH - 28.0, 20.0),
+                ),
+                text: String::new(),
+                font_size: 12.0,
+                text_color: color_secondary_label(),
+                ..Default::default()
+            });
+            configure_label(label, false, false);
+            add_subview(sidebar, label);
+            *slot = Some(label as usize);
+            y -= 34.0;
+        }
+        ui.sidebar_step_labels = sidebar_step_labels;
+
         let icon_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(250.0, 410.0), &CGSize::new(100.0, 34.0)),
+            frame: CGRect::new(
+                &CGPoint::new(content_center - 50.0, 410.0),
+                &CGSize::new(100.0, 34.0),
+            ),
             text: String::new(),
             font_size: 24.0,
             bold: true,
@@ -443,7 +601,10 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.icon_label = Some(icon_label as usize);
 
         let title_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(60.0, 364.0), &CGSize::new(480.0, 34.0)),
+            frame: CGRect::new(
+                &CGPoint::new(content_left, 364.0),
+                &CGSize::new(content_width, 34.0),
+            ),
             text: String::new(),
             font_size: 24.0,
             bold: true,
@@ -455,7 +616,10 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.title_label = Some(title_label as usize);
 
         let description_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(70.0, 255.0), &CGSize::new(460.0, 96.0)),
+            frame: CGRect::new(
+                &CGPoint::new(content_left + 8.0, 255.0),
+                &CGSize::new(content_width - 16.0, 96.0),
+            ),
             text: String::new(),
             font_size: 14.0,
             text_color: color_secondary_label(),
@@ -466,7 +630,10 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.description_label = Some(description_label as usize);
 
         let status_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(185.0, 223.0), &CGSize::new(230.0, 22.0)),
+            frame: CGRect::new(
+                &CGPoint::new(content_center - 115.0, 223.0),
+                &CGSize::new(230.0, 22.0),
+            ),
             text: String::new(),
             font_size: 13.0,
             bold: true,
@@ -478,7 +645,10 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.status_label = Some(status_label as usize);
 
         let instruction_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(80.0, 185.0), &CGSize::new(440.0, 34.0)),
+            frame: CGRect::new(
+                &CGPoint::new(content_left + 8.0, 178.0),
+                &CGSize::new(content_width - 16.0, 46.0),
+            ),
             text: String::new(),
             font_size: 12.0,
             text_color: color_secondary_label(),
@@ -491,7 +661,10 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let language_view: Id = msg_send![ns_view, alloc];
         let language_view: Id = msg_send![
             language_view,
-            initWithFrame: CGRect::new(&CGPoint::new(140.0, 170.0), &CGSize::new(320.0, 88.0))
+            initWithFrame: CGRect::new(
+                &CGPoint::new(content_center - 160.0, 170.0),
+                &CGSize::new(320.0, 88.0)
+            )
         ];
         add_subview(root, language_view);
         ui.language_view = Some(language_view as usize);
@@ -519,7 +692,10 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let api_view: Id = msg_send![ns_view, alloc];
         let api_view: Id = msg_send![
             api_view,
-            initWithFrame: CGRect::new(&CGPoint::new(110.0, 165.0), &CGSize::new(380.0, 92.0))
+            initWithFrame: CGRect::new(
+                &CGPoint::new(content_center - 190.0, 165.0),
+                &CGSize::new(380.0, 92.0)
+            )
         ];
         add_subview(root, api_view);
         ui.api_view = Some(api_view as usize);
@@ -545,7 +721,10 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let hotkey_view: Id = msg_send![ns_view, alloc];
         let hotkey_view: Id = msg_send![
             hotkey_view,
-            initWithFrame: CGRect::new(&CGPoint::new(100.0, 146.0), &CGSize::new(400.0, 132.0))
+            initWithFrame: CGRect::new(
+                &CGPoint::new(content_center - 200.0, 146.0),
+                &CGSize::new(400.0, 132.0)
+            )
         ];
         add_subview(root, hotkey_view);
         ui.hotkey_view = Some(hotkey_view as usize);
@@ -583,7 +762,10 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let summary_view: Id = msg_send![ns_view, alloc];
         let summary_view: Id = msg_send![
             summary_view,
-            initWithFrame: CGRect::new(&CGPoint::new(112.0, 142.0), &CGSize::new(376.0, 152.0))
+            initWithFrame: CGRect::new(
+                &CGPoint::new(content_center - 188.0, 142.0),
+                &CGSize::new(376.0, 152.0)
+            )
         ];
         add_subview(root, summary_view);
         ui.summary_view = Some(summary_view as usize);
@@ -640,7 +822,10 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.skip_button = Some(skip_button as usize);
 
         let step_counter = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(18.0, 20.0), &CGSize::new(200.0, 20.0)),
+            frame: CGRect::new(
+                &CGPoint::new(18.0, 20.0),
+                &CGSize::new(SIDEBAR_WIDTH - 28.0, 20.0),
+            ),
             text: String::new(),
             font_size: 12.0,
             bold: true,
@@ -648,7 +833,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
             ..Default::default()
         });
         configure_label(step_counter, false, false);
-        add_subview(root, step_counter);
+        add_subview(sidebar, step_counter);
         ui.step_counter_label = Some(step_counter as usize);
 
         ui
@@ -699,6 +884,7 @@ fn render_current_step() {
 
     sync_language_radios(ui, language);
     sync_hotkey_radios(ui, hotkey_mode);
+    update_sidebar_step_labels(ui, step_index, permissions);
 
     match step {
         WizardStep::Welcome => {
@@ -752,7 +938,7 @@ fn render_current_step() {
                     set_hidden_if_present(ui.instruction_label, false);
                     set_text_if_present(
                         ui.instruction_label,
-                        "This permission is required to continue onboarding.",
+                        "This permission is required to continue onboarding. If status does not refresh after enabling it in System Settings, restart CodeScribe.",
                     );
                 }
             }
@@ -885,6 +1071,7 @@ fn handle_permission_primary(kind: PermissionKind) {
 
 fn advance_step() {
     let mut should_render = false;
+    let mut new_step = None;
     {
         let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if state.step_index + 1 < TOTAL_STEPS {
@@ -893,8 +1080,12 @@ fn advance_step() {
             if state.step_index != FULL_DISK_STEP_INDEX {
                 state.full_disk_polling = false;
             }
+            new_step = Some(state.step_index);
             should_render = true;
         }
+    }
+    if let Some(step) = new_step {
+        save_onboarding_progress(step);
     }
 
     if should_render {
@@ -904,6 +1095,7 @@ fn advance_step() {
 
 fn retreat_step() {
     let mut should_render = false;
+    let mut new_step = None;
     {
         let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
         if state.step_index > 0 {
@@ -912,8 +1104,12 @@ fn retreat_step() {
             if state.step_index != FULL_DISK_STEP_INDEX {
                 state.full_disk_polling = false;
             }
+            new_step = Some(state.step_index);
             should_render = true;
         }
+    }
+    if let Some(step) = new_step {
+        save_onboarding_progress(step);
     }
 
     if should_render {
@@ -1311,7 +1507,8 @@ fn open_privacy_settings(deeplink: &str) {
 
 fn configure_label(label: Id, centered: bool, multiline: bool) {
     unsafe {
-        let align = if centered { 2_isize } else { 0_isize };
+        // NSTextAlignment: 0=left, 1=center, 2=right
+        let align = if centered { 1_isize } else { 0_isize };
         let _: () = msg_send![label, setAlignment: align];
 
         if multiline {
@@ -1393,6 +1590,61 @@ fn sync_hotkey_radios(ui: UiRefs, mode: HotkeyModeChoice) {
         if let Some(both) = ui.hotkey_both_radio {
             let _: () = msg_send![both as Id, setState: if mode == HotkeyModeChoice::Both { 1_isize } else { 0_isize }];
         }
+    }
+}
+
+fn sidebar_step_title(step: WizardStep) -> &'static str {
+    match step {
+        WizardStep::Welcome => "Welcome",
+        WizardStep::Permission(PermissionKind::Microphone) => "Microphone",
+        WizardStep::Permission(PermissionKind::Accessibility) => "Accessibility",
+        WizardStep::Permission(PermissionKind::InputMonitoring) => "Input Monitoring",
+        WizardStep::Permission(PermissionKind::ScreenRecording) => "Screen Recording",
+        WizardStep::Permission(PermissionKind::FullDiskAccess) => "Full Disk Access",
+        WizardStep::Language => "Language",
+        WizardStep::ApiKey => "API Key",
+        WizardStep::HotkeyMode => "Hotkeys",
+        WizardStep::Done => "Finish",
+    }
+}
+
+fn update_sidebar_step_labels(
+    ui: UiRefs,
+    current_step_index: usize,
+    permissions: [PermissionUiStatus; 5],
+) {
+    for idx in 0..TOTAL_STEPS {
+        let step = step_for_index(idx);
+        let (marker, color) = if idx == current_step_index {
+            if let WizardStep::Permission(kind) = step {
+                let status = permissions[kind.index()];
+                if status == PermissionUiStatus::Denied {
+                    ("\u{2715}", system_red_color())
+                } else {
+                    ("\u{25CF}", color_label())
+                }
+            } else {
+                ("\u{25CF}", color_label())
+            }
+        } else if idx < current_step_index {
+            if let WizardStep::Permission(PermissionKind::FullDiskAccess) = step {
+                if permissions[PermissionKind::FullDiskAccess.index()]
+                    != PermissionUiStatus::Granted
+                {
+                    ("\u{2013}", system_secondary_color())
+                } else {
+                    ("\u{2713}", system_green_color())
+                }
+            } else {
+                ("\u{2713}", system_green_color())
+            }
+        } else {
+            ("\u{25CB}", system_secondary_color())
+        };
+
+        let text = format!("{marker} {}", sidebar_step_title(step));
+        set_text_if_present(ui.sidebar_step_labels[idx], &text);
+        set_label_color_if_present(ui.sidebar_step_labels[idx], color);
     }
 }
 
