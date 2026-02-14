@@ -57,6 +57,7 @@ const MAX_OLLAMA_MEMORY_CHARS: usize = 4000;
 const DEFAULT_AI_MAX_RETRIES: u32 = 3;
 const DEFAULT_AI_RETRY_DELAY_MS: u64 = 2000;
 const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_CONNECT_TIMEOUT_MS: u64 = 5_000;
@@ -68,6 +69,7 @@ struct RetryPolicy {
     max_retries: u32,
     retry_delay: Duration,
     attempt_timeout: Duration,
+    ollama_attempt_timeout: Duration,
     inter_chunk_timeout: Duration,
 }
 
@@ -82,6 +84,10 @@ impl RetryPolicy {
             attempt_timeout: duration_from_env_ms(
                 "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
                 DEFAULT_AI_ATTEMPT_TIMEOUT_MS,
+            ),
+            ollama_attempt_timeout: duration_from_env_ms(
+                "CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS",
+                DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS,
             ),
             inter_chunk_timeout: duration_from_env_ms(
                 "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
@@ -790,10 +796,12 @@ pub async fn format_text_with_status(
     let retry_policy = RetryPolicy::from_env();
     let max_retries = retry_policy.max_retries;
     debug!(
-        "AI retry policy: max_retries={}, retry_delay={:?}, attempt_timeout={:?}, inter_chunk_timeout={:?}",
+        "AI retry policy: max_retries={}, retry_delay={:?}, attempt_timeout={:?}, \
+         ollama_attempt_timeout={:?}, inter_chunk_timeout={:?}",
         retry_policy.max_retries,
         retry_policy.retry_delay,
         retry_policy.attempt_timeout,
+        retry_policy.ollama_attempt_timeout,
         retry_policy.inter_chunk_timeout
     );
 
@@ -852,9 +860,14 @@ pub async fn format_text_with_status(
             (EndpointFormat::ResponsesApi, true) => "responses-sse",
             (EndpointFormat::ResponsesApi, false) => "responses-json",
         };
+        let attempt_timeout = if endpoint_format == EndpointFormat::OllamaChat {
+            retry_policy.ollama_attempt_timeout
+        } else {
+            retry_policy.attempt_timeout
+        };
 
         let result_opt = match tokio::time::timeout(
-            retry_policy.attempt_timeout,
+            attempt_timeout,
             call_provider_once(
                 endpoint_format,
                 &user_message,
@@ -883,7 +896,7 @@ pub async fn format_text_with_status(
                     route,
                     attempt + 1,
                     max_retries + 1,
-                    retry_policy.attempt_timeout
+                    attempt_timeout
                 );
                 None
             }

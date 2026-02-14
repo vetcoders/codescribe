@@ -555,48 +555,7 @@ impl Config {
         }
 
         // Regular-user fields → settings.json
-        let is_regular = matches!(
-            key,
-            "WHISPER_LANGUAGE"
-                | "HOLD_MODS"
-                | "HOLD_START_DELAY_MS"
-                | "DOUBLE_TAP_INTERVAL_MS"
-                | "TOGGLE_SILENCE_SEC"
-                | "HOLD_EXCLUSIVE"
-                | "AI_FORMATTING_ENABLED"
-                | "CODESCRIBE_BUFFERED_STREAM"
-                | "BEEP_ON_START"
-                | "SOUND_VOLUME"
-                | "FORMATTING_LEVEL"
-                | "LLM_ENDPOINT"
-                | "LLM_MODEL"
-                | "LLM_ASSISTIVE_ENDPOINT"
-                | "LLM_ASSISTIVE_MODEL"
-                | "TOGGLE_TRIGGER"
-                | "HOTKEY_DOUBLE_TAP_LEFT"
-                | "HOTKEY_DOUBLE_TAP_RIGHT"
-                // Promoted from .env
-                | "LLM_FORMATTING_ENDPOINT"
-                | "LLM_FORMATTING_MODEL"
-                | "USE_LOCAL_STT"
-                | "LOCAL_MODEL"
-                | "STT_ENDPOINT"
-                | "TRANSCRIPT_SEND_MODE"
-                | "AUDIO_INPUT_DEVICE"
-                | "SOUND_NAME"
-                | "HISTORY_ENABLED"
-                | "QUICK_NOTES_ENABLED"
-                | "QUICK_NOTES_SAVE_ONLY"
-                | "START_AT_LOGIN"
-                | "AGENT_ENTER_SENDS"
-                // Voice Lab survivors
-                | "CODESCRIBE_BUFFER_DELAY_MS"
-                | "CODESCRIBE_TYPING_CPS"
-                | "CODESCRIBE_EMIT_WORDS_MAX"
-                | "CODESCRIBE_BUFFERED_INTERIM_SEC"
-                | "WHISPER_MODEL"
-                | "BACKEND_MAX_UPLOAD_MB"
-        );
+        let is_regular = super::settings::is_promoted_key(key);
 
         if is_regular {
             let mut settings = super::settings::UserSettings::load();
@@ -681,48 +640,7 @@ impl Config {
             }
 
             // Regular-user fields → settings.json
-            let is_regular = matches!(
-                *key,
-                "WHISPER_LANGUAGE"
-                    | "HOLD_MODS"
-                    | "HOLD_START_DELAY_MS"
-                    | "DOUBLE_TAP_INTERVAL_MS"
-                    | "TOGGLE_SILENCE_SEC"
-                    | "HOLD_EXCLUSIVE"
-                    | "AI_FORMATTING_ENABLED"
-                    | "CODESCRIBE_BUFFERED_STREAM"
-                    | "BEEP_ON_START"
-                    | "SOUND_VOLUME"
-                    | "FORMATTING_LEVEL"
-                    | "LLM_ENDPOINT"
-                    | "LLM_MODEL"
-                    | "LLM_ASSISTIVE_ENDPOINT"
-                    | "LLM_ASSISTIVE_MODEL"
-                    | "TOGGLE_TRIGGER"
-                    | "HOTKEY_DOUBLE_TAP_LEFT"
-                    | "HOTKEY_DOUBLE_TAP_RIGHT"
-                    // Promoted from .env
-                    | "LLM_FORMATTING_ENDPOINT"
-                    | "LLM_FORMATTING_MODEL"
-                    | "USE_LOCAL_STT"
-                    | "LOCAL_MODEL"
-                    | "STT_ENDPOINT"
-                    | "TRANSCRIPT_SEND_MODE"
-                    | "AUDIO_INPUT_DEVICE"
-                    | "SOUND_NAME"
-                    | "HISTORY_ENABLED"
-                    | "QUICK_NOTES_ENABLED"
-                    | "QUICK_NOTES_SAVE_ONLY"
-                    | "START_AT_LOGIN"
-                    | "AGENT_ENTER_SENDS"
-                    // Voice Lab survivors
-                    | "CODESCRIBE_BUFFER_DELAY_MS"
-                    | "CODESCRIBE_TYPING_CPS"
-                    | "CODESCRIBE_EMIT_WORDS_MAX"
-                    | "CODESCRIBE_BUFFERED_INTERIM_SEC"
-                    | "WHISPER_MODEL"
-                    | "BACKEND_MAX_UPLOAD_MB"
-            );
+            let is_regular = super::settings::is_promoted_key(key);
 
             if is_regular {
                 let settings_ref = settings.get_or_insert_with(super::settings::UserSettings::load);

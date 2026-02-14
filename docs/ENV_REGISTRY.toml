@@ -605,7 +605,14 @@ default = "30000"
 type = "u64"
 reload = "hot"
 category = "llm"
-description = "Per-attempt timeout for AI requests (Ollama + Responses, ms)"
+description = "Per-attempt timeout for non-Ollama AI requests (ms)"
+
+[vars.CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS]
+default = "5000"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Per-attempt timeout override for Ollama /api/chat requests (ms)"
 
 [vars.CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS]
 default = "30000"

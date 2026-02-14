@@ -6,7 +6,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
@@ -18,7 +18,7 @@ use crate::config::prompts::{
     DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, get_assistive_prompt,
     get_assistive_prompt_path, get_formatting_prompt, get_formatting_prompt_path,
 };
-use crate::config::{Config, UserSettings};
+use crate::config::{Config, UserSettings, keychain, settings::is_promoted_key};
 use crate::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
 use crate::stream_postprocess::StreamPostProcessor;
 use crate::whisper;
@@ -294,6 +294,11 @@ fn save_prompt(path: &PathBuf, content: &str) -> std::io::Result<()> {
 }
 
 fn persist_config(config: &Config) -> Result<()> {
+    enum EnvUpdate {
+        Set(String, String),
+        Remove(String),
+    }
+
     let env_path = Config::env_path();
     if let Some(parent) = env_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -304,19 +309,21 @@ fn persist_config(config: &Config) -> Result<()> {
         HashMap::new()
     };
 
-    let mut updated: Vec<(String, String)> = Vec::new();
+    let mut updated: Vec<EnvUpdate> = Vec::new();
     let mut settings: Option<UserSettings> = None;
     let mut promoted_keys: Vec<String> = Vec::new();
 
     let mut put = |key: &str, value: String, env_vars: &mut HashMap<String, String>| {
-        if is_promoted_ipc_setting(key) {
+        if is_promoted_key(key) {
             let settings = settings.get_or_insert_with(UserSettings::load);
             persist_promoted_setting(settings, key, &value);
             promoted_keys.push(key.to_string());
+            // Keep promoted settings out of legacy .env to avoid stale overrides.
+            env_vars.remove(key);
         } else {
             env_vars.insert(key.to_string(), value.clone());
         }
-        updated.push((key.to_string(), value));
+        updated.push(EnvUpdate::Set(key.to_string(), value));
     };
 
     put(
@@ -438,16 +445,6 @@ fn persist_config(config: &Config) -> Result<()> {
         config.llm_endpoint.clone().unwrap_or_default(),
         &mut env_vars,
     );
-    put(
-        "LLM_API_KEY",
-        config.llm_api_key.clone().unwrap_or_default(),
-        &mut env_vars,
-    );
-    put(
-        "STT_API_KEY",
-        config.stt_api_key.clone().unwrap_or_default(),
-        &mut env_vars,
-    );
 
     put(
         "RESTORE_CLIPBOARD",
@@ -471,6 +468,23 @@ fn persist_config(config: &Config) -> Result<()> {
         &mut env_vars,
     );
 
+    match persist_secret_setting(
+        "LLM_API_KEY",
+        config.llm_api_key.clone().unwrap_or_default().as_str(),
+        &mut env_vars,
+    )? {
+        Some(secret) => updated.push(EnvUpdate::Set("LLM_API_KEY".to_string(), secret)),
+        None => updated.push(EnvUpdate::Remove("LLM_API_KEY".to_string())),
+    }
+    match persist_secret_setting(
+        "STT_API_KEY",
+        config.stt_api_key.clone().unwrap_or_default().as_str(),
+        &mut env_vars,
+    )? {
+        Some(secret) => updated.push(EnvUpdate::Set("STT_API_KEY".to_string(), secret)),
+        None => updated.push(EnvUpdate::Remove("STT_API_KEY".to_string())),
+    }
+
     Config::write_env_file(&env_path, &env_vars)?;
 
     if let Some(settings) = settings
@@ -486,12 +500,39 @@ fn persist_config(config: &Config) -> Result<()> {
         );
     }
 
-    for (key, value) in updated {
-        // SAFETY: This mirrors Config::save_to_env to keep runtime env in sync.
-        unsafe { std::env::set_var(&key, &value) };
+    for update in updated {
+        match update {
+            EnvUpdate::Set(key, value) => {
+                // SAFETY: This mirrors Config::save_to_env to keep runtime env in sync.
+                unsafe { std::env::set_var(&key, &value) };
+            }
+            EnvUpdate::Remove(key) => {
+                // SAFETY: This mirrors Config::save_to_env semantics for clearing keys.
+                unsafe { std::env::remove_var(&key) };
+            }
+        }
     }
 
     Ok(())
+}
+
+fn persist_secret_setting(
+    key: &str,
+    raw_value: &str,
+    env_vars: &mut HashMap<String, String>,
+) -> Result<Option<String>> {
+    // Never store secrets in plaintext .env.
+    env_vars.remove(key);
+
+    let value = raw_value.trim();
+    if value.is_empty() {
+        keychain::delete_key(key)
+            .with_context(|| format!("Failed to delete {key} from Keychain"))?;
+        return Ok(None);
+    }
+
+    keychain::save_key(key, value).with_context(|| format!("Failed to save {key} to Keychain"))?;
+    Ok(Some(value.to_string()))
 }
 
 fn bool_to_env(value: bool) -> String {
@@ -502,31 +543,8 @@ fn bool_to_env(value: bool) -> String {
     }
 }
 
-fn is_promoted_ipc_setting(key: &str) -> bool {
-    matches!(
-        key,
-        "WHISPER_LANGUAGE"
-            | "HOLD_MODS"
-            | "HOLD_START_DELAY_MS"
-            | "DOUBLE_TAP_INTERVAL_MS"
-            | "TOGGLE_SILENCE_SEC"
-            | "HOLD_EXCLUSIVE"
-            | "AI_FORMATTING_ENABLED"
-            | "BEEP_ON_START"
-            | "SOUND_VOLUME"
-            | "TOGGLE_TRIGGER"
-            | "USE_LOCAL_STT"
-            | "LOCAL_MODEL"
-            | "STT_ENDPOINT"
-            | "AUDIO_INPUT_DEVICE"
-            | "SOUND_NAME"
-            | "HISTORY_ENABLED"
-            | "LLM_ENDPOINT"
-            | "START_AT_LOGIN"
-    )
-}
-
 fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str) {
+    // String fields
     match key {
         "WHISPER_LANGUAGE" => settings.whisper_language = Some(value.to_string()),
         "HOLD_MODS" => settings.hold_mods = Some(value.to_string()),
@@ -536,6 +554,15 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
         "AUDIO_INPUT_DEVICE" => settings.audio_input_device = Some(value.to_string()),
         "SOUND_NAME" => settings.sound_name = Some(value.to_string()),
         "LLM_ENDPOINT" => settings.llm_endpoint = Some(value.to_string()),
+        "LLM_MODEL" => settings.llm_model = Some(value.to_string()),
+        "LLM_ASSISTIVE_ENDPOINT" => settings.llm_assistive_endpoint = Some(value.to_string()),
+        "LLM_ASSISTIVE_MODEL" => settings.llm_assistive_model = Some(value.to_string()),
+        "FORMATTING_LEVEL" => settings.formatting_level = Some(value.to_string()),
+        "LLM_FORMATTING_ENDPOINT" => settings.llm_formatting_endpoint = Some(value.to_string()),
+        "LLM_FORMATTING_MODEL" => settings.llm_formatting_model = Some(value.to_string()),
+        "TRANSCRIPT_SEND_MODE" => settings.transcript_send_mode = Some(value.to_string()),
+        "WHISPER_MODEL" => settings.whisper_model = Some(value.to_string()),
+        // u64 fields
         "HOLD_START_DELAY_MS" => {
             if let Ok(v) = value.parse::<u64>() {
                 settings.hold_start_delay_ms = Some(v);
@@ -546,6 +573,22 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
                 settings.double_tap_interval_ms = Some(v);
             }
         }
+        "CODESCRIBE_BUFFER_DELAY_MS" => {
+            if let Ok(v) = value.parse::<u64>() {
+                settings.buffer_delay_ms = Some(v);
+            }
+        }
+        "CODESCRIBE_EMIT_WORDS_MAX" => {
+            if let Ok(v) = value.parse::<u64>() {
+                settings.emit_words_max = Some(v);
+            }
+        }
+        "BACKEND_MAX_UPLOAD_MB" => {
+            if let Ok(v) = value.parse::<u64>() {
+                settings.backend_max_upload_mb = Some(v);
+            }
+        }
+        // f32 fields
         "TOGGLE_SILENCE_SEC" => {
             if let Ok(v) = value.parse::<f32>() {
                 settings.toggle_silence_sec = Some(v);
@@ -556,29 +599,45 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
                 settings.sound_volume = Some(v);
             }
         }
-        "HOLD_EXCLUSIVE" => {
-            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
-            settings.hold_exclusive = Some(bool_val);
+        "CODESCRIBE_TYPING_CPS" => {
+            if let Ok(v) = value.parse::<f32>() {
+                settings.typing_cps = Some(v);
+            }
         }
-        "AI_FORMATTING_ENABLED" => {
-            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
-            settings.ai_formatting_enabled = Some(bool_val);
+        "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
+            if let Ok(v) = value.parse::<f32>() {
+                settings.buffered_interim_sec = Some(v);
+            }
         }
-        "BEEP_ON_START" => {
+        // bool fields
+        "HOLD_EXCLUSIVE"
+        | "AI_FORMATTING_ENABLED"
+        | "BEEP_ON_START"
+        | "USE_LOCAL_STT"
+        | "HISTORY_ENABLED"
+        | "START_AT_LOGIN"
+        | "CODESCRIBE_BUFFERED_STREAM"
+        | "HOTKEY_DOUBLE_TAP_LEFT"
+        | "HOTKEY_DOUBLE_TAP_RIGHT"
+        | "QUICK_NOTES_ENABLED"
+        | "QUICK_NOTES_SAVE_ONLY"
+        | "AGENT_ENTER_SENDS" => {
             let bool_val = matches!(value, "1" | "true" | "yes" | "on");
-            settings.beep_on_start = Some(bool_val);
-        }
-        "USE_LOCAL_STT" => {
-            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
-            settings.use_local_stt = Some(bool_val);
-        }
-        "HISTORY_ENABLED" => {
-            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
-            settings.history_enabled = Some(bool_val);
-        }
-        "START_AT_LOGIN" => {
-            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
-            settings.start_at_login = Some(bool_val);
+            match key {
+                "HOLD_EXCLUSIVE" => settings.hold_exclusive = Some(bool_val),
+                "AI_FORMATTING_ENABLED" => settings.ai_formatting_enabled = Some(bool_val),
+                "BEEP_ON_START" => settings.beep_on_start = Some(bool_val),
+                "USE_LOCAL_STT" => settings.use_local_stt = Some(bool_val),
+                "HISTORY_ENABLED" => settings.history_enabled = Some(bool_val),
+                "START_AT_LOGIN" => settings.start_at_login = Some(bool_val),
+                "CODESCRIBE_BUFFERED_STREAM" => settings.buffered_stream = Some(bool_val),
+                "HOTKEY_DOUBLE_TAP_LEFT" => settings.double_tap_left = Some(bool_val),
+                "HOTKEY_DOUBLE_TAP_RIGHT" => settings.double_tap_right = Some(bool_val),
+                "QUICK_NOTES_ENABLED" => settings.quick_notes_enabled = Some(bool_val),
+                "QUICK_NOTES_SAVE_ONLY" => settings.quick_notes_save_only = Some(bool_val),
+                "AGENT_ENTER_SENDS" => settings.agent_enter_sends = Some(bool_val),
+                _ => unreachable!(),
+            }
         }
         _ => {
             warn!("IPC promoted setting key is not mapped to UserSettings: {key}");

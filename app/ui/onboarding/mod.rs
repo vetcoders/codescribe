@@ -263,6 +263,14 @@ fn release_onboarding_lock() {
     let _ = fs::remove_file(onboarding_lock_path());
 }
 
+struct OnboardingLockGuard;
+
+impl Drop for OnboardingLockGuard {
+    fn drop(&mut self) {
+        release_onboarding_lock();
+    }
+}
+
 pub fn should_show_onboarding() -> bool {
     !onboarding_done_path().exists()
 }
@@ -283,18 +291,25 @@ pub fn show_onboarding_wizard() {
     if !acquire_onboarding_lock() {
         return;
     }
+    let _lock_guard = OnboardingLockGuard;
 
     if is_main_thread() {
         show_onboarding_wizard_impl();
-        release_onboarding_lock();
     } else {
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
         Queue::main().exec_async(move || {
-            show_onboarding_wizard_impl();
-            let _ = tx.send(());
+            let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                show_onboarding_wizard_impl();
+            }))
+            .is_ok();
+            let _ = tx.send(completed);
         });
-        let _ = rx.recv();
-        release_onboarding_lock();
+        // This intentionally blocks the caller thread until modal onboarding finishes.
+        match rx.recv() {
+            Ok(true) => {}
+            Ok(false) => warn!("Onboarding wizard terminated with panic"),
+            Err(e) => warn!("Onboarding wizard completion signal failed: {e}"),
+        }
     }
 }
 

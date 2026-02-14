@@ -272,6 +272,7 @@ pub fn overlay_window_class() -> *const Class {
             );
             decl.add_method(
                 sel!(draggingUpdated:),
+                // Keep the same operation semantics while cursor moves over the drop target.
                 on_dragging_entered as extern "C" fn(&Object, Sel, Id) -> u64,
             );
             decl.add_method(

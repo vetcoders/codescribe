@@ -91,6 +91,14 @@ pub mod ui_colors {
         unsafe { msg_send![color, colorWithAlphaComponent: alpha] }
     }
 
+    fn adaptive_alpha(glass_alpha: f64, fallback_alpha: f64) -> f64 {
+        if super::glass_effect_supported() {
+            glass_alpha
+        } else {
+            fallback_alpha
+        }
+    }
+
     pub fn sidebar_bg() -> Id {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
@@ -103,7 +111,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.65)
+            with_alpha(base, adaptive_alpha(0.65, 0.74))
         }
     }
 
@@ -111,7 +119,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.74)
+            with_alpha(base, adaptive_alpha(0.74, 0.86))
         }
     }
 
@@ -150,7 +158,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.62)
+            with_alpha(base, adaptive_alpha(0.62, 0.78))
         }
     }
 
@@ -158,7 +166,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.56)
+            with_alpha(base, adaptive_alpha(0.56, 0.7))
         }
     }
 

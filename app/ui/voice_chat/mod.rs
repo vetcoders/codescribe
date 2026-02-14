@@ -1107,7 +1107,12 @@ fn create_scroll_edge_effect(frame: CGRect) -> Id {
             let gradient: Id = msg_send![gradient_cls, layer];
             let base: Id = msg_send![ns_color, separatorColor];
             let top_color: Id = msg_send![base, colorWithAlphaComponent: 0.0f64];
-            let bottom_color: Id = msg_send![base, colorWithAlphaComponent: 0.16f64];
+            let edge_alpha = if crate::ui_helpers::glass_effect_supported() {
+                0.16f64
+            } else {
+                0.28f64
+            };
+            let bottom_color: Id = msg_send![base, colorWithAlphaComponent: edge_alpha];
             let cg_top: Id = msg_send![top_color, CGColor];
             let cg_bottom: Id = msg_send![bottom_color, CGColor];
             let color_objs: [Id; 2] = [cg_top, cg_bottom];
