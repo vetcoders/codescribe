@@ -312,14 +312,14 @@ pub fn show_drawer_tab() {
 /// Switch to Settings tab programmatically
 pub fn show_settings_tab() {
     Queue::main().exec_async(|| {
-        crate::show_bootstrap_overlay();
+        update_active_tab_impl(Tab::Settings);
     });
 }
 
 /// Request Settings tab to be shown the next time the overlay is created.
 /// This is used when routing tray "Settings" to the overlay before it exists.
 pub fn request_settings_tab_on_open() {
-    crate::show_bootstrap_overlay();
+    show_settings_tab();
 }
 
 /// Set the target app name to re-activate for paste actions.
@@ -364,6 +364,9 @@ pub fn is_conversation_active() -> bool {
 
 pub fn update_active_tab_impl(tab: Tab) {
     if tab == Tab::Settings {
+        // Settings lives in the bootstrap/settings window; close chat first to avoid
+        // stacked windows that look like a duplicate/ghost overlay.
+        hide_voice_chat_overlay_impl();
         crate::show_bootstrap_overlay();
         return;
     }

@@ -1555,6 +1555,8 @@ impl RecordingController {
         *self.session_id.write().await = None;
         *self.assistive_context.write().await = None;
         self.assistive_loop_active.store(false, Ordering::SeqCst);
+        // Keep event-router sink selection in sync with controller state after finish.
+        set_assistive_session(false);
 
         // Hide red dot indicator
         hide_hold_badge();

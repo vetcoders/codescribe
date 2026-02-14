@@ -1271,6 +1271,13 @@ async fn call_llm_endpoint_streaming(
                 }
 
                 if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                    // Capture response ID whenever it appears in stream metadata.
+                    // Some providers/chunk orders can surface it before completion events.
+                    if let Some(resp) = &chunk.response
+                        && !resp.id.is_empty()
+                    {
+                        response_id = resp.id.clone();
+                    }
                     match chunk.chunk_type.as_str() {
                         "response.output_text.delta" => {
                             if let Some(delta) = chunk.delta {
@@ -1288,11 +1295,7 @@ async fn call_llm_endpoint_streaming(
                                 collected_text = text;
                             }
                         }
-                        "response.completed" | "response.done" => {
-                            if let Some(resp) = chunk.response {
-                                response_id = resp.id;
-                            }
-                        }
+                        "response.completed" | "response.done" => {}
                         _ => {}
                     }
                 }
@@ -1313,6 +1316,19 @@ async fn call_llm_endpoint_streaming(
     // Store response_id for this mode's conversation chain (separate streams)
     if !response_id.is_empty() {
         crate::state::conversation::set_response_id_for_mode(ai_mode, response_id.clone());
+    } else if let Some(prev_id) = previous_response_id.as_deref()
+        && !prev_id.is_empty()
+    {
+        warn!(
+            "SSE complete without response_id for {}; keeping previous_response_id={}",
+            if assistive { "assistive" } else { "formatting" },
+            prev_id
+        );
+    } else {
+        warn!(
+            "SSE complete without response_id for {}; no previous_response_id to keep",
+            if assistive { "assistive" } else { "formatting" }
+        );
     }
 
     debug!(

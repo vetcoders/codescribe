@@ -823,8 +823,8 @@ extern "C" fn on_tab_agent(_this: &Object, _cmd: Sel, _sender: Id) {
 }
 
 extern "C" fn on_tab_settings(_this: &Object, _cmd: Sel, _sender: Id) {
-    crate::show_bootstrap_overlay();
-    info!("Settings window opened");
+    update_active_tab_impl(Tab::Settings);
+    info!("Settings window opened from chat overlay");
 }
 
 extern "C" fn on_copy_last_response(_this: &Object, _cmd: Sel, _sender: Id) {
@@ -980,8 +980,11 @@ extern "C" fn on_header_record(_this: &Object, _cmd: Sel, _sender: Id) {
 }
 
 extern "C" fn on_show_overlay(_this: &Object, _cmd: Sel, _sender: Id) {
-    crate::show_voice_chat_overlay();
-    info!("CTA: show overlay");
+    if !super::api::is_voice_chat_overlay_visible() {
+        crate::show_voice_chat_overlay();
+    }
+    crate::voice_chat_ui::show_agent_tab();
+    info!("CTA: show/focus overlay");
 }
 
 extern "C" fn on_commit_message(_this: &Object, _cmd: Sel, _sender: Id) {
@@ -1114,7 +1117,12 @@ extern "C" fn on_export_assistant_save(_this: &Object, _cmd: Sel, _sender: Id) {
 extern "C" fn on_show_shortcuts(_this: &Object, _cmd: Sel, _sender: Id) {
     let config = Config::load();
     let (hold, toggle) = super::shortcuts_lines(config.hold_mods, config.toggle_trigger);
-    crate::show_voice_chat_overlay();
+    if !super::api::is_voice_chat_overlay_visible() {
+        // This action is wired to overlay/header UI. If it fires while hidden
+        // (e.g. stale responder chain), ignore it instead of spawning a ghost window.
+        info!("Ignored shortcuts action while overlay hidden");
+        return;
+    }
     crate::voice_chat_ui::show_agent_tab();
     crate::voice_chat_ui::add_voice_chat_system_message(&format!(
         "Keyboard shortcuts:\n{}\n{}",
