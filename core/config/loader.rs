@@ -316,6 +316,12 @@ impl Config {
         {
             self.ai_formatting_enabled = v;
         }
+        if std::env::var("FORMATTING_LEVEL").is_err()
+            && let Some(ref v) = settings.formatting_level
+        {
+            // FORMATTING_LEVEL is read from env at runtime (not a Config field).
+            unsafe { std::env::set_var("FORMATTING_LEVEL", v) };
+        }
         // Sound
         if std::env::var("BEEP_ON_START").is_err()
             && let Some(v) = settings.beep_on_start
@@ -363,8 +369,9 @@ impl Config {
             unsafe { std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", if v { "1" } else { "0" }) };
         }
         // Buffered stream (read from env at runtime)
-        if std::env::var("CODESCRIBE_BUFFERED_STREAM").is_err() {
-            let enabled = settings.buffered_stream.unwrap_or(true);
+        if std::env::var("CODESCRIBE_BUFFERED_STREAM").is_err()
+            && let Some(enabled) = settings.buffered_stream
+        {
             unsafe {
                 std::env::set_var(
                     "CODESCRIBE_BUFFERED_STREAM",

@@ -14,11 +14,11 @@ use tracing::{info, warn};
 
 use super::{AppStatus, IpcCommand, IpcResponse};
 use crate::audio::load_audio_file;
-use crate::config::Config;
 use crate::config::prompts::{
     DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, get_assistive_prompt,
     get_assistive_prompt_path, get_formatting_prompt, get_formatting_prompt_path,
 };
+use crate::config::{Config, UserSettings};
 use crate::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
 use crate::stream_postprocess::StreamPostProcessor;
 use crate::whisper;
@@ -305,9 +305,15 @@ fn persist_config(config: &Config) -> Result<()> {
     };
 
     let mut updated: Vec<(String, String)> = Vec::new();
+    let mut settings: Option<UserSettings> = None;
 
     let mut put = |key: &str, value: String, env_vars: &mut HashMap<String, String>| {
-        env_vars.insert(key.to_string(), value.clone());
+        if is_promoted_ipc_setting(key) {
+            let settings = settings.get_or_insert_with(UserSettings::load);
+            persist_promoted_setting(settings, key, &value);
+        } else {
+            env_vars.insert(key.to_string(), value.clone());
+        }
         updated.push((key.to_string(), value));
     };
 
@@ -478,6 +484,55 @@ fn bool_to_env(value: bool) -> String {
         "1".to_string()
     } else {
         "0".to_string()
+    }
+}
+
+fn is_promoted_ipc_setting(key: &str) -> bool {
+    matches!(
+        key,
+        "WHISPER_LANGUAGE"
+            | "HOLD_MODS"
+            | "HOLD_START_DELAY_MS"
+            | "DOUBLE_TAP_INTERVAL_MS"
+            | "TOGGLE_SILENCE_SEC"
+            | "HOLD_EXCLUSIVE"
+            | "AI_FORMATTING_ENABLED"
+            | "BEEP_ON_START"
+            | "SOUND_VOLUME"
+            | "TOGGLE_TRIGGER"
+            | "USE_LOCAL_STT"
+            | "LOCAL_MODEL"
+            | "STT_ENDPOINT"
+            | "AUDIO_INPUT_DEVICE"
+            | "SOUND_NAME"
+            | "HISTORY_ENABLED"
+            | "LLM_ENDPOINT"
+            | "START_AT_LOGIN"
+    )
+}
+
+fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str) {
+    match key {
+        "HOLD_START_DELAY_MS" | "DOUBLE_TAP_INTERVAL_MS" => {
+            if let Ok(v) = value.parse::<u64>() {
+                settings.set_u64(key, v);
+            }
+        }
+        "TOGGLE_SILENCE_SEC" | "SOUND_VOLUME" => {
+            if let Ok(v) = value.parse::<f32>() {
+                settings.set_f32(key, v);
+            }
+        }
+        "HOLD_EXCLUSIVE"
+        | "AI_FORMATTING_ENABLED"
+        | "BEEP_ON_START"
+        | "USE_LOCAL_STT"
+        | "HISTORY_ENABLED"
+        | "START_AT_LOGIN" => {
+            let bool_val = matches!(value, "1" | "true" | "yes" | "on");
+            settings.set_bool(key, bool_val);
+        }
+        _ => settings.set_string(key, value),
     }
 }
 

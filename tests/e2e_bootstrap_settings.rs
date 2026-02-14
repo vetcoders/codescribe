@@ -319,12 +319,19 @@ fn test_engine_tab_stt_engine_env_onnx() {
 fn test_engine_tab_whisper_embedded_status() {
     // Engine tab shows whether Whisper model is embedded in binary
     let embedded = codescribe_core::stt::whisper::embedded::is_embedded_available();
-    // In dev builds it's typically not embedded — just verify the function exists
-    // and returns a bool (not a panic)
-    assert!(
-        embedded || !embedded,
-        "is_embedded_available should return bool"
+    let embedded_data = codescribe_core::stt::whisper::embedded::get_embedded_data();
+
+    assert_eq!(
+        embedded_data.is_some(),
+        embedded,
+        "Whisper embedded availability should match get_embedded_data() result"
     );
+    if let Some(model) = embedded_data {
+        assert!(
+            model.total_size() > 0,
+            "Whisper embedded model should report non-zero total size"
+        );
+    }
 }
 
 #[test]
@@ -355,9 +362,17 @@ fn test_engine_tab_embedder_api_exists() {
 fn test_engine_tab_tts_embedded_status() {
     // Engine tab shows TTS engine status
     let embedded = codescribe_core::tts::embedded::is_embedded_available();
-    // Dev builds typically don't embed TTS — verify API exists
-    assert!(
-        embedded || !embedded,
-        "is_embedded_available should return bool"
+    let embedded_data = codescribe_core::tts::embedded::get_embedded_data();
+
+    assert_eq!(
+        embedded_data.is_some(),
+        embedded,
+        "TTS embedded availability should match get_embedded_data() result"
     );
+    if let Some(model) = embedded_data {
+        assert!(
+            model.total_size() > 0,
+            "TTS embedded model should report non-zero total size"
+        );
+    }
 }

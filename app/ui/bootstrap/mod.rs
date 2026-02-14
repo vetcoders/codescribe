@@ -33,10 +33,11 @@ type Id = *mut Object;
 
 const SIDEBAR_WIDTH: f64 = 132.0;
 const TAB_SETUP: usize = 0;
-const _TAB_KEYS: usize = 1;
-const _TAB_AUDIO: usize = 2;
-const _TAB_VOICE_LAB: usize = 3;
-const _TAB_ENGINE: usize = 4;
+const TAB_KEYS: usize = 1;
+const TAB_AUDIO: usize = 2;
+const TAB_VOICE_LAB: usize = 3;
+const TAB_ENGINE: usize = 4;
+const TAB_COUNT: usize = 5;
 
 const STEP_TEST_MIC: usize = 0;
 const STEP_SHOW_OVERLAY: usize = 1;
@@ -171,18 +172,9 @@ fn validate_voice_lab_value(spec: &VoiceLabFieldSpec, raw_value: &str) -> Option
         "CODESCRIBE_BUFFER_DELAY_MS" => parse_ranged_u64(trimmed, 0, 60_000).is_some(),
         "CODESCRIBE_TYPING_CPS" => parse_ranged_f32(trimmed, 5.0, 120.0).is_some(),
         "CODESCRIBE_EMIT_WORDS_MAX" => parse_ranged_usize(trimmed, 1, 12).is_some(),
-        "CODESCRIBE_STREAM_CHUNK_SEC" => parse_ranged_f32(trimmed, 0.5, 30.0).is_some(),
-        "CODESCRIBE_STREAM_OVERLAP_RATIO" => parse_ranged_f32(trimmed, 0.05, 0.8).is_some(),
-        "CODESCRIBE_STREAM_SIMILARITY" => parse_ranged_f32(trimmed, 0.0, 1.0).is_some(),
-        "CODESCRIBE_STREAM_NOVELTY" => parse_ranged_f32(trimmed, 0.0, 1.0).is_some(),
-        "CODESCRIBE_BUFFERED_CORRECTION_UTTERANCES" => parse_ranged_usize(trimmed, 1, 10).is_some(),
-        "CODESCRIBE_BUFFERED_CORRECTION_SEC" => parse_ranged_f32(trimmed, 1.0, 60.0).is_some(),
-        "CODESCRIBE_BUFFERED_CORRECTION_PREFIX" => parse_ranged_f32(trimmed, 0.4, 0.9).is_some(),
         "CODESCRIBE_BUFFERED_INTERIM_SEC" => parse_ranged_f32(trimmed, 1.0, 30.0).is_some(),
-        "CODESCRIBE_UTTERANCE_INTERIM_SEC" => parse_ranged_f32(trimmed, 1.0, 30.0).is_some(),
         "BACKEND_MAX_UPLOAD_MB" => parse_ranged_u64(trimmed, 1, 200).is_some(),
-        // String fields.
-        "WHISPER_MODEL" | "CODESCRIBE_STREAM_LOG_PATH" => true,
+        "WHISPER_MODEL" => true,
         _ => true,
     };
 
@@ -206,8 +198,8 @@ struct BootstrapState {
     window_delegate: Option<usize>,
     root_view: Option<usize>,
     step_labels: [Option<usize>; 3],
-    tab_buttons: [Option<usize>; 5],
-    content_views: [Option<usize>; 5],
+    tab_buttons: [Option<usize>; TAB_COUNT],
+    content_views: [Option<usize>; TAB_COUNT],
     active_tab: usize,
     keys_hold_popup: Option<usize>,
     keys_toggle_popup: Option<usize>,
@@ -655,7 +647,7 @@ unsafe fn build_settings_ui(
             sel!(onTabVoiceLab:),
             sel!(onTabEngine:),
         ];
-        let mut tab_buttons: [Option<usize>; 5] = [None; 5];
+        let mut tab_buttons: [Option<usize>; TAB_COUNT] = [None; TAB_COUNT];
 
         for (i, (name, sel)) in tab_names.iter().zip(tab_sels.iter()).enumerate() {
             let btn_height = 36.0;
@@ -1097,7 +1089,7 @@ pub(super) fn switch_tab(index: usize) {
     Queue::main().exec_async(move || unsafe {
         let (content_views, tab_buttons) = {
             let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            if index >= 5 || state.active_tab == index {
+            if index >= TAB_COUNT || state.active_tab == index {
                 return;
             }
             state.active_tab = index;
@@ -2630,9 +2622,9 @@ mod tests {
     #[test]
     fn voice_lab_validation_rejects_invalid_numeric() {
         let spec = VoiceLabFieldSpec {
-            key: "CODESCRIBE_STREAM_CHUNK_SEC",
-            label: "Chunk sec",
-            default_value: "4.0",
+            key: "CODESCRIBE_BUFFERED_INTERIM_SEC",
+            label: "Interim cadence",
+            default_value: "3.0",
             description: "",
             kind: VoiceLabFieldKind::Value,
         };
@@ -2654,8 +2646,8 @@ mod tests {
             kind: VoiceLabFieldKind::Value,
         };
         let allow_empty = VoiceLabFieldSpec {
-            key: "CODESCRIBE_STREAM_LOG_PATH",
-            label: "Stream log path",
+            key: "CUSTOM_EMPTY_KEY",
+            label: "Custom empty key",
             default_value: "",
             description: "",
             kind: VoiceLabFieldKind::Value,

@@ -27,6 +27,8 @@ pub mod embedded;
 pub mod install;
 pub mod silero_ort;
 
+use tracing::warn;
+
 pub use config::VadConfig;
 pub use install::{
     SILERO_VAD_FILE, SILERO_VAD_URL, ensure_downloaded_to_user_dir, user_model_path,
@@ -72,7 +74,11 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
 
     let mut vad = match AccumulatingVad::new(sample_rate) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
+            warn!(
+                "extract_speech: AccumulatingVad init failed at {} Hz, returning original audio: {}",
+                sample_rate, e
+            );
             return (
                 samples.to_vec(),
                 VadExtractStats {
@@ -86,7 +92,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
     };
 
     let threshold = vad.threshold();
-    let mut speech_samples = Vec::with_capacity(samples.len());
+    let mut speech_samples = Vec::with_capacity(samples.len() / 2);
     let mut speech_windows = 0usize;
     let mut total_windows = 0usize;
     let mut sparkline = String::new();
