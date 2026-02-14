@@ -5,9 +5,9 @@ use crate::config::{Config, HoldMods, ToggleTrigger, UserSettings, keychain};
 use crate::os::hotkeys;
 use crate::os::permissions::{self, PermissionStatus};
 use crate::ui::shared::helpers::{
-    LabelConfig, add_subview, button, button_set_action, color_label, color_secondary_label,
-    create_glass_effect_view_with, create_label, create_secure_text_input, ns_string, set_hidden,
-    set_text_field_string, window_close, window_show,
+    LabelConfig, add_subview, button, button_set_action, color_clear, color_label,
+    color_secondary_label, create_glass_effect_view_with, create_label, create_secure_text_input,
+    ns_string, set_hidden, set_text_field_string, window_close, window_show,
 };
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
@@ -30,8 +30,8 @@ use tracing::{info, warn};
 // Type alias for Objective-C object pointers
 pub type Id = *mut Object;
 
-const WINDOW_WIDTH: f64 = 600.0;
-const WINDOW_HEIGHT: f64 = 500.0;
+const WINDOW_WIDTH: f64 = 720.0;
+const WINDOW_HEIGHT: f64 = 540.0;
 const FULL_DISK_STEP_INDEX: usize = 5;
 const STATUS_NOT_DETERMINED: &str = "\u{25CB} Not Determined";
 const STATUS_GRANTED: &str = "\u{25CF} Granted";
@@ -462,7 +462,7 @@ fn show_onboarding_wizard_impl() {
 
         let ns_window = Class::get("NSWindow").unwrap();
         let window: Id = msg_send![ns_window, alloc];
-        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
+        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::FullSizeContentView;
         let window: Id = msg_send![
             window,
             initWithContentRect: frame
@@ -472,7 +472,10 @@ fn show_onboarding_wizard_impl() {
         ];
 
         let _: () = msg_send![window, setTitle: ns_string("Welcome to CodeScribe")];
+        let _: () = msg_send![window, setTitleVisibility: 1_isize]; // NSWindowTitleHidden
+        let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
         let _: () = msg_send![window, setOpaque: false];
+        let _: () = msg_send![window, setBackgroundColor: color_clear()];
         let _: () = msg_send![window, setReleasedWhenClosed: false];
         let _: () = msg_send![window, setMovableByWindowBackground: true];
         let _: () =
@@ -480,6 +483,12 @@ fn show_onboarding_wizard_impl() {
         let size = CGSize::new(WINDOW_WIDTH, WINDOW_HEIGHT);
         let _: () = msg_send![window, setContentMinSize: size];
         let _: () = msg_send![window, setContentMaxSize: size];
+
+        let close_btn: Id = msg_send![window, standardWindowButton: NSWindowButton::CloseButton];
+        if !close_btn.is_null() {
+            let _: () = msg_send![close_btn, setHidden: true];
+            let _: () = msg_send![close_btn, setEnabled: false];
+        }
 
         let mini_btn: Id =
             msg_send![window, standardWindowButton: NSWindowButton::MiniaturizeButton];
@@ -505,7 +514,7 @@ fn show_onboarding_wizard_impl() {
         let content_bounds: CGRect = msg_send![content_view, bounds];
         let background = create_glass_effect_view_with(
             content_bounds,
-            NSVisualEffectMaterial::WindowBackground,
+            NSVisualEffectMaterial::HUDWindow,
             NSVisualEffectBlendingMode::BehindWindow,
             NSVisualEffectState::Active,
         );
@@ -553,22 +562,52 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let ns_view = Class::get("NSView").unwrap();
         let mut ui = UiRefs::default();
 
-        const SIDEBAR_WIDTH: f64 = 188.0;
-        let content_left = SIDEBAR_WIDTH + 20.0;
-        let content_width = WINDOW_WIDTH - content_left - 18.0;
+        const SIDEBAR_WIDTH: f64 = 204.0;
+        let content_left = SIDEBAR_WIDTH + 22.0;
+        let content_width = WINDOW_WIDTH - content_left - 22.0;
         let content_center = content_left + (content_width * 0.5);
+
+        let sidebar_bg = create_glass_effect_view_with(
+            CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(SIDEBAR_WIDTH, WINDOW_HEIGHT),
+            ),
+            NSVisualEffectMaterial::Sidebar,
+            NSVisualEffectBlendingMode::BehindWindow,
+            NSVisualEffectState::Active,
+        );
+        let _: () = msg_send![
+            sidebar_bg,
+            setAutoresizingMask: 16_isize | 2_isize // NSViewHeightSizable | NSViewWidthSizable
+        ];
+        add_subview(root, sidebar_bg);
+
+        let content_bg = create_glass_effect_view_with(
+            CGRect::new(
+                &CGPoint::new(SIDEBAR_WIDTH, 0.0),
+                &CGSize::new(WINDOW_WIDTH - SIDEBAR_WIDTH, WINDOW_HEIGHT),
+            ),
+            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectBlendingMode::BehindWindow,
+            NSVisualEffectState::Active,
+        );
+        let _: () = msg_send![
+            content_bg,
+            setAutoresizingMask: 16_isize | 2_isize // NSViewHeightSizable | NSViewWidthSizable
+        ];
+        add_subview(root, content_bg);
 
         let sidebar: Id = msg_send![ns_view, alloc];
         let sidebar: Id = msg_send![
             sidebar,
             initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, WINDOW_HEIGHT))
         ];
-        let _: () = msg_send![sidebar, setAutoresizingMask: 16_isize]; // NSViewHeightSizable
+        let _: () = msg_send![sidebar, setAutoresizingMask: 16_isize | 2_isize]; // NSViewHeightSizable | NSViewWidthSizable
         add_subview(root, sidebar);
 
         let sidebar_title = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(18.0, 460.0),
+                &CGPoint::new(18.0, 494.0),
                 &CGSize::new(SIDEBAR_WIDTH - 28.0, 22.0),
             ),
             text: "Onboarding".to_string(),
@@ -592,7 +631,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         add_subview(root, divider);
 
         let mut sidebar_step_labels: [Option<usize>; TOTAL_STEPS] = [None; TOTAL_STEPS];
-        let mut y = 426.0;
+        let mut y = 460.0;
         for slot in &mut sidebar_step_labels {
             let label = create_label(LabelConfig {
                 frame: CGRect::new(
@@ -628,7 +667,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let title_label = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(content_left, 364.0),
+                &CGPoint::new(content_left, 378.0),
                 &CGSize::new(content_width, 34.0),
             ),
             text: String::new(),
@@ -643,8 +682,8 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let description_label = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(content_left + 8.0, 255.0),
-                &CGSize::new(content_width - 16.0, 96.0),
+                &CGPoint::new(content_left + 8.0, 274.0),
+                &CGSize::new(content_width - 16.0, 92.0),
             ),
             text: String::new(),
             font_size: 14.0,
@@ -657,8 +696,8 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let status_label = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(content_center - 115.0, 223.0),
-                &CGSize::new(230.0, 22.0),
+                &CGPoint::new(content_center - 132.0, 244.0),
+                &CGSize::new(264.0, 22.0),
             ),
             text: String::new(),
             font_size: 13.0,
@@ -672,8 +711,8 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let instruction_label = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(content_left + 8.0, 178.0),
-                &CGSize::new(content_width - 16.0, 46.0),
+                &CGPoint::new(content_left + 8.0, 196.0),
+                &CGSize::new(content_width - 16.0, 54.0),
             ),
             text: String::new(),
             font_size: 12.0,
@@ -688,7 +727,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let language_view: Id = msg_send![
             language_view,
             initWithFrame: CGRect::new(
-                &CGPoint::new(content_center - 160.0, 170.0),
+                &CGPoint::new(content_center - 160.0, 186.0),
                 &CGSize::new(320.0, 88.0)
             )
         ];
@@ -719,7 +758,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let api_view: Id = msg_send![
             api_view,
             initWithFrame: CGRect::new(
-                &CGPoint::new(content_center - 190.0, 165.0),
+                &CGPoint::new(content_center - 190.0, 180.0),
                 &CGSize::new(380.0, 92.0)
             )
         ];
@@ -748,7 +787,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let hotkey_view: Id = msg_send![
             hotkey_view,
             initWithFrame: CGRect::new(
-                &CGPoint::new(content_center - 200.0, 146.0),
+                &CGPoint::new(content_center - 200.0, 164.0),
                 &CGSize::new(400.0, 132.0)
             )
         ];
@@ -789,8 +828,8 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         let summary_view: Id = msg_send![
             summary_view,
             initWithFrame: CGRect::new(
-                &CGPoint::new(content_center - 188.0, 142.0),
-                &CGSize::new(376.0, 152.0)
+                &CGPoint::new(content_center - 188.0, 146.0),
+                &CGSize::new(376.0, 196.0)
             )
         ];
         add_subview(root, summary_view);
@@ -798,7 +837,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let mut summary_labels: [Option<usize>; 5] = [None; 5];
         for (idx, permission) in PERMISSION_ORDER.iter().enumerate() {
-            let y = 124.0 - (idx as f64 * 24.0);
+            let y = 166.0 - (idx as f64 * 26.0);
             let label = create_label(LabelConfig {
                 frame: CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(360.0, 20.0)),
                 text: permission.title().to_string(),
@@ -813,7 +852,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.summary_permission_labels = summary_labels;
 
         let summary_config = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(360.0, 44.0)),
+            frame: CGRect::new(&CGPoint::new(0.0, 4.0), &CGSize::new(360.0, 50.0)),
             text: String::new(),
             font_size: 12.0,
             text_color: color_secondary_label(),
@@ -823,8 +862,19 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         add_subview(summary_view, summary_config);
         ui.summary_config_label = Some(summary_config as usize);
 
+        let primary_w = 132.0;
+        let skip_w = 106.0;
+        let back_w = 90.0;
+        let button_y = 16.0;
+        let primary_x = WINDOW_WIDTH - 18.0 - primary_w;
+        let skip_x = primary_x - 8.0 - skip_w;
+        let back_x = skip_x - 8.0 - back_w;
+
         let primary_button = button(
-            CGRect::new(&CGPoint::new(468.0, 14.0), &CGSize::new(118.0, 32.0)),
+            CGRect::new(
+                &CGPoint::new(primary_x, button_y),
+                &CGSize::new(primary_w, 32.0),
+            ),
             "Continue",
         );
         button_set_action(primary_button, action_handler, sel!(onPrimaryAction:));
@@ -832,7 +882,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.primary_button = Some(primary_button as usize);
 
         let back_button = button(
-            CGRect::new(&CGPoint::new(270.0, 14.0), &CGSize::new(88.0, 32.0)),
+            CGRect::new(&CGPoint::new(back_x, button_y), &CGSize::new(back_w, 32.0)),
             "Back",
         );
         button_set_action(back_button, action_handler, sel!(onBackAction:));
@@ -840,7 +890,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         ui.back_button = Some(back_button as usize);
 
         let skip_button = button(
-            CGRect::new(&CGPoint::new(364.0, 14.0), &CGSize::new(98.0, 32.0)),
+            CGRect::new(&CGPoint::new(skip_x, button_y), &CGSize::new(skip_w, 32.0)),
             "Skip",
         );
         button_set_action(skip_button, action_handler, sel!(onSkipAction:));
@@ -1068,6 +1118,7 @@ fn handle_skip_action() {
 
 fn handle_permission_primary(kind: PermissionKind) {
     let idx = kind.index();
+    let step_to_persist;
 
     {
         let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -1078,7 +1129,11 @@ fn handle_permission_primary(kind: PermissionKind) {
         }
 
         state.requested_permissions[idx] = true;
+        step_to_persist = state.step_index;
     }
+
+    // Persist checkpoint before asking TCC in case macOS forces an app restart.
+    save_onboarding_progress(step_to_persist);
 
     let _ = request_permission(kind);
 

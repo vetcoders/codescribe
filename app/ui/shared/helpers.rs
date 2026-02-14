@@ -111,7 +111,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.86)
+            with_alpha(base, 0.74)
         }
     }
 
@@ -150,7 +150,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.78)
+            with_alpha(base, 0.62)
         }
     }
 
@@ -158,7 +158,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.7)
+            with_alpha(base, 0.56)
         }
     }
 
@@ -359,22 +359,32 @@ fn insets_from_frame(bounds: CGRect, frame: CGRect) -> NSEdgeInsets {
     }
 }
 
-/// Check whether Tahoe's `NSGlassEffectView` class is usable.
-///
-/// On macOS 26 Tahoe, `NSGlassEffectView` is a direct `NSView` subclass
-/// (NOT `NSVisualEffectView`). It does not respond to `setMaterial:`,
-/// `setBlendingMode:`, or `setState:` — it uses `setStyle:` and
-/// `setTintColor:` instead.  This function returns `false` on current
-/// Tahoe 26.3 beta because the glass API is not yet public.
-pub fn glass_effect_supported() -> bool {
-    let Some(cls) = Class::get("NSGlassEffectView") else {
-        return false;
-    };
-    unsafe {
-        !class_getInstanceMethod(cls, sel!(setMaterial:)).is_null()
-            && !class_getInstanceMethod(cls, sel!(setBlendingMode:)).is_null()
-            && !class_getInstanceMethod(cls, sel!(setState:)).is_null()
+const NS_GLASS_EFFECT_STYLE_REGULAR: isize = 0;
+const NS_GLASS_EFFECT_STYLE_CLEAR: isize = 1;
+
+fn glass_effect_view_class() -> Option<*const Class> {
+    let cls = Class::get("NSGlassEffectView")?;
+    let has_style = unsafe { !class_getInstanceMethod(cls, sel!(setStyle:)).is_null() };
+    if has_style { Some(cls) } else { None }
+}
+
+fn glass_effect_style_for_material(material: NSVisualEffectMaterial) -> isize {
+    match material {
+        // Keep side panes and title-like strips lighter.
+        NSVisualEffectMaterial::Sidebar | NSVisualEffectMaterial::Titlebar => {
+            NS_GLASS_EFFECT_STYLE_CLEAR
+        }
+        _ => NS_GLASS_EFFECT_STYLE_REGULAR,
     }
+}
+
+/// Check whether Tahoe `NSGlassEffectView` is usable on this runtime.
+///
+/// We intentionally use only official style values:
+/// - `Regular` (0)
+/// - `Clear` (1)
+pub fn glass_effect_supported() -> bool {
+    glass_effect_view_class().is_some()
 }
 
 // ── Safe NSVisualEffectView subclass ─────────────────────────────────
@@ -456,6 +466,15 @@ pub fn create_glass_effect_view_with(
     state: NSVisualEffectState,
 ) -> Id {
     unsafe {
+        if let Some(cls) = glass_effect_view_class() {
+            let view: Id = msg_send![cls, alloc];
+            let view: Id = msg_send![view, initWithFrame: frame];
+            let style = glass_effect_style_for_material(material);
+            set_glass_effect_style(view, style);
+            let _: () = msg_send![view, setWantsLayer: true];
+            return view;
+        }
+
         let cls = safe_visual_effect_view_class();
         let view: Id = msg_send![cls, alloc];
         let view: Id = msg_send![view, initWithFrame: frame];
@@ -465,6 +484,22 @@ pub fn create_glass_effect_view_with(
         let _: () = msg_send![view, setWantsLayer: true];
         view
     }
+}
+
+/// # Safety
+/// `view` must be a valid `NSGlassEffectView` instance.
+unsafe fn set_glass_effect_style(view: Id, style: isize) {
+    if view.is_null() {
+        return;
+    }
+    let cls = unsafe { object_getClass(view as *const Object) };
+    if cls.is_null() {
+        return;
+    }
+    if unsafe { class_getInstanceMethod(cls, sel!(setStyle:)) }.is_null() {
+        return;
+    }
+    let _: () = msg_send![view, setStyle: style];
 }
 
 /// # Safety

@@ -1443,7 +1443,7 @@ impl RecordingController {
             })
             .await;
 
-        if *self.state.read().await == State::RecToggle {
+        if *self.state.read().await == State::RecToggle && is_assistive {
             crate::voice_chat_ui::set_voice_chat_sending(false);
             crate::voice_chat_ui::update_voice_chat_status("Listening...");
         }
@@ -2085,6 +2085,7 @@ impl RecordingController {
             }
         } else if force_ai {
             // Left double Option: ALWAYS formatting (no augmentation)
+            // Auto-paste like hold mode — formatted text goes where the cursor is.
             let should_use_ai = crate::ai_formatting::has_api_key();
             if should_use_ai {
                 info!("Formatting mode (Left Option): correcting transcript via AI");
@@ -2108,13 +2109,13 @@ impl RecordingController {
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
-                (result.text, kind, false)
+                (result.text, kind, true)
             } else if has_repetition {
                 info!("Formatting mode (Left Option): AI unavailable, cleaning repetitions");
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
-                    false,
+                    true,
                 )
             } else {
                 info!(
@@ -2123,7 +2124,7 @@ impl RecordingController {
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
-                    false,
+                    true,
                 )
             }
         } else {

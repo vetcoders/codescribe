@@ -266,6 +266,18 @@ pub fn overlay_window_class() -> *const Class {
                 sel!(performKeyEquivalent:),
                 perform_key_equivalent as extern "C" fn(&Object, Sel, Id) -> bool,
             );
+            decl.add_method(
+                sel!(draggingEntered:),
+                on_dragging_entered as extern "C" fn(&Object, Sel, Id) -> u64,
+            );
+            decl.add_method(
+                sel!(draggingUpdated:),
+                on_dragging_entered as extern "C" fn(&Object, Sel, Id) -> u64,
+            );
+            decl.add_method(
+                sel!(performDragOperation:),
+                on_perform_drag_operation as extern "C" fn(&Object, Sel, Id) -> bool,
+            );
             let cls = decl.register();
             OVERLAY_WINDOW_CLASS = cls;
         });
@@ -345,6 +357,47 @@ fn extract_paths_from_pasteboard(pasteboard: Id) -> Vec<PathBuf> {
                 let count: usize = msg_send![files, count];
                 for i in 0..count {
                     let ns_path: Id = msg_send![files, objectAtIndex: i];
+                    if ns_path.is_null() {
+                        continue;
+                    }
+                    let c_str: *const i8 = msg_send![ns_path, UTF8String];
+                    if c_str.is_null() {
+                        continue;
+                    }
+                    let s = std::ffi::CStr::from_ptr(c_str)
+                        .to_string_lossy()
+                        .to_string();
+                    if !s.is_empty() {
+                        out.push(PathBuf::from(s));
+                    }
+                }
+            }
+        }
+
+        // Fallback for drag sources that provide raw file-url strings per pasteboard item.
+        if out.is_empty() {
+            let items: Id = msg_send![pasteboard, pasteboardItems];
+            if !items.is_null() {
+                let count: usize = msg_send![items, count];
+                let file_url_type = ns_string("public.file-url");
+                for i in 0..count {
+                    let item: Id = msg_send![items, objectAtIndex: i];
+                    if item.is_null() {
+                        continue;
+                    }
+                    let url_str: Id = msg_send![item, stringForType: file_url_type];
+                    if url_str.is_null() {
+                        continue;
+                    }
+                    let url: Id = msg_send![ns_url, URLWithString: url_str];
+                    if url.is_null() {
+                        continue;
+                    }
+                    let is_file: bool = msg_send![url, isFileURL];
+                    if !is_file {
+                        continue;
+                    }
+                    let ns_path: Id = msg_send![url, path];
                     if ns_path.is_null() {
                         continue;
                     }

@@ -54,15 +54,89 @@ struct MemoryMessage {
 static OLLAMA_MEMORY: OnceLock<RwLock<Vec<MemoryMessage>>> = OnceLock::new();
 const MAX_OLLAMA_MEMORY_CHARS: usize = 4000;
 
+const DEFAULT_AI_MAX_RETRIES: u32 = 3;
+const DEFAULT_AI_RETRY_DELAY_MS: u64 = 2000;
+const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
+const DEFAULT_AI_CONNECT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_AI_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
+const DEFAULT_AI_TCP_KEEPALIVE_MS: u64 = 30_000;
+
+#[derive(Debug, Clone, Copy)]
+struct RetryPolicy {
+    max_retries: u32,
+    retry_delay: Duration,
+    attempt_timeout: Duration,
+    inter_chunk_timeout: Duration,
+}
+
+impl RetryPolicy {
+    fn from_env() -> Self {
+        Self {
+            max_retries: env_u32("CODESCRIBE_AI_MAX_RETRIES", DEFAULT_AI_MAX_RETRIES),
+            retry_delay: duration_from_env_ms(
+                "CODESCRIBE_AI_RETRY_DELAY_MS",
+                DEFAULT_AI_RETRY_DELAY_MS,
+            ),
+            attempt_timeout: duration_from_env_ms(
+                "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
+                DEFAULT_AI_ATTEMPT_TIMEOUT_MS,
+            ),
+            inter_chunk_timeout: duration_from_env_ms(
+                "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
+                DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS,
+            ),
+        }
+    }
+}
+
+fn env_u32(key: &str, default: u32) -> u32 {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
+    Duration::from_millis(env_u64(key, default_ms))
+}
+
 fn ollama_memory() -> &'static RwLock<Vec<MemoryMessage>> {
     OLLAMA_MEMORY.get_or_init(|| RwLock::new(Vec::new()))
 }
 
 fn get_client() -> &'static Client {
     AI_CLIENT.get_or_init(|| {
+        let timeout = duration_from_env_ms(
+            "CODESCRIBE_AI_CLIENT_TIMEOUT_MS",
+            DEFAULT_AI_CLIENT_TIMEOUT_MS,
+        );
+        let connect_timeout = duration_from_env_ms(
+            "CODESCRIBE_AI_CONNECT_TIMEOUT_MS",
+            DEFAULT_AI_CONNECT_TIMEOUT_MS,
+        );
+        let pool_idle_timeout = duration_from_env_ms(
+            "CODESCRIBE_AI_POOL_IDLE_TIMEOUT_MS",
+            DEFAULT_AI_POOL_IDLE_TIMEOUT_MS,
+        );
+        let tcp_keepalive = duration_from_env_ms(
+            "CODESCRIBE_AI_TCP_KEEPALIVE_MS",
+            DEFAULT_AI_TCP_KEEPALIVE_MS,
+        );
+
         Client::builder()
-            .timeout(Duration::from_secs(90)) // Longer timeout for GPT-5.x with long inputs
-            .connect_timeout(Duration::from_secs(5))
+            .timeout(timeout)
+            .connect_timeout(connect_timeout)
+            .pool_idle_timeout(pool_idle_timeout)
+            .tcp_keepalive(tcp_keepalive)
             .build()
             .expect("Failed to create AI HTTP client")
     })
@@ -713,25 +787,15 @@ pub async fn format_text_with_status(
         text.to_string()
     };
 
-    // Production defaults (per acceptance): 1 retry after 5s, ~2.5s per attempt.
-    // For deterministic/fast tests, allow overriding via env vars.
-    let max_retries: u32 = env::var("CODESCRIBE_AI_MAX_RETRIES")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(1);
-
-    let retry_delay_ms: u64 = env::var("CODESCRIBE_AI_RETRY_DELAY_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(5000);
-    let retry_delay = Duration::from_millis(retry_delay_ms);
-
-    // Budget: ~2.5s + 5s pause + ~2.5s ≈ 10s total
-    let attempt_timeout_ms: u64 = env::var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(2500);
-    let attempt_timeout = Duration::from_millis(attempt_timeout_ms);
+    let retry_policy = RetryPolicy::from_env();
+    let max_retries = retry_policy.max_retries;
+    debug!(
+        "AI retry policy: max_retries={}, retry_delay={:?}, attempt_timeout={:?}, inter_chunk_timeout={:?}",
+        retry_policy.max_retries,
+        retry_policy.retry_delay,
+        retry_policy.attempt_timeout,
+        retry_policy.inter_chunk_timeout
+    );
 
     for attempt in 0..=max_retries {
         info!(
@@ -759,9 +823,9 @@ pub async fn format_text_with_status(
         if attempt > 0 {
             info!(
                 "Retry attempt {}/{} (waiting {:?})",
-                attempt, max_retries, retry_delay
+                attempt, max_retries, retry_policy.retry_delay
             );
-            tokio::time::sleep(retry_delay).await;
+            tokio::time::sleep(retry_policy.retry_delay).await;
 
             // Append critical instruction
             system_prompt.push_str(
@@ -782,78 +846,46 @@ pub async fn format_text_with_status(
         } else {
             get_formatting_endpoint().unwrap_or_default()
         };
+        let endpoint_format = detect_format(&endpoint);
+        let route = match (endpoint_format, use_streaming()) {
+            (EndpointFormat::OllamaChat, _) => "ollama",
+            (EndpointFormat::ResponsesApi, true) => "responses-sse",
+            (EndpointFormat::ResponsesApi, false) => "responses-json",
+        };
 
-        let llm_timeout = Duration::from_secs(90);
-
-        let result_opt = match detect_format(&endpoint) {
-            EndpointFormat::OllamaChat => {
-                match tokio::time::timeout(
-                    attempt_timeout,
-                    call_ollama(&user_message, &system_prompt, assistive),
-                )
-                .await
-                {
-                    Ok(Ok(formatted)) => Some(formatted),
-                    Ok(Err(e)) => {
-                        warn!("Ollama failed (attempt {}): {}", attempt, e);
-                        None
-                    }
-                    Err(_) => {
-                        warn!(
-                            "Ollama timed out after {:?} (attempt {})",
-                            attempt_timeout, attempt
-                        );
-                        None
-                    }
-                }
+        let result_opt = match tokio::time::timeout(
+            retry_policy.attempt_timeout,
+            call_provider_once(
+                endpoint_format,
+                &user_message,
+                &system_prompt,
+                assistive,
+                on_delta.clone(),
+                retry_policy.inter_chunk_timeout,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(formatted)) => Some(formatted),
+            Ok(Err(e)) => {
+                warn!(
+                    "LLM {} attempt {}/{} failed: {}",
+                    route,
+                    attempt + 1,
+                    max_retries + 1,
+                    e
+                );
+                None
             }
-            EndpointFormat::ResponsesApi => {
-                if use_streaming() {
-                    match tokio::time::timeout(
-                        llm_timeout,
-                        call_llm_endpoint_streaming(
-                            &user_message,
-                            &system_prompt,
-                            assistive,
-                            on_delta.clone(),
-                        ),
-                    )
-                    .await
-                    {
-                        Ok(Ok(formatted)) => Some(formatted),
-                        Ok(Err(e)) => {
-                            warn!("LLM streaming failed (attempt {}): {}", attempt, e);
-                            None
-                        }
-                        Err(_) => {
-                            warn!(
-                                "LLM streaming timed out after {:?} (attempt {})",
-                                llm_timeout, attempt
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    match tokio::time::timeout(
-                        llm_timeout,
-                        call_llm_endpoint(&user_message, &system_prompt, assistive),
-                    )
-                    .await
-                    {
-                        Ok(Ok(formatted)) => Some(formatted),
-                        Ok(Err(e)) => {
-                            warn!("LLM endpoint failed (attempt {}): {}", attempt, e);
-                            None
-                        }
-                        Err(_) => {
-                            warn!(
-                                "LLM endpoint timed out after {:?} (attempt {})",
-                                llm_timeout, attempt
-                            );
-                            None
-                        }
-                    }
-                }
+            Err(_) => {
+                warn!(
+                    "LLM {} attempt {}/{} timed out after {:?}",
+                    route,
+                    attempt + 1,
+                    max_retries + 1,
+                    retry_policy.attempt_timeout
+                );
+                None
             }
         };
 
@@ -947,6 +979,33 @@ pub async fn format_text_with_status(
     }
 }
 
+async fn call_provider_once(
+    endpoint_format: EndpointFormat,
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+    on_delta: Option<AiStreamCallback>,
+    inter_chunk_timeout: Duration,
+) -> Result<String> {
+    match endpoint_format {
+        EndpointFormat::OllamaChat => call_ollama(user_message, system_prompt, assistive).await,
+        EndpointFormat::ResponsesApi => {
+            if use_streaming() {
+                call_llm_endpoint_streaming(
+                    user_message,
+                    system_prompt,
+                    assistive,
+                    on_delta,
+                    inter_chunk_timeout,
+                )
+                .await
+            } else {
+                call_llm_endpoint(user_message, system_prompt, assistive).await
+            }
+        }
+    }
+}
+
 /// Call LLM endpoint using /v1/responses API
 ///
 /// Uses mode-aware config: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
@@ -987,13 +1046,11 @@ async fn call_llm_endpoint(
 
     // TRACE: full chain details for debugging (before model is moved)
     trace!(
-        "LLM request chain: endpoint={}, model={}, mode={}, temp={:?}, api_key={}...{}",
+        "LLM request chain: endpoint={}, model={}, mode={}, temp={:?}",
         endpoint,
         model,
         if assistive { "assistive" } else { "formatting" },
-        temperature,
-        &api_key[..8.min(api_key.len())],
-        &api_key[api_key.len().saturating_sub(4)..]
+        temperature
     );
     debug!(
         "Calling LLM endpoint {} for {} (temp={:?})",
@@ -1073,6 +1130,7 @@ async fn call_llm_endpoint_streaming(
     system_prompt: &str,
     assistive: bool,
     on_delta: Option<AiStreamCallback>,
+    inter_chunk_timeout: Duration,
 ) -> Result<String> {
     use futures_util::StreamExt;
 
@@ -1107,13 +1165,11 @@ async fn call_llm_endpoint_streaming(
 
     // TRACE: full chain details for debugging (before model is moved)
     trace!(
-        "SSE request chain: endpoint={}, model={}, mode={}, temp={:?}, api_key={}...{}",
+        "SSE request chain: endpoint={}, model={}, mode={}, temp={:?}",
         endpoint,
         model,
         if assistive { "assistive" } else { "formatting" },
-        temperature,
-        &api_key[..8.min(api_key.len())],
-        &api_key[api_key.len().saturating_sub(4)..]
+        temperature
     );
     debug!(
         "SSE streaming to {} for {} (temp={:?})",
@@ -1160,7 +1216,22 @@ async fn call_llm_endpoint_streaming(
 
     let mut buffer = String::new();
 
-    while let Some(chunk_result) = stream.next().await {
+    let mut saw_done = false;
+
+    loop {
+        let next_chunk = tokio::time::timeout(inter_chunk_timeout, stream.next())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "SSE stream inter-chunk timeout after {:?}",
+                    inter_chunk_timeout
+                )
+            })?;
+
+        let Some(chunk_result) = next_chunk else {
+            break;
+        };
+
         let chunk = chunk_result.context("Stream read error")?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -1176,6 +1247,7 @@ async fn call_llm_endpoint_streaming(
             // Parse SSE data lines
             if let Some(data) = line.strip_prefix("data: ") {
                 if data == "[DONE]" {
+                    saw_done = true;
                     break;
                 }
 
@@ -1206,6 +1278,10 @@ async fn call_llm_endpoint_streaming(
                     }
                 }
             }
+        }
+
+        if saw_done {
+            break;
         }
     }
 

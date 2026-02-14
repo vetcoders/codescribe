@@ -30,7 +30,8 @@ use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectMaterial, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use std::thread;
 use std::time::Duration;
@@ -41,10 +42,10 @@ use crate::config::{HoldMods, ToggleTrigger};
 use crate::ui_helpers::{
     LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style,
     color_clear, color_label, color_secondary_label, create_button,
-    create_flipped_vertical_stack_view, create_glass_effect_view, create_label,
-    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
-    ns_string, set_button_symbol, set_focus_ring, set_hidden, set_tooltip,
-    style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
+    create_flipped_vertical_stack_view, create_glass_effect_view, create_glass_effect_view_with,
+    create_label, create_scrollable_text_view, create_vertical_stack_view,
+    layout_region_frame_for_view, ns_string, set_button_symbol, set_focus_ring, set_hidden,
+    set_tooltip, style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -245,13 +246,22 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![window, setDelegate: window_delegate];
 
         let content_view: Id = msg_send![window, contentView];
+        let ns_mut_array = Class::get("NSMutableArray").unwrap();
+        let window_drag_types: Id = msg_send![ns_mut_array, array];
+        let _: () = msg_send![window_drag_types, addObject: ns_string("public.file-url")];
+        let _: () = msg_send![window_drag_types, addObject: ns_string("NSFilenamesPboardType")];
+        let _: () = msg_send![window, registerForDraggedTypes: window_drag_types];
 
         let blur_frame = CGRect::new(
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
         );
-        let blur_view: Id =
-            create_glass_effect_view(blur_frame, NSVisualEffectMaterial::WindowBackground);
+        let blur_view: Id = create_glass_effect_view_with(
+            blur_frame,
+            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectBlendingMode::BehindWindow,
+            NSVisualEffectState::Active,
+        );
         let _: () = msg_send![
             blur_view,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
@@ -260,6 +270,11 @@ fn show_voice_chat_overlay_impl() {
         if !layer.is_null() {
             let _: () = msg_send![layer, setCornerRadius: ui_tokens::CORNER_RADIUS_LG];
             let _: () = msg_send![layer, setMasksToBounds: true];
+            let border = ui_colors::separator();
+            let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![layer, setBorderColor: cg_border];
+            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
         }
         add_subview(content_view, blur_view);
         let bounds: CGRect = msg_send![blur_view, bounds];
@@ -612,8 +627,12 @@ fn show_voice_chat_overlay_impl() {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(content_frame.size.width, content_frame.size.height),
         );
-        let sidebar_view: Id =
-            create_glass_effect_view(sidebar_frame, NSVisualEffectMaterial::Sidebar);
+        let sidebar_view: Id = create_glass_effect_view_with(
+            sidebar_frame,
+            NSVisualEffectMaterial::Sidebar,
+            NSVisualEffectBlendingMode::BehindWindow,
+            NSVisualEffectState::Active,
+        );
         let sidebar_layer: Id = msg_send![sidebar_view, layer];
         if !sidebar_layer.is_null() {
             let _: () = msg_send![sidebar_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
@@ -832,9 +851,8 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![input_bar, setWantsLayer: true];
         let _: () =
             msg_send![input_bar, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN];
-        let ns_mut_array = Class::get("NSMutableArray").unwrap();
         let drag_types: Id = msg_send![ns_mut_array, array];
-        let _: () = msg_send![drag_types, addObject: ns_string("NSPasteboardTypeFileURL")];
+        let _: () = msg_send![drag_types, addObject: ns_string("public.file-url")];
         let _: () = msg_send![drag_types, addObject: ns_string("NSFilenamesPboardType")];
         let _: () = msg_send![input_bar, registerForDraggedTypes: drag_types];
         let input_layer: Id = msg_send![input_bar, layer];
@@ -1089,7 +1107,7 @@ fn create_scroll_edge_effect(frame: CGRect) -> Id {
             let gradient: Id = msg_send![gradient_cls, layer];
             let base: Id = msg_send![ns_color, separatorColor];
             let top_color: Id = msg_send![base, colorWithAlphaComponent: 0.0f64];
-            let bottom_color: Id = msg_send![base, colorWithAlphaComponent: 0.35f64];
+            let bottom_color: Id = msg_send![base, colorWithAlphaComponent: 0.16f64];
             let cg_top: Id = msg_send![top_color, CGColor];
             let cg_bottom: Id = msg_send![bottom_color, CGColor];
             let color_objs: [Id; 2] = [cg_top, cg_bottom];
