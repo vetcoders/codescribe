@@ -2549,6 +2549,7 @@ pub(super) extern "C" fn on_delay_changed(_this: &Object, _cmd: objc::runtime::S
         info!("Settings: hold delay -> {}ms", ms);
         let config = Config::load();
         let _ = config.save_to_env("HOLD_START_DELAY_MS", &ms.to_string());
+        hotkeys::set_hold_start_delay_ms(ms);
         let label_ptr = {
             let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.hold_delay_value_label

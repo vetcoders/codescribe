@@ -116,6 +116,9 @@ pub fn set_exclusive_mode(enabled: bool) {
 /// Atomic storage for double-tap interval (milliseconds)
 static DOUBLE_TAP_INTERVAL_MS: AtomicU64 = AtomicU64::new(200);
 
+/// Atomic storage for hold-to-talk delay (milliseconds)
+static HOLD_START_DELAY_MS: AtomicU64 = AtomicU64::new(800);
+
 /// Set the double-tap interval (ms). Clamped to safe bounds.
 pub fn set_double_tap_interval_ms(ms: u64) {
     let clamped = ms.clamp(100, 450);
@@ -126,6 +129,18 @@ pub fn set_double_tap_interval_ms(ms: u64) {
 /// Get the current double-tap interval (ms).
 pub fn get_double_tap_interval_ms() -> u64 {
     DOUBLE_TAP_INTERVAL_MS.load(AtomicOrdering::SeqCst)
+}
+
+/// Set hold-to-talk delay (ms). Clamped to practical bounds.
+pub fn set_hold_start_delay_ms(ms: u64) {
+    let clamped = ms.clamp(100, 5000);
+    HOLD_START_DELAY_MS.store(clamped, AtomicOrdering::SeqCst);
+    tracing::info!("Hold start delay set to: {}ms", clamped);
+}
+
+/// Get hold-to-talk delay (ms) used by gesture cancellation window.
+pub fn get_hold_start_delay_ms() -> u64 {
+    HOLD_START_DELAY_MS.load(AtomicOrdering::SeqCst)
 }
 
 // --- Constants ---
@@ -510,14 +525,14 @@ mod macos {
                 HoldMods::CtrlCmd => ctrl_held && cmd_held,
             };
 
-            // If base hold is active and within delay window (~800ms),
+            // If base hold is active and within configured delay window,
             // cancel the hold gesture to avoid hijacking normal shortcuts.
             // After delay, recording has started - don't cancel on key presses
-            const HOLD_DELAY_MS: u64 = 800; // Align with controller default hold delay
+            let hold_delay_ms = get_hold_start_delay_ms();
             if base_held && state.hold_active {
                 let in_delay_window = state
                     .hold_active_ts
-                    .map(|ts| ts.elapsed() < Duration::from_millis(HOLD_DELAY_MS))
+                    .map(|ts| ts.elapsed() < Duration::from_millis(hold_delay_ms))
                     .unwrap_or(false);
 
                 if in_delay_window {
@@ -1285,5 +1300,15 @@ mod tests {
         assert_eq!(get_double_tap_interval_ms(), 100);
         set_double_tap_interval_ms(999);
         assert_eq!(get_double_tap_interval_ms(), 450);
+    }
+
+    #[test]
+    fn test_hold_start_delay_get_set() {
+        set_hold_start_delay_ms(800);
+        assert_eq!(get_hold_start_delay_ms(), 800);
+        set_hold_start_delay_ms(50);
+        assert_eq!(get_hold_start_delay_ms(), 100);
+        set_hold_start_delay_ms(9999);
+        assert_eq!(get_hold_start_delay_ms(), 5000);
     }
 }
