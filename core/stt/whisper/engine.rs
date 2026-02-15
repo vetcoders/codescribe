@@ -27,7 +27,9 @@ use ndarray_npy::ReadNpyExt;
 use tokenizers::Tokenizer;
 
 use super::model::Whisper as Model;
+use super::timestamps::{self, TimestampRange};
 use crate::audio::loader as audio_loader;
+use crate::pipeline::contracts::RawTranscript;
 use crate::safe_path;
 
 use super::embedded::EmbeddedModel;
@@ -42,6 +44,7 @@ pub struct LocalWhisperEngine {
     device: Device,
     config: Config,
     mel_filters: Vec<f32>,
+    ts_range: Option<TimestampRange>,
     pub decoding_params: DecodingParams,
 }
 
@@ -192,12 +195,15 @@ impl LocalWhisperEngine {
         let mel_filters =
             load_mel_filters(&mel_filters_path, n_mels).context("Failed to load mel filters")?;
 
+        let ts_range = TimestampRange::from_tokenizer(&tokenizer);
+
         Ok(Self {
             model,
             tokenizer,
             device,
             config,
             mel_filters,
+            ts_range,
             decoding_params: DecodingParams::default(),
         })
     }
@@ -262,12 +268,15 @@ impl LocalWhisperEngine {
 
         tracing::info!("Embedded Whisper model loaded successfully");
 
+        let ts_range = TimestampRange::from_tokenizer(&tokenizer);
+
         Ok(Self {
             model,
             tokenizer,
             device,
             config,
             mel_filters,
+            ts_range,
             decoding_params: DecodingParams::default(),
         })
     }
@@ -321,6 +330,17 @@ impl LocalWhisperEngine {
         sample_rate: u32,
         language: Option<&str>,
     ) -> Result<String> {
+        Ok(self
+            .transcribe_with_language_segments(audio, sample_rate, language)?
+            .text)
+    }
+
+    pub fn transcribe_with_language_segments(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<RawTranscript> {
         let samples = audio_loader::resample_to_16k(audio, sample_rate);
         let debug_tokens = env::var("CODESCRIBE_DEBUG_TOKENS")
             .map(|v| v != "0" && v.to_lowercase() != "false")
@@ -342,7 +362,7 @@ impl LocalWhisperEngine {
             }
         };
 
-        self.transcribe_samples_16k(&samples, language, debug_tokens)
+        self.transcribe_samples_16k_raw(&samples, language, debug_tokens)
     }
 
     pub fn transcribe_long(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
@@ -355,7 +375,63 @@ impl LocalWhisperEngine {
         sample_rate: u32,
         language: Option<&str>,
     ) -> Result<String> {
-        self.transcribe_long_streaming(audio, sample_rate, language, None)
+        Ok(self
+            .transcribe_long_with_language_segments(audio, sample_rate, language)?
+            .text)
+    }
+
+    pub fn transcribe_long_with_language_segments(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<RawTranscript> {
+        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        let debug_tokens = env::var("CODESCRIBE_DEBUG_TOKENS")
+            .map(|v| v != "0" && v.to_lowercase() != "false")
+            .unwrap_or(false);
+
+        let detected_lang;
+        let language = match language {
+            Some(l) => Some(l),
+            None => {
+                detected_lang = self.detect_language_16k(&samples)?;
+                tracing::info!("Detected language: {}", detected_lang);
+                Some(detected_lang.as_str())
+            }
+        };
+
+        let chunk_samples = 16_000usize * 25; // 25 seconds
+        let overlap = 16_000usize * 5; // 5 seconds overlap
+        ensure!(chunk_samples > overlap, "chunk_samples must be > overlap");
+        let step = chunk_samples - overlap;
+
+        let mut out = String::new();
+        let mut all_segments = Vec::new();
+        let mut offset = 0usize;
+
+        while offset < samples.len() {
+            let end = (offset + chunk_samples).min(samples.len());
+            let chunk = &samples[offset..end];
+            let transcript = self.transcribe_samples_16k_raw(chunk, language, debug_tokens)?;
+            append_with_overlap_dedup(&mut out, &transcript.text);
+
+            if !transcript.segments.is_empty() {
+                let offset_sec = offset as f32 / 16_000.0;
+                all_segments.extend(transcript.segments.into_iter().map(|mut s| {
+                    s.start_ts += offset_sec;
+                    s.end_ts += offset_sec;
+                    s
+                }));
+            }
+
+            offset = offset.saturating_add(step);
+        }
+
+        Ok(RawTranscript {
+            text: dedup_repetitions(out.trim()),
+            segments: all_segments,
+        })
     }
 
     /// Transcribe long audio with streaming callback
@@ -525,6 +601,17 @@ impl LocalWhisperEngine {
         language: Option<&str>,
         debug_tokens: bool,
     ) -> Result<String> {
+        Ok(self
+            .transcribe_samples_16k_raw(samples_16k, language, debug_tokens)?
+            .text)
+    }
+
+    fn transcribe_samples_16k_raw(
+        &mut self,
+        samples_16k: &[f32],
+        language: Option<&str>,
+        debug_tokens: bool,
+    ) -> Result<RawTranscript> {
         ensure!(!samples_16k.is_empty(), "audio is empty");
 
         self.model.reset_kv_cache();
@@ -564,7 +651,8 @@ impl LocalWhisperEngine {
         if let Some(t) = self.tokenizer.token_to_id("<|transcribe|>") {
             tokens.push(t);
         }
-        if let Some(t) = self.tokenizer.token_to_id("<|notimestamps|>") {
+        let timestamps_enabled = self.decoding_params.emit_timestamps && self.ts_range.is_some();
+        if !timestamps_enabled && let Some(t) = self.tokenizer.token_to_id("<|notimestamps|>") {
             tokens.push(t);
         }
 
@@ -624,7 +712,7 @@ impl LocalWhisperEngine {
 
                     if nos_prob > self.decoding_params.no_speech_threshold {
                         tracing::debug!("No speech detected (prob={:.3})", nos_prob);
-                        return Ok(String::new()); // Return empty for silence
+                        return Ok(RawTranscript::default()); // Return empty for silence
                     }
                 }
             }
@@ -746,10 +834,21 @@ impl LocalWhisperEngine {
             all_tokens.push(best_token);
         }
 
-        let text = self
-            .tokenizer
-            .decode(&all_tokens, true)
-            .map_err(|e| anyhow!("Tokenizer error: {}", e))?;
+        let (text, segments) = if timestamps_enabled {
+            let range = self
+                .ts_range
+                .as_ref()
+                .ok_or_else(|| anyhow!("Timestamp range missing despite emit_timestamps=true"))?;
+            timestamps::extract_segments(&all_tokens, &self.tokenizer, range)
+        } else {
+            (
+                self.tokenizer
+                    .decode(&all_tokens, true)
+                    .map_err(|e| anyhow!("Tokenizer error: {}", e))?,
+                Vec::new(),
+            )
+        };
+        let text = text.trim().to_string();
 
         // 5. Logprob Threshold
         if token_count > 0 {
@@ -787,10 +886,13 @@ impl LocalWhisperEngine {
                 );
             }
 
-            return Ok(cleaned);
+            return Ok(RawTranscript {
+                text: cleaned,
+                segments: Vec::new(),
+            });
         }
 
-        Ok(text)
+        Ok(RawTranscript { text, segments })
     }
 }
 

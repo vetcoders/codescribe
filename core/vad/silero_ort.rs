@@ -6,9 +6,6 @@
 //! Created by M&K (c)2026 VetCoders
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, mpsc};
-use std::thread;
 
 use anyhow::{Context, Result};
 use ndarray::ArrayD;
@@ -23,7 +20,7 @@ use crate::hf_cache;
 pub const VAD_SAMPLE_RATE: u32 = 16000;
 
 /// Chunk size for Silero (512 samples = 32ms at 16kHz)
-const CHUNK_SIZE: usize = 512;
+pub(crate) const CHUNK_SIZE: usize = 512;
 
 /// Context size for Silero v6 (64 samples at 16kHz).
 /// Each inference call requires prepending the last 64 samples from the
@@ -34,9 +31,6 @@ const CONTEXT_SIZE: usize = 64;
 /// Unified state shape for Silero v6: [2, 1, 128].
 /// v4 used separate h/c tensors with dim 64; v5+ merged them.
 const STATE_SHAPE: [usize; 3] = [2, 1, 128];
-
-/// Global VAD worker
-static VAD_WORKER: OnceLock<VadWorker> = OnceLock::new();
 
 /// Resampler for converting audio to 16kHz
 pub struct Resampler {
@@ -219,248 +213,85 @@ impl SileroVad {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Worker-based singleton (no mutex in hot path)
+// AccumulatingVad — local SileroVad with proper chunk accumulation
 // ═══════════════════════════════════════════════════════════
 
-use std::sync::{Arc, atomic::AtomicU32};
-
-/// Message to VAD worker (fire-and-forget, no response channel)
-enum VadMessage {
-    Predict { samples: Vec<f32>, sample_rate: u32 },
-    Reset,
-    Shutdown,
-}
-
-/// VAD worker that processes requests off the audio thread.
+/// SileroVad with sample accumulation for correct chunk-boundary handling.
 ///
-/// Non-blocking design: callback submits audio via try_send,
-/// worker updates atomic last_prob. No waiting in hot path.
-struct VadWorker {
-    sender: mpsc::SyncSender<VadMessage>,
-    initialized: AtomicBool,
-    /// Last computed probability (f32 as bits for atomic access)
-    last_prob: Arc<AtomicU32>,
+/// Unlike the old global VadWorker, this:
+/// - Properly accumulates resampled samples across calls (no lost sub-chunks)
+/// - Starts with last_prob = 0.0 (no phantom speech on first frame)
+/// - Is locally owned, not a global singleton
+///
+/// Created by M&K (c)2026 VetCoders
+pub struct AccumulatingVad {
+    vad: SileroVad,
+    resampler: Option<Resampler>,
+    accumulator: Vec<f32>,
+    last_prob: f32,
 }
 
-impl VadWorker {
-    fn new(model_path: &Path, config: VadConfig) -> Result<Self> {
-        // Validate model exists before spawning worker thread
-        if !model_path.exists() {
-            anyhow::bail!(
-                "Silero VAD model not found at: {} - download with scripts/download-silero.sh",
-                model_path.display()
-            );
-        }
+impl AccumulatingVad {
+    /// Create with explicit model path and config.
+    pub fn with_config(model_path: &Path, config: VadConfig, sample_rate: u32) -> Result<Self> {
+        let vad = SileroVad::new(model_path, config)?;
+        let resampler = if sample_rate != VAD_SAMPLE_RATE {
+            Some(Resampler::new(sample_rate))
+        } else {
+            None
+        };
+        Ok(Self {
+            vad,
+            resampler,
+            accumulator: Vec::with_capacity(CHUNK_SIZE * 4),
+            last_prob: 0.0,
+        })
+    }
 
-        // Bounded channel - if full, oldest messages dropped (backpressure)
-        let (tx, rx) = mpsc::sync_channel::<VadMessage>(4);
-        let path = model_path.to_path_buf();
+    /// Create using default model path and config.
+    pub fn new(sample_rate: u32) -> Result<Self> {
+        Self::with_config(&default_model_path(), VadConfig::default(), sample_rate)
+    }
 
-        // Shared atomic for worker to update
-        // Initialize to 1.0 (assume speech) - safe default if worker fails
-        let last_prob = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let last_prob_writer = Arc::clone(&last_prob);
+    /// Feed audio samples (at the sample_rate given at construction).
+    /// Returns latest speech probability (0.0–1.0).
+    ///
+    /// Internally resamples to 16kHz, accumulates until a full 512-sample
+    /// chunk is available, then runs Silero inference.
+    pub fn feed(&mut self, samples: &[f32]) -> f32 {
+        let resampled = if let Some(ref mut r) = self.resampler {
+            r.resample(samples)
+        } else {
+            samples.to_vec()
+        };
+        self.accumulator.extend_from_slice(&resampled);
 
-        // Oneshot channel to confirm model loaded successfully
-        let (init_tx, init_rx) = mpsc::sync_channel::<Result<()>>(1);
-
-        thread::spawn(move || {
-            let mut vad = match SileroVad::new(&path, config) {
-                Ok(v) => {
-                    // Signal success to main thread
-                    let _ = init_tx.send(Ok(()));
-                    v
-                }
-                Err(e) => {
-                    // Signal failure to main thread
-                    let _ = init_tx.send(Err(anyhow::anyhow!(
-                        "Failed to load Silero VAD model: {}",
-                        e
-                    )));
-                    return;
-                }
-            };
-
-            for msg in rx {
-                match msg {
-                    VadMessage::Predict {
-                        samples,
-                        sample_rate,
-                    } => {
-                        vad.set_input_sample_rate(sample_rate);
-                        let prob = match vad.predict(&samples) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                tracing::warn!("VAD predict error (assuming speech): {e}");
-                                1.0
-                            }
-                        };
-                        // Update atomic (Relaxed - just caching value, no sync needed)
-                        last_prob_writer.store(prob.to_bits(), Ordering::Relaxed);
-                    }
-                    VadMessage::Reset => {
-                        vad.reset();
-                        last_prob_writer.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                    }
-                    VadMessage::Shutdown => {
-                        break;
-                    }
-                }
-            }
-        });
-
-        // Wait for worker to confirm model loaded (with timeout)
-        match init_rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(Ok(())) => {
-                debug!("VAD worker initialized successfully");
-                Ok(Self {
-                    sender: tx,
-                    initialized: AtomicBool::new(true),
-                    last_prob,
-                })
-            }
-            Ok(Err(e)) => {
-                // Model failed to load - propagate error
-                Err(e)
-            }
-            Err(_) => {
-                // Timeout waiting for worker
-                anyhow::bail!("Timeout waiting for VAD worker to initialize (30s)")
+        // Process every complete 512-sample chunk
+        while self.accumulator.len() >= CHUNK_SIZE {
+            let chunk: Vec<f32> = self.accumulator.drain(..CHUNK_SIZE).collect();
+            // predict() on a 16kHz chunk with no resampler set → single predict_chunk()
+            if let Ok(prob) = self.vad.predict(&chunk) {
+                self.last_prob = prob;
             }
         }
+        self.last_prob
     }
 
-    /// Submit audio for VAD processing (non-blocking, fire-and-forget).
-    /// Returns immediately, does NOT wait for result.
-    fn submit(&self, samples: &[f32], sample_rate: u32) {
-        // try_send: if channel full, drop oldest (backpressure)
-        let _ = self.sender.try_send(VadMessage::Predict {
-            samples: samples.to_vec(),
-            sample_rate,
-        });
+    /// Current speech probability without feeding new audio.
+    pub fn probability(&self) -> f32 {
+        self.last_prob
     }
 
-    /// Get the last computed probability (non-blocking atomic read).
-    fn last_probability(&self) -> f32 {
-        f32::from_bits(self.last_prob.load(Ordering::Relaxed))
+    /// Speech detection threshold from config.
+    pub fn threshold(&self) -> f32 {
+        self.vad.threshold()
     }
 
-    fn reset(&self) {
-        let _ = self.sender.try_send(VadMessage::Reset);
-    }
-
-    fn shutdown(&self) {
-        let _ = self.sender.try_send(VadMessage::Shutdown);
-        self.initialized.store(false, Ordering::SeqCst);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════
-// Public singleton API
-// ═══════════════════════════════════════════════════════════
-
-use std::sync::Mutex;
-
-/// Initialization lock to prevent concurrent init attempts
-static INIT_LOCK: Mutex<()> = Mutex::new(());
-
-/// Model path storage (set only after successful init)
-static MODEL_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
-static VAD_CONFIG: OnceLock<VadConfig> = OnceLock::new();
-
-pub fn init(model_path: &Path) -> Result<()> {
-    init_with_config(model_path, VadConfig::default())
-}
-
-/// Initialize VAD with model path and config
-///
-/// Returns Ok if initialized successfully, Err if model not found.
-/// When VAD is not initialized, `speech_probability()` returns 1.0 (assume speech).
-///
-/// **Important:** This is a no-op if VAD is already initialized.
-/// Repeated calls are safe and cheap (early-exit with mutex).
-///
-/// **Warning:** First call may block up to 30s waiting for model load.
-/// Call early in app startup, not on UI thread.
-pub fn init_with_config(model_path: &Path, config: VadConfig) -> Result<()> {
-    // Fast path: already initialized (no lock needed)
-    if is_initialized() {
-        return Ok(());
-    }
-
-    // Slow path: acquire lock to prevent concurrent init
-    let _guard = INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-    // Double-check after acquiring lock (another thread may have initialized)
-    if is_initialized() {
-        debug!("VAD initialized by another thread, skipping");
-        return Ok(());
-    }
-
-    // Try to create worker - if it fails, VAD stays uninitialized
-    // (speech_probability will return 1.0, effectively disabling segmentation)
-    match VadWorker::new(model_path, config.clone()) {
-        Ok(worker) => {
-            // Only set config/path AFTER successful init
-            let _ = MODEL_PATH.set(model_path.to_path_buf());
-            let _ = VAD_CONFIG.set(config);
-            let _ = VAD_WORKER.set(worker);
-            info!("VAD initialized successfully");
-            Ok(())
-        }
-        Err(e) => {
-            tracing::error!("VAD init failed: {} - segmentation disabled", e);
-            Err(e)
-        }
-    }
-}
-
-pub fn is_initialized() -> bool {
-    VAD_WORKER
-        .get()
-        .map(|w| w.initialized.load(Ordering::SeqCst))
-        .unwrap_or(false)
-}
-
-/// Get speech probability for audio chunk (NON-BLOCKING).
-///
-/// Safe to call from audio callbacks:
-/// 1. Submits audio to worker thread (fire-and-forget)
-/// 2. Returns the LAST computed probability (may be from previous chunk)
-///
-/// This "eventual consistency" approach avoids blocking the audio thread.
-/// After a few calls, the returned value will reflect recent audio.
-///
-/// **Important:** Returns 1.0 when VAD not initialized (assume speech),
-/// which effectively disables silence-based segmentation.
-pub fn speech_probability(samples: &[f32], sample_rate: u32) -> f32 {
-    if let Some(worker) = VAD_WORKER.get() {
-        // Submit new audio (non-blocking)
-        worker.submit(samples, sample_rate);
-        // Return last computed probability (instant, atomic read)
-        worker.last_probability()
-    } else {
-        // VAD not initialized - assume speech to prevent premature segmentation
-        1.0
-    }
-}
-
-pub fn is_speech(samples: &[f32], sample_rate: u32) -> bool {
-    let threshold = VAD_CONFIG.get().map(|c| c.threshold).unwrap_or(0.5);
-    speech_probability(samples, sample_rate) > threshold
-}
-
-/// Reset VAD state
-pub fn reset() {
-    if let Some(worker) = VAD_WORKER.get() {
-        worker.reset();
-    }
-}
-
-/// Gracefully stop the VAD worker thread.
-pub fn shutdown() {
-    if let Some(worker) = VAD_WORKER.get() {
-        worker.shutdown();
+    /// Reset internal Silero state and accumulator.
+    pub fn reset(&mut self) {
+        self.vad.reset();
+        self.accumulator.clear();
+        self.last_prob = 0.0;
     }
 }
 

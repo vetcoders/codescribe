@@ -33,12 +33,11 @@ impl TranscriptionAdapter for WhisperSingletonAdapter {
         utterance: &SpeechUtterance,
         language: Option<&str>,
     ) -> Result<RawTranscript> {
-        let text =
-            crate::stt::whisper::transcribe(&utterance.samples, utterance.sample_rate, language)?;
-        Ok(RawTranscript {
-            text,
-            segments: Vec::new(), // Whisper singleton doesn't expose segments yet
-        })
+        crate::stt::whisper::transcribe_with_segments(
+            &utterance.samples,
+            utterance.sample_rate,
+            language,
+        )
     }
 }
 

@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod onboarding;
 pub mod overlay;
 pub mod shared;
 pub mod tray;

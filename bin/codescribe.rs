@@ -9,6 +9,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use codescribe::os::hotkeys;
 use codescribe::{ai_formatting, audio, whisper};
+use codescribe_core::vad;
+use std::borrow::Cow;
 use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -71,6 +73,10 @@ struct TranscribeArgs {
     /// LLM model for formatting (overrides LLM_FORMATTING_MODEL for this run)
     #[arg(long)]
     llm: Option<String>,
+
+    /// Skip Silero VAD speech pre-filtering
+    #[arg(long)]
+    no_vad: bool,
 
     #[command(subcommand)]
     mode: Option<TranscribeMode>,
@@ -245,7 +251,15 @@ async fn handle_transcribe_command(args: TranscribeArgs) -> Result<()> {
             let file = args.file.ok_or_else(|| {
                 anyhow::anyhow!("Missing <FILE> (or use `codescribe transcribe live`)")
             })?;
-            handle_transcribe_file(file, args.language, args.format, args.llm, args.stream).await
+            handle_transcribe_file(
+                file,
+                args.language,
+                args.format,
+                args.llm,
+                args.stream,
+                args.no_vad,
+            )
+            .await
         }
     }
 }
@@ -256,6 +270,7 @@ async fn handle_transcribe_file(
     format: bool,
     llm_model: Option<String>,
     stream: bool,
+    no_vad: bool,
 ) -> Result<()> {
     use std::time::Instant;
 
@@ -280,23 +295,31 @@ async fn handle_transcribe_file(
     eprintln!("Language: {}", language.as_deref().unwrap_or("auto-detect"));
     eprintln!("Model loaded in {:?}", start.elapsed());
 
-    // Load audio only if needed (language detection or streaming)
-    let audio_data = if stream || language.is_none() {
-        Some(audio::load_audio_file(&file)?)
+    // Always load audio (needed for VAD pre-filter + language detection)
+    let (samples, sample_rate) = audio::load_audio_file(&file)?;
+    let total_sec = samples.len() as f32 / sample_rate as f32;
+
+    // ── Silero VAD pre-filter: extract speech-only regions ──
+    let speech_samples = if no_vad {
+        eprintln!("VAD: skipped (--no-vad)");
+        Cow::Borrowed(samples.as_slice())
     } else {
-        None
+        let (filtered_samples, vad_stats) = vad::extract_speech(&samples, sample_rate);
+        let speech_sec = filtered_samples.len() as f32 / sample_rate as f32;
+        eprintln!(
+            "Silero VAD: {:.1}s speech / {:.1}s total ({:.0}% speech) | {}",
+            speech_sec, total_sec, vad_stats.speech_pct, vad_stats.sparkline
+        );
+        Cow::Owned(filtered_samples)
     };
 
     // Detect language if not specified
     let lang = if let Some(l) = language {
         l
     } else {
-        let (samples, sample_rate) = audio_data
-            .as_ref()
-            .expect("audio data required for language detection");
         eprintln!("Detecting language...");
         let start = Instant::now();
-        let detected = whisper::detect_language(samples, *sample_rate)?;
+        let detected = whisper::detect_language(speech_samples.as_ref(), sample_rate)?;
         eprintln!("Detected: {} ({:?})", detected, start.elapsed());
         detected
     };
@@ -315,20 +338,21 @@ async fn handle_transcribe_file(
                 emitter.emit_cumulative(cumulative);
             }
         };
-        let (samples, sample_rate) = audio_data
-            .as_ref()
-            .expect("audio data required for streaming");
-        let _raw_text =
-            whisper::transcribe_streaming(samples, *sample_rate, Some(&lang), Some(&callback))?;
+        let _raw_text = whisper::transcribe_streaming(
+            speech_samples.as_ref(),
+            sample_rate,
+            Some(&lang),
+            Some(&callback),
+        )?;
         eprintln!("Transcription time: {:?}", start.elapsed());
         emitter.finish();
         return Ok(());
     }
 
-    // Transcribe (non-streaming)
+    // Transcribe (non-streaming) — speech-only samples
     eprintln!("Transcribing...");
     let start = Instant::now();
-    let raw_text = whisper::transcribe_file(&file, Some(&lang))?;
+    let raw_text = whisper::transcribe(speech_samples.as_ref(), sample_rate, Some(&lang))?;
     eprintln!("Transcription time: {:?}", start.elapsed());
 
     // Format with AI if requested
@@ -441,9 +465,6 @@ async fn run_daemon() -> Result<()> {
     #[cfg(target_os = "macos")]
     codescribe::install_basic_edit_menu();
 
-    #[cfg(target_os = "macos")]
-    codescribe::os::permissions::request_all_permissions();
-
     tokio::task::spawn_blocking(|| {
         codescribe_core::attachment::AttachmentStore::cleanup_old(7);
     });
@@ -454,6 +475,17 @@ async fn run_daemon() -> Result<()> {
     codescribe::controller::register_overlay_controller(Arc::clone(&controller));
     #[cfg(target_os = "macos")]
     {
+        if codescribe::should_show_onboarding() {
+            codescribe::show_onboarding_wizard();
+            if codescribe::should_show_onboarding() {
+                eprintln!("Onboarding did not complete; aborting daemon startup.");
+                return Ok(());
+            }
+        }
+
+        // Onboarding owns permission request timing. Do not trigger prompts on startup.
+        codescribe::os::permissions::check_all_permissions();
+
         if codescribe::should_show_bootstrap() {
             codescribe::schedule_bootstrap();
         }
@@ -494,30 +526,13 @@ async fn run_daemon() -> Result<()> {
                         eprintln!("Installing Silero VAD model…");
                         match codescribe_core::vad::ensure_downloaded_to_user_dir().await {
                             Ok(path) => {
-                                eprintln!("Silero VAD downloaded: {}", path.display());
-                                let init_path = path.clone();
-                                let init_result = tokio::task::spawn_blocking(move || {
-                                    codescribe_core::vad::init(&init_path)
-                                })
-                                .await;
-
-                                match init_result {
-                                    Ok(Ok(())) => {
-                                        eprintln!("Silero VAD initialized");
-                                        #[cfg(target_os = "macos")]
-                                        {
-                                            codescribe::os::notifications::notify(
-                                                "CodeScribe",
-                                                "Silero VAD is ready",
-                                            );
-                                        }
-                                    }
-                                    Ok(Err(e)) => {
-                                        eprintln!("Silero VAD init failed: {}", e);
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Silero VAD init task failed: {}", e);
-                                    }
+                                eprintln!("Silero VAD downloaded and ready: {}", path.display());
+                                #[cfg(target_os = "macos")]
+                                {
+                                    codescribe::os::notifications::notify(
+                                        "CodeScribe",
+                                        "Silero VAD is ready",
+                                    );
                                 }
                             }
                             Err(e) => {

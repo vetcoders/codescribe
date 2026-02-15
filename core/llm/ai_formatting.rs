@@ -38,11 +38,25 @@ pub enum AiFormatStatus {
 }
 
 pub type AiStreamCallback = Arc<dyn Fn(&str) + Send + Sync>;
+pub type AiReasoningCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct AiFormatResult {
     pub text: String,
+    pub reasoning_text: Option<String>,
     pub status: AiFormatStatus,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderOutput {
+    assistant_text: String,
+    reasoning_text: Option<String>,
+}
+
+#[derive(Clone)]
+struct StreamChannels {
+    assistant: Option<AiStreamCallback>,
+    reasoning: Option<AiReasoningCallback>,
 }
 
 #[derive(Clone)]
@@ -54,15 +68,95 @@ struct MemoryMessage {
 static OLLAMA_MEMORY: OnceLock<RwLock<Vec<MemoryMessage>>> = OnceLock::new();
 const MAX_OLLAMA_MEMORY_CHARS: usize = 4000;
 
+const DEFAULT_AI_MAX_RETRIES: u32 = 3;
+const DEFAULT_AI_RETRY_DELAY_MS: u64 = 2000;
+const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
+const DEFAULT_AI_CONNECT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_AI_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
+const DEFAULT_AI_TCP_KEEPALIVE_MS: u64 = 30_000;
+
+#[derive(Debug, Clone, Copy)]
+struct RetryPolicy {
+    max_retries: u32,
+    retry_delay: Duration,
+    attempt_timeout: Duration,
+    ollama_attempt_timeout: Duration,
+    inter_chunk_timeout: Duration,
+}
+
+impl RetryPolicy {
+    fn from_env() -> Self {
+        Self {
+            max_retries: env_u32("CODESCRIBE_AI_MAX_RETRIES", DEFAULT_AI_MAX_RETRIES),
+            retry_delay: duration_from_env_ms(
+                "CODESCRIBE_AI_RETRY_DELAY_MS",
+                DEFAULT_AI_RETRY_DELAY_MS,
+            ),
+            attempt_timeout: duration_from_env_ms(
+                "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
+                DEFAULT_AI_ATTEMPT_TIMEOUT_MS,
+            ),
+            ollama_attempt_timeout: duration_from_env_ms(
+                "CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS",
+                DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS,
+            ),
+            inter_chunk_timeout: duration_from_env_ms(
+                "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
+                DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS,
+            ),
+        }
+    }
+}
+
+fn env_u32(key: &str, default: u32) -> u32 {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
+    Duration::from_millis(env_u64(key, default_ms))
+}
+
 fn ollama_memory() -> &'static RwLock<Vec<MemoryMessage>> {
     OLLAMA_MEMORY.get_or_init(|| RwLock::new(Vec::new()))
 }
 
 fn get_client() -> &'static Client {
     AI_CLIENT.get_or_init(|| {
+        let timeout = duration_from_env_ms(
+            "CODESCRIBE_AI_CLIENT_TIMEOUT_MS",
+            DEFAULT_AI_CLIENT_TIMEOUT_MS,
+        );
+        let connect_timeout = duration_from_env_ms(
+            "CODESCRIBE_AI_CONNECT_TIMEOUT_MS",
+            DEFAULT_AI_CONNECT_TIMEOUT_MS,
+        );
+        let pool_idle_timeout = duration_from_env_ms(
+            "CODESCRIBE_AI_POOL_IDLE_TIMEOUT_MS",
+            DEFAULT_AI_POOL_IDLE_TIMEOUT_MS,
+        );
+        let tcp_keepalive = duration_from_env_ms(
+            "CODESCRIBE_AI_TCP_KEEPALIVE_MS",
+            DEFAULT_AI_TCP_KEEPALIVE_MS,
+        );
+
         Client::builder()
-            .timeout(Duration::from_secs(90)) // Longer timeout for GPT-5.x with long inputs
-            .connect_timeout(Duration::from_secs(5))
+            .timeout(timeout)
+            .connect_timeout(connect_timeout)
+            .pool_idle_timeout(pool_idle_timeout)
+            .tcp_keepalive(tcp_keepalive)
             .build()
             .expect("Failed to create AI HTTP client")
     })
@@ -210,11 +304,9 @@ fn detect_format(endpoint: &str) -> EndpointFormat {
     }
 }
 
-/// Streaming = default. Opt-out via LLM_USE_STREAMING=0|false.
+/// Streaming is mandatory for chat/assistant UX consistency.
+/// `LLM_USE_STREAMING` is intentionally ignored.
 fn use_streaming() -> bool {
-    if let Ok(val) = env::var("LLM_USE_STREAMING") {
-        return val != "0" && val.to_lowercase() != "false";
-    }
     true
 }
 
@@ -477,6 +569,8 @@ struct ContentPart {
     part_type: String,
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
 }
 
 /// SSE streaming chunk from Responses API
@@ -497,6 +591,8 @@ struct StreamChunk {
 struct StreamResponse {
     #[serde(default)]
     id: String,
+    #[serde(default)]
+    output: Vec<OutputItem>,
 }
 
 /// Legacy chat message (for Ollama compatibility)
@@ -504,6 +600,53 @@ struct StreamResponse {
 struct ChatMessage {
     role: String,
     content: String,
+}
+
+fn part_text(part: &ContentPart) -> Option<&str> {
+    part.text
+        .as_deref()
+        .or(part.summary.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
+    let mut assistant_parts = Vec::new();
+    let mut reasoning_parts = Vec::new();
+
+    for item in output.iter().filter(|o| o.item_type == "message") {
+        let Some(parts) = item.content.as_ref() else {
+            continue;
+        };
+
+        for part in parts {
+            match part.part_type.as_str() {
+                "output_text" | "text" => {
+                    if let Some(text) = part_text(part) {
+                        assistant_parts.push(text.to_string());
+                    }
+                }
+                "reasoning_summary_text" => {
+                    if let Some(text) = part_text(part) {
+                        reasoning_parts.push(text.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let assistant_text = assistant_parts.join("").trim().to_string();
+    let reasoning_text = reasoning_parts.join("").trim().to_string();
+
+    ProviderOutput {
+        assistant_text,
+        reasoning_text: if reasoning_text.is_empty() {
+            None
+        } else {
+            Some(reasoning_text)
+        },
+    }
 }
 
 // No token limits - let the API decide. Tokens are cheap, lost notes are not.
@@ -697,10 +840,26 @@ pub async fn format_text_with_status(
     assistive: bool,
     on_delta: Option<AiStreamCallback>,
 ) -> AiFormatResult {
+    format_text_with_status_channels(text, language, assistive, on_delta, None).await
+}
+
+/// Format text using AI provider with explicit channel callbacks.
+///
+/// Contract:
+/// - `on_assistant_delta`: receives only `response.output_text.*` deltas.
+/// - `on_reasoning_delta`: receives only `response.reasoning_summary_text.*` deltas.
+pub async fn format_text_with_status_channels(
+    text: &str,
+    language: Option<&str>,
+    assistive: bool,
+    on_assistant_delta: Option<AiStreamCallback>,
+    on_reasoning_delta: Option<AiReasoningCallback>,
+) -> AiFormatResult {
     // Skip very short texts (but not in assistive mode - user might say "help")
     if text.len() < 10 && !assistive {
         return AiFormatResult {
             text: text.to_string(),
+            reasoning_text: None,
             status: AiFormatStatus::Skipped,
         };
     }
@@ -713,25 +872,17 @@ pub async fn format_text_with_status(
         text.to_string()
     };
 
-    // Production defaults (per acceptance): 1 retry after 5s, ~2.5s per attempt.
-    // For deterministic/fast tests, allow overriding via env vars.
-    let max_retries: u32 = env::var("CODESCRIBE_AI_MAX_RETRIES")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(1);
-
-    let retry_delay_ms: u64 = env::var("CODESCRIBE_AI_RETRY_DELAY_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(5000);
-    let retry_delay = Duration::from_millis(retry_delay_ms);
-
-    // Budget: ~2.5s + 5s pause + ~2.5s ≈ 10s total
-    let attempt_timeout_ms: u64 = env::var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(2500);
-    let attempt_timeout = Duration::from_millis(attempt_timeout_ms);
+    let retry_policy = RetryPolicy::from_env();
+    let max_retries = retry_policy.max_retries;
+    debug!(
+        "AI retry policy: max_retries={}, retry_delay={:?}, attempt_timeout={:?}, \
+         ollama_attempt_timeout={:?}, inter_chunk_timeout={:?}",
+        retry_policy.max_retries,
+        retry_policy.retry_delay,
+        retry_policy.attempt_timeout,
+        retry_policy.ollama_attempt_timeout,
+        retry_policy.inter_chunk_timeout
+    );
 
     for attempt in 0..=max_retries {
         info!(
@@ -759,9 +910,9 @@ pub async fn format_text_with_status(
         if attempt > 0 {
             info!(
                 "Retry attempt {}/{} (waiting {:?})",
-                attempt, max_retries, retry_delay
+                attempt, max_retries, retry_policy.retry_delay
             );
-            tokio::time::sleep(retry_delay).await;
+            tokio::time::sleep(retry_policy.retry_delay).await;
 
             // Append critical instruction
             system_prompt.push_str(
@@ -782,82 +933,64 @@ pub async fn format_text_with_status(
         } else {
             get_formatting_endpoint().unwrap_or_default()
         };
+        let endpoint_format = detect_format(&endpoint);
+        // Streaming is always enabled. Callbacks only decide whether UI receives live chunks.
+        let streaming_enabled = use_streaming();
+        let route = match (endpoint_format, streaming_enabled) {
+            (EndpointFormat::OllamaChat, _) => "ollama",
+            (EndpointFormat::ResponsesApi, true) => "responses-sse",
+            (EndpointFormat::ResponsesApi, false) => "responses-json",
+        };
+        let attempt_timeout = if endpoint_format == EndpointFormat::OllamaChat {
+            retry_policy.ollama_attempt_timeout
+        } else {
+            retry_policy.attempt_timeout
+        };
 
-        let llm_timeout = Duration::from_secs(90);
-
-        let result_opt = match detect_format(&endpoint) {
-            EndpointFormat::OllamaChat => {
-                match tokio::time::timeout(
-                    attempt_timeout,
-                    call_ollama(&user_message, &system_prompt, assistive),
-                )
-                .await
-                {
-                    Ok(Ok(formatted)) => Some(formatted),
-                    Ok(Err(e)) => {
-                        warn!("Ollama failed (attempt {}): {}", attempt, e);
-                        None
-                    }
-                    Err(_) => {
-                        warn!(
-                            "Ollama timed out after {:?} (attempt {})",
-                            attempt_timeout, attempt
-                        );
-                        None
-                    }
-                }
+        let result_opt = match tokio::time::timeout(
+            attempt_timeout,
+            call_provider_once(
+                endpoint_format,
+                &user_message,
+                &system_prompt,
+                assistive,
+                streaming_enabled,
+                StreamChannels {
+                    assistant: on_assistant_delta.clone(),
+                    reasoning: on_reasoning_delta.clone(),
+                },
+                retry_policy.inter_chunk_timeout,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(output)) => Some(output),
+            Ok(Err(e)) => {
+                warn!(
+                    "LLM {} attempt {}/{} failed: {}",
+                    route,
+                    attempt + 1,
+                    max_retries + 1,
+                    e
+                );
+                None
             }
-            EndpointFormat::ResponsesApi => {
-                if use_streaming() {
-                    match tokio::time::timeout(
-                        llm_timeout,
-                        call_llm_endpoint_streaming(
-                            &user_message,
-                            &system_prompt,
-                            assistive,
-                            on_delta.clone(),
-                        ),
-                    )
-                    .await
-                    {
-                        Ok(Ok(formatted)) => Some(formatted),
-                        Ok(Err(e)) => {
-                            warn!("LLM streaming failed (attempt {}): {}", attempt, e);
-                            None
-                        }
-                        Err(_) => {
-                            warn!(
-                                "LLM streaming timed out after {:?} (attempt {})",
-                                llm_timeout, attempt
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    match tokio::time::timeout(
-                        llm_timeout,
-                        call_llm_endpoint(&user_message, &system_prompt, assistive),
-                    )
-                    .await
-                    {
-                        Ok(Ok(formatted)) => Some(formatted),
-                        Ok(Err(e)) => {
-                            warn!("LLM endpoint failed (attempt {}): {}", attempt, e);
-                            None
-                        }
-                        Err(_) => {
-                            warn!(
-                                "LLM endpoint timed out after {:?} (attempt {})",
-                                llm_timeout, attempt
-                            );
-                            None
-                        }
-                    }
-                }
+            Err(_) => {
+                warn!(
+                    "LLM {} attempt {}/{} timed out after {:?}",
+                    route,
+                    attempt + 1,
+                    max_retries + 1,
+                    attempt_timeout
+                );
+                None
             }
         };
 
-        if let Some(formatted) = result_opt {
+        if let Some(output) = result_opt {
+            let formatted = output.assistant_text;
+            let reasoning_text = output.reasoning_text;
+
             // Detect AI refusal responses (OpenAI content policy)
             let formatted_lower = formatted.to_lowercase();
             let is_refusal = formatted_lower.contains("i'm sorry")
@@ -871,6 +1004,7 @@ pub async fn format_text_with_status(
                 warn!("AI returned refusal response, returning raw input instead");
                 return AiFormatResult {
                     text: cleaned,
+                    reasoning_text: None,
                     status: AiFormatStatus::Failed,
                 };
             }
@@ -919,6 +1053,7 @@ pub async fn format_text_with_status(
                     };
                     return AiFormatResult {
                         text: formatted,
+                        reasoning_text,
                         status,
                     };
                 }
@@ -934,6 +1069,7 @@ pub async fn format_text_with_status(
             );
             return AiFormatResult {
                 text: formatted,
+                reasoning_text,
                 status: AiFormatStatus::Applied,
             };
         }
@@ -943,7 +1079,37 @@ pub async fn format_text_with_status(
     warn!("All AI providers/retries failed, returning cleaned text");
     AiFormatResult {
         text: cleaned,
+        reasoning_text: None,
         status: AiFormatStatus::Failed,
+    }
+}
+
+async fn call_provider_once(
+    endpoint_format: EndpointFormat,
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+    streaming_enabled: bool,
+    stream_channels: StreamChannels,
+    inter_chunk_timeout: Duration,
+) -> Result<ProviderOutput> {
+    match endpoint_format {
+        EndpointFormat::OllamaChat => call_ollama(user_message, system_prompt, assistive).await,
+        EndpointFormat::ResponsesApi => {
+            if streaming_enabled {
+                call_llm_endpoint_streaming(
+                    user_message,
+                    system_prompt,
+                    assistive,
+                    stream_channels.assistant,
+                    stream_channels.reasoning,
+                    inter_chunk_timeout,
+                )
+                .await
+            } else {
+                call_llm_endpoint(user_message, system_prompt, assistive).await
+            }
+        }
     }
 }
 
@@ -955,7 +1121,7 @@ async fn call_llm_endpoint(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
-) -> Result<String> {
+) -> Result<ProviderOutput> {
     // Mode-aware config: formatting vs assistive use different providers
     let (endpoint, model, api_key) = if assistive {
         (
@@ -987,13 +1153,11 @@ async fn call_llm_endpoint(
 
     // TRACE: full chain details for debugging (before model is moved)
     trace!(
-        "LLM request chain: endpoint={}, model={}, mode={}, temp={:?}, api_key={}...{}",
+        "LLM request chain: endpoint={}, model={}, mode={}, temp={:?}",
         endpoint,
         model,
         if assistive { "assistive" } else { "formatting" },
-        temperature,
-        &api_key[..8.min(api_key.len())],
-        &api_key[api_key.len().saturating_sub(4)..]
+        temperature
     );
     debug!(
         "Calling LLM endpoint {} for {} (temp={:?})",
@@ -1037,21 +1201,9 @@ async fn call_llm_endpoint(
     let responses_result: ResponsesResponse =
         response.json().await.context("Failed to parse response")?;
 
-    // Extract text from output array
-    let formatted = responses_result
-        .output
-        .iter()
-        .filter(|o| o.item_type == "message")
-        .filter_map(|o| o.content.as_ref())
-        .flatten()
-        .filter(|c| c.part_type == "output_text" || c.part_type == "text")
-        .filter_map(|c| c.text.as_deref())
-        .collect::<Vec<_>>()
-        .join("")
-        .trim()
-        .to_string();
+    let output = extract_output_channels(&responses_result.output);
 
-    if formatted.is_empty() {
+    if output.assistant_text.is_empty() {
         anyhow::bail!("No text content in response (id: {})", responses_result.id);
     }
 
@@ -1062,7 +1214,7 @@ async fn call_llm_endpoint(
         if assistive { "assistive" } else { "formatting" },
         responses_result.id
     );
-    Ok(formatted)
+    Ok(output)
 }
 
 /// Call LLM endpoint with SSE streaming (Responses API)
@@ -1072,8 +1224,10 @@ async fn call_llm_endpoint_streaming(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
-    on_delta: Option<AiStreamCallback>,
-) -> Result<String> {
+    on_assistant_delta: Option<AiStreamCallback>,
+    on_reasoning_delta: Option<AiReasoningCallback>,
+    inter_chunk_timeout: Duration,
+) -> Result<ProviderOutput> {
     use futures_util::StreamExt;
 
     // Mode-aware config: formatting vs assistive use different providers
@@ -1107,13 +1261,11 @@ async fn call_llm_endpoint_streaming(
 
     // TRACE: full chain details for debugging (before model is moved)
     trace!(
-        "SSE request chain: endpoint={}, model={}, mode={}, temp={:?}, api_key={}...{}",
+        "SSE request chain: endpoint={}, model={}, mode={}, temp={:?}",
         endpoint,
         model,
         if assistive { "assistive" } else { "formatting" },
-        temperature,
-        &api_key[..8.min(api_key.len())],
-        &api_key[api_key.len().saturating_sub(4)..]
+        temperature
     );
     debug!(
         "SSE streaming to {} for {} (temp={:?})",
@@ -1153,14 +1305,36 @@ async fn call_llm_endpoint_streaming(
         anyhow::bail!("HTTP {} - {}", status, body);
     }
 
-    // Parse SSE stream
-    let mut collected_text = String::new();
+    // Parse SSE stream with strict channel separation:
+    // - response.output_text.* -> assistant_text
+    // - response.reasoning_summary_text.* -> reasoning_text
+    let mut assistant_text = String::new();
+    let mut reasoning_text = String::new();
+    let mut assistant_done: Option<String> = None;
+    let mut reasoning_done: Option<String> = None;
+    let mut completed_output: Option<ProviderOutput> = None;
+    let mut saw_completed = false;
     let mut response_id = String::new();
     let mut stream = response.bytes_stream();
 
     let mut buffer = String::new();
 
-    while let Some(chunk_result) = stream.next().await {
+    let mut saw_done = false;
+
+    loop {
+        let next_chunk = tokio::time::timeout(inter_chunk_timeout, stream.next())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "SSE stream inter-chunk timeout after {:?}",
+                    inter_chunk_timeout
+                )
+            })?;
+
+        let Some(chunk_result) = next_chunk else {
+            break;
+        };
+
         let chunk = chunk_result.context("Stream read error")?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -1174,32 +1348,78 @@ async fn call_llm_endpoint_streaming(
             }
 
             // Parse SSE data lines
-            if let Some(data) = line.strip_prefix("data: ") {
+            if let Some(data) = line
+                .strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+            {
+                let data = data.trim_start();
                 if data == "[DONE]" {
+                    saw_done = true;
                     break;
                 }
 
                 if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                    // Capture response ID whenever it appears in stream metadata.
+                    // Some providers/chunk orders can surface it before completion events.
+                    if let Some(resp) = &chunk.response
+                        && !resp.id.is_empty()
+                    {
+                        response_id = resp.id.clone();
+                    }
                     match chunk.chunk_type.as_str() {
                         "response.output_text.delta" => {
                             if let Some(delta) = chunk.delta {
-                                if let Some(cb) = &on_delta {
+                                if let Some(cb) = &on_assistant_delta {
                                     cb(&delta);
                                 }
-                                collected_text.push_str(&delta);
+                                assistant_text.push_str(&delta);
                             }
                         }
                         "response.output_text.done" => {
-                            // Full text available - use it if we missed deltas
-                            if let Some(text) = chunk.text
-                                && collected_text.is_empty()
-                            {
-                                collected_text = text;
+                            if let Some(text) = chunk.text {
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    if assistant_text.is_empty()
+                                        && let Some(cb) = &on_assistant_delta
+                                    {
+                                        cb(&text);
+                                    }
+                                    assistant_done = Some(text);
+                                }
+                            }
+                        }
+                        "response.reasoning_summary_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &on_reasoning_delta {
+                                    cb(&delta);
+                                }
+                                reasoning_text.push_str(&delta);
+                            }
+                        }
+                        "response.reasoning_summary_text.done" => {
+                            if let Some(text) = chunk.text {
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    if reasoning_text.is_empty()
+                                        && let Some(cb) = &on_reasoning_delta
+                                    {
+                                        cb(&text);
+                                    }
+                                    reasoning_done = Some(text);
+                                }
                             }
                         }
                         "response.completed" | "response.done" => {
-                            if let Some(resp) = chunk.response {
-                                response_id = resp.id;
+                            saw_completed = true;
+                            if let Some(resp) = &chunk.response {
+                                let parsed = extract_output_channels(&resp.output);
+                                if !parsed.assistant_text.is_empty() {
+                                    completed_output = Some(parsed);
+                                } else {
+                                    warn!(
+                                        "SSE response.completed without parseable output_text payload; falling back to channel buffers"
+                                    );
+                                }
                             }
                         }
                         _ => {}
@@ -1207,17 +1427,73 @@ async fn call_llm_endpoint_streaming(
                 }
             }
         }
+
+        if saw_done {
+            break;
+        }
     }
 
-    let formatted = collected_text.trim().to_string();
+    let mut output = if saw_completed {
+        if let Some(completed) = completed_output {
+            completed
+        } else {
+            let fallback_assistant = assistant_done.unwrap_or(assistant_text);
+            let fallback_reasoning = reasoning_done.or_else(|| {
+                let trimmed = reasoning_text.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            });
+            ProviderOutput {
+                assistant_text: fallback_assistant,
+                reasoning_text: fallback_reasoning,
+            }
+        }
+    } else {
+        let fallback_assistant = assistant_done.unwrap_or(assistant_text);
+        let fallback_reasoning = reasoning_done.or_else(|| {
+            let trimmed = reasoning_text.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        ProviderOutput {
+            assistant_text: fallback_assistant,
+            reasoning_text: fallback_reasoning,
+        }
+    };
+    output.assistant_text = output.assistant_text.trim().to_string();
+    output.reasoning_text = output
+        .reasoning_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
 
-    if formatted.is_empty() {
+    if output.assistant_text.is_empty() {
         anyhow::bail!("No text content in SSE stream");
     }
 
     // Store response_id for this mode's conversation chain (separate streams)
     if !response_id.is_empty() {
         crate::state::conversation::set_response_id_for_mode(ai_mode, response_id.clone());
+    } else if let Some(prev_id) = previous_response_id.as_deref()
+        && !prev_id.is_empty()
+    {
+        warn!(
+            "SSE complete without response_id for {}; keeping previous_response_id={}",
+            if assistive { "assistive" } else { "formatting" },
+            prev_id
+        );
+    } else {
+        warn!(
+            "SSE complete without response_id for {}; no previous_response_id to keep",
+            if assistive { "assistive" } else { "formatting" }
+        );
     }
 
     debug!(
@@ -1225,13 +1501,17 @@ async fn call_llm_endpoint_streaming(
         if assistive { "assistive" } else { "formatting" },
         response_id
     );
-    Ok(formatted)
+    Ok(output)
 }
 
 /// Call Ollama/local LLM for text formatting/assistive mode
 ///
 /// Uses mode-aware config. Ollama native API uses /api/chat endpoint format.
-async fn call_ollama(user_message: &str, system_prompt: &str, assistive: bool) -> Result<String> {
+async fn call_ollama(
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+) -> Result<ProviderOutput> {
     // Mode-aware config
     let (host, model) = if assistive {
         (get_assistive_endpoint()?, get_assistive_model()?)
@@ -1305,7 +1585,10 @@ async fn call_ollama(user_message: &str, system_prompt: &str, assistive: bool) -
         push_memory("assistant", &formatted);
     }
 
-    Ok(formatted)
+    Ok(ProviderOutput {
+        assistant_text: formatted,
+        reasoning_text: None,
+    })
 }
 
 /// Check if AI formatting is available

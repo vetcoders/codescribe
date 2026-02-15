@@ -124,6 +124,29 @@ impl EventSink for DeltaSinkAdapter {
     }
 }
 
+/// Fan-out sink that forwards each event to multiple sinks.
+pub struct FanoutEventSink {
+    sinks: Vec<Arc<dyn EventSink>>,
+}
+
+impl FanoutEventSink {
+    pub fn new(sinks: Vec<Arc<dyn EventSink>>) -> Self {
+        Self { sinks }
+    }
+
+    pub fn pair(a: Arc<dyn EventSink>, b: Arc<dyn EventSink>) -> Arc<dyn EventSink> {
+        Arc::new(Self::new(vec![a, b]))
+    }
+}
+
+impl EventSink for FanoutEventSink {
+    fn on_event(&self, event: &EngineEvent) {
+        for sink in &self.sinks {
+            sink.on_event(event);
+        }
+    }
+}
+
 /// Test helper: collects all engine events for assertions.
 pub struct CollectorEventSink {
     events: Mutex<Vec<EngineEvent>>,
@@ -289,6 +312,7 @@ mod tests {
             raw_text: "First".to_string(),
             start_ts: 0.0,
             end_ts: 1.0,
+            segments: Vec::new(),
         });
 
         // After final, last_text resets — next preview starts fresh
@@ -346,11 +370,27 @@ mod tests {
             raw_text: "hello world".to_string(),
             start_ts: 0.0,
             end_ts: 2.0,
+            segments: Vec::new(),
         });
 
         assert_eq!(sink.events().len(), 3);
         assert_eq!(sink.previews(), vec!["hello"]);
         assert_eq!(sink.drops().len(), 1);
         assert_eq!(sink.finals(), vec!["hello world"]);
+    }
+
+    #[test]
+    fn test_fanout_event_sink_forwards_to_all() {
+        let a = Arc::new(CollectorEventSink::new());
+        let b = Arc::new(CollectorEventSink::new());
+        let fanout = FanoutEventSink::pair(a.clone() as Arc<dyn EventSink>, b.clone());
+
+        fanout.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "hello".to_string(),
+        });
+
+        assert_eq!(a.events().len(), 1);
+        assert_eq!(b.events().len(), 1);
     }
 }

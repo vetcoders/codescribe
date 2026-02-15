@@ -93,6 +93,11 @@ impl StreamingRecorder {
         self.event_sink = sink;
     }
 
+    /// Returns true when the underlying recorder still has an active audio stream.
+    pub fn is_recording(&self) -> bool {
+        self.recorder.is_active()
+    }
+
     /// Start recording with the new event-based pipeline.
     ///
     /// Uses `transcription_session` which emits `EngineEvent`s to the configured

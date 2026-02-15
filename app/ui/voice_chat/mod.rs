@@ -11,9 +11,9 @@ mod state;
 
 // Re-export public API
 pub use api::{
-    add_voice_chat_error_message, add_voice_chat_user_message, append_voice_chat_assistant_delta,
-    append_voice_chat_user_delta, clear_voice_chat_text, filter_drawer,
-    finalize_voice_chat_assistant_message, finalize_voice_chat_user_message,
+    add_voice_chat_error_message, add_voice_chat_system_message, add_voice_chat_user_message,
+    append_voice_chat_assistant_delta, append_voice_chat_user_delta, clear_voice_chat_text,
+    filter_drawer, finalize_voice_chat_assistant_message, finalize_voice_chat_user_message,
     hide_voice_chat_overlay, is_auto_send_enabled, is_conversation_active,
     is_voice_chat_overlay_visible, refresh_drawer, request_settings_tab_on_open,
     reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_send_callback,
@@ -30,7 +30,8 @@ use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectMaterial, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use std::thread;
 use std::time::Duration;
@@ -41,10 +42,10 @@ use crate::config::{HoldMods, ToggleTrigger};
 use crate::ui_helpers::{
     LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style,
     color_clear, color_label, color_secondary_label, create_button,
-    create_flipped_vertical_stack_view, create_glass_effect_view, create_label,
-    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
-    ns_string, set_button_symbol, set_focus_ring, set_hidden, set_tooltip,
-    style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
+    create_flipped_vertical_stack_view, create_glass_effect_view, create_glass_effect_view_with,
+    create_label, create_scrollable_text_view, create_vertical_stack_view,
+    layout_region_frame_for_view, ns_string, set_button_symbol, set_focus_ring, set_hidden,
+    set_tooltip, style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -70,6 +71,7 @@ const CACORNER_MAX_X_MIN_Y: u64 = 1 << 1;
 pub(super) fn shortcuts_lines(hold: HoldMods, toggle: ToggleTrigger) -> (String, String) {
     let hold_line = match hold {
         HoldMods::Fn => "Hold Fn — record • Fn+Shift — chat • Fn+Cmd — selection",
+        HoldMods::None => "Hold-to-talk disabled",
         HoldMods::Ctrl => "Hold Ctrl — record",
         HoldMods::CtrlAlt => {
             "Hold Ctrl — record • Ctrl+Option — format • Ctrl+Shift — chat • Ctrl+Cmd — selection"
@@ -244,13 +246,22 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![window, setDelegate: window_delegate];
 
         let content_view: Id = msg_send![window, contentView];
+        let ns_mut_array = Class::get("NSMutableArray").unwrap();
+        let window_drag_types: Id = msg_send![ns_mut_array, array];
+        let _: () = msg_send![window_drag_types, addObject: ns_string("public.file-url")];
+        let _: () = msg_send![window_drag_types, addObject: ns_string("NSFilenamesPboardType")];
+        let _: () = msg_send![window, registerForDraggedTypes: window_drag_types];
 
         let blur_frame = CGRect::new(
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
         );
-        let blur_view: Id =
-            create_glass_effect_view(blur_frame, NSVisualEffectMaterial::WindowBackground);
+        let blur_view: Id = create_glass_effect_view_with(
+            blur_frame,
+            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectBlendingMode::BehindWindow,
+            NSVisualEffectState::Active,
+        );
         let _: () = msg_send![
             blur_view,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
@@ -259,6 +270,11 @@ fn show_voice_chat_overlay_impl() {
         if !layer.is_null() {
             let _: () = msg_send![layer, setCornerRadius: ui_tokens::CORNER_RADIUS_LG];
             let _: () = msg_send![layer, setMasksToBounds: true];
+            let border = ui_colors::separator();
+            let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![layer, setBorderColor: cg_border];
+            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
         }
         add_subview(content_view, blur_view);
         let bounds: CGRect = msg_send![blur_view, bounds];
@@ -310,7 +326,11 @@ fn show_voice_chat_overlay_impl() {
             header_controls,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
         ];
-        let title_x = ui_tokens::EDGE_PADDING_TIGHT;
+        let title_x = if header_frame.size.width >= 620.0 {
+            ui_tokens::TRAFFIC_LIGHTS_SPACER_WIDTH + 6.0
+        } else {
+            ui_tokens::EDGE_PADDING_TIGHT
+        };
         let title_y = ((header_height - 20.0) / 2.0).max(0.0);
         // Give the tab control more room to avoid truncation ("Dr..." / "A...").
         let title_w = ui_tokens::TITLE_LABEL_WIDTH;
@@ -346,10 +366,10 @@ fn show_voice_chat_overlay_impl() {
         x -= gap + btn_w;
         let favorites_button_x = x;
         x -= gap + btn_w;
-        let export_button_x = x;
+        let record_button_x = x;
 
         // Keep the tab control between the title and the right-side icon cluster.
-        let right_cluster_start_x = export_button_x;
+        let right_cluster_start_x = record_button_x;
         let tab_x = title_x + title_w + 10.0;
         let status_pill_w = ui_tokens::STATUS_PILL_WIDTH;
         let tab_btn_w = (btn_w - 2.0).max(24.0);
@@ -367,7 +387,7 @@ fn show_voice_chat_overlay_impl() {
             "",
             button_style::INLINE,
         );
-        let _ = set_button_symbol(tab_drawer_button, "tray.full");
+        let _ = set_button_symbol(tab_drawer_button, "tray");
         style_toolbar_icon_button(tab_drawer_button);
         button_set_action(tab_drawer_button, action_handler, sel!(onTabDrawer:));
         set_tooltip(tab_drawer_button, "Drawer");
@@ -375,7 +395,6 @@ fn show_voice_chat_overlay_impl() {
             tab_drawer_button,
             setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
-        set_focus_ring(tab_drawer_button);
         add_subview(header_controls, tab_drawer_button);
 
         let tab_agent_button = create_button(
@@ -394,7 +413,6 @@ fn show_voice_chat_overlay_impl() {
             tab_agent_button,
             setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
-        set_focus_ring(tab_agent_button);
         add_subview(header_controls, tab_agent_button);
 
         let tab_settings_button = create_button(
@@ -413,7 +431,6 @@ fn show_voice_chat_overlay_impl() {
             tab_settings_button,
             setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
-        set_focus_ring(tab_settings_button);
         add_subview(header_controls, tab_settings_button);
 
         // Status pill (global status: Idle / Listening / Processing / Error).
@@ -475,26 +492,26 @@ fn show_voice_chat_overlay_impl() {
         add_subview(status_pill, status_label);
         add_subview(header_controls, status_pill);
 
-        let export_button = create_button(
+        let record_button = create_button(
             CGRect::new(
-                &CGPoint::new(export_button_x, header_btn_y),
+                &CGPoint::new(record_button_x, header_btn_y),
                 &CGSize::new(btn_w, btn_h),
             ),
             "",
             button_style::INLINE,
         );
-        let has_symbol = set_button_symbol(export_button, "arrow.down.to.line");
+        let has_symbol = set_button_symbol(record_button, "record.circle");
         if !has_symbol {
-            let _: () = msg_send![export_button, setTitle: ns_string("Export")];
+            let _: () = msg_send![record_button, setTitle: ns_string("Rec")];
         }
-        style_toolbar_icon_button(export_button);
-        button_set_action(export_button, action_handler, sel!(onExportMenu:));
-        set_tooltip(export_button, "Export conversation (Markdown)");
+        style_toolbar_icon_button(record_button);
+        button_set_action(record_button, action_handler, sel!(onHeaderRecord:));
+        set_tooltip(record_button, "Start/stop recording");
         let _: () = msg_send![
-            export_button,
+            record_button,
             setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MIN_Y_MARGIN
         ];
-        add_subview(header_controls, export_button);
+        add_subview(header_controls, record_button);
 
         // Drawer favorites filter (hearts on/off)
         let favorites_button = create_button(
@@ -611,12 +628,21 @@ fn show_voice_chat_overlay_impl() {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(content_frame.size.width, content_frame.size.height),
         );
-        let sidebar_view: Id =
-            create_glass_effect_view(sidebar_frame, NSVisualEffectMaterial::Sidebar);
+        let sidebar_view: Id = create_glass_effect_view_with(
+            sidebar_frame,
+            NSVisualEffectMaterial::Sidebar,
+            NSVisualEffectBlendingMode::BehindWindow,
+            NSVisualEffectState::Active,
+        );
         let sidebar_layer: Id = msg_send![sidebar_view, layer];
         if !sidebar_layer.is_null() {
             let _: () = msg_send![sidebar_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
             let _: () = msg_send![sidebar_layer, setMasksToBounds: true];
+            let border = ui_colors::separator();
+            let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![sidebar_layer, setBorderColor: cg_border];
+            let _: () = msg_send![sidebar_layer, setBorderWidth: 1.0f64];
         }
         let _: () = msg_send![sidebar_controller, setView: sidebar_view];
 
@@ -631,6 +657,20 @@ fn show_voice_chat_overlay_impl() {
             )
         ];
         let _: () = msg_send![content_view, setWantsLayer: true];
+        let content_layer: Id = msg_send![content_view, layer];
+        if !content_layer.is_null() {
+            let bg = ui_colors::card_bg();
+            let bg: Id = msg_send![bg, colorWithAlphaComponent: 0.56f64];
+            let cg_bg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![content_layer, setBackgroundColor: cg_bg];
+            let _: () = msg_send![content_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
+            let _: () = msg_send![content_layer, setMasksToBounds: true];
+            let border = ui_colors::separator();
+            let border: Id = msg_send![border, colorWithAlphaComponent: 0.24f64];
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![content_layer, setBorderColor: cg_border];
+            let _: () = msg_send![content_layer, setBorderWidth: 1.0f64];
+        }
         let _: () = msg_send![content_controller, setView: content_view];
 
         let has_sidebar_ctor: bool =
@@ -820,8 +860,10 @@ fn show_voice_chat_overlay_impl() {
         // Agent input bar
         let drop_target_cls = drop_target_view_class();
         let input_bar: Id = msg_send![drop_target_cls, alloc];
+        // Sit flush with the footer edge to match native rounded search/input controls.
+        let input_bar_y = (ui_tokens::FOOTER_INSET - 4.0).max(0.0);
         let input_frame = CGRect::new(
-            &CGPoint::new(inner_pad, ui_tokens::FOOTER_INSET),
+            &CGPoint::new(inner_pad, input_bar_y),
             &CGSize::new(
                 (content_frame.size.width - inner_pad * 2.0).max(0.0),
                 agent_input_height,
@@ -831,9 +873,8 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![input_bar, setWantsLayer: true];
         let _: () =
             msg_send![input_bar, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN];
-        let ns_mut_array = Class::get("NSMutableArray").unwrap();
         let drag_types: Id = msg_send![ns_mut_array, array];
-        let _: () = msg_send![drag_types, addObject: ns_string("NSPasteboardTypeFileURL")];
+        let _: () = msg_send![drag_types, addObject: ns_string("public.file-url")];
         let _: () = msg_send![drag_types, addObject: ns_string("NSFilenamesPboardType")];
         let _: () = msg_send![input_bar, registerForDraggedTypes: drag_types];
         let input_layer: Id = msg_send![input_bar, layer];
@@ -841,19 +882,23 @@ fn show_voice_chat_overlay_impl() {
             let color = ui_colors::input_bar_bg();
             let cg_color: Id = msg_send![color, CGColor];
             let _: () = msg_send![input_layer, setBackgroundColor: cg_color];
-            let _: () = msg_send![input_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_LG];
+            let _: () = msg_send![input_layer, setCornerRadius: (agent_input_height * 0.5)];
             let border = ui_colors::input_bar_border();
             let cg_border: Id = msg_send![border, CGColor];
             let _: () = msg_send![input_layer, setBorderColor: cg_border];
             let _: () = msg_send![input_layer, setBorderWidth: 1.0f64];
+            // Keep the field crisp like native NSSearchField: border-only, no heavy drop shadow.
+            let _: () = msg_send![input_layer, setShadowOpacity: 0.0f64];
+            let _: () = msg_send![input_layer, setShadowRadius: 0.0f64];
+            let _: () = msg_send![input_layer, setShadowOffset: CGSize::new(0.0, 0.0)];
         }
         add_subview(content_view, input_bar);
 
         let input_width = input_frame.size.width;
         let text_area_frame = CGRect::new(
-            &CGPoint::new(12.0, 10.0),
+            &CGPoint::new(14.0, 7.0),
             // Leave room for Attach + Send buttons on the right.
-            &CGSize::new((input_width - 140.0).max(120.0), agent_input_height - 20.0),
+            &CGSize::new((input_width - 144.0).max(120.0), agent_input_height - 14.0),
         );
         let (agent_input_scroll, agent_input_text_view) =
             create_scrollable_text_view(text_area_frame, true);
@@ -870,6 +915,10 @@ fn show_voice_chat_overlay_impl() {
             jb_font
         };
         let _: () = msg_send![agent_input_text_view, setFont: text_font];
+        let _: () = msg_send![
+            agent_input_text_view,
+            setTextContainerInset: CGSize::new(0.0, 4.0)
+        ];
         // Plain text: avoid rich text / style surprises when pasting.
         let _: () = msg_send![agent_input_text_view, setRichText: false];
         let _: () = msg_send![agent_input_text_view, setDelegate: action_handler];
@@ -1088,7 +1137,12 @@ fn create_scroll_edge_effect(frame: CGRect) -> Id {
             let gradient: Id = msg_send![gradient_cls, layer];
             let base: Id = msg_send![ns_color, separatorColor];
             let top_color: Id = msg_send![base, colorWithAlphaComponent: 0.0f64];
-            let bottom_color: Id = msg_send![base, colorWithAlphaComponent: 0.35f64];
+            let edge_alpha = if crate::ui_helpers::glass_effect_supported() {
+                0.16f64
+            } else {
+                0.28f64
+            };
+            let bottom_color: Id = msg_send![base, colorWithAlphaComponent: edge_alpha];
             let cg_top: Id = msg_send![top_color, CGColor];
             let cg_bottom: Id = msg_send![bottom_color, CGColor];
             let color_objs: [Id; 2] = [cg_top, cg_bottom];

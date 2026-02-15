@@ -68,17 +68,21 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
         std::env::set_var("LLM_FORMATTING_MODEL", "test-model");
         std::env::set_var("LLM_API_KEY", "test-key");
         std::env::set_var("LLM_FORMATTING_API_KEY", "test-key");
-        // Mock returns plain JSON, not SSE — use sync mode
-        std::env::set_var("LLM_USE_STREAMING", "0");
     }
 
     let m = server
         .mock("POST", "/v1/responses")
         .match_body(Matcher::Regex(r"raw one two".to_string()))
         .with_status(200)
-        .with_header("content-type", "application/json")
+        .with_header("content-type", "text/event-stream")
         .with_body(
-            r#"{"id":"resp_test_2","output":[{"type":"message","content":[{"type":"output_text","text":"RAW ONE TWO."}]}]}"#,
+            r#"data: {"type":"response.output_text.delta","delta":"RAW ONE TWO."}
+
+data: {"type":"response.completed","response":{"id":"resp_test_2"}}
+
+data: [DONE]
+
+"#,
         )
         .create();
 

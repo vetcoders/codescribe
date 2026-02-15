@@ -104,6 +104,18 @@ impl std::fmt::Display for State {
     }
 }
 
+impl State {
+    pub fn to_ipc_str(self) -> &'static str {
+        match self {
+            State::Idle => "idle",
+            State::RecHold => "rec_hold",
+            State::RecToggle => "rec_toggle",
+            State::Busy => "busy",
+            State::Conversation => "conversation",
+        }
+    }
+}
+
 /// Hotkey event types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyType {

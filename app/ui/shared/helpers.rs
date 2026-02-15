@@ -15,9 +15,19 @@ use objc::declare::ClassDecl;
 use objc::runtime::Sel;
 use objc::runtime::{Class, Object, class_getInstanceMethod, object_getClass};
 use objc::{msg_send, sel, sel_impl};
+#[cfg(feature = "liquid_glass")]
+use objc2::MainThreadMarker;
+#[cfg(feature = "liquid_glass")]
+use objc2::rc::Retained;
+#[cfg(feature = "liquid_glass")]
+use objc2_app_kit::{NSAppKitVersionNumber, NSGlassEffectView, NSGlassEffectViewStyle};
 use objc2_app_kit::{
     NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
     NSWindowCollectionBehavior, NSWindowStyleMask,
+};
+#[cfg(feature = "liquid_glass")]
+use objc2_core_foundation::{
+    CGPoint as Objc2CGPoint, CGRect as Objc2CGRect, CGSize as Objc2CGSize,
 };
 use std::ffi::CString;
 use std::sync::Once;
@@ -51,6 +61,7 @@ pub mod ui_tokens {
     pub const EDGE_PADDING_TIGHT: f64 = 12.0;
 
     pub const TITLE_LABEL_WIDTH: f64 = 96.0;
+    pub const TRAFFIC_LIGHTS_SPACER_WIDTH: f64 = 80.0;
     pub const HEADER_BUTTON_SIZE: f64 = 28.0;
     pub const HEADER_BUTTON_GAP: f64 = 8.0;
     pub const HELP_PANEL_WIDTH: f64 = 150.0;
@@ -91,6 +102,14 @@ pub mod ui_colors {
         unsafe { msg_send![color, colorWithAlphaComponent: alpha] }
     }
 
+    fn adaptive_alpha(glass_alpha: f64, fallback_alpha: f64) -> f64 {
+        if super::glass_effect_supported() {
+            glass_alpha
+        } else {
+            fallback_alpha
+        }
+    }
+
     pub fn sidebar_bg() -> Id {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
@@ -103,7 +122,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.65)
+            with_alpha(base, adaptive_alpha(0.65, 0.74))
         }
     }
 
@@ -111,7 +130,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.86)
+            with_alpha(base, adaptive_alpha(0.74, 0.86))
         }
     }
 
@@ -150,7 +169,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.78)
+            with_alpha(base, adaptive_alpha(0.62, 0.78))
         }
     }
 
@@ -158,7 +177,7 @@ pub mod ui_colors {
         unsafe {
             let ns_color = Class::get("NSColor").unwrap();
             let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.7)
+            with_alpha(base, adaptive_alpha(0.56, 0.7))
         }
     }
 
@@ -318,6 +337,18 @@ pub unsafe fn layout_region_frame_for_view(view: Id) -> Option<CGRect> {
 /// # Safety
 /// `view` must be a valid `NSView` instance.
 pub unsafe fn layout_region_guide_for_view(view: Id) -> Option<Id> {
+    if view.is_null() {
+        return None;
+    }
+    let cls = unsafe { object_getClass(view as *const Object) };
+    if cls.is_null() {
+        return None;
+    }
+    // Tahoe can expose NSGlassEffectView without this selector; avoid unrecognized selector crash.
+    if unsafe { class_getInstanceMethod(cls, sel!(layoutRegionGuides)) }.is_null() {
+        return None;
+    }
+
     let guides: Id = unsafe { msg_send![view, layoutRegionGuides] };
     if !guides.is_null() {
         let guide: Id = unsafe { msg_send![guides, contentLayoutGuide] };
@@ -359,22 +390,65 @@ fn insets_from_frame(bounds: CGRect, frame: CGRect) -> NSEdgeInsets {
     }
 }
 
-/// Check whether Tahoe's `NSGlassEffectView` class is usable.
-///
-/// On macOS 26 Tahoe, `NSGlassEffectView` is a direct `NSView` subclass
-/// (NOT `NSVisualEffectView`). It does not respond to `setMaterial:`,
-/// `setBlendingMode:`, or `setState:` — it uses `setStyle:` and
-/// `setTintColor:` instead.  This function returns `false` on current
-/// Tahoe 26.3 beta because the glass API is not yet public.
-pub fn glass_effect_supported() -> bool {
-    let Some(cls) = Class::get("NSGlassEffectView") else {
-        return false;
-    };
-    unsafe {
-        !class_getInstanceMethod(cls, sel!(setMaterial:)).is_null()
-            && !class_getInstanceMethod(cls, sel!(setBlendingMode:)).is_null()
-            && !class_getInstanceMethod(cls, sel!(setState:)).is_null()
+#[cfg(feature = "liquid_glass")]
+const NS_APPKIT_VERSION_26_0: f64 = 2685.0;
+
+#[cfg(feature = "liquid_glass")]
+fn glass_effect_style_for_material(material: NSVisualEffectMaterial) -> NSGlassEffectViewStyle {
+    match material {
+        // Keep side panes and title-like strips lighter.
+        NSVisualEffectMaterial::Sidebar | NSVisualEffectMaterial::Titlebar => {
+            NSGlassEffectViewStyle::Clear
+        }
+        _ => NSGlassEffectViewStyle::Regular,
     }
+}
+
+fn glass_effect_view_class_available() -> bool {
+    Class::get("NSGlassEffectView").is_some()
+}
+
+#[cfg(feature = "liquid_glass")]
+fn glass_effect_runtime_supported() -> bool {
+    unsafe { NSAppKitVersionNumber >= NS_APPKIT_VERSION_26_0 }
+}
+
+#[cfg(not(feature = "liquid_glass"))]
+fn glass_effect_runtime_supported() -> bool {
+    false
+}
+
+#[cfg(feature = "liquid_glass")]
+fn create_typed_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial) -> Option<Id> {
+    if !glass_effect_supported() {
+        return None;
+    }
+    let mtm = MainThreadMarker::new()?;
+    let frame = Objc2CGRect::new(
+        Objc2CGPoint::new(frame.origin.x, frame.origin.y),
+        Objc2CGSize::new(frame.size.width, frame.size.height),
+    );
+    let view = NSGlassEffectView::initWithFrame(mtm.alloc(), frame);
+    view.setStyle(glass_effect_style_for_material(material));
+    let view: Id = Retained::into_raw(view).cast::<Object>();
+    unsafe {
+        let _: () = msg_send![view, setWantsLayer: true];
+    }
+    Some(view)
+}
+
+#[cfg(not(feature = "liquid_glass"))]
+fn create_typed_glass_effect_view(_frame: CGRect, _material: NSVisualEffectMaterial) -> Option<Id> {
+    None
+}
+
+/// Check whether Tahoe `NSGlassEffectView` is usable on this runtime.
+///
+/// We intentionally use only official style values:
+/// - `Regular` (0)
+/// - `Clear` (1)
+pub fn glass_effect_supported() -> bool {
+    glass_effect_runtime_supported() && glass_effect_view_class_available()
 }
 
 // ── Safe NSVisualEffectView subclass ─────────────────────────────────
@@ -384,9 +458,43 @@ pub fn glass_effect_supported() -> bool {
 // We register a thin subclass once that adds a stub returning nil so
 // ObjC nil-messaging silently eats any further calls.
 
-static CS_VEV_INIT: Once = Once::new();
+static CS_LAYOUT_REGION_GUIDES_INIT: Once = Once::new();
 
-/// Ensure `NSVisualEffectView` has a `layoutRegionGuides` method.
+fn ensure_layout_region_guides_for_class(class_name: &str) {
+    let Some(cls) = Class::get(class_name) else {
+        return;
+    };
+    let has_method = unsafe { !class_getInstanceMethod(cls, sel!(layoutRegionGuides)).is_null() };
+    if has_method {
+        return;
+    }
+
+    tracing::info!(
+        "Injecting layoutRegionGuides stub into {} (Tahoe beta workaround)",
+        class_name
+    );
+    extern "C" fn layout_region_guides(_this: &Object, _cmd: Sel) -> Id {
+        std::ptr::null_mut()
+    }
+    // SAFETY: transmute fn(&Object, Sel) -> Id to Imp (extern "C" fn()).
+    // ObjC runtime internally casts Imp to the correct signature via selector dispatch.
+    // Encoding "@@:" means: return `id`, args `(id self, SEL _cmd)`, which
+    // matches `extern "C" fn(&Object, Sel) -> Id`.
+    #[allow(clippy::transmute_ptr_to_ptr)]
+    unsafe {
+        let imp: objc::runtime::Imp =
+            std::mem::transmute(layout_region_guides as extern "C" fn(&Object, Sel) -> Id);
+        let encoding = CString::new("@@:").unwrap();
+        objc::runtime::class_addMethod(
+            cls as *const Class as *mut Class,
+            sel!(layoutRegionGuides),
+            imp,
+            encoding.as_ptr(),
+        );
+    }
+}
+
+/// Ensure vibrancy classes expose a `layoutRegionGuides` method.
 ///
 /// macOS 26 Tahoe beta: AppKit internally calls `layoutRegionGuides` on
 /// NSVisualEffectView during layout, but the method is missing on current betas.
@@ -394,39 +502,12 @@ static CS_VEV_INIT: Once = Once::new();
 /// NSVisualEffectView internally (e.g. titlebar blur on FullSizeContentView windows).
 ///
 /// This injects the stub method directly into `NSVisualEffectView` itself,
-/// protecting ALL instances including AppKit-internal ones.
+/// protecting ALL instances including AppKit-internal ones. We apply the same
+/// fallback for `NSGlassEffectView` when available.
 pub fn ensure_layout_region_guides_exists() {
-    CS_VEV_INIT.call_once(|| {
-        let cls = Class::get("NSVisualEffectView").unwrap();
-        let has_method =
-            unsafe { !class_getInstanceMethod(cls, sel!(layoutRegionGuides)).is_null() };
-
-        if !has_method {
-            tracing::info!(
-                "Injecting layoutRegionGuides stub into NSVisualEffectView (Tahoe beta workaround)"
-            );
-            extern "C" fn layout_region_guides(_this: &Object, _cmd: Sel) -> Id {
-                std::ptr::null_mut()
-            }
-            // SAFETY: transmute fn(&Object, Sel) -> Id to Imp (extern "C" fn()).
-            // ObjC runtime internally casts Imp to the correct signature via selector dispatch.
-            // class_addMethod on an existing class is safe when called before any instances
-            // have been laid out (we call this at tray init, before any windows exist).
-            // Encoding "@@:" means: return `id`, args `(id self, SEL _cmd)`, which
-            // matches `extern "C" fn(&Object, Sel) -> Id`.
-            #[allow(clippy::transmute_ptr_to_ptr)]
-            unsafe {
-                let imp: objc::runtime::Imp =
-                    std::mem::transmute(layout_region_guides as extern "C" fn(&Object, Sel) -> Id);
-                let encoding = CString::new("@@:").unwrap();
-                objc::runtime::class_addMethod(
-                    cls as *const Class as *mut Class,
-                    sel!(layoutRegionGuides),
-                    imp,
-                    encoding.as_ptr(),
-                );
-            }
-        }
+    CS_LAYOUT_REGION_GUIDES_INIT.call_once(|| {
+        ensure_layout_region_guides_for_class("NSVisualEffectView");
+        ensure_layout_region_guides_for_class("NSGlassEffectView");
     });
 }
 
@@ -456,6 +537,10 @@ pub fn create_glass_effect_view_with(
     state: NSVisualEffectState,
 ) -> Id {
     unsafe {
+        if let Some(view) = create_typed_glass_effect_view(frame, material) {
+            return view;
+        }
+
         let cls = safe_visual_effect_view_class();
         let view: Id = msg_send![cls, alloc];
         let view: Id = msg_send![view, initWithFrame: frame];
@@ -1054,6 +1139,9 @@ pub fn create_floating_window(
         let mut style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable;
+        if transparent_titlebar {
+            style |= NSWindowStyleMask::FullSizeContentView;
+        }
         if resizable {
             style |= NSWindowStyleMask::Resizable;
         }
@@ -1068,8 +1156,17 @@ pub fn create_floating_window(
         ];
 
         if transparent_titlebar {
+            // Re-apply FullSizeContentView post-init to avoid AppKit falling back to
+            // separate titlebar/content regions (which visually looks like a duplicate top bar).
+            let current_style: NSWindowStyleMask = msg_send![window, styleMask];
+            let full_style = current_style | NSWindowStyleMask::FullSizeContentView;
+            let _: () = msg_send![window, setStyleMask: full_style];
             let _: () = msg_send![window, setTitleVisibility: 1_isize]; // NSWindowTitleHidden
             let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
+            let _: () = msg_send![window, setOpaque: false];
+            let ns_color = Class::get("NSColor").unwrap();
+            let clear: Id = msg_send![ns_color, clearColor];
+            let _: () = msg_send![window, setBackgroundColor: clear];
         }
 
         let _: () = msg_send![window, setMovableByWindowBackground: true];
@@ -1500,6 +1597,7 @@ unsafe fn normalize_attributed_string_fonts(attr: Id, base_font: Id) -> Id {
     }
 
     let font_key = ns_string("NSFont");
+    let base_family: Id = msg_send![base_font, familyName];
     let mut idx: usize = 0;
     while idx < len {
         let mut effective = NSRange {
@@ -1514,6 +1612,16 @@ unsafe fn normalize_attributed_string_fonts(attr: Id, base_font: Id) -> Id {
         ];
         if effective.length == 0 {
             idx += 1;
+            continue;
+        }
+
+        if cur_font.is_null() {
+            // Some markdown runs may not carry an explicit NSFont attribute.
+            // Ensure those ranges still inherit the bubble's monospace base font
+            // instead of NSTextField defaulting them to system UI font.
+            let _: () =
+                msg_send![mutable, addAttribute: font_key value: base_font range: effective];
+            idx = effective.location + effective.length;
             continue;
         }
 
@@ -1535,7 +1643,18 @@ unsafe fn normalize_attributed_string_fonts(attr: Id, base_font: Id) -> Id {
                 let converted: Id =
                     msg_send![fm, convertFont: new_font toHaveTrait: desired_traits];
                 if !converted.is_null() {
-                    new_font = converted;
+                    // NSFontManager may fallback to a proportional system family when the
+                    // requested trait isn't available in the base family. Keep monospace family
+                    // stable for chat bubbles, even if that means dropping a trait.
+                    let converted_family: Id = msg_send![converted, familyName];
+                    let same_family: bool = if base_family.is_null() || converted_family.is_null() {
+                        false
+                    } else {
+                        msg_send![base_family, isEqualToString: converted_family]
+                    };
+                    if same_family {
+                        new_font = converted;
+                    }
                 }
             }
 
@@ -1605,8 +1724,13 @@ unsafe fn apply_markdown_to_text_field(text_label: Id, text: &str, font: Id) -> 
     } else {
         font
     };
+    // Keep NSTextField fallback font aligned with markdown base font.
+    let _: () = msg_send![text_label, setFont: font];
     if let Some(attr) = unsafe { markdown_attributed_string(text, font) } {
         let _: () = msg_send![text_label, setAttributedStringValue: attr];
+        // Re-assert base font after attributed update so any future fallback ranges
+        // (e.g. during incremental updates) remain monospace.
+        let _: () = msg_send![text_label, setFont: font];
         // Balance the +1 from mutableCopy inside normalize_attributed_string_fonts.
         // setAttributedStringValue: retains its own copy.
         let _: () = msg_send![attr, release];
@@ -2015,6 +2139,7 @@ pub unsafe fn update_bubble_text(
         } else {
             jb_font
         };
+        let _: () = msg_send![text_label, setFont: font];
         if !(allow_markdown && apply_markdown_to_text_field(text_label, &display_text, font)) {
             let text_str = ns_string(&display_text);
             let _: () = msg_send![text_label, setStringValue: text_str];

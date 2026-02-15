@@ -261,6 +261,20 @@ impl Config {
         }
     }
 
+    /// Set an env var from settings, with basic validation.
+    /// Rejects empty strings and strings longer than 4096 chars.
+    fn safe_set_env(key: &str, value: &str) {
+        if value.is_empty() || value.len() > 4096 {
+            warn!(
+                "Ignoring invalid setting {key}: value length {}",
+                value.len()
+            );
+            return;
+        }
+        // SAFETY: single-threaded config init, no other threads reading env yet.
+        unsafe { std::env::set_var(key, value) };
+    }
+
     /// Apply user settings from JSON (lower priority than .env).
     /// Only applies values that are Some AND not already overridden by env vars.
     fn apply_user_settings(&mut self, settings: &super::settings::UserSettings) {
@@ -316,6 +330,12 @@ impl Config {
         {
             self.ai_formatting_enabled = v;
         }
+        if std::env::var("FORMATTING_LEVEL").is_err()
+            && let Some(ref v) = settings.formatting_level
+        {
+            // FORMATTING_LEVEL is read from env at runtime (not a Config field).
+            Self::safe_set_env("FORMATTING_LEVEL", v);
+        }
         // Sound
         if std::env::var("BEEP_ON_START").is_err()
             && let Some(v) = settings.beep_on_start
@@ -338,18 +358,18 @@ impl Config {
         {
             // LLM_MODEL is not in Config struct but read from env at runtime
             // Set env var so downstream code picks it up
-            unsafe { std::env::set_var("LLM_MODEL", v) };
+            Self::safe_set_env("LLM_MODEL", v);
         }
         // Assistive LLM (not in Config struct, read from env at runtime)
         if std::env::var("LLM_ASSISTIVE_ENDPOINT").is_err()
             && let Some(ref v) = settings.llm_assistive_endpoint
         {
-            unsafe { std::env::set_var("LLM_ASSISTIVE_ENDPOINT", v) };
+            Self::safe_set_env("LLM_ASSISTIVE_ENDPOINT", v);
         }
         if std::env::var("LLM_ASSISTIVE_MODEL").is_err()
             && let Some(ref v) = settings.llm_assistive_model
         {
-            unsafe { std::env::set_var("LLM_ASSISTIVE_MODEL", v) };
+            Self::safe_set_env("LLM_ASSISTIVE_MODEL", v);
         }
         // Double-tap toggles (read from env at runtime, not in Config struct)
         if std::env::var("HOTKEY_DOUBLE_TAP_LEFT").is_err()
@@ -363,14 +383,133 @@ impl Config {
             unsafe { std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", if v { "1" } else { "0" }) };
         }
         // Buffered stream (read from env at runtime)
-        if std::env::var("CODESCRIBE_BUFFERED_STREAM").is_err() {
-            let enabled = settings.buffered_stream.unwrap_or(true);
+        if std::env::var("CODESCRIBE_BUFFERED_STREAM").is_err()
+            && let Some(enabled) = settings.buffered_stream
+        {
             unsafe {
                 std::env::set_var(
                     "CODESCRIBE_BUFFERED_STREAM",
                     if enabled { "1" } else { "0" },
                 )
             };
+        }
+
+        // ── Promoted fields (previously .env only) ──
+
+        // LLM formatting (not in Config struct, read from env at runtime)
+        if std::env::var("LLM_FORMATTING_ENDPOINT").is_err()
+            && let Some(ref v) = settings.llm_formatting_endpoint
+        {
+            Self::safe_set_env("LLM_FORMATTING_ENDPOINT", v);
+        }
+        if std::env::var("LLM_FORMATTING_MODEL").is_err()
+            && let Some(ref v) = settings.llm_formatting_model
+        {
+            Self::safe_set_env("LLM_FORMATTING_MODEL", v);
+        }
+
+        // Local STT
+        if std::env::var("USE_LOCAL_STT").is_err()
+            && let Some(v) = settings.use_local_stt
+        {
+            self.use_local_stt = v;
+            unsafe { std::env::set_var("USE_LOCAL_STT", if v { "1" } else { "0" }) };
+        }
+        if std::env::var("LOCAL_MODEL").is_err()
+            && let Some(ref v) = settings.local_model
+        {
+            self.local_model = v.clone();
+        }
+
+        // STT endpoint
+        if std::env::var("STT_ENDPOINT").is_err()
+            && let Some(ref v) = settings.stt_endpoint
+        {
+            self.stt_endpoint = Some(v.clone());
+        }
+
+        // Transcript send mode
+        apply_parsed_if_no_env!(
+            "TRANSCRIPT_SEND_MODE",
+            self.transcript_send_mode,
+            settings.transcript_send_mode
+        );
+
+        // Audio input device
+        if std::env::var("AUDIO_INPUT_DEVICE").is_err()
+            && let Some(ref v) = settings.audio_input_device
+        {
+            self.audio_input_device = Some(v.clone());
+        }
+
+        // Sound name
+        if std::env::var("SOUND_NAME").is_err()
+            && let Some(ref v) = settings.sound_name
+        {
+            self.sound_name = v.clone();
+        }
+
+        // History
+        if std::env::var("HISTORY_ENABLED").is_err()
+            && let Some(v) = settings.history_enabled
+        {
+            self.history_enabled = v;
+        }
+
+        // Quick Notes
+        if std::env::var("QUICK_NOTES_ENABLED").is_err()
+            && let Some(v) = settings.quick_notes_enabled
+        {
+            self.quick_notes_enabled = v;
+        }
+        if std::env::var("QUICK_NOTES_SAVE_ONLY").is_err()
+            && let Some(v) = settings.quick_notes_save_only
+        {
+            self.quick_notes_save_only = v;
+        }
+
+        // System
+        if std::env::var("START_AT_LOGIN").is_err()
+            && let Some(v) = settings.start_at_login
+        {
+            self.start_at_login = v;
+        }
+        if std::env::var("AGENT_ENTER_SENDS").is_err()
+            && let Some(v) = settings.agent_enter_sends
+        {
+            self.agent_enter_sends = v;
+        }
+
+        // ── Voice Lab survivors (runtime env vars, not Config struct fields) ──
+        if std::env::var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
+            && let Some(v) = settings.buffer_delay_ms
+        {
+            unsafe { std::env::set_var("CODESCRIBE_BUFFER_DELAY_MS", v.to_string()) };
+        }
+        if std::env::var("CODESCRIBE_TYPING_CPS").is_err()
+            && let Some(v) = settings.typing_cps
+        {
+            unsafe { std::env::set_var("CODESCRIBE_TYPING_CPS", v.to_string()) };
+        }
+        if std::env::var("CODESCRIBE_EMIT_WORDS_MAX").is_err()
+            && let Some(v) = settings.emit_words_max
+        {
+            unsafe { std::env::set_var("CODESCRIBE_EMIT_WORDS_MAX", v.to_string()) };
+        }
+        if std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC").is_err()
+            && let Some(v) = settings.buffered_interim_sec
+        {
+            unsafe { std::env::set_var("CODESCRIBE_BUFFERED_INTERIM_SEC", format!("{v:.1}")) };
+        }
+        if std::env::var("WHISPER_MODEL").is_err()
+            && let Some(ref v) = settings.whisper_model
+        {
+            Self::safe_set_env("WHISPER_MODEL", v);
+        }
+        if std::env::var("BACKEND_MAX_UPLOAD_MB").is_err()
+            && let Some(v) = settings.backend_max_upload_mb
+        {
+            unsafe { std::env::set_var("BACKEND_MAX_UPLOAD_MB", v.to_string()) };
         }
     }
 
@@ -416,48 +555,25 @@ impl Config {
         }
 
         // Regular-user fields → settings.json
-        let is_regular = matches!(
-            key,
-            "WHISPER_LANGUAGE"
-                | "HOLD_MODS"
-                | "HOLD_START_DELAY_MS"
-                | "DOUBLE_TAP_INTERVAL_MS"
-                | "TOGGLE_SILENCE_SEC"
-                | "HOLD_EXCLUSIVE"
-                | "AI_FORMATTING_ENABLED"
-                | "CODESCRIBE_BUFFERED_STREAM"
-                | "BEEP_ON_START"
-                | "SOUND_VOLUME"
-                | "FORMATTING_LEVEL"
-                | "LLM_ENDPOINT"
-                | "LLM_MODEL"
-                | "LLM_ASSISTIVE_ENDPOINT"
-                | "LLM_ASSISTIVE_MODEL"
-                | "TOGGLE_TRIGGER"
-                | "HOTKEY_DOUBLE_TAP_LEFT"
-                | "HOTKEY_DOUBLE_TAP_RIGHT"
-        );
+        let is_regular = super::settings::is_promoted_key(key);
 
         if is_regular {
             let mut settings = super::settings::UserSettings::load();
             // Route to appropriate setter based on value type
             match key {
-                "HOLD_START_DELAY_MS" => {
+                "HOLD_START_DELAY_MS"
+                | "DOUBLE_TAP_INTERVAL_MS"
+                | "CODESCRIBE_BUFFER_DELAY_MS"
+                | "CODESCRIBE_EMIT_WORDS_MAX"
+                | "BACKEND_MAX_UPLOAD_MB" => {
                     if let Ok(v) = value.parse::<u64>() {
                         settings.set_u64(key, v);
                     }
                 }
-                "DOUBLE_TAP_INTERVAL_MS" => {
-                    if let Ok(v) = value.parse::<u64>() {
-                        settings.set_u64(key, v);
-                    }
-                }
-                "SOUND_VOLUME" => {
-                    if let Ok(v) = value.parse::<f32>() {
-                        settings.set_f32(key, v);
-                    }
-                }
-                "TOGGLE_SILENCE_SEC" => {
+                "SOUND_VOLUME"
+                | "TOGGLE_SILENCE_SEC"
+                | "CODESCRIBE_TYPING_CPS"
+                | "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
                     if let Ok(v) = value.parse::<f32>() {
                         settings.set_f32(key, v);
                     }
@@ -467,7 +583,13 @@ impl Config {
                 | "BEEP_ON_START"
                 | "HOLD_EXCLUSIVE"
                 | "HOTKEY_DOUBLE_TAP_LEFT"
-                | "HOTKEY_DOUBLE_TAP_RIGHT" => {
+                | "HOTKEY_DOUBLE_TAP_RIGHT"
+                | "USE_LOCAL_STT"
+                | "HISTORY_ENABLED"
+                | "QUICK_NOTES_ENABLED"
+                | "QUICK_NOTES_SAVE_ONLY"
+                | "START_AT_LOGIN"
+                | "AGENT_ENTER_SENDS" => {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
                 }
@@ -518,31 +640,12 @@ impl Config {
             }
 
             // Regular-user fields → settings.json
-            let is_regular = matches!(
-                *key,
-                "WHISPER_LANGUAGE"
-                    | "HOLD_MODS"
-                    | "HOLD_START_DELAY_MS"
-                    | "DOUBLE_TAP_INTERVAL_MS"
-                    | "TOGGLE_SILENCE_SEC"
-                    | "HOLD_EXCLUSIVE"
-                    | "AI_FORMATTING_ENABLED"
-                    | "CODESCRIBE_BUFFERED_STREAM"
-                    | "BEEP_ON_START"
-                    | "SOUND_VOLUME"
-                    | "FORMATTING_LEVEL"
-                    | "LLM_ENDPOINT"
-                    | "LLM_MODEL"
-                    | "LLM_ASSISTIVE_ENDPOINT"
-                    | "LLM_ASSISTIVE_MODEL"
-                    | "TOGGLE_TRIGGER"
-                    | "HOTKEY_DOUBLE_TAP_LEFT"
-                    | "HOTKEY_DOUBLE_TAP_RIGHT"
-            );
+            let is_regular = super::settings::is_promoted_key(key);
 
             if is_regular {
                 let settings_ref = settings.get_or_insert_with(super::settings::UserSettings::load);
                 match *key {
+                    // ── Strings ──
                     "WHISPER_LANGUAGE" => {
                         settings_ref.whisper_language = Some((*value).to_string())
                     }
@@ -559,6 +662,23 @@ impl Config {
                     "FORMATTING_LEVEL" => {
                         settings_ref.formatting_level = Some((*value).to_string())
                     }
+                    "LLM_FORMATTING_ENDPOINT" => {
+                        settings_ref.llm_formatting_endpoint = Some((*value).to_string())
+                    }
+                    "LLM_FORMATTING_MODEL" => {
+                        settings_ref.llm_formatting_model = Some((*value).to_string())
+                    }
+                    "LOCAL_MODEL" => settings_ref.local_model = Some((*value).to_string()),
+                    "STT_ENDPOINT" => settings_ref.stt_endpoint = Some((*value).to_string()),
+                    "TRANSCRIPT_SEND_MODE" => {
+                        settings_ref.transcript_send_mode = Some((*value).to_string())
+                    }
+                    "AUDIO_INPUT_DEVICE" => {
+                        settings_ref.audio_input_device = Some((*value).to_string())
+                    }
+                    "SOUND_NAME" => settings_ref.sound_name = Some((*value).to_string()),
+                    "WHISPER_MODEL" => settings_ref.whisper_model = Some((*value).to_string()),
+                    // ── u64 ──
                     "HOLD_START_DELAY_MS" => {
                         if let Ok(v) = value.parse::<u64>() {
                             settings_ref.hold_start_delay_ms = Some(v);
@@ -569,9 +689,35 @@ impl Config {
                             settings_ref.double_tap_interval_ms = Some(v);
                         }
                     }
+                    "CODESCRIBE_BUFFER_DELAY_MS" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            settings_ref.buffer_delay_ms = Some(v);
+                        }
+                    }
+                    "CODESCRIBE_EMIT_WORDS_MAX" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            settings_ref.emit_words_max = Some(v);
+                        }
+                    }
+                    "BACKEND_MAX_UPLOAD_MB" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            settings_ref.backend_max_upload_mb = Some(v);
+                        }
+                    }
+                    // ── f32 ──
                     "TOGGLE_SILENCE_SEC" => {
                         if let Ok(v) = value.parse::<f32>() {
                             settings_ref.toggle_silence_sec = Some(v);
+                        }
+                    }
+                    "CODESCRIBE_TYPING_CPS" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.typing_cps = Some(v);
+                        }
+                    }
+                    "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.buffered_interim_sec = Some(v);
                         }
                     }
                     "SOUND_VOLUME" => {
@@ -579,29 +725,39 @@ impl Config {
                             settings_ref.sound_volume = Some(v);
                         }
                     }
-                    "AI_FORMATTING_ENABLED" => {
-                        settings_ref.ai_formatting_enabled =
-                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
-                    }
-                    "CODESCRIBE_BUFFERED_STREAM" => {
-                        settings_ref.buffered_stream =
-                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
-                    }
-                    "BEEP_ON_START" => {
-                        settings_ref.beep_on_start =
-                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
-                    }
-                    "HOLD_EXCLUSIVE" => {
-                        settings_ref.hold_exclusive =
-                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
-                    }
-                    "HOTKEY_DOUBLE_TAP_LEFT" => {
-                        settings_ref.double_tap_left =
-                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
-                    }
-                    "HOTKEY_DOUBLE_TAP_RIGHT" => {
-                        settings_ref.double_tap_right =
-                            Some(matches!(*value, "1" | "true" | "yes" | "on"));
+                    // ── Bools ──
+                    "AI_FORMATTING_ENABLED"
+                    | "CODESCRIBE_BUFFERED_STREAM"
+                    | "BEEP_ON_START"
+                    | "HOLD_EXCLUSIVE"
+                    | "HOTKEY_DOUBLE_TAP_LEFT"
+                    | "HOTKEY_DOUBLE_TAP_RIGHT"
+                    | "USE_LOCAL_STT"
+                    | "HISTORY_ENABLED"
+                    | "QUICK_NOTES_ENABLED"
+                    | "QUICK_NOTES_SAVE_ONLY"
+                    | "START_AT_LOGIN"
+                    | "AGENT_ENTER_SENDS" => {
+                        let bv = matches!(*value, "1" | "true" | "yes" | "on");
+                        match *key {
+                            "AI_FORMATTING_ENABLED" => {
+                                settings_ref.ai_formatting_enabled = Some(bv)
+                            }
+                            "CODESCRIBE_BUFFERED_STREAM" => settings_ref.buffered_stream = Some(bv),
+                            "BEEP_ON_START" => settings_ref.beep_on_start = Some(bv),
+                            "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),
+                            "HOTKEY_DOUBLE_TAP_LEFT" => settings_ref.double_tap_left = Some(bv),
+                            "HOTKEY_DOUBLE_TAP_RIGHT" => settings_ref.double_tap_right = Some(bv),
+                            "USE_LOCAL_STT" => settings_ref.use_local_stt = Some(bv),
+                            "HISTORY_ENABLED" => settings_ref.history_enabled = Some(bv),
+                            "QUICK_NOTES_ENABLED" => settings_ref.quick_notes_enabled = Some(bv),
+                            "QUICK_NOTES_SAVE_ONLY" => {
+                                settings_ref.quick_notes_save_only = Some(bv)
+                            }
+                            "START_AT_LOGIN" => settings_ref.start_at_login = Some(bv),
+                            "AGENT_ENTER_SENDS" => settings_ref.agent_enter_sends = Some(bv),
+                            _ => {}
+                        }
                     }
                     _ => {}
                 }

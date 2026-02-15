@@ -109,6 +109,7 @@ bundle: ensure-models release
 		'  <key>NSMicrophoneUsageDescription</key><string>Needed to transcribe speech.</string>' \
 		'  <key>NSAccessibilityUsageDescription</key><string>Needed to monitor hotkeys and paste results.</string>' \
 		'  <key>NSInputMonitoringUsageDescription</key><string>Needed to detect global hotkeys.</string>' \
+		'  <key>NSScreenCaptureUsageDescription</key><string>Capture screen context for AI-assisted features.</string>' \
 		'</dict>' \
 		'</plist>' \
 		> bundle/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist; \

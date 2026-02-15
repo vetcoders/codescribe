@@ -246,6 +246,35 @@ async fn test_toggle_press_sets_force_ai_mode() {
 }
 
 #[tokio::test]
+#[serial]
+async fn test_left_double_option_does_not_switch_to_assistive_routing() {
+    let controller = RecordingController::new();
+
+    let event = HotkeyInput {
+        key_type: HotkeyType::Toggle,
+        action: HotkeyAction::Press,
+        assistive: false,
+        hold_mode: HoldMode::Raw,
+        force_raw: false,
+        force_ai: true,
+    };
+    controller.handle_hotkey_event(event).await.unwrap();
+
+    assert!(
+        !*controller.assistive_mode.read().await,
+        "Left double option must stay non-assistive"
+    );
+    assert!(
+        *controller.force_ai_mode.read().await,
+        "Left double option should keep force_ai_mode=true"
+    );
+    assert!(
+        !is_assistive_session(),
+        "Global routing flag must stay non-assistive for left double option"
+    );
+}
+
+#[tokio::test]
 async fn test_hold_with_shift_sets_assistive_not_force_raw() {
     let controller = RecordingController::new();
 

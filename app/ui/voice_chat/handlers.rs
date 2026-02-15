@@ -126,6 +126,10 @@ pub fn action_handler_class() -> *const Class {
                 on_start_recording as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
+                sel!(onHeaderRecord:),
+                on_header_record as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
                 sel!(onShowOverlay:),
                 on_show_overlay as extern "C" fn(&Object, Sel, Id),
             );
@@ -266,6 +270,19 @@ pub fn overlay_window_class() -> *const Class {
                 sel!(performKeyEquivalent:),
                 perform_key_equivalent as extern "C" fn(&Object, Sel, Id) -> bool,
             );
+            decl.add_method(
+                sel!(draggingEntered:),
+                on_dragging_entered as extern "C" fn(&Object, Sel, Id) -> u64,
+            );
+            decl.add_method(
+                sel!(draggingUpdated:),
+                // Keep the same operation semantics while cursor moves over the drop target.
+                on_dragging_entered as extern "C" fn(&Object, Sel, Id) -> u64,
+            );
+            decl.add_method(
+                sel!(performDragOperation:),
+                on_perform_drag_operation as extern "C" fn(&Object, Sel, Id) -> bool,
+            );
             let cls = decl.register();
             OVERLAY_WINDOW_CLASS = cls;
         });
@@ -345,6 +362,47 @@ fn extract_paths_from_pasteboard(pasteboard: Id) -> Vec<PathBuf> {
                 let count: usize = msg_send![files, count];
                 for i in 0..count {
                     let ns_path: Id = msg_send![files, objectAtIndex: i];
+                    if ns_path.is_null() {
+                        continue;
+                    }
+                    let c_str: *const i8 = msg_send![ns_path, UTF8String];
+                    if c_str.is_null() {
+                        continue;
+                    }
+                    let s = std::ffi::CStr::from_ptr(c_str)
+                        .to_string_lossy()
+                        .to_string();
+                    if !s.is_empty() {
+                        out.push(PathBuf::from(s));
+                    }
+                }
+            }
+        }
+
+        // Fallback for drag sources that provide raw file-url strings per pasteboard item.
+        if out.is_empty() {
+            let items: Id = msg_send![pasteboard, pasteboardItems];
+            if !items.is_null() {
+                let count: usize = msg_send![items, count];
+                let file_url_type = ns_string("public.file-url");
+                for i in 0..count {
+                    let item: Id = msg_send![items, objectAtIndex: i];
+                    if item.is_null() {
+                        continue;
+                    }
+                    let url_str: Id = msg_send![item, stringForType: file_url_type];
+                    if url_str.is_null() {
+                        continue;
+                    }
+                    let url: Id = msg_send![ns_url, URLWithString: url_str];
+                    if url.is_null() {
+                        continue;
+                    }
+                    let is_file: bool = msg_send![url, isFileURL];
+                    if !is_file {
+                        continue;
+                    }
+                    let ns_path: Id = msg_send![url, path];
                     if ns_path.is_null() {
                         continue;
                     }
@@ -765,8 +823,8 @@ extern "C" fn on_tab_agent(_this: &Object, _cmd: Sel, _sender: Id) {
 }
 
 extern "C" fn on_tab_settings(_this: &Object, _cmd: Sel, _sender: Id) {
-    crate::show_bootstrap_overlay();
-    info!("Settings window opened");
+    update_active_tab_impl(Tab::Settings);
+    info!("Settings window opened from chat overlay");
 }
 
 extern "C" fn on_copy_last_response(_this: &Object, _cmd: Sel, _sender: Id) {
@@ -914,9 +972,19 @@ extern "C" fn on_start_recording(_this: &Object, _cmd: Sel, _sender: Id) {
     info!("CTA: start recording");
 }
 
+extern "C" fn on_header_record(_this: &Object, _cmd: Sel, _sender: Id) {
+    // Header record button is chat-native: keep the session in assistive/chat mode.
+    crate::hide_transcription_overlay();
+    crate::controller::request_toggle_recording_start(true);
+    info!("Header CTA: toggle assistive recording");
+}
+
 extern "C" fn on_show_overlay(_this: &Object, _cmd: Sel, _sender: Id) {
-    crate::show_voice_chat_overlay();
-    info!("CTA: show overlay");
+    if !super::api::is_voice_chat_overlay_visible() {
+        crate::show_voice_chat_overlay();
+    }
+    crate::voice_chat_ui::show_agent_tab();
+    info!("CTA: show/focus overlay");
 }
 
 extern "C" fn on_commit_message(_this: &Object, _cmd: Sel, _sender: Id) {
@@ -1049,15 +1117,19 @@ extern "C" fn on_export_assistant_save(_this: &Object, _cmd: Sel, _sender: Id) {
 extern "C" fn on_show_shortcuts(_this: &Object, _cmd: Sel, _sender: Id) {
     let config = Config::load();
     let (hold, toggle) = super::shortcuts_lines(config.hold_mods, config.toggle_trigger);
-    unsafe {
-        let ns_alert = Class::get("NSAlert").unwrap();
-        let alert: Id = msg_send![ns_alert, new];
-        let _: () = msg_send![alert, setMessageText: ns_string("Keyboard Shortcuts")];
-        let _: () =
-            msg_send![alert, setInformativeText: ns_string(&format!("{}\n{}", hold, toggle))];
-        let _: () = msg_send![alert, setAlertStyle: 1_isize]; // NSAlertStyleInformational
-        let _: () = msg_send![alert, runModal];
+    if !super::api::is_voice_chat_overlay_visible() {
+        // This action is wired to overlay/header UI. If it fires while hidden
+        // (e.g. stale responder chain), ignore it instead of spawning a ghost window.
+        info!("Ignored shortcuts action while overlay hidden");
+        return;
     }
+    crate::voice_chat_ui::show_agent_tab();
+    crate::voice_chat_ui::add_voice_chat_system_message(&format!(
+        "Keyboard shortcuts:\n{}\n{}",
+        hold, toggle
+    ));
+    crate::voice_chat_ui::update_voice_chat_status("Shortcuts");
+    info!("Displayed keyboard shortcuts inline (non-modal)");
 }
 
 extern "C" fn on_more_menu(this: &Object, _cmd: Sel, sender: Id) {
@@ -1103,6 +1175,49 @@ extern "C" fn on_more_menu(this: &Object, _cmd: Sel, sender: Id) {
 
         let sep2: Id = msg_send![ns_menu_item, separatorItem];
         let _: () = msg_send![menu, addItem: sep2];
+
+        let export_all_copy: Id = msg_send![ns_menu_item, alloc];
+        let export_all_copy: Id = msg_send![
+            export_all_copy,
+            initWithTitle: ns_string("Export all (copy markdown)")
+            action: sel!(onExportAllCopy:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![export_all_copy, setTarget: target];
+        let _: () = msg_send![menu, addItem: export_all_copy];
+
+        let export_all_save: Id = msg_send![ns_menu_item, alloc];
+        let export_all_save: Id = msg_send![
+            export_all_save,
+            initWithTitle: ns_string("Export all (save markdown)")
+            action: sel!(onExportAllSave:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![export_all_save, setTarget: target];
+        let _: () = msg_send![menu, addItem: export_all_save];
+
+        let export_assistant_copy: Id = msg_send![ns_menu_item, alloc];
+        let export_assistant_copy: Id = msg_send![
+            export_assistant_copy,
+            initWithTitle: ns_string("Export assistant (copy markdown)")
+            action: sel!(onExportAssistantCopy:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![export_assistant_copy, setTarget: target];
+        let _: () = msg_send![menu, addItem: export_assistant_copy];
+
+        let export_assistant_save: Id = msg_send![ns_menu_item, alloc];
+        let export_assistant_save: Id = msg_send![
+            export_assistant_save,
+            initWithTitle: ns_string("Export assistant (save markdown)")
+            action: sel!(onExportAssistantSave:)
+            keyEquivalent: ns_string("")
+        ];
+        let _: () = msg_send![export_assistant_save, setTarget: target];
+        let _: () = msg_send![menu, addItem: export_assistant_save];
+
+        let sep3: Id = msg_send![ns_menu_item, separatorItem];
+        let _: () = msg_send![menu, addItem: sep3];
 
         let shortcuts_item: Id = msg_send![ns_menu_item, alloc];
         let shortcuts_item: Id = msg_send![

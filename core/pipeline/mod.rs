@@ -6,7 +6,7 @@ pub mod streaming;
 
 // Re-export core event types for ergonomic access
 pub use contracts::{DropKind, EngineEvent, EventSink};
-pub use sinks::{CollectorEventSink, DeltaSinkAdapter};
+pub use sinks::{CollectorEventSink, DeltaSinkAdapter, FanoutEventSink};
 
 #[cfg(test)]
 mod tests;

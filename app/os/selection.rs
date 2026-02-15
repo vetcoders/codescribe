@@ -48,7 +48,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
 /// - `ASSISTIVE_CONTEXT_MAX_CHARS` (default: 20000)
 /// - `ASSISTIVE_CONTEXT_INCLUDE_APP` (default: 1)
 /// - `ASSISTIVE_CONTEXT_COPY_DELAY_MS` (default: 150)
-/// - `ASSISTIVE_CONTEXT_COPY_FALLBACK` (default: 0) - enable Cmd+C fallback when AX selection is unavailable
+/// - `ASSISTIVE_CONTEXT_COPY_FALLBACK` (default: auto) - enable Cmd+C fallback when AX selection is unavailable
 pub fn capture_assistive_context() -> AssistiveContext {
     // Unit tests should not trigger osascript / clipboard / event simulation.
     if cfg!(test) {
@@ -81,7 +81,8 @@ pub fn capture_assistive_context() -> AssistiveContext {
         };
     }
 
-    let selected_text = selected_text_from_frontmost(max_chars, copy_delay_ms);
+    let selected_text =
+        selected_text_from_frontmost(max_chars, copy_delay_ms, frontmost_app.as_deref());
 
     debug!(
         "Assistive context captured (app_present={}, selected_chars={})",
@@ -176,7 +177,28 @@ fn frontmost_app_name() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn selected_text_from_frontmost(max_chars: usize, copy_delay_ms: u64) -> Option<String> {
+fn prefer_copy_fallback_for_app(frontmost_app: Option<&str>) -> bool {
+    let app = frontmost_app.unwrap_or("").trim().to_lowercase();
+    matches!(
+        app.as_str(),
+        "safari"
+            | "google chrome"
+            | "google chrome beta"
+            | "arc"
+            | "brave browser"
+            | "firefox"
+            | "microsoft edge"
+            | "orion"
+            | "vivaldi"
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn selected_text_from_frontmost(
+    max_chars: usize,
+    copy_delay_ms: u64,
+    frontmost_app: Option<&str>,
+) -> Option<String> {
     // Prefer Accessibility selection if available (doesn't depend on clipboard).
     //
     // Some apps report `AXSelectedTextRange.length == 0` even when `AXSelectedText` is non-empty,
@@ -186,20 +208,18 @@ fn selected_text_from_frontmost(max_chars: usize, copy_delay_ms: u64) -> Option<
         return Some(selected);
     }
 
-    // If we can reliably detect that selection length is zero, treat as "no selection" and
-    // never use any fallback that might touch the clipboard.
-    if matches!(sel_len, Some(0)) {
-        debug!("Assistive context: selection length is 0; skipping Cmd+C fallback");
+    // Cmd+C fallback is enabled by default for web browsers where AX selection is unreliable
+    // (notably Safari). The explicit env flag still overrides this behavior.
+    // We snapshot+restore to avoid clipboard pollution and treat "unchanged clipboard" as no selection.
+    let fallback_default = prefer_copy_fallback_for_app(frontmost_app);
+    if !env_flag("ASSISTIVE_CONTEXT_COPY_FALLBACK", fallback_default) {
+        if matches!(sel_len, Some(0)) {
+            debug!("Assistive context: selection length is 0; Cmd+C fallback disabled");
+        }
         return None;
     }
-
-    // Cmd+C fallback is enabled by default for Selection mode. Some apps don't expose AX APIs.
-    // We snapshot+restore to avoid clipboard pollution and treat "unchanged clipboard" as no selection.
-    //
-    // NOTE: Default is OFF because Cmd+C can be surprising/privacy-sensitive (it touches clipboard)
-    // and some users explicitly want selection context to come only from AXSelectedText.
-    if !env_flag("ASSISTIVE_CONTEXT_COPY_FALLBACK", false) {
-        return None;
+    if matches!(sel_len, Some(0)) {
+        debug!("Assistive context: AX range length=0; trying Cmd+C fallback");
     }
 
     // Fallback: snapshot clipboard + Cmd+C + restore.
@@ -251,6 +271,10 @@ fn selected_text_from_frontmost(max_chars: usize, copy_delay_ms: u64) -> Option<
 }
 
 #[cfg(not(target_os = "macos"))]
-fn selected_text_from_frontmost(_max_chars: usize, _copy_delay_ms: u64) -> Option<String> {
+fn selected_text_from_frontmost(
+    _max_chars: usize,
+    _copy_delay_ms: u64,
+    _frontmost_app: Option<&str>,
+) -> Option<String> {
     None
 }

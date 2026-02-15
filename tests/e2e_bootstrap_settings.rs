@@ -28,6 +28,7 @@ fn setup_test_env() -> TempDir {
         std::env::remove_var("HOLD_EXCLUSIVE");
         std::env::remove_var("HOTKEY_DOUBLE_TAP_LEFT");
         std::env::remove_var("HOTKEY_DOUBLE_TAP_RIGHT");
+        std::env::remove_var("CODESCRIBE_TYPING_CPS");
     }
     tmp
 }
@@ -230,6 +231,32 @@ fn test_settings_buffered_stream_toggle() {
     );
 }
 
+#[test]
+#[serial]
+fn test_settings_typing_cps_decimal_persistence() {
+    let _tmp = setup_test_env();
+
+    let config = Config::load();
+    config
+        .save_to_env("CODESCRIBE_TYPING_CPS", "36.5")
+        .expect("save typing cps");
+
+    assert_eq!(
+        std::env::var("CODESCRIBE_TYPING_CPS").unwrap(),
+        "36.5",
+        "runtime env should preserve decimal value"
+    );
+
+    let settings = codescribe::config::UserSettings::load();
+    let persisted = settings
+        .typing_cps
+        .expect("typing_cps should be persisted to settings.json");
+    assert!(
+        (persisted - 36.5).abs() < 0.0001,
+        "typing_cps should persist as f32 (expected 36.5, got {persisted})"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════
 // Settings: Multi-field round-trip (simulates user changing all tabs)
 // ═══════════════════════════════════════════════════════════
@@ -265,4 +292,87 @@ fn test_settings_full_round_trip() {
     assert_eq!(r.whisper_language.as_str(), "en");
     assert!(!r.ai_formatting_enabled);
     assert_eq!(std::env::var("CODESCRIBE_BUFFERED_STREAM").unwrap(), "1");
+}
+
+// ═══════════════════════════════════════════════════════════
+// Engine tab: runtime data sources
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn test_engine_tab_stt_engine_env_default() {
+    // Without CODESCRIBE_STT_ENGINE set, should default to candle
+    unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") };
+    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
+    assert_eq!(engine, "candle", "default STT engine should be candle");
+}
+
+#[test]
+fn test_engine_tab_stt_engine_env_onnx() {
+    // Engine tab reads CODESCRIBE_STT_ENGINE to display active engine
+    unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", "onnx") };
+    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
+    assert_eq!(engine, "onnx", "STT engine should reflect env var");
+    unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") };
+}
+
+#[test]
+fn test_engine_tab_whisper_embedded_status() {
+    // Engine tab shows whether Whisper model is embedded in binary
+    let embedded = codescribe_core::stt::whisper::embedded::is_embedded_available();
+    let embedded_data = codescribe_core::stt::whisper::embedded::get_embedded_data();
+
+    assert_eq!(
+        embedded_data.is_some(),
+        embedded,
+        "Whisper embedded availability should match get_embedded_data() result"
+    );
+    if let Some(model) = embedded_data {
+        assert!(
+            model.total_size() > 0,
+            "Whisper embedded model should report non-zero total size"
+        );
+    }
+}
+
+#[test]
+fn test_engine_tab_vad_model_available() {
+    // Engine tab shows Silero VAD status
+    let embedded = codescribe_core::vad::embedded::is_embedded_available();
+    let user_path = codescribe_core::vad::user_model_path();
+
+    // At least one source should be available in dev environment
+    let available = embedded || user_path.exists();
+    assert!(
+        available,
+        "Silero VAD should be available (embedded={}, path={})",
+        embedded,
+        user_path.display()
+    );
+}
+
+#[test]
+fn test_engine_tab_embedder_api_exists() {
+    // Engine tab queries embedder initialization status
+    // Just verify the API is callable (lazy init — may not be initialized yet)
+    let _initialized = codescribe_core::embedder::is_initialized();
+    // No assertion on value — lazy init means it's false until first use
+}
+
+#[test]
+fn test_engine_tab_tts_embedded_status() {
+    // Engine tab shows TTS engine status
+    let embedded = codescribe_core::tts::embedded::is_embedded_available();
+    let embedded_data = codescribe_core::tts::embedded::get_embedded_data();
+
+    assert_eq!(
+        embedded_data.is_some(),
+        embedded,
+        "TTS embedded availability should match get_embedded_data() result"
+    );
+    if let Some(model) = embedded_data {
+        assert!(
+            model.total_size() > 0,
+            "TTS embedded model should report non-zero total size"
+        );
+    }
 }

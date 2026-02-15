@@ -717,10 +717,11 @@ dependencies = [
 
 [[package]]
 name = "codescribe"
-version = "0.7.16"
+version = "0.7.17"
 dependencies = [
  "anyhow",
  "arboard",
+ "block",
  "chrono",
  "clap",
  "codescribe-core",
@@ -737,7 +738,9 @@ dependencies = [
  "mockito",
  "muda",
  "objc",
+ "objc2",
  "objc2-app-kit",
+ "objc2-core-foundation",
  "reqwest",
  "serde",
  "serde_json",
@@ -754,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "codescribe-core"
-version = "0.7.16"
+version = "0.7.17"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

@@ -58,6 +58,7 @@ pub mod stt_api {
     };
     pub use crate::stt::whisper::{
         detect_language, get_model_path, init, transcribe, transcribe_file, transcribe_streaming,
+        transcribe_with_segments,
     };
 }
 
@@ -81,8 +82,8 @@ pub mod tts_api {
 /// Voice activity detection using Silero VAD (neural network)
 pub mod vad_api {
     pub use crate::vad::{
-        CHUNK_SIZE, Resampler, SAMPLE_RATE, SileroVad, VadConfig, default_model_path, init,
-        init_with_config, is_initialized, is_speech, reset, speech_probability,
+        AccumulatingVad, CHUNK_SIZE, Resampler, SAMPLE_RATE, SileroVad, VadConfig, VadExtractStats,
+        default_model_path, extract_speech,
     };
 }
 

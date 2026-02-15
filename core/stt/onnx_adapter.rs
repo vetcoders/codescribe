@@ -27,6 +27,8 @@ use candle_transformers::models::whisper::{self as whisper_audio, Config as Whis
 
 use crate::audio::loader as audio_loader;
 use crate::pipeline::contracts::{RawTranscript, SpeechUtterance, TranscriptionAdapter};
+use crate::stt::whisper::DecodingParams;
+use crate::stt::whisper::timestamps::{self, TimestampRange};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -80,7 +82,6 @@ fn warn_if_initial_prompt_ignored() {
 struct ResolvedTokens {
     sot: u32,              // <|startoftranscript|>
     eot: u32,              // <|endoftext|>
-    no_timestamps: u32,    // <|notimestamps|>
     transcribe: u32,       // <|transcribe|>
     nospeech: Option<u32>, // <|nospeech|>
 }
@@ -93,9 +94,6 @@ impl ResolvedTokens {
         let eot = tokenizer
             .token_to_id("<|endoftext|>")
             .context("Tokenizer missing <|endoftext|>")?;
-        let no_timestamps = tokenizer
-            .token_to_id("<|notimestamps|>")
-            .context("Tokenizer missing <|notimestamps|>")?;
         let transcribe = tokenizer
             .token_to_id("<|transcribe|>")
             .context("Tokenizer missing <|transcribe|>")?;
@@ -103,7 +101,6 @@ impl ResolvedTokens {
         Ok(Self {
             sot,
             eot,
-            no_timestamps,
             transcribe,
             nospeech,
         })
@@ -128,6 +125,8 @@ struct OnnxEngine {
     decoder: Session,
     tokenizer: Tokenizer,
     tokens: ResolvedTokens,
+    ts_range: Option<TimestampRange>,
+    decoding_params: DecodingParams,
     mel_filters: Vec<f32>,
     whisper_config: WhisperConfig,
 }
@@ -190,18 +189,18 @@ pub(crate) fn transcribe_chunk(
     guard.transcribe_internal(audio, sample_rate, language)
 }
 
-/// Transcribe long audio via the ONNX engine (try_lock — returns error if busy).
-pub(crate) fn try_transcribe_long(
+/// Transcribe long audio via the ONNX engine (try_lock) with segment metadata.
+pub(crate) fn try_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
     language: Option<&str>,
-) -> Result<String> {
+) -> Result<RawTranscript> {
     init()?;
     let engine = ENGINE.get().context("ONNX engine not initialized")?;
     let mut guard = engine
         .try_lock()
         .map_err(|_| anyhow!("ONNX engine busy, skipping correction"))?;
-    guard.transcribe_long(audio, sample_rate, language)
+    guard.transcribe_long_raw(audio, sample_rate, language)
 }
 
 /// Resolve ONNX model path from env or HF cache.
@@ -272,6 +271,8 @@ impl OnnxEngine {
 
         // Resolve special token IDs from tokenizer
         let tokens = ResolvedTokens::from_tokenizer(&tokenizer)?;
+        let ts_range = TimestampRange::from_tokenizer(&tokenizer);
+        let decoding_params = DecodingParams::default();
 
         // Load mel filters from mel_filters.npz if available, otherwise compute
         let mel_filters = load_or_compute_mel_filters(model_path)?;
@@ -295,6 +296,8 @@ impl OnnxEngine {
             decoder,
             tokenizer,
             tokens,
+            ts_range,
+            decoding_params,
             mel_filters,
             whisper_config,
         })
@@ -313,17 +316,27 @@ impl OnnxEngine {
         sample_rate: u32,
         language: Option<&str>,
     ) -> Result<String> {
-        ensure!(!samples.is_empty(), "audio is empty");
-        let samples_16k = audio_loader::resample_to_16k(samples, sample_rate);
-        self.transcribe_internal_16k(&samples_16k, language)
+        Ok(self
+            .transcribe_internal_raw(samples, sample_rate, language)?
+            .text)
     }
 
-    /// Internal decode path for audio already resampled to 16kHz.
-    fn transcribe_internal_16k(
+    fn transcribe_internal_raw(
+        &mut self,
+        samples: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<RawTranscript> {
+        ensure!(!samples.is_empty(), "audio is empty");
+        let samples_16k = audio_loader::resample_to_16k(samples, sample_rate);
+        self.transcribe_internal_16k_raw(&samples_16k, language)
+    }
+
+    fn transcribe_internal_16k_raw(
         &mut self,
         samples_16k: &[f32],
         language: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<RawTranscript> {
         ensure!(!samples_16k.is_empty(), "audio is empty");
         warn_if_initial_prompt_ignored();
 
@@ -378,7 +391,10 @@ impl OnnxEngine {
             initial_tokens.push(lang_tok as i64);
         }
         initial_tokens.push(self.tokens.transcribe as i64);
-        initial_tokens.push(self.tokens.no_timestamps as i64);
+        let timestamps_enabled = self.decoding_params.emit_timestamps && self.ts_range.is_some();
+        if !timestamps_enabled && let Some(no_ts) = self.tokenizer.token_to_id("<|notimestamps|>") {
+            initial_tokens.push(no_ts as i64);
+        }
 
         // 6. Greedy decoder loop — always full-sequence (no KV cache)
         //    This matches candle engine's approach: full token sequence each step,
@@ -440,7 +456,7 @@ impl OnnxEngine {
                     );
                     if nos_prob > NO_SPEECH_THRESHOLD {
                         debug!("No speech detected (prob={:.3})", nos_prob);
-                        return Ok(String::new());
+                        return Ok(RawTranscript::default());
                     }
                 }
             }
@@ -492,13 +508,25 @@ impl OnnxEngine {
             all_tokens.push(next_token);
         }
 
-        // 7. Decode tokens to text (skip_special_tokens=true handles filtering)
-        let text = self
-            .tokenizer
-            .decode(&all_tokens, true)
-            .map_err(|e| anyhow!("Tokenizer decode failed: {}", e))?;
+        let (text, segments) = if timestamps_enabled {
+            let range = self
+                .ts_range
+                .as_ref()
+                .ok_or_else(|| anyhow!("Timestamp range missing despite emit_timestamps=true"))?;
+            timestamps::extract_segments(&all_tokens, &self.tokenizer, range)
+        } else {
+            (
+                self.tokenizer
+                    .decode(&all_tokens, true)
+                    .map_err(|e| anyhow!("Tokenizer decode failed: {}", e))?,
+                Vec::new(),
+            )
+        };
 
-        Ok(text.trim().to_string())
+        Ok(RawTranscript {
+            text: text.trim().to_string(),
+            segments,
+        })
     }
 
     /// Transcribe long audio by chunking in 30s windows.
@@ -514,6 +542,17 @@ impl OnnxEngine {
         sample_rate: u32,
         language: Option<&str>,
     ) -> Result<String> {
+        Ok(self
+            .transcribe_long_raw(samples, sample_rate, language)?
+            .text)
+    }
+
+    fn transcribe_long_raw(
+        &mut self,
+        samples: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<RawTranscript> {
         let samples_16k = audio_loader::resample_to_16k(samples, sample_rate);
 
         // 30s = encoder native window, 5s overlap for context continuity
@@ -523,11 +562,13 @@ impl OnnxEngine {
 
         if samples_16k.len() <= chunk_samples {
             // Short audio — single pass (pad-or-trim handles the rest)
-            let text = self.transcribe_internal_16k(&samples_16k, language)?;
-            return Ok(crate::stt::whisper::dedup_repetitions(&text));
+            let mut transcript = self.transcribe_internal_16k_raw(&samples_16k, language)?;
+            transcript.text = crate::stt::whisper::dedup_repetitions(&transcript.text);
+            return Ok(transcript);
         }
 
         let mut out = String::new();
+        let mut all_segments = Vec::new();
         let mut offset = 0usize;
 
         while offset < samples_16k.len() {
@@ -539,16 +580,27 @@ impl OnnxEngine {
                 break;
             }
 
-            let text = self.transcribe_internal_16k(chunk, language)?;
-            if !text.is_empty() {
-                crate::stt::whisper::append_with_overlap_dedup(&mut out, &text);
+            let transcript = self.transcribe_internal_16k_raw(chunk, language)?;
+            if !transcript.text.is_empty() {
+                crate::stt::whisper::append_with_overlap_dedup(&mut out, &transcript.text);
+            }
+            if !transcript.segments.is_empty() {
+                let offset_sec = offset as f32 / 16_000.0;
+                all_segments.extend(transcript.segments.into_iter().map(|mut s| {
+                    s.start_ts += offset_sec;
+                    s.end_ts += offset_sec;
+                    s
+                }));
             }
 
             offset += step;
         }
 
         let trimmed = out.trim();
-        Ok(crate::stt::whisper::dedup_repetitions(trimmed))
+        Ok(RawTranscript {
+            text: crate::stt::whisper::dedup_repetitions(trimmed),
+            segments: all_segments,
+        })
     }
 }
 
@@ -585,12 +637,7 @@ impl TranscriptionAdapter for OnnxWhisperAdapter {
             .lock()
             .map_err(|e| anyhow!("ONNX engine mutex poisoned: {}", e))?;
 
-        let text = guard.transcribe_long(&utterance.samples, utterance.sample_rate, language)?;
-
-        Ok(RawTranscript {
-            text,
-            segments: Vec::new(),
-        })
+        guard.transcribe_long_raw(&utterance.samples, utterance.sample_rate, language)
     }
 }
 

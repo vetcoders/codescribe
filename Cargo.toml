@@ -3,7 +3,7 @@ resolver = "2"
 members = [".", "core"]
 
 [workspace.package]
-version = "0.7.16"
+version = "0.7.17"
 edition = "2024"
 authors = ["VetCoders <hello@vetcoders.io>"]
 
@@ -16,7 +16,7 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.7.16"
+version = "0.7.17"
 edition = "2024"
 description = "Speech-to-text tray app for macOS - Pure Rust"
 authors = ["VetCoders <hello@vetcoders.io>"]
@@ -36,6 +36,10 @@ path = "bin/codescribe_loop.rs"
 
 [lib]
 path = "app/lib.rs"
+
+[features]
+default = ["liquid_glass"]
+liquid_glass = []
 
 [dependencies]
 # Core library
@@ -107,9 +111,13 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 core-foundation = "0.10"
 core-graphics = "0.25"
 # UI utilities (hold badge, caret tracking) - modern objc2-* crates
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSColor", "NSEvent", "NSBezierPath", "NSGraphics", "NSResponder", "NSVisualEffectView"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSColor", "NSEvent", "NSBezierPath", "NSGraphics", "NSResponder", "NSVisualEffectView", "NSGlassEffectView", "NSApplication"] }
+objc2-core-foundation = "0.3"
 # Legacy objc for runtime declarations (ClassDecl) and msg_send! macro
 objc = "0.2"
+# ObjC blocks for callback-based permission APIs (e.g. AVCaptureDevice requestAccess)
+block = "0.1"
 # Grand Central Dispatch for main thread operations
 dispatch = "0.2"
 

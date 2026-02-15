@@ -259,6 +259,7 @@ pub enum EngineEvent {
         raw_text: String,
         start_ts: f32,
         end_ts: f32,
+        segments: Vec<TranscriptSegment>,
     },
 
     /// Content dropped by engine intelligence.
@@ -283,7 +284,8 @@ pub enum EngineEvent {
 }
 
 /// Why the engine dropped content.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DropKind {
     /// Whisper hallucination pattern detected (e.g. "thank you", "subscribe").
     Hallucination,
@@ -534,6 +536,11 @@ mod tests {
             raw_text: "raw text from whisper".to_string(),
             start_ts: 1.5,
             end_ts: 3.2,
+            segments: vec![TranscriptSegment {
+                text: "cleaned".to_string(),
+                start_ts: 1.5,
+                end_ts: 3.2,
+            }],
         };
         if let EngineEvent::UtteranceFinal {
             utterance_id,
@@ -541,6 +548,7 @@ mod tests {
             raw_text,
             start_ts,
             end_ts,
+            segments,
         } = event
         {
             assert_eq!(utterance_id, 42);
@@ -548,6 +556,7 @@ mod tests {
             assert_eq!(raw_text, "raw text from whisper");
             assert!((start_ts - 1.5).abs() < f32::EPSILON);
             assert!((end_ts - 3.2).abs() < f32::EPSILON);
+            assert_eq!(segments.len(), 1);
         } else {
             panic!("Expected UtteranceFinal variant");
         }
