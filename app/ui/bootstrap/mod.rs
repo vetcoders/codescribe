@@ -635,13 +635,21 @@ pub(super) fn refresh_permission_indicators() {
             state.permission_labels
         };
         for (i, granted) in perms.iter().enumerate() {
-            if let Some(label_ptr) = labels[i] {
-                let label = label_ptr as Id;
+            if let Some(ptr) = labels[i] {
+                let view = ptr as Id;
                 let dot = if *granted { "\u{25CF}" } else { "\u{25CB}" }; // ● vs ○
                 let text = format!("{} {}", dot, names[i]);
-                set_text_field_string(label, &text);
                 let color = permission_color(*granted);
-                let _: () = msg_send![label, setTextColor: color];
+                if i == 1 || i == 2 {
+                    // Accessibility & Input are NSButton (inline clickable)
+                    let title = ns_string(&text);
+                    let _: () = msg_send![view, setTitle: title];
+                    let _: () = msg_send![view, setContentTintColor: color];
+                } else {
+                    // Mic is NSTextField (plain label)
+                    set_text_field_string(view, &text);
+                    let _: () = msg_send![view, setTextColor: color];
+                }
             }
         }
     });
@@ -888,46 +896,38 @@ unsafe fn build_settings_ui(
                 &CGPoint::new(pad + perm_w * i as f64, y),
                 &CGSize::new(perm_w, 18.0),
             );
-            let lbl = create_label(LabelConfig {
-                frame: perm_frame,
-                text,
-                font_size: ui_tokens::SMALL_FONT_SIZE,
-                bold: true,
-                text_color: permission_color(*granted),
-                ..Default::default()
-            });
-            add_subview(setup_view, lbl);
-            perm_labels[i] = Some(lbl as usize);
 
-            // Setup convenience shortcuts: dedicated open buttons on a second row.
+            // Accessibility & Input: clickable inline buttons that open System Settings.
+            // Mic: plain label (no settings shortcut needed).
             if i == 1 || i == 2 {
-                let open_btn_frame = CGRect::new(
-                    &CGPoint::new(pad + perm_w * i as f64 + 18.0, y - 22.0),
-                    &CGSize::new(56.0, 18.0),
-                );
-                let click_target = create_button(open_btn_frame, "Open", button_style::ROUNDED);
+                let btn = create_button(perm_frame, &text, button_style::INLINE);
+                let _: () = msg_send![btn, setBordered: false];
+                let _: () = msg_send![btn, setAlignment: 0_isize]; // NSTextAlignmentLeft
+                let ns_font_cls = Class::get("NSFont").unwrap();
+                let font: Id = msg_send![ns_font_cls, boldSystemFontOfSize: ui_tokens::SMALL_FONT_SIZE];
+                let _: () = msg_send![btn, setFont: font];
+                let color = permission_color(*granted);
+                let _: () = msg_send![btn, setContentTintColor: color];
                 if i == 1 {
-                    button_set_action(
-                        click_target,
-                        action_handler,
-                        sel!(onOpenAccessibilitySettings:),
-                    );
-                    set_tooltip(
-                        click_target,
-                        "Open System Settings > Privacy > Accessibility",
-                    );
+                    button_set_action(btn, action_handler, sel!(onOpenAccessibilitySettings:));
+                    set_tooltip(btn, "Open System Settings \u{203A} Accessibility");
                 } else {
-                    button_set_action(
-                        click_target,
-                        action_handler,
-                        sel!(onOpenInputMonitoringSettings:),
-                    );
-                    set_tooltip(
-                        click_target,
-                        "Open System Settings > Privacy > Input Monitoring",
-                    );
+                    button_set_action(btn, action_handler, sel!(onOpenInputMonitoringSettings:));
+                    set_tooltip(btn, "Open System Settings \u{203A} Input Monitoring");
                 }
-                add_subview(setup_view, click_target);
+                add_subview(setup_view, btn);
+                perm_labels[i] = Some(btn as usize);
+            } else {
+                let lbl = create_label(LabelConfig {
+                    frame: perm_frame,
+                    text,
+                    font_size: ui_tokens::SMALL_FONT_SIZE,
+                    bold: true,
+                    text_color: permission_color(*granted),
+                    ..Default::default()
+                });
+                add_subview(setup_view, lbl);
+                perm_labels[i] = Some(lbl as usize);
             }
         }
 
@@ -940,7 +940,7 @@ unsafe fn build_settings_ui(
         );
         button_set_action(refresh_btn, action_handler, sel!(onRefreshPermissions:));
         add_subview(setup_view, refresh_btn);
-        y -= 54.0;
+        y -= 32.0;
 
         // ── Quick-start steps ────────────────────────────────────────
         let step_defs: [(&str, objc::runtime::Sel, &str); 3] = [
@@ -1115,7 +1115,7 @@ unsafe fn build_settings_ui(
         });
         add_subview(setup_view, assist_status_label);
         state.assistive_key_status_label = Some(assist_status_label as usize);
-        y -= 40.0;
+        y -= 28.0;
 
         let save_btn = button(
             CGRect::new(
@@ -1126,7 +1126,7 @@ unsafe fn build_settings_ui(
         );
         button_set_action(save_btn, action_handler, sel!(onSaveApiSettings:));
         add_subview(setup_view, save_btn);
-        y -= 44.0;
+        y -= 34.0;
 
         // ── Quality daemon toggle ────────────────────────────────────
         let quality_on = std::env::var("CODESCRIBE_AUTOSTART_QUALITY_DAEMON")
