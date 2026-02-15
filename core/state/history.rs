@@ -421,10 +421,41 @@ pub fn latest_entry() -> Option<HistoryEntry> {
     recent_entries(1).into_iter().next()
 }
 
-/// Open the transcriptions folder in Finder
+fn history_open_program() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "open"
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        "xdg-open"
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        "explorer"
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        ""
+    }
+}
+
+/// Open the transcriptions folder in system file manager
 pub fn open_history_folder() {
     let dir = transcriptions_base_dir();
-    if let Err(e) = Command::new("open").arg(&dir).spawn() {
+    let program = history_open_program();
+    if program.is_empty() {
+        warn!(
+            "Open history is unsupported on this platform (dir={})",
+            dir.display()
+        );
+        return;
+    }
+
+    if let Err(e) = Command::new(program).arg(&dir).spawn() {
         error!("Failed to open transcriptions folder: {}", e);
     }
 }
@@ -856,5 +887,17 @@ mod tests {
         let ai_base = ai_stem.strip_suffix("_ai").unwrap_or(&ai_stem);
 
         assert_eq!(raw_base, ai_base, "Slug hint should align base name");
+    }
+
+    #[test]
+    fn test_history_open_program_matches_platform() {
+        let program = history_open_program();
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(program, "open");
+        #[cfg(target_os = "linux")]
+        assert_eq!(program, "xdg-open");
+        #[cfg(target_os = "windows")]
+        assert_eq!(program, "explorer");
     }
 }
