@@ -129,7 +129,7 @@ pub struct RecordingController {
     /// Whether to force RAW mode (Ctrl Hold without Shift = always raw, ignores AI toggle)
     /// Toggle mode (Double Option) keeps this false and respects AI_FORMATTING_ENABLED setting.
     force_raw_mode: Arc<RwLock<bool>>,
-    /// Whether to force AI formatting for the current session (e.g., left double Option)
+    /// Whether to force AI formatting for the current session (explicit force path)
     force_ai_mode: Arc<RwLock<bool>>,
 
     /// Current session ID for tracking
@@ -435,7 +435,7 @@ impl RecordingController {
     /// ## Mode Determination (NEW architecture):
     /// - **Hold + assistive=false**: force RAW mode (ignores AI_FORMATTING_ENABLED)
     /// - **Hold + assistive=true**: force Assistive mode (Shift pressed = AI augmentation)
-    /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
+    /// - **Toggle + force_ai=true**: force AI formatting (explicit force path)
     /// - **Toggle + assistive=true**: force Assistive hands-off
     pub async fn handle_hotkey_event(&self, event: HotkeyInput) -> Result<()> {
         let current_state = self.current_state().await;
@@ -1329,6 +1329,10 @@ impl RecordingController {
         let language = config.whisper_language;
         let toggle_silence_sec = config.toggle_silence_sec;
         let beep_enabled = config.beep_on_start;
+        let use_buffered_stream = std::env::var("CODESCRIBE_BUFFERED_STREAM")
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(true);
 
         // Start the recorder
         let mut recorder = self.recorder.lock().await;
@@ -1495,10 +1499,15 @@ impl RecordingController {
                 })),
             )));
 
+            debug!(
+                "Legacy toggle pipeline using buffered_stream={}",
+                use_buffered_stream
+            );
+
             // Skip actual audio stream in tests (no CoreAudio device needed)
             if !cfg!(test)
                 && let Err(e) = recorder
-                    .start_with_buffered(Some(language.as_str().to_string()), true)
+                    .start_with_buffered(Some(language.as_str().to_string()), use_buffered_stream)
                     .await
             {
                 if Self::is_already_in_progress_error(&e) {
@@ -1510,7 +1519,10 @@ impl RecordingController {
                     recorder.set_utterance_silence_sec(None);
                     recorder.set_event_sink(None);
                     if let Err(retry_err) = recorder
-                        .start_with_buffered(Some(language.as_str().to_string()), true)
+                        .start_with_buffered(
+                            Some(language.as_str().to_string()),
+                            use_buffered_stream,
+                        )
                         .await
                     {
                         *self.session_id.write().await = None;
@@ -1859,7 +1871,7 @@ impl RecordingController {
     /// ## Mode Logic:
     /// - `assistive=true`: ALWAYS AI augmentation (HoldMode::Chat / HoldMode::Selection)
     /// - `force_raw=true`: ALWAYS raw transcript (HoldMode::Raw)
-    /// - `force_ai=true`: ALWAYS AI formatting (left double Option)
+    /// - `force_ai=true`: ALWAYS AI formatting (explicit force path)
     /// - Neither: Toggle mode - respects AI_FORMATTING_ENABLED setting
     async fn process_recording(
         &self,
@@ -2134,7 +2146,7 @@ impl RecordingController {
         //
         // 1. HoldMode::Chat / HoldMode::Selection (assistive=true): ALWAYS AI augmentation
         // 2. Ctrl Hold (force_raw=true): ALWAYS raw transcript (ignores AI toggle)
-        // 3. Left double Option (force_ai=true): ALWAYS AI formatting
+        // 3. Explicit force_ai=true: ALWAYS AI formatting
         // 4. Toggle (neither): respects AI_FORMATTING_ENABLED toggle
         //
         // This allows users to choose mode via hotkey:
@@ -2312,11 +2324,11 @@ impl RecordingController {
                 )
             }
         } else if force_ai {
-            // Left double Option: ALWAYS formatting (no augmentation)
+            // Explicit force path: ALWAYS formatting (no augmentation).
             // Auto-paste like hold mode — formatted text goes where the cursor is.
             let should_use_ai = crate::ai_formatting::has_api_key();
             if should_use_ai {
-                info!("Formatting mode (Left Option): correcting transcript via AI");
+                info!("Formatting mode (force_ai): correcting transcript via AI");
 
                 let lang_str = language_opt.map(String::from);
                 let result = crate::ai_formatting::format_text_with_status(
@@ -2339,7 +2351,7 @@ impl RecordingController {
                 };
                 (result.text, kind, true)
             } else if has_repetition {
-                info!("Formatting mode (Left Option): AI unavailable, cleaning repetitions");
+                info!("Formatting mode (force_ai): AI unavailable, cleaning repetitions");
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
@@ -2347,7 +2359,7 @@ impl RecordingController {
                 )
             } else {
                 info!(
-                    "Formatting mode (Left Option): AI unavailable, using post-processed transcript"
+                    "Formatting mode (force_ai): AI unavailable, using post-processed transcript"
                 );
                 (
                     clean_text.clone(),

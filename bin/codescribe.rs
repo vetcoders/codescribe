@@ -903,7 +903,7 @@ async fn dispatch_hotkey_event(
                 assistive: false,
                 hold_mode: HoldMode::Raw,
                 force_raw: false,
-                force_ai: true,
+                force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
         }

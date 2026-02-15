@@ -4,7 +4,7 @@
 //
 // Detects modifier-only keypresses:
 // - Hold Ctrl (or configured combo): Start recording while held, stop when released
-// - Double-tap Left Option: Toggle recording on/off (normal, AI formatting)
+// - Double-tap Left Option: Toggle recording on/off (normal, respects AI toggle)
 // - Double-tap Right Option: Toggle assistive hands-off (AI augmentation)
 // - Double-tap Ctrl: Toggle recording on/off (raw, auto-paste)
 //
