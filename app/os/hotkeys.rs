@@ -18,6 +18,7 @@
 // - CtrlAlt: Ctrl+Option together
 // - CtrlShift: Ctrl+Shift together
 // - CtrlCmd: Ctrl+Command together
+// - None: hold-to-talk disabled
 //
 // ToggleTrigger options:
 // - DoubleOption: Left Option (normal) + Right Option (assistive)
@@ -34,17 +35,18 @@ use std::time::{Duration, Instant};
 // --- Global HoldMods Configuration ---
 
 /// Atomic storage for current HoldMods setting
-/// Values: 0=Fn, 1=Ctrl, 2=CtrlAlt, 3=CtrlShift, 4=CtrlCmd
+/// Values: 0=Fn, 1=None, 2=Ctrl, 3=CtrlAlt, 4=CtrlShift, 5=CtrlCmd
 static HOLD_MODS: AtomicU8 = AtomicU8::new(0);
 
 /// Set the hold modifier combination for hold-to-talk
 pub fn set_hold_mods(mods: HoldMods) {
     let value = match mods {
         HoldMods::Fn => 0,
-        HoldMods::Ctrl => 1,
-        HoldMods::CtrlAlt => 2,
-        HoldMods::CtrlShift => 3,
-        HoldMods::CtrlCmd => 4,
+        HoldMods::None => 1,
+        HoldMods::Ctrl => 2,
+        HoldMods::CtrlAlt => 3,
+        HoldMods::CtrlShift => 4,
+        HoldMods::CtrlCmd => 5,
     };
     HOLD_MODS.store(value, AtomicOrdering::SeqCst);
     tracing::info!("HoldMods set to {:?}", mods);
@@ -54,10 +56,11 @@ pub fn set_hold_mods(mods: HoldMods) {
 pub fn get_hold_mods() -> HoldMods {
     match HOLD_MODS.load(AtomicOrdering::SeqCst) {
         0 => HoldMods::Fn,
-        1 => HoldMods::Ctrl,
-        2 => HoldMods::CtrlAlt,
-        3 => HoldMods::CtrlShift,
-        4 => HoldMods::CtrlCmd,
+        1 => HoldMods::None,
+        2 => HoldMods::Ctrl,
+        3 => HoldMods::CtrlAlt,
+        4 => HoldMods::CtrlShift,
+        5 => HoldMods::CtrlCmd,
         _ => HoldMods::Fn, // fallback
     }
 }
@@ -338,8 +341,9 @@ mod macos {
         ctrl_down_ts: Option<Instant>,
         /// Option is currently held
         option_down: bool,
-        /// Whether the currently held Option is the RIGHT Option key
-        right_option_held: bool,
+        /// Side captured on Option key-down: Some(true)=right, Some(false)=left.
+        /// We require a matching side on key-up to accept a tap gesture.
+        option_side: Option<bool>,
         /// A non-modifier key was pressed while modifier(s) held - invalidates gesture
         key_pressed_during_modifier: bool,
         /// Event sender
@@ -360,7 +364,7 @@ mod macos {
                 ctrl_down: false,
                 ctrl_down_ts: None,
                 option_down: false,
-                right_option_held: false,
+                option_side: None,
                 key_pressed_during_modifier: false,
                 tx,
             }
@@ -411,6 +415,7 @@ mod macos {
         // start/stop thrashing and, in worst cases, system-level freezes (event tap churn).
         match hold_mods {
             HoldMods::Fn => fn_key,
+            HoldMods::None => false,
             HoldMods::Ctrl => ctrl,
             HoldMods::CtrlAlt => ctrl,
             HoldMods::CtrlShift => ctrl && shift,
@@ -427,6 +432,7 @@ mod macos {
         // (e.g. Ctrl+Option). With bare Ctrl hold, Shift/Cmd must be ignored
         // because Ctrl+K, Ctrl+Shift+K etc. are normal terminal shortcuts.
         match hold_mods {
+            HoldMods::None => HoldMode::Raw,
             HoldMods::Ctrl => HoldMode::Raw,
             HoldMods::CtrlShift | HoldMods::CtrlCmd => {
                 // Shift or Cmd is already part of the base combo — no room for modifiers
@@ -497,6 +503,7 @@ mod macos {
             let hold_mods = get_hold_mods();
             let base_held = match hold_mods {
                 HoldMods::Fn => fn_held,
+                HoldMods::None => false,
                 HoldMods::Ctrl => ctrl_held,
                 HoldMods::CtrlAlt => ctrl_held,
                 HoldMods::CtrlShift => ctrl_held && shift_held,
@@ -708,20 +715,28 @@ mod macos {
 
         // Skip Option processing if toggle is disabled
         if matches!(toggle_trigger, ToggleTrigger::None) {
-            // Still track option_down state but don't process double-tap
-            if option_now && !state.option_down {
-                state.option_down = true;
-            } else if !option_now && state.option_down {
+            // Still track option-down state for combo invalidation, but strictly by Option key events.
+            if is_option_key {
+                if option_now {
+                    state.option_down = true;
+                    state.option_side = Some(is_right_option);
+                } else {
+                    state.option_down = false;
+                    state.option_side = None;
+                }
+            } else if !option_now {
+                // Defensive cleanup when flags desync (never emit toggles here).
                 state.option_down = false;
+                state.option_side = None;
             }
             return event;
         }
 
         // Detect Option double-tap for toggle gesture (left/right)
-        if option_now && !state.option_down {
+        if is_option_key && option_now && !state.option_down {
             // Option just pressed
             state.option_down = true;
-            state.right_option_held = is_right_option;
+            state.option_side = Some(is_right_option);
             tracing::debug!(
                 "Option pressed (right={}, keycode={})",
                 is_right_option,
@@ -729,14 +744,39 @@ mod macos {
             );
         } else if !option_now && state.option_down {
             // Option just released
-            let was_right_option = state.right_option_held;
             state.option_down = false;
-            state.right_option_held = false;
+            let pressed_side = state.option_side.take();
+
+            // Strict side handling:
+            // if release did not come from an Option key event, drop the gesture.
+            if !is_option_key {
+                tracing::debug!(
+                    "Option released without Option keycode (keycode={}); dropping gesture",
+                    keycode
+                );
+                state.last_left_tap_ts = None;
+                state.last_right_tap_ts = None;
+                state.key_pressed_during_modifier = false;
+                return event;
+            }
+
+            // If key-down side and key-up side disagree, treat as invalid gesture.
+            if let Some(pressed_right) = pressed_side
+                && pressed_right != is_right_option
+            {
+                tracing::warn!(
+                    "Option press/release side mismatch (down_right={}, up_right={}) - dropping tap",
+                    pressed_right,
+                    is_right_option
+                );
+                state.last_left_tap_ts = None;
+                state.last_right_tap_ts = None;
+                return event;
+            }
 
             tracing::debug!(
-                "Option released (right={}, was_right={}, keycode={})",
+                "Option released (right={}, keycode={})",
                 is_right_option,
-                was_right_option,
                 keycode
             );
 
@@ -756,7 +796,7 @@ mod macos {
             }
 
             if !hold_mods_block_toggle {
-                let current_tap_is_right = was_right_option || (is_option_key && is_right_option);
+                let current_tap_is_right = is_right_option;
 
                 if current_tap_is_right {
                     state.last_left_tap_ts = None;
@@ -942,9 +982,15 @@ mod macos {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::sync::Mutex;
+
+        static HOLD_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
         #[test]
         fn compute_hold_mode_respects_modifiers() {
+            let _guard = HOLD_MODE_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev = EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst);
             EXCLUSIVE_MODE.store(false, AtomicOrdering::SeqCst);
 
@@ -995,6 +1041,9 @@ mod macos {
 
         #[test]
         fn compute_hold_mode_exclusive_forces_raw() {
+            let _guard = HOLD_MODE_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prev = EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst);
             EXCLUSIVE_MODE.store(true, AtomicOrdering::SeqCst);
 
@@ -1203,6 +1252,10 @@ mod tests {
         // Test Fn
         set_hold_mods(HoldMods::Fn);
         assert_eq!(get_hold_mods(), HoldMods::Fn);
+
+        // Test None (disabled hold)
+        set_hold_mods(HoldMods::None);
+        assert_eq!(get_hold_mods(), HoldMods::None);
 
         // Test Ctrl
         set_hold_mods(HoldMods::Ctrl);

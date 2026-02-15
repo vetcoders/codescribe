@@ -13,6 +13,7 @@ use super::defaults::*;
 pub enum HoldMods {
     #[default]
     Fn,
+    None,
     Ctrl,
     CtrlAlt,
     CtrlShift,
@@ -23,6 +24,7 @@ impl HoldMods {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Fn => "fn",
+            Self::None => "none",
             Self::Ctrl => "ctrl",
             Self::CtrlAlt => "ctrl_alt",
             Self::CtrlShift => "ctrl_shift",
@@ -34,6 +36,7 @@ impl HoldMods {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Fn => "Fn",
+            Self::None => "Disabled",
             Self::Ctrl => "Ctrl",
             Self::CtrlAlt => "Ctrl+Option",
             Self::CtrlShift => "Ctrl+Shift",
@@ -48,6 +51,7 @@ impl FromStr for HoldMods {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "fn" | "globe" => Ok(Self::Fn),
+            "none" | "disabled" | "off" => Ok(Self::None),
             "ctrl" => Ok(Self::Ctrl),
             "ctrl_alt" | "ctrl+alt" => Ok(Self::CtrlAlt),
             "ctrl_shift" | "ctrl+shift" => Ok(Self::CtrlShift),

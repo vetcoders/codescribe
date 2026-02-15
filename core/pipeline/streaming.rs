@@ -35,7 +35,9 @@ lazy_static! {
 
 // ── Public type alias ────────────────────────────────────────────────────────
 
-use crate::pipeline::contracts::{DeltaSink, DropKind, EngineEvent, EventSink, TranscriptDelta};
+use crate::pipeline::contracts::{
+    DeltaSink, DropKind, EngineEvent, EventSink, RawTranscript, TranscriptDelta, TranscriptSegment,
+};
 
 /// Legacy alias — now backed by `DeltaSink` trait instead of bare `Fn(&str)`.
 /// Consumers should migrate to `Arc<dyn DeltaSink>` directly.
@@ -538,6 +540,9 @@ pub(crate) async fn transcription_session(
     let mut accumulated_text = String::new();
     // Track last raw Whisper output for final flush UtteranceFinal.
     let mut last_raw_text = String::new();
+    let mut last_segments: Vec<TranscriptSegment> = Vec::new();
+    // Accumulate segment timestamps for the current utterance across interim slices.
+    let mut utterance_segments: Vec<TranscriptSegment> = Vec::new();
 
     // Track audio position for UtteranceFinal timestamps (seconds).
     let mut utterance_start_s: f32 = 0.0;
@@ -555,11 +560,11 @@ pub(crate) async fn transcription_session(
     let mut audio_closed = false;
 
     // Phase 1 (streaming preview) — one utterance transcription in flight.
-    let mut utterance_in_flight: Option<tokio::task::JoinHandle<Result<String>>> = None;
+    let mut utterance_in_flight: Option<tokio::task::JoinHandle<Result<RawTranscript>>> = None;
     let mut utterance_active: Option<UtteranceWorkItem> = None;
 
     // Phase 2 (buffered correction) — re-transcription in flight.
-    let mut correction_in_flight: Option<tokio::task::JoinHandle<Result<String>>> = None;
+    let mut correction_in_flight: Option<tokio::task::JoinHandle<Result<RawTranscript>>> = None;
     let mut correction_current_suffix: Option<String> = None;
 
     loop {
@@ -698,7 +703,7 @@ pub(crate) async fn transcription_session(
                             if !current_suffix.is_empty() {
                                 pipeline.last_suffix = current_suffix;
                             }
-                        } else if let Some(cleaned) = pipeline.postprocess(&raw) {
+                        } else if let Some(cleaned) = pipeline.postprocess(&raw.text) {
                             let previous_text = accumulated_text.clone();
                             preview_rev += 1;
                             corrections_applied += 1;
@@ -733,11 +738,23 @@ pub(crate) async fn transcription_session(
                     max_speech_prob: 0.0,
                 });
                 // Track audio duration for timestamp computation.
+                let chunk_start_samples = utterance_audio_samples;
                 utterance_audio_samples += item.audio.len();
+                let chunk_start_ts =
+                    utterance_start_s + chunk_start_samples as f32 / output_sample_rate as f32;
 
                 match result {
-                    Ok(Ok(raw_text)) => {
+                    Ok(Ok(raw_transcript)) => {
+                        let raw_text = raw_transcript.text;
+                        let mut raw_segments = raw_transcript.segments;
+                        if !raw_segments.is_empty() {
+                            for segment in &mut raw_segments {
+                                segment.start_ts += chunk_start_ts;
+                                segment.end_ts += chunk_start_ts;
+                            }
+                        }
                         last_raw_text = raw_text.clone();
+                        last_segments = raw_segments.clone();
                         if utterance_count == 0 && correction_audio_buf.is_empty() {
                             suffix_snapshot = pipeline.last_suffix.clone();
                         }
@@ -764,6 +781,7 @@ pub(crate) async fn transcription_session(
                                         accumulated_text.push(' ');
                                     }
                                     accumulated_text.push_str(cleaned.trim());
+                                    utterance_segments.extend(raw_segments.clone());
 
                                     event_sink.on_event(&EngineEvent::Preview {
                                         rev: preview_rev,
@@ -816,7 +834,10 @@ pub(crate) async fn transcription_session(
                                     raw_text: raw_text.clone(),
                                     start_ts: utterance_start_s,
                                     end_ts,
+                                    segments: std::mem::take(&mut utterance_segments),
                                 });
+                            } else {
+                                utterance_segments.clear();
                             }
                             accumulated_text.clear();
                             // Advance start_ts for next utterance.
@@ -894,12 +915,18 @@ pub(crate) async fn transcription_session(
         utterance_id += 1;
         total_utterances += 1;
         let end_ts = utterance_start_s + utterance_audio_samples as f32 / output_sample_rate as f32;
+        let segments = if utterance_segments.is_empty() {
+            last_segments
+        } else {
+            utterance_segments
+        };
         event_sink.on_event(&EngineEvent::UtteranceFinal {
             utterance_id,
             text: remaining,
             raw_text: last_raw_text,
             start_ts: utterance_start_s,
             end_ts,
+            segments,
         });
     }
 
@@ -1109,11 +1136,11 @@ pub(crate) async fn buffered_transcription_worker(
     let mut audio_closed = false;
 
     // Phase 1 (streaming preview) — one utterance transcription in flight.
-    let mut utterance_in_flight: Option<tokio::task::JoinHandle<Result<String>>> = None;
+    let mut utterance_in_flight: Option<tokio::task::JoinHandle<Result<RawTranscript>>> = None;
     let mut utterance_active: Option<UtteranceWorkItem> = None;
 
     // Phase 2 (buffered correction) — re-transcription in flight.
-    let mut correction_in_flight: Option<tokio::task::JoinHandle<Result<String>>> = None;
+    let mut correction_in_flight: Option<tokio::task::JoinHandle<Result<RawTranscript>>> = None;
     let mut correction_current_suffix: Option<String> = None;
 
     loop {
@@ -1217,7 +1244,7 @@ pub(crate) async fn buffered_transcription_worker(
                 let current_suffix = correction_current_suffix.take().unwrap_or_default();
                 match result {
                     Ok(Ok(raw)) => {
-                        if let Some(cleaned) = pipeline.postprocess(&raw) {
+                        if let Some(cleaned) = pipeline.postprocess(&raw.text) {
                             let mut guard = emitter.lock().await;
                             guard.push_correction(cleaned);
                             // postprocess() already updated last_suffix to match re-transcription.
@@ -1247,7 +1274,8 @@ pub(crate) async fn buffered_transcription_worker(
                     max_speech_prob: 0.0,
                 });
                 match result {
-                    Ok(Ok(raw_text)) => {
+                    Ok(Ok(raw_transcript)) => {
+                        let raw_text = raw_transcript.text;
                         if utterance_count == 0 && correction_audio_buf.is_empty() {
                             suffix_snapshot = pipeline.last_suffix.clone();
                         }
@@ -1383,7 +1411,7 @@ fn spawn_utterance_transcription(
     samples: Vec<f32>,
     sample_rate: u32,
     language: Option<String>,
-) -> tokio::task::JoinHandle<Result<String>> {
+) -> tokio::task::JoinHandle<Result<RawTranscript>> {
     tokio::task::spawn_blocking(move || {
         let correction_started_at = std::time::Instant::now();
         // Use try_lock to avoid blocking-pool saturation when corrections
@@ -1391,7 +1419,11 @@ fn spawn_utterance_transcription(
         // is already busy (main transcription or a previous correction),
         // we bail immediately — the next correction cycle will pick up
         // the accumulated audio.
-        let result = crate::stt::try_transcribe_long(&samples, sample_rate, language.as_deref());
+        let result = crate::stt::try_transcribe_long_with_segments(
+            &samples,
+            sample_rate,
+            language.as_deref(),
+        );
         if let Err(err) = &result
             && err.to_string().contains("engine busy")
         {

@@ -18,6 +18,7 @@ use tracing::{info, warn};
 use crate::config::Config;
 use crate::config::models::ModelManager;
 use crate::hf_cache;
+use crate::pipeline::contracts::RawTranscript;
 
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
@@ -166,12 +167,21 @@ pub fn engine() -> Result<&'static Mutex<LocalWhisperEngine>> {
 
 /// Transcribe audio samples using the global engine
 pub fn transcribe(samples: &[f32], sample_rate: u32, language: Option<&str>) -> Result<String> {
+    Ok(transcribe_with_segments(samples, sample_rate, language)?.text)
+}
+
+/// Transcribe audio samples with segment-level timestamps.
+pub fn transcribe_with_segments(
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+) -> Result<RawTranscript> {
     let engine_mutex = engine()?;
     let mut engine = engine_mutex
         .lock()
         .map_err(|e| anyhow!("Failed to lock engine: {}", e))?;
 
-    engine.transcribe_long_with_language(samples, sample_rate, language)
+    engine.transcribe_long_with_language_segments(samples, sample_rate, language)
 }
 
 /// Transcribe with streaming callback

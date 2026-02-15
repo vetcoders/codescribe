@@ -122,6 +122,11 @@ pub fn migrate_if_needed() {
     {
         settings.sound_volume = Some(n);
     }
+    if let Ok(v) = std::env::var("TOGGLE_SILENCE_SEC")
+        && let Ok(n) = v.parse::<f32>()
+    {
+        settings.toggle_silence_sec = Some(n);
+    }
     if let Ok(v) = std::env::var("DOUBLE_TAP_INTERVAL_MS")
         && let Ok(n) = v.parse::<u64>()
     {

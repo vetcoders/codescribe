@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -52,6 +52,7 @@ use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
 // Moshi conversation engine and audio output
 use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
+use codescribe_core::ipc::{IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
 // UI state for conversation mode
@@ -181,6 +182,9 @@ pub struct RecordingController {
 
     /// Task handle for conversation audio processing loop
     conversation_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+
+    /// Broadcast stream for IPC subscribers.
+    event_broadcast: broadcast::Sender<IpcEvent>,
 }
 
 impl RecordingController {
@@ -219,6 +223,7 @@ impl RecordingController {
 
         let config = Arc::new(RwLock::new(config));
         setup_voice_chat_send_callback(Arc::clone(&config));
+        let (event_broadcast, _) = broadcast::channel::<IpcEvent>(256);
 
         Self {
             config,
@@ -243,6 +248,7 @@ impl RecordingController {
             conversation_stop_flag: Arc::new(AtomicBool::new(false)),
             conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
+            event_broadcast,
         }
     }
 
@@ -283,6 +289,7 @@ impl RecordingController {
         }
 
         setup_voice_chat_send_callback(Arc::clone(&config));
+        let (event_broadcast, _) = broadcast::channel::<IpcEvent>(256);
 
         Self {
             config,
@@ -307,12 +314,52 @@ impl RecordingController {
             conversation_stop_flag: Arc::new(AtomicBool::new(false)),
             conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
+            event_broadcast,
         }
     }
 
     /// Get current state
     pub async fn current_state(&self) -> State {
         *self.state.read().await
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<IpcEvent> {
+        self.event_broadcast.subscribe()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_ipc_event_for_test(&self, payload: IpcEventPayload) {
+        let _ = self.event_broadcast.send(IpcEvent {
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            payload,
+        });
+    }
+
+    async fn set_state(&self, new_state: State) {
+        Self::set_state_with_broadcast(&self.state, &self.event_broadcast, new_state).await;
+    }
+
+    async fn set_state_with_broadcast(
+        state: &Arc<RwLock<State>>,
+        event_broadcast: &broadcast::Sender<IpcEvent>,
+        new_state: State,
+    ) {
+        let old_state = {
+            let mut guard = state.write().await;
+            let old = *guard;
+            *guard = new_state;
+            old
+        };
+
+        if old_state != new_state {
+            let _ = event_broadcast.send(IpcEvent {
+                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                payload: IpcEventPayload::StateChange {
+                    from: old_state.to_ipc_str().to_string(),
+                    to: new_state.to_ipc_str().to_string(),
+                },
+            });
+        }
     }
 
     /// Replace controller configuration at runtime
@@ -347,6 +394,36 @@ impl RecordingController {
         }
     }
 
+    fn is_already_in_progress_error(error: &anyhow::Error) -> bool {
+        error
+            .to_string()
+            .contains("Recording is already in progress")
+    }
+
+    async fn recover_stale_recorder_if_idle(&self) {
+        if self.current_state().await != State::Idle {
+            return;
+        }
+
+        let mut recorder = self.recorder.lock().await;
+        if !recorder.recorder.is_active() {
+            return;
+        }
+
+        warn!("Recorder recovery: detected active stream while controller is IDLE; forcing stop");
+        if let Err(e) = recorder.stop_without_saving().await {
+            warn!("Recorder recovery: forced stop failed: {e}");
+        }
+        recorder.set_utterance_callback(None);
+        recorder.set_utterance_silence_sec(None);
+        recorder.set_event_sink(None);
+        drop(recorder);
+
+        *self.session_id.write().await = None;
+        self.assistive_loop_active.store(false, Ordering::SeqCst);
+        set_assistive_session(false);
+    }
+
     /// Handle hotkey event - main entry point for state machine
     ///
     /// # Arguments
@@ -362,6 +439,10 @@ impl RecordingController {
     /// - **Toggle + assistive=true**: force Assistive hands-off
     pub async fn handle_hotkey_event(&self, event: HotkeyInput) -> Result<()> {
         let current_state = self.current_state().await;
+
+        if current_state == State::Idle {
+            self.recover_stale_recorder_if_idle().await;
+        }
 
         debug!(
             "Hotkey event: type={:?} action={:?} assistive={} hold_mode={:?} force_raw={} force_ai={} state={}",
@@ -652,7 +733,7 @@ impl RecordingController {
         helpers::set_conversation_session(true);
 
         // 5. Transition to CONVERSATION state
-        *self.state.write().await = State::Conversation;
+        self.set_state(State::Conversation).await;
         info!("STATE TRANSITION: IDLE → CONVERSATION");
 
         // 6. Update UI
@@ -669,6 +750,7 @@ impl RecordingController {
         let generation_arc = Arc::clone(&self.conversation_generation);
         let state = Arc::clone(&self.state);
         let recorder = Arc::clone(&self.recorder);
+        let event_broadcast = self.event_broadcast.clone();
 
         let task = tokio::spawn(async move {
             Self::conversation_audio_loop(
@@ -679,6 +761,7 @@ impl RecordingController {
                 generation_arc,
                 generation,
                 state,
+                event_broadcast,
             )
             .await;
         });
@@ -691,6 +774,7 @@ impl RecordingController {
     /// The main conversation audio processing loop
     ///
     /// Runs in a background task: captures audio → ConversationEngine → speaker
+    #[allow(clippy::too_many_arguments)]
     async fn conversation_audio_loop(
         engine: Arc<Mutex<Option<ConversationEngine>>>,
         player: Arc<Mutex<Option<AudioPlayer>>>,
@@ -699,6 +783,7 @@ impl RecordingController {
         generation_counter: Arc<AtomicU64>,
         my_generation: u64,
         state: Arc<RwLock<State>>,
+        event_broadcast: broadcast::Sender<IpcEvent>,
     ) {
         info!(
             "Conversation audio loop started (generation {})",
@@ -722,7 +807,7 @@ impl RecordingController {
             if let Err(e) = rec.recorder.start().await {
                 error!("Failed to start recorder for conversation: {}", e);
                 // Full cleanup on failure: state, session flag, badge, UI
-                *state.write().await = State::Idle;
+                Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
                 helpers::set_conversation_session(false);
                 hide_hold_badge();
                 crate::voice_chat_ui::update_voice_chat_status("Recorder error");
@@ -885,7 +970,7 @@ impl RecordingController {
             // This loop owns the current session - safe to cleanup
             stop_flag.store(true, Ordering::SeqCst);
 
-            *state.write().await = State::Idle;
+            Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
             helpers::set_conversation_session(false);
             hide_hold_badge();
             crate::voice_chat_ui::update_voice_chat_status("Conversation ended");
@@ -946,7 +1031,7 @@ impl RecordingController {
         }
 
         // 7. Transition back to IDLE
-        *self.state.write().await = State::Idle;
+        self.set_state(State::Idle).await;
         info!("STATE TRANSITION: CONVERSATION → IDLE");
 
         // 8. Update UI
@@ -1004,12 +1089,17 @@ impl RecordingController {
         let delay = Duration::from_millis(delay_ms);
         let vad_flag = Arc::clone(&self.vad_triggered);
         let assistive_context = Arc::clone(&self.assistive_context);
+        let event_broadcast = self.event_broadcast.clone();
+        let serial_lock = Arc::clone(&self.serial_lock);
         let opened_overlay_for_transcription =
             Arc::clone(&self.opened_voice_chat_overlay_for_transcription);
 
         let task = tokio::spawn(async move {
             // Wait for the configured delay
             tokio::time::sleep(delay).await;
+
+            // Serialize with other start/stop operations.
+            let _serial_guard = serial_lock.lock().await;
 
             // Check if we're still in IDLE state
             let current_state = *state.read().await;
@@ -1054,25 +1144,71 @@ impl RecordingController {
                 let tb = rec.transcript_buffer_handle();
                 let delta_sink: Arc<dyn codescribe_core::pipeline::contracts::DeltaSink> =
                     Arc::new(helpers::RoutingDeltaSink);
-                let pe = PresentationEmitter::new(tb, Some(delta_sink), None);
-                rec.set_event_sink(Some(Arc::new(pe)));
-
-                if !cfg!(test)
-                    && let Err(e) = rec
-                        .start_event_session(Some(language.as_str().to_string()))
-                        .await
-                {
-                    error!("Failed to start event session: {}", e);
-                    *session_id.write().await = None;
-                    return;
-                }
-            } else if !cfg!(test)
-                && let Err(e) = rec.start(Some(language.as_str().to_string())).await
-            {
-                error!("Failed to start recorder: {}", e);
-                *session_id.write().await = None;
-                return;
+                let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                    Arc::new(PresentationEmitter::new(tb, Some(delta_sink), None));
+                let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                    Arc::new(helpers::IpcBroadcastSink::new(event_broadcast.clone()));
+                rec.set_event_sink(Some(
+                    codescribe_core::pipeline::sinks::FanoutEventSink::pair(pe, ipc_sink),
+                ));
             }
+            if !cfg!(test) {
+                let start_result = if use_event_pipeline {
+                    rec.start_event_session(Some(language.as_str().to_string()))
+                        .await
+                } else {
+                    rec.start(Some(language.as_str().to_string())).await
+                };
+                if let Err(e) = start_result {
+                    if Self::is_already_in_progress_error(&e) {
+                        warn!("Hold-start hit stale recorder lock; forcing stop and retrying once");
+                        if let Err(stop_err) = rec.stop_without_saving().await {
+                            warn!("Hold-start stale-recorder recovery failed: {stop_err}");
+                        }
+                        rec.set_utterance_callback(None);
+                        rec.set_utterance_silence_sec(None);
+
+                        let retry_result = if use_event_pipeline {
+                            let tb = rec.transcript_buffer_handle();
+                            let delta_sink: Arc<
+                                dyn codescribe_core::pipeline::contracts::DeltaSink,
+                            > = Arc::new(helpers::RoutingDeltaSink);
+                            let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                                Arc::new(PresentationEmitter::new(tb, Some(delta_sink), None));
+                            let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                                Arc::new(helpers::IpcBroadcastSink::new(event_broadcast.clone()));
+                            rec.set_event_sink(Some(
+                                codescribe_core::pipeline::sinks::FanoutEventSink::pair(
+                                    pe, ipc_sink,
+                                ),
+                            ));
+                            rec.start_event_session(Some(language.as_str().to_string()))
+                                .await
+                        } else {
+                            rec.set_event_sink(None);
+                            rec.start(Some(language.as_str().to_string())).await
+                        };
+                        if let Err(retry_err) = retry_result {
+                            error!("Failed to start recorder after recovery: {retry_err}");
+                            *session_id.write().await = None;
+                            set_assistive_session(false);
+                            return;
+                        }
+                    } else {
+                        error!("Failed to start recorder: {e}");
+                        *session_id.write().await = None;
+                        set_assistive_session(false);
+                        return;
+                    }
+                }
+            }
+
+            // Transition to REC_HOLD as soon as recorder starts to avoid IDLE/active races.
+            Self::set_state_with_broadcast(&state, &event_broadcast, State::RecHold).await;
+            info!(
+                "STATE TRANSITION: IDLE → REC_HOLD (assistive={})",
+                is_assistive
+            );
 
             // Play start beep if enabled
             if beep {
@@ -1134,13 +1270,6 @@ impl RecordingController {
                 crate::enter_recording_mode();
                 crate::clear_transcription_text();
             }
-
-            // Transition to REC_HOLD
-            *state.write().await = State::RecHold;
-            info!(
-                "STATE TRANSITION: IDLE → REC_HOLD (assistive={})",
-                is_assistive
-            );
         });
 
         *self.hold_start_task.lock().await = Some(task);
@@ -1224,6 +1353,7 @@ impl RecordingController {
             let controller = OVERLAY_CONTROLLER.get().cloned();
             let expected_session = new_session_id.clone();
             let is_assistive_session = is_assistive;
+            let event_broadcast = self.event_broadcast.clone();
 
             let tb = recorder.transcript_buffer_handle();
             let delta_sink: Arc<dyn codescribe_core::pipeline::contracts::DeltaSink> =
@@ -1253,12 +1383,82 @@ impl RecordingController {
                 });
             })));
 
-            recorder.set_event_sink(Some(Arc::new(pe)));
+            let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> = Arc::new(pe);
+            let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
+            recorder.set_event_sink(Some(
+                codescribe_core::pipeline::sinks::FanoutEventSink::pair(pe, ipc_sink),
+            ));
 
-            if !cfg!(test) {
-                recorder
+            if !cfg!(test)
+                && let Err(e) = recorder
                     .start_event_session(Some(language.as_str().to_string()))
-                    .await?;
+                    .await
+            {
+                if Self::is_already_in_progress_error(&e) {
+                    warn!("Toggle start hit stale recorder lock; forcing stop and retrying once");
+                    if let Err(stop_err) = recorder.stop_without_saving().await {
+                        warn!("Toggle stale-recorder recovery failed: {stop_err}");
+                    }
+                    recorder.set_utterance_callback(None);
+                    recorder.set_utterance_silence_sec(None);
+
+                    let retry_controller = OVERLAY_CONTROLLER.get().cloned();
+                    let retry_expected_session = new_session_id.clone();
+                    let retry_assistive_session = is_assistive;
+                    let retry_event_broadcast = self.event_broadcast.clone();
+                    let tb = recorder.transcript_buffer_handle();
+                    let delta_sink: Arc<dyn codescribe_core::pipeline::contracts::DeltaSink> =
+                        Arc::new(helpers::RoutingDeltaSink);
+                    let mut retry_pe = PresentationEmitter::new(tb, Some(delta_sink), None);
+                    retry_pe.set_utterance_callback(Some(Arc::new(move |text: String| {
+                        if retry_assistive_session {
+                            crate::voice_chat_ui::finalize_voice_chat_user_message();
+                        }
+                        let controller = retry_controller.clone();
+                        let expected_session = retry_expected_session.clone();
+                        tokio::spawn(async move {
+                            if let Some(controller) = controller
+                                && let Err(e) = controller
+                                    .handle_toggle_utterance(
+                                        text,
+                                        expected_session,
+                                        retry_assistive_session,
+                                        true,
+                                    )
+                                    .await
+                            {
+                                warn!("Toggle utterance processing failed: {}", e);
+                            }
+                        });
+                    })));
+                    let retry_pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                        Arc::new(retry_pe);
+                    let retry_ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+                        Arc::new(helpers::IpcBroadcastSink::new(retry_event_broadcast));
+                    recorder.set_event_sink(Some(
+                        codescribe_core::pipeline::sinks::FanoutEventSink::pair(
+                            retry_pe,
+                            retry_ipc_sink,
+                        ),
+                    ));
+                    if let Err(retry_err) = recorder
+                        .start_event_session(Some(language.as_str().to_string()))
+                        .await
+                    {
+                        *self.session_id.write().await = None;
+                        self.assistive_loop_active.store(false, Ordering::SeqCst);
+                        set_assistive_session(false);
+                        return Err(anyhow::anyhow!(
+                            "Failed to start event session after recovery: {retry_err}"
+                        ));
+                    }
+                } else {
+                    *self.session_id.write().await = None;
+                    self.assistive_loop_active.store(false, Ordering::SeqCst);
+                    set_assistive_session(false);
+                    return Err(e);
+                }
             }
         } else {
             // Legacy pipeline: separate delta_callback + utterance_callback
@@ -1296,12 +1496,42 @@ impl RecordingController {
             )));
 
             // Skip actual audio stream in tests (no CoreAudio device needed)
-            if !cfg!(test) {
-                recorder
+            if !cfg!(test)
+                && let Err(e) = recorder
                     .start_with_buffered(Some(language.as_str().to_string()), true)
-                    .await?;
+                    .await
+            {
+                if Self::is_already_in_progress_error(&e) {
+                    warn!("Toggle start hit stale recorder lock; forcing stop and retrying once");
+                    if let Err(stop_err) = recorder.stop_without_saving().await {
+                        warn!("Toggle stale-recorder recovery failed: {stop_err}");
+                    }
+                    recorder.set_utterance_callback(None);
+                    recorder.set_utterance_silence_sec(None);
+                    recorder.set_event_sink(None);
+                    if let Err(retry_err) = recorder
+                        .start_with_buffered(Some(language.as_str().to_string()), true)
+                        .await
+                    {
+                        *self.session_id.write().await = None;
+                        self.assistive_loop_active.store(false, Ordering::SeqCst);
+                        set_assistive_session(false);
+                        return Err(anyhow::anyhow!(
+                            "Failed to start buffered recorder after recovery: {retry_err}"
+                        ));
+                    }
+                } else {
+                    *self.session_id.write().await = None;
+                    self.assistive_loop_active.store(false, Ordering::SeqCst);
+                    set_assistive_session(false);
+                    return Err(e);
+                }
             }
         }
+
+        // Transition to REC_TOGGLE immediately after recorder starts.
+        self.set_state(State::RecToggle).await;
+        info!("STATE TRANSITION: IDLE → REC_TOGGLE (pulsing badge)");
 
         // Play start beep if enabled
         if beep_enabled {
@@ -1358,10 +1588,6 @@ impl RecordingController {
             crate::enter_recording_mode();
             crate::clear_transcription_text();
         }
-
-        // Transition to REC_TOGGLE
-        *self.state.write().await = State::RecToggle;
-        info!("STATE TRANSITION: IDLE → REC_TOGGLE (pulsing badge)");
 
         Ok(())
     }
@@ -1443,7 +1669,7 @@ impl RecordingController {
             })
             .await;
 
-        if *self.state.read().await == State::RecToggle {
+        if *self.state.read().await == State::RecToggle && is_assistive {
             crate::voice_chat_ui::set_voice_chat_sending(false);
             crate::voice_chat_ui::update_voice_chat_status("Listening...");
         }
@@ -1472,7 +1698,7 @@ impl RecordingController {
         drop(recorder);
 
         // Reset state
-        *self.state.write().await = State::Idle;
+        self.set_state(State::Idle).await;
         *self.assistive_mode.write().await = false;
         *self.hold_mode.write().await = HoldMode::Raw;
         *self.force_raw_mode.write().await = false;
@@ -1530,7 +1756,7 @@ impl RecordingController {
 
         // Transition to BUSY
         debug!("STATE TRANSITION: {} → BUSY", current_state);
-        *self.state.write().await = State::Busy;
+        self.set_state(State::Busy).await;
 
         // Get session ID and mode flags before we reset them
         let session_id = self.session_id.read().await.clone();
@@ -1547,7 +1773,7 @@ impl RecordingController {
             .await;
 
         // Always reset to IDLE, even on error
-        *self.state.write().await = State::Idle;
+        self.set_state(State::Idle).await;
         *self.assistive_mode.write().await = false;
         *self.hold_mode.write().await = HoldMode::Raw;
         *self.force_raw_mode.write().await = false;
@@ -1555,6 +1781,8 @@ impl RecordingController {
         *self.session_id.write().await = None;
         *self.assistive_context.write().await = None;
         self.assistive_loop_active.store(false, Ordering::SeqCst);
+        // Keep event-router sink selection in sync with controller state after finish.
+        set_assistive_session(false);
 
         // Hide red dot indicator
         hide_hold_badge();
@@ -1894,7 +2122,7 @@ impl RecordingController {
 
         let chat_active = assistive;
 
-        let effective_hold_mode = if assistive && matches!(hold_mode, HoldMode::Raw) {
+        let mut effective_hold_mode = if assistive && matches!(hold_mode, HoldMode::Raw) {
             // Toggle-assistive path doesn't have a meaningful hold-mode; treat as Chat
             // but allow optional selection context if it was captured.
             HoldMode::Chat
@@ -1971,100 +2199,108 @@ impl RecordingController {
                 ));
             }
 
-            // Split behavior:
-            // - Chat: ignore selection.
-            // - Selection: require selection; never fallback to clipboard by default.
-            if matches!(effective_hold_mode, HoldMode::Selection)
-                && ctx.selected_text.as_deref().unwrap_or("").trim().is_empty()
-            {
+            let missing_selection = matches!(effective_hold_mode, HoldMode::Selection)
+                && ctx.selected_text.as_deref().unwrap_or("").trim().is_empty();
+            if missing_selection {
+                warn!(
+                    "Selection mode requested, but no selected text captured; falling back to Chat mode"
+                );
+                effective_hold_mode = HoldMode::Chat;
                 if chat_active {
-                    crate::voice_chat_ui::set_voice_chat_sending(false);
-                    crate::voice_chat_ui::update_voice_chat_status("No selection");
-                    crate::voice_chat_ui::add_voice_chat_error_message(
-                        "No selected text. Select text first or use Chat mode (Shift).",
+                    crate::voice_chat_ui::update_voice_chat_status(
+                        "Selection unavailable - chat fallback",
+                    );
+                    crate::voice_chat_ui::add_voice_chat_system_message(
+                        "Selection was not detected. Continuing without selected-text context.",
                     );
                 }
-                (
-                    clean_text.clone(),
-                    crate::state::history::TranscriptKind::Raw,
-                    false,
-                )
-            } else {
-                let assistive_input = build_assistive_input(&clean_text, &ctx);
-
-                let lang_str = language_opt.map(String::from);
-
-                // Determine streaming mode from config
-                let transcript_mode = config.transcript_send_mode;
-                let use_streaming = matches!(
-                    transcript_mode,
-                    crate::config::TranscriptSendMode::Streaming
-                );
-
-                // Callback for streaming AI response to overlay
-                let delta_callback = if use_streaming && chat_active {
-                    let needs_prefix = append_mode && assistant_needs_separator;
-                    let prefix_sent = Arc::new(AtomicBool::new(false));
-                    let assistant_has_text = self.toggle_assistant_has_text.clone();
-                    Some(Arc::new(move |text: &str| {
-                        if needs_prefix && !prefix_sent.swap(true, Ordering::SeqCst) {
-                            crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
-                        }
-                        crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
-                        assistant_has_text.store(true, Ordering::SeqCst);
-                    }) as Arc<dyn Fn(&str) + Send + Sync>)
-                } else {
-                    None
-                };
-
-                let result = crate::ai_formatting::format_text_with_status(
-                    &assistive_input,
-                    lang_str.as_deref(),
-                    true,
-                    delta_callback,
-                )
-                .await;
-                let kind = match result.status {
-                    crate::ai_formatting::AiFormatStatus::Applied => {
-                        if chat_active {
-                            // Display AI response in overlay
-                            crate::show_voice_chat_overlay();
-                            crate::voice_chat_ui::update_voice_chat_status("AI Response:");
-                            if append_mode {
-                                if assistant_needs_separator {
-                                    crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
-                                }
-                                crate::voice_chat_ui::append_voice_chat_assistant_delta(
-                                    &result.text,
-                                );
-                                self.toggle_assistant_has_text.store(true, Ordering::SeqCst);
-                            } else {
-                                crate::voice_chat_ui::set_voice_chat_text(&result.text);
-                            }
-                            info!(
-                                "Assistive response displayed in overlay ({} chars)",
-                                result.text.len()
-                            );
-                        }
-                        crate::state::history::TranscriptKind::Ai
-                    }
-                    crate::ai_formatting::AiFormatStatus::Failed => {
-                        if chat_active {
-                            crate::show_voice_chat_overlay();
-                            crate::voice_chat_ui::update_voice_chat_status("AI Failed");
-                            crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
-                        }
-                        crate::state::history::TranscriptKind::AiFailed
-                    }
-                    crate::ai_formatting::AiFormatStatus::Skipped => {
-                        if chat_active {
-                            crate::voice_chat_ui::set_voice_chat_sending(false);
-                        }
-                        crate::state::history::TranscriptKind::Raw
-                    }
-                };
-                (result.text, kind, false)
             }
+
+            // Split behavior:
+            // - Chat: ignore selection.
+            // - Selection: if no selection was captured, we already downgraded to Chat mode.
+            let assistive_input = build_assistive_input(&clean_text, &ctx);
+
+            let lang_str = language_opt.map(String::from);
+
+            // Assistive/chat responses should always stream to preserve progressive feedback.
+            let use_streaming = chat_active;
+
+            // Callback for streaming AI response to overlay (assistant channel only).
+            let streamed_any_delta = Arc::new(AtomicBool::new(false));
+            let delta_callback = if use_streaming && chat_active {
+                let needs_prefix = append_mode && assistant_needs_separator;
+                let prefix_sent = Arc::new(AtomicBool::new(false));
+                let assistant_has_text = self.toggle_assistant_has_text.clone();
+                let streamed_any_delta = Arc::clone(&streamed_any_delta);
+                Some(Arc::new(move |text: &str| {
+                    if needs_prefix && !prefix_sent.swap(true, Ordering::SeqCst) {
+                        crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
+                    }
+                    streamed_any_delta.store(true, Ordering::SeqCst);
+                    crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
+                    assistant_has_text.store(true, Ordering::SeqCst);
+                }) as Arc<dyn Fn(&str) + Send + Sync>)
+            } else {
+                None
+            };
+
+            let result = crate::ai_formatting::format_text_with_status_channels(
+                &assistive_input,
+                lang_str.as_deref(),
+                true,
+                delta_callback,
+                None,
+            )
+            .await;
+            let kind = match result.status {
+                crate::ai_formatting::AiFormatStatus::Applied => {
+                    if chat_active {
+                        let streamed = use_streaming && streamed_any_delta.load(Ordering::SeqCst);
+                        // Display AI response in overlay
+                        crate::show_voice_chat_overlay();
+                        crate::voice_chat_ui::update_voice_chat_status("AI Response:");
+                        if streamed {
+                            crate::voice_chat_ui::finalize_voice_chat_assistant_message();
+                        } else if append_mode {
+                            if assistant_needs_separator {
+                                crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
+                            }
+                            crate::voice_chat_ui::append_voice_chat_assistant_delta(&result.text);
+                            self.toggle_assistant_has_text.store(true, Ordering::SeqCst);
+                        } else {
+                            crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                        }
+                        info!(
+                            "Assistive response displayed in overlay ({} chars)",
+                            result.text.len()
+                        );
+
+                        if let Some(reasoning_text) = result.reasoning_text.clone() {
+                            crate::voice_chat_ui::add_voice_chat_system_message(&format!(
+                                "Reasoning summary:\n{}",
+                                reasoning_text
+                            ));
+                        }
+                    }
+                    crate::state::history::TranscriptKind::Ai
+                }
+                crate::ai_formatting::AiFormatStatus::Failed => {
+                    if chat_active {
+                        crate::show_voice_chat_overlay();
+                        crate::voice_chat_ui::update_voice_chat_status("AI Failed");
+                        crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
+                    }
+                    crate::state::history::TranscriptKind::AiFailed
+                }
+                crate::ai_formatting::AiFormatStatus::Skipped => {
+                    if chat_active {
+                        crate::voice_chat_ui::set_voice_chat_sending(false);
+                    }
+                    crate::state::history::TranscriptKind::Raw
+                }
+            };
+            (result.text, kind, false)
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
             // Post-processed clean_text is used (lexicon + cleanup already applied)
@@ -2085,6 +2321,7 @@ impl RecordingController {
             }
         } else if force_ai {
             // Left double Option: ALWAYS formatting (no augmentation)
+            // Auto-paste like hold mode — formatted text goes where the cursor is.
             let should_use_ai = crate::ai_formatting::has_api_key();
             if should_use_ai {
                 info!("Formatting mode (Left Option): correcting transcript via AI");
@@ -2108,13 +2345,13 @@ impl RecordingController {
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
-                (result.text, kind, false)
+                (result.text, kind, true)
             } else if has_repetition {
                 info!("Formatting mode (Left Option): AI unavailable, cleaning repetitions");
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
-                    false,
+                    true,
                 )
             } else {
                 info!(
@@ -2123,7 +2360,7 @@ impl RecordingController {
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
-                    false,
+                    true,
                 )
             }
         } else {
@@ -2313,7 +2550,7 @@ impl RecordingController {
 
     /// Internal helper to reset all state variables
     async fn reset_state(&self) {
-        *self.state.write().await = State::Idle;
+        self.set_state(State::Idle).await;
         *self.assistive_mode.write().await = false;
         *self.hold_mode.write().await = HoldMode::Raw;
         *self.force_raw_mode.write().await = false;

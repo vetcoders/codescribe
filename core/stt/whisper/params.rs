@@ -27,6 +27,8 @@ pub struct DecodingParams {
     /// Initial prompt to guide the decoder (helps with vocabulary/formatting)
     /// Can contain domain-specific terms to improve accuracy
     pub initial_prompt: Option<String>,
+    /// Emit native Whisper timestamp tokens and parse them into transcript segments.
+    pub emit_timestamps: bool,
 }
 
 impl Default for DecodingParams {
@@ -41,6 +43,7 @@ impl Default for DecodingParams {
             compression_ratio_threshold: 2.2,
             logprob_threshold: -1.0, // mlx_whisper default
             initial_prompt: None,    // no prompt by default
+            emit_timestamps: true,
         }
     }
 }

@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -20,10 +21,11 @@ use crate::ipc::{IpcCommand, IpcResponse};
 use crate::os::hotkeys;
 use crate::ui::bootstrap::handlers::{action_handler_class, window_delegate_class};
 use crate::ui_helpers::{
-    LabelConfig, add_subview, button, button_set_action, create_checkbox, create_floating_window,
-    create_glass_effect_view_with, create_label, create_secure_text_input, create_slider,
-    create_text_input, ns_string, set_text_field_string, ui_colors, ui_tokens, window_close,
-    window_content_view, window_show,
+    LabelConfig, add_subview, button, button_set_action, button_style, create_button,
+    create_checkbox, create_floating_window, create_glass_effect_view_with, create_label,
+    create_secure_text_input, create_slider, create_text_input, ns_string, set_button_symbol,
+    set_text_field_string, set_tooltip, style_toolbar_icon_button, ui_colors, ui_tokens,
+    window_close, window_content_view, window_show,
 };
 
 mod handlers;
@@ -31,12 +33,18 @@ mod handlers;
 // Type alias for Objective-C object pointers
 type Id = *mut Object;
 
-const SIDEBAR_WIDTH: f64 = 132.0;
+const SIDEBAR_WIDTH: f64 = 204.0;
+const SETTINGS_WINDOW_WIDTH: f64 = 760.0;
+const SETTINGS_WINDOW_HEIGHT: f64 = 660.0;
+const SETTINGS_TOPBAR_HEIGHT: f64 = 54.0;
+const SETTINGS_CONTENT_INSET_X: f64 = 20.0;
+const SETTINGS_CONTENT_INSET_Y: f64 = 12.0;
 const TAB_SETUP: usize = 0;
-const _TAB_KEYS: usize = 1;
-const _TAB_AUDIO: usize = 2;
-const _TAB_VOICE_LAB: usize = 3;
-const _TAB_ENGINE: usize = 4;
+const TAB_KEYS: usize = 1;
+const TAB_AUDIO: usize = 2;
+const TAB_VOICE_LAB: usize = 3;
+const TAB_ENGINE: usize = 4;
+const TAB_COUNT: usize = 5;
 
 const STEP_TEST_MIC: usize = 0;
 const STEP_SHOW_OVERLAY: usize = 1;
@@ -171,18 +179,9 @@ fn validate_voice_lab_value(spec: &VoiceLabFieldSpec, raw_value: &str) -> Option
         "CODESCRIBE_BUFFER_DELAY_MS" => parse_ranged_u64(trimmed, 0, 60_000).is_some(),
         "CODESCRIBE_TYPING_CPS" => parse_ranged_f32(trimmed, 5.0, 120.0).is_some(),
         "CODESCRIBE_EMIT_WORDS_MAX" => parse_ranged_usize(trimmed, 1, 12).is_some(),
-        "CODESCRIBE_STREAM_CHUNK_SEC" => parse_ranged_f32(trimmed, 0.5, 30.0).is_some(),
-        "CODESCRIBE_STREAM_OVERLAP_RATIO" => parse_ranged_f32(trimmed, 0.05, 0.8).is_some(),
-        "CODESCRIBE_STREAM_SIMILARITY" => parse_ranged_f32(trimmed, 0.0, 1.0).is_some(),
-        "CODESCRIBE_STREAM_NOVELTY" => parse_ranged_f32(trimmed, 0.0, 1.0).is_some(),
-        "CODESCRIBE_BUFFERED_CORRECTION_UTTERANCES" => parse_ranged_usize(trimmed, 1, 10).is_some(),
-        "CODESCRIBE_BUFFERED_CORRECTION_SEC" => parse_ranged_f32(trimmed, 1.0, 60.0).is_some(),
-        "CODESCRIBE_BUFFERED_CORRECTION_PREFIX" => parse_ranged_f32(trimmed, 0.4, 0.9).is_some(),
         "CODESCRIBE_BUFFERED_INTERIM_SEC" => parse_ranged_f32(trimmed, 1.0, 30.0).is_some(),
-        "CODESCRIBE_UTTERANCE_INTERIM_SEC" => parse_ranged_f32(trimmed, 1.0, 30.0).is_some(),
         "BACKEND_MAX_UPLOAD_MB" => parse_ranged_u64(trimmed, 1, 200).is_some(),
-        // String fields.
-        "WHISPER_MODEL" | "CODESCRIBE_STREAM_LOG_PATH" => true,
+        "WHISPER_MODEL" => true,
         _ => true,
     };
 
@@ -206,8 +205,8 @@ struct BootstrapState {
     window_delegate: Option<usize>,
     root_view: Option<usize>,
     step_labels: [Option<usize>; 3],
-    tab_buttons: [Option<usize>; 5],
-    content_views: [Option<usize>; 5],
+    tab_buttons: [Option<usize>; TAB_COUNT],
+    content_views: [Option<usize>; TAB_COUNT],
     active_tab: usize,
     keys_hold_popup: Option<usize>,
     keys_toggle_popup: Option<usize>,
@@ -261,10 +260,30 @@ pub fn schedule_bootstrap() {
     });
 }
 
+static SHOW_OVERLAY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
 pub fn show_bootstrap_overlay() {
+    // Fast path: if window already exists, just show it on main thread.
+    {
+        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ptr) = state.window {
+            drop(state);
+            Queue::main().exec_async(move || unsafe {
+                let window = ptr as Id;
+                window_show(window);
+            });
+            return;
+        }
+    }
+
+    // Slow path: need to create window — guard against concurrent thread spawns.
+    if SHOW_OVERLAY_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return;
+    }
     std::thread::spawn(|| {
         let config = Config::load();
         Queue::main().exec_async(move || {
+            SHOW_OVERLAY_IN_FLIGHT.store(false, Ordering::SeqCst);
             let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.config_cache = Some(config);
             drop(state);
@@ -311,8 +330,8 @@ fn show_bootstrap_overlay_impl() {
             return;
         }
         let visible: CGRect = msg_send![screen, visibleFrame];
-        let window_width = 720.0;
-        let window_height = 640.0;
+        let window_width = SETTINGS_WINDOW_WIDTH;
+        let window_height = SETTINGS_WINDOW_HEIGHT;
         let x = visible.origin.x + (visible.size.width - window_width) * 0.5;
         let y = visible.origin.y + (visible.size.height - window_height) * 0.5;
         let frame = CGRect::new(
@@ -322,7 +341,7 @@ fn show_bootstrap_overlay_impl() {
 
         // Settings window should be fixed-size (no resize / fullscreen), to avoid AppKit
         // fullscreen transition crashes with our custom content setup.
-        let window = create_floating_window(frame, "Settings", false, false);
+        let window = create_floating_window(frame, "Settings", true, false);
         let _: () = msg_send![window, setOpaque: false];
         let _: () = msg_send![window, setLevel: crate::ui_helpers::NS_NORMAL_WINDOW_LEVEL];
         // Disallow fullscreen/zoom to avoid triggering AppKit fullscreen snapshots that can crash.
@@ -388,10 +407,13 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
             root,
             setAutoresizingMask: 2_isize | 16_isize // NSViewWidthSizable | NSViewHeightSizable
         ];
-        // No corner radius on the root container; individual panes will handle their own if needed,
-        // or the window itself handles clipping. Since it's a full-size content window, we rely on window mask.
-        // Actually, for a floating window, we might want rounded corners on the content if it's detached,
-        // but here we are building a standard window structure.
+        let _: () = msg_send![root, setWantsLayer: true];
+        let root_layer: Id = msg_send![root, layer];
+        if !root_layer.is_null() {
+            let _: () = msg_send![root_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_LG];
+            let _: () = msg_send![root_layer, setMasksToBounds: true];
+            let _: () = msg_send![root_layer, setBorderWidth: 0.0f64];
+        }
         add_subview(parent, root);
 
         let action_handler_class = action_handler_class();
@@ -574,12 +596,108 @@ unsafe fn build_settings_ui(
         let settings_width = settings_width.max(SIDEBAR_WIDTH + 240.0);
         let settings_height = settings_height.max(280.0);
 
+        // ── Unified top toolbar (Vista-style: traffic spacer + center title + right actions) ──
+        let topbar_h = SETTINGS_TOPBAR_HEIGHT
+            .min(settings_height - 160.0)
+            .max(44.0);
+        let body_h = (settings_height - topbar_h).max(220.0);
+        let topbar_frame = CGRect::new(
+            &CGPoint::new(0.0, body_h),
+            &CGSize::new(settings_width, topbar_h),
+        );
+        let topbar_bg = create_glass_effect_view_with(
+            topbar_frame,
+            NSVisualEffectMaterial::Titlebar,
+            objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
+            objc2_app_kit::NSVisualEffectState::Active,
+        );
+        let _: () = msg_send![
+            topbar_bg,
+            setAutoresizingMask: 2_isize | 8_isize // Width | MinYMargin
+        ];
+        let topbar_layer: Id = msg_send![topbar_bg, layer];
+        if !topbar_layer.is_null() {
+            let _: () = msg_send![topbar_layer, setBorderWidth: 0.0f64];
+        }
+        add_subview(root_view, topbar_bg);
+
+        let topbar_divider = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(settings_width, 1.0)),
+            text: String::new(),
+            background_color: Some(ui_colors::separator()),
+            ..Default::default()
+        });
+        let _: () = msg_send![topbar_divider, setAlphaValue: 0.44f64];
+        let _: () = msg_send![
+            topbar_divider,
+            setAutoresizingMask: 2_isize | 8_isize // Width | MinYMargin
+        ];
+        add_subview(topbar_bg, topbar_divider);
+
+        let topbar_controls: Id = msg_send![ns_view, alloc];
+        let topbar_controls: Id = msg_send![
+            topbar_controls,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(settings_width, topbar_h),
+            )
+        ];
+        let _: () = msg_send![topbar_controls, setWantsLayer: true];
+        let _: () = msg_send![
+            topbar_controls,
+            setAutoresizingMask: 2_isize | 16_isize // Width | Height
+        ];
+        add_subview(topbar_bg, topbar_controls);
+
+        let btn_w = ui_tokens::HEADER_BUTTON_SIZE;
+        let btn_h = ui_tokens::HEADER_BUTTON_SIZE;
+        let right_pad = ui_tokens::EDGE_PADDING_TIGHT;
+        let btn_y = ((topbar_h - btn_h) * 0.5).max(0.0);
+
+        let overlay_btn_x = settings_width - right_pad - btn_w;
+        let overlay_btn = create_button(
+            CGRect::new(
+                &CGPoint::new(overlay_btn_x, btn_y),
+                &CGSize::new(btn_w, btn_h),
+            ),
+            "",
+            button_style::INLINE,
+        );
+        let _ = set_button_symbol(overlay_btn, "bubble.left.and.bubble.right");
+        style_toolbar_icon_button(overlay_btn);
+        set_tooltip(overlay_btn, "Show chat overlay");
+        button_set_action(overlay_btn, action_handler, sel!(onShowOverlay:));
+        add_subview(topbar_controls, overlay_btn);
+
+        let title_x = ui_tokens::TRAFFIC_LIGHTS_SPACER_WIDTH + 6.0;
+        let title_label = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(title_x, topbar_h - 30.0),
+                &CGSize::new(280.0, 20.0),
+            ),
+            text: "CodeScribe Settings".to_string(),
+            font_size: 15.0,
+            bold: true,
+            text_color: crate::ui_helpers::color_label(),
+            ..Default::default()
+        });
+        add_subview(topbar_controls, title_label);
+
+        let subtitle_w = (overlay_btn_x - title_x - 14.0).max(200.0);
+        let subtitle_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(title_x, 8.0), &CGSize::new(subtitle_w, 16.0)),
+            text: "Native macOS speech-to-text setup and runtime tuning".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: false,
+            text_color: crate::ui_helpers::color_secondary_label(),
+            ..Default::default()
+        });
+        add_subview(topbar_controls, subtitle_label);
+
         // ── Glass Split Structure ────────────────────────────────────
         // Left: Sidebar (Material: Sidebar)
-        let sidebar_frame = CGRect::new(
-            &CGPoint::new(0.0, 0.0),
-            &CGSize::new(SIDEBAR_WIDTH, settings_height),
-        );
+        let sidebar_frame =
+            CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, body_h));
         let sidebar_bg = create_glass_effect_view_with(
             sidebar_frame,
             NSVisualEffectMaterial::Sidebar,
@@ -592,14 +710,14 @@ unsafe fn build_settings_ui(
         ];
         add_subview(root_view, sidebar_bg);
 
-        // Right: Content (Material: WindowBackground)
+        // Right: Content (Material: HUDWindow for richer contrast, aligned with onboarding)
         let content_bg_frame = CGRect::new(
             &CGPoint::new(SIDEBAR_WIDTH, 0.0),
-            &CGSize::new(settings_width - SIDEBAR_WIDTH, settings_height),
+            &CGSize::new(settings_width - SIDEBAR_WIDTH, body_h),
         );
         let content_bg = create_glass_effect_view_with(
             content_bg_frame,
-            NSVisualEffectMaterial::WindowBackground,
+            NSVisualEffectMaterial::HUDWindow,
             objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
             objc2_app_kit::NSVisualEffectState::Active,
         );
@@ -609,44 +727,36 @@ unsafe fn build_settings_ui(
         ];
         add_subview(root_view, content_bg);
 
-        // ── Header (inside Content BG) ───────────────────────────────
-        let header_h = 80.0; // Slightly shorter header for modern feel
-        let content_area_w = content_bg_frame.size.width;
-        let content_area_h = settings_height; // Full height available in bg, but we'll inset content below header
-
-        let title_label = create_label(LabelConfig {
+        let split_divider = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(30.0, content_area_h - 40.0),
-                &CGSize::new(content_area_w - 60.0, 24.0),
+                &CGPoint::new(SIDEBAR_WIDTH - 0.5, 0.0),
+                &CGSize::new(1.0, body_h),
             ),
-            text: "Welcome to CodeScribe".to_string(),
-            font_size: 18.0,
-            bold: true,
-            text_color: crate::ui_helpers::color_label(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        add_subview(content_bg, title_label);
-
-        let subtitle_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(30.0, content_area_h - 60.0),
-                &CGSize::new(content_area_w - 60.0, 16.0),
-            ),
-            text: "Native macOS speech-to-text with AI formatting".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: false,
-            text_color: crate::ui_helpers::color_secondary_label(),
+            text: String::new(),
+            background_color: Some(ui_colors::separator()),
             ..Default::default()
         });
-        add_subview(content_bg, subtitle_label);
+        let _: () = msg_send![split_divider, setAlphaValue: 0.40f64];
+        add_subview(root_view, split_divider);
+
+        let content_area_w = content_bg_frame.size.width;
+        let content_area_h = body_h;
+
+        let sidebar_title = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(18.0, body_h - 34.0),
+                &CGSize::new(SIDEBAR_WIDTH - 26.0, 20.0),
+            ),
+            text: "Settings".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: crate::ui_helpers::color_label(),
+            ..Default::default()
+        });
+        add_subview(sidebar_bg, sidebar_title);
 
         // Sidebar tab buttons (inside sidebar_bg)
-        // Vertically centered or top-aligned? Standard is top, below window traffic lights if visible.
-        // Since it's a frameless window with titlebar, traffic lights are at top-left.
-        // We start buttons a bit lower.
-        let tab_start_y = settings_height - 60.0;
+        let tab_start_y = body_h - 86.0;
         let tab_names = ["Setup", "Keys", "Audio", "Voice Lab", "Engine"];
         let tab_sels = [
             sel!(onTabSetup:),
@@ -655,15 +765,15 @@ unsafe fn build_settings_ui(
             sel!(onTabVoiceLab:),
             sel!(onTabEngine:),
         ];
-        let mut tab_buttons: [Option<usize>; 5] = [None; 5];
+        let mut tab_buttons: [Option<usize>; TAB_COUNT] = [None; TAB_COUNT];
 
         for (i, (name, sel)) in tab_names.iter().zip(tab_sels.iter()).enumerate() {
-            let btn_height = 36.0;
-            let gap = 4.0;
+            let btn_height = 38.0;
+            let gap = 6.0;
             let btn_y = tab_start_y - (btn_height + gap) * (i as f64);
             let btn_frame = CGRect::new(
-                &CGPoint::new(8.0, btn_y),
-                &CGSize::new(SIDEBAR_WIDTH - 16.0, btn_height),
+                &CGPoint::new(10.0, btn_y),
+                &CGSize::new(SIDEBAR_WIDTH - 20.0, btn_height),
             );
 
             let tab_btn = create_sidebar_tab_button(btn_frame, name, i == TAB_SETUP);
@@ -677,12 +787,15 @@ unsafe fn build_settings_ui(
         // ====================================================================
         // Relative to content_bg: origin is (0,0)
         let tab_content_frame = CGRect::new(
-            &CGPoint::new(0.0, 0.0),
-            &CGSize::new(content_area_w, content_area_h - header_h),
+            &CGPoint::new(SETTINGS_CONTENT_INSET_X, SETTINGS_CONTENT_INSET_Y),
+            &CGSize::new(
+                (content_area_w - SETTINGS_CONTENT_INSET_X * 2.0).max(240.0),
+                (content_area_h - SETTINGS_CONTENT_INSET_Y * 2.0).max(220.0),
+            ),
         );
 
         // --- Setup tab (index 0) ---
-        let content_width = content_area_w;
+        let content_width = tab_content_frame.size.width;
         let content_h = tab_content_frame.size.height;
 
         let setup_view: Id = msg_send![ns_view, alloc];
@@ -694,7 +807,6 @@ unsafe fn build_settings_ui(
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
         let mut y = content_h - 20.0;
-        let mono_font = crate::ui_helpers::monospace_font(ui_tokens::SMALL_FONT_SIZE);
         let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
 
         // ── Permission indicators ────────────────────────────────────
@@ -717,7 +829,6 @@ unsafe fn build_settings_ui(
                 text_color: permission_color(*granted),
                 ..Default::default()
             });
-            let _: () = msg_send![lbl, setFont: mono_font];
             add_subview(setup_view, lbl);
             perm_labels[i] = Some(lbl as usize);
         }
@@ -759,7 +870,6 @@ unsafe fn build_settings_ui(
                 text_color: secondary,
                 ..Default::default()
             });
-            let _: () = msg_send![status_lbl, setFont: mono_font];
             add_subview(setup_view, status_lbl);
             step_status_labels[i] = Some(status_lbl as usize);
 
@@ -1060,28 +1170,38 @@ unsafe fn create_sidebar_tab_button(
         // NSImageLeft = 2
         let _: () = msg_send![btn, setImagePosition: 2_isize];
 
-        let font: Id = msg_send![ns_font, systemFontOfSize: 13.0f64];
+        let font: Id = msg_send![ns_font, systemFontOfSize: 13.5f64];
         let _: () = msg_send![btn, setFont: font];
 
         let _: () = msg_send![btn, setWantsLayer: true];
         let layer: Id = msg_send![btn, layer];
         if !layer.is_null() {
             let bg = if active {
-                // Active selection color (accent color with some transparency)
                 let ns_color = Class::get("NSColor").unwrap();
                 let accent: Id = msg_send![ns_color, controlAccentColor];
-                let semi: Id = msg_send![accent, colorWithAlphaComponent: 0.2f64];
+                let semi: Id = msg_send![accent, colorWithAlphaComponent: 0.16f64];
                 semi
             } else {
                 crate::ui_helpers::color_clear()
             };
             let cg_color: Id = msg_send![bg, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg_color];
-            let _: () = msg_send![layer, setCornerRadius: 6.0f64]; // Rounded rect selection
+            let _: () = msg_send![layer, setCornerRadius: 10.0f64];
+            if active {
+                let ns_color = Class::get("NSColor").unwrap();
+                let accent: Id = msg_send![ns_color, controlAccentColor];
+                let border: Id = msg_send![accent, colorWithAlphaComponent: 0.40f64];
+                let cg_border: Id = msg_send![border, CGColor];
+                let _: () = msg_send![layer, setBorderColor: cg_border];
+                let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+            } else {
+                let _: () = msg_send![layer, setBorderWidth: 0.0f64];
+            }
         }
 
         let tint = if active {
-            crate::ui_helpers::color_label()
+            let ns_color = Class::get("NSColor").unwrap();
+            msg_send![ns_color, controlAccentColor]
         } else {
             crate::ui_helpers::color_secondary_label()
         };
@@ -1097,7 +1217,7 @@ pub(super) fn switch_tab(index: usize) {
     Queue::main().exec_async(move || unsafe {
         let (content_views, tab_buttons) = {
             let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            if index >= 5 || state.active_tab == index {
+            if index >= TAB_COUNT || state.active_tab == index {
                 return;
             }
             state.active_tab = index;
@@ -1121,18 +1241,32 @@ pub(super) fn switch_tab(index: usize) {
                 let _: () = msg_send![btn, setWantsLayer: true];
                 let layer: Id = msg_send![btn, layer];
                 if !layer.is_null() {
-                    let bg = if active {
-                        ui_colors::panel_bg()
+                    let bg: Id = if active {
+                        let ns_color = Class::get("NSColor").unwrap();
+                        let accent: Id = msg_send![ns_color, controlAccentColor];
+                        msg_send![accent, colorWithAlphaComponent: 0.16f64]
                     } else {
                         crate::ui_helpers::color_clear()
                     };
                     let cg_color: Id = msg_send![bg, CGColor];
                     let _: () = msg_send![layer, setBackgroundColor: cg_color];
-                    let _: () = msg_send![layer, setCornerRadius: ui_tokens::CORNER_RADIUS_SM];
+                    let _: () = msg_send![layer, setCornerRadius: 10.0f64];
+                    if active {
+                        let ns_color = Class::get("NSColor").unwrap();
+                        let accent: Id = msg_send![ns_color, controlAccentColor];
+                        let border: Id = msg_send![accent, colorWithAlphaComponent: 0.40f64];
+                        let cg_border: Id = msg_send![border, CGColor];
+                        let _: () = msg_send![layer, setBorderColor: cg_border];
+                        let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+                    } else {
+                        let _: () = msg_send![layer, setBorderWidth: 0.0f64];
+                    }
                 }
 
                 let tint = if active {
-                    crate::ui_helpers::color_label()
+                    let ns_color = Class::get("NSColor").unwrap();
+                    let accent: Id = msg_send![ns_color, controlAccentColor];
+                    accent
                 } else {
                     crate::ui_helpers::color_secondary_label()
                 };
@@ -1448,6 +1582,7 @@ unsafe fn build_keys_tab(
             "Ctrl+Option",
             "Ctrl+Shift",
             "Ctrl+Command",
+            "Disabled (toggle only)",
         ] {
             let ns_title = ns_string(title);
             let _: () = msg_send![hold_popup, addItemWithTitle: ns_title];
@@ -1458,6 +1593,7 @@ unsafe fn build_keys_tab(
             "ctrl_alt" => 2,
             "ctrl_shift" => 3,
             "ctrl_cmd" => 4,
+            "none" => 5,
             _ => 0,
         };
         let _: () = msg_send![hold_popup, selectItemAtIndex: hold_idx];
@@ -1810,7 +1946,8 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
         let scroll_frame = CGRect::new(&CGPoint::new(pad, 12.0), &CGSize::new(content_w, scroll_h));
         let scroll: Id = msg_send![ns_scroll_view, alloc];
         let scroll: Id = msg_send![scroll, initWithFrame: scroll_frame];
-        let _: () = msg_send![scroll, setHasVerticalScroller: true];
+        // Configure the vertical scroller after we know actual document height.
+        let _: () = msg_send![scroll, setHasVerticalScroller: false];
         let _: () = msg_send![scroll, setHasHorizontalScroller: false];
         let _: () = msg_send![scroll, setAutohidesScrollers: true];
         let _: () = msg_send![scroll, setBorderType: 0_isize];
@@ -1828,7 +1965,9 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
                 58.0
             };
         }
-        doc_h = doc_h.max(scroll_h + 8.0);
+        doc_h = doc_h.max(18.0);
+        let needs_vertical_scroll = doc_h > (scroll_h + 1.0);
+        let _: () = msg_send![scroll, setHasVerticalScroller: needs_vertical_scroll];
 
         let doc_w = (content_w - 14.0).max(260.0);
         let doc_view: Id = msg_send![ns_view, alloc];
@@ -2015,7 +2154,8 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
         } else {
             let path =
                 std::env::var("CODESCRIBE_MODEL_PATH").unwrap_or_else(|_| "(not set)".to_string());
-            format!("External: {path}")
+            let filename = path.rsplit('/').next().unwrap_or(&path);
+            format!("External: {filename}")
         };
         add_row("Whisper", &whisper_status, whisper_embedded);
 
@@ -2026,7 +2166,11 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
         } else {
             let path = codescribe_core::vad::user_model_path();
             if path.exists() {
-                format!("Silero v6: {}", path.display())
+                let filename = path
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy();
+                format!("Silero v6: {filename}")
             } else {
                 "Not found (will auto-download)".to_string()
             }
@@ -2104,22 +2248,28 @@ pub(super) extern "C" fn on_hold_mod_changed(_this: &Object, _cmd: objc::runtime
             2 => ("ctrl_alt", HoldMods::CtrlAlt),
             3 => ("ctrl_shift", HoldMods::CtrlShift),
             4 => ("ctrl_cmd", HoldMods::CtrlCmd),
+            5 => ("none", HoldMods::None),
             _ => ("fn", HoldMods::Fn),
         };
         info!("Settings: hold modifier -> {}", value);
         let config = Config::load();
-        let _ = config.save_to_env("HOLD_MODS", value);
         hotkeys::set_hold_mods(mods);
 
         // If DoubleCtrl toggle is enabled, Ctrl-only hold is unsafe → disable toggle.
         if mods == HoldMods::Ctrl && config.toggle_trigger == ToggleTrigger::DoubleCtrl {
-            let _ = config.save_to_env("TOGGLE_TRIGGER", ToggleTrigger::None.as_str());
+            let _ = config.save_to_env_many(&[
+                ("HOLD_MODS", value),
+                ("TOGGLE_TRIGGER", ToggleTrigger::None.as_str()),
+            ]);
             hotkeys::set_toggle_trigger(ToggleTrigger::None);
 
             let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
             set_keys_popup_index(state.keys_toggle_popup, 0);
+        } else {
+            let _ = config.save_to_env("HOLD_MODS", value);
         }
         mark_keys_preset_custom();
+        sync_runtime_config_via_ipc();
     }
 }
 
@@ -2131,9 +2281,11 @@ pub(super) extern "C" fn on_preset_changed(_this: &Object, _cmd: objc::runtime::
             0 => {
                 info!("Settings: hotkey preset -> fn_recommended");
                 let config = Config::load();
-                let _ = config.save_to_env("HOLD_MODS", HoldMods::Fn.as_str());
-                let _ = config.save_to_env("TOGGLE_TRIGGER", ToggleTrigger::DoubleOption.as_str());
-                let _ = config.save_to_env("HOLD_EXCLUSIVE", "0");
+                let _ = config.save_to_env_many(&[
+                    ("HOLD_MODS", HoldMods::Fn.as_str()),
+                    ("TOGGLE_TRIGGER", ToggleTrigger::DoubleOption.as_str()),
+                    ("HOLD_EXCLUSIVE", "0"),
+                ]);
                 hotkeys::set_hold_mods(HoldMods::Fn);
                 hotkeys::set_toggle_trigger(ToggleTrigger::DoubleOption);
                 hotkeys::set_exclusive_mode(false);
@@ -2142,14 +2294,17 @@ pub(super) extern "C" fn on_preset_changed(_this: &Object, _cmd: objc::runtime::
                 set_keys_popup_index(state.keys_hold_popup, 0);
                 set_keys_popup_index(state.keys_toggle_popup, 4);
                 set_keys_checkbox_state(state.keys_exclusive_checkbox, true);
+                sync_runtime_config_via_ipc();
             }
             // Safe (no toggles)
             1 => {
                 info!("Settings: hotkey preset -> safe");
                 let config = Config::load();
-                let _ = config.save_to_env("HOLD_MODS", HoldMods::Fn.as_str());
-                let _ = config.save_to_env("TOGGLE_TRIGGER", ToggleTrigger::None.as_str());
-                let _ = config.save_to_env("HOLD_EXCLUSIVE", "1");
+                let _ = config.save_to_env_many(&[
+                    ("HOLD_MODS", HoldMods::Fn.as_str()),
+                    ("TOGGLE_TRIGGER", ToggleTrigger::None.as_str()),
+                    ("HOLD_EXCLUSIVE", "1"),
+                ]);
                 hotkeys::set_hold_mods(HoldMods::Fn);
                 hotkeys::set_toggle_trigger(ToggleTrigger::None);
                 hotkeys::set_exclusive_mode(true);
@@ -2158,6 +2313,7 @@ pub(super) extern "C" fn on_preset_changed(_this: &Object, _cmd: objc::runtime::
                 set_keys_popup_index(state.keys_hold_popup, 0);
                 set_keys_popup_index(state.keys_toggle_popup, 0);
                 set_keys_checkbox_state(state.keys_exclusive_checkbox, false);
+                sync_runtime_config_via_ipc();
             }
             _ => {
                 info!("Settings: hotkey preset -> custom");
@@ -2180,6 +2336,7 @@ pub(super) extern "C" fn on_hold_exclusive_changed(
         let _ = config.save_to_env("HOLD_EXCLUSIVE", if hold_exclusive { "1" } else { "0" });
         hotkeys::set_exclusive_mode(hold_exclusive);
         mark_keys_preset_custom();
+        sync_runtime_config_via_ipc();
     }
 }
 
@@ -2205,17 +2362,20 @@ pub(super) extern "C" fn on_toggle_trigger_changed(
 
         // If enabling DoubleCtrl and hold is Ctrl-only, switch to Ctrl+Option and enable modes.
         if trigger == ToggleTrigger::DoubleCtrl && config.hold_mods == HoldMods::Ctrl {
-            let _ = config.save_to_env("HOLD_MODS", HoldMods::CtrlAlt.as_str());
-            let _ = config.save_to_env("HOLD_EXCLUSIVE", "0");
+            let _ = config.save_to_env_many(&[
+                ("HOLD_MODS", HoldMods::CtrlAlt.as_str()),
+                ("HOLD_EXCLUSIVE", "0"),
+            ]);
             hotkeys::set_hold_mods(HoldMods::CtrlAlt);
             hotkeys::set_exclusive_mode(false);
 
             let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            set_keys_popup_index(state.keys_hold_popup, 1);
+            set_keys_popup_index(state.keys_hold_popup, 2);
             set_keys_checkbox_state(state.keys_exclusive_checkbox, true);
         }
 
         mark_keys_preset_custom();
+        sync_runtime_config_via_ipc();
     }
 }
 pub(super) extern "C" fn on_language_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
@@ -2396,6 +2556,7 @@ pub(super) extern "C" fn on_delay_changed(_this: &Object, _cmd: objc::runtime::S
         if let Some(ptr) = label_ptr {
             set_text_field_string(ptr as Id, &format!("{ms} ms"));
         }
+        sync_runtime_config_via_ipc();
     }
 }
 
@@ -2418,6 +2579,7 @@ pub(super) extern "C" fn on_double_tap_interval_changed(
         if let Some(ptr) = label_ptr {
             set_text_field_string(ptr as Id, &format!("{ms} ms"));
         }
+        sync_runtime_config_via_ipc();
     }
 }
 
@@ -2619,6 +2781,12 @@ fn send_ipc(cmd: IpcCommand) -> Result<IpcResponse, String> {
     serde_json::from_str::<IpcResponse>(&line).map_err(|e| e.to_string())
 }
 
+fn sync_runtime_config_via_ipc() {
+    if let Err(e) = send_ipc(IpcCommand::ReloadRuntimeConfig) {
+        warn!("Settings: runtime config sync via IPC failed: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2627,9 +2795,9 @@ mod tests {
     #[test]
     fn voice_lab_validation_rejects_invalid_numeric() {
         let spec = VoiceLabFieldSpec {
-            key: "CODESCRIBE_STREAM_CHUNK_SEC",
-            label: "Chunk sec",
-            default_value: "4.0",
+            key: "CODESCRIBE_BUFFERED_INTERIM_SEC",
+            label: "Interim cadence",
+            default_value: "3.0",
             description: "",
             kind: VoiceLabFieldKind::Value,
         };
@@ -2651,8 +2819,8 @@ mod tests {
             kind: VoiceLabFieldKind::Value,
         };
         let allow_empty = VoiceLabFieldSpec {
-            key: "CODESCRIBE_STREAM_LOG_PATH",
-            label: "Stream log path",
+            key: "CUSTOM_EMPTY_KEY",
+            label: "Custom empty key",
             default_value: "",
             description: "",
             kind: VoiceLabFieldKind::Value,

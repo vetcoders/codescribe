@@ -95,6 +95,64 @@ pub struct UserSettings {
     pub backend_max_upload_mb: Option<u64>,
 }
 
+/// Canonical list of env keys that route to `settings.json` (not `.env`).
+///
+/// Used by `Config::save_to_env`, `Config::save_to_env_many`, and IPC
+/// `persist_config` to decide whether a key is "promoted" (GUI-managed)
+/// or power-user (.env-managed).
+///
+/// **Single source of truth** — add new promoted keys here only.
+pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
+    // Hotkeys
+    "WHISPER_LANGUAGE",
+    "HOLD_MODS",
+    "HOLD_START_DELAY_MS",
+    "DOUBLE_TAP_INTERVAL_MS",
+    "TOGGLE_SILENCE_SEC",
+    "HOLD_EXCLUSIVE",
+    "TOGGLE_TRIGGER",
+    "HOTKEY_DOUBLE_TAP_LEFT",
+    "HOTKEY_DOUBLE_TAP_RIGHT",
+    // AI / Formatting
+    "AI_FORMATTING_ENABLED",
+    "CODESCRIBE_BUFFERED_STREAM",
+    "FORMATTING_LEVEL",
+    // Sound
+    "BEEP_ON_START",
+    "SOUND_VOLUME",
+    "SOUND_NAME",
+    // LLM endpoints
+    "LLM_ENDPOINT",
+    "LLM_MODEL",
+    "LLM_ASSISTIVE_ENDPOINT",
+    "LLM_ASSISTIVE_MODEL",
+    "LLM_FORMATTING_ENDPOINT",
+    "LLM_FORMATTING_MODEL",
+    // Promoted from .env
+    "USE_LOCAL_STT",
+    "LOCAL_MODEL",
+    "STT_ENDPOINT",
+    "TRANSCRIPT_SEND_MODE",
+    "AUDIO_INPUT_DEVICE",
+    "HISTORY_ENABLED",
+    "QUICK_NOTES_ENABLED",
+    "QUICK_NOTES_SAVE_ONLY",
+    "START_AT_LOGIN",
+    "AGENT_ENTER_SENDS",
+    // Voice Lab survivors
+    "CODESCRIBE_BUFFER_DELAY_MS",
+    "CODESCRIBE_TYPING_CPS",
+    "CODESCRIBE_EMIT_WORDS_MAX",
+    "CODESCRIBE_BUFFERED_INTERIM_SEC",
+    "WHISPER_MODEL",
+    "BACKEND_MAX_UPLOAD_MB",
+];
+
+/// Check if a key is a promoted (settings.json) setting.
+pub fn is_promoted_key(key: &str) -> bool {
+    PROMOTED_SETTINGS_KEYS.contains(&key)
+}
+
 impl UserSettings {
     /// Returns the settings directory.
     ///
@@ -155,6 +213,14 @@ impl UserSettings {
         fs::create_dir_all(&dir)?;
         let path = Self::settings_path();
         let json = serde_json::to_string_pretty(self)?;
+
+        if let Ok(existing) = fs::read_to_string(&path)
+            && existing == json
+        {
+            debug!("Settings unchanged; skipping save to {}", path.display());
+            return Ok(());
+        }
+
         fs::write(&path, json)?;
         info!("Saved settings to {}", path.display());
         Ok(())

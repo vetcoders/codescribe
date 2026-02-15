@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod onnx_adapter;
 pub mod whisper;
 
+use crate::pipeline::contracts::RawTranscript;
 use crate::pipeline::contracts::TranscriptionAdapter;
 use std::sync::OnceLock;
 
@@ -74,19 +75,19 @@ pub(crate) fn transcribe_chunk(
     }
 }
 
-/// Transcribe long audio (try_lock — returns error if engine is busy).
-pub(crate) fn try_transcribe_long(
+/// Transcribe long audio (try_lock) with segment-level timestamps.
+pub(crate) fn try_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
     language: Option<&str>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<RawTranscript> {
     if is_onnx_engine() {
-        onnx_adapter::try_transcribe_long(audio, sample_rate, language)
+        onnx_adapter::try_transcribe_long_with_segments(audio, sample_rate, language)
     } else {
         let engine = whisper::singleton::engine()?;
         let mut guard = engine
             .try_lock()
             .map_err(|_| anyhow::anyhow!("Whisper engine busy, skipping correction"))?;
-        guard.transcribe_long_with_language(audio, sample_rate, language)
+        guard.transcribe_long_with_language_segments(audio, sample_rate, language)
     }
 }

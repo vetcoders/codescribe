@@ -261,6 +261,20 @@ impl Config {
         }
     }
 
+    /// Set an env var from settings, with basic validation.
+    /// Rejects empty strings and strings longer than 4096 chars.
+    fn safe_set_env(key: &str, value: &str) {
+        if value.is_empty() || value.len() > 4096 {
+            warn!(
+                "Ignoring invalid setting {key}: value length {}",
+                value.len()
+            );
+            return;
+        }
+        // SAFETY: single-threaded config init, no other threads reading env yet.
+        unsafe { std::env::set_var(key, value) };
+    }
+
     /// Apply user settings from JSON (lower priority than .env).
     /// Only applies values that are Some AND not already overridden by env vars.
     fn apply_user_settings(&mut self, settings: &super::settings::UserSettings) {
@@ -316,6 +330,12 @@ impl Config {
         {
             self.ai_formatting_enabled = v;
         }
+        if std::env::var("FORMATTING_LEVEL").is_err()
+            && let Some(ref v) = settings.formatting_level
+        {
+            // FORMATTING_LEVEL is read from env at runtime (not a Config field).
+            Self::safe_set_env("FORMATTING_LEVEL", v);
+        }
         // Sound
         if std::env::var("BEEP_ON_START").is_err()
             && let Some(v) = settings.beep_on_start
@@ -338,18 +358,18 @@ impl Config {
         {
             // LLM_MODEL is not in Config struct but read from env at runtime
             // Set env var so downstream code picks it up
-            unsafe { std::env::set_var("LLM_MODEL", v) };
+            Self::safe_set_env("LLM_MODEL", v);
         }
         // Assistive LLM (not in Config struct, read from env at runtime)
         if std::env::var("LLM_ASSISTIVE_ENDPOINT").is_err()
             && let Some(ref v) = settings.llm_assistive_endpoint
         {
-            unsafe { std::env::set_var("LLM_ASSISTIVE_ENDPOINT", v) };
+            Self::safe_set_env("LLM_ASSISTIVE_ENDPOINT", v);
         }
         if std::env::var("LLM_ASSISTIVE_MODEL").is_err()
             && let Some(ref v) = settings.llm_assistive_model
         {
-            unsafe { std::env::set_var("LLM_ASSISTIVE_MODEL", v) };
+            Self::safe_set_env("LLM_ASSISTIVE_MODEL", v);
         }
         // Double-tap toggles (read from env at runtime, not in Config struct)
         if std::env::var("HOTKEY_DOUBLE_TAP_LEFT").is_err()
@@ -363,8 +383,9 @@ impl Config {
             unsafe { std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", if v { "1" } else { "0" }) };
         }
         // Buffered stream (read from env at runtime)
-        if std::env::var("CODESCRIBE_BUFFERED_STREAM").is_err() {
-            let enabled = settings.buffered_stream.unwrap_or(true);
+        if std::env::var("CODESCRIBE_BUFFERED_STREAM").is_err()
+            && let Some(enabled) = settings.buffered_stream
+        {
             unsafe {
                 std::env::set_var(
                     "CODESCRIBE_BUFFERED_STREAM",
@@ -379,12 +400,12 @@ impl Config {
         if std::env::var("LLM_FORMATTING_ENDPOINT").is_err()
             && let Some(ref v) = settings.llm_formatting_endpoint
         {
-            unsafe { std::env::set_var("LLM_FORMATTING_ENDPOINT", v) };
+            Self::safe_set_env("LLM_FORMATTING_ENDPOINT", v);
         }
         if std::env::var("LLM_FORMATTING_MODEL").is_err()
             && let Some(ref v) = settings.llm_formatting_model
         {
-            unsafe { std::env::set_var("LLM_FORMATTING_MODEL", v) };
+            Self::safe_set_env("LLM_FORMATTING_MODEL", v);
         }
 
         // Local STT
@@ -483,7 +504,7 @@ impl Config {
         if std::env::var("WHISPER_MODEL").is_err()
             && let Some(ref v) = settings.whisper_model
         {
-            unsafe { std::env::set_var("WHISPER_MODEL", v) };
+            Self::safe_set_env("WHISPER_MODEL", v);
         }
         if std::env::var("BACKEND_MAX_UPLOAD_MB").is_err()
             && let Some(v) = settings.backend_max_upload_mb
@@ -534,48 +555,7 @@ impl Config {
         }
 
         // Regular-user fields → settings.json
-        let is_regular = matches!(
-            key,
-            "WHISPER_LANGUAGE"
-                | "HOLD_MODS"
-                | "HOLD_START_DELAY_MS"
-                | "DOUBLE_TAP_INTERVAL_MS"
-                | "TOGGLE_SILENCE_SEC"
-                | "HOLD_EXCLUSIVE"
-                | "AI_FORMATTING_ENABLED"
-                | "CODESCRIBE_BUFFERED_STREAM"
-                | "BEEP_ON_START"
-                | "SOUND_VOLUME"
-                | "FORMATTING_LEVEL"
-                | "LLM_ENDPOINT"
-                | "LLM_MODEL"
-                | "LLM_ASSISTIVE_ENDPOINT"
-                | "LLM_ASSISTIVE_MODEL"
-                | "TOGGLE_TRIGGER"
-                | "HOTKEY_DOUBLE_TAP_LEFT"
-                | "HOTKEY_DOUBLE_TAP_RIGHT"
-                // Promoted from .env
-                | "LLM_FORMATTING_ENDPOINT"
-                | "LLM_FORMATTING_MODEL"
-                | "USE_LOCAL_STT"
-                | "LOCAL_MODEL"
-                | "STT_ENDPOINT"
-                | "TRANSCRIPT_SEND_MODE"
-                | "AUDIO_INPUT_DEVICE"
-                | "SOUND_NAME"
-                | "HISTORY_ENABLED"
-                | "QUICK_NOTES_ENABLED"
-                | "QUICK_NOTES_SAVE_ONLY"
-                | "START_AT_LOGIN"
-                | "AGENT_ENTER_SENDS"
-                // Voice Lab survivors
-                | "CODESCRIBE_BUFFER_DELAY_MS"
-                | "CODESCRIBE_TYPING_CPS"
-                | "CODESCRIBE_EMIT_WORDS_MAX"
-                | "CODESCRIBE_BUFFERED_INTERIM_SEC"
-                | "WHISPER_MODEL"
-                | "BACKEND_MAX_UPLOAD_MB"
-        );
+        let is_regular = super::settings::is_promoted_key(key);
 
         if is_regular {
             let mut settings = super::settings::UserSettings::load();
@@ -660,48 +640,7 @@ impl Config {
             }
 
             // Regular-user fields → settings.json
-            let is_regular = matches!(
-                *key,
-                "WHISPER_LANGUAGE"
-                    | "HOLD_MODS"
-                    | "HOLD_START_DELAY_MS"
-                    | "DOUBLE_TAP_INTERVAL_MS"
-                    | "TOGGLE_SILENCE_SEC"
-                    | "HOLD_EXCLUSIVE"
-                    | "AI_FORMATTING_ENABLED"
-                    | "CODESCRIBE_BUFFERED_STREAM"
-                    | "BEEP_ON_START"
-                    | "SOUND_VOLUME"
-                    | "FORMATTING_LEVEL"
-                    | "LLM_ENDPOINT"
-                    | "LLM_MODEL"
-                    | "LLM_ASSISTIVE_ENDPOINT"
-                    | "LLM_ASSISTIVE_MODEL"
-                    | "TOGGLE_TRIGGER"
-                    | "HOTKEY_DOUBLE_TAP_LEFT"
-                    | "HOTKEY_DOUBLE_TAP_RIGHT"
-                    // Promoted from .env
-                    | "LLM_FORMATTING_ENDPOINT"
-                    | "LLM_FORMATTING_MODEL"
-                    | "USE_LOCAL_STT"
-                    | "LOCAL_MODEL"
-                    | "STT_ENDPOINT"
-                    | "TRANSCRIPT_SEND_MODE"
-                    | "AUDIO_INPUT_DEVICE"
-                    | "SOUND_NAME"
-                    | "HISTORY_ENABLED"
-                    | "QUICK_NOTES_ENABLED"
-                    | "QUICK_NOTES_SAVE_ONLY"
-                    | "START_AT_LOGIN"
-                    | "AGENT_ENTER_SENDS"
-                    // Voice Lab survivors
-                    | "CODESCRIBE_BUFFER_DELAY_MS"
-                    | "CODESCRIBE_TYPING_CPS"
-                    | "CODESCRIBE_EMIT_WORDS_MAX"
-                    | "CODESCRIBE_BUFFERED_INTERIM_SEC"
-                    | "WHISPER_MODEL"
-                    | "BACKEND_MAX_UPLOAD_MB"
-            );
+            let is_regular = super::settings::is_promoted_key(key);
 
             if is_regular {
                 let settings_ref = settings.get_or_insert_with(super::settings::UserSettings::load);

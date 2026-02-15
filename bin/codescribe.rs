@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 use codescribe::os::hotkeys;
 use codescribe::{ai_formatting, audio, whisper};
 use codescribe_core::vad;
+use std::borrow::Cow;
 use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,6 +73,10 @@ struct TranscribeArgs {
     /// LLM model for formatting (overrides LLM_FORMATTING_MODEL for this run)
     #[arg(long)]
     llm: Option<String>,
+
+    /// Skip Silero VAD speech pre-filtering
+    #[arg(long)]
+    no_vad: bool,
 
     #[command(subcommand)]
     mode: Option<TranscribeMode>,
@@ -246,7 +251,15 @@ async fn handle_transcribe_command(args: TranscribeArgs) -> Result<()> {
             let file = args.file.ok_or_else(|| {
                 anyhow::anyhow!("Missing <FILE> (or use `codescribe transcribe live`)")
             })?;
-            handle_transcribe_file(file, args.language, args.format, args.llm, args.stream).await
+            handle_transcribe_file(
+                file,
+                args.language,
+                args.format,
+                args.llm,
+                args.stream,
+                args.no_vad,
+            )
+            .await
         }
     }
 }
@@ -257,6 +270,7 @@ async fn handle_transcribe_file(
     format: bool,
     llm_model: Option<String>,
     stream: bool,
+    no_vad: bool,
 ) -> Result<()> {
     use std::time::Instant;
 
@@ -286,12 +300,18 @@ async fn handle_transcribe_file(
     let total_sec = samples.len() as f32 / sample_rate as f32;
 
     // ── Silero VAD pre-filter: extract speech-only regions ──
-    let (speech_samples, vad_stats) = vad::extract_speech(&samples, sample_rate);
-    let speech_sec = speech_samples.len() as f32 / sample_rate as f32;
-    eprintln!(
-        "Silero VAD: {:.1}s speech / {:.1}s total ({:.0}% speech) | {}",
-        speech_sec, total_sec, vad_stats.speech_pct, vad_stats.sparkline
-    );
+    let speech_samples = if no_vad {
+        eprintln!("VAD: skipped (--no-vad)");
+        Cow::Borrowed(samples.as_slice())
+    } else {
+        let (filtered_samples, vad_stats) = vad::extract_speech(&samples, sample_rate);
+        let speech_sec = filtered_samples.len() as f32 / sample_rate as f32;
+        eprintln!(
+            "Silero VAD: {:.1}s speech / {:.1}s total ({:.0}% speech) | {}",
+            speech_sec, total_sec, vad_stats.speech_pct, vad_stats.sparkline
+        );
+        Cow::Owned(filtered_samples)
+    };
 
     // Detect language if not specified
     let lang = if let Some(l) = language {
@@ -299,7 +319,7 @@ async fn handle_transcribe_file(
     } else {
         eprintln!("Detecting language...");
         let start = Instant::now();
-        let detected = whisper::detect_language(&speech_samples, sample_rate)?;
+        let detected = whisper::detect_language(speech_samples.as_ref(), sample_rate)?;
         eprintln!("Detected: {} ({:?})", detected, start.elapsed());
         detected
     };
@@ -319,7 +339,7 @@ async fn handle_transcribe_file(
             }
         };
         let _raw_text = whisper::transcribe_streaming(
-            &speech_samples,
+            speech_samples.as_ref(),
             sample_rate,
             Some(&lang),
             Some(&callback),
@@ -332,7 +352,7 @@ async fn handle_transcribe_file(
     // Transcribe (non-streaming) — speech-only samples
     eprintln!("Transcribing...");
     let start = Instant::now();
-    let raw_text = whisper::transcribe(&speech_samples, sample_rate, Some(&lang))?;
+    let raw_text = whisper::transcribe(speech_samples.as_ref(), sample_rate, Some(&lang))?;
     eprintln!("Transcription time: {:?}", start.elapsed());
 
     // Format with AI if requested
@@ -445,9 +465,6 @@ async fn run_daemon() -> Result<()> {
     #[cfg(target_os = "macos")]
     codescribe::install_basic_edit_menu();
 
-    #[cfg(target_os = "macos")]
-    codescribe::os::permissions::request_all_permissions();
-
     tokio::task::spawn_blocking(|| {
         codescribe_core::attachment::AttachmentStore::cleanup_old(7);
     });
@@ -458,6 +475,17 @@ async fn run_daemon() -> Result<()> {
     codescribe::controller::register_overlay_controller(Arc::clone(&controller));
     #[cfg(target_os = "macos")]
     {
+        if codescribe::should_show_onboarding() {
+            codescribe::show_onboarding_wizard();
+            if codescribe::should_show_onboarding() {
+                eprintln!("Onboarding did not complete; aborting daemon startup.");
+                return Ok(());
+            }
+        }
+
+        // Onboarding owns permission request timing. Do not trigger prompts on startup.
+        codescribe::os::permissions::check_all_permissions();
+
         if codescribe::should_show_bootstrap() {
             codescribe::schedule_bootstrap();
         }

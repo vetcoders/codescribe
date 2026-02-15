@@ -63,6 +63,9 @@ pub use ui::bootstrap::{
 };
 
 #[cfg(target_os = "macos")]
+pub use ui::onboarding::{should_show_onboarding, show_onboarding_wizard};
+
+#[cfg(target_os = "macos")]
 pub use ui::tray;
 
 #[cfg(target_os = "macos")]

@@ -94,7 +94,7 @@ impl RecorderVad {
             return None;
         }
 
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(8);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(128);
         // 0.0 = no speech seen yet (the critical fix)
         let last_prob = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
         let writer = Arc::clone(&last_prob);
@@ -114,7 +114,7 @@ impl RecorderVad {
                 info!("RecorderVad ready (sample_rate={sample_rate}Hz)");
                 for samples in rx {
                     let prob = acc_vad.feed(&samples);
-                    writer.store(prob.to_bits(), Ordering::Relaxed);
+                    writer.store(prob.to_bits(), Ordering::Release);
                 }
                 debug!("RecorderVad thread exiting (channel closed)");
             })
@@ -293,12 +293,32 @@ impl Recorder {
         self.actual_sample_rate
     }
 
+    /// Returns true when the recorder still has an active stream/session.
+    ///
+    /// This is used by higher-level state recovery to detect desyncs where the
+    /// controller thinks it is idle but CoreAudio is still running.
+    pub fn is_active(&self) -> bool {
+        self.is_recording.load(Ordering::SeqCst) || self.stream.is_some()
+    }
+
     /// Starts the audio recording process.
     ///
     /// Clears the buffer, creates and starts a new input stream,
     /// and launches the asynchronous collection task to read audio data.
     pub async fn start(&mut self) -> Result<()> {
-        if self.is_recording.load(Ordering::SeqCst) {
+        let is_recording = self.is_recording.load(Ordering::SeqCst);
+        let has_stream = self.stream.is_some();
+
+        // Self-heal stale atomic flag observed after abrupt stop races:
+        // if there is no live stream, we can safely clear the flag and continue.
+        if is_recording && !has_stream {
+            warn!(
+                "Recorder start: stale is_recording flag detected without active stream; clearing"
+            );
+            self.is_recording.store(false, Ordering::SeqCst);
+        }
+
+        if self.is_recording.load(Ordering::SeqCst) || self.stream.is_some() {
             anyhow::bail!("Recording is already in progress");
         }
 
@@ -439,7 +459,7 @@ impl Recorder {
                     // Read latest speech probability from local VAD
                     let speech_prob = vad_prob
                         .as_ref()
-                        .map(|p| f32::from_bits(p.load(Ordering::Relaxed)))
+                        .map(|p| f32::from_bits(p.load(Ordering::Acquire)))
                         .unwrap_or(0.0);
                     let is_silence = speech_prob < speech_threshold;
 
