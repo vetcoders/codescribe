@@ -38,11 +38,25 @@ pub enum AiFormatStatus {
 }
 
 pub type AiStreamCallback = Arc<dyn Fn(&str) + Send + Sync>;
+pub type AiReasoningCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct AiFormatResult {
     pub text: String,
+    pub reasoning_text: Option<String>,
     pub status: AiFormatStatus,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderOutput {
+    assistant_text: String,
+    reasoning_text: Option<String>,
+}
+
+#[derive(Clone)]
+struct StreamChannels {
+    assistant: Option<AiStreamCallback>,
+    reasoning: Option<AiReasoningCallback>,
 }
 
 #[derive(Clone)]
@@ -555,6 +569,8 @@ struct ContentPart {
     part_type: String,
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
 }
 
 /// SSE streaming chunk from Responses API
@@ -575,6 +591,8 @@ struct StreamChunk {
 struct StreamResponse {
     #[serde(default)]
     id: String,
+    #[serde(default)]
+    output: Vec<OutputItem>,
 }
 
 /// Legacy chat message (for Ollama compatibility)
@@ -582,6 +600,53 @@ struct StreamResponse {
 struct ChatMessage {
     role: String,
     content: String,
+}
+
+fn part_text(part: &ContentPart) -> Option<&str> {
+    part.text
+        .as_deref()
+        .or(part.summary.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
+    let mut assistant_parts = Vec::new();
+    let mut reasoning_parts = Vec::new();
+
+    for item in output.iter().filter(|o| o.item_type == "message") {
+        let Some(parts) = item.content.as_ref() else {
+            continue;
+        };
+
+        for part in parts {
+            match part.part_type.as_str() {
+                "output_text" | "text" => {
+                    if let Some(text) = part_text(part) {
+                        assistant_parts.push(text.to_string());
+                    }
+                }
+                "reasoning_summary_text" => {
+                    if let Some(text) = part_text(part) {
+                        reasoning_parts.push(text.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let assistant_text = assistant_parts.join("").trim().to_string();
+    let reasoning_text = reasoning_parts.join("").trim().to_string();
+
+    ProviderOutput {
+        assistant_text,
+        reasoning_text: if reasoning_text.is_empty() {
+            None
+        } else {
+            Some(reasoning_text)
+        },
+    }
 }
 
 // No token limits - let the API decide. Tokens are cheap, lost notes are not.
@@ -775,10 +840,26 @@ pub async fn format_text_with_status(
     assistive: bool,
     on_delta: Option<AiStreamCallback>,
 ) -> AiFormatResult {
+    format_text_with_status_channels(text, language, assistive, on_delta, None).await
+}
+
+/// Format text using AI provider with explicit channel callbacks.
+///
+/// Contract:
+/// - `on_assistant_delta`: receives only `response.output_text.*` deltas.
+/// - `on_reasoning_delta`: receives only `response.reasoning_summary_text.*` deltas.
+pub async fn format_text_with_status_channels(
+    text: &str,
+    language: Option<&str>,
+    assistive: bool,
+    on_assistant_delta: Option<AiStreamCallback>,
+    on_reasoning_delta: Option<AiReasoningCallback>,
+) -> AiFormatResult {
     // Skip very short texts (but not in assistive mode - user might say "help")
     if text.len() < 10 && !assistive {
         return AiFormatResult {
             text: text.to_string(),
+            reasoning_text: None,
             status: AiFormatStatus::Skipped,
         };
     }
@@ -853,7 +934,7 @@ pub async fn format_text_with_status(
             get_formatting_endpoint().unwrap_or_default()
         };
         let endpoint_format = detect_format(&endpoint);
-        // Streaming is always enabled. `on_delta` only decides whether UI receives live chunks.
+        // Streaming is always enabled. Callbacks only decide whether UI receives live chunks.
         let streaming_enabled = use_streaming();
         let route = match (endpoint_format, streaming_enabled) {
             (EndpointFormat::OllamaChat, _) => "ollama",
@@ -874,13 +955,16 @@ pub async fn format_text_with_status(
                 &system_prompt,
                 assistive,
                 streaming_enabled,
-                on_delta.clone(),
+                StreamChannels {
+                    assistant: on_assistant_delta.clone(),
+                    reasoning: on_reasoning_delta.clone(),
+                },
                 retry_policy.inter_chunk_timeout,
             ),
         )
         .await
         {
-            Ok(Ok(formatted)) => Some(formatted),
+            Ok(Ok(output)) => Some(output),
             Ok(Err(e)) => {
                 warn!(
                     "LLM {} attempt {}/{} failed: {}",
@@ -903,7 +987,10 @@ pub async fn format_text_with_status(
             }
         };
 
-        if let Some(formatted) = result_opt {
+        if let Some(output) = result_opt {
+            let formatted = output.assistant_text;
+            let reasoning_text = output.reasoning_text;
+
             // Detect AI refusal responses (OpenAI content policy)
             let formatted_lower = formatted.to_lowercase();
             let is_refusal = formatted_lower.contains("i'm sorry")
@@ -917,6 +1004,7 @@ pub async fn format_text_with_status(
                 warn!("AI returned refusal response, returning raw input instead");
                 return AiFormatResult {
                     text: cleaned,
+                    reasoning_text: None,
                     status: AiFormatStatus::Failed,
                 };
             }
@@ -965,6 +1053,7 @@ pub async fn format_text_with_status(
                     };
                     return AiFormatResult {
                         text: formatted,
+                        reasoning_text,
                         status,
                     };
                 }
@@ -980,6 +1069,7 @@ pub async fn format_text_with_status(
             );
             return AiFormatResult {
                 text: formatted,
+                reasoning_text,
                 status: AiFormatStatus::Applied,
             };
         }
@@ -989,6 +1079,7 @@ pub async fn format_text_with_status(
     warn!("All AI providers/retries failed, returning cleaned text");
     AiFormatResult {
         text: cleaned,
+        reasoning_text: None,
         status: AiFormatStatus::Failed,
     }
 }
@@ -999,9 +1090,9 @@ async fn call_provider_once(
     system_prompt: &str,
     assistive: bool,
     streaming_enabled: bool,
-    on_delta: Option<AiStreamCallback>,
+    stream_channels: StreamChannels,
     inter_chunk_timeout: Duration,
-) -> Result<String> {
+) -> Result<ProviderOutput> {
     match endpoint_format {
         EndpointFormat::OllamaChat => call_ollama(user_message, system_prompt, assistive).await,
         EndpointFormat::ResponsesApi => {
@@ -1010,7 +1101,8 @@ async fn call_provider_once(
                     user_message,
                     system_prompt,
                     assistive,
-                    on_delta,
+                    stream_channels.assistant,
+                    stream_channels.reasoning,
                     inter_chunk_timeout,
                 )
                 .await
@@ -1029,7 +1121,7 @@ async fn call_llm_endpoint(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
-) -> Result<String> {
+) -> Result<ProviderOutput> {
     // Mode-aware config: formatting vs assistive use different providers
     let (endpoint, model, api_key) = if assistive {
         (
@@ -1109,21 +1201,9 @@ async fn call_llm_endpoint(
     let responses_result: ResponsesResponse =
         response.json().await.context("Failed to parse response")?;
 
-    // Extract text from output array
-    let formatted = responses_result
-        .output
-        .iter()
-        .filter(|o| o.item_type == "message")
-        .filter_map(|o| o.content.as_ref())
-        .flatten()
-        .filter(|c| c.part_type == "output_text" || c.part_type == "text")
-        .filter_map(|c| c.text.as_deref())
-        .collect::<Vec<_>>()
-        .join("")
-        .trim()
-        .to_string();
+    let output = extract_output_channels(&responses_result.output);
 
-    if formatted.is_empty() {
+    if output.assistant_text.is_empty() {
         anyhow::bail!("No text content in response (id: {})", responses_result.id);
     }
 
@@ -1134,7 +1214,7 @@ async fn call_llm_endpoint(
         if assistive { "assistive" } else { "formatting" },
         responses_result.id
     );
-    Ok(formatted)
+    Ok(output)
 }
 
 /// Call LLM endpoint with SSE streaming (Responses API)
@@ -1144,9 +1224,10 @@ async fn call_llm_endpoint_streaming(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
-    on_delta: Option<AiStreamCallback>,
+    on_assistant_delta: Option<AiStreamCallback>,
+    on_reasoning_delta: Option<AiReasoningCallback>,
     inter_chunk_timeout: Duration,
-) -> Result<String> {
+) -> Result<ProviderOutput> {
     use futures_util::StreamExt;
 
     // Mode-aware config: formatting vs assistive use different providers
@@ -1224,8 +1305,15 @@ async fn call_llm_endpoint_streaming(
         anyhow::bail!("HTTP {} - {}", status, body);
     }
 
-    // Parse SSE stream
-    let mut collected_text = String::new();
+    // Parse SSE stream with strict channel separation:
+    // - response.output_text.* -> assistant_text
+    // - response.reasoning_summary_text.* -> reasoning_text
+    let mut assistant_text = String::new();
+    let mut reasoning_text = String::new();
+    let mut assistant_done: Option<String> = None;
+    let mut reasoning_done: Option<String> = None;
+    let mut completed_output: Option<ProviderOutput> = None;
+    let mut saw_completed = false;
     let mut response_id = String::new();
     let mut stream = response.bytes_stream();
 
@@ -1281,21 +1369,59 @@ async fn call_llm_endpoint_streaming(
                     match chunk.chunk_type.as_str() {
                         "response.output_text.delta" => {
                             if let Some(delta) = chunk.delta {
-                                if let Some(cb) = &on_delta {
+                                if let Some(cb) = &on_assistant_delta {
                                     cb(&delta);
                                 }
-                                collected_text.push_str(&delta);
+                                assistant_text.push_str(&delta);
                             }
                         }
                         "response.output_text.done" => {
-                            // Full text available - use it if we missed deltas
-                            if let Some(text) = chunk.text
-                                && collected_text.is_empty()
-                            {
-                                collected_text = text;
+                            if let Some(text) = chunk.text {
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    if assistant_text.is_empty()
+                                        && let Some(cb) = &on_assistant_delta
+                                    {
+                                        cb(&text);
+                                    }
+                                    assistant_done = Some(text);
+                                }
                             }
                         }
-                        "response.completed" | "response.done" => {}
+                        "response.reasoning_summary_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &on_reasoning_delta {
+                                    cb(&delta);
+                                }
+                                reasoning_text.push_str(&delta);
+                            }
+                        }
+                        "response.reasoning_summary_text.done" => {
+                            if let Some(text) = chunk.text {
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    if reasoning_text.is_empty()
+                                        && let Some(cb) = &on_reasoning_delta
+                                    {
+                                        cb(&text);
+                                    }
+                                    reasoning_done = Some(text);
+                                }
+                            }
+                        }
+                        "response.completed" | "response.done" => {
+                            saw_completed = true;
+                            if let Some(resp) = &chunk.response {
+                                let parsed = extract_output_channels(&resp.output);
+                                if !parsed.assistant_text.is_empty() {
+                                    completed_output = Some(parsed);
+                                } else {
+                                    warn!(
+                                        "SSE response.completed without parseable output_text payload; falling back to channel buffers"
+                                    );
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1307,9 +1433,48 @@ async fn call_llm_endpoint_streaming(
         }
     }
 
-    let formatted = collected_text.trim().to_string();
+    let mut output = if saw_completed {
+        if let Some(completed) = completed_output {
+            completed
+        } else {
+            let fallback_assistant = assistant_done.unwrap_or(assistant_text);
+            let fallback_reasoning = reasoning_done.or_else(|| {
+                let trimmed = reasoning_text.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            });
+            ProviderOutput {
+                assistant_text: fallback_assistant,
+                reasoning_text: fallback_reasoning,
+            }
+        }
+    } else {
+        let fallback_assistant = assistant_done.unwrap_or(assistant_text);
+        let fallback_reasoning = reasoning_done.or_else(|| {
+            let trimmed = reasoning_text.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+        ProviderOutput {
+            assistant_text: fallback_assistant,
+            reasoning_text: fallback_reasoning,
+        }
+    };
+    output.assistant_text = output.assistant_text.trim().to_string();
+    output.reasoning_text = output
+        .reasoning_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
 
-    if formatted.is_empty() {
+    if output.assistant_text.is_empty() {
         anyhow::bail!("No text content in SSE stream");
     }
 
@@ -1336,13 +1501,17 @@ async fn call_llm_endpoint_streaming(
         if assistive { "assistive" } else { "formatting" },
         response_id
     );
-    Ok(formatted)
+    Ok(output)
 }
 
 /// Call Ollama/local LLM for text formatting/assistive mode
 ///
 /// Uses mode-aware config. Ollama native API uses /api/chat endpoint format.
-async fn call_ollama(user_message: &str, system_prompt: &str, assistive: bool) -> Result<String> {
+async fn call_ollama(
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+) -> Result<ProviderOutput> {
     // Mode-aware config
     let (host, model) = if assistive {
         (get_assistive_endpoint()?, get_assistive_model()?)
@@ -1416,7 +1585,10 @@ async fn call_ollama(user_message: &str, system_prompt: &str, assistive: bool) -
         push_memory("assistant", &formatted);
     }
 
-    Ok(formatted)
+    Ok(ProviderOutput {
+        assistant_text: formatted,
+        reasoning_text: None,
+    })
 }
 
 /// Check if AI formatting is available

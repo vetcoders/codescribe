@@ -88,11 +88,12 @@ pub fn setup_voice_chat_send_callback(config: Arc<RwLock<Config>>) {
                 None
             };
 
-            let result = crate::ai_formatting::format_text_with_status(
+            let result = crate::ai_formatting::format_text_with_status_channels(
                 &text,
                 Some(lang_str.as_str()),
                 true,
                 delta_callback,
+                None,
             )
             .await;
 
@@ -103,6 +104,12 @@ pub fn setup_voice_chat_send_callback(config: Arc<RwLock<Config>>) {
                         crate::voice_chat_ui::finalize_voice_chat_assistant_message();
                     } else {
                         crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                    }
+                    if let Some(reasoning_text) = result.reasoning_text.clone() {
+                        crate::voice_chat_ui::add_voice_chat_system_message(&format!(
+                            "Reasoning summary:\n{}",
+                            reasoning_text
+                        ));
                     }
                 }
                 crate::ai_formatting::AiFormatStatus::Failed => {

@@ -2226,7 +2226,7 @@ impl RecordingController {
             // Assistive/chat responses should always stream to preserve progressive feedback.
             let use_streaming = chat_active;
 
-            // Callback for streaming AI response to overlay
+            // Callback for streaming AI response to overlay (assistant channel only).
             let streamed_any_delta = Arc::new(AtomicBool::new(false));
             let delta_callback = if use_streaming && chat_active {
                 let needs_prefix = append_mode && assistant_needs_separator;
@@ -2245,11 +2245,12 @@ impl RecordingController {
                 None
             };
 
-            let result = crate::ai_formatting::format_text_with_status(
+            let result = crate::ai_formatting::format_text_with_status_channels(
                 &assistive_input,
                 lang_str.as_deref(),
                 true,
                 delta_callback,
+                None,
             )
             .await;
             let kind = match result.status {
@@ -2274,6 +2275,13 @@ impl RecordingController {
                             "Assistive response displayed in overlay ({} chars)",
                             result.text.len()
                         );
+
+                        if let Some(reasoning_text) = result.reasoning_text.clone() {
+                            crate::voice_chat_ui::add_voice_chat_system_message(&format!(
+                                "Reasoning summary:\n{}",
+                                reasoning_text
+                            ));
+                        }
                     }
                     crate::state::history::TranscriptKind::Ai
                 }
