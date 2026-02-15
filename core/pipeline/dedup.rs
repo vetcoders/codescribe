@@ -160,7 +160,7 @@ pub fn strip_suffix_overlap(last_suffix: &str, new_text: &str) -> String {
         }
         // Find the matching char boundary in new_text for this byte length.
         if text_bounds.binary_search(&tail_len).is_ok()
-            && suffix_tail.eq_ignore_ascii_case(&new_text[..tail_len])
+            && suffix_tail.to_lowercase() == new_text[..tail_len].to_lowercase()
         {
             let stripped = new_text[tail_len..].trim_start();
             if !stripped.is_empty() {
@@ -230,6 +230,12 @@ mod tests {
         // "ż" is 2 bytes in UTF-8 — old code would panic slicing mid-char
         let result = strip_suffix_overlap("weterynarzem.", "weterynarzem. Dziękuję.");
         assert_eq!(result, "Dziękuję.");
+    }
+
+    #[test]
+    fn test_suffix_overlap_polish_diacritics_case_insensitive() {
+        let result = strip_suffix_overlap("dziękuję za uwagę.", "DZIĘKUJĘ za uwagę. Jeszcze raz.");
+        assert_eq!(result, "Jeszcze raz.");
     }
 
     #[test]
