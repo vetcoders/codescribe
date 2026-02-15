@@ -81,6 +81,8 @@ pub struct UserSettings {
     pub show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_enter_sends: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inline_edit_enabled: Option<bool>,
 
     // ── Voice Lab survivors (user-facing UX knobs) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,6 +144,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "START_AT_LOGIN",
     "SHOW_DOCK_ICON",
     "AGENT_ENTER_SENDS",
+    "INLINE_EDIT_ENABLED",
     // Voice Lab survivors
     "CODESCRIBE_BUFFER_DELAY_MS",
     "CODESCRIBE_TYPING_CPS",
@@ -274,6 +277,7 @@ impl UserSettings {
             "START_AT_LOGIN" => self.start_at_login = Some(value),
             "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
             "AGENT_ENTER_SENDS" => self.agent_enter_sends = Some(value),
+            "INLINE_EDIT_ENABLED" => self.inline_edit_enabled = Some(value),
             other => {
                 warn!("Unknown bool setting key: {other}");
                 return;

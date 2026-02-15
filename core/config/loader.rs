@@ -493,6 +493,11 @@ impl Config {
         {
             self.agent_enter_sends = v;
         }
+        if std::env::var("INLINE_EDIT_ENABLED").is_err()
+            && let Some(v) = settings.inline_edit_enabled
+        {
+            self.inline_edit_enabled = v;
+        }
 
         // ── Voice Lab survivors (runtime env vars, not Config struct fields) ──
         if std::env::var("CODESCRIBE_BUFFER_DELAY_MS").is_err()

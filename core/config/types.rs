@@ -421,7 +421,7 @@ impl Default for Config {
             stt_api_key: None,
             restore_clipboard: default_restore_clipboard(),
             restore_clipboard_delay_ms: default_restore_clipboard_delay_ms(),
-            inline_edit_enabled: false,
+            inline_edit_enabled: true,
             start_at_login: false,
             agent_enter_sends: default_agent_enter_sends(),
             dump_audio_logs: default_dump_audio_logs(),
