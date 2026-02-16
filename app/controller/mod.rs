@@ -1181,6 +1181,22 @@ impl RecordingController {
             let hold_mode = *hold_mode.read().await;
             let is_assistive = matches!(hold_mode, HoldMode::Chat | HoldMode::Selection);
 
+            // Capture context IMMEDIATELY, before starting recorder/badge/beep.
+            // Any of those can transiently make CodeScribe frontmost, which breaks
+            // the osascript frontmost-app query and skips selection capture.
+            let captured_ctx = match (is_assistive, hold_mode) {
+                (true, HoldMode::Selection) => {
+                    tokio::task::spawn_blocking(capture_assistive_context)
+                        .await
+                        .unwrap_or_default()
+                }
+                _ => {
+                    tokio::task::spawn_blocking(capture_frontmost_app_only)
+                        .await
+                        .unwrap_or_default()
+                }
+            };
+
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is configured via CODESCRIBE_VAD_MAX_SILENCE_SEC env var (single source of truth)
             let mut rec = recorder.lock().await;
@@ -1289,19 +1305,7 @@ impl RecordingController {
 
             if is_assistive {
                 opened_overlay_for_transcription.store(false, Ordering::SeqCst);
-                // Capture context BEFORE showing any overlay (overlays can steal focus).
-                let ctx = match hold_mode {
-                    HoldMode::Selection => tokio::task::spawn_blocking(capture_assistive_context)
-                        .await
-                        .unwrap_or_default(),
-                    HoldMode::Chat => tokio::task::spawn_blocking(capture_frontmost_app_only)
-                        .await
-                        .unwrap_or_default(),
-                    HoldMode::Raw => tokio::task::spawn_blocking(capture_frontmost_app_only)
-                        .await
-                        .unwrap_or_default(),
-                };
-                *assistive_context.write().await = Some(ctx);
+                *assistive_context.write().await = Some(captured_ctx);
                 crate::voice_chat_ui::set_voice_chat_target_app(
                     assistive_context
                         .read()
@@ -1316,11 +1320,7 @@ impl RecordingController {
                 crate::show_agent_tab();
                 crate::voice_chat_ui::update_voice_chat_status("Listening...");
             } else {
-                // Capture frontmost app for paste actions (no selection/clipboard).
-                let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
-                    .await
-                    .unwrap_or_default();
-                *assistive_context.write().await = Some(ctx);
+                *assistive_context.write().await = Some(captured_ctx);
                 crate::voice_chat_ui::set_voice_chat_target_app(
                     assistive_context
                         .read()

@@ -74,7 +74,7 @@ pub fn capture_assistive_context() -> AssistiveContext {
         frontmost_app.as_deref(),
         Some("CodeScribe") | Some("codescribe")
     ) {
-        debug!("Assistive context: frontmost is CodeScribe, skipping selection capture");
+        info!("Assistive context: frontmost is CodeScribe, skipping selection capture");
         return AssistiveContext {
             frontmost_app,
             selected_text: None,
