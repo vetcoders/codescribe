@@ -29,12 +29,6 @@ use crate::vad;
 // Constants
 // ═══════════════════════════════════════════════════════════
 
-/// Minimum peak speech probability to consider a buffer "speech-like"
-/// when VAD's `iter_state` never fired `Start`. Used for:
-/// - **flush fallback**: emitting buffered audio instead of dropping it,
-/// - **retention**: keeping ≥1s of raw audio for the fallback path.
-const FALLBACK_PROB: f32 = 0.25;
-
 // ═══════════════════════════════════════════════════════════
 // Public types
 // ═══════════════════════════════════════════════════════════
@@ -119,7 +113,8 @@ pub(crate) struct SpeechSession {
     vad_frames_total: u64,
     vad_frames_speech: u64,
     last_vad_heartbeat: Instant,
-    /// Peak speech probability seen across this session (for flush fallback).
+    /// Peak speech probability since the last completed segment.
+    /// Used as a conservative confidence fallback for segment-level quality checks.
     max_speech_prob: f32,
     /// Peak speech probability for the currently active utterance/segment.
     segment_peak_prob: f32,
@@ -127,8 +122,6 @@ pub(crate) struct SpeechSession {
     last_boundary_prob: f32,
     /// Wall-clock instant when this session was created.
     session_start: Instant,
-    /// Set to true if `flush()` used the fallback path (VAD never fired Start).
-    last_flush_fallback: bool,
 }
 
 impl SpeechSession {
@@ -215,7 +208,6 @@ impl SpeechSession {
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
             session_start: Instant::now(),
-            last_flush_fallback: false,
         }
     }
 
@@ -326,7 +318,6 @@ impl SpeechSession {
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
             session_start: Instant::now(),
-            last_flush_fallback: false,
         }
     }
 
@@ -552,20 +543,16 @@ impl SpeechSession {
             self.pending_end = None;
             self.last_emit_raw = end;
             self.segment_peak_prob = 0.0;
+            // Segment was emitted successfully; clear fallback probe state so
+            // later flush() does not use stale speech probability.
+            self.max_speech_prob = 0.0;
             self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
         }
 
         // Safety net: when no segment is active, cap raw_buffer to prevent
-        // unbounded growth. When VAD saw speech-like signal but never triggered
-        // Start, retain enough audio for the flush fallback path (>= 1s).
+        // unbounded growth.
         if self.segment_start.is_none() && self.pending_end.is_none() {
-            let retain = if self.max_speech_prob >= FALLBACK_PROB {
-                // Keep at least 1s of audio for the flush fallback.
-                (self.raw_sample_rate as usize).max(self.pre_roll_raw)
-            } else {
-                self.pre_roll_raw
-            };
-            self.trim_raw_buffer(self.raw_cursor.saturating_sub(retain));
+            self.trim_raw_buffer(self.raw_cursor.saturating_sub(self.pre_roll_raw));
         }
 
         events
@@ -592,28 +579,7 @@ impl SpeechSession {
                     });
                 }
             }
-            // VAD never triggered Start — but if we saw speech-like signal,
-            // emit raw buffer as degraded fallback instead of dropping.
-            let fallback_min_samples = self.raw_sample_rate as usize / 2; // 0.5s at any rate
-            let available = self.raw_cursor.saturating_sub(self.raw_buffer_start);
-            if self.max_speech_prob >= FALLBACK_PROB && available > fallback_min_samples {
-                let start = self.raw_buffer_start;
-                let end = self.raw_cursor;
-                if let Some(chunk) = self.raw_slice(start, end) {
-                    warn!(
-                        "Supervisor flush: VAD never triggered Start, but max_prob={:.3} — emitting {} samples as fallback",
-                        self.max_speech_prob,
-                        chunk.len()
-                    );
-                    self.last_flush_fallback = true;
-                    self.segment_peak_prob = 0.0;
-                    return Some(match self.mode {
-                        SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
-                        SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
-                    });
-                }
-            }
-            // Truly no speech detected.
+            // VAD never triggered Start: drop silently.
             return None;
         }
         if self.pending_samples.is_empty() {
@@ -855,16 +821,6 @@ impl SpeechSession {
         self.session_start.elapsed().as_millis() as u64
     }
 
-    /// Whether the last `flush()` used the fallback path (VAD never fired Start).
-    pub(crate) fn was_flush_fallback(&self) -> bool {
-        self.last_flush_fallback
-    }
-
-    /// Peak speech probability observed across the entire session.
-    pub(crate) fn peak_speech_prob(&self) -> f32 {
-        self.max_speech_prob
-    }
-
     /// Peak speech probability for the current utterance/segment.
     pub(crate) fn segment_speech_prob(&self) -> f32 {
         let prob = self.segment_peak_prob.max(self.last_boundary_prob);
@@ -876,7 +832,7 @@ impl SpeechSession {
     }
 
     /// Override VAD threshold (test-only). Set impossibly high to prevent
-    /// VadIterState from firing Start, exercising the flush fallback path.
+    /// VadIterState from firing `Start`.
     #[cfg(test)]
     pub fn set_vad_threshold_for_test(&mut self, threshold: f32) {
         self.threshold = threshold;
@@ -885,8 +841,8 @@ impl SpeechSession {
         }
     }
 
-    /// Override max_speech_prob (test-only). Simulates VAD having seen
-    /// speech-like signal without requiring real speech audio.
+    /// Override max_speech_prob (test-only). Simulates observed speech confidence
+    /// without requiring real speech audio.
     #[cfg(test)]
     pub fn set_max_speech_prob_for_test(&mut self, prob: f32) {
         self.max_speech_prob = prob;
@@ -1559,10 +1515,9 @@ mod tests {
         }
     }
 
-    /// P0-2: Verify that flush() emits fallback audio when VAD never triggers Start
-    /// but speech-like signal was detected (max_speech_prob >= 0.25).
+    /// Verify that flush() drops audio when VAD never triggers Start.
     #[test]
-    fn test_supervisor_flush_fallback_emits_when_vad_never_starts() {
+    fn test_supervisor_flush_drops_when_vad_never_starts() {
         let sr = 16000u32;
         let mut session = SpeechSession::new_utterance(sr);
 
@@ -1575,9 +1530,7 @@ mod tests {
         // simulating edge cases where speech is too soft/short for min_speech.
         session.set_vad_threshold_for_test(2.0);
 
-        // Feed ~1s of audio. The real Silero model may score synthetic audio
-        // below the fallback threshold, so we inject max_speech_prob directly
-        // to simulate "VAD saw speech but iter_state never triggered Start".
+        // Feed ~1s of audio while threshold prevents Start detection.
         let total_samples = sr as usize; // 1s
         let callback_size = 512usize;
         for i in 0..(total_samples / callback_size) {
@@ -1585,9 +1538,6 @@ mod tests {
                 .map(|j| ((i * callback_size + j) as f32 * 0.01).sin() * 0.5)
                 .collect();
             let events = session.feed(&buf, sr);
-            // Override max_speech_prob after each feed so the buffer retention
-            // path (which checks max_speech_prob >= 0.25) keeps enough audio.
-            session.set_max_speech_prob_for_test(0.40);
             // No events expected — threshold too high to trigger Start.
             assert!(
                 events.is_empty(),
@@ -1597,27 +1547,50 @@ mod tests {
             );
         }
 
-        // Flush should emit fallback audio instead of returning None.
+        // Flush should drop gracefully (no degraded fallback emission).
         let result = session.flush();
         assert!(
-            result.is_some(),
-            "flush() should return fallback audio when max_speech_prob >= 0.25"
+            result.is_none(),
+            "flush() should return None when VAD never started a segment"
         );
-        if let Some(SpeechEvent::UtteranceFinal(samples)) = result {
-            let duration = samples.len() as f32 / sr as f32;
-            assert!(
-                duration >= 0.3,
-                "Fallback audio should be >= 0.3s, got {:.3}s ({} samples)",
-                duration,
-                samples.len()
-            );
-            println!(
-                "Flush fallback: emitted {:.3}s ({} samples) from 1.0s input",
-                duration,
-                samples.len()
-            );
-        } else {
-            panic!("Expected UtteranceFinal from flush fallback");
+    }
+
+    /// Regression guard: completed segments must clear peak state.
+    #[test]
+    fn test_supervisor_segment_completion_resets_fallback_peak() {
+        let sr = 16000u32;
+        let mut session = SpeechSession::new_utterance(sr);
+
+        if session.gate_mode() != VadGateMode::Supervisor {
+            eprintln!("Skipping: gate mode is not Supervisor");
+            return;
         }
+
+        let total_samples = sr as usize;
+        session.raw_buffer.extend(vec![0.25; total_samples]);
+        session.raw_cursor = total_samples;
+        session.segment_start = Some(0);
+        session.pending_end = Some(total_samples / 2);
+        session.last_emit_raw = 0;
+        session.set_max_speech_prob_for_test(0.95);
+        session.segment_peak_prob = 0.95;
+
+        // feed() requires non-empty input to run supervisor bookkeeping.
+        let events = session.feed(&[0.0], sr);
+        assert!(
+            matches!(events.as_slice(), [SpeechEvent::UtteranceFinal(_)]),
+            "Expected completed segment emission, got {} events",
+            events.len()
+        );
+        assert_eq!(
+            session.max_speech_prob, 0.0,
+            "max_speech_prob should reset after completed segment"
+        );
+
+        let flush = session.flush();
+        assert!(
+            flush.is_none(),
+            "flush() should not emit any extra event after a normal completed segment"
+        );
     }
 }

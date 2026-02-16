@@ -674,18 +674,6 @@ pub(crate) async fn transcription_session(
                     None => {
                         audio_closed = true;
                         if let Some(event) = session.flush() {
-                            // Emit VadFallback if flush used degraded path (VAD never fired Start).
-                            if session.was_flush_fallback() {
-                                event_sink.on_event(&EngineEvent::VadFallback {
-                                    max_prob: session.peak_speech_prob(),
-                                    samples: match &event {
-                                        SpeechEvent::UtteranceFinal(u)
-                                        | SpeechEvent::Utterance(u) => u.len(),
-                                        _ => 0,
-                                    },
-                                });
-                            }
-
                             let (utterance, is_final, max_speech_prob) = match event {
                                 SpeechEvent::Utterance(u) => {
                                     (u, false, session.segment_speech_prob())
@@ -769,12 +757,11 @@ pub(crate) async fn transcription_session(
                                     }
                                 }
                                 Err(PostprocessDrop::Hallucination) => {
-                                    pipeline.hallucination_drops =
-                                        pipeline.hallucination_drops.saturating_add(1);
+                                    // Already counted in postprocess_with_reason.
                                     debug!("Correction dropped as hallucination");
                                 }
                                 Err(PostprocessDrop::OverlapEmpty) => {
-                                    pipeline.overlap_strips = pipeline.overlap_strips.saturating_add(1);
+                                    // Already counted in postprocess_with_reason.
                                     debug!("Correction dropped as overlap-empty");
                                 }
                                 Err(PostprocessDrop::FilteredEmpty) => {
@@ -1351,13 +1338,11 @@ pub(crate) async fn buffered_transcription_worker(
                                     guard.push_correction(cleaned);
                                 }
                                 Err(PostprocessDrop::Hallucination) => {
-                                    pipeline.hallucination_drops =
-                                        pipeline.hallucination_drops.saturating_add(1);
+                                    // Already counted in postprocess_with_reason.
                                     debug!("Buffered correction dropped as hallucination");
                                 }
                                 Err(PostprocessDrop::OverlapEmpty) => {
-                                    pipeline.overlap_strips =
-                                        pipeline.overlap_strips.saturating_add(1);
+                                    // Already counted in postprocess_with_reason.
                                     debug!("Buffered correction dropped as overlap-empty");
                                 }
                                 Err(PostprocessDrop::FilteredEmpty) => {

@@ -218,7 +218,8 @@ pub enum EngineEvent {
     VadStart { speech_prob: f32, ts_ms: u64 },
     /// VAD detected speech end.
     VadEnd { speech_prob: f32, ts_ms: u64 },
-    /// VAD flush fallback — speech detected but iter_state never fired Start.
+    /// Legacy event kept for wire compatibility.
+    /// Degraded VAD flush fallback is disabled by default and this event is not emitted.
     VadFallback { max_prob: f32, samples: usize },
 
     /// Interim preview — latest transcription of the current utterance.
