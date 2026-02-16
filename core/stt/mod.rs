@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod onnx_adapter;
+pub mod scheduler;
 pub mod whisper;
 
 use crate::pipeline::contracts::RawTranscript;
@@ -27,7 +28,7 @@ pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
 // These functions dispatch to either candle or ONNX engine based on
 // `CODESCRIBE_STT_ENGINE` env var. They match the call semantics of
 // `LocalWhisperEngine::transcribe_with_language` (chunk) and
-// `transcribe_long_with_language` (utterance/correction with try_lock).
+// `transcribe_long_with_language` (utterance/correction).
 //
 // Used by `pipeline::streaming` to make the dual-engine switch transparent.
 
@@ -76,7 +77,28 @@ pub(crate) fn transcribe_chunk(
     }
 }
 
+/// Transcribe long audio (blocking lock) with segment-level timestamps.
+pub(crate) fn transcribe_long_with_segments(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+) -> anyhow::Result<RawTranscript> {
+    if is_onnx_engine() {
+        Ok(RawTranscript {
+            text: onnx_adapter::transcribe_long(audio, sample_rate, language)?,
+            segments: Vec::new(),
+        })
+    } else {
+        let engine = whisper::singleton::engine()?;
+        let mut guard = engine
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Candle lock error: {}", e))?;
+        guard.transcribe_long_with_language_segments(audio, sample_rate, language)
+    }
+}
+
 /// Transcribe long audio (try_lock) with segment-level timestamps.
+#[allow(dead_code)]
 pub(crate) fn try_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
