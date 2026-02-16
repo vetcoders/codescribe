@@ -1,15 +1,15 @@
 //!
 //! Build script for CodeScribe
 //! Exports embedded model data and configuration.
-//! Generates embedded_model_data.rs and embedded_tts_data.rs in OUT_DIR for release builds.
+//! Generates embedded_tts_data.rs / embedded_embedder_data.rs / embedded_vad_data.rs in OUT_DIR.
 //!
-//! Release builds EMBED Whisper + Silero VAD + MiniLM embedder by default (zero-dependency distribution).
-//! Opt-out with CODESCRIBE_NO_EMBED=1 to skip all embedding (except Silero).
-//! Opt-out Whisper only with CODESCRIBE_NO_EMBED_WHISPER=1 (keeps MiniLM + Silero).
+//! Whisper embedding is hard-disabled (runtime model loading only).
+//! Release builds still embed Silero VAD + MiniLM embedder by default.
+//! Opt-out with CODESCRIBE_NO_EMBED=1 to skip optional embedding (except Silero).
 //! TTS requires opt-in via CODESCRIBE_EMBED_TTS.
 //!
-//! ⚠ Binary > 3GB causes dylib crash on macOS — Whisper (~888MB) + Silero (~2MB) + MiniLM (~224MB) = safe.
-//!   Adding TTS on top may exceed limit — test before shipping!
+//! ⚠ Binary size stays lower with runtime Whisper loading.
+//!   TTS can still increase artifact size significantly — test before shipping!
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -58,7 +58,6 @@ fn main() {
         }
 
         let out_dir = env::var("OUT_DIR").unwrap();
-        let dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
         let embed_model = env::var("CODESCRIBE_EMBED_MODEL")
             .ok()
             .map(|v| v.trim().to_string())
@@ -197,70 +196,27 @@ fn main() {
             );
         }
 
-        // Release builds embed Whisper by default (zero-dependency distribution)
-        // Skip with CODESCRIBE_NO_EMBED=1, CODESCRIBE_NO_EMBED_WHISPER=1, or if model not found
-        let should_embed_whisper = is_release && model_exists && !no_embed && !no_embed_whisper;
-
-        if should_embed_whisper {
-            // Release + model found → embed it
+        // Whisper embedding is intentionally disabled (runtime loading only).
+        // We keep model discovery for diagnostics in build logs.
+        if is_release {
             println!(
-                "cargo:warning=Embedding Whisper model from: {}",
-                model_path.display()
+                "cargo:warning=Whisper embedding is disabled by policy; using runtime model loading"
             );
-            let content = format!(
-                r#"
-                pub static CONFIG: &[u8] = include_bytes!(r"{}");
-                pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
-                pub static MEL_FILTERS: &[u8] = include_bytes!(r"{}");
-                pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
-                "#,
-                model_path.join("config.json").display(),
-                model_path.join("tokenizer.json").display(),
-                model_path.join("mel_filters.npz").display(),
-                weights_path.display()
-            );
-            fs::write(&dest_path, content).expect("Failed to write embedded_model_data.rs");
-            println!("cargo:rustc-cfg=embed_model");
-            println!(
-                "cargo:rustc-env=CODESCRIBE_MODEL_DIR={}",
-                model_path.display()
-            );
-        } else if is_release && (no_embed || no_embed_whisper) {
-            // Explicit opt-out (global or whisper-only)
-            let reason = if no_embed {
-                "CODESCRIBE_NO_EMBED"
-            } else {
-                "CODESCRIBE_NO_EMBED_WHISPER"
-            };
-            println!("cargo:warning={} set - skipping Whisper embedding", reason);
-            println!(
-                "cargo:warning=Binary will require CODESCRIBE_MODEL_PATH or HF cache at runtime"
-            );
-            println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
-        } else if is_release && !model_exists {
-            // Release but model not found
-            println!("cargo:warning=Whisper model not found - cannot embed");
-            println!(
-                "cargo:warning=Download with: hf download {}",
-                DEFAULT_WHISPER_REPO
-            );
-            println!("cargo:warning=Or set CODESCRIBE_MODEL_PATH at runtime");
-            println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
-        } else {
-            // Debug build → skip embedding (use runtime loading)
-            println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
+            if no_embed_whisper {
+                println!(
+                    "cargo:warning=CODESCRIBE_NO_EMBED_WHISPER is set (legacy override, now redundant)"
+                );
+            }
+            if !model_exists {
+                println!(
+                    "cargo:warning=Whisper model not found in build context (OK; resolve via CODESCRIBE_MODEL_PATH/HF cache at runtime)"
+                );
+            }
         }
+        println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
 
         // Summary (single line for build logs)
-        let whisper_summary = if should_embed_whisper {
-            "embedded"
-        } else if no_embed || no_embed_whisper {
-            "disabled"
-        } else if !model_exists {
-            "missing"
-        } else {
-            "external"
-        };
+        let whisper_summary = "runtime_only";
         let embedder_summary = if !no_embed && embedder_model_exists {
             "embedded"
         } else if no_embed {
