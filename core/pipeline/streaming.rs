@@ -9,11 +9,12 @@
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 #[cfg(any(test, feature = "offline_eval"))]
 use crate::pipeline::dedup::dedup_chunk_overlap;
-use crate::pipeline::dedup::strip_suffix_overlap;
+use crate::pipeline::dedup::strip_suffix_overlap_live;
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
 #[cfg(any(test, feature = "offline_eval"))]
 use crate::stt::whisper::singleton::engine as get_engine;
+use crate::vad;
 use anyhow::{Result, anyhow};
 use chrono::SecondsFormat;
 use futures_util::StreamExt;
@@ -36,6 +37,9 @@ const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for stronger context con
 const DEFAULT_BUFFER_DELAY_MS: u64 = 1800;
 const DEFAULT_TYPING_CPS: f32 = 36.0;
 const DEFAULT_EMIT_WORDS_MAX: usize = 3;
+const PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS: u32 = 3;
+const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 6_000;
+const PARTIAL_PASS_TRIGGER_WATCHDOG_MS: u64 = 12_000;
 
 lazy_static! {
     static ref TOKEN_RE: Regex = Regex::new(r"\s+|\S+\s*").expect("token regex");
@@ -135,6 +139,151 @@ fn should_drop_short_utterance(audio_samples: usize, sample_rate: u32, speech_pr
     duration_s < MIN_UTTERANCE_SEC && speech_prob < SHORT_UTTERANCE_LOW_CONFIDENCE
 }
 
+fn silero_vad_samples_to_ms(samples: u64) -> u64 {
+    samples.saturating_mul(1_000) / u64::from(crate::vad::VAD_SAMPLE_RATE)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartialPassTriggerReason {
+    UtteranceFinals,
+    SileroSpeech,
+    Watchdog,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PartialPassTriggerFlags {
+    utterance_finals: bool,
+    silero_speech: bool,
+    watchdog: bool,
+}
+
+impl PartialPassTriggerFlags {
+    fn primary_reason(self) -> Option<PartialPassTriggerReason> {
+        if self.utterance_finals {
+            Some(PartialPassTriggerReason::UtteranceFinals)
+        } else if self.silero_speech {
+            Some(PartialPassTriggerReason::SileroSpeech)
+        } else if self.watchdog {
+            Some(PartialPassTriggerReason::Watchdog)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PartialPassTriggerState {
+    utterance_finals_since_partial: u32,
+    silero_speech_ms_since_partial: u64,
+    watchdog_baseline: Instant,
+}
+
+impl PartialPassTriggerState {
+    fn new(now: Instant) -> Self {
+        Self {
+            utterance_finals_since_partial: 0,
+            silero_speech_ms_since_partial: 0,
+            watchdog_baseline: now,
+        }
+    }
+
+    fn observe_speech_event(&mut self, is_final: bool, silero_speech_vad_samples: u64) {
+        if is_final {
+            self.utterance_finals_since_partial =
+                self.utterance_finals_since_partial.saturating_add(1);
+        }
+        self.silero_speech_ms_since_partial = self
+            .silero_speech_ms_since_partial
+            .saturating_add(silero_vad_samples_to_ms(silero_speech_vad_samples));
+    }
+
+    fn evaluate(&self, now: Instant) -> PartialPassTriggerFlags {
+        let watchdog_elapsed_ms = now.duration_since(self.watchdog_baseline).as_millis() as u64;
+        PartialPassTriggerFlags {
+            utterance_finals: self.utterance_finals_since_partial
+                >= PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS,
+            silero_speech: self.silero_speech_ms_since_partial
+                >= PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
+            watchdog: watchdog_elapsed_ms >= PARTIAL_PASS_TRIGGER_WATCHDOG_MS,
+        }
+    }
+
+    fn reset_after_success(&mut self, now: Instant) {
+        self.utterance_finals_since_partial = 0;
+        self.silero_speech_ms_since_partial = 0;
+        self.watchdog_baseline = now;
+    }
+}
+
+fn silero_speech_seconds(speech_vad_samples: u64) -> f32 {
+    speech_vad_samples as f32 / vad::VAD_SAMPLE_RATE as f32
+}
+
+fn should_schedule_correction(
+    utterance_count: usize,
+    min_utterances: usize,
+    speech_vad_samples: u64,
+    min_sec: f32,
+) -> bool {
+    utterance_count >= min_utterances || silero_speech_seconds(speech_vad_samples) >= min_sec
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct EnqueueOutcome {
+    enqueued: bool,
+    dropped: u64,
+    evicted_final: bool,
+}
+
+fn enqueue_pending_utterance(
+    pending: &mut VecDeque<PendingUtteranceWorkItem>,
+    item: PendingUtteranceWorkItem,
+    max_pending: usize,
+) -> EnqueueOutcome {
+    if max_pending == 0 {
+        return EnqueueOutcome {
+            enqueued: false,
+            dropped: 1,
+            evicted_final: false,
+        };
+    }
+
+    if pending.len() < max_pending {
+        pending.push_back(item);
+        return EnqueueOutcome {
+            enqueued: true,
+            dropped: 0,
+            evicted_final: false,
+        };
+    }
+
+    if !item.is_final {
+        return EnqueueOutcome {
+            enqueued: false,
+            dropped: 1,
+            evicted_final: false,
+        };
+    }
+
+    if let Some(pos) = pending.iter().position(|queued| !queued.is_final) {
+        pending.remove(pos);
+        pending.push_back(item);
+        return EnqueueOutcome {
+            enqueued: true,
+            dropped: 1,
+            evicted_final: false,
+        };
+    }
+
+    let evicted_final = pending.pop_front().is_some();
+    pending.push_back(item);
+    EnqueueOutcome {
+        enqueued: true,
+        dropped: u64::from(evicted_final),
+        evicted_final,
+    }
+}
+
 pub(crate) fn is_hallucination(text: &str, language: Option<&str>) -> bool {
     let lower = text.trim().to_lowercase();
     if SHORT_SPEECH_WHITELIST.iter().any(|w| lower == *w) {
@@ -190,7 +339,7 @@ impl TranscriptionPipeline {
     }
 
     pub(crate) fn strip_overlap(&mut self, text: &str) -> String {
-        strip_suffix_overlap(&self.last_suffix, text)
+        strip_suffix_overlap_live(&self.last_suffix, text)
     }
 
     /// Postprocess an utterance and return the drop reason on failure.
@@ -259,6 +408,138 @@ fn correction_is_stale(
     current_text: &str,
 ) -> bool {
     expected_preview_rev != current_preview_rev || expected_text != current_text
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartialPassTrigger {
+    Utterance,
+    Speech,
+    Watchdog,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct PartialPassTelemetry {
+    runs_total: u64,
+    trigger_utterance_count: u64,
+    trigger_speech_count: u64,
+    trigger_watchdog_count: u64,
+    stale_count: u64,
+    coalesced_count: u64,
+    dropped_count: u64,
+}
+
+impl PartialPassTelemetry {
+    fn record_run(&mut self, trigger: PartialPassTrigger) {
+        self.runs_total = self.runs_total.saturating_add(1);
+        match trigger {
+            PartialPassTrigger::Utterance => {
+                self.trigger_utterance_count = self.trigger_utterance_count.saturating_add(1);
+            }
+            PartialPassTrigger::Speech => {
+                self.trigger_speech_count = self.trigger_speech_count.saturating_add(1);
+            }
+            PartialPassTrigger::Watchdog => {
+                self.trigger_watchdog_count = self.trigger_watchdog_count.saturating_add(1);
+            }
+        }
+    }
+
+    fn record_stale(&mut self) {
+        self.stale_count = self.stale_count.saturating_add(1);
+    }
+
+    fn record_coalesced(&mut self) {
+        self.coalesced_count = self.coalesced_count.saturating_add(1);
+    }
+
+    fn record_dropped(&mut self) {
+        self.dropped_count = self.dropped_count.saturating_add(1);
+    }
+}
+
+fn classify_partial_trigger(
+    utterance_count: usize,
+    correction_min_utterances: usize,
+    speech_duration_s: f32,
+    correction_min_sec: f32,
+) -> Option<PartialPassTrigger> {
+    let utterance_triggered = utterance_count >= correction_min_utterances;
+    let speech_triggered = speech_duration_s >= correction_min_sec;
+    if utterance_triggered {
+        // Deterministic tie-break: when both thresholds are true, classify as utterance-triggered.
+        Some(PartialPassTrigger::Utterance)
+    } else if speech_triggered {
+        Some(PartialPassTrigger::Speech)
+    } else {
+        None
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn schedule_partial_pass(
+    stt_scheduler: &SttScheduler,
+    output_sample_rate: u32,
+    pipeline_language: Option<String>,
+    correction_audio_buf: &mut Vec<f32>,
+    correction_in_flight: &mut Option<SttTaskHandle>,
+    correction_expected_preview_rev: &mut Option<u64>,
+    correction_expected_text: &mut Option<String>,
+    correction_suffix_snapshot: &mut Option<String>,
+    suffix_snapshot: &str,
+    preview_rev: u64,
+    accumulated_text: &str,
+    speech_duration_s: f32,
+    trigger: PartialPassTrigger,
+    partial_telemetry: &mut PartialPassTelemetry,
+    event_sink: &Arc<dyn EventSink>,
+) {
+    if correction_audio_buf.is_empty() {
+        return;
+    }
+    let audio = std::mem::take(correction_audio_buf);
+    let audio_duration_s = audio.len() as f32 / output_sample_rate as f32;
+
+    if let Some(old) = correction_in_flight.take() {
+        partial_telemetry.record_coalesced();
+        debug!(
+            dropped_request_id = old.id(),
+            dropped_lane = ?old.lane(),
+            "Superseding tracked correction request"
+        );
+    }
+
+    partial_telemetry.record_run(trigger);
+    debug!(
+        expected_rev = preview_rev,
+        baseline_len = accumulated_text.chars().count(),
+        audio_sec = audio_duration_s,
+        silero_speech_sec = speech_duration_s,
+        trigger = ?trigger,
+        runs_total = partial_telemetry.runs_total,
+        "BOUNDARY correction_scheduled"
+    );
+
+    match stt_scheduler.submit(
+        SttLane::Refine,
+        audio,
+        output_sample_rate,
+        pipeline_language,
+    ) {
+        Ok(handle) => {
+            *correction_expected_preview_rev = Some(preview_rev);
+            *correction_expected_text = Some(accumulated_text.to_string());
+            *correction_suffix_snapshot = Some(suffix_snapshot.to_string());
+            *correction_in_flight = Some(handle);
+        }
+        Err(e) => {
+            partial_telemetry.record_dropped();
+            error!("Failed to submit correction request: {}", e);
+            event_sink.on_event(&EngineEvent::Warning {
+                code: "scheduler_submit_error".to_string(),
+                message: format!("{}", e),
+            });
+        }
+    }
 }
 
 // ── BufferedEmitter ──────────────────────────────────────────────────────────
@@ -545,6 +826,7 @@ pub(crate) async fn transcription_session(
     let semantic_gate_drops: u64 = 0;
     let mut filtered_empty_drops: u64 = 0;
     let mut corrections_applied: u64 = 0;
+    let mut partial_telemetry = PartialPassTelemetry::default();
     let mut vad_started = false;
     let mut speech_activity_observed = false;
 
@@ -563,6 +845,7 @@ pub(crate) async fn transcription_session(
     // Phase 2 correction state
     let mut correction_audio_buf: Vec<f32> = Vec::new();
     let mut utterance_count: usize = 0;
+    let mut correction_speech_vad_samples: u64 = 0;
     let mut suffix_snapshot = String::new();
 
     // Decouple audio ingestion from Whisper inference.
@@ -604,6 +887,7 @@ pub(crate) async fn transcription_session(
                 inference_audio,
                 is_final,
                 max_speech_prob,
+                speech_vad_samples,
             } = item;
 
             if should_drop_short_utterance(audio.len(), output_sample_rate, max_speech_prob) {
@@ -630,6 +914,7 @@ pub(crate) async fn transcription_session(
                 audio,
                 inference_audio_len: inference_audio.len(),
                 is_final,
+                speech_vad_samples,
             };
 
             match stt_scheduler.submit(lane, inference_audio, output_sample_rate, lang) {
@@ -654,11 +939,40 @@ pub(crate) async fn transcription_session(
             }
         }
 
+        // Watchdog fallback: if input is closed and only partial correction audio remains,
+        // force one last refine run with an explicit watchdog trigger.
+        if audio_closed
+            && pending_utterances.is_empty()
+            && inference_pipeline.is_empty()
+            && correction_in_flight.is_none()
+            && !correction_audio_buf.is_empty()
+        {
+            schedule_partial_pass(
+                &stt_scheduler,
+                output_sample_rate,
+                pipeline.language.clone(),
+                &mut correction_audio_buf,
+                &mut correction_in_flight,
+                &mut correction_expected_preview_rev,
+                &mut correction_expected_text,
+                &mut correction_suffix_snapshot,
+                &suffix_snapshot,
+                preview_rev,
+                &accumulated_text,
+                silero_speech_seconds(correction_speech_vad_samples),
+                PartialPassTrigger::Watchdog,
+                &mut partial_telemetry,
+                &event_sink,
+            );
+            correction_speech_vad_samples = 0;
+        }
+
         // If audio is closed and there is no work left, finish.
         if audio_closed
             && pending_utterances.is_empty()
             && inference_pipeline.is_empty()
             && correction_in_flight.is_none()
+            && correction_audio_buf.is_empty()
         {
             break;
         }
@@ -668,6 +982,7 @@ pub(crate) async fn transcription_session(
                 match maybe_data {
                     Some(data) => {
                         for event in session.feed(&data, sample_rate) {
+                            let speech_vad_samples = session.take_event_speech_vad_samples();
                             let (utterance, inference_audio, is_final, max_speech_prob) = match event {
                                 SpeechEvent::Utterance(u) => {
                                     current_utterance_audio.extend_from_slice(&u);
@@ -690,23 +1005,61 @@ pub(crate) async fn transcription_session(
                                 vad_started = true;
                             }
 
-                            if pending_utterances.len() >= MAX_PENDING_UTTERANCES {
-                                dropped_utterances = dropped_utterances.saturating_add(1);
+                            let outcome = enqueue_pending_utterance(
+                                &mut pending_utterances,
+                                PendingUtteranceWorkItem {
+                                    audio: utterance,
+                                    inference_audio,
+                                    is_final,
+                                    max_speech_prob,
+                                    speech_vad_samples,
+                                },
+                                MAX_PENDING_UTTERANCES,
+                            );
+                            if outcome.dropped > 0 {
+                                dropped_utterances = dropped_utterances.saturating_add(outcome.dropped);
+                                let message = if outcome.enqueued {
+                                    if outcome.evicted_final {
+                                        format!(
+                                            "Pending utterance queue full (limit={}): evicted an older final item to preserve latest final boundary",
+                                            MAX_PENDING_UTTERANCES
+                                        )
+                                    } else {
+                                        format!(
+                                            "Pending utterance queue full (limit={}): evicted a non-final item to preserve latest final boundary",
+                                            MAX_PENDING_UTTERANCES
+                                        )
+                                    }
+                                } else {
+                                    format!(
+                                        "Pending utterance queue full (limit={}): dropped incoming non-final item",
+                                        MAX_PENDING_UTTERANCES
+                                    )
+                                };
+                                warn!(
+                                    queue_len = pending_utterances.len(),
+                                    is_final,
+                                    enqueued = outcome.enqueued,
+                                    evicted_final = outcome.evicted_final,
+                                    dropped = outcome.dropped,
+                                    "{}",
+                                    message
+                                );
+                                event_sink.on_event(&EngineEvent::Warning {
+                                    code: "pending_utterance_backpressure".to_string(),
+                                    message,
+                                });
+                            }
+                            if !outcome.enqueued {
                                 continue;
                             }
-
-                            pending_utterances.push_back(PendingUtteranceWorkItem {
-                                audio: utterance,
-                                inference_audio,
-                                is_final,
-                                max_speech_prob,
-                            });
                         }
                         emit_vad_warning(&event_sink, &mut session);
                     }
                     None => {
                         audio_closed = true;
                         if let Some(event) = session.flush() {
+                            let speech_vad_samples = session.take_event_speech_vad_samples();
                             let (utterance, inference_audio, is_final, max_speech_prob) = match event {
                                 SpeechEvent::Utterance(u) => {
                                     current_utterance_audio.extend_from_slice(&u);
@@ -730,15 +1083,50 @@ pub(crate) async fn transcription_session(
                                     });
                                     vad_started = true;
                                 }
-                                if pending_utterances.len() < MAX_PENDING_UTTERANCES {
-                                    pending_utterances.push_back(PendingUtteranceWorkItem {
+                                let outcome = enqueue_pending_utterance(
+                                    &mut pending_utterances,
+                                    PendingUtteranceWorkItem {
                                         audio: utterance,
                                         inference_audio,
                                         is_final,
                                         max_speech_prob,
+                                        speech_vad_samples,
+                                    },
+                                    MAX_PENDING_UTTERANCES,
+                                );
+                                if outcome.dropped > 0 {
+                                    dropped_utterances = dropped_utterances.saturating_add(outcome.dropped);
+                                    let message = if outcome.enqueued {
+                                        if outcome.evicted_final {
+                                            format!(
+                                                "Pending utterance queue full (limit={}): evicted an older final item to preserve flush-final boundary",
+                                                MAX_PENDING_UTTERANCES
+                                            )
+                                        } else {
+                                            format!(
+                                                "Pending utterance queue full (limit={}): evicted a non-final item to preserve flush-final boundary",
+                                                MAX_PENDING_UTTERANCES
+                                            )
+                                        }
+                                    } else {
+                                        format!(
+                                            "Pending utterance queue full (limit={}): dropped flush-final boundary",
+                                            MAX_PENDING_UTTERANCES
+                                        )
+                                    };
+                                    warn!(
+                                        queue_len = pending_utterances.len(),
+                                        is_final,
+                                        enqueued = outcome.enqueued,
+                                        evicted_final = outcome.evicted_final,
+                                        dropped = outcome.dropped,
+                                        "{}",
+                                        message
+                                    );
+                                    event_sink.on_event(&EngineEvent::Warning {
+                                        code: "pending_utterance_backpressure".to_string(),
+                                        message,
                                     });
-                                } else {
-                                    dropped_utterances = dropped_utterances.saturating_add(1);
                                 }
                             }
                         }
@@ -760,6 +1148,7 @@ pub(crate) async fn transcription_session(
                             &expected_text,
                             &accumulated_text,
                         ) {
+                            partial_telemetry.record_stale();
                             debug!(
                                 expected_preview_rev,
                                 preview_rev,
@@ -811,6 +1200,7 @@ pub(crate) async fn transcription_session(
                         }
                     }
                     Err(e) => {
+                        partial_telemetry.record_dropped();
                         if e.to_string().contains("superseded") {
                             debug!("Skipping superseded correction request: {}", e);
                         } else if e.to_string().contains("shutting down") {
@@ -977,53 +1367,47 @@ pub(crate) async fn transcription_session(
                             // (preview rev + baseline text mismatch).
                             correction_audio_buf.clear();
                             utterance_count = 0;
+                            correction_speech_vad_samples = 0;
                         } else {
                             // Phase 2 correction accumulation — only for non-final items.
                             // Spawning correction on a final item would produce a stale
                             // Correction event after UtteranceFinal has already fired.
                             correction_audio_buf.extend_from_slice(&item.audio);
                             utterance_count += 1;
-
-                            let audio_duration_s =
-                                correction_audio_buf.len() as f32 / output_sample_rate as f32;
-                            if utterance_count >= correction_min_utterances || audio_duration_s >= correction_min_sec {
-                                let audio = std::mem::take(&mut correction_audio_buf);
-                                let lang = pipeline.language.clone();
+                            correction_speech_vad_samples = correction_speech_vad_samples
+                                .saturating_add(item.speech_vad_samples);
+                            let speech_duration_s =
+                                silero_speech_seconds(correction_speech_vad_samples);
+                            if should_schedule_correction(
+                                utterance_count,
+                                correction_min_utterances,
+                                correction_speech_vad_samples,
+                                correction_min_sec,
+                            ) && let Some(trigger) = classify_partial_trigger(
+                                utterance_count,
+                                correction_min_utterances,
+                                speech_duration_s,
+                                correction_min_sec,
+                            ) {
                                 utterance_count = 0;
-
-                                if let Some(old) = correction_in_flight.take() {
-                                    debug!(
-                                        dropped_request_id = old.id(),
-                                        dropped_lane = ?old.lane(),
-                                        "Superseding tracked correction request"
-                                    );
-                                }
-                                debug!(
-                                    expected_rev = preview_rev,
-                                    baseline_len = accumulated_text.chars().count(),
-                                    audio_sec = audio_duration_s,
-                                    "BOUNDARY correction_scheduled"
-                                );
-                                match stt_scheduler.submit(
-                                    SttLane::Refine,
-                                    audio,
+                                correction_speech_vad_samples = 0;
+                                schedule_partial_pass(
+                                    &stt_scheduler,
                                     output_sample_rate,
-                                    lang,
-                                ) {
-                                    Ok(handle) => {
-                                        correction_expected_preview_rev = Some(preview_rev);
-                                        correction_expected_text = Some(accumulated_text.clone());
-                                        correction_suffix_snapshot = Some(suffix_snapshot.clone());
-                                        correction_in_flight = Some(handle);
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to submit correction request: {}", e);
-                                        event_sink.on_event(&EngineEvent::Warning {
-                                            code: "scheduler_submit_error".to_string(),
-                                            message: format!("{}", e),
-                                        });
-                                    }
-                                }
+                                    pipeline.language.clone(),
+                                    &mut correction_audio_buf,
+                                    &mut correction_in_flight,
+                                    &mut correction_expected_preview_rev,
+                                    &mut correction_expected_text,
+                                    &mut correction_suffix_snapshot,
+                                    &suffix_snapshot,
+                                    preview_rev,
+                                    &accumulated_text,
+                                    speech_duration_s,
+                                    trigger,
+                                    &mut partial_telemetry,
+                                    &event_sink,
+                                );
                             }
                         }
                     }
@@ -1119,6 +1503,13 @@ pub(crate) async fn transcription_session(
         filtered_empty_drops,
         corrections_applied,
         total_utterances,
+        partial_runs_total: partial_telemetry.runs_total,
+        trigger_utterance_count: partial_telemetry.trigger_utterance_count,
+        trigger_speech_count: partial_telemetry.trigger_speech_count,
+        trigger_watchdog_count: partial_telemetry.trigger_watchdog_count,
+        partial_stale_count: partial_telemetry.stale_count,
+        partial_coalesced_count: partial_telemetry.coalesced_count,
+        partial_dropped_count: partial_telemetry.dropped_count,
     });
 
     if dropped_utterances > 0 {
@@ -1129,8 +1520,18 @@ pub(crate) async fn transcription_session(
     }
 
     info!(
-        "Transcription session finished: {} utterances, {} hallucination drops, {} semantic gate drops, {} filtered empty drops",
-        total_utterances, pipeline.hallucination_drops, semantic_gate_drops, filtered_empty_drops
+        "Transcription session finished: {} utterances, {} hallucination drops, {} semantic gate drops, {} filtered empty drops, partial_runs={} (utterance={}, speech={}, watchdog={}, stale={}, coalesced={}, dropped={})",
+        total_utterances,
+        pipeline.hallucination_drops,
+        semantic_gate_drops,
+        filtered_empty_drops,
+        partial_telemetry.runs_total,
+        partial_telemetry.trigger_utterance_count,
+        partial_telemetry.trigger_speech_count,
+        partial_telemetry.trigger_watchdog_count,
+        partial_telemetry.stale_count,
+        partial_telemetry.coalesced_count,
+        partial_telemetry.dropped_count
     );
 }
 
@@ -1501,6 +1902,15 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_overlap_word_fallback_handles_polish_diacritic_drift() {
+        let mut pipeline = TranscriptionPipeline::new(Some("pl".to_string()));
+        pipeline.last_suffix = "pacjent czuje się już dobrze".to_string();
+
+        let res = pipeline.strip_overlap("pacjent czuje się juz dobrze dzisiaj");
+        assert_eq!(res, "dzisiaj");
+    }
+
+    #[test]
     fn test_postprocess_with_reason_uses_fuzzy_overlap_dedup() {
         let mut pipeline = TranscriptionPipeline::new(None);
         pipeline.last_suffix = "the patient is feeling much better".to_string();
@@ -1620,6 +2030,49 @@ mod tests {
         assert!(correction_is_stale(9, 9, "ala ma", "ala ma kota"));
     }
 
+    #[test]
+    fn test_classify_partial_trigger_is_deterministic() {
+        assert_eq!(
+            classify_partial_trigger(1, 2, 1.0, 2.0),
+            None,
+            "no threshold hit should not trigger partial pass"
+        );
+        assert_eq!(
+            classify_partial_trigger(2, 2, 1.0, 2.0),
+            Some(PartialPassTrigger::Utterance),
+            "utterance threshold should classify as utterance trigger"
+        );
+        assert_eq!(
+            classify_partial_trigger(1, 2, 2.0, 2.0),
+            Some(PartialPassTrigger::Speech),
+            "speech-duration threshold should classify as speech trigger"
+        );
+        assert_eq!(
+            classify_partial_trigger(2, 2, 3.0, 2.0),
+            Some(PartialPassTrigger::Utterance),
+            "when both thresholds hit, utterance trigger wins tie-break deterministically"
+        );
+    }
+
+    #[test]
+    fn test_partial_telemetry_counters_accumulate() {
+        let mut telemetry = PartialPassTelemetry::default();
+        telemetry.record_run(PartialPassTrigger::Utterance);
+        telemetry.record_run(PartialPassTrigger::Speech);
+        telemetry.record_run(PartialPassTrigger::Watchdog);
+        telemetry.record_stale();
+        telemetry.record_coalesced();
+        telemetry.record_dropped();
+
+        assert_eq!(telemetry.runs_total, 3);
+        assert_eq!(telemetry.trigger_utterance_count, 1);
+        assert_eq!(telemetry.trigger_speech_count, 1);
+        assert_eq!(telemetry.trigger_watchdog_count, 1);
+        assert_eq!(telemetry.stale_count, 1);
+        assert_eq!(telemetry.coalesced_count, 1);
+        assert_eq!(telemetry.dropped_count, 1);
+    }
+
     #[tokio::test]
     async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
         let (tx, rx) = mpsc::channel::<Vec<f32>>(1);
@@ -1666,6 +2119,13 @@ mod tests {
                     filtered_empty_drops,
                     corrections_applied,
                     total_utterances,
+                    partial_runs_total,
+                    trigger_utterance_count,
+                    trigger_speech_count,
+                    trigger_watchdog_count,
+                    partial_stale_count,
+                    partial_coalesced_count,
+                    partial_dropped_count,
                 } => {
                     stats_count += 1;
                     assert_eq!(*dropped_audio_chunks, 0);
@@ -1674,6 +2134,13 @@ mod tests {
                     assert_eq!(*filtered_empty_drops, 0);
                     assert_eq!(*corrections_applied, 0);
                     assert_eq!(*total_utterances, 0);
+                    assert_eq!(*partial_runs_total, 0);
+                    assert_eq!(*trigger_utterance_count, 0);
+                    assert_eq!(*trigger_speech_count, 0);
+                    assert_eq!(*trigger_watchdog_count, 0);
+                    assert_eq!(*partial_stale_count, 0);
+                    assert_eq!(*partial_coalesced_count, 0);
+                    assert_eq!(*partial_dropped_count, 0);
                 }
                 _ => {}
             }

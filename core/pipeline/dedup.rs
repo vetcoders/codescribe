@@ -16,9 +16,48 @@
 
 // ── helpers ──────────────────────────────────────────────
 
-const MAX_CHUNK_OVERLAP_WORDS: usize = 30;
-const MAX_SUFFIX_FUZZY_OVERLAP_WORDS: usize = 16;
-const MIN_FUZZY_OVERLAP_WORDS: usize = 3;
+#[derive(Debug, Clone, Copy)]
+struct OverlapParams {
+    max_window: usize,
+    min_fuzzy_overlap_words: usize,
+    fuzzy_error_ratio_denominator: usize,
+}
+
+impl OverlapParams {
+    #[inline]
+    fn bounded_max_window(self) -> usize {
+        self.max_window.max(1)
+    }
+
+    #[inline]
+    fn bounded_min_fuzzy_overlap(self) -> usize {
+        self.min_fuzzy_overlap_words.max(1)
+    }
+
+    #[inline]
+    fn max_fuzzy_errors(self, overlap_words: usize) -> usize {
+        (overlap_words / self.fuzzy_error_ratio_denominator.max(1)).max(1)
+    }
+}
+
+const CHUNK_OVERLAP_PARAMS: OverlapParams = OverlapParams {
+    max_window: 30,
+    min_fuzzy_overlap_words: 3,
+    fuzzy_error_ratio_denominator: 3,
+};
+
+const DEFAULT_SUFFIX_OVERLAP_PARAMS: OverlapParams = OverlapParams {
+    max_window: 16,
+    min_fuzzy_overlap_words: 3,
+    fuzzy_error_ratio_denominator: 3,
+};
+
+const LIVE_SUFFIX_OVERLAP_PARAMS: OverlapParams = OverlapParams {
+    // Live path runs this for every utterance boundary, keep the fuzzy window tighter.
+    max_window: 12,
+    min_fuzzy_overlap_words: 3,
+    fuzzy_error_ratio_denominator: 3,
+};
 
 fn normalize_token_for_overlap(token: &str) -> String {
     let mut out = String::new();
@@ -67,13 +106,11 @@ fn word_edit_distance_bounded(a: &[String], b: &[String], max_dist: usize) -> Op
 ///
 /// Pass 1: exact normalized word match.
 /// Pass 2: fuzzy word edit distance for larger windows.
-fn detect_word_overlap(
-    left_words: &[&str],
-    right_words: &[&str],
-    max_window: usize,
-    min_fuzzy_overlap: usize,
-) -> usize {
-    let max_overlap = left_words.len().min(right_words.len()).min(max_window);
+fn detect_word_overlap(left_words: &[&str], right_words: &[&str], params: OverlapParams) -> usize {
+    let max_overlap = left_words
+        .len()
+        .min(right_words.len())
+        .min(params.bounded_max_window());
     if max_overlap == 0 {
         return 0;
     }
@@ -98,20 +135,23 @@ fn detect_word_overlap(
     }
 
     // Pass 2: fuzzy match.
-    for k in (min_fuzzy_overlap..=max_overlap).rev() {
-        let tail = &left_norm[max_overlap - k..];
-        let head = &right_norm[..k];
-        let max_errors = (k / 3).max(1);
-        if let Some(dist) = word_edit_distance_bounded(tail, head, max_errors) {
-            tracing::debug!(
-                "[FUZZY_DEDUP] matched k={} dist={} max_err={} tail={:?} head={:?}",
-                k,
-                dist,
-                max_errors,
-                &tail[..tail.len().min(5)],
-                &head[..head.len().min(5)]
-            );
-            return k;
+    let min_fuzzy_overlap = params.bounded_min_fuzzy_overlap();
+    if min_fuzzy_overlap <= max_overlap {
+        for k in (min_fuzzy_overlap..=max_overlap).rev() {
+            let tail = &left_norm[max_overlap - k..];
+            let head = &right_norm[..k];
+            let max_errors = params.max_fuzzy_errors(k);
+            if let Some(dist) = word_edit_distance_bounded(tail, head, max_errors) {
+                tracing::debug!(
+                    "[FUZZY_DEDUP] matched k={} dist={} max_err={} tail={:?} head={:?}",
+                    k,
+                    dist,
+                    max_errors,
+                    &tail[..tail.len().min(5)],
+                    &head[..head.len().min(5)]
+                );
+                return k;
+            }
         }
     }
 
@@ -148,7 +188,9 @@ pub fn dedup_chunk_overlap(out: &mut String, segment: &str) {
     }
 
     // Keep only the suffix window needed for overlap checks.
-    let max_overlap_window = seg_words.len().min(MAX_CHUNK_OVERLAP_WORDS);
+    let max_overlap_window = seg_words
+        .len()
+        .min(CHUNK_OVERLAP_PARAMS.bounded_max_window());
     let mut out_tail_words: Vec<&str> = out_trim
         .split_whitespace()
         .rev()
@@ -163,12 +205,7 @@ pub fn dedup_chunk_overlap(out: &mut String, segment: &str) {
     }
     out_tail_words.reverse();
 
-    let overlap = detect_word_overlap(
-        &out_tail_words,
-        &seg_words,
-        MAX_CHUNK_OVERLAP_WORDS,
-        MIN_FUZZY_OVERLAP_WORDS,
-    );
+    let overlap = detect_word_overlap(&out_tail_words, &seg_words, CHUNK_OVERLAP_PARAMS);
 
     if !out.ends_with(' ') {
         out.push(' ');
@@ -190,6 +227,23 @@ pub fn dedup_chunk_overlap(out: &mut String, segment: &str) {
 /// Fallback: normalized word overlap (exact + fuzzy) to handle small mutations
 /// in streaming re-transcriptions (e.g. punctuation or 1-word typo drift).
 pub fn strip_suffix_overlap(last_suffix: &str, new_text: &str) -> String {
+    strip_suffix_overlap_with_params(last_suffix, new_text, DEFAULT_SUFFIX_OVERLAP_PARAMS)
+}
+
+/// Live-streaming overlap strip with stricter fuzzy bounds for deterministic runtime.
+///
+/// Order is deterministic:
+/// 1. exact char suffix/prefix
+/// 2. bounded fuzzy fallback
+pub fn strip_suffix_overlap_live(last_suffix: &str, new_text: &str) -> String {
+    strip_suffix_overlap_with_params(last_suffix, new_text, LIVE_SUFFIX_OVERLAP_PARAMS)
+}
+
+fn strip_suffix_overlap_with_params(
+    last_suffix: &str,
+    new_text: &str,
+    overlap_params: OverlapParams,
+) -> String {
     if last_suffix.is_empty() {
         return new_text.to_string();
     }
@@ -198,7 +252,7 @@ pub fn strip_suffix_overlap(last_suffix: &str, new_text: &str) -> String {
         return stripped;
     }
 
-    if let Some(stripped) = strip_suffix_overlap_fuzzy(last_suffix, new_text) {
+    if let Some(stripped) = strip_suffix_overlap_fuzzy(last_suffix, new_text, overlap_params) {
         return stripped;
     }
 
@@ -235,7 +289,11 @@ fn strip_suffix_overlap_exact(last_suffix: &str, new_text: &str) -> Option<Strin
     None
 }
 
-fn strip_suffix_overlap_fuzzy(last_suffix: &str, new_text: &str) -> Option<String> {
+fn strip_suffix_overlap_fuzzy(
+    last_suffix: &str,
+    new_text: &str,
+    overlap_params: OverlapParams,
+) -> Option<String> {
     let trimmed_new = new_text.trim();
     if trimmed_new.is_empty() {
         return None;
@@ -246,7 +304,7 @@ fn strip_suffix_overlap_fuzzy(last_suffix: &str, new_text: &str) -> Option<Strin
         return None;
     }
 
-    let max_overlap_window = new_words.len().min(MAX_SUFFIX_FUZZY_OVERLAP_WORDS);
+    let max_overlap_window = new_words.len().min(overlap_params.bounded_max_window());
     let mut suffix_tail_words: Vec<&str> = last_suffix
         .split_whitespace()
         .rev()
@@ -257,12 +315,7 @@ fn strip_suffix_overlap_fuzzy(last_suffix: &str, new_text: &str) -> Option<Strin
     }
     suffix_tail_words.reverse();
 
-    let overlap = detect_word_overlap(
-        &suffix_tail_words,
-        &new_words,
-        MAX_SUFFIX_FUZZY_OVERLAP_WORDS,
-        MIN_FUZZY_OVERLAP_WORDS,
-    );
+    let overlap = detect_word_overlap(&suffix_tail_words, &new_words, overlap_params);
     if overlap == 0 {
         return None;
     }
@@ -362,5 +415,21 @@ mod tests {
             "the patient is feelingg much better today",
         );
         assert_eq!(result, "today");
+    }
+
+    #[test]
+    fn test_suffix_overlap_live_fuzzy_typo() {
+        let result = strip_suffix_overlap_live(
+            "the patient is feeling much better",
+            "the patient is feelingg much better today",
+        );
+        assert_eq!(result, "today");
+    }
+
+    #[test]
+    fn test_suffix_overlap_live_small_windows_do_not_trigger_fuzzy() {
+        // 2-word span stays strict-only in live mode (min fuzzy overlap = 3).
+        let result = strip_suffix_overlap_live("alpha beta", "alpaa betaa gamma");
+        assert_eq!(result, "alpaa betaa gamma");
     }
 }

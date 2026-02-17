@@ -151,6 +151,13 @@ pub(crate) struct SessionEngineStats {
     pub corrections_applied: u64,
     pub total_utterances: u64,
     pub dropped_audio_chunks: u64,
+    pub partial_runs_total: u64,
+    pub trigger_utterance_count: u64,
+    pub trigger_speech_count: u64,
+    pub trigger_watchdog_count: u64,
+    pub partial_stale_count: u64,
+    pub partial_coalesced_count: u64,
+    pub partial_dropped_count: u64,
 }
 
 /// Session telemetry captured from `EngineEvent`s.
@@ -223,6 +230,13 @@ impl EventSink for SessionTelemetrySink {
                 corrections_applied,
                 total_utterances,
                 dropped_audio_chunks,
+                partial_runs_total,
+                trigger_utterance_count,
+                trigger_speech_count,
+                trigger_watchdog_count,
+                partial_stale_count,
+                partial_coalesced_count,
+                partial_dropped_count,
             } => {
                 guard.stats = Some(SessionEngineStats {
                     hallucination_drops: *hallucination_drops,
@@ -231,6 +245,13 @@ impl EventSink for SessionTelemetrySink {
                     corrections_applied: *corrections_applied,
                     total_utterances: *total_utterances,
                     dropped_audio_chunks: *dropped_audio_chunks,
+                    partial_runs_total: *partial_runs_total,
+                    trigger_utterance_count: *trigger_utterance_count,
+                    trigger_speech_count: *trigger_speech_count,
+                    trigger_watchdog_count: *trigger_watchdog_count,
+                    partial_stale_count: *partial_stale_count,
+                    partial_coalesced_count: *partial_coalesced_count,
+                    partial_dropped_count: *partial_dropped_count,
                 });
             }
             _ => {}
@@ -257,6 +278,13 @@ mod tests {
             filtered_empty_drops: 4,
             corrections_applied: 5,
             total_utterances: 0,
+            partial_runs_total: 6,
+            trigger_utterance_count: 2,
+            trigger_speech_count: 3,
+            trigger_watchdog_count: 1,
+            partial_stale_count: 7,
+            partial_coalesced_count: 8,
+            partial_dropped_count: 9,
         });
 
         let snapshot = snapshot_session_telemetry(&shared);
@@ -271,6 +299,13 @@ mod tests {
         assert_eq!(stats.corrections_applied, 5);
         assert_eq!(stats.total_utterances, 0);
         assert_eq!(stats.dropped_audio_chunks, 3);
+        assert_eq!(stats.partial_runs_total, 6);
+        assert_eq!(stats.trigger_utterance_count, 2);
+        assert_eq!(stats.trigger_speech_count, 3);
+        assert_eq!(stats.trigger_watchdog_count, 1);
+        assert_eq!(stats.partial_stale_count, 7);
+        assert_eq!(stats.partial_coalesced_count, 8);
+        assert_eq!(stats.partial_dropped_count, 9);
     }
 
     #[test]

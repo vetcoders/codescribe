@@ -371,6 +371,13 @@ mod tests {
             filtered_empty_drops: 0,
             corrections_applied: 0,
             total_utterances: 0,
+            partial_runs_total: 0,
+            trigger_utterance_count: 0,
+            trigger_speech_count: 0,
+            trigger_watchdog_count: 0,
+            partial_stale_count: 0,
+            partial_coalesced_count: 0,
+            partial_dropped_count: 0,
         });
 
         assert!(collector.collected().is_empty());

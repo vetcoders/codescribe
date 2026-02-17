@@ -126,6 +126,13 @@ pub enum EngineEventWire {
         filtered_empty_drops: u64,
         corrections_applied: u64,
         total_utterances: u64,
+        partial_runs_total: u64,
+        trigger_utterance_count: u64,
+        trigger_speech_count: u64,
+        trigger_watchdog_count: u64,
+        partial_stale_count: u64,
+        partial_coalesced_count: u64,
+        partial_dropped_count: u64,
     },
     Warning {
         code: String,
@@ -186,6 +193,13 @@ impl From<&EngineEvent> for EngineEventWire {
                 filtered_empty_drops,
                 corrections_applied,
                 total_utterances,
+                partial_runs_total,
+                trigger_utterance_count,
+                trigger_speech_count,
+                trigger_watchdog_count,
+                partial_stale_count,
+                partial_coalesced_count,
+                partial_dropped_count,
             } => Self::Stats {
                 dropped_audio_chunks: *dropped_audio_chunks,
                 hallucination_drops: *hallucination_drops,
@@ -193,6 +207,13 @@ impl From<&EngineEvent> for EngineEventWire {
                 filtered_empty_drops: *filtered_empty_drops,
                 corrections_applied: *corrections_applied,
                 total_utterances: *total_utterances,
+                partial_runs_total: *partial_runs_total,
+                trigger_utterance_count: *trigger_utterance_count,
+                trigger_speech_count: *trigger_speech_count,
+                trigger_watchdog_count: *trigger_watchdog_count,
+                partial_stale_count: *partial_stale_count,
+                partial_coalesced_count: *partial_coalesced_count,
+                partial_dropped_count: *partial_dropped_count,
             },
             EngineEvent::Warning { code, message } => Self::Warning {
                 code: code.clone(),
@@ -275,6 +296,41 @@ mod tests {
         assert_eq!(
             obj.get("reason").and_then(Value::as_str),
             Some("vad_no_speech_detected")
+        );
+    }
+
+    #[test]
+    fn stats_event_serializes_partial_pass_fields() {
+        let event = EngineEvent::Stats {
+            dropped_audio_chunks: 3,
+            hallucination_drops: 2,
+            semantic_gate_drops: 1,
+            filtered_empty_drops: 4,
+            corrections_applied: 5,
+            total_utterances: 6,
+            partial_runs_total: 7,
+            trigger_utterance_count: 8,
+            trigger_speech_count: 9,
+            trigger_watchdog_count: 10,
+            partial_stale_count: 11,
+            partial_coalesced_count: 12,
+            partial_dropped_count: 13,
+        };
+        let wire = EngineEventWire::from(&event);
+        let json = serde_json::to_value(&wire).expect("serialize stats");
+        let obj = must_object(json);
+        assert_eq!(obj.get("type").and_then(Value::as_str), Some("stats"));
+        assert_eq!(
+            obj.get("partial_runs_total").and_then(Value::as_u64),
+            Some(7)
+        );
+        assert_eq!(
+            obj.get("trigger_watchdog_count").and_then(Value::as_u64),
+            Some(10)
+        );
+        assert_eq!(
+            obj.get("partial_dropped_count").and_then(Value::as_u64),
+            Some(13)
         );
     }
 

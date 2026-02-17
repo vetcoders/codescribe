@@ -123,6 +123,10 @@ pub(crate) struct SpeechSession {
     vad_frames_total: u64,
     vad_frames_speech: u64,
     last_vad_heartbeat: Instant,
+    /// Per-emitted-event Silero-positive speech samples (16k domain).
+    event_speech_vad_samples: VecDeque<u64>,
+    /// Speech samples accumulated since the last emitted speech event.
+    pending_event_speech_vad_samples: u64,
     /// Peak speech probability since the last completed segment.
     /// Used as a conservative confidence fallback for segment-level quality checks.
     max_speech_prob: f32,
@@ -225,6 +229,8 @@ impl SpeechSession {
             vad_frames_total: 0,
             vad_frames_speech: 0,
             last_vad_heartbeat: Instant::now(),
+            event_speech_vad_samples: VecDeque::new(),
+            pending_event_speech_vad_samples: 0,
             max_speech_prob: 0.0,
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
@@ -340,6 +346,8 @@ impl SpeechSession {
             vad_frames_total: 0,
             vad_frames_speech: 0,
             last_vad_heartbeat: Instant::now(),
+            event_speech_vad_samples: VecDeque::new(),
+            pending_event_speech_vad_samples: 0,
             max_speech_prob: 0.0,
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
@@ -490,6 +498,14 @@ impl SpeechSession {
                 self.last_boundary_prob = speech_prob;
             }
 
+            // Speech-time integrity: count only Silero-positive VAD frames while
+            // a Supervisor segment is active.
+            if self.segment_start.is_some() && speech_prob >= self.threshold {
+                self.pending_event_speech_vad_samples = self
+                    .pending_event_speech_vad_samples
+                    .saturating_add(vad::CHUNK_SIZE as u64);
+            }
+
             if let Some(iter_state) = self.iter_state.as_ref() {
                 trace!(
                     "VAD index sync: vad_current={} raw_cursor={} mapped={}",
@@ -509,7 +525,7 @@ impl SpeechSession {
             {
                 let end = self.raw_cursor;
                 if let Some(chunk) = self.raw_slice(self.last_emit_raw, end) {
-                    events.push(SpeechEvent::Chunk(chunk));
+                    self.push_event_with_speech_vad_samples(&mut events, SpeechEvent::Chunk(chunk));
                 }
                 if overlap_size > 0 {
                     self.last_emit_raw = end.saturating_sub(overlap_size);
@@ -535,7 +551,10 @@ impl SpeechSession {
                         chunk.len(),
                         chunk.len() as f32 / self.output_sample_rate as f32
                     );
-                    events.push(SpeechEvent::Utterance(chunk));
+                    self.push_event_with_speech_vad_samples(
+                        &mut events,
+                        SpeechEvent::Utterance(chunk),
+                    );
                 }
                 self.last_emit_raw = end;
                 self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
@@ -549,8 +568,12 @@ impl SpeechSession {
                 && let Some(chunk) = self.raw_slice(start, end)
             {
                 match self.mode {
-                    SpeechMode::Stream { .. } => events.push(SpeechEvent::Chunk(chunk)),
-                    SpeechMode::Utterance { .. } => events.push(SpeechEvent::UtteranceFinal(chunk)),
+                    SpeechMode::Stream { .. } => self
+                        .push_event_with_speech_vad_samples(&mut events, SpeechEvent::Chunk(chunk)),
+                    SpeechMode::Utterance { .. } => self.push_event_with_speech_vad_samples(
+                        &mut events,
+                        SpeechEvent::UtteranceFinal(chunk),
+                    ),
                 }
             }
             self.pending_end = None;
@@ -585,14 +608,18 @@ impl SpeechSession {
                         end,
                         chunk.len()
                     );
+                    let speech_vad_samples = self.take_pending_event_speech_vad_samples();
+                    self.event_speech_vad_samples.push_back(speech_vad_samples);
                     self.segment_peak_prob = 0.0;
                     return Some(match self.mode {
                         SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
                         SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
                     });
                 }
+                self.pending_event_speech_vad_samples = 0;
             }
             // VAD never triggered Start: drop silently.
+            self.pending_event_speech_vad_samples = 0;
             return None;
         }
         if self.pending_samples.is_empty() {
@@ -781,6 +808,20 @@ impl SpeechSession {
         }
     }
 
+    fn take_pending_event_speech_vad_samples(&mut self) -> u64 {
+        std::mem::take(&mut self.pending_event_speech_vad_samples)
+    }
+
+    fn push_event_with_speech_vad_samples(
+        &mut self,
+        events: &mut Vec<SpeechEvent>,
+        event: SpeechEvent,
+    ) {
+        let speech_vad_samples = self.take_pending_event_speech_vad_samples();
+        self.event_speech_vad_samples.push_back(speech_vad_samples);
+        events.push(event);
+    }
+
     fn gate_with_iter(&mut self, audio: &[f32], speech_prob: f32) -> GateDecision {
         let Some(iter_state) = self.iter_state.as_mut() else {
             return self.gate_with_prob(audio, speech_prob);
@@ -871,6 +912,11 @@ impl SpeechSession {
         } else {
             self.max_speech_prob
         }
+    }
+
+    /// Silero-positive speech samples (16k domain) for the next emitted speech event.
+    pub(crate) fn take_event_speech_vad_samples(&mut self) -> u64 {
+        self.event_speech_vad_samples.pop_front().unwrap_or(0)
     }
 
     pub(crate) fn take_vad_error_stats(&mut self) -> Option<VadErrorStats> {

@@ -293,6 +293,20 @@ pub enum EngineEvent {
         filtered_empty_drops: u64,
         corrections_applied: u64,
         total_utterances: u64,
+        /// Number of partial-pass refine runs attempted in this session.
+        partial_runs_total: u64,
+        /// Partial-pass runs triggered by utterance-count threshold.
+        trigger_utterance_count: u64,
+        /// Partial-pass runs triggered by speech-duration threshold.
+        trigger_speech_count: u64,
+        /// Partial-pass runs triggered by watchdog fallback.
+        trigger_watchdog_count: u64,
+        /// Refinement results suppressed by stale-guard checks.
+        partial_stale_count: u64,
+        /// Tracked refine runs superseded by newer partial-pass requests.
+        partial_coalesced_count: u64,
+        /// Partial-pass runs dropped (submit/queue/shutdown paths).
+        partial_dropped_count: u64,
     },
 
     /// Recoverable error — engine continues.
@@ -563,15 +577,26 @@ mod tests {
             filtered_empty_drops: 0,
             corrections_applied: 4,
             total_utterances: 10,
+            partial_runs_total: 7,
+            trigger_utterance_count: 4,
+            trigger_speech_count: 2,
+            trigger_watchdog_count: 1,
+            partial_stale_count: 3,
+            partial_coalesced_count: 2,
+            partial_dropped_count: 1,
         };
         if let EngineEvent::Stats {
             total_utterances,
             hallucination_drops,
+            partial_runs_total,
+            trigger_watchdog_count,
             ..
         } = event
         {
             assert_eq!(total_utterances, 10);
             assert_eq!(hallucination_drops, 3);
+            assert_eq!(partial_runs_total, 7);
+            assert_eq!(trigger_watchdog_count, 1);
         } else {
             panic!("Expected Stats variant");
         }
