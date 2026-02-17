@@ -1698,6 +1698,40 @@ mod tests {
     }
 
     #[test]
+    fn test_supervisor_flush_tracks_event_speech_samples() {
+        let sr = 16000u32;
+        let mut session = SpeechSession::new_utterance(sr);
+
+        if session.gate_mode() != VadGateMode::Supervisor {
+            eprintln!("Skipping: gate mode is not Supervisor");
+            return;
+        }
+
+        let total_samples = sr as usize;
+        session.raw_buffer.extend(vec![0.2; total_samples]);
+        session.raw_cursor = total_samples;
+        session.segment_start = Some(0);
+        session.pending_end = None;
+        session.pending_event_speech_vad_samples = vad::VAD_SAMPLE_RATE as u64 * 6;
+
+        let flush = session.flush();
+        assert!(
+            matches!(flush, Some(SpeechEvent::UtteranceFinal(_))),
+            "flush should emit the open Supervisor segment"
+        );
+        assert_eq!(
+            session.take_event_speech_vad_samples(),
+            vad::VAD_SAMPLE_RATE as u64 * 6,
+            "flush event should carry Silero-positive speech samples for trigger accounting"
+        );
+        assert_eq!(
+            session.take_event_speech_vad_samples(),
+            0,
+            "event speech sample queue should be drained"
+        );
+    }
+
+    #[test]
     fn test_vad_unavailable_is_measured_and_does_not_assume_speech() {
         let sr = 16000u32;
         let mut session = SpeechSession::new_utterance(sr);

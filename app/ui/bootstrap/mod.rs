@@ -37,7 +37,10 @@ const SIDEBAR_WIDTH: f64 = 204.0;
 const SETTINGS_WINDOW_WIDTH: f64 = 760.0;
 const SETTINGS_WINDOW_HEIGHT: f64 = 660.0;
 const SETTINGS_TOPBAR_HEIGHT: f64 = 54.0;
-const SETTINGS_MAX_OPACITY: f64 = 0.80;
+// Match chat/transcription overlays: full-opacity window + full-opacity glass layers.
+// In AppKit vibrancy, there is no direct blur-radius knob on NSVisualEffectView,
+// so opacity is the safest lever to increase perceived glass strength.
+const SETTINGS_MAX_OPACITY: f64 = 1.00;
 const SETTINGS_CONTENT_INSET_X: f64 = 20.0;
 const SETTINGS_CONTENT_INSET_Y: f64 = 12.0;
 const TAB_SETUP: usize = 0;
@@ -50,6 +53,13 @@ const TAB_COUNT: usize = 5;
 const STEP_TEST_MIC: usize = 0;
 const STEP_SHOW_OVERLAY: usize = 1;
 const STEP_PRESS_HOTKEY: usize = 2;
+
+unsafe fn intensify_settings_glass(view: Id) {
+    let supports_emphasized: bool = msg_send![view, respondsToSelector: sel!(setEmphasized:)];
+    if supports_emphasized {
+        let _: () = msg_send![view, setEmphasized: true];
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum VoiceLabFieldKind {
@@ -344,7 +354,7 @@ fn show_bootstrap_overlay_impl() {
         // fullscreen transition crashes with our custom content setup.
         let window = create_floating_window(frame, "Settings", true, false);
         let _: () = msg_send![window, setOpaque: false];
-        // Keep Settings less translucent than overlay windows for better observability.
+        // Keep Settings glass/opacity aligned with chat + transcription overlays.
         let _: () = msg_send![window, setAlphaValue: SETTINGS_MAX_OPACITY];
         let _: () = msg_send![window, setLevel: crate::ui_helpers::NS_NORMAL_WINDOW_LEVEL];
         // Disallow fullscreen/zoom to avoid triggering AppKit fullscreen snapshots that can crash.
@@ -610,11 +620,12 @@ unsafe fn build_settings_ui(
         );
         let topbar_bg = create_glass_effect_view_with(
             topbar_frame,
-            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectMaterial::FullScreenUI,
             objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
             objc2_app_kit::NSVisualEffectState::Active,
         );
         let _: () = msg_send![topbar_bg, setAlphaValue: SETTINGS_MAX_OPACITY];
+        intensify_settings_glass(topbar_bg);
         let _: () = msg_send![
             topbar_bg,
             setAutoresizingMask: 2_isize | 8_isize // Width | MinYMargin
@@ -699,34 +710,36 @@ unsafe fn build_settings_ui(
         add_subview(topbar_controls, subtitle_label);
 
         // ── Glass Split Structure ────────────────────────────────────
-        // Left: Sidebar (Material: Sidebar)
+        // Left: Sidebar (stronger frosted panel material)
         let sidebar_frame =
             CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, body_h));
         let sidebar_bg = create_glass_effect_view_with(
             sidebar_frame,
-            NSVisualEffectMaterial::Sidebar,
+            NSVisualEffectMaterial::UnderWindowBackground,
             objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
             objc2_app_kit::NSVisualEffectState::Active,
         );
         let _: () = msg_send![sidebar_bg, setAlphaValue: SETTINGS_MAX_OPACITY];
+        intensify_settings_glass(sidebar_bg);
         let _: () = msg_send![
             sidebar_bg,
             setAutoresizingMask: 16_isize | 2_isize // Height | MinXMargin (fixed left)
         ];
         add_subview(root_view, sidebar_bg);
 
-        // Right: Content (Material: HUDWindow for richer contrast, aligned with onboarding)
+        // Right: Content (stronger frosted panel material)
         let content_bg_frame = CGRect::new(
             &CGPoint::new(SIDEBAR_WIDTH, 0.0),
             &CGSize::new(settings_width - SIDEBAR_WIDTH, body_h),
         );
         let content_bg = create_glass_effect_view_with(
             content_bg_frame,
-            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectMaterial::FullScreenUI,
             objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
             objc2_app_kit::NSVisualEffectState::Active,
         );
         let _: () = msg_send![content_bg, setAlphaValue: SETTINGS_MAX_OPACITY];
+        intensify_settings_glass(content_bg);
         let _: () = msg_send![
             content_bg,
             setAutoresizingMask: 16_isize | 2_isize // Height | Width

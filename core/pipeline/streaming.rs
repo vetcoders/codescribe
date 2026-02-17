@@ -140,13 +140,13 @@ fn should_drop_short_utterance(audio_samples: usize, sample_rate: u32, speech_pr
 }
 
 fn silero_vad_samples_to_ms(samples: u64) -> u64 {
-    samples.saturating_mul(1_000) / u64::from(crate::vad::VAD_SAMPLE_RATE)
+    samples.saturating_mul(1_000) / u64::from(vad::VAD_SAMPLE_RATE)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PartialPassTriggerReason {
-    UtteranceFinals,
-    SileroSpeech,
+enum PartialPassTrigger {
+    Utterance,
+    Speech,
     Watchdog,
 }
 
@@ -158,13 +158,13 @@ struct PartialPassTriggerFlags {
 }
 
 impl PartialPassTriggerFlags {
-    fn primary_reason(self) -> Option<PartialPassTriggerReason> {
+    fn primary_reason(self) -> Option<PartialPassTrigger> {
         if self.utterance_finals {
-            Some(PartialPassTriggerReason::UtteranceFinals)
+            Some(PartialPassTrigger::Utterance)
         } else if self.silero_speech {
-            Some(PartialPassTriggerReason::SileroSpeech)
+            Some(PartialPassTrigger::Speech)
         } else if self.watchdog {
-            Some(PartialPassTriggerReason::Watchdog)
+            Some(PartialPassTrigger::Watchdog)
         } else {
             None
         }
@@ -215,17 +215,8 @@ impl PartialPassTriggerState {
     }
 }
 
-fn silero_speech_seconds(speech_vad_samples: u64) -> f32 {
-    speech_vad_samples as f32 / vad::VAD_SAMPLE_RATE as f32
-}
-
-fn should_schedule_correction(
-    utterance_count: usize,
-    min_utterances: usize,
-    speech_vad_samples: u64,
-    min_sec: f32,
-) -> bool {
-    utterance_count >= min_utterances || silero_speech_seconds(speech_vad_samples) >= min_sec
+fn silero_speech_seconds(speech_ms: u64) -> f32 {
+    speech_ms as f32 / 1_000.0
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -410,13 +401,6 @@ fn correction_is_stale(
     expected_preview_rev != current_preview_rev || expected_text != current_text
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PartialPassTrigger {
-    Utterance,
-    Speech,
-    Watchdog,
-}
-
 #[derive(Debug, Default, Clone, Copy)]
 struct PartialPassTelemetry {
     runs_total: u64,
@@ -457,22 +441,8 @@ impl PartialPassTelemetry {
     }
 }
 
-fn classify_partial_trigger(
-    utterance_count: usize,
-    correction_min_utterances: usize,
-    speech_duration_s: f32,
-    correction_min_sec: f32,
-) -> Option<PartialPassTrigger> {
-    let utterance_triggered = utterance_count >= correction_min_utterances;
-    let speech_triggered = speech_duration_s >= correction_min_sec;
-    if utterance_triggered {
-        // Deterministic tie-break: when both thresholds are true, classify as utterance-triggered.
-        Some(PartialPassTrigger::Utterance)
-    } else if speech_triggered {
-        Some(PartialPassTrigger::Speech)
-    } else {
-        None
-    }
+fn classify_partial_trigger(flags: PartialPassTriggerFlags) -> Option<PartialPassTrigger> {
+    flags.primary_reason()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -488,13 +458,13 @@ fn schedule_partial_pass(
     suffix_snapshot: &str,
     preview_rev: u64,
     accumulated_text: &str,
-    speech_duration_s: f32,
+    speech_ms_since_partial: u64,
     trigger: PartialPassTrigger,
     partial_telemetry: &mut PartialPassTelemetry,
     event_sink: &Arc<dyn EventSink>,
-) {
+) -> bool {
     if correction_audio_buf.is_empty() {
-        return;
+        return false;
     }
     let audio = std::mem::take(correction_audio_buf);
     let audio_duration_s = audio.len() as f32 / output_sample_rate as f32;
@@ -508,12 +478,11 @@ fn schedule_partial_pass(
         );
     }
 
-    partial_telemetry.record_run(trigger);
     debug!(
         expected_rev = preview_rev,
         baseline_len = accumulated_text.chars().count(),
         audio_sec = audio_duration_s,
-        silero_speech_sec = speech_duration_s,
+        silero_speech_sec = silero_speech_seconds(speech_ms_since_partial),
         trigger = ?trigger,
         runs_total = partial_telemetry.runs_total,
         "BOUNDARY correction_scheduled"
@@ -526,10 +495,12 @@ fn schedule_partial_pass(
         pipeline_language,
     ) {
         Ok(handle) => {
+            partial_telemetry.record_run(trigger);
             *correction_expected_preview_rev = Some(preview_rev);
             *correction_expected_text = Some(accumulated_text.to_string());
             *correction_suffix_snapshot = Some(suffix_snapshot.to_string());
             *correction_in_flight = Some(handle);
+            true
         }
         Err(e) => {
             partial_telemetry.record_dropped();
@@ -538,6 +509,7 @@ fn schedule_partial_pass(
                 code: "scheduler_submit_error".to_string(),
                 message: format!("{}", e),
             });
+            false
         }
     }
 }
@@ -808,9 +780,6 @@ pub(crate) async fn transcription_session(
 
     info!("Transcription session started (event-based pipeline)");
 
-    let correction_min_utterances = buffered_correction_min_utterances();
-    let correction_min_sec = buffered_correction_min_sec();
-
     let mut session = if let Some(sec) = utterance_silence_sec {
         SpeechSession::new_utterance_with_silence(sample_rate, sec)
     } else {
@@ -844,8 +813,7 @@ pub(crate) async fn transcription_session(
 
     // Phase 2 correction state
     let mut correction_audio_buf: Vec<f32> = Vec::new();
-    let mut utterance_count: usize = 0;
-    let mut correction_speech_vad_samples: u64 = 0;
+    let mut partial_trigger_state = PartialPassTriggerState::new(Instant::now());
     let mut suffix_snapshot = String::new();
 
     // Decouple audio ingestion from Whisper inference.
@@ -939,32 +907,30 @@ pub(crate) async fn transcription_session(
             }
         }
 
-        // Watchdog fallback: if input is closed and only partial correction audio remains,
-        // force one last refine run with an explicit watchdog trigger.
-        if audio_closed
-            && pending_utterances.is_empty()
-            && inference_pipeline.is_empty()
-            && correction_in_flight.is_none()
-            && !correction_audio_buf.is_empty()
-        {
-            schedule_partial_pass(
-                &stt_scheduler,
-                output_sample_rate,
-                pipeline.language.clone(),
-                &mut correction_audio_buf,
-                &mut correction_in_flight,
-                &mut correction_expected_preview_rev,
-                &mut correction_expected_text,
-                &mut correction_suffix_snapshot,
-                &suffix_snapshot,
-                preview_rev,
-                &accumulated_text,
-                silero_speech_seconds(correction_speech_vad_samples),
-                PartialPassTrigger::Watchdog,
-                &mut partial_telemetry,
-                &event_sink,
-            );
-            correction_speech_vad_samples = 0;
+        if correction_in_flight.is_none() && !correction_audio_buf.is_empty() {
+            let now = Instant::now();
+            let trigger_flags = partial_trigger_state.evaluate(now);
+            if let Some(trigger) = classify_partial_trigger(trigger_flags)
+                && schedule_partial_pass(
+                    &stt_scheduler,
+                    output_sample_rate,
+                    pipeline.language.clone(),
+                    &mut correction_audio_buf,
+                    &mut correction_in_flight,
+                    &mut correction_expected_preview_rev,
+                    &mut correction_expected_text,
+                    &mut correction_suffix_snapshot,
+                    &suffix_snapshot,
+                    preview_rev,
+                    &accumulated_text,
+                    partial_trigger_state.silero_speech_ms_since_partial,
+                    trigger,
+                    &mut partial_telemetry,
+                    &event_sink,
+                )
+            {
+                partial_trigger_state.reset_after_success(now);
+            }
         }
 
         // If audio is closed and there is no work left, finish.
@@ -972,7 +938,6 @@ pub(crate) async fn transcription_session(
             && pending_utterances.is_empty()
             && inference_pipeline.is_empty()
             && correction_in_flight.is_none()
-            && correction_audio_buf.is_empty()
         {
             break;
         }
@@ -1134,6 +1099,34 @@ pub(crate) async fn transcription_session(
                     }
                 }
             }
+            _ = tokio::time::sleep_until(
+                partial_trigger_state.watchdog_baseline
+                    + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS)
+            ), if correction_in_flight.is_none() && !correction_audio_buf.is_empty() => {
+                let now = Instant::now();
+                let trigger_flags = partial_trigger_state.evaluate(now);
+                if let Some(trigger) = classify_partial_trigger(trigger_flags)
+                    && schedule_partial_pass(
+                        &stt_scheduler,
+                        output_sample_rate,
+                        pipeline.language.clone(),
+                        &mut correction_audio_buf,
+                        &mut correction_in_flight,
+                        &mut correction_expected_preview_rev,
+                        &mut correction_expected_text,
+                        &mut correction_suffix_snapshot,
+                        &suffix_snapshot,
+                        preview_rev,
+                        &accumulated_text,
+                        partial_trigger_state.silero_speech_ms_since_partial,
+                        trigger,
+                        &mut partial_telemetry,
+                        &event_sink,
+                    )
+                {
+                    partial_trigger_state.reset_after_success(now);
+                }
+            }
             result = async {
                 correction_in_flight.as_mut().unwrap().recv().await
             }, if correction_in_flight.is_some() => {
@@ -1220,6 +1213,11 @@ pub(crate) async fn transcription_session(
                 utterance_audio_samples += item.audio.len();
                 let chunk_start_ts =
                     utterance_start_s + chunk_start_samples as f32 / output_sample_rate as f32;
+                if correction_audio_buf.is_empty() {
+                    suffix_snapshot = pipeline.last_suffix.clone();
+                }
+                correction_audio_buf.extend_from_slice(&item.audio);
+                partial_trigger_state.observe_speech_event(item.is_final, item.speech_vad_samples);
 
                 match result {
                     Ok(raw_transcript) => {
@@ -1246,9 +1244,6 @@ pub(crate) async fn transcription_session(
                             }
                         } else {
                             utterance_segments.extend(raw_segments.clone());
-                        }
-                        if utterance_count == 0 && correction_audio_buf.is_empty() {
-                            suffix_snapshot = pipeline.last_suffix.clone();
                         }
 
                         if let Some(words_per_sec) =
@@ -1361,54 +1356,30 @@ pub(crate) async fn transcription_session(
                                 });
                                 vad_started = false;
                             }
-
-                            // Reset Phase 2 correction window on utterance boundary.
-                            // Any in-flight correction will be suppressed by stale guards
-                            // (preview rev + baseline text mismatch).
-                            correction_audio_buf.clear();
-                            utterance_count = 0;
-                            correction_speech_vad_samples = 0;
-                        } else {
-                            // Phase 2 correction accumulation — only for non-final items.
-                            // Spawning correction on a final item would produce a stale
-                            // Correction event after UtteranceFinal has already fired.
-                            correction_audio_buf.extend_from_slice(&item.audio);
-                            utterance_count += 1;
-                            correction_speech_vad_samples = correction_speech_vad_samples
-                                .saturating_add(item.speech_vad_samples);
-                            let speech_duration_s =
-                                silero_speech_seconds(correction_speech_vad_samples);
-                            if should_schedule_correction(
-                                utterance_count,
-                                correction_min_utterances,
-                                correction_speech_vad_samples,
-                                correction_min_sec,
-                            ) && let Some(trigger) = classify_partial_trigger(
-                                utterance_count,
-                                correction_min_utterances,
-                                speech_duration_s,
-                                correction_min_sec,
-                            ) {
-                                utterance_count = 0;
-                                correction_speech_vad_samples = 0;
-                                schedule_partial_pass(
-                                    &stt_scheduler,
-                                    output_sample_rate,
-                                    pipeline.language.clone(),
-                                    &mut correction_audio_buf,
-                                    &mut correction_in_flight,
-                                    &mut correction_expected_preview_rev,
-                                    &mut correction_expected_text,
-                                    &mut correction_suffix_snapshot,
-                                    &suffix_snapshot,
-                                    preview_rev,
-                                    &accumulated_text,
-                                    speech_duration_s,
-                                    trigger,
-                                    &mut partial_telemetry,
-                                    &event_sink,
-                                );
-                            }
+                        }
+                        let now = Instant::now();
+                        let trigger_flags = partial_trigger_state.evaluate(now);
+                        if correction_in_flight.is_none()
+                            && let Some(trigger) = classify_partial_trigger(trigger_flags)
+                            && schedule_partial_pass(
+                                &stt_scheduler,
+                                output_sample_rate,
+                                pipeline.language.clone(),
+                                &mut correction_audio_buf,
+                                &mut correction_in_flight,
+                                &mut correction_expected_preview_rev,
+                                &mut correction_expected_text,
+                                &mut correction_suffix_snapshot,
+                                &suffix_snapshot,
+                                preview_rev,
+                                &accumulated_text,
+                                partial_trigger_state.silero_speech_ms_since_partial,
+                                trigger,
+                                &mut partial_telemetry,
+                                &event_sink,
+                            )
+                        {
+                            partial_trigger_state.reset_after_success(now);
                         }
                     }
                     Err(e) => {
@@ -1541,6 +1512,7 @@ struct PendingUtteranceWorkItem {
     inference_audio: Vec<f32>,
     is_final: bool,
     max_speech_prob: f32,
+    speech_vad_samples: u64,
 }
 
 #[derive(Debug)]
@@ -1548,6 +1520,7 @@ struct UtteranceWorkItem {
     audio: Vec<f32>,
     inference_audio_len: usize,
     is_final: bool,
+    speech_vad_samples: u64,
 }
 
 // ── Offline/test: batch streaming transcription ──────────────────────────────
@@ -1835,14 +1808,6 @@ fn inference_max_concurrency() -> usize {
     .clamp(1, HARD_MAX_INFERENCE_CONCURRENCY)
 }
 
-fn buffered_correction_min_utterances() -> usize {
-    env_usize("CODESCRIBE_BUFFERED_CORRECTION_UTTERANCES", 1).clamp(1, 10)
-}
-
-fn buffered_correction_min_sec() -> f32 {
-    env_f32("CODESCRIBE_BUFFERED_CORRECTION_SEC", 2.5).clamp(1.0, 60.0)
-}
-
 fn buffered_correction_prefix_ratio() -> f64 {
     env_f32("CODESCRIBE_BUFFERED_CORRECTION_PREFIX", 0.60).clamp(0.4, 0.9) as f64
 }
@@ -1864,6 +1829,16 @@ pub(crate) fn stream_overlap_sec(chunk_duration_sec: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::pipeline::sinks::CollectorEventSink;
+
+    fn pending_item(is_final: bool) -> PendingUtteranceWorkItem {
+        PendingUtteranceWorkItem {
+            audio: vec![0.1; 32],
+            inference_audio: vec![0.1; 32],
+            is_final,
+            max_speech_prob: 0.9,
+            speech_vad_samples: 512,
+        }
+    }
 
     #[test]
     fn test_postprocess_components() {
@@ -1928,6 +1903,138 @@ mod tests {
         let short = (0.2 * sample_rate as f32) as usize;
         assert!(should_drop_short_utterance(short, sample_rate, 0.40));
         assert!(!should_drop_short_utterance(short, sample_rate, 0.80));
+    }
+
+    #[test]
+    fn test_enqueue_pending_utterance_preserves_final_boundary_when_full() {
+        let mut pending = VecDeque::new();
+        pending.push_back(pending_item(false));
+        pending.push_back(pending_item(false));
+
+        let outcome = enqueue_pending_utterance(&mut pending, pending_item(true), 2);
+        assert!(outcome.enqueued, "final item should be admitted");
+        assert_eq!(outcome.dropped, 1, "one older non-final should be evicted");
+        assert!(
+            !outcome.evicted_final,
+            "non-final eviction should be preferred for final boundaries"
+        );
+        assert_eq!(pending.len(), 2);
+        assert!(
+            pending.back().is_some_and(|item| item.is_final),
+            "latest queued item should be final boundary"
+        );
+    }
+
+    #[test]
+    fn test_enqueue_pending_utterance_drops_non_final_when_full() {
+        let mut pending = VecDeque::new();
+        pending.push_back(pending_item(false));
+        pending.push_back(pending_item(true));
+
+        let outcome = enqueue_pending_utterance(&mut pending, pending_item(false), 2);
+        assert!(!outcome.enqueued);
+        assert_eq!(outcome.dropped, 1);
+        assert_eq!(pending.len(), 2, "queue should stay unchanged");
+    }
+
+    #[test]
+    fn test_enqueue_pending_utterance_still_admits_final_when_only_finals_queued() {
+        let mut pending = VecDeque::new();
+        pending.push_back(pending_item(true));
+        pending.push_back(pending_item(true));
+
+        let outcome = enqueue_pending_utterance(&mut pending, pending_item(true), 2);
+        assert!(outcome.enqueued, "latest final should still be admitted");
+        assert_eq!(outcome.dropped, 1, "one older final should be evicted");
+        assert!(outcome.evicted_final);
+        assert_eq!(pending.len(), 2);
+        assert!(pending.back().is_some_and(|item| item.is_final));
+    }
+
+    #[test]
+    fn test_partial_trigger_contract_utterance_path() {
+        let now = Instant::now();
+        let mut state = PartialPassTriggerState::new(now);
+
+        state.observe_speech_event(true, 0);
+        state.observe_speech_event(true, 0);
+        assert_eq!(
+            classify_partial_trigger(state.evaluate(now + Duration::from_secs(1))),
+            None
+        );
+
+        state.observe_speech_event(true, 0);
+        assert_eq!(
+            classify_partial_trigger(state.evaluate(now + Duration::from_secs(1))),
+            Some(PartialPassTrigger::Utterance),
+            "3 UtteranceFinal events should trigger partial pass"
+        );
+    }
+
+    #[test]
+    fn test_partial_trigger_contract_silero_speech_path() {
+        let now = Instant::now();
+        let mut state = PartialPassTriggerState::new(now);
+        let one_second = u64::from(vad::VAD_SAMPLE_RATE);
+
+        for _ in 0..5 {
+            state.observe_speech_event(false, one_second);
+        }
+        assert_eq!(
+            classify_partial_trigger(state.evaluate(now + Duration::from_secs(1))),
+            None
+        );
+
+        state.observe_speech_event(false, one_second);
+        assert_eq!(
+            classify_partial_trigger(state.evaluate(now + Duration::from_secs(1))),
+            Some(PartialPassTrigger::Speech),
+            "6s of Silero-positive speech should trigger partial pass"
+        );
+    }
+
+    #[test]
+    fn test_partial_trigger_contract_watchdog_path() {
+        let now = Instant::now();
+        let state = PartialPassTriggerState::new(now);
+
+        assert_eq!(
+            classify_partial_trigger(state.evaluate(now + Duration::from_millis(11_999))),
+            None
+        );
+        assert_eq!(
+            classify_partial_trigger(state.evaluate(now + Duration::from_millis(12_000))),
+            Some(PartialPassTrigger::Watchdog),
+            "12s watchdog should trigger partial pass"
+        );
+    }
+
+    #[test]
+    fn test_partial_trigger_coalesces_and_reset_clears_watchdog_baseline() {
+        let now = Instant::now();
+        let mut state = PartialPassTriggerState::new(now);
+        let two_seconds = u64::from(vad::VAD_SAMPLE_RATE) * 2;
+
+        for _ in 0..3 {
+            state.observe_speech_event(true, two_seconds);
+        }
+        let due_at = now + Duration::from_millis(12_000);
+        let flags = state.evaluate(due_at);
+        assert!(flags.utterance_finals);
+        assert!(flags.silero_speech);
+        assert!(flags.watchdog);
+        assert_eq!(
+            classify_partial_trigger(flags),
+            Some(PartialPassTrigger::Utterance),
+            "simultaneous triggers should coalesce into one deterministic run"
+        );
+
+        state.reset_after_success(due_at);
+        assert_eq!(
+            classify_partial_trigger(state.evaluate(due_at + Duration::from_millis(1))),
+            None,
+            "successful partial pass must reset watchdog baseline"
+        );
     }
 
     #[test]
@@ -2028,30 +2135,6 @@ mod tests {
     #[test]
     fn test_correction_stale_guard_detects_text_drift() {
         assert!(correction_is_stale(9, 9, "ala ma", "ala ma kota"));
-    }
-
-    #[test]
-    fn test_classify_partial_trigger_is_deterministic() {
-        assert_eq!(
-            classify_partial_trigger(1, 2, 1.0, 2.0),
-            None,
-            "no threshold hit should not trigger partial pass"
-        );
-        assert_eq!(
-            classify_partial_trigger(2, 2, 1.0, 2.0),
-            Some(PartialPassTrigger::Utterance),
-            "utterance threshold should classify as utterance trigger"
-        );
-        assert_eq!(
-            classify_partial_trigger(1, 2, 2.0, 2.0),
-            Some(PartialPassTrigger::Speech),
-            "speech-duration threshold should classify as speech trigger"
-        );
-        assert_eq!(
-            classify_partial_trigger(2, 2, 3.0, 2.0),
-            Some(PartialPassTrigger::Utterance),
-            "when both thresholds hit, utterance trigger wins tie-break deterministically"
-        );
     }
 
     #[test]
