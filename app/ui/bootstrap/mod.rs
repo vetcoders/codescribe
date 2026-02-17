@@ -632,6 +632,9 @@ unsafe fn build_settings_ui(
         ];
         let topbar_layer: Id = msg_send![topbar_bg, layer];
         if !topbar_layer.is_null() {
+            // Root view owns outer window rounding; keep section junctions flush.
+            let _: () = msg_send![topbar_layer, setCornerRadius: 0.0f64];
+            let _: () = msg_send![topbar_layer, setMasksToBounds: true];
             let _: () = msg_send![topbar_layer, setBorderWidth: 0.0f64];
         }
         add_subview(root_view, topbar_bg);
@@ -725,6 +728,12 @@ unsafe fn build_settings_ui(
             sidebar_bg,
             setAutoresizingMask: 16_isize | 2_isize // Height | MinXMargin (fixed left)
         ];
+        let sidebar_layer: Id = msg_send![sidebar_bg, layer];
+        if !sidebar_layer.is_null() {
+            // Prevent inner panel corner rounding between topbar/sidebar/content.
+            let _: () = msg_send![sidebar_layer, setCornerRadius: 0.0f64];
+            let _: () = msg_send![sidebar_layer, setMasksToBounds: true];
+        }
         add_subview(root_view, sidebar_bg);
 
         // Right: Content (stronger frosted panel material)
@@ -744,6 +753,12 @@ unsafe fn build_settings_ui(
             content_bg,
             setAutoresizingMask: 16_isize | 2_isize // Height | Width
         ];
+        let content_layer: Id = msg_send![content_bg, layer];
+        if !content_layer.is_null() {
+            // Prevent inner panel corner rounding between topbar/sidebar/content.
+            let _: () = msg_send![content_layer, setCornerRadius: 0.0f64];
+            let _: () = msg_send![content_layer, setMasksToBounds: true];
+        }
         add_subview(root_view, content_bg);
 
         let split_divider = create_label(LabelConfig {

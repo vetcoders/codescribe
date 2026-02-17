@@ -67,6 +67,8 @@ const NSVIEW_MAX_Y_MARGIN: isize = 32;
 
 const CACORNER_MIN_X_MIN_Y: u64 = 1 << 0;
 const CACORNER_MAX_X_MIN_Y: u64 = 1 << 1;
+const CACORNER_MIN_X_MAX_Y: u64 = 1 << 2;
+const CACORNER_MAX_X_MAX_Y: u64 = 1 << 3;
 
 pub(super) fn shortcuts_lines(hold: HoldMods, toggle: ToggleTrigger) -> (String, String) {
     let hold_line = match hold {
@@ -309,7 +311,9 @@ fn show_voice_chat_overlay_impl() {
         if !header_layer.is_null() {
             let radius = ui_tokens::CORNER_RADIUS_LG;
             let _: () = msg_send![header_layer, setCornerRadius: radius];
-            let corners = CACORNER_MIN_X_MIN_Y | CACORNER_MAX_X_MIN_Y;
+            // Keep header rounding only on the outer top edge to avoid
+            // unnatural arcs at the bottom boundary of the header.
+            let corners = CACORNER_MIN_X_MAX_Y | CACORNER_MAX_X_MAX_Y;
             let _: () = msg_send![header_layer, setMaskedCorners: corners];
             let _: () = msg_send![header_layer, setMasksToBounds: true];
         }
@@ -637,6 +641,7 @@ fn show_voice_chat_overlay_impl() {
         let sidebar_layer: Id = msg_send![sidebar_view, layer];
         if !sidebar_layer.is_null() {
             let _: () = msg_send![sidebar_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
+            let _: () = msg_send![sidebar_layer, setMaskedCorners: CACORNER_MIN_X_MIN_Y];
             let _: () = msg_send![sidebar_layer, setMasksToBounds: true];
             let border = ui_colors::separator();
             let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
@@ -664,6 +669,7 @@ fn show_voice_chat_overlay_impl() {
             let cg_bg: Id = msg_send![bg, CGColor];
             let _: () = msg_send![content_layer, setBackgroundColor: cg_bg];
             let _: () = msg_send![content_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
+            let _: () = msg_send![content_layer, setMaskedCorners: CACORNER_MAX_X_MIN_Y];
             let _: () = msg_send![content_layer, setMasksToBounds: true];
             let border = ui_colors::separator();
             let border: Id = msg_send![border, colorWithAlphaComponent: 0.24f64];
