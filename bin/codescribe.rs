@@ -411,40 +411,67 @@ async fn handle_transcribe_file(
 }
 
 async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
-    use tokio::sync::mpsc;
+    use std::io::Write;
 
     eprintln!("CodeScribe Live Transcription");
     eprintln!("Press Ctrl+C to stop.");
 
     whisper::init()?;
 
+    // Create transcript log file — clean text only, one utterance per line.
+    let log_dir = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".codescribe/logs");
+    std::fs::create_dir_all(&log_dir)?;
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let log_path = log_dir.join(format!("live_{timestamp}.log"));
+    let log_file = Arc::new(Mutex::new(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?,
+    ));
+    eprintln!("Transcript log: {}", log_path.display());
+
+    // Auto-open log in Console.app for live tailing.
+    let _ = std::process::Command::new("open")
+        .arg("-a")
+        .arg("Console")
+        .arg(&log_path)
+        .spawn();
+
     let mut recorder = codescribe::audio::streaming_recorder::StreamingRecorder::new()?;
-    let (vad_tx, mut vad_rx) = mpsc::unbounded_channel::<()>();
-    recorder.recorder.set_on_vad_stop({
-        let vad_tx = vad_tx.clone();
-        move || {
-            let _ = vad_tx.send(());
-        }
-    });
+    // Disable auto-silence stop — live mode runs until Ctrl+C.
+    // Silero VAD still acts as supervisor for utterance segmentation
+    // inside the streaming pipeline (same as the daemon app).
+    recorder.recorder.config.auto_silence = false;
 
     let emitter = StreamEmitter::new();
-    recorder.set_event_sink(Some(
-        Arc::new(LiveCliEventSink::new(Arc::clone(&emitter))) as Arc<dyn EventSink>
-    ));
+    let sink = LiveCliEventSink::new(Arc::clone(&emitter));
+    let log_sink = LiveLogEventSink {
+        inner: sink,
+        log_file: log_file.clone(),
+    };
+    recorder.set_event_sink(Some(Arc::new(log_sink) as Arc<dyn EventSink>));
     recorder.start_event_session(language).await?;
 
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            eprintln!("Stopping live transcription (Ctrl+C)...");
-        }
-        _ = vad_rx.recv() => {
-            eprintln!("Stopping live transcription (VAD)...");
-        }
-    }
+    tokio::signal::ctrl_c().await.ok();
+    eprintln!("\nStopping live transcription...");
 
     let _ = recorder.stop().await?;
     emitter.finish();
 
+    // Write session footer.
+    if let Ok(mut f) = log_file.lock() {
+        let _ = writeln!(
+            f,
+            "\n--- session ended {} ---",
+            chrono::Local::now().format("%H:%M:%S")
+        );
+    }
+
+    eprintln!("Transcript saved: {}", log_path.display());
     Ok(())
 }
 
@@ -906,6 +933,31 @@ impl EventSink for LiveCliEventSink {
                 self.clear_preview();
             }
             _ => {}
+        }
+    }
+}
+
+/// Wraps `LiveCliEventSink` and appends UtteranceFinal text to a log file.
+struct LiveLogEventSink {
+    inner: LiveCliEventSink,
+    log_file: Arc<Mutex<std::fs::File>>,
+}
+
+impl EventSink for LiveLogEventSink {
+    fn on_event(&self, event: &EngineEvent) {
+        // Delegate to the CLI sink for stdout output.
+        self.inner.on_event(event);
+
+        // Append clean transcript text to log file on utterance boundaries.
+        if let EngineEvent::UtteranceFinal { text, .. } = event {
+            let trimmed = text.trim();
+            if !trimmed.is_empty()
+                && let Ok(mut f) = self.log_file.lock()
+            {
+                use std::io::Write;
+                let _ = writeln!(f, "{}", trimmed);
+                let _ = f.flush();
+            }
         }
     }
 }

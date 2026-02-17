@@ -23,6 +23,26 @@ enum EmitterCmd {
     Finish,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum PreviewUpdate {
+    Noop,
+    Segment(String),
+    Correction,
+}
+
+fn preview_update(last_preview: &str, incoming: &str) -> PreviewUpdate {
+    if let Some(stripped) = incoming.strip_prefix(last_preview) {
+        let suffix = stripped.to_string();
+        if suffix.trim().is_empty() {
+            PreviewUpdate::Noop
+        } else {
+            PreviewUpdate::Segment(suffix)
+        }
+    } else {
+        PreviewUpdate::Correction
+    }
+}
+
 /// Presentation emitter — bridges `EngineEvent`s to `BufferedEmitter`.
 ///
 /// Implements `EventSink` so it can be plugged directly into `transcription_session`.
@@ -174,18 +194,30 @@ impl EventSink for PresentationEmitter {
             EngineEvent::Preview { text, .. } => {
                 // Compute only the new suffix since last preview and push
                 // that as incremental segment to the buffered emitter.
+                //
+                // If Preview diverges (not a prefix extension), treat it as a
+                // replacement path instead of appending the whole preview.
+                // This prevents duplicated/garbled overlay text when partial
+                // passes rewrite earlier tokens.
                 let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
-                let new_suffix = if text.starts_with(last.as_str()) {
-                    text[last.len()..].to_string()
-                } else {
-                    // Text changed structure (shouldn't happen for Preview, but be safe)
-                    text.clone()
-                };
+                let previous_len = last.chars().count();
+                let update = preview_update(last.as_str(), text);
                 *last = text.clone();
                 drop(last);
 
-                if !new_suffix.trim().is_empty() {
-                    self.send_cmd(EmitterCmd::PushSegment(new_suffix));
+                match update {
+                    PreviewUpdate::Noop => {}
+                    PreviewUpdate::Segment(new_suffix) => {
+                        self.send_cmd(EmitterCmd::PushSegment(new_suffix));
+                    }
+                    PreviewUpdate::Correction => {
+                        debug!(
+                            previous_len,
+                            incoming_len = text.chars().count(),
+                            "Preview diverged from last preview; routing as correction to avoid append corruption"
+                        );
+                        self.send_cmd(EmitterCmd::PushCorrection(text.clone()));
+                    }
                 }
             }
             EngineEvent::Correction { text, .. } => {
@@ -268,5 +300,31 @@ impl EventSink for PresentationEmitter {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PreviewUpdate, preview_update};
+
+    #[test]
+    fn preview_update_emits_only_new_suffix_for_prefix_growth() {
+        assert_eq!(
+            preview_update("No dobra", "No dobra ziomeczku"),
+            PreviewUpdate::Segment(" ziomeczku".to_string())
+        );
+    }
+
+    #[test]
+    fn preview_update_routes_divergence_to_correction() {
+        assert_eq!(
+            preview_update("No dobra ziomeczku", "No dobra, ziomeczku"),
+            PreviewUpdate::Correction
+        );
+    }
+
+    #[test]
+    fn preview_update_ignores_whitespace_only_suffix() {
+        assert_eq!(preview_update("tekst", "tekst "), PreviewUpdate::Noop);
     }
 }
