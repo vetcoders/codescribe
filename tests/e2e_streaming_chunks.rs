@@ -12,10 +12,32 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use codescribe::audio;
+use codescribe::whisper::append_with_overlap_dedup;
 
-/// Path to synthetic test audio file
-fn test_audio_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/1.fretka-Ziggy.mp3")
+#[path = "support/e2e_stt_matrix.rs"]
+mod e2e_stt_matrix;
+
+use e2e_stt_matrix::{
+    ModelDiscovery, STT_OPT_IN_ENV, discover_local_whisper_model, model_discovery_hint,
+    normalize_transcript, skip_unless_opt_in, test_audio_path,
+};
+
+fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn resolve_model_or_skip(suite: &str) -> Option<ModelDiscovery> {
+    match discover_local_whisper_model() {
+        Some(found) => Some(found),
+        None => {
+            let home = home_dir();
+            eprintln!("Skipping {}: no complete Whisper model found.", suite);
+            eprintln!("{}", model_discovery_hint(&home));
+            None
+        }
+    }
 }
 
 /// Test that streaming callback is invoked during transcription
@@ -23,38 +45,22 @@ fn test_audio_path() -> PathBuf {
 /// Run with: CODESCRIBE_E2E_STT=1 cargo test --test e2e_streaming_chunks test_streaming_callback
 #[test]
 fn test_streaming_callback_invoked() {
-    let enabled = std::env::var("CODESCRIBE_E2E_STT")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    if !enabled {
-        eprintln!("Skipping streaming E2E (set CODESCRIBE_E2E_STT=1 to enable)");
+    if skip_unless_opt_in(
+        STT_OPT_IN_ENV,
+        "streaming callback E2E",
+        "Deterministic chunk merge checks still run by default.",
+    ) {
         return;
     }
 
     use codescribe::whisper::LocalWhisperEngine;
 
-    // Find model: ~/.codescribe/models/ (unified standard)
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let model_candidates = [
-        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-mlx-q8"),
-    ];
-
-    let model_path = model_candidates
-        .iter()
-        .find(|p| p.join("tokenizer.json").exists());
-
-    let model_path = match model_path {
-        Some(p) => p.clone(),
-        None => {
-            eprintln!("No model found, skipping streaming test");
-            return;
-        }
+    let model = match resolve_model_or_skip("streaming callback E2E") {
+        Some(found) => found,
+        None => return,
     };
 
-    let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
+    let mut engine = LocalWhisperEngine::new(&model.path).expect("load model");
 
     let audio_path = test_audio_path();
     let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
@@ -124,37 +130,22 @@ fn test_streaming_callback_invoked() {
 /// Test streaming with None callback (should still work)
 #[test]
 fn test_streaming_no_callback() {
-    let enabled = std::env::var("CODESCRIBE_E2E_STT")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    if !enabled {
-        eprintln!("Skipping streaming E2E (set CODESCRIBE_E2E_STT=1 to enable)");
+    if skip_unless_opt_in(
+        STT_OPT_IN_ENV,
+        "streaming no-callback E2E",
+        "Set CODESCRIBE_E2E_STT=1 to run model-dependent streaming checks.",
+    ) {
         return;
     }
 
     use codescribe::whisper::LocalWhisperEngine;
 
-    // Find model: ~/.codescribe/models/ (unified standard)
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let model_candidates = [
-        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-mlx-q8"),
-    ];
-
-    let model_path = match model_candidates
-        .iter()
-        .find(|p| p.join("tokenizer.json").exists())
-    {
-        Some(p) => p.clone(),
-        None => {
-            eprintln!("No model found, skipping test");
-            return;
-        }
+    let model = match resolve_model_or_skip("streaming no-callback E2E") {
+        Some(found) => found,
+        None => return,
     };
 
-    let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
+    let mut engine = LocalWhisperEngine::new(&model.path).expect("load model");
 
     let audio_path = test_audio_path();
     let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
@@ -171,37 +162,22 @@ fn test_streaming_no_callback() {
 /// Verify chunk text doesn't cut words mid-stream (regression test)
 #[test]
 fn test_chunk_word_boundaries() {
-    let enabled = std::env::var("CODESCRIBE_E2E_STT")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    if !enabled {
-        eprintln!("Skipping word boundary E2E (set CODESCRIBE_E2E_STT=1 to enable)");
+    if skip_unless_opt_in(
+        STT_OPT_IN_ENV,
+        "streaming word-boundary E2E",
+        "Set CODESCRIBE_E2E_STT=1 to run model-dependent word-boundary checks.",
+    ) {
         return;
     }
 
     use codescribe::whisper::LocalWhisperEngine;
 
-    // Find model: ~/.codescribe/models/ (unified standard)
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let model_candidates = [
-        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-mlx-q8"),
-    ];
-
-    let model_path = match model_candidates
-        .iter()
-        .find(|p| p.join("tokenizer.json").exists())
-    {
-        Some(p) => p.clone(),
-        None => {
-            eprintln!("No model found, skipping test");
-            return;
-        }
+    let model = match resolve_model_or_skip("streaming word-boundary E2E") {
+        Some(found) => found,
+        None => return,
     };
 
-    let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
+    let mut engine = LocalWhisperEngine::new(&model.path).expect("load model");
 
     let audio_path = test_audio_path();
     let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
@@ -247,4 +223,96 @@ fn test_chunk_word_boundaries() {
             }
         }
     }
+}
+
+#[test]
+fn test_overlap_dedup_stable_across_chunkings() {
+    let chunks_a = [
+        "Ala ma kota i psa",
+        "kota i psa i papuge",
+        "i papuge w domu",
+    ];
+    let chunks_b = ["Ala ma kota", "ma kota i psa i papuge", "i papuge w domu"];
+
+    let mut merged_a = String::new();
+    for chunk in chunks_a {
+        append_with_overlap_dedup(&mut merged_a, chunk);
+    }
+
+    let mut merged_b = String::new();
+    for chunk in chunks_b {
+        append_with_overlap_dedup(&mut merged_b, chunk);
+    }
+
+    assert_eq!(
+        normalize_transcript(&merged_a),
+        normalize_transcript(&merged_b),
+        "overlap dedup should produce stable final text across equivalent chunk boundaries"
+    );
+}
+
+#[test]
+fn test_streaming_matches_non_streaming_output() {
+    if skip_unless_opt_in(
+        STT_OPT_IN_ENV,
+        "streaming parity E2E",
+        "Set CODESCRIBE_E2E_STT=1 to compare streaming and non-streaming Whisper paths.",
+    ) {
+        return;
+    }
+
+    use codescribe::whisper::LocalWhisperEngine;
+
+    let model = match resolve_model_or_skip("streaming parity E2E") {
+        Some(found) => found,
+        None => return,
+    };
+
+    let mut engine = LocalWhisperEngine::new(&model.path).expect("load model");
+    let audio_path = test_audio_path();
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
+
+    let non_streaming = engine
+        .transcribe_long_with_language(&samples, sample_rate, Some("pl"))
+        .expect("transcribe non-streaming");
+
+    let streaming_no_callback = engine
+        .transcribe_long_streaming(&samples, sample_rate, Some("pl"), None)
+        .expect("transcribe streaming without callback");
+
+    let chunks: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let chunks_clone = Arc::clone(&chunks);
+    let callback = move |text: &str| {
+        chunks_clone
+            .lock()
+            .expect("lock callback chunks")
+            .push(text.to_string());
+    };
+
+    let streaming_with_callback = engine
+        .transcribe_long_streaming(&samples, sample_rate, Some("pl"), Some(&callback))
+        .expect("transcribe streaming with callback");
+
+    assert_eq!(
+        normalize_transcript(&non_streaming),
+        normalize_transcript(&streaming_no_callback),
+        "streaming path (no callback) must match non-streaming path for identical audio input"
+    );
+    assert_eq!(
+        normalize_transcript(&non_streaming),
+        normalize_transcript(&streaming_with_callback),
+        "streaming path (with callback) must match non-streaming path for identical audio input"
+    );
+
+    let last_callback = chunks
+        .lock()
+        .expect("lock callback chunks")
+        .last()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        normalize_transcript(&streaming_with_callback),
+        normalize_transcript(&last_callback),
+        "final streaming result should equal last callback payload"
+    );
 }

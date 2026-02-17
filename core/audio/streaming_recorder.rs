@@ -232,7 +232,7 @@ impl StreamingRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::chunker::{SpeechEvent, SpeechSession};
+    use crate::audio::chunker::{SpeechEvent, SpeechSession, VadGateMode};
     use crate::audio::load_audio_file;
     use crate::pipeline::streaming::transcribe_streaming_samples;
     use crate::stt::whisper;
@@ -557,6 +557,10 @@ mod tests {
         dist as f32 / denom
     }
 
+    fn vad_index_drift_tolerance(input_sr: u32) -> usize {
+        ((vad::CHUNK_SIZE as f32 * input_sr as f32) / vad::VAD_SAMPLE_RATE as f32) as usize
+    }
+
     #[test]
     fn test_vad_index_sync_no_drift() {
         let input_sr = 48000u32;
@@ -590,28 +594,130 @@ mod tests {
             "raw_cursor should equal total input samples"
         );
 
-        if let Some(vad_sample) = session.vad_current_sample() {
-            let mapped = session.vad_to_raw_index_pub(vad_sample);
-            let raw_cur = session.raw_cursor();
-            let drift = mapped.abs_diff(raw_cur);
-            let vad_chunk = 512usize;
-            let vad_sr = 16000.0f32;
-            let tolerance = ((vad_chunk as f32 * input_sr as f32) / vad_sr) as usize;
-            assert!(
-                drift <= tolerance,
-                "VAD index drift too large: mapped={} raw_cursor={} drift={} tolerance={}",
-                mapped,
-                raw_cur,
-                drift,
-                tolerance
-            );
-        }
-
-        let vad_chunk_size = 512usize;
+        let vad_sample = session
+            .vad_current_sample()
+            .expect("Supervisor mode should expose VAD sample index");
+        let mapped = session.vad_to_raw_index_pub(vad_sample);
+        let raw_cur = session.raw_cursor();
+        let drift = mapped.abs_diff(raw_cur);
+        let tolerance = vad_index_drift_tolerance(input_sr);
         assert!(
-            session.vad_resample_buf_len() < vad_chunk_size,
+            drift <= tolerance,
+            "VAD index drift too large: mapped={} raw_cursor={} drift={} tolerance={}",
+            mapped,
+            raw_cur,
+            drift,
+            tolerance
+        );
+
+        assert!(
+            session.vad_resample_buf_len() < vad::CHUNK_SIZE,
             "Residual buffer should be < CHUNK_SIZE, got {}",
             session.vad_resample_buf_len()
+        );
+    }
+
+    #[test]
+    fn test_supervisor_busy_flush_keeps_boundary_and_speech_accounting() {
+        let input_sr = 48000u32;
+        let callback_size = 1024usize;
+        let num_callbacks = 210usize;
+
+        let mut session = SpeechSession::new_utterance_with_silence(input_sr, 10.0);
+        if session.gate_mode() != VadGateMode::Supervisor {
+            eprintln!("Skipping: gate mode is not Supervisor");
+            return;
+        }
+
+        // Deterministic open segment even when VAD model is unavailable.
+        session.set_vad_threshold_for_test(-1.0);
+
+        let mut interim_events = 0usize;
+        let mut accounted_speech_vad_samples = 0u64;
+
+        for _ in 0..num_callbacks {
+            let buf = vec![0.0f32; callback_size];
+            for event in session.feed(&buf, input_sr) {
+                let event_speech = session.take_event_speech_vad_samples();
+                accounted_speech_vad_samples =
+                    accounted_speech_vad_samples.saturating_add(event_speech);
+                match event {
+                    SpeechEvent::Utterance(samples) => {
+                        interim_events = interim_events.saturating_add(1);
+                        assert!(
+                            !samples.is_empty(),
+                            "busy interim event should never carry empty audio"
+                        );
+                        assert!(
+                            event_speech > 0,
+                            "busy interim event should carry positive speech sample accounting"
+                        );
+                    }
+                    SpeechEvent::UtteranceFinal(_) => {
+                        panic!("unexpected UtteranceFinal before flush in long-silence test")
+                    }
+                    SpeechEvent::Chunk(_) => {
+                        panic!("unexpected Chunk event in utterance mode")
+                    }
+                }
+            }
+        }
+
+        assert!(
+            interim_events > 0,
+            "busy callback run should emit at least one interim utterance before flush"
+        );
+
+        let flush = session.flush();
+        let flush_speech = session.take_event_speech_vad_samples();
+        accounted_speech_vad_samples = accounted_speech_vad_samples.saturating_add(flush_speech);
+
+        let flush_len = match flush {
+            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
+            Some(SpeechEvent::Utterance(_)) => {
+                panic!("flush should emit final utterance event")
+            }
+            Some(SpeechEvent::Chunk(_)) => {
+                panic!("flush should not emit stream chunk in utterance mode")
+            }
+            None => panic!("flush should preserve active Supervisor boundary under busy load"),
+        };
+        assert!(flush_len > 0, "flush final event should include audio");
+        assert!(
+            flush_speech > 0,
+            "flush final event should carry pending speech sample accounting"
+        );
+        assert_eq!(
+            session.take_event_speech_vad_samples(),
+            0,
+            "speech accounting queue should be empty after consuming flush event"
+        );
+
+        let total_raw = num_callbacks * callback_size;
+        assert_eq!(
+            session.raw_cursor(),
+            total_raw,
+            "raw cursor should stay aligned with callback sample count under busy load"
+        );
+
+        let vad_sample = session
+            .vad_current_sample()
+            .expect("Supervisor mode should expose VAD sample index");
+        let mapped = session.vad_to_raw_index_pub(vad_sample);
+        let raw_cur = session.raw_cursor();
+        let drift = mapped.abs_diff(raw_cur);
+        let tolerance = vad_index_drift_tolerance(input_sr);
+        assert!(
+            drift <= tolerance,
+            "busy path drift too large: mapped={} raw_cursor={} drift={} tolerance={}",
+            mapped,
+            raw_cur,
+            drift,
+            tolerance
+        );
+        assert_eq!(
+            accounted_speech_vad_samples as usize, vad_sample,
+            "sum of emitted speech sample accounting should equal processed VAD samples"
         );
     }
 

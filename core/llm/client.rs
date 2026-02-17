@@ -715,6 +715,11 @@ async fn transcribe_multipart(
                 }
 
                 last_error = Some(e);
+
+                // Non-retryable errors should fail fast instead of looping through all attempts.
+                if !is_retryable {
+                    break;
+                }
             }
         }
     }

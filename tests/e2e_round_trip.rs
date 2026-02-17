@@ -12,11 +12,15 @@
 //! Created by M&K (c)2026 VetCoders
 
 use anyhow::Result;
-use std::env;
+
+#[path = "support/e2e_stt_matrix.rs"]
+mod e2e_stt_matrix;
+
+use e2e_stt_matrix::{ROUNDTRIP_OPT_IN_ENV, env_opt_in, parse_opt_in};
 
 /// Skip unless CODESCRIBE_E2E_ROUNDTRIP=1 is set
 fn should_run() -> bool {
-    env::var("CODESCRIBE_E2E_ROUNDTRIP").is_ok()
+    env_opt_in(ROUNDTRIP_OPT_IN_ENV)
 }
 
 /// Calculate simple word overlap similarity (0.0 - 1.0)
@@ -43,6 +47,62 @@ fn word_similarity(a: &str, b: &str) -> f32 {
     let union = a_words.union(&b_words).count();
 
     intersection as f32 / union as f32
+}
+
+#[test]
+fn test_roundtrip_gate_requires_explicit_opt_in() {
+    assert!(parse_opt_in(Some("1")), "1 should enable opt-in gates");
+    assert!(
+        parse_opt_in(Some("true")),
+        "true should enable opt-in gates"
+    );
+    assert!(
+        !parse_opt_in(Some("yes")),
+        "yes should not enable round-trip opt-in gates"
+    );
+    assert!(
+        !parse_opt_in(Some("0")),
+        "0 should not enable round-trip opt-in gates"
+    );
+    assert!(
+        !parse_opt_in(None),
+        "missing env var should keep heavy round-trip tests disabled"
+    );
+}
+
+#[test]
+fn test_whisper_embedded_readiness_contract() {
+    let available = codescribe_core::stt::whisper::embedded::is_embedded_available();
+    let embedded = codescribe_core::stt::whisper::embedded::get_embedded_data();
+
+    assert_eq!(
+        available,
+        embedded.is_some(),
+        "embedded readiness contract broken: is_embedded_available() and get_embedded_data() disagree"
+    );
+
+    if let Some(model) = embedded {
+        assert!(
+            model.total_size() > 0,
+            "embedded model advertised as available but total_size() is zero"
+        );
+        assert!(
+            !model.config.is_empty(),
+            "embedded model missing config bytes despite availability=true"
+        );
+        assert!(
+            !model.tokenizer.is_empty(),
+            "embedded model missing tokenizer bytes despite availability=true"
+        );
+        assert!(
+            !model.mel_filters.is_empty(),
+            "embedded model missing mel filter bytes despite availability=true"
+        );
+        assert!(
+            !model.weights.is_empty(),
+            "embedded model missing weight bytes despite availability=true"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════

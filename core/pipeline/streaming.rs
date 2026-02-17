@@ -816,6 +816,18 @@ pub(crate) async fn transcription_session(
     let mut partial_trigger_state = PartialPassTriggerState::new(Instant::now());
     let mut suffix_snapshot = String::new();
 
+    // Fix A: Snapshot pipeline.last_suffix at utterance boundary so FINAL
+    // compares against previous utterance's tail, not intermediate non-final
+    // chunk suffixes that advanced during Phase 1 preview processing.
+    let mut utterance_boundary_suffix = String::new();
+
+    // Fix D: Speech-window-scoped text/rev for partial-pass stale guard.
+    // Unlike accumulated_text (cleared on UtteranceFinal), these track all text
+    // emitted in the current correction window — giving schedule_partial_pass
+    // a stable baseline that survives utterance boundaries.
+    let mut window_text = String::new();
+    let mut window_rev: u64 = 0;
+
     // Decouple audio ingestion from Whisper inference.
     const MAX_PENDING_UTTERANCES: usize = 64;
     let mut pending_utterances: VecDeque<PendingUtteranceWorkItem> = VecDeque::new();
@@ -921,8 +933,8 @@ pub(crate) async fn transcription_session(
                     &mut correction_expected_text,
                     &mut correction_suffix_snapshot,
                     &suffix_snapshot,
-                    preview_rev,
-                    &accumulated_text,
+                    window_rev,
+                    &window_text,
                     partial_trigger_state.silero_speech_ms_since_partial,
                     trigger,
                     &mut partial_telemetry,
@@ -1116,8 +1128,8 @@ pub(crate) async fn transcription_session(
                         &mut correction_expected_text,
                         &mut correction_suffix_snapshot,
                         &suffix_snapshot,
-                        preview_rev,
-                        &accumulated_text,
+                        window_rev,
+                        &window_text,
                         partial_trigger_state.silero_speech_ms_since_partial,
                         trigger,
                         &mut partial_telemetry,
@@ -1130,25 +1142,32 @@ pub(crate) async fn transcription_session(
             result = async {
                 correction_in_flight.as_mut().unwrap().recv().await
             }, if correction_in_flight.is_some() => {
-                let expected_preview_rev = correction_expected_preview_rev.take().unwrap_or(preview_rev);
+                // Fix D: Use window_rev as fallback (schedule_partial_pass now stores window_rev).
+                let expected_preview_rev = correction_expected_preview_rev.take().unwrap_or(window_rev);
                 let expected_text = correction_expected_text.take().unwrap_or_default();
                 let suffix_snapshot = correction_suffix_snapshot.take().unwrap_or_default();
                 match result {
                     Ok(raw) => {
+                        // Fix D: Compare against window-scoped state (survives utterance boundaries).
                         if correction_is_stale(
                             expected_preview_rev,
-                            preview_rev,
+                            window_rev,
                             &expected_text,
-                            &accumulated_text,
+                            &window_text,
                         ) {
                             partial_telemetry.record_stale();
                             debug!(
                                 expected_preview_rev,
-                                preview_rev,
+                                window_rev,
                                 expected_len = expected_text.chars().count(),
-                                current_len = accumulated_text.chars().count(),
-                                "Suppressing stale correction (preview advanced or text changed)"
+                                current_len = window_text.chars().count(),
+                                "Suppressing stale correction (window advanced or text changed)"
                             );
+                        } else if accumulated_text.is_empty() {
+                            // Guard: if accumulated_text was cleared by FINAL but stale
+                            // guard passed (edge case: dropped FINAL), skip — the
+                            // utterance was already committed.
+                            debug!("Skipping correction: accumulated_text is empty after FINAL");
                         } else {
                             match postprocess_correction_with_snapshot(
                                 &mut pipeline,
@@ -1246,6 +1265,12 @@ pub(crate) async fn transcription_session(
                             utterance_segments.extend(raw_segments.clone());
                         }
 
+                        // Fix A: Restore suffix to utterance-boundary snapshot before
+                        // FINAL processing so strip_overlap sees the correct tail.
+                        if item.is_final {
+                            pipeline.last_suffix = utterance_boundary_suffix.clone();
+                        }
+
                         if let Some(words_per_sec) =
                             text_words_per_second(&raw_text, item.inference_audio_len, output_sample_rate)
                                 .filter(|wps| *wps > MAX_WORDS_PER_SEC)
@@ -1266,12 +1291,26 @@ pub(crate) async fn transcription_session(
                                     if item.is_final {
                                         // Final boundary commit: use full-utterance cleaned text as source of truth.
                                         accumulated_text = cleaned.trim().to_string();
+                                        // Fix D: Append FINAL text to window-scoped state
+                                        // (not replace — window spans multiple utterances).
+                                        if !window_text.is_empty() {
+                                            window_text.push(' ');
+                                        }
+                                        window_text.push_str(cleaned.trim());
+                                        window_rev += 1;
                                     } else {
                                         preview_rev += 1;
                                         if !accumulated_text.is_empty() {
                                             accumulated_text.push(' ');
                                         }
                                         accumulated_text.push_str(cleaned.trim());
+
+                                        // Fix D: Mirror into window-scoped state for partial-pass stale guard.
+                                        if !window_text.is_empty() {
+                                            window_text.push(' ');
+                                        }
+                                        window_text.push_str(cleaned.trim());
+                                        window_rev += 1;
 
                                         debug!(
                                             rev = preview_rev,
@@ -1343,6 +1382,9 @@ pub(crate) async fn transcription_session(
                                 utterance_segments.clear();
                             }
                             accumulated_text.clear();
+                            // Fix A: Save current suffix as utterance-boundary snapshot
+                            // for the next FINAL to restore from.
+                            utterance_boundary_suffix = pipeline.last_suffix.clone();
                             // Advance start_ts for next utterance.
                             utterance_start_s = end_ts;
                             utterance_audio_samples = 0;
@@ -1371,8 +1413,8 @@ pub(crate) async fn transcription_session(
                                 &mut correction_expected_text,
                                 &mut correction_suffix_snapshot,
                                 &suffix_snapshot,
-                                preview_rev,
-                                &accumulated_text,
+                                window_rev,
+                                &window_text,
                                 partial_trigger_state.silero_speech_ms_since_partial,
                                 trigger,
                                 &mut partial_telemetry,
@@ -1828,12 +1870,18 @@ pub(crate) fn stream_overlap_sec(chunk_duration_sec: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::contracts::RawTranscript;
     use crate::pipeline::sinks::CollectorEventSink;
+    use std::sync::{Condvar, Mutex as StdMutex};
 
     fn pending_item(is_final: bool) -> PendingUtteranceWorkItem {
+        pending_item_with_marker(is_final, if is_final { 1.0 } else { 0.1 })
+    }
+
+    fn pending_item_with_marker(is_final: bool, marker: f32) -> PendingUtteranceWorkItem {
         PendingUtteranceWorkItem {
-            audio: vec![0.1; 32],
-            inference_audio: vec![0.1; 32],
+            audio: vec![marker; 32],
+            inference_audio: vec![marker; 32],
             is_final,
             max_speech_prob: 0.9,
             speech_vad_samples: 512,
@@ -1928,13 +1976,20 @@ mod tests {
     #[test]
     fn test_enqueue_pending_utterance_drops_non_final_when_full() {
         let mut pending = VecDeque::new();
-        pending.push_back(pending_item(false));
-        pending.push_back(pending_item(true));
+        pending.push_back(pending_item_with_marker(false, 1.0));
+        pending.push_back(pending_item_with_marker(true, 2.0));
 
-        let outcome = enqueue_pending_utterance(&mut pending, pending_item(false), 2);
+        let outcome =
+            enqueue_pending_utterance(&mut pending, pending_item_with_marker(false, 3.0), 2);
         assert!(!outcome.enqueued);
         assert_eq!(outcome.dropped, 1);
         assert_eq!(pending.len(), 2, "queue should stay unchanged");
+        let markers: Vec<f32> = pending.iter().map(|item| item.audio[0]).collect();
+        assert_eq!(
+            markers,
+            vec![1.0, 2.0],
+            "dropping a non-final under pressure must preserve queued work order"
+        );
     }
 
     #[test]
@@ -1949,6 +2004,201 @@ mod tests {
         assert!(outcome.evicted_final);
         assert_eq!(pending.len(), 2);
         assert!(pending.back().is_some_and(|item| item.is_final));
+    }
+
+    #[test]
+    fn test_enqueue_pending_utterance_zero_capacity_drops_all_items() {
+        let mut pending = VecDeque::new();
+
+        let non_final = enqueue_pending_utterance(&mut pending, pending_item(false), 0);
+        assert!(!non_final.enqueued);
+        assert_eq!(non_final.dropped, 1);
+        assert!(!non_final.evicted_final);
+
+        let final_item = enqueue_pending_utterance(&mut pending, pending_item(true), 0);
+        assert!(!final_item.enqueued);
+        assert_eq!(final_item.dropped, 1);
+        assert!(!final_item.evicted_final);
+        assert!(
+            pending.is_empty(),
+            "zero-capacity queue should never retain pending work"
+        );
+    }
+
+    #[test]
+    fn test_enqueue_pending_utterance_final_evicts_oldest_non_final_in_mixed_queue() {
+        let mut pending = VecDeque::new();
+        pending.push_back(pending_item_with_marker(true, 1.0));
+        pending.push_back(pending_item_with_marker(false, 2.0));
+        pending.push_back(pending_item_with_marker(true, 3.0));
+
+        let outcome =
+            enqueue_pending_utterance(&mut pending, pending_item_with_marker(true, 4.0), 3);
+        assert!(outcome.enqueued, "incoming final should be admitted");
+        assert_eq!(outcome.dropped, 1);
+        assert!(
+            !outcome.evicted_final,
+            "queue policy should evict a non-final before any final boundary"
+        );
+        let markers: Vec<f32> = pending.iter().map(|item| item.audio[0]).collect();
+        assert_eq!(
+            markers,
+            vec![1.0, 3.0, 4.0],
+            "oldest non-final should be removed while preserving final boundaries"
+        );
+        assert!(pending.iter().all(|item| item.is_final));
+    }
+
+    #[test]
+    fn test_enqueue_pending_utterance_pressure_sequence_preserves_final_boundaries() {
+        let mut pending = VecDeque::new();
+        pending.push_back(pending_item_with_marker(false, 1.0));
+        pending.push_back(pending_item_with_marker(false, 2.0));
+        pending.push_back(pending_item_with_marker(false, 3.0));
+
+        let drop_non_final =
+            enqueue_pending_utterance(&mut pending, pending_item_with_marker(false, 4.0), 3);
+        assert!(!drop_non_final.enqueued);
+        assert_eq!(drop_non_final.dropped, 1);
+        assert!(!drop_non_final.evicted_final);
+        assert_eq!(
+            pending
+                .iter()
+                .map(|item| item.audio[0])
+                .collect::<Vec<f32>>(),
+            vec![1.0, 2.0, 3.0]
+        );
+
+        let admit_final_a =
+            enqueue_pending_utterance(&mut pending, pending_item_with_marker(true, 5.0), 3);
+        assert!(admit_final_a.enqueued);
+        assert_eq!(admit_final_a.dropped, 1);
+        assert!(!admit_final_a.evicted_final);
+        assert_eq!(
+            pending
+                .iter()
+                .map(|item| item.audio[0])
+                .collect::<Vec<f32>>(),
+            vec![2.0, 3.0, 5.0]
+        );
+
+        let admit_final_b =
+            enqueue_pending_utterance(&mut pending, pending_item_with_marker(true, 6.0), 3);
+        assert!(admit_final_b.enqueued);
+        assert_eq!(admit_final_b.dropped, 1);
+        assert!(!admit_final_b.evicted_final);
+        assert_eq!(
+            pending
+                .iter()
+                .map(|item| item.audio[0])
+                .collect::<Vec<f32>>(),
+            vec![3.0, 5.0, 6.0]
+        );
+
+        let admit_final_c =
+            enqueue_pending_utterance(&mut pending, pending_item_with_marker(true, 7.0), 3);
+        assert!(admit_final_c.enqueued);
+        assert_eq!(admit_final_c.dropped, 1);
+        assert!(!admit_final_c.evicted_final);
+        assert!(pending.iter().all(|item| item.is_final));
+        assert_eq!(
+            pending
+                .iter()
+                .map(|item| item.audio[0])
+                .collect::<Vec<f32>>(),
+            vec![5.0, 6.0, 7.0]
+        );
+
+        let drop_non_final_again =
+            enqueue_pending_utterance(&mut pending, pending_item_with_marker(false, 8.0), 3);
+        assert!(!drop_non_final_again.enqueued);
+        assert_eq!(drop_non_final_again.dropped, 1);
+        assert!(!drop_non_final_again.evicted_final);
+        assert_eq!(
+            pending
+                .iter()
+                .map(|item| item.audio[0])
+                .collect::<Vec<f32>>(),
+            vec![5.0, 6.0, 7.0]
+        );
+
+        let admit_final_d =
+            enqueue_pending_utterance(&mut pending, pending_item_with_marker(true, 9.0), 3);
+        assert!(admit_final_d.enqueued);
+        assert_eq!(admit_final_d.dropped, 1);
+        assert!(
+            admit_final_d.evicted_final,
+            "when only finals are queued, oldest final should be evicted"
+        );
+        assert_eq!(
+            pending
+                .iter()
+                .map(|item| item.audio[0])
+                .collect::<Vec<f32>>(),
+            vec![6.0, 7.0, 9.0]
+        );
+        assert!(pending.iter().all(|item| item.is_final));
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_pending_utterance_pressure_sequence_under_async_saturated_load() {
+        let mut pending = VecDeque::new();
+        let mut dropped_total = 0u64;
+        let mut dropped_non_finals = 0u64;
+        let mut final_evictions = 0u64;
+
+        let (tx, mut rx) = mpsc::channel::<PendingUtteranceWorkItem>(32);
+        let producer = tokio::spawn(async move {
+            let sequence = [
+                (false, 1.0),
+                (false, 2.0),
+                (false, 3.0),
+                (false, 4.0),
+                (true, 5.0),
+                (false, 6.0),
+                (true, 7.0),
+                (true, 8.0),
+                (true, 9.0),
+                (false, 10.0),
+                (true, 11.0),
+            ];
+            for (is_final, marker) in sequence {
+                tx.send(pending_item_with_marker(is_final, marker))
+                    .await
+                    .expect("async pressure sequence send should succeed");
+                tokio::task::yield_now().await;
+            }
+        });
+
+        while let Some(item) = rx.recv().await {
+            // Simulate saturated inference slots by not draining the pending queue.
+            let item_is_final = item.is_final;
+            let outcome = enqueue_pending_utterance(&mut pending, item, 4);
+            dropped_total = dropped_total.saturating_add(outcome.dropped);
+            if !item_is_final && !outcome.enqueued {
+                dropped_non_finals = dropped_non_finals.saturating_add(outcome.dropped);
+            }
+            if outcome.evicted_final {
+                final_evictions = final_evictions.saturating_add(1);
+            }
+        }
+        producer
+            .await
+            .expect("async pressure producer should finish");
+
+        assert_eq!(
+            pending
+                .iter()
+                .map(|item| item.audio[0])
+                .collect::<Vec<f32>>(),
+            vec![7.0, 8.0, 9.0, 11.0],
+            "saturated async ingress should preserve newest final boundaries"
+        );
+        assert_eq!(pending.len(), 4);
+        assert!(pending.iter().all(|item| item.is_final));
+        assert_eq!(dropped_total, 7);
+        assert_eq!(dropped_non_finals, 2);
+        assert_eq!(final_evictions, 1);
     }
 
     #[test]
@@ -2010,6 +2260,54 @@ mod tests {
     }
 
     #[test]
+    fn test_partial_trigger_precedence_prefers_speech_over_watchdog_without_utterance_trigger() {
+        let now = Instant::now();
+        let mut state = PartialPassTriggerState::new(now);
+
+        state.observe_speech_event(false, u64::from(vad::VAD_SAMPLE_RATE) * 6);
+        let flags = state.evaluate(now + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS));
+        assert!(!flags.utterance_finals);
+        assert!(flags.silero_speech);
+        assert!(flags.watchdog);
+        assert_eq!(
+            classify_partial_trigger(flags),
+            Some(PartialPassTrigger::Speech),
+            "speech trigger should outrank watchdog when utterance-count threshold is not met"
+        );
+    }
+
+    #[test]
+    fn test_partial_trigger_precedence_matrix_is_explicit() {
+        assert_eq!(
+            classify_partial_trigger(PartialPassTriggerFlags {
+                utterance_finals: true,
+                silero_speech: true,
+                watchdog: true,
+            }),
+            Some(PartialPassTrigger::Utterance),
+            "utterance-count trigger should dominate when multiple trigger paths are true"
+        );
+        assert_eq!(
+            classify_partial_trigger(PartialPassTriggerFlags {
+                utterance_finals: false,
+                silero_speech: true,
+                watchdog: true,
+            }),
+            Some(PartialPassTrigger::Speech),
+            "speech trigger should outrank watchdog when utterance threshold is not met"
+        );
+        assert_eq!(
+            classify_partial_trigger(PartialPassTriggerFlags {
+                utterance_finals: false,
+                silero_speech: false,
+                watchdog: true,
+            }),
+            Some(PartialPassTrigger::Watchdog),
+            "watchdog should be selected when it is the only triggered path"
+        );
+    }
+
+    #[test]
     fn test_partial_trigger_coalesces_and_reset_clears_watchdog_baseline() {
         let now = Instant::now();
         let mut state = PartialPassTriggerState::new(now);
@@ -2034,6 +2332,38 @@ mod tests {
             classify_partial_trigger(state.evaluate(due_at + Duration::from_millis(1))),
             None,
             "successful partial pass must reset watchdog baseline"
+        );
+    }
+
+    #[test]
+    fn test_partial_trigger_reset_clears_utterance_and_speech_accumulators() {
+        let now = Instant::now();
+        let mut state = PartialPassTriggerState::new(now);
+        let two_seconds = u64::from(vad::VAD_SAMPLE_RATE) * 2;
+
+        for _ in 0..3 {
+            state.observe_speech_event(true, two_seconds);
+        }
+        let due_at = now + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS);
+        assert_eq!(
+            classify_partial_trigger(state.evaluate(due_at)),
+            Some(PartialPassTrigger::Utterance)
+        );
+
+        state.reset_after_success(due_at);
+        assert_eq!(
+            state.evaluate(due_at + Duration::from_millis(1)),
+            PartialPassTriggerFlags::default(),
+            "reset should clear all trigger counters and watchdog elapsed time"
+        );
+
+        for _ in 0..2 {
+            state.observe_speech_event(true, two_seconds);
+        }
+        assert_eq!(
+            classify_partial_trigger(state.evaluate(due_at + Duration::from_millis(10))),
+            None,
+            "post-reset counters should require fresh accumulation before triggering again"
         );
     }
 
@@ -2157,6 +2487,327 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
+        let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
+        let gate = Arc::new((StdMutex::new(false), Condvar::new()));
+        let started_ref = Arc::clone(&started);
+        let gate_ref = Arc::clone(&gate);
+
+        let infer = Arc::new(
+            move |samples: Vec<f32>,
+                  _sample_rate: u32,
+                  _language: Option<String>|
+                  -> Result<RawTranscript> {
+                let id = samples.first().copied().unwrap_or_default() as u32;
+                started_ref
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(id);
+                if id == 100 {
+                    let (lock, cvar) = &*gate_ref;
+                    let mut released = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    while !*released {
+                        released = cvar.wait(released).unwrap_or_else(|e| e.into_inner());
+                    }
+                }
+                Ok(RawTranscript {
+                    text: format!("job-{id}"),
+                    segments: Vec::new(),
+                })
+            },
+        );
+
+        let scheduler = SttScheduler::with_infer_fn(infer);
+        let mut blocker = scheduler
+            .submit(SttLane::Live, vec![100.0], 16_000, None)
+            .expect("submit blocking live request");
+
+        let collector = Arc::new(CollectorEventSink::new());
+        let event_sink: Arc<dyn EventSink> = collector.clone();
+        let mut correction_in_flight: Option<SttTaskHandle> = None;
+        let mut correction_expected_preview_rev: Option<u64> = None;
+        let mut correction_expected_text: Option<String> = None;
+        let mut correction_suffix_snapshot: Option<String> = None;
+        let mut partial_telemetry = PartialPassTelemetry::default();
+
+        let mut first_audio = vec![21.0];
+        assert!(schedule_partial_pass(
+            &scheduler,
+            16_000,
+            Some("en".to_string()),
+            &mut first_audio,
+            &mut correction_in_flight,
+            &mut correction_expected_preview_rev,
+            &mut correction_expected_text,
+            &mut correction_suffix_snapshot,
+            "suffix-a",
+            7,
+            "draft-a",
+            PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
+            PartialPassTrigger::Watchdog,
+            &mut partial_telemetry,
+            &event_sink,
+        ));
+        assert!(
+            first_audio.is_empty(),
+            "correction audio buffer should be consumed on schedule"
+        );
+        assert_eq!(
+            correction_expected_preview_rev,
+            Some(7),
+            "tracked preview revision should match first scheduled correction"
+        );
+        assert_eq!(
+            correction_expected_text.as_deref(),
+            Some("draft-a"),
+            "tracked expected text should match first scheduled correction"
+        );
+        assert_eq!(
+            correction_suffix_snapshot.as_deref(),
+            Some("suffix-a"),
+            "tracked suffix snapshot should match first scheduled correction"
+        );
+        let first_id = correction_in_flight
+            .as_ref()
+            .expect("first correction handle should be tracked")
+            .id();
+
+        let mut second_audio = vec![22.0];
+        assert!(schedule_partial_pass(
+            &scheduler,
+            16_000,
+            Some("en".to_string()),
+            &mut second_audio,
+            &mut correction_in_flight,
+            &mut correction_expected_preview_rev,
+            &mut correction_expected_text,
+            &mut correction_suffix_snapshot,
+            "suffix-b",
+            8,
+            "draft-b",
+            PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
+            PartialPassTrigger::Speech,
+            &mut partial_telemetry,
+            &event_sink,
+        ));
+        let second_id = correction_in_flight
+            .as_ref()
+            .expect("latest correction handle should replace old in-flight handle")
+            .id();
+        assert!(
+            second_id > first_id,
+            "newly scheduled correction should replace the previous tracked handle"
+        );
+        assert_eq!(partial_telemetry.runs_total, 2);
+        assert_eq!(partial_telemetry.trigger_watchdog_count, 1);
+        assert_eq!(partial_telemetry.trigger_speech_count, 1);
+        assert_eq!(partial_telemetry.trigger_utterance_count, 0);
+        assert_eq!(partial_telemetry.coalesced_count, 1);
+        assert_eq!(partial_telemetry.stale_count, 0);
+        assert_eq!(partial_telemetry.dropped_count, 0);
+        assert_eq!(
+            correction_expected_preview_rev,
+            Some(8),
+            "new schedule should overwrite tracked preview revision"
+        );
+        assert_eq!(
+            correction_expected_text.as_deref(),
+            Some("draft-b"),
+            "new schedule should overwrite tracked expected text"
+        );
+        assert_eq!(
+            correction_suffix_snapshot.as_deref(),
+            Some("suffix-b"),
+            "new schedule should overwrite tracked suffix snapshot"
+        );
+
+        {
+            let (lock, cvar) = &*gate;
+            let mut released = lock.lock().unwrap_or_else(|e| e.into_inner());
+            *released = true;
+            cvar.notify_all();
+        }
+
+        let blocking_result = tokio::time::timeout(Duration::from_secs(2), blocker.recv())
+            .await
+            .expect("blocking live request timed out")
+            .expect("blocking live request should finish");
+        assert_eq!(blocking_result.text, "job-100");
+        assert!(blocking_result.segments.is_empty());
+
+        let mut correction_handle = correction_in_flight
+            .take()
+            .expect("latest correction handle should remain in-flight");
+        let correction_result =
+            tokio::time::timeout(Duration::from_secs(2), correction_handle.recv())
+                .await
+                .expect("latest correction request timed out")
+                .expect("latest correction request should complete");
+        assert_eq!(correction_result.text, "job-22");
+        assert!(correction_result.segments.is_empty());
+
+        tokio::time::timeout(Duration::from_secs(2), scheduler.shutdown())
+            .await
+            .expect("scheduler shutdown timed out")
+            .expect("scheduler shutdown");
+
+        assert_eq!(
+            started.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            vec![100, 22],
+            "superseded correction should not execute when scheduler is saturated"
+        );
+        assert!(
+            collector
+                .events()
+                .iter()
+                .all(|event| !matches!(event, EngineEvent::Warning { .. })),
+            "successful partial scheduling should not emit warning events"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
+        let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
+        let gate = Arc::new((StdMutex::new(false), Condvar::new()));
+        let started_ref = Arc::clone(&started);
+        let gate_ref = Arc::clone(&gate);
+
+        let infer = Arc::new(
+            move |samples: Vec<f32>,
+                  _sample_rate: u32,
+                  _language: Option<String>|
+                  -> Result<RawTranscript> {
+                let id = samples.first().copied().unwrap_or_default() as u32;
+                started_ref
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(id);
+                if id == 100 {
+                    let (lock, cvar) = &*gate_ref;
+                    let mut released = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    while !*released {
+                        released = cvar.wait(released).unwrap_or_else(|e| e.into_inner());
+                    }
+                }
+                Ok(RawTranscript {
+                    text: format!("job-{id}"),
+                    segments: Vec::new(),
+                })
+            },
+        );
+
+        let scheduler = SttScheduler::with_infer_fn(infer);
+        let mut blocker = scheduler
+            .submit(SttLane::Live, vec![100.0], 16_000, None)
+            .expect("submit blocking live request");
+
+        let collector = Arc::new(CollectorEventSink::new());
+        let event_sink: Arc<dyn EventSink> = collector.clone();
+        let mut correction_in_flight: Option<SttTaskHandle> = None;
+        let mut correction_expected_preview_rev: Option<u64> = None;
+        let mut correction_expected_text: Option<String> = None;
+        let mut correction_suffix_snapshot: Option<String> = None;
+        let mut partial_telemetry = PartialPassTelemetry::default();
+        let trigger_sequence = [
+            PartialPassTrigger::Utterance,
+            PartialPassTrigger::Speech,
+            PartialPassTrigger::Watchdog,
+            PartialPassTrigger::Speech,
+            PartialPassTrigger::Watchdog,
+        ];
+        let first_marker = 31u32;
+        let expected_last_id = first_marker + trigger_sequence.len() as u32 - 1;
+
+        for (index, trigger) in trigger_sequence.iter().copied().enumerate() {
+            let marker = 31.0 + index as f32;
+            let expected_rev = 21 + index as u64;
+            let expected_text = format!("draft-{index}");
+            let expected_suffix = format!("suffix-{index}");
+            let mut audio = vec![marker];
+
+            assert!(schedule_partial_pass(
+                &scheduler,
+                16_000,
+                Some("en".to_string()),
+                &mut audio,
+                &mut correction_in_flight,
+                &mut correction_expected_preview_rev,
+                &mut correction_expected_text,
+                &mut correction_suffix_snapshot,
+                &expected_suffix,
+                expected_rev,
+                &expected_text,
+                PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS + index as u64,
+                trigger,
+                &mut partial_telemetry,
+                &event_sink,
+            ));
+            assert!(
+                audio.is_empty(),
+                "schedule should consume correction audio buffer"
+            );
+            assert_eq!(correction_expected_preview_rev, Some(expected_rev));
+            assert_eq!(
+                correction_expected_text.as_deref(),
+                Some(expected_text.as_str())
+            );
+            assert_eq!(
+                correction_suffix_snapshot.as_deref(),
+                Some(expected_suffix.as_str())
+            );
+        }
+
+        {
+            let (lock, cvar) = &*gate;
+            let mut released = lock.lock().unwrap_or_else(|e| e.into_inner());
+            *released = true;
+            cvar.notify_all();
+        }
+
+        let blocking_result = tokio::time::timeout(Duration::from_secs(2), blocker.recv())
+            .await
+            .expect("blocking live request timed out")
+            .expect("blocking live request should finish");
+        assert_eq!(blocking_result.text, "job-100");
+
+        let mut correction_handle = correction_in_flight
+            .take()
+            .expect("latest correction handle should remain in-flight");
+        let correction_result =
+            tokio::time::timeout(Duration::from_secs(2), correction_handle.recv())
+                .await
+                .expect("latest correction request timed out")
+                .expect("latest correction request should complete");
+        assert_eq!(correction_result.text, format!("job-{expected_last_id}"));
+        assert!(correction_result.segments.is_empty());
+
+        tokio::time::timeout(Duration::from_secs(2), scheduler.shutdown())
+            .await
+            .expect("scheduler shutdown timed out")
+            .expect("scheduler shutdown");
+
+        assert_eq!(
+            started.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            vec![100, expected_last_id],
+            "coalescing under pressure should execute only the latest correction"
+        );
+        assert_eq!(partial_telemetry.runs_total, 5);
+        assert_eq!(partial_telemetry.trigger_utterance_count, 1);
+        assert_eq!(partial_telemetry.trigger_speech_count, 2);
+        assert_eq!(partial_telemetry.trigger_watchdog_count, 2);
+        assert_eq!(partial_telemetry.coalesced_count, 4);
+        assert_eq!(partial_telemetry.stale_count, 0);
+        assert_eq!(partial_telemetry.dropped_count, 0);
+        assert!(
+            collector
+                .events()
+                .iter()
+                .all(|event| !matches!(event, EngineEvent::Warning { .. })),
+            "successful coalescing should not emit warnings"
+        );
+    }
+
+    #[tokio::test]
     async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
         let (tx, rx) = mpsc::channel::<Vec<f32>>(1);
         drop(tx);
@@ -2261,5 +2912,117 @@ mod tests {
         .expect("correction should pass");
         assert!(!corrected.is_empty());
         assert_ne!(pipeline.last_suffix, "old-tail");
+    }
+
+    // ── Fix A contract: FINAL must not inherit corrupted suffix from non-final ──
+
+    #[test]
+    fn test_fix_a_final_uses_boundary_suffix_not_nonfinal_suffix() {
+        // Simulate: utterance boundary leaves suffix "abc". Then non-final
+        // chunks advance pipeline.last_suffix to "xyz". When FINAL arrives,
+        // it should see "abc" (the boundary snapshot), not "xyz".
+        let mut pipeline = TranscriptionPipeline::new(None);
+
+        // Initial utterance boundary — suffix is empty (session start).
+        let utterance_boundary_suffix = pipeline.last_suffix.clone();
+        assert_eq!(utterance_boundary_suffix, "");
+
+        // Non-final chunk processing advances pipeline.last_suffix.
+        let _ = pipeline.postprocess_with_reason("hello world");
+        assert_ne!(
+            pipeline.last_suffix, utterance_boundary_suffix,
+            "non-final should advance last_suffix"
+        );
+        let corrupted_suffix = pipeline.last_suffix.clone();
+
+        // Fix A: Restore boundary suffix before FINAL processing.
+        pipeline.last_suffix = utterance_boundary_suffix.clone();
+        let result = pipeline.postprocess_with_reason("hello world final version");
+        assert!(result.is_ok());
+
+        // Verify FINAL did NOT use the corrupted non-final suffix.
+        // The boundary suffix was empty, so no overlap should be stripped.
+        let cleaned = result.unwrap();
+        assert!(
+            cleaned.contains("hello"),
+            "FINAL with restored boundary suffix should not aggressively strip: got '{}'",
+            cleaned
+        );
+
+        // Without Fix A, pipeline.last_suffix would have been "corrupted_suffix"
+        // causing strip_overlap to incorrectly remove matching text.
+        assert_ne!(
+            pipeline.last_suffix, corrupted_suffix,
+            "after Fix A, pipeline.last_suffix should be updated from FINAL, not stuck on non-final's suffix"
+        );
+    }
+
+    // ── Fix D contract: window-scoped stale guard survives utterance boundaries ──
+
+    #[test]
+    fn test_fix_d_stale_guard_with_window_rev_survives_final() {
+        // Before Fix D: schedule_partial_pass stored preview_rev / accumulated_text.
+        // After FINAL: accumulated_text.clear() → correction_is_stale could pass
+        // when it shouldn't (empty == empty).
+        //
+        // After Fix D: schedule_partial_pass stores window_rev / window_text.
+        // FINAL increments window_rev → correction_is_stale correctly detects staleness.
+
+        let window_rev_at_schedule: u64 = 5;
+        let window_text_at_schedule = "cześć jak się masz";
+
+        // Simulate FINAL boundary advancing window state.
+        let window_rev_after_final: u64 = 6; // FINAL incremented it
+        let window_text_after_final = "cześć jak się masz dobrze";
+
+        assert!(
+            correction_is_stale(
+                window_rev_at_schedule,
+                window_rev_after_final,
+                window_text_at_schedule,
+                window_text_after_final,
+            ),
+            "correction scheduled before FINAL should be stale after FINAL"
+        );
+    }
+
+    #[test]
+    fn test_fix_d_stale_guard_passes_when_window_unchanged() {
+        // When no FINAL or new text arrives between schedule and correction result,
+        // the window state matches and correction should apply.
+        let window_rev: u64 = 5;
+        let window_text = "cześć jak się masz";
+
+        assert!(
+            !correction_is_stale(window_rev, window_rev, window_text, window_text),
+            "correction should not be stale when window state unchanged"
+        );
+    }
+
+    #[test]
+    fn test_fix_d_empty_accumulated_text_after_final_detected_by_window_rev() {
+        // Edge case: FINAL clears accumulated_text. Before Fix D, stale guard
+        // compared "" vs "" → not stale → correction applies to empty text.
+        // After Fix D, window_rev incremented by FINAL → stale.
+
+        // Old behavior (broken): accumulated_text scope — expected "hello world"
+        // vs current "" (cleared by FINAL). This would pass if revs matched
+        // (both based on preview_rev which didn't increment for FINAL).
+
+        // New behavior: window scope
+        let window_rev_at_schedule: u64 = 3;
+        let window_text_at_schedule = "hello world";
+        let window_rev_after_final: u64 = 4; // FINAL bumped it
+        let window_text_after_final = "hello world and more"; // FINAL appended
+
+        assert!(
+            correction_is_stale(
+                window_rev_at_schedule,
+                window_rev_after_final,
+                window_text_at_schedule,
+                window_text_after_final,
+            ),
+            "window-scoped stale guard must detect FINAL boundary crossing"
+        );
     }
 }

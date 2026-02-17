@@ -564,8 +564,10 @@ impl SpeechSession {
         if let Some(end) = self.pending_end
             && self.raw_cursor >= end
         {
+            let end = end.min(self.raw_cursor);
             if let Some(start) = self.segment_start.take()
-                && let Some(chunk) = self.raw_slice(start, end)
+                && let Some((emit_start, emit_end)) = self.supervisor_emit_range(start, end)
+                && let Some(chunk) = self.raw_slice(emit_start, emit_end)
             {
                 match self.mode {
                     SpeechMode::Stream { .. } => self
@@ -579,6 +581,7 @@ impl SpeechSession {
             self.pending_end = None;
             self.last_emit_raw = end;
             self.segment_peak_prob = 0.0;
+            self.pending_event_speech_vad_samples = 0;
             // Segment was emitted successfully; clear fallback probe state so
             // later flush() does not use stale speech probability.
             self.max_speech_prob = 0.0;
@@ -600,25 +603,31 @@ impl SpeechSession {
                 // VAD fired Start but recording ended before End — emit what we have.
                 let end = self.pending_end.take().unwrap_or(self.raw_cursor);
                 let end = end.min(self.raw_cursor);
-                self.last_emit_raw = end;
-                if let Some(chunk) = self.raw_slice(start, end) {
+                if let Some((emit_start, emit_end)) = self.supervisor_emit_range(start, end)
+                    && let Some(chunk) = self.raw_slice(emit_start, emit_end)
+                {
                     debug!(
-                        "Supervisor flush: open segment {}..{} ({} samples)",
+                        "Supervisor flush: open segment {}..{} emitted {}..{} ({} samples)",
                         start,
                         end,
+                        emit_start,
+                        emit_end,
                         chunk.len()
                     );
                     let speech_vad_samples = self.take_pending_event_speech_vad_samples();
                     self.event_speech_vad_samples.push_back(speech_vad_samples);
                     self.segment_peak_prob = 0.0;
+                    self.last_emit_raw = emit_end;
                     return Some(match self.mode {
                         SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
                         SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
                     });
                 }
+                self.last_emit_raw = end;
                 self.pending_event_speech_vad_samples = 0;
             }
             // VAD never triggered Start: drop silently.
+            self.segment_peak_prob = 0.0;
             self.pending_event_speech_vad_samples = 0;
             return None;
         }
@@ -1006,6 +1015,27 @@ impl SpeechSession {
         ((vad_index as f32 * self.raw_sample_rate as f32) / vad::VAD_SAMPLE_RATE as f32)
             .round()
             .max(0.0) as usize
+    }
+
+    fn supervisor_emit_range(&self, segment_start: usize, end: usize) -> Option<(usize, usize)> {
+        if end <= segment_start || end > self.raw_cursor {
+            return None;
+        }
+
+        let mut emit_start = self
+            .last_emit_raw
+            .max(segment_start)
+            .max(self.raw_buffer_start);
+
+        if emit_start >= end {
+            // Preserve a small final boundary window when all new audio was already
+            // emitted as busy interim/chunk previews.
+            emit_start = end
+                .saturating_sub(self.pre_roll_raw)
+                .max(self.raw_buffer_start);
+        }
+
+        (emit_start < end).then_some((emit_start, end))
     }
 
     fn raw_slice(&self, start: usize, end: usize) -> Option<Vec<f32>> {
@@ -1728,6 +1758,140 @@ mod tests {
             session.take_event_speech_vad_samples(),
             0,
             "event speech sample queue should be drained"
+        );
+    }
+
+    #[test]
+    fn test_supervisor_busy_flush_emits_tail_and_keeps_speech_sample_fifo() {
+        let sr = 16000u32;
+        let mut session = SpeechSession::new_utterance(sr);
+
+        if session.gate_mode() != VadGateMode::Supervisor {
+            eprintln!("Skipping: gate mode is not Supervisor");
+            return;
+        }
+
+        let total_samples = sr as usize * 2;
+        let already_emitted = sr as usize;
+        session.raw_buffer.extend(vec![0.2; total_samples]);
+        session.raw_cursor = total_samples;
+        session.segment_start = Some(0);
+        session.last_emit_raw = already_emitted;
+        session
+            .event_speech_vad_samples
+            .push_back(vad::VAD_SAMPLE_RATE as u64);
+        session.pending_event_speech_vad_samples = vad::VAD_SAMPLE_RATE as u64 * 2;
+
+        let flush = session.flush();
+        let tail_len = match flush {
+            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
+            Some(SpeechEvent::Utterance(_)) | Some(SpeechEvent::Chunk(_)) => {
+                panic!("flush must emit UtteranceFinal in utterance mode")
+            }
+            None => panic!("flush should emit the active Supervisor segment"),
+        };
+        assert_eq!(
+            tail_len,
+            total_samples - already_emitted,
+            "flush should emit only the previously un-emitted tail"
+        );
+        assert_eq!(
+            session.take_event_speech_vad_samples(),
+            vad::VAD_SAMPLE_RATE as u64,
+            "existing queued accounting must stay first (FIFO)"
+        );
+        assert_eq!(
+            session.take_event_speech_vad_samples(),
+            vad::VAD_SAMPLE_RATE as u64 * 2,
+            "flush should append its pending speech accounting after queued events"
+        );
+        assert_eq!(
+            session.take_event_speech_vad_samples(),
+            0,
+            "speech accounting queue should be fully drained"
+        );
+    }
+
+    #[test]
+    fn test_supervisor_flush_is_boundary_safe_when_start_was_trimmed() {
+        let sr = 16000u32;
+        let mut session = SpeechSession::new_utterance(sr);
+
+        if session.gate_mode() != VadGateMode::Supervisor {
+            eprintln!("Skipping: gate mode is not Supervisor");
+            return;
+        }
+
+        let trimmed_start = sr as usize / 2;
+        let visible_len = sr as usize / 2;
+        let tail_start = trimmed_start + visible_len / 2;
+        session.raw_buffer_start = trimmed_start;
+        session.raw_buffer.extend(vec![0.2; visible_len]);
+        session.raw_cursor = trimmed_start + visible_len;
+        session.segment_start = Some(0);
+        session.last_emit_raw = tail_start;
+        session.pending_event_speech_vad_samples = vad::VAD_SAMPLE_RATE as u64;
+
+        let flush = session.flush();
+        let len = match flush {
+            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
+            Some(SpeechEvent::Utterance(_)) | Some(SpeechEvent::Chunk(_)) => {
+                panic!("flush must emit UtteranceFinal in utterance mode")
+            }
+            None => panic!("flush should emit tail even when segment start is trimmed"),
+        };
+        assert_eq!(
+            len,
+            session.raw_cursor - tail_start,
+            "flush should emit from last emitted boundary to raw_cursor"
+        );
+        assert_eq!(
+            session.take_event_speech_vad_samples(),
+            vad::VAD_SAMPLE_RATE as u64,
+            "flush should preserve pending speech accounting after boundary clamp"
+        );
+        assert_eq!(
+            session.take_event_speech_vad_samples(),
+            0,
+            "speech accounting queue should be drained after reading flush event"
+        );
+    }
+
+    #[test]
+    fn test_supervisor_flush_emits_preroll_window_when_no_new_tail_exists() {
+        let sr = 16000u32;
+        let mut session = SpeechSession::new_utterance(sr);
+
+        if session.gate_mode() != VadGateMode::Supervisor {
+            eprintln!("Skipping: gate mode is not Supervisor");
+            return;
+        }
+
+        let total_samples = sr as usize;
+        let preroll = session.pre_roll_raw.max(1);
+        session.raw_buffer_start = total_samples - preroll;
+        session.raw_buffer.extend(vec![0.2; preroll]);
+        session.raw_cursor = total_samples;
+        session.segment_start = Some(0);
+        session.last_emit_raw = total_samples;
+        session.pending_event_speech_vad_samples = 0;
+
+        let flush = session.flush();
+        let len = match flush {
+            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
+            Some(SpeechEvent::Utterance(_)) | Some(SpeechEvent::Chunk(_)) => {
+                panic!("flush must emit UtteranceFinal in utterance mode")
+            }
+            None => panic!("flush should emit a final boundary window"),
+        };
+        assert_eq!(
+            len, preroll,
+            "flush should emit preroll-sized context when no unseen tail remains"
+        );
+        assert_eq!(
+            session.take_event_speech_vad_samples(),
+            0,
+            "finalization-only flush window should carry zero pending speech samples"
         );
     }
 
