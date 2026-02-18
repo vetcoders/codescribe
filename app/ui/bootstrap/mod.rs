@@ -507,6 +507,8 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
         state.assistive_model_field = built_state.assistive_model_field;
         state.assistive_key_field = built_state.assistive_key_field;
 
+        drop(state); // Release lock before permission calls to avoid deadlock.
+
         refresh_permission_indicators();
         start_permission_polling();
         Some(root)
