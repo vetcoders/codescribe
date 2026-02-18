@@ -4,15 +4,16 @@ use objc::{sel, sel_impl};
 use std::sync::Once;
 
 use super::{
-    TAB_AUDIO, TAB_ENGINE, TAB_KEYS, TAB_SETUP, TAB_VOICE_LAB, handle_bootstrap_window_closed,
-    handle_finish, handle_hotkey_done, handle_show_overlay, handle_test_mic,
-    on_assistive_endpoint_changed, on_assistive_key_changed, on_assistive_model_changed,
-    on_beep_toggled, on_clear_assistive_key, on_clear_llm_key, on_delay_changed,
-    on_double_tap_interval_changed, on_enter_send_toggled, on_formatting_level_changed,
-    on_formatting_toggled, on_hold_exclusive_changed, on_hold_mod_changed, on_language_changed,
-    on_llm_endpoint_changed, on_llm_key_changed, on_llm_model_changed, on_open_system_settings,
-    on_permission_action, on_preset_changed, on_quality_daemon_toggled, on_refresh_permissions,
-    on_save_api_settings, on_toggle_trigger_changed, on_voice_lab_field_changed,
+    TAB_AUDIO, TAB_ENGINE, TAB_KEYS, TAB_SETUP, TAB_USER, TAB_VOICE_LAB,
+    handle_bootstrap_window_closed, handle_finish, handle_hotkey_done, handle_show_overlay,
+    handle_test_mic, on_assistive_endpoint_changed, on_assistive_key_changed,
+    on_assistive_model_changed, on_beep_toggled, on_clear_assistive_key, on_clear_llm_key,
+    on_delay_changed, on_double_tap_interval_changed, on_enter_send_toggled,
+    on_formatting_level_changed, on_formatting_toggled, on_hold_exclusive_changed,
+    on_hold_mod_changed, on_language_changed, on_llm_endpoint_changed, on_llm_key_changed,
+    on_llm_model_changed, on_open_system_settings, on_permission_action, on_preset_changed,
+    on_quality_daemon_toggled, on_refresh_permissions, on_save_api_settings,
+    on_toggle_trigger_changed, on_ultra_quality_toggled, on_voice_lab_field_changed,
     on_voice_lab_toggle_changed, on_volume_changed, switch_tab,
 };
 
@@ -68,6 +69,10 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onTabEngine:),
                 on_tab_engine as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onTabUser:),
+                on_tab_user as extern "C" fn(&Object, Sel, Id),
             );
 
             // Keys tab actions
@@ -179,6 +184,10 @@ pub fn action_handler_class() -> *const Class {
                 sel!(onQualityDaemonToggled:),
                 on_quality_daemon_toggled as extern "C" fn(&Object, Sel, Id),
             );
+            decl.add_method(
+                sel!(onUltraQualityToggled:),
+                on_ultra_quality_toggled as extern "C" fn(&Object, Sel, Id),
+            );
 
             // Permission refresh
             decl.add_method(
@@ -252,6 +261,10 @@ extern "C" fn on_tab_voice_lab(_this: &Object, _sel: Sel, _sender: Id) {
 
 extern "C" fn on_tab_engine(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_ENGINE);
+}
+
+extern "C" fn on_tab_user(_this: &Object, _sel: Sel, _sender: Id) {
+    switch_tab(TAB_USER);
 }
 
 extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, _notification: Id) {

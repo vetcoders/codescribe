@@ -51,6 +51,8 @@ pub struct UserSettings {
     pub double_tap_right: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_zoom: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_dock_icon: Option<bool>,
 
     // ── Promoted from .env (settings.json is now source of truth) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -121,6 +123,8 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "BEEP_ON_START",
     "SOUND_VOLUME",
     "SOUND_NAME",
+    // App visibility
+    "SHOW_DOCK_ICON",
     // LLM endpoints
     "LLM_ENDPOINT",
     "LLM_MODEL",
@@ -303,6 +307,7 @@ impl UserSettings {
             "AI_FORMATTING_ENABLED" => self.ai_formatting_enabled = Some(value),
             "CODESCRIBE_BUFFERED_STREAM" => self.buffered_stream = Some(value),
             "BEEP_ON_START" => self.beep_on_start = Some(value),
+            "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
             "HOTKEY_DOUBLE_TAP_LEFT" => self.double_tap_left = Some(value),
             "HOTKEY_DOUBLE_TAP_RIGHT" => self.double_tap_right = Some(value),
@@ -400,5 +405,18 @@ mod tests {
         assert!(!settings.set_chat_zoom(1.129));
         let second_contents = fs::read_to_string(&path).expect("read settings after no-op write");
         assert_eq!(first_contents, second_contents);
+    }
+
+    #[test]
+    #[serial]
+    fn test_show_dock_icon_bool_persists_and_roundtrips() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_bool("SHOW_DOCK_ICON", false);
+
+        assert_eq!(settings.show_dock_icon, Some(false));
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.show_dock_icon, Some(false));
     }
 }

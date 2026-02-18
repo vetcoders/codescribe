@@ -27,6 +27,10 @@ pub fn default_show_tray_glyph() -> bool {
     true
 }
 
+pub fn default_show_dock_icon() -> bool {
+    true
+}
+
 pub fn default_hold_indicator() -> bool {
     true
 }
