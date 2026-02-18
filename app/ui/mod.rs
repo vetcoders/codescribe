@@ -804,6 +804,62 @@ pub fn hide_hold_badge() {
 /// Embedded icon for Dock (same as tray icon source)
 const DOCK_ICON_BYTES: &[u8] = include_bytes!("../../assets/icon.png");
 
+#[cfg(target_os = "macos")]
+const NS_APP_ACTIVATION_POLICY_REGULAR: isize = 0;
+#[cfg(target_os = "macos")]
+const NS_APP_ACTIVATION_POLICY_ACCESSORY: isize = 1;
+
+#[cfg(target_os = "macos")]
+fn dock_activation_policy(show_dock_icon: bool) -> isize {
+    if show_dock_icon {
+        NS_APP_ACTIVATION_POLICY_REGULAR
+    } else {
+        NS_APP_ACTIVATION_POLICY_ACCESSORY
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dock_activation_policy_name(policy: isize) -> &'static str {
+    match policy {
+        NS_APP_ACTIVATION_POLICY_REGULAR => "Regular",
+        NS_APP_ACTIVATION_POLICY_ACCESSORY => "Accessory",
+        _ => "Unknown",
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn set_dock_icon_for_app(shared_app: Id) {
+    let Some(ns_data_class) = Class::get("NSData") else {
+        warn!("set_dock_icon: NSData class not found");
+        return;
+    };
+    let ns_data: Id = msg_send![
+        ns_data_class,
+        dataWithBytes: DOCK_ICON_BYTES.as_ptr()
+        length: DOCK_ICON_BYTES.len()
+    ];
+
+    if ns_data.is_null() {
+        warn!("set_dock_icon: failed to create NSData from icon bytes");
+        return;
+    }
+
+    let Some(ns_image_class) = Class::get("NSImage") else {
+        warn!("set_dock_icon: NSImage class not found");
+        return;
+    };
+    let ns_image: Id = msg_send![ns_image_class, alloc];
+    let ns_image: Id = msg_send![ns_image, initWithData: ns_data];
+
+    if ns_image.is_null() {
+        warn!("set_dock_icon: failed to create NSImage from icon data");
+        return;
+    }
+
+    let _: () = msg_send![shared_app, setApplicationIconImage: ns_image];
+    debug!("Dock icon image set successfully");
+}
+
 /// Set the Dock icon programmatically (for unbundled binaries)
 ///
 /// This allows the app to show its custom icon in the Dock even when
@@ -812,43 +868,74 @@ pub fn set_dock_icon() {
     debug!("Setting Dock icon programmatically");
 
     Queue::main().exec_async(|| unsafe {
-        // Get NSApplication shared instance
-        let ns_app_class = Class::get("NSApplication").expect("NSApplication class not found");
+        let Some(ns_app_class) = Class::get("NSApplication") else {
+            warn!("set_dock_icon: NSApplication class not found");
+            return;
+        };
         let shared_app: Id = msg_send![ns_app_class, sharedApplication];
 
         if shared_app.is_null() {
-            warn!("Failed to get NSApplication sharedApplication");
+            warn!("set_dock_icon: NSApplication sharedApplication is null");
             return;
         }
 
-        // Create NSData from embedded bytes
-        let ns_data_class = Class::get("NSData").expect("NSData class not found");
-        let ns_data: Id = msg_send![
-            ns_data_class,
-            dataWithBytes: DOCK_ICON_BYTES.as_ptr()
-            length: DOCK_ICON_BYTES.len()
-        ];
-
-        if ns_data.is_null() {
-            warn!("Failed to create NSData from icon bytes");
-            return;
-        }
-
-        // Create NSImage from NSData
-        let ns_image_class = Class::get("NSImage").expect("NSImage class not found");
-        let ns_image: Id = msg_send![ns_image_class, alloc];
-        let ns_image: Id = msg_send![ns_image, initWithData: ns_data];
-
-        if ns_image.is_null() {
-            warn!("Failed to create NSImage from icon data");
-            return;
-        }
-
-        // Set as application icon
-        let _: () = msg_send![shared_app, setApplicationIconImage: ns_image];
-        debug!("Dock icon set successfully");
+        set_dock_icon_for_app(shared_app);
     });
 }
+
+/// Apply Dock visibility preference at runtime (best effort on macOS).
+///
+/// We switch NSApplication activation policy between:
+/// - `Regular` (show Dock icon)
+/// - `Accessory` (hide Dock icon, menu bar/tray style)
+///
+/// Some launch modes can refuse policy transitions (for example strict `LSUIElement`
+/// behavior in certain app bundle contexts). In that case we keep current behavior and
+/// only log a warning instead of failing.
+#[cfg(target_os = "macos")]
+pub fn apply_dock_icon_visibility(show_dock_icon: bool) {
+    Queue::main().exec_async(move || unsafe {
+        let Some(ns_app_class) = Class::get("NSApplication") else {
+            warn!("apply_dock_icon_visibility: NSApplication class not found");
+            return;
+        };
+        let shared_app: Id = msg_send![ns_app_class, sharedApplication];
+        if shared_app.is_null() {
+            warn!("apply_dock_icon_visibility: NSApplication sharedApplication is null");
+            return;
+        }
+
+        let target_policy = dock_activation_policy(show_dock_icon);
+        let current_policy: isize = msg_send![shared_app, activationPolicy];
+
+        if current_policy != target_policy {
+            let changed: bool = msg_send![shared_app, setActivationPolicy: target_policy];
+            if !changed {
+                warn!(
+                    "Show dock icon={} requested but activation policy change {} -> {} was refused. \
+                     Keeping current Dock behavior (likely launch-mode limitation).",
+                    show_dock_icon,
+                    dock_activation_policy_name(current_policy),
+                    dock_activation_policy_name(target_policy),
+                );
+                return;
+            }
+
+            debug!(
+                "Dock activation policy changed: {} -> {}",
+                dock_activation_policy_name(current_policy),
+                dock_activation_policy_name(target_policy),
+            );
+        }
+
+        if show_dock_icon {
+            set_dock_icon_for_app(shared_app);
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn apply_dock_icon_visibility(_show_dock_icon: bool) {}
 
 /// Install a minimal AppKit main menu with standard Edit key equivalents.
 ///
@@ -958,5 +1045,24 @@ mod tests {
         assert_eq!(config.diameter, 12.0);
         assert_eq!(config.offset, (10.0, -10.0));
         assert_eq!(config.update_interval_ms, 150);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_dock_policy_mapping() {
+        assert_eq!(
+            dock_activation_policy(true),
+            NS_APP_ACTIVATION_POLICY_REGULAR
+        );
+        assert_eq!(
+            dock_activation_policy(false),
+            NS_APP_ACTIVATION_POLICY_ACCESSORY
+        );
+    }
+
+    #[test]
+    fn test_apply_dock_icon_visibility_is_safe_to_call() {
+        apply_dock_icon_visibility(true);
+        apply_dock_icon_visibility(false);
     }
 }

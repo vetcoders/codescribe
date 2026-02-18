@@ -143,6 +143,9 @@ impl Config {
         if let Ok(val) = std::env::var("SHOW_TRAY_GLYPH") {
             self.show_tray_glyph = val.parse().unwrap_or(true);
         }
+        if let Ok(val) = std::env::var("SHOW_DOCK_ICON") {
+            self.show_dock_icon = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
         if let Ok(val) = std::env::var("HOLD_INDICATOR") {
             self.hold_indicator = val.parse().unwrap_or(true);
         }
@@ -341,6 +344,11 @@ impl Config {
             && let Some(v) = settings.beep_on_start
         {
             self.beep_on_start = v;
+        }
+        if std::env::var("SHOW_DOCK_ICON").is_err()
+            && let Some(v) = settings.show_dock_icon
+        {
+            self.show_dock_icon = v;
         }
         if std::env::var("SOUND_VOLUME").is_err()
             && let Some(v) = settings.sound_volume
@@ -581,6 +589,7 @@ impl Config {
                 "AI_FORMATTING_ENABLED"
                 | "CODESCRIBE_BUFFERED_STREAM"
                 | "BEEP_ON_START"
+                | "SHOW_DOCK_ICON"
                 | "HOLD_EXCLUSIVE"
                 | "HOTKEY_DOUBLE_TAP_LEFT"
                 | "HOTKEY_DOUBLE_TAP_RIGHT"
@@ -729,6 +738,7 @@ impl Config {
                     "AI_FORMATTING_ENABLED"
                     | "CODESCRIBE_BUFFERED_STREAM"
                     | "BEEP_ON_START"
+                    | "SHOW_DOCK_ICON"
                     | "HOLD_EXCLUSIVE"
                     | "HOTKEY_DOUBLE_TAP_LEFT"
                     | "HOTKEY_DOUBLE_TAP_RIGHT"
@@ -745,6 +755,7 @@ impl Config {
                             }
                             "CODESCRIBE_BUFFERED_STREAM" => settings_ref.buffered_stream = Some(bv),
                             "BEEP_ON_START" => settings_ref.beep_on_start = Some(bv),
+                            "SHOW_DOCK_ICON" => settings_ref.show_dock_icon = Some(bv),
                             "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),
                             "HOTKEY_DOUBLE_TAP_LEFT" => settings_ref.double_tap_left = Some(bv),
                             "HOTKEY_DOUBLE_TAP_RIGHT" => settings_ref.double_tap_right = Some(bv),

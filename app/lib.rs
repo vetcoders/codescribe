@@ -50,9 +50,9 @@ pub mod dev;
 
 #[cfg(target_os = "macos")]
 pub use ui::{
-    BadgeMode, HoldBadgeConfig, focused_element_accepts_text, get_caret_position,
-    get_cursor_position, hide_hold_badge, install_basic_edit_menu, set_dock_icon,
-    show_badge_for_mode, show_hold_badge, show_hold_badge_with_config,
+    BadgeMode, HoldBadgeConfig, apply_dock_icon_visibility, focused_element_accepts_text,
+    get_caret_position, get_cursor_position, hide_hold_badge, install_basic_edit_menu,
+    set_dock_icon, show_badge_for_mode, show_hold_badge, show_hold_badge_with_config,
 };
 
 #[cfg(target_os = "macos")]

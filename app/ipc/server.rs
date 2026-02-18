@@ -431,6 +431,11 @@ fn persist_config(config: &Config) -> Result<()> {
         &mut env_vars,
     );
     put(
+        "SHOW_DOCK_ICON",
+        bool_to_env(config.show_dock_icon),
+        &mut env_vars,
+    );
+    put(
         "HOLD_INDICATOR",
         bool_to_env(config.hold_indicator),
         &mut env_vars,
@@ -667,7 +672,8 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
         | "HOTKEY_DOUBLE_TAP_RIGHT"
         | "QUICK_NOTES_ENABLED"
         | "QUICK_NOTES_SAVE_ONLY"
-        | "AGENT_ENTER_SENDS" => {
+        | "AGENT_ENTER_SENDS"
+        | "SHOW_DOCK_ICON" => {
             let bool_val = matches!(value, "1" | "true" | "yes" | "on");
             match key {
                 "HOLD_EXCLUSIVE" => settings.hold_exclusive = Some(bool_val),
@@ -682,6 +688,7 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
                 "QUICK_NOTES_ENABLED" => settings.quick_notes_enabled = Some(bool_val),
                 "QUICK_NOTES_SAVE_ONLY" => settings.quick_notes_save_only = Some(bool_val),
                 "AGENT_ENTER_SENDS" => settings.agent_enter_sends = Some(bool_val),
+                "SHOW_DOCK_ICON" => settings.show_dock_icon = Some(bool_val),
                 _ => unreachable!(),
             }
         }

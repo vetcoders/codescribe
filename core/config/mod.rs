@@ -48,7 +48,24 @@ mod tests {
         assert!(!config.ai_formatting_enabled);
         assert_eq!(config.double_tap_interval_ms, 200);
         assert_eq!(config.toggle_silence_sec, 5.0);
+        assert!(config.show_dock_icon);
         assert_eq!(config.local_model, models::DEFAULT_MODEL);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_show_dock_icon_env_override_applies() {
+        let previous = std::env::var("SHOW_DOCK_ICON").ok();
+        unsafe { std::env::set_var("SHOW_DOCK_ICON", "0") };
+
+        let config = Config::load();
+        assert!(!config.show_dock_icon);
+
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("SHOW_DOCK_ICON", value) };
+        } else {
+            unsafe { std::env::remove_var("SHOW_DOCK_ICON") };
+        }
     }
 
     #[test]

@@ -2594,7 +2594,7 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
 unsafe fn build_user_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
-    _config: &Config,
+    config: &Config,
     state: &mut BootstrapState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -2630,6 +2630,49 @@ unsafe fn build_user_tab(
         });
         add_subview(container, subtitle);
         y -= 30.0;
+
+        let app_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "App".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, app_header);
+        y -= 26.0;
+
+        let dock_check = create_checkbox(
+            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 20.0)),
+            "Show dock icon",
+            config.show_dock_icon,
+        );
+        button_set_action(dock_check, action_handler, sel!(onShowDockIconToggled:));
+        add_subview(container, dock_check);
+        y -= 18.0;
+
+        let dock_desc = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(pad + 22.0, y),
+                &CGSize::new(field_w - 22.0, 16.0),
+            ),
+            text: "Best effort at runtime; some launch modes keep current behavior.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, dock_desc);
+        y -= 24.0;
+
+        let app_divider = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 1.0)),
+            text: String::new(),
+            background_color: Some(ui_colors::separator()),
+            ..Default::default()
+        });
+        let _: () = msg_send![app_divider, setAlphaValue: 0.55f64];
+        add_subview(container, app_divider);
+        y -= 24.0;
 
         let quality_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
@@ -3092,6 +3135,22 @@ pub(super) extern "C" fn on_enter_send_toggled(
         let _ = config.save_to_env("AGENT_ENTER_SENDS", if enabled { "1" } else { "0" });
     }
 }
+
+pub(super) extern "C" fn on_show_dock_icon_toggled(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let state: isize = msg_send![sender, state];
+        let enabled = state == 1;
+        info!("Settings: show dock icon -> {}", enabled);
+        let config = Config::load();
+        let _ = config.save_to_env("SHOW_DOCK_ICON", if enabled { "1" } else { "0" });
+        crate::apply_dock_icon_visibility(enabled);
+    }
+}
+
 pub(super) extern "C" fn on_volume_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];
