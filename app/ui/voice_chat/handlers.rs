@@ -2,6 +2,7 @@
 //!
 //! Contains Objective-C class registration and action handler functions.
 
+use core_graphics::base::CGFloat;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
 use objc::declare::ClassDecl;
@@ -43,6 +44,85 @@ static mut DROP_TARGET_CLASS: *const Class = std::ptr::null();
 
 const NS_DRAG_OP_COPY: u64 = 1;
 const MAX_ATTACHMENT_BYTES_UI: u64 = 50 * 1024 * 1024;
+static RESIZE_SETTLE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ObjcCGPoint {
+    x: CGFloat,
+    y: CGFloat,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ObjcCGSize {
+    width: CGFloat,
+    height: CGFloat,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ObjcCGRect {
+    origin: ObjcCGPoint,
+    size: ObjcCGSize,
+}
+
+#[cfg(target_pointer_width = "64")]
+const OBJC_POINT_ENCODING: &str = "{CGPoint=dd}";
+#[cfg(target_pointer_width = "32")]
+const OBJC_POINT_ENCODING: &str = "{CGPoint=ff}";
+
+#[cfg(target_pointer_width = "64")]
+const OBJC_SIZE_ENCODING: &str = "{CGSize=dd}";
+#[cfg(target_pointer_width = "32")]
+const OBJC_SIZE_ENCODING: &str = "{CGSize=ff}";
+
+#[cfg(target_pointer_width = "64")]
+const OBJC_RECT_ENCODING: &str = "{CGRect={CGPoint=dd}{CGSize=dd}}";
+#[cfg(target_pointer_width = "32")]
+const OBJC_RECT_ENCODING: &str = "{CGRect={CGPoint=ff}{CGSize=ff}}";
+
+unsafe impl objc::Encode for ObjcCGPoint {
+    fn encode() -> objc::Encoding {
+        unsafe { objc::Encoding::from_str(OBJC_POINT_ENCODING) }
+    }
+}
+
+unsafe impl objc::Encode for ObjcCGSize {
+    fn encode() -> objc::Encoding {
+        unsafe { objc::Encoding::from_str(OBJC_SIZE_ENCODING) }
+    }
+}
+
+unsafe impl objc::Encode for ObjcCGRect {
+    fn encode() -> objc::Encoding {
+        unsafe { objc::Encoding::from_str(OBJC_RECT_ENCODING) }
+    }
+}
+
+impl From<CGRect> for ObjcCGRect {
+    fn from(value: CGRect) -> Self {
+        Self {
+            origin: ObjcCGPoint {
+                x: value.origin.x,
+                y: value.origin.y,
+            },
+            size: ObjcCGSize {
+                width: value.size.width,
+                height: value.size.height,
+            },
+        }
+    }
+}
+
+impl From<ObjcCGRect> for CGRect {
+    fn from(value: ObjcCGRect) -> Self {
+        CGRect::new(
+            &CGPoint::new(value.origin.x, value.origin.y),
+            &CGSize::new(value.size.width, value.size.height),
+        )
+    }
+}
 
 /// Get or create the action handler class for UI controls
 pub fn action_handler_class() -> *const Class {
@@ -228,16 +308,16 @@ pub fn window_delegate_class() -> *const Class {
                 on_window_will_close as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(windowDidMove:),
-                on_window_did_move as extern "C" fn(&Object, Sel, Id),
-            );
-            decl.add_method(
                 sel!(windowDidEndLiveResize:),
                 on_window_did_end_live_resize as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(windowDidResize:),
                 on_window_did_resize as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(windowDidChangeScreen:),
+                on_window_did_change_screen as extern "C" fn(&Object, Sel, Id),
             );
             let cls = decl.register();
             WINDOW_DELEGATE_CLASS = cls;
@@ -269,6 +349,11 @@ pub fn overlay_window_class() -> *const Class {
             decl.add_method(
                 sel!(performKeyEquivalent:),
                 perform_key_equivalent as extern "C" fn(&Object, Sel, Id) -> bool,
+            );
+            decl.add_method(
+                sel!(constrainFrameRect:toScreen:),
+                constrain_frame_rect_to_screen
+                    as extern "C" fn(&Object, Sel, ObjcCGRect, Id) -> ObjcCGRect,
             );
             decl.add_method(
                 sel!(draggingEntered:),
@@ -524,6 +609,38 @@ extern "C" fn can_become_main_window(_this: &Object, _cmd: Sel) -> bool {
     true
 }
 
+extern "C" fn constrain_frame_rect_to_screen(
+    this: &Object,
+    _cmd: Sel,
+    frame_rect: ObjcCGRect,
+    screen: Id,
+) -> ObjcCGRect {
+    unsafe {
+        let superclass = Class::get("NSWindow").unwrap();
+        let super_rect: ObjcCGRect =
+            msg_send![super(this, superclass), constrainFrameRect: frame_rect toScreen: screen];
+        let constrained: CGRect = super_rect.into();
+        let Some(visible_frame) = visible_frame_for_screen(screen) else {
+            return super_rect;
+        };
+
+        let (x, y) = clamp_overlay_position(
+            visible_frame,
+            constrained.size.width,
+            constrained.size.height,
+            0.0,
+            constrained.origin.x,
+            constrained.origin.y,
+        );
+
+        if (x - constrained.origin.x).abs() <= 0.5 && (y - constrained.origin.y).abs() <= 0.5 {
+            super_rect
+        } else {
+            ObjcCGRect::from(CGRect::new(&CGPoint::new(x, y), &constrained.size))
+        }
+    }
+}
+
 extern "C" fn perform_key_equivalent(_this: &Object, _cmd: Sel, event: Id) -> bool {
     unsafe {
         let flags: u64 = msg_send![event, modifierFlags];
@@ -753,25 +870,72 @@ extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id)
     debug!("Voice chat overlay closed by user");
 }
 
-unsafe fn clamp_overlay_window_to_visible(window: Id) {
-    // Don't fight AppKit during live resizing; it can cause flicker/"disappearing" windows.
-    let in_live_resize: bool = msg_send![window, inLiveResize];
-    if in_live_resize {
+fn window_visible_frame(window: Id) -> Option<CGRect> {
+    unsafe {
+        let screen: Id = msg_send![window, screen];
+        visible_frame_for_screen(screen)
+    }
+}
+
+fn visible_frame_for_screen(screen: Id) -> Option<CGRect> {
+    unsafe {
+        let ns_screen = Class::get("NSScreen").unwrap();
+        let mut target_screen = screen;
+        if target_screen.is_null() {
+            target_screen = msg_send![ns_screen, mainScreen];
+        }
+        if target_screen.is_null() {
+            None
+        } else {
+            Some(msg_send![target_screen, visibleFrame])
+        }
+    }
+}
+
+fn update_overlay_content_max_size(window: Id) -> Option<CGSize> {
+    let visible = window_visible_frame(window)?;
+    let max_size = CGSize::new(visible.size.width.min(1000.0), visible.size.height);
+    unsafe {
+        let _: () = msg_send![window, setContentMaxSize: max_size];
+    }
+    Some(max_size)
+}
+
+fn enforce_overlay_content_max_size(window: Id, animate: bool) {
+    let Some(max_size) = update_overlay_content_max_size(window) else {
         return;
+    };
+
+    let frame: CGRect = unsafe { msg_send![window, frame] };
+    let mut new_frame = frame;
+    let mut changed = false;
+
+    if frame.size.width > max_size.width {
+        new_frame.size.width = max_size.width;
+        changed = true;
     }
 
-    let ns_screen = Class::get("NSScreen").unwrap();
-    let mut screen: Id = msg_send![window, screen];
-    if screen.is_null() {
-        screen = msg_send![ns_screen, mainScreen];
-    }
-    if screen.is_null() {
-        return;
+    if frame.size.height > max_size.height {
+        // Keep top edge visually stable while shrinking height.
+        new_frame.origin.y += frame.size.height - max_size.height;
+        new_frame.size.height = max_size.height;
+        changed = true;
     }
 
-    let visible_frame: CGRect = msg_send![screen, visibleFrame];
-    let frame: CGRect = msg_send![window, frame];
-    let margin = 20.0;
+    if changed {
+        unsafe {
+            let _: () = msg_send![window, setFrame: new_frame display: true animate: animate];
+        }
+    }
+}
+
+fn clamp_overlay_window_to_visible(window: Id) {
+    let Some(visible_frame) = window_visible_frame(window) else {
+        return;
+    };
+    let frame: CGRect = unsafe { msg_send![window, frame] };
+    // Keep native snap/tile edge alignment; only guarantee visibility.
+    let margin = 0.0;
 
     let (x, y) = clamp_overlay_position(
         visible_frame,
@@ -783,51 +947,79 @@ unsafe fn clamp_overlay_window_to_visible(window: Id) {
     );
 
     if (x - frame.origin.x).abs() > 0.5 || (y - frame.origin.y).abs() > 0.5 {
-        let _: () = msg_send![window, setFrameOrigin: CGPoint::new(x, y)];
+        unsafe {
+            let _: () = msg_send![window, setFrameOrigin: CGPoint::new(x, y)];
+        }
     }
 }
 
-extern "C" fn on_window_did_move(_this: &Object, _cmd: Sel, notification: Id) {
-    unsafe {
-        let window: Id = msg_send![notification, object];
-        if window.is_null() {
+fn schedule_post_resize_settle(window: Id) {
+    let window_ptr = window as usize;
+    let generation = RESIZE_SETTLE_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        if RESIZE_SETTLE_GEN.load(std::sync::atomic::Ordering::Relaxed) != generation {
             return;
         }
-        clamp_overlay_window_to_visible(window);
-    }
+        Queue::main().exec_async(move || {
+            let active_window = {
+                let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                state.window
+            };
+            if active_window != Some(window_ptr) {
+                return;
+            }
+            let window = window_ptr as Id;
+            enforce_overlay_content_max_size(window, false);
+            clamp_overlay_window_to_visible(window);
+            reflow_overlay_after_resize_impl();
+            reflow_agent_after_resize_impl();
+        });
+    });
 }
 
 extern "C" fn on_window_did_end_live_resize(_this: &Object, _cmd: Sel, notification: Id) {
     unsafe {
         let window: Id = msg_send![notification, object];
         if !window.is_null() {
+            enforce_overlay_content_max_size(window, true);
             clamp_overlay_window_to_visible(window);
-
-            // Cap max size: width 1000px, height = screen visible height.
-            let ns_screen = Class::get("NSScreen").unwrap();
-            let mut screen: Id = msg_send![window, screen];
-            if screen.is_null() {
-                screen = msg_send![ns_screen, mainScreen];
-            }
-            if !screen.is_null() {
-                let visible: CGRect = msg_send![screen, visibleFrame];
-                let max_w = visible.size.width.min(1000.0);
-                let _: () =
-                    msg_send![window, setContentMaxSize: CGSize::new(max_w, visible.size.height)];
-            }
         }
 
-        // Reflow bubbles to the new width/height.
+        // Reflow footer/input and bubbles after resize settles.
         Queue::main().exec_async(|| {
+            reflow_overlay_after_resize_impl();
             reflow_agent_after_resize_impl();
         });
     }
 }
 
-extern "C" fn on_window_did_resize(_this: &Object, _cmd: Sel, _notification: Id) {
-    // Keep footer/input aligned during live resizing.
+extern "C" fn on_window_did_resize(_this: &Object, _cmd: Sel, notification: Id) {
+    unsafe {
+        let window: Id = msg_send![notification, object];
+        if window.is_null() {
+            return;
+        }
+        let in_live_resize: bool = msg_send![window, inLiveResize];
+        if in_live_resize {
+            return;
+        }
+        schedule_post_resize_settle(window);
+    }
+}
+
+extern "C" fn on_window_did_change_screen(_this: &Object, _cmd: Sel, notification: Id) {
+    unsafe {
+        let window: Id = msg_send![notification, object];
+        if window.is_null() {
+            return;
+        }
+        enforce_overlay_content_max_size(window, false);
+        clamp_overlay_window_to_visible(window);
+    }
     Queue::main().exec_async(|| {
         reflow_overlay_after_resize_impl();
+        reflow_agent_after_resize_impl();
     });
 }
 

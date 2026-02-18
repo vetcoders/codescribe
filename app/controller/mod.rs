@@ -142,6 +142,7 @@ impl Drop for AtomicFlagGuard {
 struct ProcessRecordingOutcome {
     no_speech_reason: Option<String>,
     commit_trigger: Option<String>,
+    transcript_present: bool,
 }
 
 impl ProcessRecordingOutcome {
@@ -149,6 +150,7 @@ impl ProcessRecordingOutcome {
         Self {
             no_speech_reason: Some(reason.into()),
             commit_trigger: None,
+            transcript_present: false,
         }
     }
 }
@@ -1998,7 +2000,7 @@ impl RecordingController {
                     }
                 } else if !assistive {
                     let cfg = self.config.read().await.clone();
-                    let show_decision_overlay = outcome.commit_trigger.is_some()
+                    let show_decision_overlay = outcome.transcript_present
                         && !(cfg.quick_notes_enabled && cfg.quick_notes_save_only);
 
                     let opened = self
@@ -2012,7 +2014,7 @@ impl RecordingController {
                         let reason = outcome
                             .commit_trigger
                             .as_deref()
-                            .unwrap_or("quality_gate_required");
+                            .unwrap_or("quality_gate_clean");
                         info!(
                             "COMMIT decision: trigger={reason} force_ai={force_ai} force_raw={force_raw}"
                         );
@@ -2255,6 +2257,7 @@ impl RecordingController {
         };
 
         info!("Raw transcript captured ({} chars)", raw_text.len());
+        let transcript_present = !raw_text.trim().is_empty();
 
         let language_opt = Some(language.as_str().to_string());
         let pipeline_outcome = self
@@ -2282,6 +2285,7 @@ impl RecordingController {
         Ok(ProcessRecordingOutcome {
             no_speech_reason: None,
             commit_trigger: pipeline_outcome.commit_trigger,
+            transcript_present,
         })
     }
 

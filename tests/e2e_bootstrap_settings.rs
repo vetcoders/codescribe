@@ -353,20 +353,31 @@ fn test_settings_full_round_trip() {
 // ═══════════════════════════════════════════════════════════
 
 #[test]
+#[serial]
 fn test_engine_tab_stt_engine_env_default() {
+    let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
     // Without CODESCRIBE_STT_ENGINE set, should default to candle
     unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") };
     let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
     assert_eq!(engine, "candle", "default STT engine should be candle");
+    match previous {
+        Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
+        None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },
+    }
 }
 
 #[test]
+#[serial]
 fn test_engine_tab_stt_engine_env_onnx() {
+    let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
     // Engine tab reads CODESCRIBE_STT_ENGINE to display active engine
     unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", "onnx") };
     let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
     assert_eq!(engine, "onnx", "STT engine should reflect env var");
-    unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") };
+    match previous {
+        Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
+        None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },
+    }
 }
 
 #[test]

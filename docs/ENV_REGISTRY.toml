@@ -731,6 +731,13 @@ reload = "restart"
 category = "ui"
 description = "Show tray icon glyph"
 
+[vars.SHOW_DOCK_ICON]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "ui"
+description = "Show Dock icon"
+
 [vars.START_AT_LOGIN]
 default = "0"
 type = "bool"

@@ -63,7 +63,6 @@ const OVERLAY_CONTENT_GAP: f64 = 8.0;
 const OVERLAY_TEXT_MIN_HEIGHT: f64 = 44.0;
 const OVERLAY_BUTTON_HEIGHT: f64 = 28.0;
 const OVERLAY_BUTTON_MARGIN: f64 = 8.0;
-const OVERLAY_CORNER_RADIUS: f64 = 16.0;
 const OVERLAY_HEADER_LABEL: &str = "CodeScribe - Dictation Overlay";
 
 // Auto-hide delay after recording completes
@@ -282,20 +281,36 @@ extern "C" fn on_commit_recording(_this: &Object, _cmd: Sel, _sender: Id) {
 }
 
 extern "C" fn on_mouse_entered(_this: &Object, _cmd: Sel, _sender: Id) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.hover_active = true;
-    if state.decision_mode {
-        set_action_buttons_visible(&state, true);
+    let cancel_auto_hide = {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.hover_active = true;
+        if state.decision_mode {
+            set_action_buttons_visible(&state, true);
+            true
+        } else {
+            false
+        }
+    };
+    if cancel_auto_hide {
+        AUTO_HIDE_GENERATION.fetch_add(1, Ordering::SeqCst);
+        AUTO_HIDE_PENDING.store(false, Ordering::SeqCst);
     }
 }
 
 extern "C" fn on_mouse_exited(_this: &Object, _cmd: Sel, _sender: Id) {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.hover_active = false;
-    if state.decision_mode {
-        set_action_buttons_visible(&state, true);
-    } else {
-        set_action_buttons_visible(&state, false);
+    let should_reschedule_auto_hide = {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.hover_active = false;
+        if state.decision_mode {
+            set_action_buttons_visible(&state, true);
+            true
+        } else {
+            set_action_buttons_visible(&state, false);
+            false
+        }
+    };
+    if should_reschedule_auto_hide {
+        schedule_auto_hide();
     }
 }
 
@@ -828,7 +843,7 @@ fn show_transcription_overlay_impl() {
         let window_width = OVERLAY_WINDOW_WIDTH;
         let window_height = OVERLAY_WINDOW_MIN_HEIGHT;
         let margin = 20.0;
-        let corner_radius = OVERLAY_CORNER_RADIUS;
+        let corner_radius = ui_tokens::CORNER_RADIUS_LG;
         let max_height =
             (visible_frame.size.height * OVERLAY_WINDOW_MAX_HEIGHT_RATIO).max(window_height);
 
@@ -927,6 +942,11 @@ fn show_transcription_overlay_impl() {
         if !layer.is_null() {
             let _: () = msg_send![layer, setCornerRadius: corner_radius];
             let _: () = msg_send![layer, setMasksToBounds: true];
+            let border = ui_colors::separator();
+            let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![layer, setBorderColor: cg_border];
+            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
         }
 
         // Add blur view as background
