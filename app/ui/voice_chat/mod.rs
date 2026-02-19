@@ -457,8 +457,7 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![status_pill, setWantsLayer: true];
         let status_layer: Id = msg_send![status_pill, layer];
         if !status_layer.is_null() {
-            let bg = ui_colors::surface_glass();
-            let bg: Id = msg_send![bg, colorWithAlphaComponent: 0.5f64];
+            let bg = ui_colors::surface_paper_cool();
             let cg_bg: Id = msg_send![bg, CGColor];
             let _: () = msg_send![status_layer, setBackgroundColor: cg_bg];
             apply_tafla_surface(status_layer, true);
@@ -651,12 +650,8 @@ fn show_voice_chat_overlay_impl() {
         ];
         let sidebar_layer: Id = msg_send![sidebar_view, layer];
         if !sidebar_layer.is_null() {
-            let bg = ui_colors::surface_glass();
-            let bg: Id = msg_send![bg, colorWithAlphaComponent: 0.64f64];
-            let cg_bg: Id = msg_send![bg, CGColor];
-            let _: () = msg_send![sidebar_layer, setBackgroundColor: cg_bg];
-            apply_tafla_surface(sidebar_layer, true);
-            let _: () = msg_send![sidebar_layer, setMasksToBounds: true];
+            let clear_cg: Id = msg_send![color_clear(), CGColor];
+            let _: () = msg_send![sidebar_layer, setBackgroundColor: clear_cg];
         }
         let _: () = msg_send![sidebar_controller, setView: sidebar_view];
 
@@ -673,12 +668,8 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![content_view, setWantsLayer: true];
         let content_layer: Id = msg_send![content_view, layer];
         if !content_layer.is_null() {
-            let bg = ui_colors::surface_glass();
-            let bg: Id = msg_send![bg, colorWithAlphaComponent: 0.56f64];
-            let cg_bg: Id = msg_send![bg, CGColor];
-            let _: () = msg_send![content_layer, setBackgroundColor: cg_bg];
-            apply_tafla_surface(content_layer, true);
-            let _: () = msg_send![content_layer, setMasksToBounds: true];
+            let clear_cg: Id = msg_send![color_clear(), CGColor];
+            let _: () = msg_send![content_layer, setBackgroundColor: clear_cg];
         }
         let _: () = msg_send![content_controller, setView: content_view];
 

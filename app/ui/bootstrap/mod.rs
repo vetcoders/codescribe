@@ -51,14 +51,11 @@ const SETTINGS_CONTENT_INSET_Y: f64 = 12.0;
 const TAB_BUTTON_HEIGHT: f64 = 38.0;
 const TAB_BUTTON_GAP: f64 = 6.0;
 const SIDEBAR_INSET: f64 = 10.0;
-const PERMISSION_ROW_HEIGHT: f64 = 28.0;
+const PERMISSION_ROW_HEIGHT: f64 = 24.0 + ui_tokens::DENSITY_COMFORTABLE;
 const PERMISSION_BUTTON_WIDTH: f64 = 118.0;
-const STEP_ROW_HEIGHT: f64 = 34.0;
-const SECTION_GAP: f64 = 22.0;
-const SECTION_HEADER_GAP: f64 = 26.0;
+const STEP_ROW_HEIGHT: f64 = 24.0 + ui_tokens::DENSITY_COMFORTABLE;
 const SETUP_TOP_OFFSET: f64 = 20.0;
 const SETUP_POST_STEPS_GAP: f64 = 8.0;
-const SETUP_SUBSECTION_GAP: f64 = 24.0;
 const SETUP_SAVE_MIN_ANCHOR_Y: f64 = 52.0;
 const SETUP_HINT_MIN_Y: f64 = 52.0;
 const TAB_SETUP: usize = 0;
@@ -73,8 +70,7 @@ const TOGGLE_ROW_HEIGHT: f64 = 20.0;
 const TOGGLE_ROW_LABEL_INDENT: f64 = 22.0;
 const TOGGLE_ROW_DESC_OFFSET: f64 = 18.0;
 const TOGGLE_ROW_DESC_HEIGHT: f64 = 16.0;
-const TOGGLE_ROW_STEP: f64 = 32.0;
-const TOGGLE_ROW_WITH_DESC_STEP: f64 = 40.0;
+const SETTINGS_INPUT_HEIGHT: f64 = 22.0;
 
 const STEP_TEST_MIC: usize = 0;
 const STEP_SHOW_OVERLAY: usize = 1;
@@ -87,6 +83,7 @@ struct ToggleRowSpec<'a> {
     action: objc::runtime::Sel,
     description: Option<&'a str>,
     tag: Option<isize>,
+    gap: f64,
 }
 
 unsafe fn intensify_settings_glass(view: Id) {
@@ -173,32 +170,64 @@ fn parse_env_bool(v: &str) -> bool {
     )
 }
 
-fn toggle_row_step(has_description: bool) -> f64 {
+fn toggle_row_step(has_description: bool, gap: f64) -> f64 {
     if has_description {
-        TOGGLE_ROW_WITH_DESC_STEP
+        TOGGLE_ROW_DESC_OFFSET + TOGGLE_ROW_DESC_HEIGHT + gap
     } else {
-        TOGGLE_ROW_STEP
+        TOGGLE_ROW_HEIGHT + gap
     }
 }
 
-fn setup_content_height(min_visible_height: f64) -> f64 {
+fn setup_content_height(min_visible_height: f64, gap: f64) -> f64 {
     let permission_rows = PERMISSION_ORDER.len() as f64;
     let quick_start_steps = (STEP_PRESS_HOTKEY + 1) as f64;
-    let flow_before_save = SECTION_HEADER_GAP
+    let flow_before_save = (22.0 + gap) // setup title
+        + (1.0 + gap) // header separator
+        + (16.0 + gap) // optional/non-blocking note
+        + (20.0 + gap) // permissions header
         + permission_rows * PERMISSION_ROW_HEIGHT
-        + SECTION_GAP
-        + SECTION_HEADER_GAP
+        + gap // permissions divider
+        + (20.0 + gap) // quick start header
         + quick_start_steps * STEP_ROW_HEIGHT
         + SETUP_POST_STEPS_GAP
-        + SECTION_GAP * 3.0
-        + SETUP_SUBSECTION_GAP
-        + PERMISSION_ROW_HEIGHT * 2.0
-        + SECTION_GAP * 2.0
-        + SETUP_SUBSECTION_GAP
-        + PERMISSION_ROW_HEIGHT * 2.0
-        + SECTION_GAP
-        + SECTION_HEADER_GAP;
+        + (16.0 + gap) // checklist hint
+        + gap // setup divider
+        + (16.0 + gap); // tab routing hint
     min_visible_height.max((SETUP_TOP_OFFSET + flow_before_save + SETUP_SAVE_MIN_ANCHOR_Y).ceil())
+}
+
+unsafe fn style_tafla_section(container: Id) {
+    let _: () = msg_send![container, setWantsLayer: true];
+    let layer: Id = msg_send![container, layer];
+    if layer.is_null() {
+        return;
+    }
+    let bg = ui_colors::surface_paper_cool();
+    let cg_bg: Id = msg_send![bg, CGColor];
+    let _: () = msg_send![layer, setBackgroundColor: cg_bg];
+    unsafe {
+        apply_tafla_surface(layer, true);
+    }
+    let _: () = msg_send![layer, setMasksToBounds: true];
+}
+
+unsafe fn style_paper_input(field: Id) {
+    let _: () = msg_send![field, setDrawsBackground: true];
+    let _: () = msg_send![field, setBackgroundColor: ui_colors::surface_paper_warm()];
+}
+
+unsafe fn add_tafla_header_separator(container: Id, x: f64, y: f64, width: f64) -> f64 {
+    let separator = create_label(LabelConfig {
+        frame: CGRect::new(&CGPoint::new(x, y), &CGSize::new(width, 1.0)),
+        text: String::new(),
+        background_color: Some(ui_colors::header_border()),
+        ..Default::default()
+    });
+    let _: () = msg_send![separator, setAlphaValue: 0.9f64];
+    unsafe {
+        add_subview(container, separator);
+    }
+    y - 1.0
 }
 
 unsafe fn autosize_tab_document_view(document_view: Id, minimum_height: f64) -> f64 {
@@ -327,7 +356,7 @@ unsafe fn add_toggle_row(
         }
     }
 
-    *y -= toggle_row_step(spec.description.is_some());
+    *y -= toggle_row_step(spec.description.is_some(), spec.gap);
     toggle
 }
 
@@ -1038,7 +1067,7 @@ unsafe fn build_settings_ui(
         );
         let content_container: Id = msg_send![ns_view, alloc];
         let content_container: Id = msg_send![content_container, initWithFrame: content_bg_frame];
-        let _: () = msg_send![content_container, setWantsLayer: true];
+        style_tafla_section(content_container);
         let _: () = msg_send![
             content_container,
             setAutoresizingMask: 2_isize | 16_isize // Width | Height
@@ -1120,7 +1149,8 @@ unsafe fn build_settings_ui(
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(tab_content_frame.size.width, tab_content_frame.size.height),
         );
-        let content_h = setup_content_height(tab_content_frame.size.height);
+        let setup_gap = ui_tokens::DENSITY_COMFORTABLE;
+        let content_h = setup_content_height(tab_content_frame.size.height, setup_gap);
         let setup_document_frame = CGRect::new(
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(content_width, content_h),
@@ -1128,6 +1158,7 @@ unsafe fn build_settings_ui(
 
         let setup_view: Id = msg_send![ns_view, alloc];
         let setup_view: Id = msg_send![setup_view, initWithFrame: setup_document_frame];
+        style_tafla_section(setup_view);
         let setup_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, setup_view);
         add_subview(content_container, setup_scroll);
 
@@ -1135,23 +1166,46 @@ unsafe fn build_settings_ui(
         let field_w = content_width - pad * 2.0;
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
-        let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
         let mut y = content_h - SETUP_TOP_OFFSET;
 
         // ── Permissions ───────────────────────────────────────────────
         let mut perm_labels: [Option<usize>; 5] = [None; 5];
         let mut perm_action_buttons: [Option<usize>; 5] = [None; 5];
 
+        let setup_title = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
+            text: "Setup".to_string(),
+            font_size: ui_tokens::BODY_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(setup_view, setup_title);
+        y -= 22.0 + setup_gap;
+
+        y = add_tafla_header_separator(setup_view, pad, y, field_w);
+        y -= setup_gap;
+
+        let setup_hint_top = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
+            text: "Checklist is optional. You can switch tabs any time.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(setup_view, setup_hint_top);
+        y -= 16.0 + setup_gap;
+
         let permissions_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 20.0)),
-            text: "Permissions".to_string(),
+            text: "Permissions Checklist".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(setup_view, permissions_header);
-        y -= SECTION_HEADER_GAP;
+        y -= 20.0 + setup_gap;
 
         let permission_button_w = PERMISSION_BUTTON_WIDTH;
         let permission_label_w = (field_w - permission_button_w - 12.0).max(180.0);
@@ -1199,12 +1253,12 @@ unsafe fn build_settings_ui(
         let permissions_divider = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 1.0)),
             text: String::new(),
-            background_color: Some(ui_colors::separator()),
+            background_color: Some(ui_colors::surface_border()),
             ..Default::default()
         });
-        let _: () = msg_send![permissions_divider, setAlphaValue: 0.55f64];
+        let _: () = msg_send![permissions_divider, setAlphaValue: 0.9f64];
         add_subview(setup_view, permissions_divider);
-        y -= SECTION_GAP;
+        y -= setup_gap;
 
         let quick_start_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 20.0)),
@@ -1215,7 +1269,7 @@ unsafe fn build_settings_ui(
             ..Default::default()
         });
         add_subview(setup_view, quick_start_header);
-        y -= SECTION_HEADER_GAP;
+        y -= 20.0 + setup_gap;
 
         // ── Quick-start steps ────────────────────────────────────────
         let step_defs: [(&str, objc::runtime::Sel, &str); 3] = [
@@ -1227,7 +1281,7 @@ unsafe fn build_settings_ui(
 
         for (i, (label_text, sel, btn_text)) in step_defs.iter().enumerate() {
             let step_label = create_label(LabelConfig {
-                frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(200.0, 20.0)),
+                frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(240.0, 20.0)),
                 text: label_text.to_string(),
                 font_size: ui_tokens::BODY_FONT_SIZE,
                 bold: true,
@@ -1237,7 +1291,7 @@ unsafe fn build_settings_ui(
             add_subview(setup_view, step_label);
 
             let status_lbl = create_label(LabelConfig {
-                frame: CGRect::new(&CGPoint::new(pad + 210.0, y), &CGSize::new(80.0, 20.0)),
+                frame: CGRect::new(&CGPoint::new(pad + 250.0, y), &CGSize::new(120.0, 20.0)),
                 text: "pending".to_string(),
                 font_size: ui_tokens::SMALL_FONT_SIZE,
                 text_color: secondary,
@@ -1259,187 +1313,34 @@ unsafe fn build_settings_ui(
         }
         y -= SETUP_POST_STEPS_GAP;
 
-        let assistant_divider = create_label(LabelConfig {
+        let checklist_hint = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
+            text: "Non-blocking onboarding: finish now or continue later.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(setup_view, checklist_hint);
+        y -= 16.0 + setup_gap;
+
+        let setup_divider = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 1.0)),
             text: String::new(),
-            background_color: Some(ui_colors::separator()),
+            background_color: Some(ui_colors::surface_border()),
             ..Default::default()
         });
-        let _: () = msg_send![assistant_divider, setAlphaValue: 0.55f64];
-        add_subview(setup_view, assistant_divider);
-        y -= SECTION_GAP;
-
-        let assistant_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 18.0)),
-            text: "Assistant Runtime".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: primary,
-            ..Default::default()
-        });
-        add_subview(setup_view, assistant_header);
-        y -= SECTION_GAP;
-
-        let assistant_subtitle = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: "Setup controls for formatting and assistive AI models.".to_string(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            text_color: secondary,
-            ..Default::default()
-        });
-        add_subview(setup_view, assistant_subtitle);
-        y -= SECTION_GAP;
-
-        let fmt_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 18.0)),
-            text: "Formatting AI (optional)".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: secondary,
-            ..Default::default()
-        });
-        add_subview(setup_view, fmt_header);
-        y -= SETUP_SUBSECTION_GAP;
-
-        let llm_endpoint_val = config
-            .llm_endpoint
-            .clone()
-            .unwrap_or_else(|| std::env::var("LLM_ENDPOINT").unwrap_or_default());
-        let llm_endpoint_field = create_text_input(
-            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
-            "Endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
-            &llm_endpoint_val,
-        );
-        let _: () = msg_send![llm_endpoint_field, setFont: mono_font_input];
-        button_set_action(
-            llm_endpoint_field,
-            action_handler,
-            sel!(onLlmEndpointChanged:),
-        );
-        add_subview(setup_view, llm_endpoint_field);
-        state.llm_endpoint_field = Some(llm_endpoint_field as usize);
-        y -= PERMISSION_ROW_HEIGHT;
-
-        let llm_model_val = std::env::var("LLM_MODEL").unwrap_or_default();
-        let llm_model_field = create_text_input(
-            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
-            "Model (e.g. programmer)",
-            &llm_model_val,
-        );
-        let _: () = msg_send![llm_model_field, setFont: mono_font_input];
-        button_set_action(llm_model_field, action_handler, sel!(onLlmModelChanged:));
-        add_subview(setup_view, llm_model_field);
-        state.llm_model_field = Some(llm_model_field as usize);
-        y -= PERMISSION_ROW_HEIGHT;
-
-        let llm_key_field = create_secure_text_input(
-            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
-            "API Key (stored in Keychain)",
-        );
-        let _: () = msg_send![llm_key_field, setFont: mono_font_input];
-        button_set_action(llm_key_field, action_handler, sel!(onLlmKeyChanged:));
-        add_subview(setup_view, llm_key_field);
-        state.llm_key_field = Some(llm_key_field as usize);
-        y -= SECTION_GAP;
-
-        let llm_key_status = keychain_key_is_set("LLM_API_KEY");
-        let llm_status_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: key_status_text(llm_key_status).to_string(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            text_color: key_status_color(llm_key_status),
-            ..Default::default()
-        });
-        add_subview(setup_view, llm_status_label);
-        state.llm_key_status_label = Some(llm_status_label as usize);
-        y -= SECTION_GAP;
-
-        let assist_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 18.0)),
-            text: "Assistive AI (optional)".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: secondary,
-            ..Default::default()
-        });
-        add_subview(setup_view, assist_header);
-        y -= SETUP_SUBSECTION_GAP;
-
-        let assist_endpoint_val = std::env::var("LLM_ASSISTIVE_ENDPOINT").unwrap_or_default();
-        let assist_endpoint_field = create_text_input(
-            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
-            "Endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
-            &assist_endpoint_val,
-        );
-        let _: () = msg_send![assist_endpoint_field, setFont: mono_font_input];
-        button_set_action(
-            assist_endpoint_field,
-            action_handler,
-            sel!(onAssistiveEndpointChanged:),
-        );
-        add_subview(setup_view, assist_endpoint_field);
-        state.assistive_endpoint_field = Some(assist_endpoint_field as usize);
-        y -= PERMISSION_ROW_HEIGHT;
-
-        let assist_model_val = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_default();
-        let assist_model_field = create_text_input(
-            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
-            "Model (e.g. programmer)",
-            &assist_model_val,
-        );
-        let _: () = msg_send![assist_model_field, setFont: mono_font_input];
-        button_set_action(
-            assist_model_field,
-            action_handler,
-            sel!(onAssistiveModelChanged:),
-        );
-        add_subview(setup_view, assist_model_field);
-        state.assistive_model_field = Some(assist_model_field as usize);
-        y -= PERMISSION_ROW_HEIGHT;
-
-        let assist_key_field = create_secure_text_input(
-            CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
-            "API Key (stored in Keychain)",
-        );
-        let _: () = msg_send![assist_key_field, setFont: mono_font_input];
-        button_set_action(
-            assist_key_field,
-            action_handler,
-            sel!(onAssistiveKeyChanged:),
-        );
-        add_subview(setup_view, assist_key_field);
-        state.assistive_key_field = Some(assist_key_field as usize);
-        y -= SECTION_GAP;
-
-        let assist_key_status = keychain_key_is_set("LLM_ASSISTIVE_API_KEY");
-        let assist_status_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: key_status_text(assist_key_status).to_string(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            text_color: key_status_color(assist_key_status),
-            ..Default::default()
-        });
-        add_subview(setup_view, assist_status_label);
-        state.assistive_key_status_label = Some(assist_status_label as usize);
-        y -= SECTION_HEADER_GAP;
-
-        let save_btn = button(
-            CGRect::new(
-                &CGPoint::new(content_width - 110.0, y + 2.0),
-                &CGSize::new(90.0, 24.0),
-            ),
-            "Save",
-        );
-        button_set_action(save_btn, action_handler, sel!(onSaveApiSettings:));
-        add_subview(setup_view, save_btn);
-        y -= STEP_ROW_HEIGHT;
+        let _: () = msg_send![setup_divider, setAlphaValue: 0.9f64];
+        add_subview(setup_view, setup_divider);
+        y -= setup_gap;
 
         let setup_hint = create_label(LabelConfig {
             frame: CGRect::new(
                 &CGPoint::new(pad, (y - 6.0).max(SETUP_HINT_MIN_Y)),
                 &CGSize::new(field_w, 16.0),
             ),
-            text: "Personalization and quality controls live in User tab.".to_string(),
+            text:
+                "API keys live in Keys. Audio behavior lives in Audio. Daily toggles live in User."
+                    .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1922,24 +1823,40 @@ unsafe fn build_keys_tab(
 
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
+        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let mut y = frame.size.height - 40.0;
+        let gap = ui_tokens::DENSITY_MEDIUM;
+        let mut y = frame.size.height - (22.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
+        let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
 
         // Section title
         let title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
-            text: "Hotkey Configuration".to_string(),
+            text: "Keys & Configuration".to_string(),
             font_size: ui_tokens::BODY_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 36.0;
+        y -= 22.0 + gap;
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= gap;
+
+        let subtitle = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: "Hotkeys plus all API/runtime key configuration.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, subtitle);
+        y -= 16.0 + gap;
 
         // Preset dropdown
         let preset_label = create_label(LabelConfig {
@@ -1977,7 +1894,7 @@ unsafe fn build_keys_tab(
         let _: () = msg_send![preset_popup, selectItemAtIndex: preset_idx];
         button_set_action(preset_popup, action_handler, sel!(onPresetChanged:));
         add_subview(container, preset_popup);
-        y -= 40.0;
+        y -= 24.0 + gap;
 
         // Hold base dropdown
         let hold_label = create_label(LabelConfig {
@@ -2017,7 +1934,7 @@ unsafe fn build_keys_tab(
         let _: () = msg_send![hold_popup, selectItemAtIndex: hold_idx];
         button_set_action(hold_popup, action_handler, sel!(onHoldModChanged:));
         add_subview(container, hold_popup);
-        y -= 36.0;
+        y -= 24.0 + gap;
 
         // Shift/Cmd modes toggle
         let modes_check = add_toggle_row(
@@ -2033,6 +1950,7 @@ unsafe fn build_keys_tab(
                 action: sel!(onHoldExclusiveChanged:),
                 description: None,
                 tag: None,
+                gap,
             },
         );
 
@@ -2072,7 +1990,7 @@ unsafe fn build_keys_tab(
         let _: () = msg_send![toggle_popup, selectItemAtIndex: toggle_idx];
         button_set_action(toggle_popup, action_handler, sel!(onToggleTriggerChanged:));
         add_subview(container, toggle_popup);
-        y -= 44.0;
+        y -= 24.0 + gap;
 
         // Hold start delay slider
         let delay_label = create_label(LabelConfig {
@@ -2108,7 +2026,7 @@ unsafe fn build_keys_tab(
             ..Default::default()
         });
         add_subview(container, delay_value);
-        y -= 36.0;
+        y -= 20.0 + gap;
 
         // Double-tap interval slider
         let double_tap_label = create_label(LabelConfig {
@@ -2150,6 +2068,206 @@ unsafe fn build_keys_tab(
         });
         add_subview(container, double_tap_value);
 
+        y -= 20.0 + gap;
+
+        let config_divider = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 1.0)),
+            text: String::new(),
+            background_color: Some(ui_colors::surface_border()),
+            ..Default::default()
+        });
+        let _: () = msg_send![config_divider, setAlphaValue: 0.9f64];
+        add_subview(container, config_divider);
+        y -= gap;
+
+        let runtime_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "AI Runtime Configuration".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, runtime_header);
+        y -= 18.0 + gap;
+
+        let runtime_subtitle = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: "Formatting + Assistive models and endpoints.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, runtime_subtitle);
+        y -= 16.0 + gap;
+
+        let fmt_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "Formatting AI (optional)".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, fmt_header);
+        y -= 18.0 + gap;
+
+        let llm_endpoint_val = config
+            .llm_endpoint
+            .clone()
+            .unwrap_or_else(|| std::env::var("LLM_ENDPOINT").unwrap_or_default());
+        let llm_endpoint_field = create_text_input(
+            CGRect::new(
+                &CGPoint::new(pad, y),
+                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
+            ),
+            "Endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
+            &llm_endpoint_val,
+        );
+        style_paper_input(llm_endpoint_field);
+        let _: () = msg_send![llm_endpoint_field, setFont: mono_font_input];
+        button_set_action(
+            llm_endpoint_field,
+            action_handler,
+            sel!(onLlmEndpointChanged:),
+        );
+        add_subview(container, llm_endpoint_field);
+        state.llm_endpoint_field = Some(llm_endpoint_field as usize);
+        y -= SETTINGS_INPUT_HEIGHT + gap;
+
+        let llm_model_val = std::env::var("LLM_MODEL").unwrap_or_default();
+        let llm_model_field = create_text_input(
+            CGRect::new(
+                &CGPoint::new(pad, y),
+                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
+            ),
+            "Model (e.g. programmer)",
+            &llm_model_val,
+        );
+        style_paper_input(llm_model_field);
+        let _: () = msg_send![llm_model_field, setFont: mono_font_input];
+        button_set_action(llm_model_field, action_handler, sel!(onLlmModelChanged:));
+        add_subview(container, llm_model_field);
+        state.llm_model_field = Some(llm_model_field as usize);
+        y -= SETTINGS_INPUT_HEIGHT + gap;
+
+        let llm_key_field = create_secure_text_input(
+            CGRect::new(
+                &CGPoint::new(pad, y),
+                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
+            ),
+            "API Key (stored in Keychain)",
+        );
+        style_paper_input(llm_key_field);
+        let _: () = msg_send![llm_key_field, setFont: mono_font_input];
+        button_set_action(llm_key_field, action_handler, sel!(onLlmKeyChanged:));
+        add_subview(container, llm_key_field);
+        state.llm_key_field = Some(llm_key_field as usize);
+        y -= SETTINGS_INPUT_HEIGHT + gap;
+
+        let llm_key_status = keychain_key_is_set("LLM_API_KEY");
+        let llm_status_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: key_status_text(llm_key_status).to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: key_status_color(llm_key_status),
+            ..Default::default()
+        });
+        add_subview(container, llm_status_label);
+        state.llm_key_status_label = Some(llm_status_label as usize);
+        y -= 16.0 + gap;
+
+        let assist_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "Assistive AI (optional)".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, assist_header);
+        y -= 18.0 + gap;
+
+        let assist_endpoint_val = std::env::var("LLM_ASSISTIVE_ENDPOINT").unwrap_or_default();
+        let assist_endpoint_field = create_text_input(
+            CGRect::new(
+                &CGPoint::new(pad, y),
+                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
+            ),
+            "Endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
+            &assist_endpoint_val,
+        );
+        style_paper_input(assist_endpoint_field);
+        let _: () = msg_send![assist_endpoint_field, setFont: mono_font_input];
+        button_set_action(
+            assist_endpoint_field,
+            action_handler,
+            sel!(onAssistiveEndpointChanged:),
+        );
+        add_subview(container, assist_endpoint_field);
+        state.assistive_endpoint_field = Some(assist_endpoint_field as usize);
+        y -= SETTINGS_INPUT_HEIGHT + gap;
+
+        let assist_model_val = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_default();
+        let assist_model_field = create_text_input(
+            CGRect::new(
+                &CGPoint::new(pad, y),
+                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
+            ),
+            "Model (e.g. programmer)",
+            &assist_model_val,
+        );
+        style_paper_input(assist_model_field);
+        let _: () = msg_send![assist_model_field, setFont: mono_font_input];
+        button_set_action(
+            assist_model_field,
+            action_handler,
+            sel!(onAssistiveModelChanged:),
+        );
+        add_subview(container, assist_model_field);
+        state.assistive_model_field = Some(assist_model_field as usize);
+        y -= SETTINGS_INPUT_HEIGHT + gap;
+
+        let assist_key_field = create_secure_text_input(
+            CGRect::new(
+                &CGPoint::new(pad, y),
+                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
+            ),
+            "API Key (stored in Keychain)",
+        );
+        style_paper_input(assist_key_field);
+        let _: () = msg_send![assist_key_field, setFont: mono_font_input];
+        button_set_action(
+            assist_key_field,
+            action_handler,
+            sel!(onAssistiveKeyChanged:),
+        );
+        add_subview(container, assist_key_field);
+        state.assistive_key_field = Some(assist_key_field as usize);
+        y -= SETTINGS_INPUT_HEIGHT + gap;
+
+        let assist_key_status = keychain_key_is_set("LLM_ASSISTIVE_API_KEY");
+        let assist_status_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: key_status_text(assist_key_status).to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: key_status_color(assist_key_status),
+            ..Default::default()
+        });
+        add_subview(container, assist_status_label);
+        state.assistive_key_status_label = Some(assist_status_label as usize);
+        y -= 16.0 + gap;
+
+        let save_btn = button(
+            CGRect::new(
+                &CGPoint::new(frame.size.width - pad - 90.0, y - 2.0),
+                &CGSize::new(90.0, 24.0),
+            ),
+            "Save",
+        );
+        button_set_action(save_btn, action_handler, sel!(onSaveApiSettings:));
+        add_subview(container, save_btn);
+
         state.keys_hold_popup = Some(hold_popup as usize);
         state.keys_toggle_popup = Some(toggle_popup as usize);
         state.keys_preset_popup = Some(preset_popup as usize);
@@ -2177,24 +2295,39 @@ unsafe fn build_audio_tab(
 
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
+        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let mut y = frame.size.height - 40.0;
+        let gap = ui_tokens::DENSITY_MEDIUM;
+        let mut y = frame.size.height - (22.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
 
         // Section title
         let title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
-            text: "Audio & Transcription".to_string(),
+            text: "Speech & Interaction".to_string(),
             font_size: ui_tokens::BODY_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 36.0;
+        y -= 22.0 + gap;
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= gap;
+
+        let subtitle = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: "Speech capture, formatting, and interaction behavior.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, subtitle);
+        y -= 16.0 + gap;
 
         // Language dropdown
         let lang_label = create_label(LabelConfig {
@@ -2221,7 +2354,7 @@ unsafe fn build_audio_tab(
         let _: () = msg_send![lang_popup, selectItemAtIndex: lang_idx];
         button_set_action(lang_popup, action_handler, sel!(onLanguageChanged:));
         add_subview(container, lang_popup);
-        y -= 38.0;
+        y -= 24.0 + gap;
 
         // AI Formatting toggle
         let _fmt_check = add_toggle_row(
@@ -2237,6 +2370,7 @@ unsafe fn build_audio_tab(
                 action: sel!(onFormattingToggled:),
                 description: Some("Use LLM to clean up transcriptions"),
                 tag: None,
+                gap,
             },
         );
 
@@ -2269,7 +2403,7 @@ unsafe fn build_audio_tab(
         let _: () = msg_send![fmt_popup, selectItemAtIndex: sel_idx];
         button_set_action(fmt_popup, action_handler, sel!(onFormattingLevelChanged:));
         add_subview(container, fmt_popup);
-        y -= 38.0;
+        y -= 24.0 + gap;
 
         // Beep on start toggle
         let _beep_check = add_toggle_row(
@@ -2285,6 +2419,7 @@ unsafe fn build_audio_tab(
                 action: sel!(onBeepToggled:),
                 description: None,
                 tag: None,
+                gap,
             },
         );
         // Agent: Enter to send toggle
@@ -2301,6 +2436,7 @@ unsafe fn build_audio_tab(
                 action: sel!(onEnterSendToggled:),
                 description: None,
                 tag: None,
+                gap,
             },
         );
         // Sound volume slider
@@ -2338,10 +2474,12 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
 
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
+        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let mut y = frame.size.height - 40.0;
+        let gap = ui_tokens::DENSITY_COMPACT;
+        let mut y = frame.size.height - (22.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
 
@@ -2354,7 +2492,10 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 20.0;
+        y -= 22.0 + gap;
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= gap;
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
@@ -2364,7 +2505,7 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
             ..Default::default()
         });
         add_subview(container, subtitle);
-        y -= 16.0;
+        y -= 16.0 + gap;
         let apply_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 14.0)),
             text: "Apply: press Enter or click outside the field.".to_string(),
@@ -2373,7 +2514,7 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
             ..Default::default()
         });
         add_subview(container, apply_hint);
-        y -= 14.0;
+        y -= 14.0 + gap;
 
         let scroll_h = (y - 18.0).max(160.0);
         let scroll_frame = CGRect::new(&CGPoint::new(pad, 12.0), &CGSize::new(content_w, scroll_h));
@@ -2393,9 +2534,9 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
         let mut doc_h: f64 = 18.0;
         for spec in VOICE_LAB_FIELDS {
             doc_h += if spec.kind == VoiceLabFieldKind::Bool {
-                toggle_row_step(true)
+                toggle_row_step(true, gap)
             } else {
-                58.0
+                16.0 + gap + SETTINGS_INPUT_HEIGHT + gap + 16.0 + gap
             };
         }
         doc_h = doc_h.max(18.0);
@@ -2432,6 +2573,7 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
                             action: sel!(onVoiceLabToggleChanged:),
                             description: Some(spec.description),
                             tag: Some(idx as isize),
+                            gap,
                         },
                     );
                 }
@@ -2444,18 +2586,22 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
                         ..Default::default()
                     });
                     add_subview(doc_view, label);
-                    row_y -= 20.0;
+                    row_y -= 16.0 + gap;
 
                     let current = voice_lab_value_from_snapshot(spec, &env_snapshot);
                     let field = create_text_input(
-                        CGRect::new(&CGPoint::new(0.0, row_y), &CGSize::new(doc_w - 6.0, 22.0)),
+                        CGRect::new(
+                            &CGPoint::new(0.0, row_y),
+                            &CGSize::new(doc_w - 6.0, SETTINGS_INPUT_HEIGHT),
+                        ),
                         spec.default_value,
                         &current,
                     );
+                    style_paper_input(field);
                     let _: () = msg_send![field, setTag: idx as isize];
                     button_set_action(field, action_handler, sel!(onVoiceLabFieldChanged:));
                     add_subview(doc_view, field);
-                    row_y -= 20.0;
+                    row_y -= SETTINGS_INPUT_HEIGHT + gap;
 
                     let desc = create_label(LabelConfig {
                         frame: CGRect::new(
@@ -2468,7 +2614,7 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
                         ..Default::default()
                     });
                     add_subview(doc_view, desc);
-                    row_y -= 20.0;
+                    row_y -= 16.0 + gap;
                 }
             }
         }
@@ -2490,10 +2636,12 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
 
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
+        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let mut y = frame.size.height - 40.0;
+        let gap = ui_tokens::DENSITY_COMPACT;
+        let mut y = frame.size.height - (22.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
         let mono = crate::ui_helpers::monospace_font(ui_tokens::SMALL_FONT_SIZE);
@@ -2508,7 +2656,10 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 20.0;
+        y -= 22.0 + gap;
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= gap;
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
@@ -2518,7 +2669,7 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
             ..Default::default()
         });
         add_subview(container, subtitle);
-        y -= 28.0;
+        y -= 16.0 + gap;
 
         // ── Helper: add a status row (dot + label + mono value) ─
         let mut add_row = |label_text: &str, value_text: &str, ok: bool| {
@@ -2560,7 +2711,7 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
             });
             let _: () = msg_send![val, setFont: mono];
             add_subview(container, val);
-            y -= 28.0;
+            y -= 18.0 + gap;
         };
 
         // ── STT Engine ─────────────────────────────────────────
@@ -2638,12 +2789,12 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
         let _: () = msg_send![sep, setWantsLayer: true];
         let layer: Id = msg_send![sep, layer];
         if !layer.is_null() {
-            let bg = ui_colors::separator();
+            let bg = ui_colors::surface_border();
             let cg: Id = msg_send![bg, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg];
         }
         add_subview(container, sep);
-        y -= 20.0;
+        y -= gap;
 
         // ── Env hint ───────────────────────────────────────────
         let hint = create_label(LabelConfig {
@@ -2671,11 +2822,13 @@ unsafe fn build_user_tab(
         let ns_view = Class::get("NSView").unwrap();
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
+        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
         let field_w = content_w;
-        let mut y = frame.size.height - 40.0;
+        let gap = ui_tokens::DENSITY_COMFORTABLE;
+        let mut y = frame.size.height - (22.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
 
@@ -2688,7 +2841,10 @@ unsafe fn build_user_tab(
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 20.0;
+        y -= 22.0 + gap;
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= gap;
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
@@ -2698,7 +2854,7 @@ unsafe fn build_user_tab(
             ..Default::default()
         });
         add_subview(container, subtitle);
-        y -= 30.0;
+        y -= 16.0 + gap;
 
         let app_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
@@ -2709,7 +2865,7 @@ unsafe fn build_user_tab(
             ..Default::default()
         });
         add_subview(container, app_header);
-        y -= 26.0;
+        y -= 18.0 + gap;
 
         let _dock_check = add_toggle_row(
             container,
@@ -2726,18 +2882,19 @@ unsafe fn build_user_tab(
                     "Best effort at runtime; some launch modes keep current behavior.",
                 ),
                 tag: None,
+                gap,
             },
         );
 
         let app_divider = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 1.0)),
             text: String::new(),
-            background_color: Some(ui_colors::separator()),
+            background_color: Some(ui_colors::surface_border()),
             ..Default::default()
         });
-        let _: () = msg_send![app_divider, setAlphaValue: 0.55f64];
+        let _: () = msg_send![app_divider, setAlphaValue: 0.9f64];
         add_subview(container, app_divider);
-        y -= 24.0;
+        y -= gap;
 
         let quality_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
@@ -2748,7 +2905,7 @@ unsafe fn build_user_tab(
             ..Default::default()
         });
         add_subview(container, quality_header);
-        y -= 28.0;
+        y -= 18.0 + gap;
 
         let ultra_on = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS")
             .map(|v| parse_env_bool(&v))
@@ -2766,6 +2923,7 @@ unsafe fn build_user_tab(
                 action: sel!(onUltraQualityToggled:),
                 description: Some("Runs legacy end-of-session pass for max quality (slower)."),
                 tag: None,
+                gap,
             },
         );
         state.ultra_quality_checkbox = Some(ultra_check as usize);
@@ -2786,24 +2944,25 @@ unsafe fn build_user_tab(
                 action: sel!(onQualityDaemonToggled:),
                 description: Some("Runs quality analysis every 30min in background."),
                 tag: None,
+                gap,
             },
         );
         state.quality_daemon_checkbox = Some(quality_check as usize);
-        y -= 24.0;
+        y -= gap;
 
         let divider = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 1.0)),
             text: String::new(),
-            background_color: Some(ui_colors::separator()),
+            background_color: Some(ui_colors::surface_border()),
             ..Default::default()
         });
-        let _: () = msg_send![divider, setAlphaValue: 0.55f64];
+        let _: () = msg_send![divider, setAlphaValue: 0.9f64];
         add_subview(container, divider);
-        y -= 22.0;
+        y -= gap;
 
         let user_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: "Assistant endpoints and models are configured in Setup tab.".to_string(),
+            text: "Assistant endpoints and models are configured in Keys tab.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -3444,8 +3603,12 @@ mod tests {
 
     #[test]
     fn toggle_row_spacing_is_consistent() {
-        assert_eq!(toggle_row_step(false), TOGGLE_ROW_STEP);
-        assert_eq!(toggle_row_step(true), TOGGLE_ROW_WITH_DESC_STEP);
+        let gap = ui_tokens::DENSITY_MEDIUM;
+        assert_eq!(toggle_row_step(false, gap), TOGGLE_ROW_HEIGHT + gap);
+        assert_eq!(
+            toggle_row_step(true, gap),
+            TOGGLE_ROW_DESC_OFFSET + TOGGLE_ROW_DESC_HEIGHT + gap
+        );
     }
 
     #[test]

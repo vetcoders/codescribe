@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
     add_subview, animate_fade, apply_tafla_surface, button_set_action, button_style,
-    clamp_overlay_position, color_rgba, create_button, create_glass_effect_view_with, create_label,
+    clamp_overlay_position, create_button, create_glass_effect_view_with, create_label,
     create_scrollable_text_view, ns_string, set_hidden, set_text, set_text_view_string,
     set_tooltip, ui_colors, ui_tokens, window_close, window_set_alpha, window_show,
 };
@@ -422,6 +422,29 @@ fn set_auto_hide_hint_visible(state: &TranscriptionOverlayState, visible: bool) 
     refresh_action_contract_ui(state, visible);
 }
 
+unsafe fn style_overlay_action_button(button: Id) {
+    let _: () = msg_send![button, setWantsLayer: true];
+    let layer: Id = msg_send![button, layer];
+    if !layer.is_null() {
+        let bg = ui_colors::surface_paper_warm();
+        let cg_bg: Id = msg_send![bg, CGColor];
+        let _: () = msg_send![layer, setBackgroundColor: cg_bg];
+        unsafe {
+            apply_tafla_surface(layer, true);
+        }
+        let _: () = msg_send![layer, setCornerRadius: ui_tokens::SURFACE_RADIUS];
+        let _: () = msg_send![layer, setMasksToBounds: true];
+    }
+    let responds_bezel_color: bool = msg_send![button, respondsToSelector: sel!(setBezelColor:)];
+    if responds_bezel_color {
+        let _: () = msg_send![button, setBezelColor: ui_colors::surface_paper_warm()];
+    }
+    let responds_tint: bool = msg_send![button, respondsToSelector: sel!(setContentTintColor:)];
+    if responds_tint {
+        let _: () = msg_send![button, setContentTintColor: ui_colors::bubble_text()];
+    }
+}
+
 fn overlay_status_label(kind: UiStatus) -> &'static str {
     match kind {
         UiStatus::Idle => "Idle",
@@ -475,18 +498,12 @@ fn compute_overlay_layout_metrics(
 fn set_status_message(state: &TranscriptionOverlayState, msg: &str, allow_spinner: bool) {
     let status_kind = status_from_detail(msg);
     let status_text = overlay_status_label(status_kind);
-    let palette = status_kind.palette();
 
     if let Some(status_ptr) = state.status_field {
         unsafe {
             set_text(status_ptr as Id, status_text);
             set_hidden(status_ptr as Id, false);
-            let status_color = color_rgba(
-                palette.text.0,
-                palette.text.1,
-                palette.text.2,
-                palette.text.3,
-            );
+            let status_color = ui_colors::secondary_label();
             let _: () = msg_send![status_ptr as Id, setTextColor: status_color];
 
             let detail = if msg.trim().is_empty() {
@@ -1013,7 +1030,7 @@ fn show_transcription_overlay_impl() {
             text: "Idle".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: true,
-            text_color: ui_colors::overlay_hint_text(),
+            text_color: ui_colors::secondary_label(),
             background_color: None,
             selectable: false,
             editable: false,
@@ -1029,7 +1046,7 @@ fn show_transcription_overlay_impl() {
             text: decision_hint_text(TranscriptionActionContractMode::Raw, true),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             bold: false,
-            text_color: ui_colors::overlay_hint_text(),
+            text_color: ui_colors::secondary_label(),
             background_color: None,
             selectable: false,
             editable: false,
@@ -1072,6 +1089,9 @@ fn show_transcription_overlay_impl() {
         let ns_font_class = Class::get("NSFont").unwrap();
         let system_font: Id = msg_send![ns_font_class, systemFontOfSize: 14.0f64];
         let _: () = msg_send![text_view, setFont: system_font];
+        let paper_bg = ui_colors::surface_paper_warm();
+        let _: () = msg_send![text_view, setDrawsBackground: true];
+        let _: () = msg_send![text_view, setBackgroundColor: paper_bg];
         let text_color = ui_colors::overlay_text();
         let _: () = msg_send![text_view, setTextColor: text_color];
         let _: () = msg_send![text_view, setRichText: false];
@@ -1160,16 +1180,7 @@ fn show_transcription_overlay_impl() {
         let augment_button = create_button(augment_frame, "Augment", button_style::ROUNDED);
         let commit_button = create_button(commit_frame, "Finish", button_style::ROUNDED);
         for button in [save_button, copy_button, augment_button, commit_button] {
-            let responds_bezel_color: bool =
-                msg_send![button, respondsToSelector: sel!(setBezelColor:)];
-            if responds_bezel_color {
-                let _: () = msg_send![button, setBezelColor: ui_colors::surface_paper_warm()];
-            }
-            let responds_tint: bool =
-                msg_send![button, respondsToSelector: sel!(setContentTintColor:)];
-            if responds_tint {
-                let _: () = msg_send![button, setContentTintColor: ui_colors::bubble_text()];
-            }
+            style_overlay_action_button(button);
         }
         set_tooltip(
             copy_button,

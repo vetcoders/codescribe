@@ -345,11 +345,24 @@ extern "C" fn toolbar_item_for_identifier(
     _will_be_inserted: bool,
 ) -> Id {
     unsafe {
+        let flexible_space_identifier = ns_string(NSTOOLBAR_FLEXIBLE_SPACE_ITEM_IDENTIFIER);
+        let is_flexible_space: bool =
+            msg_send![item_identifier, isEqualToString: flexible_space_identifier];
+        if is_flexible_space {
+            let ns_toolbar_item = Class::get("NSToolbarItem").unwrap();
+            let item: Id = msg_send![ns_toolbar_item, alloc];
+            let item: Id = msg_send![item, initWithItemIdentifier: item_identifier];
+            return item;
+        }
+
         let show_agent_identifier = ns_string(SETTINGS_TOOLBAR_ITEM_SHOW_AGENT);
         let is_show_agent: bool =
             msg_send![item_identifier, isEqualToString: show_agent_identifier];
         if !is_show_agent {
-            return std::ptr::null_mut();
+            let ns_toolbar_item = Class::get("NSToolbarItem").unwrap();
+            let item: Id = msg_send![ns_toolbar_item, alloc];
+            let item: Id = msg_send![item, initWithItemIdentifier: item_identifier];
+            return item;
         }
 
         let ns_toolbar_item = Class::get("NSToolbarItem").unwrap();

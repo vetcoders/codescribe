@@ -581,13 +581,7 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
         let pill = pill_ptr as Id;
         let layer: Id = msg_send![pill, layer];
         if !layer.is_null() {
-            let tint_mix = 0.16f64;
-            let bg = color_rgba(
-                ui_tokens::PAPER_COOL_R * (1.0 - tint_mix) + palette.dot.0 * tint_mix,
-                ui_tokens::PAPER_COOL_G * (1.0 - tint_mix) + palette.dot.1 * tint_mix,
-                ui_tokens::PAPER_COOL_B * (1.0 - tint_mix) + palette.dot.2 * tint_mix,
-                0.78,
-            );
+            let bg = ui_colors::surface_paper_cool();
             let cg: Id = msg_send![bg, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg];
             let border = ui_colors::surface_border();
@@ -599,7 +593,7 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
         if let Some(label_ptr) = state.status_pill_label {
             let label = label_ptr as Id;
             let _: () = msg_send![label, setStringValue: ns_string(state.status_kind.label())];
-            let text_color = ui_colors::bubble_text();
+            let text_color = ui_colors::bubble_meta_text();
             let _: () = msg_send![label, setTextColor: text_color];
         }
 
