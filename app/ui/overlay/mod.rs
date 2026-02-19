@@ -214,24 +214,8 @@ fn action_handler_class() -> *const Class {
 
 fn action_text_for_contract(state: &TranscriptionOverlayState) -> String {
     match state.action_contract_mode {
-        TranscriptionActionContractMode::Raw => {
-            if !state.raw_text.trim().is_empty() {
-                state.raw_text.clone()
-            } else if !state.accumulated_text.trim().is_empty() {
-                state.accumulated_text.clone()
-            } else {
-                state.last_pass_text.clone()
-            }
-        }
-        TranscriptionActionContractMode::AiFormat => {
-            if !state.last_pass_text.trim().is_empty() {
-                state.last_pass_text.clone()
-            } else if !state.accumulated_text.trim().is_empty() {
-                state.accumulated_text.clone()
-            } else {
-                state.raw_text.clone()
-            }
-        }
+        TranscriptionActionContractMode::Raw => state.raw_text.clone(),
+        TranscriptionActionContractMode::AiFormat => state.last_pass_text.clone(),
     }
 }
 
@@ -733,16 +717,20 @@ fn resize_overlay_to_fit_text(state: &mut TranscriptionOverlayState) {
 
 fn update_overlay_text_only(state: &TranscriptionOverlayState) {
     if let Some(text_view_ptr) = state.text_view {
-        let visible_text = if state.decision_mode {
-            // Decision mode must show exact contract text (RAW or last-pass).
-            state.accumulated_text.as_str()
-        } else {
-            // Live preview shows only complete word boundaries to avoid jittery partial tails.
-            stable_overlay_preview_text(&state.accumulated_text)
-        };
+        let visible_text = overlay_visible_text(&state.accumulated_text, state.decision_mode);
         unsafe {
             set_text_view_string(text_view_ptr as Id, visible_text);
         }
+    }
+}
+
+fn overlay_visible_text(text: &str, decision_mode: bool) -> &str {
+    if decision_mode {
+        // Decision mode must show exact contract payload without preview filtering.
+        text
+    } else {
+        // Live preview shows only complete word boundaries to avoid jittery partial tails.
+        stable_overlay_preview_text(text)
     }
 }
 
@@ -1650,7 +1638,7 @@ mod tests {
         state.last_pass_text.clear();
 
         let text = action_text_for_contract(&state);
-        assert_eq!(text, "overlay preview");
+        assert!(text.is_empty());
     }
 
     #[test]
@@ -1668,5 +1656,17 @@ mod tests {
     #[test]
     fn test_stable_overlay_preview_text_without_boundary_returns_empty() {
         assert_eq!(stable_overlay_preview_text("partial"), "");
+    }
+
+    #[test]
+    fn test_overlay_visible_text_decision_mode_uses_exact_text() {
+        let text = "pełny tekst kontraktu bez trimowania";
+        assert_eq!(overlay_visible_text(text, true), text);
+    }
+
+    #[test]
+    fn test_overlay_visible_text_live_mode_uses_stable_preview() {
+        let text = "To jest stabilne zda";
+        assert_eq!(overlay_visible_text(text, false), "To jest stabilne ");
     }
 }

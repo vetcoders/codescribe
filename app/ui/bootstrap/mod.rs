@@ -48,8 +48,8 @@ const SETTINGS_CONTENT_INSET_X: f64 = 20.0;
 const SETTINGS_CONTENT_INSET_Y: f64 = 12.0;
 const TAB_BUTTON_HEIGHT: f64 = 38.0;
 const TAB_BUTTON_GAP: f64 = 6.0;
-const TAB_ACTIVE_BG_ALPHA: f64 = 0.14;
-const TAB_ACTIVE_BORDER_ALPHA: f64 = 0.30;
+const TAB_ACTIVE_BG_ALPHA: f64 = 0.10;
+const TAB_ACTIVE_BORDER_ALPHA: f64 = 0.22;
 const SIDEBAR_INSET: f64 = 10.0;
 const PERMISSION_ROW_HEIGHT: f64 = 24.0 + ui_tokens::DENSITY_COMFORTABLE;
 const PERMISSION_BUTTON_WIDTH: f64 = 118.0;
@@ -202,7 +202,7 @@ unsafe fn style_tafla_section(container: Id) {
     if layer.is_null() {
         return;
     }
-    let bg = ui_colors::surface_paper_cool();
+    let bg = unsafe { settings_content_paper_bg() };
     let cg_bg: Id = msg_send![bg, CGColor];
     let _: () = msg_send![layer, setBackgroundColor: cg_bg];
     unsafe {
@@ -213,7 +213,23 @@ unsafe fn style_tafla_section(container: Id) {
 
 unsafe fn style_paper_input(field: Id) {
     let _: () = msg_send![field, setDrawsBackground: true];
-    let _: () = msg_send![field, setBackgroundColor: ui_colors::surface_paper_warm()];
+    let input_bg = unsafe { settings_input_paper_bg() };
+    let _: () = msg_send![field, setBackgroundColor: input_bg];
+}
+
+unsafe fn settings_content_paper_bg() -> Id {
+    let base = ui_colors::surface_paper_warm();
+    msg_send![base, colorWithAlphaComponent: 0.68f64]
+}
+
+unsafe fn settings_input_paper_bg() -> Id {
+    let base = ui_colors::surface_paper_warm();
+    msg_send![base, colorWithAlphaComponent: 0.84f64]
+}
+
+unsafe fn settings_sidebar_tint_color() -> Id {
+    let base = ui_colors::control_bg_tint(0.22);
+    msg_send![base, colorWithAlphaComponent: 0.95f64]
 }
 
 unsafe fn add_tafla_header_separator(container: Id, x: f64, y: f64, width: f64) -> f64 {
@@ -1051,7 +1067,7 @@ unsafe fn build_settings_ui(
         ];
         let sidebar_tint_layer: Id = msg_send![sidebar_tint, layer];
         if !sidebar_tint_layer.is_null() {
-            let tint_color = ui_colors::sidebar_bg();
+            let tint_color = settings_sidebar_tint_color();
             let tint_cg: Id = msg_send![tint_color, CGColor];
             let _: () = msg_send![sidebar_tint_layer, setBackgroundColor: tint_cg];
         }
