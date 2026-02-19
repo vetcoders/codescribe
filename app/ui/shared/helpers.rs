@@ -76,8 +76,8 @@ pub mod ui_tokens {
     pub const CORNER_RADIUS_SM: f64 = 8.0;
 
     pub const STATUS_PILL_HEIGHT: f64 = 20.0;
-    pub const STATUS_PILL_WIDTH: f64 = 110.0;
-    pub const STATUS_DOT_SIZE: f64 = 6.0;
+    pub const STATUS_PILL_WIDTH: f64 = 104.0;
+    pub const STATUS_DOT_SIZE: f64 = 5.0;
     pub const BUBBLE_MAX_WIDTH: f64 = 560.0;
 
     pub const PLACEHOLDER_LINE_WIDTH: f64 = 120.0;
@@ -87,6 +87,41 @@ pub mod ui_tokens {
     pub const EMPTY_STATE_BUTTON_HEIGHT: f64 = 28.0;
     pub const EMPTY_STATE_BUTTON_WIDTH: f64 = 140.0;
     pub const EMPTY_STATE_BUTTON_GAP: f64 = 12.0;
+
+    // ─── Tafla: unified surface design system ──────────────────────
+    // Glass = frame (cool, system materials).  Paper = content (warm, readable).
+    // One radius, one border, no stacking — flat pane, not bubble soup.
+
+    /// Canonical corner radius — use this everywhere instead of LG/MD/SM mix.
+    pub const SURFACE_RADIUS: f64 = 12.0;
+    pub const SURFACE_BORDER_WIDTH: f64 = 1.0;
+    pub const SURFACE_BORDER_ALPHA: f64 = 0.18;
+
+    /// Glass background: alpha for vibrancy-backed views.
+    pub const GLASS_BG_ALPHA: f64 = 0.22;
+    /// Glass fallback: alpha when NSVisualEffectView is not available.
+    pub const GLASS_FALLBACK_ALPHA: f64 = 0.30;
+
+    /// Paper warm tint (content areas: bubbles, transcription, inputs).
+    pub const PAPER_WARM_R: f64 = 1.0;
+    pub const PAPER_WARM_G: f64 = 0.992;
+    pub const PAPER_WARM_B: f64 = 0.973;
+    pub const PAPER_WARM_ALPHA: f64 = 0.85;
+    /// Paper cool tint (system/meta areas).
+    pub const PAPER_COOL_R: f64 = 0.973;
+    pub const PAPER_COOL_G: f64 = 0.980;
+    pub const PAPER_COOL_B: f64 = 1.0;
+    pub const PAPER_COOL_ALPHA: f64 = 0.85;
+    pub const PAPER_BORDER_ALPHA: f64 = 0.12;
+
+    /// Compact header for Tafla windows.
+    pub const HEADER_HEIGHT_COMPACT: f64 = 46.0;
+    pub const HEADER_BORDER_ALPHA: f64 = 0.12;
+
+    /// Tafla density tiers (vertical gap between controls per tab density).
+    pub const DENSITY_COMFORTABLE: f64 = 12.0;
+    pub const DENSITY_MEDIUM: f64 = 8.0;
+    pub const DENSITY_COMPACT: f64 = 6.0;
 }
 
 // ============================================================================
@@ -127,19 +162,11 @@ pub mod ui_colors {
     }
 
     pub fn input_bar_bg() -> Id {
-        unsafe {
-            let ns_color = Class::get("NSColor").unwrap();
-            let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, adaptive_alpha(0.74, 0.86))
-        }
+        surface_glass()
     }
 
     pub fn input_bar_border() -> Id {
-        unsafe {
-            let ns_color = Class::get("NSColor").unwrap();
-            let base: Id = msg_send![ns_color, separatorColor];
-            with_alpha(base, 0.92)
-        }
+        surface_border()
     }
 
     pub fn overlay_text() -> Id {
@@ -213,11 +240,7 @@ pub mod ui_colors {
     }
 
     pub fn card_bg() -> Id {
-        unsafe {
-            let ns_color = Class::get("NSColor").unwrap();
-            let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, adaptive_alpha(0.62, 0.78))
-        }
+        surface_paper_warm()
     }
 
     pub fn empty_state_bg() -> Id {
@@ -229,35 +252,24 @@ pub mod ui_colors {
     }
 
     pub fn bubble_user_bg() -> Id {
-        accent_tint(0.18)
+        accent_tint(0.12)
     }
 
     pub fn bubble_user_border() -> Id {
-        accent_tint(0.35)
+        accent_tint(0.25)
     }
 
     pub fn bubble_assistant_bg() -> Id {
-        unsafe {
-            let ns_color = Class::get("NSColor").unwrap();
-            let base: Id = msg_send![ns_color, controlBackgroundColor];
-            with_alpha(base, 0.8)
-        }
+        surface_paper_warm()
     }
 
     pub fn bubble_system_bg() -> Id {
-        unsafe {
-            let ns_color = Class::get("NSColor").unwrap();
-            let base: Id = msg_send![ns_color, windowBackgroundColor];
-            with_alpha(base, 0.8)
-        }
+        surface_paper_cool()
     }
 
     pub fn bubble_border() -> Id {
-        unsafe {
-            let ns_color = Class::get("NSColor").unwrap();
-            let base: Id = msg_send![ns_color, separatorColor];
-            with_alpha(base, 0.4)
-        }
+        use super::ui_tokens::PAPER_BORDER_ALPHA;
+        with_alpha(separator(), PAPER_BORDER_ALPHA)
     }
 
     pub fn bubble_text() -> Id {
@@ -297,6 +309,54 @@ pub mod ui_colors {
             msg_send![ns_color, systemRedColor]
         }
     }
+
+    // ─── Tafla: unified surface colors ─────────────────────────────
+
+    /// Glass surface background (panels, sidebar, overlays with vibrancy).
+    pub fn surface_glass() -> Id {
+        use super::ui_tokens::{GLASS_BG_ALPHA, GLASS_FALLBACK_ALPHA};
+        control_bg_tint(adaptive_alpha(GLASS_BG_ALPHA, GLASS_FALLBACK_ALPHA))
+    }
+
+    /// Paper warm surface (content: bubbles, transcription text, input fields).
+    pub fn surface_paper_warm() -> Id {
+        use super::ui_tokens::*;
+        super::color_rgba(PAPER_WARM_R, PAPER_WARM_G, PAPER_WARM_B, PAPER_WARM_ALPHA)
+    }
+
+    /// Paper cool surface (system/meta content).
+    pub fn surface_paper_cool() -> Id {
+        use super::ui_tokens::*;
+        super::color_rgba(PAPER_COOL_R, PAPER_COOL_G, PAPER_COOL_B, PAPER_COOL_ALPHA)
+    }
+
+    /// Canonical surface border — one style for all Tafla windows.
+    pub fn surface_border() -> Id {
+        use super::ui_tokens::SURFACE_BORDER_ALPHA;
+        with_alpha(separator(), SURFACE_BORDER_ALPHA)
+    }
+
+    /// Header bottom separator — subtler than surface border.
+    pub fn header_border() -> Id {
+        use super::ui_tokens::HEADER_BORDER_ALPHA;
+        with_alpha(separator(), HEADER_BORDER_ALPHA)
+    }
+}
+
+/// Apply Tafla surface treatment to a CALayer: corner radius + optional border.
+/// Shadows off by default — Tafla is flat pane, not bubble soup.
+///
+/// # Safety
+/// `layer` must be a valid pointer to a CALayer (or NSView.layer).
+pub unsafe fn apply_tafla_surface(layer: Id, with_border: bool) {
+    let _: () = msg_send![layer, setCornerRadius: ui_tokens::SURFACE_RADIUS];
+    if with_border {
+        let border = ui_colors::surface_border();
+        let cg_border: Id = msg_send![border, CGColor];
+        let _: () = msg_send![layer, setBorderColor: cg_border];
+        let _: () = msg_send![layer, setBorderWidth: ui_tokens::SURFACE_BORDER_WIDTH];
+    }
+    let _: () = msg_send![layer, setShadowOpacity: 0.0f32];
 }
 
 #[repr(C)]
@@ -1015,12 +1075,7 @@ pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &st
             let bg_color: Id = ui_colors::card_bg();
             let cg_color: Id = msg_send![bg_color, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg_color];
-            let _: () = msg_send![layer, setCornerRadius: 12.0f64];
-            let border: Id = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.35f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![layer, setBorderColor: cg_border];
-            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+            apply_tafla_surface(layer, true);
         }
 
         let title_frame = CGRect::new(
@@ -2040,16 +2095,22 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             // CGColor from NSColor
             let cg_color: Id = msg_send![bg_color, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg_color];
-            let _: () = msg_send![layer, setCornerRadius: 12.0f64];
+            apply_tafla_surface(layer, false);
             let _: () = msg_send![layer, setMasksToBounds: false];
             // Border styling
             let (border_color, bw) = if config.is_error {
-                (ui_colors::bubble_error_text(), 1.0f64)
+                (
+                    ui_colors::bubble_error_text(),
+                    ui_tokens::SURFACE_BORDER_WIDTH,
+                )
             } else {
                 match config.role {
-                    BubbleRole::User => (ui_colors::bubble_user_border(), 1.0f64),
+                    BubbleRole::User => (
+                        ui_colors::bubble_user_border(),
+                        ui_tokens::SURFACE_BORDER_WIDTH,
+                    ),
                     BubbleRole::Assistant | BubbleRole::System => {
-                        (ui_colors::bubble_border(), 1.0f64)
+                        (ui_colors::bubble_border(), ui_tokens::SURFACE_BORDER_WIDTH)
                     }
                 }
             };

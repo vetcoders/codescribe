@@ -31,10 +31,10 @@ use tracing::{debug, info, warn};
 
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
-    add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position, color_rgba,
-    create_button, create_glass_effect_view_with, create_label, create_scrollable_text_view,
-    ns_string, set_hidden, set_text, set_text_view_string, set_tooltip, ui_colors, ui_tokens,
-    window_close, window_set_alpha, window_show,
+    add_subview, animate_fade, apply_tafla_surface, button_set_action, button_style,
+    clamp_overlay_position, color_rgba, create_button, create_glass_effect_view_with, create_label,
+    create_scrollable_text_view, ns_string, set_hidden, set_text, set_text_view_string,
+    set_tooltip, ui_colors, ui_tokens, window_close, window_set_alpha, window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -46,6 +46,9 @@ type Id = *mut Object;
 // Window level constants
 const NS_FLOATING_WINDOW_LEVEL: i64 = 3;
 const NS_PROGRESS_INDICATOR_STYLE_SPINNING: i64 = 1;
+const NSVIEW_WIDTH_SIZABLE: isize = 2;
+const NSVIEW_MIN_Y_MARGIN: isize = 8;
+const NSVIEW_HEIGHT_SIZABLE: isize = 16;
 const NSTRACKING_MOUSE_ENTERED_AND_EXITED: u64 = 1 << 0;
 const NSTRACKING_ACTIVE_ALWAYS: u64 = 1 << 7;
 const NSTRACKING_IN_VISIBLE_RECT: u64 = 1 << 9;
@@ -53,16 +56,17 @@ const NSTRACKING_IN_VISIBLE_RECT: u64 = 1 << 9;
 const OVERLAY_WINDOW_WIDTH: f64 = 420.0;
 const OVERLAY_WINDOW_MIN_HEIGHT: f64 = 180.0;
 const OVERLAY_WINDOW_MAX_HEIGHT_RATIO: f64 = 0.5;
-const OVERLAY_PADDING: f64 = 16.0;
-const OVERLAY_HEADER_HEIGHT: f64 = 20.0;
+const OVERLAY_PADDING: f64 = ui_tokens::EDGE_PADDING;
+const OVERLAY_HEADER_HEIGHT: f64 = ui_tokens::HEADER_HEIGHT_COMPACT;
+const OVERLAY_HEADER_LABEL_HEIGHT: f64 = 20.0;
 const OVERLAY_STATUS_HEIGHT: f64 = 20.0;
 const OVERLAY_INFO_HEIGHT: f64 = 12.0;
 const OVERLAY_STATUS_WIDTH: f64 = 100.0;
-const OVERLAY_HEADER_GAP: f64 = 4.0;
-const OVERLAY_CONTENT_GAP: f64 = 8.0;
+const OVERLAY_HEADER_GAP: f64 = ui_tokens::DENSITY_COMPACT;
+const OVERLAY_CONTENT_GAP: f64 = ui_tokens::DENSITY_MEDIUM;
 const OVERLAY_TEXT_MIN_HEIGHT: f64 = 44.0;
 const OVERLAY_BUTTON_HEIGHT: f64 = 28.0;
-const OVERLAY_BUTTON_MARGIN: f64 = 8.0;
+const OVERLAY_BUTTON_MARGIN: f64 = ui_tokens::DENSITY_MEDIUM;
 const OVERLAY_HEADER_LABEL: &str = "CodeScribe - Dictation Overlay";
 
 // Auto-hide delay after recording completes
@@ -608,6 +612,8 @@ fn resize_overlay_to_fit_text(state: &mut TranscriptionOverlayState) {
         }
 
         let header_y = applied_height - OVERLAY_PADDING - OVERLAY_HEADER_HEIGHT;
+        let header_text_y =
+            header_y + ((OVERLAY_HEADER_HEIGHT - OVERLAY_HEADER_LABEL_HEIGHT) / 2.0).max(0.0);
         let info_y = header_y - OVERLAY_HEADER_GAP - OVERLAY_INFO_HEIGHT;
         let spinner_size = 14.0;
         let spinner_x = state.window_width - OVERLAY_PADDING - spinner_size;
@@ -621,11 +627,11 @@ fn resize_overlay_to_fit_text(state: &mut TranscriptionOverlayState) {
             let header_frame = CGRect {
                 origin: CGPoint {
                     x: OVERLAY_PADDING,
-                    y: header_y,
+                    y: header_text_y,
                 },
                 size: CGSize {
                     width: header_width,
-                    height: OVERLAY_HEADER_HEIGHT,
+                    height: OVERLAY_HEADER_LABEL_HEIGHT,
                 },
             };
             let _: () = msg_send![header_ptr as Id, setFrame: header_frame];
@@ -635,7 +641,7 @@ fn resize_overlay_to_fit_text(state: &mut TranscriptionOverlayState) {
             let status_frame = CGRect {
                 origin: CGPoint {
                     x: status_x,
-                    y: header_y,
+                    y: header_text_y,
                 },
                 size: CGSize {
                     width: status_width,
@@ -843,7 +849,6 @@ fn show_transcription_overlay_impl() {
         let window_width = OVERLAY_WINDOW_WIDTH;
         let window_height = OVERLAY_WINDOW_MIN_HEIGHT;
         let margin = 20.0;
-        let corner_radius = ui_tokens::CORNER_RADIUS_LG;
         let max_height =
             (visible_frame.size.height * OVERLAY_WINDOW_MAX_HEIGHT_RATIO).max(window_height);
 
@@ -938,15 +943,17 @@ fn show_transcription_overlay_impl() {
             NSVisualEffectBlendingMode::BehindWindow,
             NSVisualEffectState::Active,
         );
+        let _: () = msg_send![
+            blur_view,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
+        ];
         let layer: Id = msg_send![blur_view, layer];
         if !layer.is_null() {
-            let _: () = msg_send![layer, setCornerRadius: corner_radius];
+            let bg = ui_colors::surface_glass();
+            let cg_bg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg_bg];
+            apply_tafla_surface(layer, true);
             let _: () = msg_send![layer, setMasksToBounds: true];
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![layer, setBorderColor: cg_border];
-            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
         }
 
         // Add blur view as background
@@ -958,6 +965,8 @@ fn show_transcription_overlay_impl() {
         let button_height = OVERLAY_BUTTON_HEIGHT;
         let initial_layout = compute_overlay_layout_metrics(0.0, window_height, max_height);
         let header_y = initial_layout.target_height - OVERLAY_PADDING - OVERLAY_HEADER_HEIGHT;
+        let header_text_y =
+            header_y + ((OVERLAY_HEADER_HEIGHT - OVERLAY_HEADER_LABEL_HEIGHT) / 2.0).max(0.0);
         let info_y = header_y - OVERLAY_HEADER_GAP - OVERLAY_INFO_HEIGHT;
         let spinner_size = 14.0;
         let spinner_x = window_width - OVERLAY_PADDING - spinner_size;
@@ -966,11 +975,25 @@ fn show_transcription_overlay_impl() {
         let status_width = OVERLAY_STATUS_WIDTH.min((status_max_x - OVERLAY_PADDING).max(80.0));
         let status_x = (status_max_x - status_width).max(OVERLAY_PADDING);
         let header_width = (status_x - OVERLAY_CONTENT_GAP - OVERLAY_PADDING).max(120.0);
+        let header_separator = create_label(crate::ui_helpers::LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(OVERLAY_PADDING, header_y - 1.0),
+                &CGSize::new((window_width - OVERLAY_PADDING * 2.0).max(0.0), 1.0),
+            ),
+            text: String::new(),
+            background_color: Some(ui_colors::header_border()),
+            ..Default::default()
+        });
+        let _: () = msg_send![
+            header_separator,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN
+        ];
+        add_subview(blur_view, header_separator);
 
         let header_label = create_label(crate::ui_helpers::LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(OVERLAY_PADDING, header_y),
-                &CGSize::new(header_width, OVERLAY_HEADER_HEIGHT),
+                &CGPoint::new(OVERLAY_PADDING, header_text_y),
+                &CGSize::new(header_width, OVERLAY_HEADER_LABEL_HEIGHT),
             ),
             text: OVERLAY_HEADER_LABEL.to_string(),
             font_size: ui_tokens::BODY_FONT_SIZE,
@@ -980,11 +1003,11 @@ fn show_transcription_overlay_impl() {
             selectable: false,
             editable: false,
         });
-        add_subview(content_view, header_label);
+        add_subview(blur_view, header_label);
 
         let status_field = create_label(crate::ui_helpers::LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(status_x, header_y),
+                &CGPoint::new(status_x, header_text_y),
                 &CGSize::new(status_width, OVERLAY_STATUS_HEIGHT),
             ),
             text: "Idle".to_string(),
@@ -996,7 +1019,7 @@ fn show_transcription_overlay_impl() {
             editable: false,
         });
         let _: () = msg_send![status_field, setAlignment: 2_isize];
-        add_subview(content_view, status_field);
+        add_subview(blur_view, status_field);
 
         let auto_hide_label = create_label(crate::ui_helpers::LabelConfig {
             frame: CGRect::new(
@@ -1011,7 +1034,7 @@ fn show_transcription_overlay_impl() {
             selectable: false,
             editable: false,
         });
-        add_subview(content_view, auto_hide_label);
+        add_subview(blur_view, auto_hide_label);
         set_hidden(auto_hide_label, true);
 
         let spinner_frame = CGRect::new(
@@ -1026,7 +1049,7 @@ fn show_transcription_overlay_impl() {
         let _: () = msg_send![spinner, setStyle: NS_PROGRESS_INDICATOR_STYLE_SPINNING];
         let _: () = msg_send![spinner, setIndeterminate: true];
         let _: () = msg_send![spinner, setDisplayedWhenStopped: false];
-        add_subview(content_view, spinner);
+        add_subview(blur_view, spinner);
         set_hidden(spinner, true);
 
         // === Scrollable text view for transcription (main area) ===
@@ -1038,6 +1061,14 @@ fn show_transcription_overlay_impl() {
             ),
         );
         let (text_scroll_view, text_view) = create_scrollable_text_view(text_frame, false);
+        let _: () = msg_send![text_scroll_view, setWantsLayer: true];
+        let text_scroll_layer: Id = msg_send![text_scroll_view, layer];
+        if !text_scroll_layer.is_null() {
+            let bg = ui_colors::surface_paper_warm();
+            let cg_bg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![text_scroll_layer, setBackgroundColor: cg_bg];
+            apply_tafla_surface(text_scroll_layer, true);
+        }
         let ns_font_class = Class::get("NSFont").unwrap();
         let system_font: Id = msg_send![ns_font_class, systemFontOfSize: 14.0f64];
         let _: () = msg_send![text_view, setFont: system_font];
@@ -1055,7 +1086,7 @@ fn show_transcription_overlay_impl() {
             let _: () = msg_send![container, setLineFragmentPadding: 0.0f64];
         }
         set_text_view_string(text_view, "");
-        add_subview(content_view, text_scroll_view);
+        add_subview(blur_view, text_scroll_view);
 
         // Create action handler instance
         let handler_class = action_handler_class();
@@ -1074,7 +1105,7 @@ fn show_transcription_overlay_impl() {
             owner: action_handler
             userInfo: std::ptr::null::<Object>()
         ];
-        let _: () = msg_send![content_view, addTrackingArea: tracking_area];
+        let _: () = msg_send![blur_view, addTrackingArea: tracking_area];
 
         // === Decision buttons (hidden during recording; show on hover) ===
         let button_width = 100.0;
@@ -1128,6 +1159,18 @@ fn show_transcription_overlay_impl() {
         let copy_button = create_button(copy_frame, "Copy", button_style::ROUNDED);
         let augment_button = create_button(augment_frame, "Augment", button_style::ROUNDED);
         let commit_button = create_button(commit_frame, "Finish", button_style::ROUNDED);
+        for button in [save_button, copy_button, augment_button, commit_button] {
+            let responds_bezel_color: bool =
+                msg_send![button, respondsToSelector: sel!(setBezelColor:)];
+            if responds_bezel_color {
+                let _: () = msg_send![button, setBezelColor: ui_colors::surface_paper_warm()];
+            }
+            let responds_tint: bool =
+                msg_send![button, respondsToSelector: sel!(setContentTintColor:)];
+            if responds_tint {
+                let _: () = msg_send![button, setContentTintColor: ui_colors::bubble_text()];
+            }
+        }
         set_tooltip(
             copy_button,
             copy_action_tooltip(TranscriptionActionContractMode::Raw),
@@ -1147,10 +1190,10 @@ fn show_transcription_overlay_impl() {
         button_set_action(augment_button, action_handler, sel!(onAugmentTranscript:));
         button_set_action(commit_button, action_handler, sel!(onCommitRecording:));
 
-        add_subview(content_view, save_button);
-        add_subview(content_view, copy_button);
-        add_subview(content_view, augment_button);
-        add_subview(content_view, commit_button);
+        add_subview(blur_view, save_button);
+        add_subview(blur_view, copy_button);
+        add_subview(blur_view, augment_button);
+        add_subview(blur_view, commit_button);
 
         set_hidden(save_button, true);
         set_hidden(copy_button, true);

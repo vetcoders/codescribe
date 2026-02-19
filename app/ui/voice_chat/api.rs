@@ -17,9 +17,9 @@ use codescribe_core::attachment::Attachment;
 
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
-    BubbleConfig, BubbleRole, LabelConfig, add_subview, button_set_action, button_style,
-    color_label, color_rgba, color_secondary_label, create_bubble_view, create_button,
-    create_card_view, create_label, get_text_field_string, get_text_view_string,
+    BubbleConfig, BubbleRole, LabelConfig, add_subview, apply_tafla_surface, button_set_action,
+    button_style, color_label, color_rgba, color_secondary_label, create_bubble_view,
+    create_button, create_card_view, create_label, get_text_field_string, get_text_view_string,
     layout_region_frame_for_view, list_draft_files, ns_string, open_file_in_editor,
     resize_bubble_container_for_text, set_button_symbol, set_text_field_string,
     set_text_view_string, set_tooltip, stack_view_add, stack_view_clear, ui_colors, ui_tokens,
@@ -581,20 +581,25 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
         let pill = pill_ptr as Id;
         let layer: Id = msg_send![pill, layer];
         if !layer.is_null() {
-            let bg = color_rgba(palette.bg.0, palette.bg.1, palette.bg.2, palette.bg.3);
+            let tint_mix = 0.16f64;
+            let bg = color_rgba(
+                ui_tokens::PAPER_COOL_R * (1.0 - tint_mix) + palette.dot.0 * tint_mix,
+                ui_tokens::PAPER_COOL_G * (1.0 - tint_mix) + palette.dot.1 * tint_mix,
+                ui_tokens::PAPER_COOL_B * (1.0 - tint_mix) + palette.dot.2 * tint_mix,
+                0.78,
+            );
             let cg: Id = msg_send![bg, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg];
+            let border = ui_colors::surface_border();
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![layer, setBorderColor: cg_border];
+            let _: () = msg_send![layer, setBorderWidth: ui_tokens::SURFACE_BORDER_WIDTH];
         }
 
         if let Some(label_ptr) = state.status_pill_label {
             let label = label_ptr as Id;
             let _: () = msg_send![label, setStringValue: ns_string(state.status_kind.label())];
-            let text_color = color_rgba(
-                palette.text.0,
-                palette.text.1,
-                palette.text.2,
-                palette.text.3,
-            );
+            let text_color = ui_colors::bubble_text();
             let _: () = msg_send![label, setTextColor: text_color];
         }
 
@@ -602,8 +607,7 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
             let dot = dot_ptr as Id;
             let dot_layer: Id = msg_send![dot, layer];
             if !dot_layer.is_null() {
-                let dot_color =
-                    color_rgba(palette.dot.0, palette.dot.1, palette.dot.2, palette.dot.3);
+                let dot_color = color_rgba(palette.dot.0, palette.dot.1, palette.dot.2, 0.92);
                 let cg: Id = msg_send![dot_color, CGColor];
                 let _: () = msg_send![dot_layer, setBackgroundColor: cg];
                 // Pulse animation for Listening state
@@ -615,12 +619,12 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
                         let anim: Id =
                             msg_send![ca_anim, animationWithKeyPath: ns_string("opacity")];
                         let from_val: Id =
-                            msg_send![Class::get("NSNumber").unwrap(), numberWithFloat: 1.0f32];
+                            msg_send![Class::get("NSNumber").unwrap(), numberWithFloat: 0.95f32];
                         let to_val: Id =
-                            msg_send![Class::get("NSNumber").unwrap(), numberWithFloat: 0.3f32];
+                            msg_send![Class::get("NSNumber").unwrap(), numberWithFloat: 0.55f32];
                         let _: () = msg_send![anim, setFromValue: from_val];
                         let _: () = msg_send![anim, setToValue: to_val];
-                        let _: () = msg_send![anim, setDuration: 0.8f64];
+                        let _: () = msg_send![anim, setDuration: 1.0f64];
                         let _: () = msg_send![anim, setAutoreverses: true];
                         let _: () = msg_send![anim, setRepeatCount: f32::INFINITY];
                         let _: () = msg_send![dot_layer, addAnimation: anim forKey: pulse_key];
@@ -2586,15 +2590,10 @@ fn create_drawer_empty_state(width: f64, handler: Option<usize>) -> Id {
         let _: () = msg_send![view, setWantsLayer: true];
         let layer: Id = msg_send![view, layer];
         if !layer.is_null() {
-            let bg = ui_colors::empty_state_bg();
+            let bg = ui_colors::surface_paper_cool();
             let cg: Id = msg_send![bg, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg];
-            let _: () = msg_send![layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.3f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![layer, setBorderColor: cg_border];
-            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
+            apply_tafla_surface(layer, true);
         }
 
         let pad = ui_tokens::EDGE_PADDING;

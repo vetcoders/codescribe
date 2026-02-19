@@ -28,10 +28,10 @@ use crate::ui::onboarding::{
     request_permission,
 };
 use crate::ui_helpers::{
-    LabelConfig, add_subview, button, button_set_action, create_checkbox, create_floating_window,
-    create_glass_effect_view_with, create_label, create_secure_text_input, create_slider,
-    create_text_input, ns_string, set_text_field_string, ui_colors, ui_tokens, window_close,
-    window_content_view, window_show,
+    LabelConfig, add_subview, apply_tafla_surface, button, button_set_action, create_checkbox,
+    create_floating_window, create_glass_effect_view_with, create_label, create_secure_text_input,
+    create_slider, create_text_input, ns_string, set_text_field_string, ui_colors, ui_tokens,
+    window_close, window_content_view, window_show,
 };
 
 mod handlers;
@@ -684,7 +684,7 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
         let _: () = msg_send![root, setWantsLayer: true];
         let root_layer: Id = msg_send![root, layer];
         if !root_layer.is_null() {
-            let _: () = msg_send![root_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_LG];
+            let _: () = msg_send![root_layer, setCornerRadius: ui_tokens::SURFACE_RADIUS];
             let _: () = msg_send![root_layer, setMasksToBounds: true];
             let _: () = msg_send![root_layer, setBorderWidth: 0.0f64];
         }
@@ -979,9 +979,31 @@ unsafe fn build_settings_ui(
             root_glass,
             setAutoresizingMask: 2_isize | 16_isize // Width | Height
         ];
+        let root_glass_layer: Id = msg_send![root_glass, layer];
+        if !root_glass_layer.is_null() {
+            let bg = ui_colors::surface_glass();
+            let cg_bg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![root_glass_layer, setBackgroundColor: cg_bg];
+            apply_tafla_surface(root_glass_layer, true);
+            let _: () = msg_send![root_glass_layer, setMasksToBounds: true];
+        }
         add_subview(root_view, root_glass);
 
         // ── Section containers on top of root glass ─────────────────
+        let section_layer: Id = msg_send![ns_view, alloc];
+        let section_layer: Id = msg_send![
+            section_layer,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(settings_width, body_h),
+            )
+        ];
+        let _: () = msg_send![
+            section_layer,
+            setAutoresizingMask: 2_isize | 16_isize // Width | Height
+        ];
+        add_subview(root_glass, section_layer);
+
         // Left: Sidebar
         let sidebar_frame =
             CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, body_h));
@@ -990,9 +1012,9 @@ unsafe fn build_settings_ui(
         let _: () = msg_send![sidebar_container, setWantsLayer: true];
         let _: () = msg_send![
             sidebar_container,
-            setAutoresizingMask: 16_isize | 2_isize // Height | MinXMargin (fixed left)
+            setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin (fixed left)
         ];
-        add_subview(root_view, sidebar_container);
+        add_subview(section_layer, sidebar_container);
 
         let sidebar_tint: Id = msg_send![ns_view, alloc];
         let sidebar_tint: Id = msg_send![sidebar_tint, initWithFrame: sidebar_frame];
@@ -1019,9 +1041,9 @@ unsafe fn build_settings_ui(
         let _: () = msg_send![content_container, setWantsLayer: true];
         let _: () = msg_send![
             content_container,
-            setAutoresizingMask: 16_isize | 2_isize // Height | Width
+            setAutoresizingMask: 2_isize | 16_isize // Width | Height
         ];
-        add_subview(root_view, content_container);
+        add_subview(section_layer, content_container);
 
         let split_divider = create_label(LabelConfig {
             frame: CGRect::new(
@@ -1029,11 +1051,14 @@ unsafe fn build_settings_ui(
                 &CGSize::new(1.0, body_h),
             ),
             text: String::new(),
-            background_color: Some(ui_colors::separator()),
+            background_color: Some(ui_colors::header_border()),
             ..Default::default()
         });
-        let _: () = msg_send![split_divider, setAlphaValue: 0.40f64];
-        add_subview(root_view, split_divider);
+        let _: () = msg_send![
+            split_divider,
+            setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin
+        ];
+        add_subview(section_layer, split_divider);
 
         let content_area_w = content_bg_frame.size.width;
         let content_area_h = body_h;

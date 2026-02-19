@@ -40,12 +40,12 @@ use tracing::{debug, info, warn};
 use crate::config::{HoldMods, ToggleTrigger};
 
 use crate::ui_helpers::{
-    LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style,
-    color_clear, color_label, color_secondary_label, create_button,
-    create_flipped_vertical_stack_view, create_glass_effect_view, create_glass_effect_view_with,
-    create_label, create_scrollable_text_view, create_vertical_stack_view,
-    layout_region_frame_for_view, ns_string, set_button_symbol, set_focus_ring, set_hidden,
-    set_tooltip, style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
+    LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, apply_tafla_surface, button_set_action,
+    button_style, color_clear, color_label, color_secondary_label, create_button,
+    create_flipped_vertical_stack_view, create_glass_effect_view_with, create_label,
+    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
+    ns_string, set_button_symbol, set_focus_ring, set_hidden, set_tooltip,
+    style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -64,11 +64,6 @@ const NSVIEW_MAX_X_MARGIN: isize = 4;
 const NSVIEW_MIN_Y_MARGIN: isize = 8;
 const NSVIEW_HEIGHT_SIZABLE: isize = 16;
 const NSVIEW_MAX_Y_MARGIN: isize = 32;
-
-const CACORNER_MIN_X_MIN_Y: u64 = 1 << 0;
-const CACORNER_MAX_X_MIN_Y: u64 = 1 << 1;
-const CACORNER_MIN_X_MAX_Y: u64 = 1 << 2;
-const CACORNER_MAX_X_MAX_Y: u64 = 1 << 3;
 
 pub(super) fn shortcuts_lines(hold: HoldMods, toggle: ToggleTrigger) -> (String, String) {
     let hold_line = match hold {
@@ -270,13 +265,11 @@ fn show_voice_chat_overlay_impl() {
         ];
         let layer: Id = msg_send![blur_view, layer];
         if !layer.is_null() {
-            let _: () = msg_send![layer, setCornerRadius: ui_tokens::CORNER_RADIUS_LG];
+            let bg = ui_colors::surface_glass();
+            let cg_bg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg_bg];
+            apply_tafla_surface(layer, true);
             let _: () = msg_send![layer, setMasksToBounds: true];
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![layer, setBorderColor: cg_border];
-            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
         }
         add_subview(content_view, blur_view);
         let bounds: CGRect = msg_send![blur_view, bounds];
@@ -287,13 +280,13 @@ fn show_voice_chat_overlay_impl() {
 
         let content_pad = ui_tokens::EDGE_PADDING;
 
-        let header_height = ui_tokens::HEADER_HEIGHT;
+        let header_height = ui_tokens::HEADER_HEIGHT_COMPACT;
         let footer_height = ui_tokens::FOOTER_HEIGHT;
         // Start compact; grows dynamically as the user types/pastes more content.
         // Agent input starts compact and can grow with content (see `resize_agent_input_locked`).
         let agent_input_height = ui_tokens::AGENT_INPUT_HEIGHT;
 
-        // Header background (glass if available, fallback to subtle layer)
+        // Header container on the single root glass (no glass-on-glass dome).
         let header_frame = CGRect::new(
             &CGPoint::new(
                 content_bounds.origin.x,
@@ -301,21 +294,36 @@ fn show_voice_chat_overlay_impl() {
             ),
             &CGSize::new(content_bounds.size.width.max(0.0), header_height),
         );
-        let header_bg: Id =
-            create_glass_effect_view(header_frame, NSVisualEffectMaterial::Titlebar);
+        let header_bg: Id = msg_send![Class::get("NSView").unwrap(), alloc];
+        let header_bg: Id = msg_send![header_bg, initWithFrame: header_frame];
+        let _: () = msg_send![header_bg, setWantsLayer: true];
         let _: () = msg_send![
             header_bg,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN
         ];
         let header_layer: Id = msg_send![header_bg, layer];
         if !header_layer.is_null() {
-            let radius = ui_tokens::CORNER_RADIUS_LG;
-            let _: () = msg_send![header_layer, setCornerRadius: radius];
-            // Keep header rounding only on the outer top edge to avoid
-            // unnatural arcs at the bottom boundary of the header.
-            let corners = CACORNER_MIN_X_MAX_Y | CACORNER_MAX_X_MAX_Y;
-            let _: () = msg_send![header_layer, setMaskedCorners: corners];
-            let _: () = msg_send![header_layer, setMasksToBounds: true];
+            let clear_cg: Id = msg_send![color_clear(), CGColor];
+            let _: () = msg_send![header_layer, setBackgroundColor: clear_cg];
+        }
+        let header_separator: Id = msg_send![Class::get("NSView").unwrap(), alloc];
+        let header_separator: Id = msg_send![
+            header_separator,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(header_frame.size.width.max(0.0), 1.0),
+            )
+        ];
+        let _: () = msg_send![header_separator, setWantsLayer: true];
+        let _: () = msg_send![
+            header_separator,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN
+        ];
+        let separator_layer: Id = msg_send![header_separator, layer];
+        if !separator_layer.is_null() {
+            let border = ui_colors::header_border();
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![separator_layer, setBackgroundColor: cg_border];
         }
         let header_controls: Id = msg_send![Class::get("NSView").unwrap(), alloc];
         let header_controls: Id = msg_send![
@@ -444,14 +452,16 @@ fn show_voice_chat_overlay_impl() {
             &CGPoint::new(status_pill_x, status_pill_y),
             &CGSize::new(status_pill_w, status_pill_h),
         );
-        let status_pill: Id =
-            create_glass_effect_view(status_pill_frame, NSVisualEffectMaterial::HUDWindow);
+        let status_pill: Id = msg_send![Class::get("NSView").unwrap(), alloc];
+        let status_pill: Id = msg_send![status_pill, initWithFrame: status_pill_frame];
+        let _: () = msg_send![status_pill, setWantsLayer: true];
         let status_layer: Id = msg_send![status_pill, layer];
         if !status_layer.is_null() {
-            let _: () = msg_send![
-                status_layer,
-                setCornerRadius: (status_pill_h / 2.0).max(8.0)
-            ];
+            let bg = ui_colors::surface_glass();
+            let bg: Id = msg_send![bg, colorWithAlphaComponent: 0.5f64];
+            let cg_bg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![status_layer, setBackgroundColor: cg_bg];
+            apply_tafla_surface(status_layer, true);
             let _: () = msg_send![status_layer, setMasksToBounds: true];
         }
         let _: () = msg_send![
@@ -464,7 +474,7 @@ fn show_voice_chat_overlay_impl() {
         let dot: Id = msg_send![
             dot,
             initWithFrame: CGRect::new(
-                &CGPoint::new(8.0, (status_pill_h - dot_size) / 2.0),
+                &CGPoint::new(7.0, (status_pill_h - dot_size) / 2.0),
                 &CGSize::new(dot_size, dot_size),
             )
         ];
@@ -478,13 +488,13 @@ fn show_voice_chat_overlay_impl() {
 
         let status_label = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(18.0, 2.0),
-                &CGSize::new(status_pill_w - 22.0, status_pill_h - 4.0),
+                &CGPoint::new(16.0, 2.0),
+                &CGSize::new(status_pill_w - 20.0, status_pill_h - 4.0),
             ),
             text: "Idle".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: crate::ui_helpers::color_white(0.9),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            bold: false,
+            text_color: ui_colors::bubble_meta_text(),
             background_color: None,
             selectable: false,
             editable: false,
@@ -603,7 +613,7 @@ fn show_voice_chat_overlay_impl() {
         ];
         add_subview(header_controls, close_button);
 
-        // Drawer/Agent split view (system sidebar glass)
+        // Drawer/Agent split view on top of the single root glass.
         let content_gap = ui_tokens::CONTENT_GAP;
         let content_frame = CGRect::new(
             &CGPoint::new(
@@ -632,22 +642,21 @@ fn show_voice_chat_overlay_impl() {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(content_frame.size.width, content_frame.size.height),
         );
-        let sidebar_view: Id = create_glass_effect_view_with(
-            sidebar_frame,
-            NSVisualEffectMaterial::Sidebar,
-            NSVisualEffectBlendingMode::BehindWindow,
-            NSVisualEffectState::Active,
-        );
+        let sidebar_view: Id = msg_send![ns_view, alloc];
+        let sidebar_view: Id = msg_send![sidebar_view, initWithFrame: sidebar_frame];
+        let _: () = msg_send![sidebar_view, setWantsLayer: true];
+        let _: () = msg_send![
+            sidebar_view,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
+        ];
         let sidebar_layer: Id = msg_send![sidebar_view, layer];
         if !sidebar_layer.is_null() {
-            let _: () = msg_send![sidebar_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
-            let _: () = msg_send![sidebar_layer, setMaskedCorners: CACORNER_MIN_X_MIN_Y];
+            let bg = ui_colors::surface_glass();
+            let bg: Id = msg_send![bg, colorWithAlphaComponent: 0.64f64];
+            let cg_bg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![sidebar_layer, setBackgroundColor: cg_bg];
+            apply_tafla_surface(sidebar_layer, true);
             let _: () = msg_send![sidebar_layer, setMasksToBounds: true];
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![sidebar_layer, setBorderColor: cg_border];
-            let _: () = msg_send![sidebar_layer, setBorderWidth: 1.0f64];
         }
         let _: () = msg_send![sidebar_controller, setView: sidebar_view];
 
@@ -664,18 +673,12 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![content_view, setWantsLayer: true];
         let content_layer: Id = msg_send![content_view, layer];
         if !content_layer.is_null() {
-            let bg = ui_colors::card_bg();
+            let bg = ui_colors::surface_glass();
             let bg: Id = msg_send![bg, colorWithAlphaComponent: 0.56f64];
             let cg_bg: Id = msg_send![bg, CGColor];
             let _: () = msg_send![content_layer, setBackgroundColor: cg_bg];
-            let _: () = msg_send![content_layer, setCornerRadius: ui_tokens::CORNER_RADIUS_MD];
-            let _: () = msg_send![content_layer, setMaskedCorners: CACORNER_MAX_X_MIN_Y];
+            apply_tafla_surface(content_layer, true);
             let _: () = msg_send![content_layer, setMasksToBounds: true];
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.24f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![content_layer, setBorderColor: cg_border];
-            let _: () = msg_send![content_layer, setBorderWidth: 1.0f64];
         }
         let _: () = msg_send![content_controller, setView: content_view];
 
@@ -736,8 +739,9 @@ fn show_voice_chat_overlay_impl() {
             }
         }
         add_subview(blur_view, split_view);
-        // Ensure header glass + controls stay above the split view content.
+        // Ensure header controls stay above the split view content.
         add_subview(blur_view, header_bg);
+        add_subview(header_bg, header_separator);
         add_subview(header_bg, header_controls);
 
         let inner_pad = ui_tokens::EDGE_PADDING_TIGHT;
@@ -888,11 +892,7 @@ fn show_voice_chat_overlay_impl() {
             let color = ui_colors::input_bar_bg();
             let cg_color: Id = msg_send![color, CGColor];
             let _: () = msg_send![input_layer, setBackgroundColor: cg_color];
-            let _: () = msg_send![input_layer, setCornerRadius: (agent_input_height * 0.5)];
-            let border = ui_colors::input_bar_border();
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![input_layer, setBorderColor: cg_border];
-            let _: () = msg_send![input_layer, setBorderWidth: 1.0f64];
+            apply_tafla_surface(input_layer, true);
             // Keep the field crisp like native NSSearchField: border-only, no heavy drop shadow.
             let _: () = msg_send![input_layer, setShadowOpacity: 0.0f64];
             let _: () = msg_send![input_layer, setShadowRadius: 0.0f64];

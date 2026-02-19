@@ -584,6 +584,8 @@ struct StreamChunk {
     text: Option<String>,
     #[serde(default)]
     response: Option<StreamResponse>,
+    #[serde(default)]
+    sequence_number: Option<u64>,
 }
 
 /// Response object in stream chunks (for response.completed event)
@@ -941,15 +943,14 @@ pub async fn format_text_with_status_channels(
             (EndpointFormat::ResponsesApi, true) => "responses-sse",
             (EndpointFormat::ResponsesApi, false) => "responses-json",
         };
-        let attempt_timeout = if endpoint_format == EndpointFormat::OllamaChat {
-            retry_policy.ollama_attempt_timeout
-        } else {
-            retry_policy.attempt_timeout
-        };
-
-        let result_opt = match tokio::time::timeout(
-            attempt_timeout,
-            call_provider_once(
+        // Streaming calls: NO outer attempt_timeout. The stream runs until completion
+        // or inter_chunk_timeout detects a stall. Streams can run for minutes/hours
+        // (agentic sessions, long generation). Only inter_chunk_timeout guards liveness.
+        //
+        // Non-streaming / Ollama calls: attempt_timeout caps the total wait for a
+        // single JSON response.
+        let result_opt = if streaming_enabled && endpoint_format != EndpointFormat::OllamaChat {
+            match call_provider_once(
                 endpoint_format,
                 &user_message,
                 &system_prompt,
@@ -960,30 +961,65 @@ pub async fn format_text_with_status_channels(
                     reasoning: on_reasoning_delta.clone(),
                 },
                 retry_policy.inter_chunk_timeout,
-            ),
-        )
-        .await
-        {
-            Ok(Ok(output)) => Some(output),
-            Ok(Err(e)) => {
-                warn!(
-                    "LLM {} attempt {}/{} failed: {}",
-                    route,
-                    attempt + 1,
-                    max_retries + 1,
-                    e
-                );
-                None
+            )
+            .await
+            {
+                Ok(output) => Some(output),
+                Err(e) => {
+                    warn!(
+                        "LLM {} attempt {}/{} failed: {}",
+                        route,
+                        attempt + 1,
+                        max_retries + 1,
+                        e
+                    );
+                    None
+                }
             }
-            Err(_) => {
-                warn!(
-                    "LLM {} attempt {}/{} timed out after {:?}",
-                    route,
-                    attempt + 1,
-                    max_retries + 1,
-                    attempt_timeout
-                );
-                None
+        } else {
+            let attempt_timeout = if endpoint_format == EndpointFormat::OllamaChat {
+                retry_policy.ollama_attempt_timeout
+            } else {
+                retry_policy.attempt_timeout
+            };
+            match tokio::time::timeout(
+                attempt_timeout,
+                call_provider_once(
+                    endpoint_format,
+                    &user_message,
+                    &system_prompt,
+                    assistive,
+                    streaming_enabled,
+                    StreamChannels {
+                        assistant: on_assistant_delta.clone(),
+                        reasoning: on_reasoning_delta.clone(),
+                    },
+                    retry_policy.inter_chunk_timeout,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(output)) => Some(output),
+                Ok(Err(e)) => {
+                    warn!(
+                        "LLM {} attempt {}/{} failed: {}",
+                        route,
+                        attempt + 1,
+                        max_retries + 1,
+                        e
+                    );
+                    None
+                }
+                Err(_) => {
+                    warn!(
+                        "LLM {} attempt {}/{} timed out after {:?}",
+                        route,
+                        attempt + 1,
+                        max_retries + 1,
+                        attempt_timeout
+                    );
+                    None
+                }
             }
         };
 
@@ -1294,6 +1330,9 @@ async fn call_llm_endpoint_streaming(
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
+        // Override client-level timeout (90s) for streaming.
+        // Streams can run indefinitely; inter_chunk_timeout guards liveness.
+        .timeout(Duration::from_secs(3600))
         .json(&request)
         .send()
         .await
@@ -1320,16 +1359,63 @@ async fn call_llm_endpoint_streaming(
     let mut buffer = String::new();
 
     let mut saw_done = false;
+    let mut last_sequence_number: Option<u64> = None;
 
     loop {
-        let next_chunk = tokio::time::timeout(inter_chunk_timeout, stream.next())
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "SSE stream inter-chunk timeout after {:?}",
-                    inter_chunk_timeout
-                )
-            })?;
+        let next_chunk = match tokio::time::timeout(inter_chunk_timeout, stream.next()).await {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                // Inter-chunk timeout — stream stalled.
+                // If we have partial text, try resume or return what we have.
+                if !assistant_text.is_empty() || assistant_done.is_some() {
+                    let partial_len = assistant_text.len();
+                    if !response_id.is_empty()
+                        && let Some(seq) = last_sequence_number
+                    {
+                        info!(
+                            "SSE inter-chunk timeout with {}B partial text; \
+                             attempting resume (response_id={}, seq={})",
+                            partial_len, response_id, seq
+                        );
+                        match resume_sse_stream(
+                            &endpoint,
+                            &api_key,
+                            &response_id,
+                            seq,
+                            inter_chunk_timeout,
+                            &on_assistant_delta,
+                            &on_reasoning_delta,
+                        )
+                        .await
+                        {
+                            Ok(resumed) => {
+                                assistant_text.push_str(&resumed.assistant_text);
+                                if let Some(r) = resumed.reasoning_text {
+                                    reasoning_text.push_str(&r);
+                                }
+                                saw_completed = true;
+                                break;
+                            }
+                            Err(e) => {
+                                warn!("Resume failed: {}; returning partial text", e);
+                                break;
+                            }
+                        }
+                    }
+                    warn!(
+                        "SSE inter-chunk timeout after {:?} with {}B partial text; \
+                         returning partial result",
+                        inter_chunk_timeout, partial_len
+                    );
+                    break;
+                } else {
+                    anyhow::bail!(
+                        "SSE stream inter-chunk timeout after {:?} (no data received)",
+                        inter_chunk_timeout
+                    );
+                }
+            }
+        };
 
         let Some(chunk_result) = next_chunk else {
             break;
@@ -1359,6 +1445,10 @@ async fn call_llm_endpoint_streaming(
                 }
 
                 if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                    // Track sequence_number for stream resume capability
+                    if let Some(seq) = chunk.sequence_number {
+                        last_sequence_number = Some(seq);
+                    }
                     // Capture response ID whenever it appears in stream metadata.
                     // Some providers/chunk orders can surface it before completion events.
                     if let Some(resp) = &chunk.response
@@ -1502,6 +1592,140 @@ async fn call_llm_endpoint_streaming(
         response_id
     );
     Ok(output)
+}
+
+/// Resume an interrupted SSE stream using Responses API GET endpoint.
+///
+/// `GET /responses/{response_id}?stream=true&starting_after={sequence_number}`
+/// Picks up from where the stream broke, preserving all context.
+/// Falls back gracefully if the provider doesn't support resume.
+async fn resume_sse_stream(
+    endpoint: &str,
+    api_key: &str,
+    response_id: &str,
+    starting_after: u64,
+    inter_chunk_timeout: Duration,
+    on_assistant_delta: &Option<AiStreamCallback>,
+    on_reasoning_delta: &Option<AiReasoningCallback>,
+) -> Result<ProviderOutput> {
+    use futures_util::StreamExt;
+
+    // Derive resume URL from endpoint: /v1/responses → /v1/responses/{id}
+    let base = endpoint.trim_end_matches('/');
+    let resume_url = format!(
+        "{}/{}?stream=true&starting_after={}",
+        base, response_id, starting_after
+    );
+
+    debug!(
+        "Resuming SSE stream: {} (after seq={})",
+        resume_url, starting_after
+    );
+
+    let response = get_client()
+        .get(&resume_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Accept", "text/event-stream")
+        .timeout(Duration::from_secs(3600))
+        .send()
+        .await
+        .context("SSE resume request failed")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Resume HTTP {} - {}", status, body);
+    }
+
+    let mut assistant_text = String::new();
+    let mut reasoning_text = String::new();
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+
+    loop {
+        let next_chunk = match tokio::time::timeout(inter_chunk_timeout, stream.next()).await {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                warn!(
+                    "Resume stream inter-chunk timeout after {:?}; returning what we have ({}B)",
+                    inter_chunk_timeout,
+                    assistant_text.len()
+                );
+                break;
+            }
+        };
+
+        let Some(chunk_result) = next_chunk else {
+            break;
+        };
+        let chunk = chunk_result.context("Resume stream read error")?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(newline_pos) = buffer.find('\n') {
+            let line = buffer[..newline_pos].trim().to_string();
+            buffer = buffer[newline_pos + 1..].to_string();
+
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
+
+            if let Some(data) = line
+                .strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+            {
+                let data = data.trim_start();
+                if data == "[DONE]" {
+                    return Ok(ProviderOutput {
+                        assistant_text,
+                        reasoning_text: if reasoning_text.is_empty() {
+                            None
+                        } else {
+                            Some(reasoning_text)
+                        },
+                    });
+                }
+
+                if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                    match chunk.chunk_type.as_str() {
+                        "response.output_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = on_assistant_delta {
+                                    cb(&delta);
+                                }
+                                assistant_text.push_str(&delta);
+                            }
+                        }
+                        "response.reasoning_summary_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = on_reasoning_delta {
+                                    cb(&delta);
+                                }
+                                reasoning_text.push_str(&delta);
+                            }
+                        }
+                        "response.completed" | "response.done" => {
+                            if let Some(resp) = &chunk.response {
+                                let parsed = extract_output_channels(&resp.output);
+                                if !parsed.assistant_text.is_empty() {
+                                    return Ok(parsed);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(ProviderOutput {
+        assistant_text,
+        reasoning_text: if reasoning_text.is_empty() {
+            None
+        } else {
+            Some(reasoning_text)
+        },
+    })
 }
 
 /// Call Ollama/local LLM for text formatting/assistive mode
