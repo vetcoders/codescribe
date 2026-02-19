@@ -129,7 +129,7 @@ pub mod ui_tokens {
     /// Compact header for Tafla windows.
     pub const HEADER_HEIGHT_COMPACT: f64 = 46.0;
     pub const HEADER_BORDER_ALPHA: f64 = 0.10;
-    pub const SETTINGS_WINDOW_OPACITY: f64 = 0.91;
+    pub const SETTINGS_WINDOW_OPACITY: f64 = 1.00;
 
     /// Tafla density tiers (vertical gap between controls per tab density).
     pub const DENSITY_COMFORTABLE: f64 = 12.0;

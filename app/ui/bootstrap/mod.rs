@@ -42,7 +42,7 @@ type Id = *mut Object;
 const SIDEBAR_WIDTH: f64 = 204.0;
 const SETTINGS_WINDOW_WIDTH: f64 = 760.0;
 const SETTINGS_WINDOW_HEIGHT: f64 = 660.0;
-// Keep Settings readable while preserving Tafla glass feel.
+// Keep Settings readable while restoring stronger system glass.
 const SETTINGS_MAX_OPACITY: f64 = ui_tokens::SETTINGS_WINDOW_OPACITY;
 const SETTINGS_CONTENT_INSET_X: f64 = 20.0;
 const SETTINGS_CONTENT_INSET_Y: f64 = 12.0;
@@ -993,13 +993,13 @@ unsafe fn build_settings_ui(
         let body_h = settings_height;
 
         // Single root glass panel to avoid seam artifacts between split sections.
-        // Match onboarding material to keep visual language consistent.
+        // Use the stronger FullScreenUI material to match the previous stable glass state.
         let root_glass = create_glass_effect_view_with(
             CGRect::new(
                 &CGPoint::new(0.0, 0.0),
                 &CGSize::new(settings_width, settings_height),
             ),
-            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectMaterial::FullScreenUI,
             objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
             objc2_app_kit::NSVisualEffectState::Active,
         );
@@ -1011,10 +1011,6 @@ unsafe fn build_settings_ui(
         ];
         let root_glass_layer: Id = msg_send![root_glass, layer];
         if !root_glass_layer.is_null() {
-            let bg = ui_colors::settings_glass_bg();
-            let cg_bg: Id = msg_send![bg, CGColor];
-            let _: () = msg_send![root_glass_layer, setBackgroundColor: cg_bg];
-            apply_tafla_surface(root_glass_layer, true);
             let _: () = msg_send![root_glass_layer, setMasksToBounds: true];
         }
         add_subview(root_view, root_glass);
