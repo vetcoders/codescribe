@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
-    add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position, color_rgba,
+    add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position,
     create_button, create_glass_effect_view_with, create_label, create_scrollable_text_view,
     ns_string, set_hidden, set_text, set_text_view_string, set_tooltip, ui_colors, ui_tokens,
     window_close, window_set_alpha, window_show,
@@ -508,18 +508,12 @@ fn compute_overlay_layout_metrics(
 fn set_status_message_unlocked(snap: &OverlaySnapshot, msg: &str, allow_spinner: bool) {
     let status_kind = status_from_detail(msg);
     let status_text = overlay_status_label(status_kind);
-    let palette = status_kind.palette();
 
     if let Some(status_ptr) = snap.status_field {
         unsafe {
             set_text(status_ptr as Id, status_text);
             set_hidden(status_ptr as Id, false);
-            let status_color = color_rgba(
-                palette.text.0,
-                palette.text.1,
-                palette.text.2,
-                palette.text.3,
-            );
+            let status_color = status_kind.text_color();
             let _: () = msg_send![status_ptr as Id, setTextColor: status_color];
 
             let detail = if msg.trim().is_empty() {
@@ -895,6 +889,7 @@ fn show_transcription_overlay_impl() {
         state.raw_text.clear();
         state.last_pass_text.clear();
         state.action_contract_mode = TranscriptionActionContractMode::Raw;
+        drop(state); // Release lock BEFORE heavy AppKit widget creation.
 
         // Get classes
         let ns_window_class = Class::get("NSWindow");
@@ -935,7 +930,7 @@ fn show_transcription_overlay_impl() {
         let window_width = OVERLAY_WINDOW_WIDTH;
         let window_height = OVERLAY_WINDOW_MIN_HEIGHT;
         let margin = 20.0;
-        let corner_radius = ui_tokens::CORNER_RADIUS_LG;
+        let corner_radius = ui_tokens::SURFACE_RADIUS;
         let max_height =
             (visible_frame.size.height * OVERLAY_WINDOW_MAX_HEIGHT_RATIO).max(window_height);
 
@@ -1034,8 +1029,7 @@ fn show_transcription_overlay_impl() {
         if !layer.is_null() {
             let _: () = msg_send![layer, setCornerRadius: corner_radius];
             let _: () = msg_send![layer, setMasksToBounds: true];
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
+            let border = ui_colors::overlay_sheet_border();
             let cg_border: Id = msg_send![border, CGColor];
             let _: () = msg_send![layer, setBorderColor: cg_border];
             let _: () = msg_send![layer, setBorderWidth: 1.0f64];
@@ -1254,6 +1248,15 @@ fn show_transcription_overlay_impl() {
         window_show(window);
         animate_fade(window, 1.0, 0.2);
 
+        // Re-acquire lock to store widget pointers (quick write, no AppKit calls).
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        // Guard: if another path filled window while we were creating, abandon ours.
+        if state.window.is_some() {
+            drop(state);
+            warn!("Overlay window created concurrently; discarding duplicate");
+            window_close(window);
+            return;
+        }
         state.window = Some(window as usize);
         state.header_label = Some(header_label as usize);
         state.text_scroll_view = Some(text_scroll_view as usize);
@@ -1323,15 +1326,19 @@ fn append_transcription_delta_impl(delta: &str) {
     // Extract text + snapshot under lock, then drop before AppKit calls.
     let (visible_text, snap, needs_resize) = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let len_before = state.accumulated_text.len();
         codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta)
             .apply(&mut state.accumulated_text);
+        let len_after = state.accumulated_text.len();
         let visible =
             overlay_visible_text(&state.accumulated_text, state.decision_mode).to_string();
         let snap = OverlaySnapshot::from_state(&state);
 
-        // Throttled resize: only if enough time has passed since last layout.
+        // Throttled resize: trigger immediately on structural changes (newlines,
+        // backspace/deletion that shortens text), otherwise throttle by time.
         let now = Instant::now();
-        let needs_resize = delta.contains('\n')
+        let structural_change = delta.contains('\n') || len_after < len_before;
+        let needs_resize = structural_change
             || now.duration_since(state.last_layout_resize_at).as_millis()
                 >= OVERLAY_LAYOUT_THROTTLE_MS as u128;
         if needs_resize {
@@ -1753,7 +1760,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_action_text_ai_mode_falls_back_to_overlay_preview() {
+    fn test_action_text_ai_mode_returns_empty_when_last_pass_empty() {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.action_contract_mode = TranscriptionActionContractMode::AiFormat;
         state.raw_text = "raw transcript".to_string();

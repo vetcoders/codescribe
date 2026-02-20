@@ -1361,7 +1361,19 @@ async fn call_llm_endpoint_streaming(
     let mut saw_done = false;
     let mut last_sequence_number: Option<u64> = None;
 
+    // Safety timeout: cap total stream duration to prevent zombie connections.
+    // inter_chunk_timeout guards per-chunk stalls; this guards runaway streams
+    // that keep trickling data indefinitely.
+    let stream_deadline = tokio::time::Instant::now() + Duration::from_secs(10 * 60);
+
     loop {
+        if tokio::time::Instant::now() > stream_deadline {
+            warn!(
+                "SSE global safety timeout (10min); returning {}B partial text",
+                assistant_text.len()
+            );
+            break;
+        }
         let next_chunk = match tokio::time::timeout(inter_chunk_timeout, stream.next()).await {
             Ok(chunk) => chunk,
             Err(_) => {
@@ -1704,12 +1716,15 @@ async fn resume_sse_stream(
                             }
                         }
                         "response.completed" | "response.done" => {
-                            if let Some(resp) = &chunk.response {
-                                let parsed = extract_output_channels(&resp.output);
-                                if !parsed.assistant_text.is_empty() {
-                                    return Ok(parsed);
-                                }
-                            }
+                            // completed event carries the FULL response, not a
+                            // continuation.  Accumulated deltas already captured
+                            // the new content; returning the full text here would
+                            // cause duplication when the caller appends.
+                            debug!(
+                                "Resume stream completed ({}B accumulated text)",
+                                assistant_text.len()
+                            );
+                            break;
                         }
                         _ => {}
                     }

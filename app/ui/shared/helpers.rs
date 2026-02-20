@@ -84,9 +84,7 @@ pub mod ui_tokens {
     pub const CHAT_INPUT_CONTROL_GAP: f64 = 8.0;
     pub const CHAT_INPUT_TEXT_INSET_Y: f64 = 7.0;
 
-    pub const CORNER_RADIUS_LG: f64 = 16.0;
-    pub const CORNER_RADIUS_MD: f64 = 12.0;
-    pub const CORNER_RADIUS_SM: f64 = 8.0;
+    // Legacy CORNER_RADIUS_LG/MD/SM removed — use SURFACE_RADIUS everywhere.
 
     pub const STATUS_PILL_HEIGHT: f64 = 18.0;
     pub const STATUS_PILL_WIDTH: f64 = 96.0;

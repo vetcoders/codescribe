@@ -1,4 +1,8 @@
+use objc::{sel, sel_impl};
+
 use crate::tray::TrayStatus;
+
+type Id = *mut objc::runtime::Object;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiStatus {
@@ -46,6 +50,20 @@ impl UiStatus {
                 text: (1.0, 0.75, 0.75, 1.0),
                 dot: (1.0, 0.25, 0.25, 1.0),
             },
+        }
+    }
+
+    /// System-dynamic text color for status labels.
+    /// Uses NSColor named colors that adapt to light/dark appearance.
+    pub fn text_color(self) -> Id {
+        unsafe {
+            let cls = objc::runtime::Class::get("NSColor").unwrap();
+            match self {
+                UiStatus::Idle => objc::msg_send![cls, systemGreenColor],
+                UiStatus::Listening => objc::msg_send![cls, systemRedColor],
+                UiStatus::Processing => objc::msg_send![cls, systemOrangeColor],
+                UiStatus::Error => objc::msg_send![cls, systemRedColor],
+            }
         }
     }
 
