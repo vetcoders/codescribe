@@ -1,25 +1,22 @@
-use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
 use objc::{msg_send, sel, sel_impl};
 use std::sync::Once;
 
-use crate::ui_helpers::{
-    ns_string, set_button_symbol, set_tooltip, style_toolbar_icon_button, ui_tokens,
-};
+use crate::ui_helpers::ns_string;
 
 use super::{
-    TAB_AUDIO, TAB_ENGINE, TAB_KEYS, TAB_SETUP, TAB_USER, TAB_VOICE_LAB,
-    handle_bootstrap_window_closed, handle_finish, handle_hotkey_done, handle_show_overlay,
-    handle_test_mic, on_assistive_endpoint_changed, on_assistive_key_changed,
-    on_assistive_model_changed, on_beep_toggled, on_clear_assistive_key, on_clear_llm_key,
-    on_delay_changed, on_double_tap_interval_changed, on_enter_send_toggled,
-    on_formatting_level_changed, on_formatting_toggled, on_hold_exclusive_changed,
-    on_hold_mod_changed, on_language_changed, on_llm_endpoint_changed, on_llm_key_changed,
-    on_llm_model_changed, on_open_system_settings, on_permission_action, on_preset_changed,
-    on_quality_daemon_toggled, on_refresh_permissions, on_save_api_settings,
-    on_show_dock_icon_toggled, on_toggle_trigger_changed, on_ultra_quality_toggled,
-    on_voice_lab_field_changed, on_voice_lab_toggle_changed, on_volume_changed, switch_tab,
+    TAB_API, TAB_AUDIO, TAB_ENGINE, TAB_KEYS, TAB_SETUP, TAB_USER, TAB_VOICE_LAB,
+    handle_bootstrap_window_closed, handle_hotkey_done, handle_show_overlay, handle_test_mic,
+    on_assistive_endpoint_changed, on_assistive_key_changed, on_assistive_model_changed,
+    on_beep_toggled, on_clear_assistive_key, on_clear_llm_key, on_delay_changed,
+    on_double_tap_interval_changed, on_enter_send_toggled, on_formatting_level_changed,
+    on_formatting_toggled, on_hold_exclusive_changed, on_hold_mod_changed, on_language_changed,
+    on_llm_endpoint_changed, on_llm_key_changed, on_llm_model_changed, on_open_system_settings,
+    on_permission_action, on_preset_changed, on_quality_daemon_toggled, on_refresh_permissions,
+    on_save_api_settings, on_show_dock_icon_toggled, on_toggle_trigger_changed,
+    on_ultra_quality_toggled, on_voice_lab_field_changed, on_voice_lab_toggle_changed,
+    on_volume_changed, switch_tab,
 };
 
 pub type Id = *mut Object;
@@ -31,7 +28,6 @@ static mut WINDOW_DELEGATE_CLASS: *const Class = std::ptr::null();
 static TOOLBAR_DELEGATE_INIT: Once = Once::new();
 static mut TOOLBAR_DELEGATE_CLASS: *const Class = std::ptr::null();
 
-const SETTINGS_TOOLBAR_ITEM_SHOW_AGENT: &str = "codescribe.toolbar.show-agent";
 const NSTOOLBAR_FLEXIBLE_SPACE_ITEM_IDENTIFIER: &str = "NSToolbarFlexibleSpaceItem";
 
 pub fn action_handler_class() -> *const Class {
@@ -54,10 +50,6 @@ pub fn action_handler_class() -> *const Class {
                 sel!(onHotkeyDone:),
                 on_hotkey_done_action as extern "C" fn(&Object, Sel, Id),
             );
-            decl.add_method(
-                sel!(onFinish:),
-                on_finish as extern "C" fn(&Object, Sel, Id),
-            );
 
             // Tab switching
             decl.add_method(
@@ -67,6 +59,10 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onTabKeys:),
                 on_tab_keys as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onTabApi:),
+                on_tab_api as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onTabAudio:),
@@ -259,10 +255,6 @@ pub fn toolbar_delegate_class() -> *const Class {
                 sel!(toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:),
                 toolbar_item_for_identifier as extern "C" fn(&Object, Sel, Id, Id, bool) -> Id,
             );
-            decl.add_method(
-                sel!(onToolbarShowOverlay:),
-                on_toolbar_show_overlay as extern "C" fn(&Object, Sel, Id),
-            );
             TOOLBAR_DELEGATE_CLASS = decl.register();
         });
 
@@ -282,16 +274,16 @@ extern "C" fn on_hotkey_done_action(_this: &Object, _sel: Sel, _sender: Id) {
     handle_hotkey_done();
 }
 
-extern "C" fn on_finish(_this: &Object, _sel: Sel, _sender: Id) {
-    handle_finish();
-}
-
 extern "C" fn on_tab_setup(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_SETUP);
 }
 
 extern "C" fn on_tab_keys(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_KEYS);
+}
+
+extern "C" fn on_tab_api(_this: &Object, _sel: Sel, _sender: Id) {
+    switch_tab(TAB_API);
 }
 
 extern "C" fn on_tab_audio(_this: &Object, _sel: Sel, _sender: Id) {
@@ -321,7 +313,6 @@ extern "C" fn toolbar_allowed_item_identifiers(_this: &Object, _sel: Sel, _toolb
         // AppKit exposes flexible-space as a global identifier constant, not a class selector.
         let flexible_space: Id = ns_string(NSTOOLBAR_FLEXIBLE_SPACE_ITEM_IDENTIFIER);
         let _: () = msg_send![ids, addObject: flexible_space];
-        let _: () = msg_send![ids, addObject: ns_string(SETTINGS_TOOLBAR_ITEM_SHOW_AGENT)];
         ids
     }
 }
@@ -332,75 +323,20 @@ extern "C" fn toolbar_default_item_identifiers(_this: &Object, _sel: Sel, _toolb
         let ids: Id = msg_send![ns_mutable_array, array];
         let flexible_space: Id = ns_string(NSTOOLBAR_FLEXIBLE_SPACE_ITEM_IDENTIFIER);
         let _: () = msg_send![ids, addObject: flexible_space];
-        let _: () = msg_send![ids, addObject: ns_string(SETTINGS_TOOLBAR_ITEM_SHOW_AGENT)];
         ids
     }
 }
 
 extern "C" fn toolbar_item_for_identifier(
-    this: &Object,
+    _this: &Object,
     _sel: Sel,
     _toolbar: Id,
     item_identifier: Id,
     _will_be_inserted: bool,
 ) -> Id {
     unsafe {
-        let flexible_space_identifier = ns_string(NSTOOLBAR_FLEXIBLE_SPACE_ITEM_IDENTIFIER);
-        let is_flexible_space: bool =
-            msg_send![item_identifier, isEqualToString: flexible_space_identifier];
-        if is_flexible_space {
-            let ns_toolbar_item = Class::get("NSToolbarItem").unwrap();
-            let item: Id = msg_send![ns_toolbar_item, alloc];
-            let item: Id = msg_send![item, initWithItemIdentifier: item_identifier];
-            return item;
-        }
-
-        let show_agent_identifier = ns_string(SETTINGS_TOOLBAR_ITEM_SHOW_AGENT);
-        let is_show_agent: bool =
-            msg_send![item_identifier, isEqualToString: show_agent_identifier];
-        if !is_show_agent {
-            let ns_toolbar_item = Class::get("NSToolbarItem").unwrap();
-            let item: Id = msg_send![ns_toolbar_item, alloc];
-            let item: Id = msg_send![item, initWithItemIdentifier: item_identifier];
-            return item;
-        }
-
         let ns_toolbar_item = Class::get("NSToolbarItem").unwrap();
         let item: Id = msg_send![ns_toolbar_item, alloc];
-        let item: Id = msg_send![item, initWithItemIdentifier: item_identifier];
-        let _: () = msg_send![item, setLabel: ns_string("Show Agent")];
-        let _: () = msg_send![item, setPaletteLabel: ns_string("Show Agent")];
-        let _: () = msg_send![item, setToolTip: ns_string("Show agent overlay")];
-
-        let ns_button = Class::get("NSButton").unwrap();
-        let button: Id = msg_send![ns_button, alloc];
-        let button: Id = msg_send![
-            button,
-            initWithFrame: CGRect::new(
-                &CGPoint::new(0.0, 0.0),
-                &CGSize::new(ui_tokens::HEADER_BUTTON_SIZE, ui_tokens::HEADER_BUTTON_SIZE),
-            )
-        ];
-        let _: () = msg_send![button, setTitle: ns_string("")];
-        let target: Id = this as *const Object as *mut Object;
-        let _: () = msg_send![button, setTarget: target];
-        let _: () = msg_send![button, setAction: sel!(onToolbarShowOverlay:)];
-        let _ = set_button_symbol(button, "bubble.left.and.bubble.right");
-        style_toolbar_icon_button(button);
-        set_tooltip(button, "Show agent overlay");
-        let _: () = msg_send![item, setView: button];
-        let _: () = msg_send![
-            item,
-            setMinSize: CGSize::new(ui_tokens::HEADER_BUTTON_SIZE, ui_tokens::HEADER_BUTTON_SIZE)
-        ];
-        let _: () = msg_send![
-            item,
-            setMaxSize: CGSize::new(ui_tokens::HEADER_BUTTON_SIZE, ui_tokens::HEADER_BUTTON_SIZE)
-        ];
-        item
+        msg_send![item, initWithItemIdentifier: item_identifier]
     }
-}
-
-extern "C" fn on_toolbar_show_overlay(_this: &Object, _sel: Sel, _sender: Id) {
-    handle_show_overlay();
 }

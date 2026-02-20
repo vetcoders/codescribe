@@ -61,7 +61,7 @@ pub mod ui_tokens {
     pub const EDGE_PADDING_TIGHT: f64 = 12.0;
 
     pub const TITLE_LABEL_WIDTH: f64 = 96.0;
-    pub const CHAT_TITLE_LABEL_WIDTH: f64 = 82.0;
+    pub const CHAT_TITLE_LABEL_WIDTH: f64 = 104.0;
     pub const TRAFFIC_LIGHTS_SPACER_WIDTH: f64 = 80.0;
     pub const HEADER_BUTTON_SIZE: f64 = 28.0;
     pub const HEADER_BUTTON_GAP: f64 = 8.0;
@@ -78,6 +78,11 @@ pub mod ui_tokens {
     pub const CONTENT_GAP: f64 = 4.0;
     pub const SIDEBAR_MIN_WIDTH: f64 = 200.0;
     pub const SIDEBAR_MAX_WIDTH: f64 = 320.0;
+    pub const CHAT_INPUT_BUTTON_WIDTH: f64 = 36.0;
+    pub const CHAT_INPUT_BUTTON_HEIGHT: f64 = 32.0;
+    pub const CHAT_INPUT_SIDE_INSET: f64 = 8.0;
+    pub const CHAT_INPUT_CONTROL_GAP: f64 = 8.0;
+    pub const CHAT_INPUT_TEXT_INSET_Y: f64 = 7.0;
 
     pub const CORNER_RADIUS_LG: f64 = 16.0;
     pub const CORNER_RADIUS_MD: f64 = 12.0;
@@ -114,16 +119,12 @@ pub mod ui_tokens {
     /// Glass fallback: alpha when NSVisualEffectView is not available.
     pub const GLASS_FALLBACK_ALPHA: f64 = 0.30;
 
-    /// Paper warm tint (content areas: bubbles, transcription, inputs).
-    pub const PAPER_WARM_R: f64 = 0.15;
-    pub const PAPER_WARM_G: f64 = 0.16;
-    pub const PAPER_WARM_B: f64 = 0.19;
+    /// Paper tiers are appearance-aware: derived from controlBackgroundColor.
     pub const PAPER_WARM_ALPHA: f64 = 0.74;
-    /// Paper cool tint (system/meta areas).
-    pub const PAPER_COOL_R: f64 = 0.13;
-    pub const PAPER_COOL_G: f64 = 0.17;
-    pub const PAPER_COOL_B: f64 = 0.24;
+    pub const PAPER_WARM_FALLBACK_ALPHA: f64 = 0.84;
+    /// Paper cool tier (system/meta areas).
     pub const PAPER_COOL_ALPHA: f64 = 0.70;
+    pub const PAPER_COOL_FALLBACK_ALPHA: f64 = 0.80;
     pub const PAPER_BORDER_ALPHA: f64 = 0.14;
 
     /// Compact header for Tafla windows.
@@ -371,14 +372,14 @@ pub mod ui_colors {
 
     /// Paper warm surface (content: bubbles, transcription text, input fields).
     pub fn surface_paper_warm() -> Id {
-        use super::ui_tokens::*;
-        super::color_rgba(PAPER_WARM_R, PAPER_WARM_G, PAPER_WARM_B, PAPER_WARM_ALPHA)
+        use super::ui_tokens::{PAPER_WARM_ALPHA, PAPER_WARM_FALLBACK_ALPHA};
+        control_bg_tint(adaptive_alpha(PAPER_WARM_ALPHA, PAPER_WARM_FALLBACK_ALPHA))
     }
 
     /// Paper cool surface (system/meta content).
     pub fn surface_paper_cool() -> Id {
-        use super::ui_tokens::*;
-        super::color_rgba(PAPER_COOL_R, PAPER_COOL_G, PAPER_COOL_B, PAPER_COOL_ALPHA)
+        use super::ui_tokens::{PAPER_COOL_ALPHA, PAPER_COOL_FALLBACK_ALPHA};
+        control_bg_tint(adaptive_alpha(PAPER_COOL_ALPHA, PAPER_COOL_FALLBACK_ALPHA))
     }
 
     /// Canonical surface border — one style for all Tafla windows.
@@ -402,6 +403,20 @@ pub struct ChatHeaderLayout {
     pub status_pill_x: f64,
     pub status_pill_width: f64,
     pub show_status_pill: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ChatInputRowLayout {
+    pub attach_x: f64,
+    pub attach_y: f64,
+    pub send_x: f64,
+    pub send_y: f64,
+    pub button_width: f64,
+    pub button_height: f64,
+    pub text_x: f64,
+    pub text_y: f64,
+    pub text_width: f64,
+    pub text_height: f64,
 }
 
 pub fn chat_header_layout(
@@ -456,16 +471,31 @@ pub fn chat_header_layout(
         tab_width = ((tab_space - tab_gap * 2.0) / 3.0).min(tab_target_width);
     }
 
-    let tab_space = tab_space.max(0.0);
+    tab_space = tab_space.max(0.0);
     let max_gap = (tab_space / 2.0).max(0.0);
     tab_gap = tab_gap.min(max_gap);
     let max_width_for_space = ((tab_space - tab_gap * 2.0) / 3.0).max(0.0);
     tab_width = tab_width.min(max_width_for_space);
 
-    let tab_total = (tab_width * 3.0 + tab_gap * 2.0).max(0.0);
-    let status_x = if show_status {
+    let mut tab_total = (tab_width * 3.0 + tab_gap * 2.0).max(0.0);
+    if show_status {
         let min_status_x = left_anchor + tab_total + CHAT_HEADER_GROUP_GAP;
-        (right_anchor - status_width).max(min_status_x)
+        let max_status_width = (right_anchor - min_status_x).max(0.0);
+        if max_status_width < STATUS_PILL_MIN_WIDTH {
+            show_status = false;
+            status_width = 0.0;
+            tab_space = available.max(0.0);
+            tab_gap = tab_target_gap.min((tab_space / 2.0).max(0.0));
+            tab_width = ((tab_space - tab_gap * 2.0) / 3.0)
+                .max(0.0)
+                .min(tab_target_width);
+            tab_total = (tab_width * 3.0 + tab_gap * 2.0).max(0.0);
+        } else {
+            status_width = status_width.min(max_status_width);
+        }
+    }
+    let status_x = if show_status {
+        (right_anchor - status_width).max(left_anchor + tab_total + CHAT_HEADER_GROUP_GAP)
     } else {
         right_anchor
     };
@@ -477,6 +507,41 @@ pub fn chat_header_layout(
         status_pill_x: status_x,
         status_pill_width: status_width,
         show_status_pill: show_status,
+    }
+}
+
+pub fn chat_input_row_layout(bar_width: f64, bar_height: f64) -> ChatInputRowLayout {
+    use ui_tokens::{
+        CHAT_INPUT_BUTTON_HEIGHT, CHAT_INPUT_BUTTON_WIDTH, CHAT_INPUT_CONTROL_GAP,
+        CHAT_INPUT_SIDE_INSET, CHAT_INPUT_TEXT_INSET_Y,
+    };
+
+    let button_width = CHAT_INPUT_BUTTON_WIDTH;
+    let button_height = CHAT_INPUT_BUTTON_HEIGHT;
+    let side_inset = CHAT_INPUT_SIDE_INSET.max(0.0);
+    let control_gap = CHAT_INPUT_CONTROL_GAP.max(0.0);
+
+    let attach_x = side_inset;
+    let send_x = (bar_width - side_inset - button_width).max(attach_x + button_width + control_gap);
+    let text_x = attach_x + button_width + control_gap;
+    let text_right = (send_x - control_gap).max(text_x);
+    let text_width = (text_right - text_x).max(0.0);
+
+    let button_y = ((bar_height - button_height) * 0.5).max(6.0);
+    let text_y = CHAT_INPUT_TEXT_INSET_Y.max(0.0);
+    let text_height = (bar_height - text_y * 2.0).max(24.0);
+
+    ChatInputRowLayout {
+        attach_x,
+        attach_y: button_y,
+        send_x,
+        send_y: button_y,
+        button_width,
+        button_height,
+        text_x,
+        text_y,
+        text_width,
+        text_height,
     }
 }
 
@@ -510,14 +575,6 @@ pub fn color_rgba(r: f64, g: f64, b: f64, a: f64) -> Id {
     unsafe {
         let ns_color = Class::get("NSColor").unwrap();
         msg_send![ns_color, colorWithRed: r green: g blue: b alpha: a]
-    }
-}
-
-/// Create white color with optional alpha
-pub fn color_white(alpha: f64) -> Id {
-    unsafe {
-        let ns_color = Class::get("NSColor").unwrap();
-        msg_send![ns_color, colorWithWhite: 1.0f64 alpha: alpha]
     }
 }
 
@@ -1171,26 +1228,18 @@ pub fn button(frame: CGRect, title: &str) -> Id {
 }
 
 // ============================================================================
-// Checkbox Helpers
+// Toggle Helpers
 // ============================================================================
 
-/// Create a checkbox (switch style button)
-pub fn create_checkbox(frame: CGRect, title: &str, checked: bool) -> Id {
+/// Create a native NSSwitch toggle.
+pub fn create_toggle(frame: CGRect, checked: bool) -> Id {
     unsafe {
-        let ns_button = Class::get("NSButton").unwrap();
-
-        let btn: Id = msg_send![ns_button, alloc];
-        let btn: Id = msg_send![btn, initWithFrame: frame];
-
-        let _: () = msg_send![btn, setButtonType: 3_isize]; // NSSwitchButton
-
-        let title_str = ns_string(title);
-        let _: () = msg_send![btn, setTitle: title_str];
-
+        let ns_switch = Class::get("NSSwitch").unwrap();
+        let toggle: Id = msg_send![ns_switch, alloc];
+        let toggle: Id = msg_send![toggle, initWithFrame: frame];
         let state: isize = if checked { 1 } else { 0 };
-        let _: () = msg_send![btn, setState: state];
-
-        btn
+        let _: () = msg_send![toggle, setState: state];
+        toggle
     }
 }
 
@@ -1214,6 +1263,10 @@ pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &st
             let cg_color: Id = msg_send![bg_color, CGColor];
             let _: () = msg_send![layer, setBackgroundColor: cg_color];
             apply_tafla_surface(layer, true);
+            // Drawer cards stay intentionally flat: one border, no halo.
+            let _: () = msg_send![layer, setMasksToBounds: true];
+            let _: () = msg_send![layer, setShadowRadius: 0.0f64];
+            let _: () = msg_send![layer, setShadowOffset: CGSize::new(0.0, 0.0)];
         }
 
         let title_frame = CGRect::new(
@@ -1525,6 +1578,39 @@ mod tests {
         let tabs_right =
             layout.tab_cluster_x + layout.tab_button_width * 3.0 + layout.tab_button_gap * 2.0;
         assert!(tabs_right <= 142.0 - ui_tokens::CHAT_HEADER_GROUP_GAP + 0.001);
+    }
+
+    #[test]
+    fn chat_header_layout_keeps_status_before_right_cluster() {
+        let right_cluster_start_x = 270.0;
+        let layout = chat_header_layout(
+            86.0,
+            ui_tokens::CHAT_TITLE_LABEL_WIDTH,
+            right_cluster_start_x,
+        );
+        if layout.show_status_pill {
+            let right_anchor = right_cluster_start_x - ui_tokens::CHAT_HEADER_GROUP_GAP;
+            assert!(layout.status_pill_x + layout.status_pill_width <= right_anchor + 0.001);
+        }
+    }
+
+    #[test]
+    fn chat_input_row_layout_keeps_buttons_on_sides() {
+        let layout = chat_input_row_layout(420.0, ui_tokens::AGENT_INPUT_HEIGHT);
+        assert!(
+            layout.attach_x + layout.button_width + ui_tokens::CHAT_INPUT_CONTROL_GAP
+                <= layout.text_x
+        );
+        assert!(
+            layout.text_x + layout.text_width + ui_tokens::CHAT_INPUT_CONTROL_GAP <= layout.send_x
+        );
+    }
+
+    #[test]
+    fn chat_input_row_layout_avoids_overlap_on_narrow_width() {
+        let layout = chat_input_row_layout(140.0, ui_tokens::AGENT_INPUT_HEIGHT);
+        assert!(layout.text_width >= 0.0);
+        assert!(layout.attach_x + layout.button_width <= layout.send_x);
     }
 
     #[test]
@@ -2161,10 +2247,10 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
 
         let _: () = msg_send![text_label, setBezeled: false];
         let _: () = msg_send![text_label, setEditable: false];
-        let _: () = msg_send![text_label, setSelectable: false];
+        let _: () = msg_send![text_label, setSelectable: true];
         let _: () = msg_send![text_label, setDrawsBackground: false];
         let _: () = msg_send![text_label, setUsesSingleLineMode: false];
-        let _: () = msg_send![text_label, setRefusesFirstResponder: true];
+        let _: () = msg_send![text_label, setRefusesFirstResponder: false];
         let responds_attr: bool =
             msg_send![text_label, respondsToSelector: sel!(setAllowsEditingTextAttributes:)];
         if responds_attr {
@@ -2198,8 +2284,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let _: () = msg_send![text_label, setTextColor: text_color];
 
         let _: () = msg_send![text_label, setFont: font];
-        let allow_markdown = !config.is_streaming
-            && matches!(config.role, BubbleRole::Assistant | BubbleRole::System);
+        let allow_markdown = matches!(config.role, BubbleRole::Assistant | BubbleRole::System);
         if !(allow_markdown && apply_markdown_to_text_field(text_label, &display_text, font)) {
             let _: () = msg_send![text_label, setStringValue: text_str];
         }
@@ -2428,8 +2513,7 @@ pub unsafe fn update_bubble_text(
             text.to_string()
         };
 
-        let allow_markdown =
-            !is_streaming && matches!(role, BubbleRole::Assistant | BubbleRole::System);
+        let allow_markdown = matches!(role, BubbleRole::Assistant | BubbleRole::System);
         // Always create a fresh monospace font instead of reading from the label.
         // After markdown parsing, text_label.font may return a system font from
         // the first attributed range, causing cascading degradation on subsequent updates.

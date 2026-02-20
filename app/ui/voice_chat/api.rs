@@ -379,9 +379,7 @@ pub fn is_conversation_active() -> bool {
 
 pub fn update_active_tab_impl(tab: Tab) {
     if tab == Tab::Settings {
-        // Settings lives in the bootstrap/settings window; close chat first to avoid
-        // stacked windows that look like a duplicate/ghost overlay.
-        hide_voice_chat_overlay_impl();
+        // Settings lives in a separate NSWindow; keep chat overlay alive.
         crate::show_bootstrap_overlay();
         return;
     }
@@ -656,13 +654,26 @@ fn reflow_header_controls_locked(state: &mut VoiceChatOverlayState) {
             - (ui_tokens::CHAT_HEADER_BUTTON_SIZE + ui_tokens::CHAT_HEADER_BUTTON_GAP);
 
         let title_frame: CGRect = msg_send![title_label, frame];
+        let header_controls: Id = msg_send![title_label, superview];
+        let header_width = if header_controls.is_null() {
+            0.0
+        } else {
+            let bounds: CGRect = msg_send![header_controls, bounds];
+            bounds.size.width
+        };
+        let title_x = if header_width >= 620.0 {
+            ui_tokens::TRAFFIC_LIGHTS_SPACER_WIDTH + 6.0
+        } else {
+            ui_tokens::EDGE_PADDING_TIGHT
+        };
         let title_max_w =
-            (right_cluster_start_x - title_frame.origin.x - ui_tokens::CHAT_HEADER_GROUP_GAP * 2.0)
-                .max(56.0);
+            (right_cluster_start_x - title_x - ui_tokens::CHAT_HEADER_GROUP_GAP * 2.0).max(56.0);
         let title_w = ui_tokens::CHAT_TITLE_LABEL_WIDTH.min(title_max_w);
-        if (title_w - title_frame.size.width).abs() > 0.5 {
+        if (title_w - title_frame.size.width).abs() > 0.5
+            || (title_x - title_frame.origin.x).abs() > 0.5
+        {
             let resized_title = CGRect::new(
-                &CGPoint::new(title_frame.origin.x, title_frame.origin.y),
+                &CGPoint::new(title_x, title_frame.origin.y),
                 &CGSize::new(title_w, title_frame.size.height),
             );
             let _: () = msg_send![title_label, setFrame: resized_title];
@@ -1612,9 +1623,20 @@ fn update_send_button_with_state(state: &mut VoiceChatOverlayState) {
             let btn = button_ptr as Id;
             let enabled = !state.is_sending && state.auto_send_enabled;
             let _: () = msg_send![btn, setEnabled: enabled];
-            let title = if state.is_sending { "…" } else { ">" };
-            let title = ns_string(title);
-            let _: () = msg_send![btn, setTitle: title];
+            let symbol = if state.is_sending {
+                "ellipsis.circle"
+            } else {
+                "arrow.up.circle.fill"
+            };
+            let has_symbol = crate::ui_helpers::set_button_symbol(btn, symbol);
+            let title = if has_symbol {
+                ""
+            } else if state.is_sending {
+                "…"
+            } else {
+                "Send"
+            };
+            let _: () = msg_send![btn, setTitle: ns_string(title)];
         }
     }
 }
@@ -1629,13 +1651,15 @@ pub(super) fn update_attach_button_ui(
             return;
         };
         let btn = btn_ptr as Id;
-        let has_symbol = crate::ui_helpers::set_button_symbol(btn, "doc.badge.plus");
+        let has_symbol = crate::ui_helpers::set_button_symbol(btn, "paperclip");
         let title = if count == 0 {
             if has_symbol {
                 String::new()
             } else {
                 "Attach".to_string()
             }
+        } else if has_symbol {
+            String::new()
         } else {
             count.to_string()
         };
@@ -2397,23 +2421,23 @@ fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
         );
         let _: () = msg_send![input_bar, setFrame: new_bar_frame];
 
-        // Resize the scrollable text view inside the bar.
+        // Resize the input row (attach left, text center, send right).
+        let row_layout = crate::ui_helpers::chat_input_row_layout(bar_width, desired_h);
         let text_area_frame = CGRect::new(
-            &CGPoint::new(12.0, 10.0),
-            &CGSize::new((bar_width - 140.0).max(120.0), (desired_h - 20.0).max(24.0)),
+            &CGPoint::new(row_layout.text_x, row_layout.text_y),
+            &CGSize::new(row_layout.text_width, row_layout.text_height),
         );
         let _: () = msg_send![input_scroll, setFrame: text_area_frame];
 
         // Recenter buttons vertically.
-        let send_y = ((desired_h - 32.0) / 2.0).max(8.0);
         let attach_frame = CGRect::new(
-            &CGPoint::new((bar_width - 120.0).max(0.0), send_y),
-            &CGSize::new(36.0, 32.0),
+            &CGPoint::new(row_layout.attach_x, row_layout.attach_y),
+            &CGSize::new(row_layout.button_width, row_layout.button_height),
         );
         let _: () = msg_send![attach_btn, setFrame: attach_frame];
         let send_frame = CGRect::new(
-            &CGPoint::new((bar_width - 76.0).max(0.0), send_y),
-            &CGSize::new(36.0, 32.0),
+            &CGPoint::new(row_layout.send_x, row_layout.send_y),
+            &CGSize::new(row_layout.button_width, row_layout.button_height),
         );
         let _: () = msg_send![send_btn, setFrame: send_frame];
 
@@ -2589,10 +2613,7 @@ fn refresh_drawer_impl() {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.favorites = load_favorites_from_disk();
     state.drawer_entries = load_drawer_entries();
-    let query = state
-        .search_field
-        .map(|field| unsafe { get_text_field_string(field as Id) })
-        .unwrap_or_default();
+    let query = drawer_query_from_state(&state);
     render_drawer_entries(&mut state, &query);
 }
 
@@ -2690,7 +2711,8 @@ pub fn handle_card_delete(index: usize) {
     }
     state.favorites = load_favorites_from_disk();
     state.drawer_entries = load_drawer_entries();
-    render_drawer_entries(&mut state, "");
+    let query = drawer_query_from_state(&state);
+    render_drawer_entries(&mut state, &query);
 }
 
 pub fn handle_card_favorite(index: usize) {
@@ -2706,7 +2728,8 @@ pub fn handle_card_favorite(index: usize) {
         save_favorites_to_disk(&state.favorites);
     }
     update_favorites_button_with_state(&mut state);
-    render_drawer_entries(&mut state, "");
+    let query = drawer_query_from_state(&state);
+    render_drawer_entries(&mut state, &query);
 }
 
 pub(super) fn toggle_drawer_favorites_only_impl() {
@@ -2718,10 +2741,7 @@ pub(super) fn toggle_drawer_favorites_only_impl() {
 
     update_favorites_button_with_state(&mut state);
 
-    let query = state
-        .search_field
-        .map(|field| unsafe { get_text_field_string(field as Id) })
-        .unwrap_or_default();
+    let query = drawer_query_from_state(&state);
     render_drawer_entries(&mut state, &query);
 }
 
@@ -2749,6 +2769,33 @@ fn update_favorites_button_with_state(state: &mut VoiceChatOverlayState) {
     }
 }
 
+fn drawer_query_from_state(state: &VoiceChatOverlayState) -> String {
+    state
+        .search_field
+        .map(|field| unsafe { get_text_field_string(field as Id) })
+        .unwrap_or_default()
+}
+
+fn drawer_entry_matches_query(entry: &DrawerEntry, query_lower: &str) -> bool {
+    if query_lower.is_empty() {
+        return true;
+    }
+    let path = entry.path.to_string_lossy();
+    let mut haystack = String::with_capacity(path.len() + entry.preview.len() + 64);
+    haystack.push_str(entry_type_label(entry));
+    haystack.push(' ');
+    haystack.push_str(mode_label(entry.mode));
+    haystack.push(' ');
+    haystack.push_str(&path);
+    haystack.push(' ');
+    if let Some(file_name) = entry.path.file_name().and_then(|name| name.to_str()) {
+        haystack.push_str(file_name);
+        haystack.push(' ');
+    }
+    haystack.push_str(&entry.preview);
+    haystack.to_lowercase().contains(query_lower)
+}
+
 fn filtered_drawer_entries<'a>(
     state: &'a VoiceChatOverlayState,
     query: &str,
@@ -2759,11 +2806,8 @@ fn filtered_drawer_entries<'a>(
         if state.drawer_favorites_only && !entry.is_favorite {
             continue;
         }
-        if !filter.is_empty() {
-            let hay = entry.preview.to_lowercase();
-            if !hay.contains(&filter) {
-                continue;
-            }
+        if !drawer_entry_matches_query(entry, &filter) {
+            continue;
         }
         out.push((index, entry));
     }
@@ -2947,33 +2991,120 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    fn sample_drawer_entry(
+        path: &str,
+        preview: &str,
+        mode: TranscriptionMode,
+        is_ai_formatted: bool,
+        is_favorite: bool,
+    ) -> DrawerEntry {
+        DrawerEntry {
+            path: PathBuf::from(path),
+            timestamp: SystemTime::now(),
+            mode,
+            preview: preview.to_string(),
+            is_ai_formatted,
+            is_favorite,
+        }
+    }
+
     #[test]
-    fn filtered_drawer_entries_respects_query_and_favorites() {
+    fn filtered_drawer_entries_matches_preview_path_and_title_case_insensitively() {
         let mut state = VoiceChatOverlayState {
             drawer_entries: vec![
-                DrawerEntry {
-                    path: PathBuf::from("a.txt"),
-                    timestamp: SystemTime::now(),
-                    mode: TranscriptionMode::Hold,
-                    preview: "hello world".to_string(),
-                    is_ai_formatted: false,
-                    is_favorite: false,
-                },
-                DrawerEntry {
-                    path: PathBuf::from("b.txt"),
-                    timestamp: SystemTime::now(),
-                    mode: TranscriptionMode::Assistive,
-                    preview: "favorite note".to_string(),
-                    is_ai_formatted: false,
-                    is_favorite: true,
-                },
+                sample_drawer_entry(
+                    "meeting_notes.md",
+                    "Follow-up from team sync",
+                    TranscriptionMode::Hold,
+                    false,
+                    false,
+                ),
+                sample_drawer_entry(
+                    "roadmap.md",
+                    "Architecture review memo",
+                    TranscriptionMode::Assistive,
+                    true,
+                    true,
+                ),
             ],
             ..Default::default()
         };
 
-        assert_eq!(filtered_drawer_entries(&state, "hello").len(), 1);
+        assert_eq!(filtered_drawer_entries(&state, "TEAM").len(), 1);
+        assert_eq!(filtered_drawer_entries(&state, "MEETING_NOTES").len(), 1);
+        assert_eq!(filtered_drawer_entries(&state, "shift/cmd").len(), 1);
+        assert_eq!(filtered_drawer_entries(&state, "AI").len(), 1);
+
         state.drawer_favorites_only = true;
         assert_eq!(filtered_drawer_entries(&state, "").len(), 1);
+    }
+
+    #[test]
+    fn filtered_drawer_entries_returns_empty_when_query_has_no_match() {
+        let state = VoiceChatOverlayState {
+            drawer_entries: vec![
+                sample_drawer_entry(
+                    "draft-a.md",
+                    "First transcript snippet",
+                    TranscriptionMode::Hold,
+                    false,
+                    false,
+                ),
+                sample_drawer_entry(
+                    "draft-b.md",
+                    "Second transcript snippet",
+                    TranscriptionMode::Toggle,
+                    false,
+                    false,
+                ),
+            ],
+            ..Default::default()
+        };
+
+        assert!(filtered_drawer_entries(&state, "missing phrase").is_empty());
+    }
+
+    #[test]
+    fn filtered_drawer_entries_clear_query_restores_full_list() {
+        let state = VoiceChatOverlayState {
+            drawer_entries: vec![
+                sample_drawer_entry("first.md", "alpha", TranscriptionMode::Hold, false, false),
+                sample_drawer_entry(
+                    "second.md",
+                    "beta",
+                    TranscriptionMode::Assistive,
+                    false,
+                    true,
+                ),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(filtered_drawer_entries(&state, "alpha").len(), 1);
+        assert_eq!(filtered_drawer_entries(&state, "").len(), 2);
+        assert_eq!(filtered_drawer_entries(&state, "   ").len(), 2);
+    }
+
+    #[test]
+    fn filtered_drawer_entries_keeps_original_indices_for_card_actions() {
+        let state = VoiceChatOverlayState {
+            drawer_entries: vec![
+                sample_drawer_entry("first.md", "alpha", TranscriptionMode::Hold, false, false),
+                sample_drawer_entry(
+                    "second.md",
+                    "alpha",
+                    TranscriptionMode::Assistive,
+                    false,
+                    false,
+                ),
+                sample_drawer_entry("third.md", "alpha", TranscriptionMode::Toggle, false, false),
+            ],
+            ..Default::default()
+        };
+
+        let visible = filtered_drawer_entries(&state, "third");
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].0, 2);
     }
 
     #[test]

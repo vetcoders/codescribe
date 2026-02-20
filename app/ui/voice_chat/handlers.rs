@@ -193,6 +193,11 @@ pub fn action_handler_class() -> *const Class {
                 sel!(onSearchChanged:),
                 on_search_changed as extern "C" fn(&Object, Sel, Id),
             );
+            // NSTextField/NSSearchField delegate callback for per-keystroke filtering.
+            decl.add_method(
+                sel!(controlTextDidChange:),
+                on_control_text_did_change as extern "C" fn(&Object, Sel, Id),
+            );
             decl.add_method(
                 sel!(onNewThread:),
                 on_new_thread as extern "C" fn(&Object, Sel, Id),
@@ -1163,9 +1168,28 @@ extern "C" fn on_card_favorite(_this: &Object, _cmd: Sel, sender: Id) {
     handle_card_favorite(index);
 }
 
-extern "C" fn on_search_changed(_this: &Object, _cmd: Sel, sender: Id) {
-    let query = unsafe { get_text_field_string(sender) };
+fn filter_drawer_for_search_field(search_field: Id) {
+    if search_field.is_null() {
+        return;
+    }
+    let is_active_search_field = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.search_field == Some(search_field as usize)
+    };
+    if !is_active_search_field {
+        return;
+    }
+    let query = unsafe { get_text_field_string(search_field) };
     filter_drawer(&query);
+}
+
+extern "C" fn on_search_changed(_this: &Object, _cmd: Sel, sender: Id) {
+    filter_drawer_for_search_field(sender);
+}
+
+extern "C" fn on_control_text_did_change(_this: &Object, _cmd: Sel, notification: Id) {
+    let search_field: Id = unsafe { msg_send![notification, object] };
+    filter_drawer_for_search_field(search_field);
 }
 
 extern "C" fn on_new_thread(_this: &Object, _cmd: Sel, _sender: Id) {

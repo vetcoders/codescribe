@@ -28,9 +28,9 @@ use crate::ui::onboarding::{
     request_permission,
 };
 use crate::ui_helpers::{
-    LabelConfig, add_subview, apply_tafla_surface, button, button_set_action, create_checkbox,
-    create_floating_window, create_glass_effect_view_with, create_label, create_secure_text_input,
-    create_slider, create_text_input, ns_string, set_text_field_string, ui_colors, ui_tokens,
+    LabelConfig, add_subview, button, button_set_action, create_floating_window,
+    create_glass_effect_view_with, create_label, create_secure_text_input, create_slider,
+    create_text_input, create_toggle, ns_string, set_text_field_string, ui_colors, ui_tokens,
     window_close, window_content_view, window_show,
 };
 
@@ -60,17 +60,21 @@ const SETUP_SAVE_MIN_ANCHOR_Y: f64 = 52.0;
 const SETUP_HINT_MIN_Y: f64 = 52.0;
 const TAB_SETUP: usize = 0;
 const TAB_KEYS: usize = 1;
-const TAB_AUDIO: usize = 2;
-const TAB_VOICE_LAB: usize = 3;
-const TAB_ENGINE: usize = 4;
-pub(super) const TAB_USER: usize = 5;
-const TAB_COUNT: usize = 6;
+pub(super) const TAB_API: usize = 2;
+const TAB_AUDIO: usize = 3;
+const TAB_VOICE_LAB: usize = 4;
+const TAB_ENGINE: usize = 5;
+pub(super) const TAB_USER: usize = 6;
+const TAB_COUNT: usize = 7;
 
-const TOGGLE_ROW_HEIGHT: f64 = 20.0;
-const TOGGLE_ROW_LABEL_INDENT: f64 = 22.0;
+const TOGGLE_ROW_HEIGHT: f64 = 22.0;
+const TOGGLE_SWITCH_WIDTH: f64 = 38.0;
+const TOGGLE_SWITCH_HEIGHT: f64 = 22.0;
+const TOGGLE_ROW_LABEL_INDENT: f64 = 0.0;
 const TOGGLE_ROW_DESC_OFFSET: f64 = 18.0;
 const TOGGLE_ROW_DESC_HEIGHT: f64 = 16.0;
 const SETTINGS_INPUT_HEIGHT: f64 = 22.0;
+const KEY_STATUS_ICON_SIZE: f64 = 14.0;
 
 const STEP_TEST_MIC: usize = 0;
 const STEP_SHOW_OVERLAY: usize = 1;
@@ -196,40 +200,15 @@ fn setup_content_height(min_visible_height: f64, gap: f64) -> f64 {
     min_visible_height.max((SETUP_TOP_OFFSET + flow_before_save + SETUP_SAVE_MIN_ANCHOR_Y).ceil())
 }
 
-unsafe fn style_tafla_section(container: Id) {
-    let _: () = msg_send![container, setWantsLayer: true];
-    let layer: Id = msg_send![container, layer];
-    if layer.is_null() {
-        return;
-    }
-    let bg = unsafe { settings_content_paper_bg() };
-    let cg_bg: Id = msg_send![bg, CGColor];
-    let _: () = msg_send![layer, setBackgroundColor: cg_bg];
-    unsafe {
-        apply_tafla_surface(layer, true);
-    }
-    let _: () = msg_send![layer, setMasksToBounds: true];
-}
-
 unsafe fn style_paper_input(field: Id) {
     let _: () = msg_send![field, setDrawsBackground: true];
     let input_bg = unsafe { settings_input_paper_bg() };
     let _: () = msg_send![field, setBackgroundColor: input_bg];
 }
 
-unsafe fn settings_content_paper_bg() -> Id {
-    let base = ui_colors::surface_paper_warm();
-    msg_send![base, colorWithAlphaComponent: 0.68f64]
-}
-
 unsafe fn settings_input_paper_bg() -> Id {
     let base = ui_colors::surface_paper_warm();
     msg_send![base, colorWithAlphaComponent: 0.84f64]
-}
-
-unsafe fn settings_sidebar_tint_color() -> Id {
-    let base = ui_colors::control_bg_tint(0.22);
-    msg_send![base, colorWithAlphaComponent: 0.95f64]
 }
 
 unsafe fn add_tafla_header_separator(container: Id, x: f64, y: f64, width: f64) -> f64 {
@@ -340,9 +319,26 @@ unsafe fn add_toggle_row(
     secondary: Id,
     spec: ToggleRowSpec<'_>,
 ) -> Id {
-    let toggle = create_checkbox(
-        CGRect::new(&CGPoint::new(x, *y), &CGSize::new(width, TOGGLE_ROW_HEIGHT)),
-        spec.title,
+    let text_width = (width - TOGGLE_SWITCH_WIDTH - 10.0).max(80.0);
+    let title_label = create_label(LabelConfig {
+        frame: CGRect::new(
+            &CGPoint::new(x, *y + 1.0),
+            &CGSize::new(text_width, TOGGLE_ROW_HEIGHT),
+        ),
+        text: spec.title.to_string(),
+        font_size: ui_tokens::BODY_FONT_SIZE,
+        text_color: crate::ui_helpers::color_label(),
+        ..Default::default()
+    });
+    unsafe {
+        add_subview(container, title_label);
+    }
+
+    let toggle = create_toggle(
+        CGRect::new(
+            &CGPoint::new(x + width - TOGGLE_SWITCH_WIDTH, *y),
+            &CGSize::new(TOGGLE_SWITCH_WIDTH, TOGGLE_SWITCH_HEIGHT),
+        ),
         spec.checked,
     );
     if let Some(tag) = spec.tag {
@@ -358,7 +354,7 @@ unsafe fn add_toggle_row(
             frame: CGRect::new(
                 &CGPoint::new(x + TOGGLE_ROW_LABEL_INDENT, *y - TOGGLE_ROW_DESC_OFFSET),
                 &CGSize::new(
-                    (width - TOGGLE_ROW_LABEL_INDENT).max(60.0),
+                    (width - TOGGLE_ROW_LABEL_INDENT - TOGGLE_SWITCH_WIDTH - 10.0).max(60.0),
                     TOGGLE_ROW_DESC_HEIGHT,
                 ),
             ),
@@ -471,14 +467,15 @@ struct BootstrapState {
     permission_polling: bool,
     quality_daemon_checkbox: Option<usize>,
     ultra_quality_checkbox: Option<usize>,
-    completion_view: Option<usize>,
     llm_endpoint_field: Option<usize>,
     llm_model_field: Option<usize>,
     llm_key_field: Option<usize>,
+    llm_key_status_icon: Option<usize>,
     llm_key_status_label: Option<usize>,
     assistive_endpoint_field: Option<usize>,
     assistive_model_field: Option<usize>,
     assistive_key_field: Option<usize>,
+    assistive_key_status_icon: Option<usize>,
     assistive_key_status_label: Option<usize>,
 }
 
@@ -625,12 +622,10 @@ fn show_bootstrap_overlay_impl() {
 
         // Settings window should be fixed-size (no resize / fullscreen), to avoid AppKit
         // fullscreen transition crashes with our custom content setup.
-        let window = create_floating_window(frame, "CodeScribe Settings", false, false);
+        let window = create_floating_window(frame, "CodeScribe Settings", true, false);
         // Keep Settings glass/opacity aligned with chat + transcription overlays.
         let _: () = msg_send![window, setAlphaValue: SETTINGS_MAX_OPACITY];
         let _: () = msg_send![window, setLevel: crate::ui_helpers::NS_NORMAL_WINDOW_LEVEL];
-        let _: () = msg_send![window, setTitleVisibility: 0_isize]; // NSWindowTitleVisible
-        let _: () = msg_send![window, setTitlebarAppearsTransparent: false];
         let _: () = msg_send![window, setTitle: ns_string("CodeScribe Settings")];
         let supports_subtitle: bool = msg_send![window, respondsToSelector: sel!(setSubtitle:)];
         if supports_subtitle {
@@ -763,14 +758,15 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
         state.permission_polling = built_state.permission_polling;
         state.quality_daemon_checkbox = built_state.quality_daemon_checkbox;
         state.ultra_quality_checkbox = built_state.ultra_quality_checkbox;
-        state.completion_view = built_state.completion_view;
         state.llm_endpoint_field = built_state.llm_endpoint_field;
         state.llm_model_field = built_state.llm_model_field;
         state.llm_key_field = built_state.llm_key_field;
+        state.llm_key_status_icon = built_state.llm_key_status_icon;
         state.llm_key_status_label = built_state.llm_key_status_label;
         state.assistive_endpoint_field = built_state.assistive_endpoint_field;
         state.assistive_model_field = built_state.assistive_model_field;
         state.assistive_key_field = built_state.assistive_key_field;
+        state.assistive_key_status_icon = built_state.assistive_key_status_icon;
         state.assistive_key_status_label = built_state.assistive_key_status_label;
 
         drop(state); // Release lock before permission calls to avoid deadlock.
@@ -890,17 +886,60 @@ fn key_status_color(is_set: bool) -> Id {
     }
 }
 
+fn key_status_symbol_name(is_set: bool) -> &'static str {
+    if is_set {
+        "checkmark.seal.fill"
+    } else {
+        "circle"
+    }
+}
+
+unsafe fn update_key_status_indicator(indicator: Id, is_set: bool) {
+    let _ =
+        unsafe { crate::ui_helpers::set_button_symbol(indicator, key_status_symbol_name(is_set)) };
+    let supports_tint: bool = msg_send![indicator, respondsToSelector: sel!(setContentTintColor:)];
+    if supports_tint {
+        let _: () = msg_send![indicator, setContentTintColor: key_status_color(is_set)];
+    }
+}
+
+unsafe fn create_key_status_indicator(frame: CGRect, is_set: bool) -> Id {
+    let ns_button = Class::get("NSButton").unwrap();
+    let indicator: Id = msg_send![ns_button, alloc];
+    let indicator: Id = msg_send![indicator, initWithFrame: frame];
+    let _: () = msg_send![indicator, setBordered: false];
+    let _: () = msg_send![indicator, setEnabled: false];
+    let _: () = msg_send![indicator, setTitle: ns_string("")];
+    unsafe {
+        update_key_status_indicator(indicator, is_set);
+    }
+    indicator
+}
+
 fn update_keychain_status_labels() {
-    let (llm_label, assist_label) = {
+    let (llm_icon, llm_label, assist_icon, assist_label) = {
         let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        (state.llm_key_status_label, state.assistive_key_status_label)
+        (
+            state.llm_key_status_icon,
+            state.llm_key_status_label,
+            state.assistive_key_status_icon,
+            state.assistive_key_status_label,
+        )
     };
     unsafe {
+        if let Some(ptr) = llm_icon {
+            let is_set = keychain_key_is_set("LLM_API_KEY");
+            update_key_status_indicator(ptr as Id, is_set);
+        }
         if let Some(ptr) = llm_label {
             let is_set = keychain_key_is_set("LLM_API_KEY");
             let label = ptr as Id;
             set_text_field_string(label, key_status_text(is_set));
             let _: () = msg_send![label, setTextColor: key_status_color(is_set)];
+        }
+        if let Some(ptr) = assist_icon {
+            let is_set = keychain_key_is_set("LLM_ASSISTIVE_API_KEY");
+            update_key_status_indicator(ptr as Id, is_set);
         }
         if let Some(ptr) = assist_label {
             let is_set = keychain_key_is_set("LLM_ASSISTIVE_API_KEY");
@@ -989,6 +1028,10 @@ pub(super) fn refresh_permission_indicators() {
                 }
             }
         }
+
+        if permissions_all_granted() {
+            mark_setup_done();
+        }
     });
 }
 
@@ -1031,47 +1074,16 @@ unsafe fn build_settings_ui(
         }
         add_subview(root_view, root_glass);
 
-        // ── Section containers on top of root glass ─────────────────
-        let section_layer: Id = msg_send![ns_view, alloc];
-        let section_layer: Id = msg_send![
-            section_layer,
-            initWithFrame: CGRect::new(
-                &CGPoint::new(0.0, 0.0),
-                &CGSize::new(settings_width, body_h),
-            )
-        ];
-        let _: () = msg_send![
-            section_layer,
-            setAutoresizingMask: 2_isize | 16_isize // Width | Height
-        ];
-        add_subview(root_glass, section_layer);
-
         // Left: Sidebar
         let sidebar_frame =
             CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, body_h));
         let sidebar_container: Id = msg_send![ns_view, alloc];
         let sidebar_container: Id = msg_send![sidebar_container, initWithFrame: sidebar_frame];
-        let _: () = msg_send![sidebar_container, setWantsLayer: true];
         let _: () = msg_send![
             sidebar_container,
             setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin (fixed left)
         ];
-        add_subview(section_layer, sidebar_container);
-
-        let sidebar_tint: Id = msg_send![ns_view, alloc];
-        let sidebar_tint: Id = msg_send![sidebar_tint, initWithFrame: sidebar_frame];
-        let _: () = msg_send![sidebar_tint, setWantsLayer: true];
-        let _: () = msg_send![
-            sidebar_tint,
-            setAutoresizingMask: 2_isize | 16_isize // Width | Height
-        ];
-        let sidebar_tint_layer: Id = msg_send![sidebar_tint, layer];
-        if !sidebar_tint_layer.is_null() {
-            let tint_color = settings_sidebar_tint_color();
-            let tint_cg: Id = msg_send![tint_color, CGColor];
-            let _: () = msg_send![sidebar_tint_layer, setBackgroundColor: tint_cg];
-        }
-        add_subview(sidebar_container, sidebar_tint);
+        add_subview(root_glass, sidebar_container);
 
         // Right: Content
         let content_bg_frame = CGRect::new(
@@ -1080,12 +1092,11 @@ unsafe fn build_settings_ui(
         );
         let content_container: Id = msg_send![ns_view, alloc];
         let content_container: Id = msg_send![content_container, initWithFrame: content_bg_frame];
-        style_tafla_section(content_container);
         let _: () = msg_send![
             content_container,
             setAutoresizingMask: 2_isize | 16_isize // Width | Height
         ];
-        add_subview(section_layer, content_container);
+        add_subview(root_glass, content_container);
 
         let split_divider = create_label(LabelConfig {
             frame: CGRect::new(
@@ -1100,7 +1111,7 @@ unsafe fn build_settings_ui(
             split_divider,
             setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin
         ];
-        add_subview(section_layer, split_divider);
+        add_subview(root_glass, split_divider);
 
         let content_area_w = content_bg_frame.size.width;
         let content_area_h = body_h;
@@ -1120,10 +1131,19 @@ unsafe fn build_settings_ui(
 
         // Sidebar tab buttons (inside sidebar container)
         let tab_start_y = body_h - 86.0;
-        let tab_names = ["Setup", "Keys", "Audio", "Voice Lab", "Engine", "User"];
+        let tab_names = [
+            "Setup",
+            "Hotkeys",
+            "API Keys",
+            "Audio",
+            "Voice Lab",
+            "Engine",
+            "User",
+        ];
         let tab_sels = [
             sel!(onTabSetup:),
             sel!(onTabKeys:),
+            sel!(onTabApi:),
             sel!(onTabAudio:),
             sel!(onTabVoiceLab:),
             sel!(onTabEngine:),
@@ -1171,7 +1191,6 @@ unsafe fn build_settings_ui(
 
         let setup_view: Id = msg_send![ns_view, alloc];
         let setup_view: Id = msg_send![setup_view, initWithFrame: setup_document_frame];
-        style_tafla_section(setup_view);
         let setup_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, setup_view);
         add_subview(content_container, setup_scroll);
 
@@ -1328,7 +1347,7 @@ unsafe fn build_settings_ui(
 
         let checklist_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: "Non-blocking onboarding: finish now or continue later.".to_string(),
+            text: "Permissions update live as macOS grants access.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1352,7 +1371,7 @@ unsafe fn build_settings_ui(
                 &CGSize::new(field_w, 16.0),
             ),
             text:
-                "API keys live in Keys. Audio behavior lives in Audio. Daily toggles live in User."
+                "Hotkeys live in Hotkeys. API credentials live in API Keys. Daily toggles live in User."
                     .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -1360,68 +1379,37 @@ unsafe fn build_settings_ui(
         });
         add_subview(setup_view, setup_hint);
 
-        // ── Footer buttons ───────────────────────────────────────────
-        let finish_btn = button(
-            CGRect::new(
-                &CGPoint::new(content_width - 110.0, 16.0),
-                &CGSize::new(90.0, 28.0),
-            ),
-            "Finish",
-        );
-        button_set_action(finish_btn, action_handler, sel!(onFinish:));
-        add_subview(setup_view, finish_btn);
-
-        let skip_btn = button(
-            CGRect::new(&CGPoint::new(pad, 16.0), &CGSize::new(90.0, 28.0)),
-            "Skip",
-        );
-        button_set_action(skip_btn, action_handler, sel!(onFinish:));
-        add_subview(setup_view, skip_btn);
-
-        // ── Completion view (hidden, shown on Finish) ────────────────
-        let completion: Id = msg_send![ns_view, alloc];
-        let completion: Id = msg_send![completion, initWithFrame: tab_content_frame];
-        let _: () = msg_send![completion, setHidden: true];
-        let done_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(0.0, tab_content_frame.size.height * 0.5 - 20.0),
-                &CGSize::new(content_width, 40.0),
-            ),
-            text: "All set!".to_string(),
-            font_size: 24.0,
-            bold: true,
-            text_color: permission_color(true), // green
-            ..Default::default()
-        });
-        let _: () = msg_send![done_label, setAlignment: 1_isize]; // NSTextAlignmentCenter
-        add_subview(completion, done_label);
-        add_subview(content_container, completion);
-
-        // --- Keys tab (index 1) ---
-        let keys_view = build_keys_tab(action_handler, tab_document_frame, config, &mut state);
+        // --- Hotkeys tab (index 1) ---
+        let keys_view = build_hotkeys_tab(action_handler, tab_document_frame, config, &mut state);
         let keys_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, keys_view);
         let _: () = msg_send![keys_scroll, setHidden: true];
         add_subview(content_container, keys_scroll);
 
-        // --- Audio tab (index 2) ---
+        // --- API Keys tab (index 2) ---
+        let api_view = build_api_tab(action_handler, tab_document_frame, config, &mut state);
+        let api_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, api_view);
+        let _: () = msg_send![api_scroll, setHidden: true];
+        add_subview(content_container, api_scroll);
+
+        // --- Audio tab (index 3) ---
         let audio_view = build_audio_tab(action_handler, tab_document_frame, config);
         let audio_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, audio_view);
         let _: () = msg_send![audio_scroll, setHidden: true];
         add_subview(content_container, audio_scroll);
 
-        // --- Voice Lab tab (index 3) ---
+        // --- Voice Lab tab (index 4) ---
         let voice_lab_view = build_voice_lab_tab(action_handler, tab_document_frame);
         let voice_lab_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, voice_lab_view);
         let _: () = msg_send![voice_lab_scroll, setHidden: true];
         add_subview(content_container, voice_lab_scroll);
 
-        // --- Engine tab (index 4) ---
+        // --- Engine tab (index 5) ---
         let engine_view = build_engine_tab(tab_document_frame);
         let engine_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, engine_view);
         let _: () = msg_send![engine_scroll, setHidden: true];
         add_subview(content_container, engine_scroll);
 
-        // --- User tab (index 5) ---
+        // --- User tab (index 6) ---
         let user_view = build_user_tab(action_handler, tab_document_frame, config, &mut state);
         let user_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, user_view);
         let _: () = msg_send![user_scroll, setHidden: true];
@@ -1435,6 +1423,7 @@ unsafe fn build_settings_ui(
         state.content_views = [
             Some(setup_scroll as usize),
             Some(keys_scroll as usize),
+            Some(api_scroll as usize),
             Some(audio_scroll as usize),
             Some(voice_lab_scroll as usize),
             Some(engine_scroll as usize),
@@ -1445,7 +1434,6 @@ unsafe fn build_settings_ui(
         state.permission_action_buttons = perm_action_buttons;
         state.permission_requested = [false; 5];
         state.permission_polling = false;
-        state.completion_view = Some(completion as usize);
         state.config_cache = Some(config.clone());
 
         state
@@ -1478,7 +1466,8 @@ unsafe fn create_sidebar_tab_button(
         // Add SF Symbol icon based on title
         let symbol_name = match title {
             "Setup" => "gearshape",
-            "Keys" => "keyboard",
+            "Hotkeys" => "keyboard",
+            "API Keys" => "key.horizontal",
             "Audio" => "waveform",
             "Voice Lab" => "waveform.path.ecg",
             "Engine" => "cpu",
@@ -1610,43 +1599,6 @@ pub(super) fn handle_hotkey_done() {
     update_step_status(STEP_PRESS_HOTKEY, "done");
 }
 
-pub(super) fn handle_finish() {
-    // Show "All set!" completion view, then close after a brief delay.
-    Queue::main().exec_async(|| unsafe {
-        let (setup_ptr, tab_buttons, completion_ptr) = {
-            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                state.content_views[0],
-                state.tab_buttons,
-                state.completion_view,
-            )
-        };
-        if let Some(setup_ptr) = setup_ptr {
-            let _: () = msg_send![setup_ptr as Id, setHidden: true];
-        }
-        // Hide sidebar tabs too
-        for ptr in tab_buttons.iter().flatten() {
-            let _: () = msg_send![*ptr as Id, setHidden: true];
-        }
-        if let Some(completion_ptr) = completion_ptr {
-            let _: () = msg_send![completion_ptr as Id, setHidden: false];
-        }
-    });
-
-    thread::spawn(|| {
-        thread::sleep(Duration::from_millis(1200));
-        if permissions_all_granted() {
-            mark_setup_done();
-        } else {
-            warn!(
-                "Setup finish requested but not all permissions are granted yet; keeping setup incomplete."
-            );
-        }
-        crate::voice_chat_ui::show_agent_tab();
-        hide_bootstrap_overlay();
-    });
-}
-
 pub(super) fn handle_bootstrap_window_closed() {
     let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.window = None;
@@ -1667,14 +1619,15 @@ pub(super) fn handle_bootstrap_window_closed() {
     state.permission_polling = false;
     state.quality_daemon_checkbox = None;
     state.ultra_quality_checkbox = None;
-    state.completion_view = None;
     state.llm_endpoint_field = None;
     state.llm_model_field = None;
     state.llm_key_field = None;
+    state.llm_key_status_icon = None;
     state.llm_key_status_label = None;
     state.assistive_endpoint_field = None;
     state.assistive_model_field = None;
     state.assistive_key_field = None;
+    state.assistive_key_status_icon = None;
     state.assistive_key_status_label = None;
     state.config_cache = None;
 }
@@ -1703,14 +1656,15 @@ pub fn hide_bootstrap_overlay() {
                 state.permission_polling = false;
                 state.quality_daemon_checkbox = None;
                 state.ultra_quality_checkbox = None;
-                state.completion_view = None;
                 state.llm_endpoint_field = None;
                 state.llm_model_field = None;
                 state.llm_key_field = None;
+                state.llm_key_status_icon = None;
                 state.llm_key_status_label = None;
                 state.assistive_endpoint_field = None;
                 state.assistive_model_field = None;
                 state.assistive_key_field = None;
+                state.assistive_key_status_icon = None;
                 state.assistive_key_status_label = None;
                 (window_ptr, None)
             } else {
@@ -1774,14 +1728,15 @@ pub fn reset_embedded_bootstrap_state() {
     state.permission_polling = false;
     state.quality_daemon_checkbox = None;
     state.ultra_quality_checkbox = None;
-    state.completion_view = None;
     state.llm_endpoint_field = None;
     state.llm_model_field = None;
     state.llm_key_field = None;
+    state.llm_key_status_icon = None;
     state.llm_key_status_label = None;
     state.assistive_endpoint_field = None;
     state.assistive_model_field = None;
     state.assistive_key_field = None;
+    state.assistive_key_status_icon = None;
     state.assistive_key_status_label = None;
 }
 
@@ -1820,10 +1775,10 @@ fn mark_keys_preset_custom() {
 }
 
 // ============================================================================
-// Keys tab
+// Hotkeys tab
 // ============================================================================
 
-unsafe fn build_keys_tab(
+unsafe fn build_hotkeys_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
     config: &Config,
@@ -1836,7 +1791,6 @@ unsafe fn build_keys_tab(
 
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
-        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
@@ -1844,12 +1798,10 @@ unsafe fn build_keys_tab(
         let mut y = frame.size.height - (22.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
-        let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
 
-        // Section title
         let title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
-            text: "Keys & Configuration".to_string(),
+            text: "Hotkeys".to_string(),
             font_size: ui_tokens::BODY_FONT_SIZE,
             bold: true,
             text_color: primary,
@@ -1863,7 +1815,7 @@ unsafe fn build_keys_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Hotkeys plus all API/runtime key configuration.".to_string(),
+            text: "Recording trigger and shortcut behavior.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1871,7 +1823,6 @@ unsafe fn build_keys_tab(
         add_subview(container, subtitle);
         y -= 16.0 + gap;
 
-        // Preset dropdown
         let preset_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
             text: "Hotkey preset:".to_string(),
@@ -1909,7 +1860,6 @@ unsafe fn build_keys_tab(
         add_subview(container, preset_popup);
         y -= 24.0 + gap;
 
-        // Hold base dropdown
         let hold_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
             text: "Hold base:".to_string(),
@@ -1949,7 +1899,6 @@ unsafe fn build_keys_tab(
         add_subview(container, hold_popup);
         y -= 24.0 + gap;
 
-        // Shift/Cmd modes toggle
         let modes_check = add_toggle_row(
             container,
             action_handler,
@@ -1967,7 +1916,6 @@ unsafe fn build_keys_tab(
             },
         );
 
-        // Hands-off toggle dropdown
         let toggle_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
             text: "Hands-off toggle:".to_string(),
@@ -2005,7 +1953,6 @@ unsafe fn build_keys_tab(
         add_subview(container, toggle_popup);
         y -= 24.0 + gap;
 
-        // Hold start delay slider
         let delay_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
             text: "Hold delay (ms):".to_string(),
@@ -2041,7 +1988,6 @@ unsafe fn build_keys_tab(
         add_subview(container, delay_value);
         y -= 20.0 + gap;
 
-        // Double-tap interval slider
         let double_tap_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(160.0, 20.0)),
             text: "Double-tap interval (ms):".to_string(),
@@ -2080,7 +2026,6 @@ unsafe fn build_keys_tab(
             ..Default::default()
         });
         add_subview(container, double_tap_value);
-
         y -= 20.0 + gap;
 
         let config_divider = create_label(LabelConfig {
@@ -2093,25 +2038,72 @@ unsafe fn build_keys_tab(
         add_subview(container, config_divider);
         y -= gap;
 
-        let runtime_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
-            text: "AI Runtime Configuration".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: primary,
-            ..Default::default()
-        });
-        add_subview(container, runtime_header);
-        y -= 18.0 + gap;
-
-        let runtime_subtitle = create_label(LabelConfig {
+        let api_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Formatting + Assistive models and endpoints.".to_string(),
+            text: "API endpoints, models, and keys are in the API Keys tab.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
         });
-        add_subview(container, runtime_subtitle);
+        add_subview(container, api_hint);
+
+        state.keys_hold_popup = Some(hold_popup as usize);
+        state.keys_toggle_popup = Some(toggle_popup as usize);
+        state.keys_preset_popup = Some(preset_popup as usize);
+        state.keys_exclusive_checkbox = Some(modes_check as usize);
+        state.hold_delay_value_label = Some(delay_value as usize);
+        state.double_tap_value_label = Some(double_tap_value as usize);
+
+        container
+    } // unsafe
+}
+
+// ============================================================================
+// API Keys tab
+// ============================================================================
+
+unsafe fn build_api_tab(
+    action_handler: Id,
+    frame: core_graphics::geometry::CGRect,
+    config: &Config,
+    state: &mut BootstrapState,
+) -> Id {
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    unsafe {
+        let ns_view = Class::get("NSView").unwrap();
+        let container: Id = msg_send![ns_view, alloc];
+        let container: Id = msg_send![container, initWithFrame: frame];
+
+        let pad = ui_tokens::EDGE_PADDING;
+        let content_w = frame.size.width - pad * 2.0;
+        let gap = ui_tokens::DENSITY_MEDIUM;
+        let mut y = frame.size.height - (22.0 + gap);
+        let primary = crate::ui_helpers::color_label();
+        let secondary = crate::ui_helpers::color_secondary_label();
+        let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
+
+        let title = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            text: "API Keys".to_string(),
+            font_size: ui_tokens::BODY_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, title);
+        y -= 22.0 + gap;
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= gap;
+
+        let subtitle = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: "Runtime endpoints, models, and credentials.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, subtitle);
         y -= 16.0 + gap;
 
         let fmt_header = create_label(LabelConfig {
@@ -2179,8 +2171,21 @@ unsafe fn build_keys_tab(
         y -= SETTINGS_INPUT_HEIGHT + gap;
 
         let llm_key_status = keychain_key_is_set("LLM_API_KEY");
+        let llm_status_icon = create_key_status_indicator(
+            CGRect::new(
+                &CGPoint::new(pad, y + 1.0),
+                &CGSize::new(KEY_STATUS_ICON_SIZE, KEY_STATUS_ICON_SIZE),
+            ),
+            llm_key_status,
+        );
+        add_subview(container, llm_status_icon);
+        state.llm_key_status_icon = Some(llm_status_icon as usize);
+
         let llm_status_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            frame: CGRect::new(
+                &CGPoint::new(pad + KEY_STATUS_ICON_SIZE + 6.0, y),
+                &CGSize::new(content_w - KEY_STATUS_ICON_SIZE - 6.0, 16.0),
+            ),
             text: key_status_text(llm_key_status).to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: key_status_color(llm_key_status),
@@ -2260,8 +2265,21 @@ unsafe fn build_keys_tab(
         y -= SETTINGS_INPUT_HEIGHT + gap;
 
         let assist_key_status = keychain_key_is_set("LLM_ASSISTIVE_API_KEY");
+        let assist_status_icon = create_key_status_indicator(
+            CGRect::new(
+                &CGPoint::new(pad, y + 1.0),
+                &CGSize::new(KEY_STATUS_ICON_SIZE, KEY_STATUS_ICON_SIZE),
+            ),
+            assist_key_status,
+        );
+        add_subview(container, assist_status_icon);
+        state.assistive_key_status_icon = Some(assist_status_icon as usize);
+
         let assist_status_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            frame: CGRect::new(
+                &CGPoint::new(pad + KEY_STATUS_ICON_SIZE + 6.0, y),
+                &CGSize::new(content_w - KEY_STATUS_ICON_SIZE - 6.0, 16.0),
+            ),
             text: key_status_text(assist_key_status).to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: key_status_color(assist_key_status),
@@ -2281,15 +2299,8 @@ unsafe fn build_keys_tab(
         button_set_action(save_btn, action_handler, sel!(onSaveApiSettings:));
         add_subview(container, save_btn);
 
-        state.keys_hold_popup = Some(hold_popup as usize);
-        state.keys_toggle_popup = Some(toggle_popup as usize);
-        state.keys_preset_popup = Some(preset_popup as usize);
-        state.keys_exclusive_checkbox = Some(modes_check as usize);
-        state.hold_delay_value_label = Some(delay_value as usize);
-        state.double_tap_value_label = Some(double_tap_value as usize);
-
         container
-    } // unsafe
+    }
 }
 
 // ============================================================================
@@ -2308,7 +2319,6 @@ unsafe fn build_audio_tab(
 
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
-        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
@@ -2487,7 +2497,6 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
 
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
-        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
@@ -2649,7 +2658,6 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect) -> Id {
 
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
-        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
@@ -2835,7 +2843,6 @@ unsafe fn build_user_tab(
         let ns_view = Class::get("NSView").unwrap();
         let container: Id = msg_send![ns_view, alloc];
         let container: Id = msg_send![container, initWithFrame: frame];
-        style_tafla_section(container);
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
@@ -2975,7 +2982,7 @@ unsafe fn build_user_tab(
 
         let user_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: "Assistant endpoints and models are configured in Keys tab.".to_string(),
+            text: "Assistant endpoints and models are configured in API Keys tab.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()

@@ -41,11 +41,12 @@ use crate::config::{HoldMods, ToggleTrigger};
 
 use crate::ui_helpers::{
     LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, apply_tafla_surface, button_set_action,
-    button_style, chat_header_layout, color_clear, color_label, color_secondary_label,
-    create_button, create_flipped_vertical_stack_view, create_glass_effect_view_with, create_label,
-    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
-    ns_string, set_button_symbol, set_focus_ring, set_hidden, set_tooltip,
-    style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
+    button_style, chat_header_layout, chat_input_row_layout, color_clear, color_label,
+    color_secondary_label, create_button, create_flipped_vertical_stack_view,
+    create_glass_effect_view_with, create_label, create_scrollable_text_view,
+    create_vertical_stack_view, layout_region_frame_for_view, ns_string, set_button_symbol,
+    set_focus_ring, set_hidden, set_tooltip, style_toolbar_icon_button, ui_colors, ui_tokens,
+    window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -344,7 +345,7 @@ fn show_voice_chat_overlay_impl() {
             ui_tokens::EDGE_PADDING_TIGHT
         };
         let title_y = ((header_height - 20.0) / 2.0).max(0.0);
-        // Give the tab control more room to avoid truncation ("Dr..." / "A...").
+        // Keep enough width so "CodeScribe" is not clipped at default window sizes.
         let title_w = ui_tokens::CHAT_TITLE_LABEL_WIDTH;
         let title_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(title_x, title_y), &CGSize::new(title_w, 20.0)),
@@ -863,8 +864,22 @@ fn show_voice_chat_overlay_impl() {
         let search_field: Id = msg_send![search_field, initWithFrame: search_frame];
         let placeholder = ns_string("Filter transcripts");
         let _: () = msg_send![search_field, setPlaceholderString: placeholder];
+        let _: () = msg_send![search_field, setDelegate: action_handler];
         let _: () = msg_send![search_field, setTarget: action_handler];
         let _: () = msg_send![search_field, setAction: sel!(onSearchChanged:)];
+        let search_cell: Id = msg_send![search_field, cell];
+        if !search_cell.is_null() {
+            let supports_immediate: bool =
+                msg_send![search_cell, respondsToSelector: sel!(setSendsSearchStringImmediately:)];
+            if supports_immediate {
+                let _: () = msg_send![search_cell, setSendsSearchStringImmediately: true];
+            }
+            let supports_whole: bool =
+                msg_send![search_cell, respondsToSelector: sel!(setSendsWholeSearchString:)];
+            if supports_whole {
+                let _: () = msg_send![search_cell, setSendsWholeSearchString: false];
+            }
+        }
         let _: () = msg_send![
             search_field,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN
@@ -911,10 +926,10 @@ fn show_voice_chat_overlay_impl() {
         add_subview(content_view, input_bar);
 
         let input_width = input_frame.size.width;
+        let input_row = chat_input_row_layout(input_width, agent_input_height);
         let text_area_frame = CGRect::new(
-            &CGPoint::new(14.0, 7.0),
-            // Leave room for Attach + Send buttons on the right.
-            &CGSize::new((input_width - 144.0).max(120.0), agent_input_height - 14.0),
+            &CGPoint::new(input_row.text_x, input_row.text_y),
+            &CGSize::new(input_row.text_width, input_row.text_height),
         );
         let (agent_input_scroll, agent_input_text_view) =
             create_scrollable_text_view(text_area_frame, true);
@@ -941,36 +956,41 @@ fn show_voice_chat_overlay_impl() {
         set_focus_ring(agent_input_text_view);
         let _: () = msg_send![input_bar, addSubview: agent_input_scroll];
 
-        // Attach button (file context for Agent).
-        let send_y = ((agent_input_height - 32.0) / 2.0).max(8.0);
+        // Attach button (file context for Agent) — anchored left.
         let agent_attach_button = create_button(
             CGRect::new(
-                &CGPoint::new((input_width - 120.0).max(0.0), send_y),
-                &CGSize::new(36.0, 32.0),
+                &CGPoint::new(input_row.attach_x, input_row.attach_y),
+                &CGSize::new(input_row.button_width, input_row.button_height),
             ),
             "",
-            button_style::ROUNDED,
+            button_style::INLINE,
         );
-        let has_symbol = set_button_symbol(agent_attach_button, "doc.badge.plus");
+        let has_symbol = set_button_symbol(agent_attach_button, "paperclip");
         if !has_symbol {
             let _: () = msg_send![agent_attach_button, setTitle: ns_string("Attach")];
         }
+        style_toolbar_icon_button(agent_attach_button);
         button_set_action(agent_attach_button, action_handler, sel!(onAttachMenu:));
         let _: () = msg_send![
             agent_attach_button,
-            setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MAX_Y_MARGIN
+            setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MAX_Y_MARGIN
         ];
         set_tooltip(agent_attach_button, "Attach files (assistant context)");
         let _: () = msg_send![input_bar, addSubview: agent_attach_button];
 
         let agent_send_button = create_button(
             CGRect::new(
-                &CGPoint::new((input_width - 76.0).max(0.0), send_y),
-                &CGSize::new(36.0, 32.0),
+                &CGPoint::new(input_row.send_x, input_row.send_y),
+                &CGSize::new(input_row.button_width, input_row.button_height),
             ),
-            ">",
-            button_style::ROUNDED,
+            "",
+            button_style::INLINE,
         );
+        let has_symbol = set_button_symbol(agent_send_button, "arrow.up.circle.fill");
+        if !has_symbol {
+            let _: () = msg_send![agent_send_button, setTitle: ns_string("Send")];
+        }
+        style_toolbar_icon_button(agent_send_button);
         button_set_action(agent_send_button, action_handler, sel!(onSend:));
         set_tooltip(agent_send_button, "Send (Enter)");
         let _: () = msg_send![
