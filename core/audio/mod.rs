@@ -17,5 +17,5 @@ pub mod streaming_recorder;
 // Re-export main types at module level
 pub use loader::load_audio_file;
 pub use loader::resample_to_16k;
-pub use playback::play_sound;
+pub use playback::{play_sound, play_sound_with_volume};
 // pub use recorder::Recorder; // Internal use only now

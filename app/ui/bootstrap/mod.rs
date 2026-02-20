@@ -1116,9 +1116,14 @@ unsafe fn build_settings_ui(
         let content_area_w = content_bg_frame.size.width;
         let content_area_h = body_h;
 
+        // Offset sidebar content below the titlebar+toolbar zone (~52px in unified style).
+        // With FullSizeContentView, content extends under the titlebar, so we must
+        // manually avoid the traffic lights area.
+        let titlebar_inset = 52.0;
+
         let sidebar_title = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(18.0, body_h - 34.0),
+                &CGPoint::new(18.0, body_h - titlebar_inset - 2.0),
                 &CGSize::new(SIDEBAR_WIDTH - 26.0, 20.0),
             ),
             text: "Settings".to_string(),
@@ -1130,7 +1135,7 @@ unsafe fn build_settings_ui(
         add_subview(sidebar_container, sidebar_title);
 
         // Sidebar tab buttons (inside sidebar container)
-        let tab_start_y = body_h - 86.0;
+        let tab_start_y = body_h - titlebar_inset - 54.0;
         let tab_names = [
             "Setup",
             "Hotkeys",
@@ -3363,6 +3368,7 @@ pub(super) extern "C" fn on_beep_toggled(_this: &Object, _cmd: objc::runtime::Se
         info!("Settings: beep on start -> {}", enabled);
         let config = Config::load();
         let _ = config.save_to_env("BEEP_ON_START", if enabled { "1" } else { "0" });
+        sync_runtime_config_via_ipc();
     }
 }
 
@@ -3401,6 +3407,7 @@ pub(super) extern "C" fn on_volume_changed(_this: &Object, _cmd: objc::runtime::
         info!("Settings: sound volume -> {:.2}", value);
         let config = Config::load();
         let _ = config.save_to_env("SOUND_VOLUME", &format!("{:.2}", value));
+        sync_runtime_config_via_ipc();
     }
 }
 

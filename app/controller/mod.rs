@@ -1369,6 +1369,7 @@ impl RecordingController {
         let config = self.config.read().await;
         let delay_ms = config.hold_start_delay_ms;
         let beep = config.beep_on_start;
+        let sound_volume = config.sound_volume;
         let language = config.whisper_language;
         drop(config); // Release read lock
 
@@ -1524,7 +1525,7 @@ impl RecordingController {
 
             // Play start beep if enabled
             if beep {
-                crate::audio::play_sound("Tink");
+                crate::audio::play_sound_with_volume("Tink", sound_volume);
             }
 
             // Show badge with appropriate mode (Hold=red solid, Assistive=purple)
@@ -1642,6 +1643,7 @@ impl RecordingController {
         let language = config.whisper_language;
         let toggle_silence_sec = config.toggle_silence_sec;
         let beep_enabled = config.beep_on_start;
+        let sound_volume = config.sound_volume;
 
         // Start the recorder
         let mut recorder = self.recorder.lock().await;
@@ -1719,7 +1721,7 @@ impl RecordingController {
 
         // Play start beep if enabled
         if beep_enabled {
-            crate::audio::play_sound("Tink");
+            crate::audio::play_sound_with_volume("Tink", sound_volume);
         }
 
         // Show badge with appropriate mode

@@ -3370,7 +3370,8 @@ pub fn create_slider(frame: CGRect, min: f64, max: f64, value: f64) -> Id {
         let _: () = msg_send![slider, setMinValue: min];
         let _: () = msg_send![slider, setMaxValue: max];
         let _: () = msg_send![slider, setDoubleValue: value];
-        let _: () = msg_send![slider, setContinuous: true];
+        // Fire action only on mouse-up to avoid spamming settings.json writes.
+        let _: () = msg_send![slider, setContinuous: false];
 
         slider
     }
