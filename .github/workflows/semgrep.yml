@@ -1,6 +1,3 @@
-# Semgrep OSS Security Scan
-# Created by M&K (c)2026 VetCoders
-
 name: Semgrep
 
 on:
@@ -17,10 +14,16 @@ jobs:
   semgrep:
     name: Security Scan
     runs-on: self-hosted
-    container:
-      image: semgrep/semgrep
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Semgrep (using brew)
+        run: brew install semgrep
+
+      # Alternative (using pip):
+      # - name: Install Semgrep via pip
+      #   run: pip3 install semgrep
 
       - name: Run Semgrep
         run: semgrep scan --config auto --error .
