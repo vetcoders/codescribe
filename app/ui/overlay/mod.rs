@@ -773,13 +773,25 @@ fn update_overlay_text_unlocked(text_view_ptr: Option<usize>, visible_text: &str
 }
 
 fn overlay_visible_text(text: &str, decision_mode: bool) -> &str {
-    if decision_mode {
+    if decision_mode || !overlay_live_preview_uses_stable_text() {
         // Decision mode must show exact contract payload without preview filtering.
         text
     } else {
         // Live preview shows only complete word boundaries to avoid jittery partial tails.
         stable_overlay_preview_text(text)
     }
+}
+
+fn overlay_live_preview_uses_stable_text() -> bool {
+    std::env::var("CODESCRIBE_OVERLAY_STABLE_PREVIEW")
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn stable_overlay_preview_text(text: &str) -> &str {
@@ -805,7 +817,7 @@ fn stable_overlay_preview_text(text: &str) -> &str {
 
     match last_boundary_idx {
         Some(idx) => &text[..idx],
-        None => "",
+        None => text,
     }
 }
 
@@ -1784,8 +1796,8 @@ mod tests {
     }
 
     #[test]
-    fn test_stable_overlay_preview_text_without_boundary_returns_empty() {
-        assert_eq!(stable_overlay_preview_text("partial"), "");
+    fn test_stable_overlay_preview_text_without_boundary_returns_text() {
+        assert_eq!(stable_overlay_preview_text("partial"), "partial");
     }
 
     #[test]
@@ -1795,8 +1807,8 @@ mod tests {
     }
 
     #[test]
-    fn test_overlay_visible_text_live_mode_uses_stable_preview() {
+    fn test_overlay_visible_text_live_mode_defaults_to_exact_text() {
         let text = "To jest stabilne zda";
-        assert_eq!(overlay_visible_text(text, false), "To jest stabilne ");
+        assert_eq!(overlay_visible_text(text, false), text);
     }
 }

@@ -34,12 +34,13 @@ use tracing::{debug, error, info, warn};
 const DEFAULT_CHUNK_DURATION_SEC: f32 = 4.0;
 #[cfg(any(test, feature = "offline_eval"))]
 const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for stronger context continuity
-const DEFAULT_BUFFER_DELAY_MS: u64 = 1800;
-const DEFAULT_TYPING_CPS: f32 = 36.0;
-const DEFAULT_EMIT_WORDS_MAX: usize = 3;
-const PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS: u32 = 3;
-const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 6_000;
-const PARTIAL_PASS_TRIGGER_WATCHDOG_MS: u64 = 12_000;
+// Golden runtime profile (balanced for low-latency preview + stable quality).
+const DEFAULT_BUFFER_DELAY_MS: u64 = 280;
+const DEFAULT_TYPING_CPS: f32 = 90.0;
+const DEFAULT_EMIT_WORDS_MAX: usize = 2;
+const PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS: u32 = 2;
+const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 3_500;
+const PARTIAL_PASS_TRIGGER_WATCHDOG_MS: u64 = 6_500;
 
 lazy_static! {
     static ref TOKEN_RE: Regex = Regex::new(r"\s+|\S+\s*").expect("token regex");
@@ -655,7 +656,7 @@ impl BufferedEmitter {
             return false;
         }
 
-        const CORRECTION_COOLDOWN_MS: u64 = 250;
+        const CORRECTION_COOLDOWN_MS: u64 = 120;
         if let Some(ref _corrected) = self.correction_pending {
             let can_correct = self
                 .last_correction_at
@@ -1873,8 +1874,10 @@ fn env_usize(key: &str, default: usize) -> usize {
 }
 
 fn inference_max_concurrency() -> usize {
-    const DEFAULT_MAX_INFERENCE_CONCURRENCY: usize = 4;
-    const HARD_MAX_INFERENCE_CONCURRENCY: usize = 8;
+    // Whisper singleton uses a single engine lock; defaulting to 1 avoids queue churn
+    // that looks like "parallelism" but mostly adds latency/jitter in preview.
+    const DEFAULT_MAX_INFERENCE_CONCURRENCY: usize = 1;
+    const HARD_MAX_INFERENCE_CONCURRENCY: usize = 4;
     env_usize(
         "CODESCRIBE_MAX_INFERENCE_CONCURRENCY",
         DEFAULT_MAX_INFERENCE_CONCURRENCY,
@@ -1883,7 +1886,7 @@ fn inference_max_concurrency() -> usize {
 }
 
 fn buffered_correction_prefix_ratio() -> f64 {
-    env_f32("CODESCRIBE_BUFFERED_CORRECTION_PREFIX", 0.60).clamp(0.4, 0.9) as f64
+    env_f32("CODESCRIBE_BUFFERED_CORRECTION_PREFIX", 0.50).clamp(0.4, 0.9) as f64
 }
 
 #[cfg(any(test, feature = "offline_eval"))]

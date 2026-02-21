@@ -1081,7 +1081,7 @@ fn utterance_interim_sec() -> f32 {
                 .ok()
                 .and_then(|v| v.parse::<f32>().ok())
         })
-        .unwrap_or(3.0)
+        .unwrap_or(1.2)
         .clamp(1.0, 30.0)
 }
 
@@ -1148,9 +1148,9 @@ pub(crate) fn hardcoded_utterance_gate_config() -> GateConfig {
 
     // Keep fast start + tight pre-roll like streaming, unless explicitly overridden.
     if std::env::var("CODESCRIBE_VAD_MIN_SPEECH_SEC").is_err() {
-        // In utterance mode we prefer robustness over ultra-low latency.
-        // 0.5s filters out noisy micro-bursts that frequently trigger Whisper hallucinations.
-        vad_cfg.min_speech_duration_sec = 0.50;
+        // In utterance mode keep enough robustness against micro-bursts, but lower
+        // startup floor so live preview appears sooner in real speech.
+        vad_cfg.min_speech_duration_sec = 0.30;
     }
     if std::env::var("CODESCRIBE_VAD_PRE_ROLL_SEC").is_err() {
         vad_cfg.pre_roll_sec = 0.064;

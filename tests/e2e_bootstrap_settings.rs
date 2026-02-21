@@ -23,7 +23,6 @@ fn setup_test_env() -> TempDir {
         std::env::remove_var("HOLD_MODS");
         std::env::remove_var("WHISPER_LANGUAGE");
         std::env::remove_var("AI_FORMATTING_ENABLED");
-        std::env::remove_var("CODESCRIBE_BUFFERED_STREAM");
         std::env::remove_var("TOGGLE_TRIGGER");
         std::env::remove_var("HOLD_EXCLUSIVE");
         std::env::remove_var("HOTKEY_DOUBLE_TAP_LEFT");
@@ -225,42 +224,6 @@ fn test_settings_formatting_toggle() {
 
 #[test]
 #[serial]
-fn test_settings_buffered_stream_toggle() {
-    let _tmp = setup_test_env();
-
-    // CODESCRIBE_BUFFERED_STREAM is not a Config struct field — it's read via
-    // env_bool_default() at runtime. Test that save_to_env persists it to .env
-    // and sets the runtime env var.
-    let config = Config::load();
-    config
-        .save_to_env("CODESCRIBE_BUFFERED_STREAM", "1")
-        .expect("save on");
-    assert_eq!(
-        std::env::var("CODESCRIBE_BUFFERED_STREAM").unwrap(),
-        "1",
-        "env var should be set to 1"
-    );
-
-    config
-        .save_to_env("CODESCRIBE_BUFFERED_STREAM", "0")
-        .expect("save off");
-    assert_eq!(
-        std::env::var("CODESCRIBE_BUFFERED_STREAM").unwrap(),
-        "0",
-        "env var should be set to 0"
-    );
-
-    // Buffered stream is a regular-user key → persisted to settings.json
-    let settings = codescribe::config::UserSettings::load();
-    assert_eq!(
-        settings.buffered_stream,
-        Some(false),
-        "last value persisted in JSON"
-    );
-}
-
-#[test]
-#[serial]
 fn test_settings_typing_cps_decimal_persistence() {
     let _tmp = setup_test_env();
 
@@ -335,7 +298,7 @@ fn test_settings_full_round_trip() {
         .save_to_env("AI_FORMATTING_ENABLED", "0")
         .expect("save");
     config
-        .save_to_env("CODESCRIBE_BUFFERED_STREAM", "1")
+        .save_to_env("CODESCRIBE_TYPING_CPS", "90")
         .expect("save");
 
     // Reload and verify all
@@ -345,7 +308,7 @@ fn test_settings_full_round_trip() {
     assert!(!r.hold_exclusive);
     assert_eq!(r.whisper_language.as_str(), "en");
     assert!(!r.ai_formatting_enabled);
-    assert_eq!(std::env::var("CODESCRIBE_BUFFERED_STREAM").unwrap(), "1");
+    assert_eq!(std::env::var("CODESCRIBE_TYPING_CPS").unwrap(), "90");
 }
 
 // ═══════════════════════════════════════════════════════════

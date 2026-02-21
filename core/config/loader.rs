@@ -390,18 +390,6 @@ impl Config {
         {
             unsafe { std::env::set_var("HOTKEY_DOUBLE_TAP_RIGHT", if v { "1" } else { "0" }) };
         }
-        // Buffered stream (read from env at runtime)
-        if std::env::var("CODESCRIBE_BUFFERED_STREAM").is_err()
-            && let Some(enabled) = settings.buffered_stream
-        {
-            unsafe {
-                std::env::set_var(
-                    "CODESCRIBE_BUFFERED_STREAM",
-                    if enabled { "1" } else { "0" },
-                )
-            };
-        }
-
         // ── Promoted fields (previously .env only) ──
 
         // LLM formatting (not in Config struct, read from env at runtime)
@@ -587,7 +575,6 @@ impl Config {
                     }
                 }
                 "AI_FORMATTING_ENABLED"
-                | "CODESCRIBE_BUFFERED_STREAM"
                 | "BEEP_ON_START"
                 | "SHOW_DOCK_ICON"
                 | "HOLD_EXCLUSIVE"
@@ -736,7 +723,6 @@ impl Config {
                     }
                     // ── Bools ──
                     "AI_FORMATTING_ENABLED"
-                    | "CODESCRIBE_BUFFERED_STREAM"
                     | "BEEP_ON_START"
                     | "SHOW_DOCK_ICON"
                     | "HOLD_EXCLUSIVE"
@@ -753,7 +739,6 @@ impl Config {
                             "AI_FORMATTING_ENABLED" => {
                                 settings_ref.ai_formatting_enabled = Some(bv)
                             }
-                            "CODESCRIBE_BUFFERED_STREAM" => settings_ref.buffered_stream = Some(bv),
                             "BEEP_ON_START" => settings_ref.beep_on_start = Some(bv),
                             "SHOW_DOCK_ICON" => settings_ref.show_dock_icon = Some(bv),
                             "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),

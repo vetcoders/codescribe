@@ -30,8 +30,6 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub buffered_stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub beep_on_start: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_volume: Option<f32>,
@@ -117,7 +115,6 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "HOTKEY_DOUBLE_TAP_RIGHT",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
-    "CODESCRIBE_BUFFERED_STREAM",
     "FORMATTING_LEVEL",
     // Sound
     "BEEP_ON_START",
@@ -305,7 +302,6 @@ impl UserSettings {
         let before = self.clone();
         match key {
             "AI_FORMATTING_ENABLED" => self.ai_formatting_enabled = Some(value),
-            "CODESCRIBE_BUFFERED_STREAM" => self.buffered_stream = Some(value),
             "BEEP_ON_START" => self.beep_on_start = Some(value),
             "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),

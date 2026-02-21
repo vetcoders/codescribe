@@ -115,39 +115,32 @@ struct VoiceLabFieldSpec {
 // Voice Lab: only fields where user choice actually improves UX.
 // Tuned pipeline internals (chunk_sec, similarity, correction thresholds etc.)
 // stay as env-var escape hatches — their defaults are proven optimal.
-const VOICE_LAB_FIELDS: [VoiceLabFieldSpec; 7] = [
-    VoiceLabFieldSpec {
-        key: "CODESCRIBE_BUFFERED_STREAM",
-        label: "Buffered flag (compat)",
-        default_value: "1",
-        description: "Deprecated compatibility flag; runtime pipeline remains event-based.",
-        kind: VoiceLabFieldKind::Bool,
-    },
+const VOICE_LAB_FIELDS: [VoiceLabFieldSpec; 6] = [
     VoiceLabFieldSpec {
         key: "CODESCRIBE_BUFFER_DELAY_MS",
         label: "Buffer delay (ms)",
-        default_value: "1800",
+        default_value: "280",
         description: "Delay before buffered emission starts.",
         kind: VoiceLabFieldKind::Value,
     },
     VoiceLabFieldSpec {
         key: "CODESCRIBE_TYPING_CPS",
         label: "Typing speed (CPS)",
-        default_value: "36",
+        default_value: "90",
         description: "Characters-per-second animation speed.",
         kind: VoiceLabFieldKind::Value,
     },
     VoiceLabFieldSpec {
         key: "CODESCRIBE_EMIT_WORDS_MAX",
         label: "Emit words max",
-        default_value: "3",
+        default_value: "2",
         description: "Max words emitted per tick in buffered mode.",
         kind: VoiceLabFieldKind::Value,
     },
     VoiceLabFieldSpec {
         key: "CODESCRIBE_BUFFERED_INTERIM_SEC",
         label: "Interim cadence (sec)",
-        default_value: "3.0",
+        default_value: "1.2",
         description: "How often partial results are shown.",
         kind: VoiceLabFieldKind::Value,
     },
@@ -3643,7 +3636,7 @@ mod tests {
         let spec = VoiceLabFieldSpec {
             key: "CODESCRIBE_BUFFERED_INTERIM_SEC",
             label: "Interim cadence",
-            default_value: "3.0",
+            default_value: "1.2",
             description: "",
             kind: VoiceLabFieldKind::Value,
         };

@@ -549,7 +549,6 @@ pub fn diagnostics_report() -> String {
         "DOUBLE_TAP_INTERVAL_MS",
         "TOGGLE_SILENCE_SEC",
         "TOGGLE_TRIGGER",
-        "CODESCRIBE_BUFFERED_STREAM",
         "CODESCRIBE_STREAM_CHUNK_SEC",
     ] {
         if let Ok(val) = std::env::var(key) {

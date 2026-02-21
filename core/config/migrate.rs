@@ -76,9 +76,6 @@ pub fn migrate_if_needed() {
     if let Ok(v) = std::env::var("AI_FORMATTING_ENABLED") {
         settings.ai_formatting_enabled = Some(v == "1" || v.eq_ignore_ascii_case("true"));
     }
-    if let Ok(v) = std::env::var("CODESCRIBE_BUFFERED_STREAM") {
-        settings.buffered_stream = Some(v == "1" || v.eq_ignore_ascii_case("true"));
-    }
     if let Ok(v) = std::env::var("BEEP_ON_START") {
         settings.beep_on_start = Some(v == "1" || v.eq_ignore_ascii_case("true"));
     }

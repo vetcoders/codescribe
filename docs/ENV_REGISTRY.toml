@@ -151,13 +151,6 @@ range = "0.0-1.0"
 # Streaming / Buffering
 # ═══════════════════════════════════════════════════════════════════════════════
 
-[vars.CODESCRIBE_BUFFERED_STREAM]
-default = "1"
-type = "bool"
-reload = "hot"
-category = "streaming"
-description = "Deprecated compatibility flag. Runtime pipeline is always event-based; this no longer switches architecture."
-
 [vars.CODESCRIBE_EVENT_PIPELINE]
 default = "1"
 type = "bool"
@@ -166,21 +159,21 @@ category = "streaming"
 description = "Deprecated migration flag. Event pipeline is always active in app runtime."
 
 [vars.CODESCRIBE_BUFFER_DELAY_MS]
-default = "1800"
+default = "280"
 type = "u64"
 reload = "hot"
 category = "streaming"
 description = "Buffer delay in milliseconds (skipped for first emission to give instant feedback)"
 
 [vars.CODESCRIBE_TYPING_CPS]
-default = "36"
+default = "90"
 type = "f32"
 reload = "hot"
 category = "streaming"
 description = "Typing speed in characters per second"
 
 [vars.CODESCRIBE_EMIT_WORDS_MAX]
-default = "3"
+default = "2"
 type = "u64"
 reload = "hot"
 category = "streaming"
@@ -261,7 +254,7 @@ description = "Minimum elapsed seconds before buffered correction pass"
 range = "1.0-60.0"
 
 [vars.CODESCRIBE_BUFFERED_CORRECTION_PREFIX]
-default = "0.60"
+default = "0.50"
 type = "f32"
 reload = "hot"
 category = "streaming"
@@ -269,7 +262,7 @@ description = "Prefix ratio required to accept buffered correction"
 range = "0.4-0.9"
 
 [vars.CODESCRIBE_BUFFERED_INTERIM_SEC]
-default = "3.0"
+default = "1.2"
 type = "f32"
 reload = "hot"
 category = "streaming"
@@ -277,7 +270,7 @@ description = "Interim emission cadence for buffered mode (sec)"
 range = "1.0-30.0"
 
 [vars.CODESCRIBE_UTTERANCE_INTERIM_SEC]
-default = "3.0"
+default = "1.2"
 type = "f32"
 reload = "hot"
 category = "streaming"
@@ -793,6 +786,13 @@ type = "i64"
 reload = "restart"
 category = "ui"
 description = "Custom overlay Y position (when mode=custom)"
+
+[vars.CODESCRIBE_OVERLAY_STABLE_PREVIEW]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "ui"
+description = "Use stable-word-only preview for live overlay text (0 = show exact live text)"
 
 [vars.CODESCRIBE_DISABLE_GLASS]
 default = "0"

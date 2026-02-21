@@ -461,14 +461,6 @@
         <!-- Streaming / VAD -->
         <section class="card optional">
           <h2>📊 Streaming & VAD (Advanced)</h2>
-          <div class="toggle-row">
-            <div
-              class="toggle on"
-              id="toggle-buffered"
-              onclick="toggleSwitch(this)"
-            ></div>
-            <span class="toggle-label">Buffered Stream Mode (VAD-based)</span>
-          </div>
           <div class="split-3 split">
             <div class="field">
               <label>CHUNK_SEC <span class="default">15.0</span></label>
@@ -686,8 +678,6 @@
         lines.push(
           `# =============================================================================`
         );
-        const buffered = isOn("toggle-buffered");
-        lines.push(`CODESCRIBE_BUFFERED_STREAM=${buffered ? "1" : "0"}`);
         lines.push(
           `CODESCRIBE_STREAM_CHUNK_SEC=${
             document.getElementById("chunk-sec").value
@@ -797,7 +787,6 @@
           .forEach((el) => (el.selectedIndex = 0));
         document.getElementById("toggle-local-stt").classList.add("on");
         document.getElementById("toggle-ai").classList.remove("on");
-        document.getElementById("toggle-buffered").classList.add("on");
         document.getElementById("toggle-beep").classList.add("on");
         document.getElementById("local-model").value =
           "whisper-large-v3-turbo-mlx-q8";
