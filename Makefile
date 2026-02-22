@@ -262,6 +262,9 @@ test-sse:
 	echo "=== SSE Streaming Tests ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
 	cargo test e2e_sse --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	echo "=== Responses Live Chain/Resume Tests ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); CODESCRIBE_E2E_RESPONSES=1 \
+	cargo test --test e2e_retry_responses -- --nocapture 2>&1 | tee -a "$$LOG"; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-formatting:
