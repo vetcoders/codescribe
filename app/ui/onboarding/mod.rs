@@ -199,6 +199,16 @@ fn clear_onboarding_progress() {
     let _ = fs::remove_file(onboarding_progress_path());
 }
 
+fn mode_api_key_configured() -> bool {
+    ["LLM_FORMATTING_API_KEY", "LLM_ASSISTIVE_API_KEY"]
+        .into_iter()
+        .any(|account| {
+            keychain::load_key(account)
+                .map(|k| !k.trim().is_empty())
+                .unwrap_or(false)
+        })
+}
+
 fn process_is_alive(pid: u32) -> bool {
     let result = unsafe { libc::kill(pid as i32, 0) };
     if result == 0 {
@@ -571,9 +581,7 @@ fn show_onboarding_wizard_impl() -> bool {
                 scheduled_auto_advance_step: None,
                 full_disk_polling: false,
                 closing_via_finish: false,
-                api_key_configured: keychain::load_key("LLM_API_KEY")
-                    .map(|k| !k.trim().is_empty())
-                    .unwrap_or(false),
+                api_key_configured: mode_api_key_configured(),
                 ui,
             };
             refresh_all_permission_states_locked(&mut state);
@@ -1435,9 +1443,16 @@ fn persist_api_key_from_field() -> bool {
         return true;
     }
 
-    match keychain::save_key("LLM_API_KEY", &key) {
+    match keychain::save_key("LLM_FORMATTING_API_KEY", &key).and_then(|_| {
+        keychain::save_key("LLM_ASSISTIVE_API_KEY", &key).inspect_err(|_| {
+            let _ = keychain::delete_key("LLM_FORMATTING_API_KEY");
+        })
+    }) {
         Ok(()) => {
-            unsafe { std::env::set_var("LLM_API_KEY", &key) };
+            unsafe {
+                std::env::set_var("LLM_FORMATTING_API_KEY", &key);
+                std::env::set_var("LLM_ASSISTIVE_API_KEY", &key);
+            };
             let mut settings = UserSettings::load();
             settings.ai_formatting_enabled = Some(true);
             if let Err(e) = settings.save() {

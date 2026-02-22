@@ -46,7 +46,6 @@ fn load_codescribe_env() {
 /// Get API key for formatting mode (new schema)
 fn get_formatting_api_key() -> Option<String> {
     std::env::var("LLM_FORMATTING_API_KEY")
-        .or_else(|_| std::env::var("LLM_API_KEY"))
         .ok()
         .filter(|k| !k.is_empty() && !k.starts_with("sk-test"))
 }
@@ -54,7 +53,6 @@ fn get_formatting_api_key() -> Option<String> {
 /// Get API key for assistive mode (new schema)
 fn get_assistive_api_key() -> Option<String> {
     std::env::var("LLM_ASSISTIVE_API_KEY")
-        .or_else(|_| std::env::var("LLM_API_KEY"))
         .ok()
         .filter(|k| !k.is_empty() && !k.starts_with("sk-test"))
 }

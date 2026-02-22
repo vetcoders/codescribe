@@ -173,12 +173,18 @@ fn get_env_non_empty(candidates: &[&str], what: &str) -> Result<String> {
         }
     }
 
-    anyhow::bail!(
-        "{} is required. Set {} (or legacy {}).",
-        what,
-        candidates.first().unwrap_or(&"LLM_*"),
-        candidates.get(1).unwrap_or(&"<none>")
-    );
+    match candidates {
+        [single] => anyhow::bail!("{} is required. Set {}.", what, single),
+        [first, second, ..] => {
+            anyhow::bail!(
+                "{} is required. Set {} (or fallback {}).",
+                what,
+                first,
+                second
+            )
+        }
+        [] => anyhow::bail!("{} is required.", what),
+    }
 }
 
 // ============================================================================
@@ -186,72 +192,49 @@ fn get_env_non_empty(candidates: &[&str], what: &str) -> Result<String> {
 // ============================================================================
 //
 // Contract: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
-// Fallback: LLM_{ENDPOINT,MODEL,API_KEY} (shared defaults)
 //
 // FORMATTING mode (cheap, fast): punctuation, structure, cleanup
 // ASSISTIVE mode (smart): Voice Chat, AI assistant
 //
 // NO legacy variables. Clean contract only.
 
-/// Helper: get specific var or fall back to shared default
-fn get_mode_config(specific_key: &str, default_key: &str, what: &str) -> Result<String> {
-    // Try specific first
+/// Helper: require mode-specific key (no fallback to shared keys)
+fn get_mode_config(specific_key: &str, what: &str) -> Result<String> {
     if let Ok(val) = env::var(specific_key) {
         let val = val.trim();
         if !val.is_empty() {
             return Ok(val.to_string());
         }
     }
-    // Fall back to shared default
-    get_env_non_empty(&[default_key], what)
+    get_env_non_empty(&[specific_key], what)
 }
 
 // ---- FORMATTING mode config ----
 
 fn get_formatting_endpoint() -> Result<String> {
-    get_mode_config(
-        "LLM_FORMATTING_ENDPOINT",
-        "LLM_ENDPOINT",
-        "LLM endpoint (formatting)",
-    )
+    get_mode_config("LLM_FORMATTING_ENDPOINT", "LLM endpoint (formatting)")
 }
 
 fn get_formatting_model() -> Result<String> {
-    get_mode_config(
-        "LLM_FORMATTING_MODEL",
-        "LLM_MODEL",
-        "LLM model (formatting)",
-    )
+    get_mode_config("LLM_FORMATTING_MODEL", "LLM model (formatting)")
 }
 
 fn get_formatting_api_key() -> Result<String> {
-    get_mode_config(
-        "LLM_FORMATTING_API_KEY",
-        "LLM_API_KEY",
-        "LLM API key (formatting)",
-    )
+    get_mode_config("LLM_FORMATTING_API_KEY", "LLM API key (formatting)")
 }
 
 // ---- ASSISTIVE mode config ----
 
 fn get_assistive_endpoint() -> Result<String> {
-    get_mode_config(
-        "LLM_ASSISTIVE_ENDPOINT",
-        "LLM_ENDPOINT",
-        "LLM endpoint (assistive)",
-    )
+    get_mode_config("LLM_ASSISTIVE_ENDPOINT", "LLM endpoint (assistive)")
 }
 
 fn get_assistive_model() -> Result<String> {
-    get_mode_config("LLM_ASSISTIVE_MODEL", "LLM_MODEL", "LLM model (assistive)")
+    get_mode_config("LLM_ASSISTIVE_MODEL", "LLM model (assistive)")
 }
 
 fn get_assistive_api_key() -> Result<String> {
-    get_mode_config(
-        "LLM_ASSISTIVE_API_KEY",
-        "LLM_API_KEY",
-        "LLM API key (assistive)",
-    )
+    get_mode_config("LLM_ASSISTIVE_API_KEY", "LLM API key (assistive)")
 }
 
 /// Get temperature from env var. Returns None if empty/unset (skip parameter).

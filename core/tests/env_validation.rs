@@ -59,11 +59,12 @@ fn missing_required_envs(config: &Config) -> Vec<&'static str> {
     }
 
     if config.ai_formatting_enabled {
-        let has_key = std::env::var("LLM_API_KEY").is_ok()
-            || std::env::var("LLM_FORMATTING_API_KEY").is_ok()
-            || std::env::var("LLM_ASSISTIVE_API_KEY").is_ok();
+        let has_key = std::env::var("LLM_FORMATTING_API_KEY")
+            .ok()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
         if !has_key {
-            missing.push("LLM_API_KEY (or mode-specific)");
+            missing.push("LLM_FORMATTING_API_KEY");
         }
     }
 
@@ -120,15 +121,13 @@ fn required_cloud_stt_vars_when_local_disabled() {
 #[serial]
 fn required_llm_key_when_ai_enabled() {
     let _g1 = EnvGuard::set("AI_FORMATTING_ENABLED", "1");
-    let _g2 = EnvGuard::unset("LLM_API_KEY");
-    let _g3 = EnvGuard::unset("LLM_FORMATTING_API_KEY");
-    let _g4 = EnvGuard::unset("LLM_ASSISTIVE_API_KEY");
+    let _g2 = EnvGuard::unset("LLM_FORMATTING_API_KEY");
 
     let mut cfg = Config::default();
     cfg.load_from_env();
 
     let missing = missing_required_envs(&cfg);
-    assert!(missing.contains(&"LLM_API_KEY (or mode-specific)"));
+    assert!(missing.contains(&"LLM_FORMATTING_API_KEY"));
 }
 
 #[test]

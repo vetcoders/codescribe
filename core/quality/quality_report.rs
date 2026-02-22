@@ -1297,8 +1297,9 @@ fn snapshot_environment(metrics_reference: MetricsReference) -> ReportEnvironmen
             .unwrap_or(false),
         llm_formatting_endpoint: std::env::var("LLM_FORMATTING_ENDPOINT").ok(),
         llm_formatting_model: std::env::var("LLM_FORMATTING_MODEL").ok(),
-        llm_formatting_key_present: std::env::var("LLM_FORMATTING_API_KEY").is_ok()
-            || std::env::var("LLM_API_KEY").is_ok(),
+        llm_formatting_key_present: std::env::var("LLM_FORMATTING_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
         local_model: Some(config.local_model),
         whisper_language: Some(config.whisper_language.as_str().to_string()),
         metrics_reference: metrics_reference.as_str().to_string(),

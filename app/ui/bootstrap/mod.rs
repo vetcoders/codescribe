@@ -892,6 +892,10 @@ fn key_status_symbol_name(is_set: bool) -> &'static str {
     }
 }
 
+fn formatting_key_is_set() -> bool {
+    keychain_key_is_set("LLM_FORMATTING_API_KEY")
+}
+
 unsafe fn update_key_status_indicator(indicator: Id, is_set: bool) {
     let _ =
         unsafe { crate::ui_helpers::set_button_symbol(indicator, key_status_symbol_name(is_set)) };
@@ -926,11 +930,11 @@ fn update_keychain_status_labels() {
     };
     unsafe {
         if let Some(ptr) = llm_icon {
-            let is_set = keychain_key_is_set("LLM_API_KEY");
+            let is_set = formatting_key_is_set();
             update_key_status_indicator(ptr as Id, is_set);
         }
         if let Some(ptr) = llm_label {
-            let is_set = keychain_key_is_set("LLM_API_KEY");
+            let is_set = formatting_key_is_set();
             let label = ptr as Id;
             set_text_field_string(label, key_status_text(is_set));
             let _: () = msg_send![label, setTextColor: key_status_color(is_set)];
@@ -2068,7 +2072,7 @@ unsafe fn build_hotkeys_tab(
 unsafe fn build_api_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
-    config: &Config,
+    _config: &Config,
     state: &mut BootstrapState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -2120,10 +2124,10 @@ unsafe fn build_api_tab(
         add_subview(container, fmt_header);
         y -= 18.0 + gap;
 
-        let llm_endpoint_val = config
-            .llm_endpoint
-            .clone()
-            .unwrap_or_else(|| std::env::var("LLM_ENDPOINT").unwrap_or_default());
+        let llm_endpoint_val = std::env::var("LLM_FORMATTING_ENDPOINT")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_default();
         let llm_endpoint_field = create_text_input(
             CGRect::new(
                 &CGPoint::new(pad, y),
@@ -2143,7 +2147,10 @@ unsafe fn build_api_tab(
         state.llm_endpoint_field = Some(llm_endpoint_field as usize);
         y -= SETTINGS_INPUT_HEIGHT + gap;
 
-        let llm_model_val = std::env::var("LLM_MODEL").unwrap_or_default();
+        let llm_model_val = std::env::var("LLM_FORMATTING_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_default();
         let llm_model_field = create_text_input(
             CGRect::new(
                 &CGPoint::new(pad, y),
@@ -2173,7 +2180,7 @@ unsafe fn build_api_tab(
         state.llm_key_field = Some(llm_key_field as usize);
         y -= SETTINGS_INPUT_HEIGHT + gap;
 
-        let llm_key_status = keychain_key_is_set("LLM_API_KEY");
+        let llm_key_status = formatting_key_is_set();
         let llm_status_icon = create_key_status_indicator(
             CGRect::new(
                 &CGPoint::new(pad, y + 1.0),
@@ -3209,9 +3216,9 @@ pub(super) extern "C" fn on_llm_endpoint_changed(
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
         let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
-        info!("Settings: LLM endpoint -> {}", value);
+        info!("Settings: formatting endpoint -> {}", value);
         let config = Config::load();
-        let _ = config.save_to_env("LLM_ENDPOINT", &value);
+        let _ = config.save_to_env("LLM_FORMATTING_ENDPOINT", &value);
     }
 }
 
@@ -3224,9 +3231,9 @@ pub(super) extern "C" fn on_llm_model_changed(
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
         let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
-        info!("Settings: LLM model -> {}", value);
+        info!("Settings: formatting model -> {}", value);
         let config = Config::load();
-        let _ = config.save_to_env("LLM_MODEL", &value);
+        let _ = config.save_to_env("LLM_FORMATTING_MODEL", &value);
     }
 }
 
@@ -3236,9 +3243,9 @@ pub(super) extern "C" fn on_llm_key_changed(_this: &Object, _cmd: objc::runtime:
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
         let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
         if !value.is_empty() {
-            info!("Settings: LLM API key updated (stored in Keychain)");
+            info!("Settings: formatting API key updated (stored in Keychain)");
             let config = Config::load();
-            let _ = config.save_to_env("LLM_API_KEY", &value);
+            let _ = config.save_to_env("LLM_FORMATTING_API_KEY", &value);
             update_keychain_status_labels();
         }
     }
@@ -3249,7 +3256,7 @@ pub(super) extern "C" fn on_clear_llm_key(_this: &Object, _cmd: objc::runtime::S
         let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.llm_key_field
     };
-    clear_keychain_entry("LLM_API_KEY", field_ptr);
+    clear_keychain_entry("LLM_FORMATTING_API_KEY", field_ptr);
 }
 
 pub(super) extern "C" fn on_save_api_settings(
@@ -3273,16 +3280,16 @@ pub(super) extern "C" fn on_save_api_settings(
     unsafe {
         if let Some(ptr) = llm_endpoint {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
-            entries.push(("LLM_ENDPOINT", value.trim().to_string()));
+            entries.push(("LLM_FORMATTING_ENDPOINT", value.trim().to_string()));
         }
         if let Some(ptr) = llm_model {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
-            entries.push(("LLM_MODEL", value.trim().to_string()));
+            entries.push(("LLM_FORMATTING_MODEL", value.trim().to_string()));
         }
         if let Some(ptr) = llm_key {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
             if !value.trim().is_empty() {
-                entries.push(("LLM_API_KEY", value.trim().to_string()));
+                entries.push(("LLM_FORMATTING_API_KEY", value.trim().to_string()));
             }
         }
         if let Some(ptr) = assist_endpoint {
