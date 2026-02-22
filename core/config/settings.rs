@@ -247,6 +247,8 @@ struct FeedbackV2 {
 struct UiV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     chat_zoom: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    show_dock_icon: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -389,6 +391,7 @@ impl UserSettings {
             }),
             ui: Some(UiV2 {
                 chat_zoom: self.chat_zoom,
+                show_dock_icon: self.show_dock_icon,
             }),
             features: Some(FeaturesV2 {
                 history_enabled: self.history_enabled,
@@ -480,7 +483,7 @@ impl UserSettings {
                 .and_then(|t| t.double_tap_sides.as_ref())
                 .and_then(|s| s.right),
             chat_zoom: v2.ui.as_ref().and_then(|ui| ui.chat_zoom),
-            show_dock_icon: None,
+            show_dock_icon: v2.ui.as_ref().and_then(|ui| ui.show_dock_icon),
             llm_formatting_endpoint: v2
                 .speech
                 .as_ref()

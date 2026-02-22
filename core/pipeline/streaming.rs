@@ -2365,8 +2365,9 @@ mod tests {
         let now = Instant::now();
         let mut state = PartialPassTriggerState::new(now);
 
-        state.observe_speech_event(true, 0);
-        state.observe_speech_event(true, 0);
+        for _ in 0..PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS.saturating_sub(1) {
+            state.observe_speech_event(true, 0);
+        }
         assert_eq!(
             classify_partial_trigger(state.evaluate(now + Duration::from_secs(1))),
             None
@@ -2376,7 +2377,8 @@ mod tests {
         assert_eq!(
             classify_partial_trigger(state.evaluate(now + Duration::from_secs(1))),
             Some(PartialPassTrigger::Utterance),
-            "3 UtteranceFinal events should trigger partial pass"
+            "{} UtteranceFinal events should trigger partial pass",
+            PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS
         );
     }
 
@@ -2384,21 +2386,28 @@ mod tests {
     fn test_partial_trigger_contract_silero_speech_path() {
         let now = Instant::now();
         let mut state = PartialPassTriggerState::new(now);
-        let one_second = u64::from(vad::VAD_SAMPLE_RATE);
+        let samples_per_ms = u64::from(vad::VAD_SAMPLE_RATE) / 1_000;
+        assert!(
+            samples_per_ms > 0,
+            "VAD sample rate must support ms conversion in tests"
+        );
+        let threshold_samples = PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS
+            .saturating_mul(u64::from(vad::VAD_SAMPLE_RATE))
+            / 1_000;
+        let below_threshold_samples = threshold_samples.saturating_sub(samples_per_ms);
 
-        for _ in 0..5 {
-            state.observe_speech_event(false, one_second);
-        }
+        state.observe_speech_event(false, below_threshold_samples);
         assert_eq!(
             classify_partial_trigger(state.evaluate(now + Duration::from_secs(1))),
             None
         );
 
-        state.observe_speech_event(false, one_second);
+        state.observe_speech_event(false, samples_per_ms);
         assert_eq!(
             classify_partial_trigger(state.evaluate(now + Duration::from_secs(1))),
             Some(PartialPassTrigger::Speech),
-            "6s of Silero-positive speech should trigger partial pass"
+            "{}ms of Silero-positive speech should trigger partial pass",
+            PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS
         );
     }
 
@@ -2408,13 +2417,18 @@ mod tests {
         let state = PartialPassTriggerState::new(now);
 
         assert_eq!(
-            classify_partial_trigger(state.evaluate(now + Duration::from_millis(11_999))),
+            classify_partial_trigger(state.evaluate(
+                now + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS.saturating_sub(1))
+            )),
             None
         );
         assert_eq!(
-            classify_partial_trigger(state.evaluate(now + Duration::from_millis(12_000))),
+            classify_partial_trigger(
+                state.evaluate(now + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS))
+            ),
             Some(PartialPassTrigger::Watchdog),
-            "12s watchdog should trigger partial pass"
+            "{}ms watchdog should trigger partial pass",
+            PARTIAL_PASS_TRIGGER_WATCHDOG_MS
         );
     }
 
@@ -2542,7 +2556,7 @@ mod tests {
             "reset should clear all trigger counters and watchdog elapsed time"
         );
 
-        for _ in 0..2 {
+        for _ in 0..PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS.saturating_sub(1) {
             state.observe_speech_event(true, two_seconds);
         }
         assert_eq!(

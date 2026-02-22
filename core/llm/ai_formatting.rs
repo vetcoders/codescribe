@@ -926,9 +926,10 @@ pub async fn format_text_with_status_channels(
             (EndpointFormat::ResponsesApi, true) => "responses-sse",
             (EndpointFormat::ResponsesApi, false) => "responses-json",
         };
-        // Streaming calls: NO outer attempt_timeout. The stream runs until completion
-        // or inter_chunk_timeout detects a stall. Streams can run for minutes/hours
-        // (agentic sessions, long generation). Only inter_chunk_timeout guards liveness.
+        // Streaming calls:
+        // - attempt_timeout guards initial response latency (request -> first response readiness)
+        // - inter_chunk_timeout guards stalled streams after they start
+        // We intentionally do not cap total stream duration here.
         //
         // Non-streaming / Ollama calls: attempt_timeout caps the total wait for a
         // single JSON response.
@@ -943,6 +944,7 @@ pub async fn format_text_with_status_channels(
                     assistant: on_assistant_delta.clone(),
                     reasoning: on_reasoning_delta.clone(),
                 },
+                retry_policy.attempt_timeout,
                 retry_policy.inter_chunk_timeout,
             )
             .await
@@ -977,6 +979,7 @@ pub async fn format_text_with_status_channels(
                         assistant: on_assistant_delta.clone(),
                         reasoning: on_reasoning_delta.clone(),
                     },
+                    attempt_timeout,
                     retry_policy.inter_chunk_timeout,
                 ),
             )
@@ -1103,6 +1106,7 @@ pub async fn format_text_with_status_channels(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn call_provider_once(
     endpoint_format: EndpointFormat,
     user_message: &str,
@@ -1110,6 +1114,7 @@ async fn call_provider_once(
     assistive: bool,
     streaming_enabled: bool,
     stream_channels: StreamChannels,
+    initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
 ) -> Result<ProviderOutput> {
     match endpoint_format {
@@ -1122,6 +1127,7 @@ async fn call_provider_once(
                     assistive,
                     stream_channels.assistant,
                     stream_channels.reasoning,
+                    initial_response_timeout,
                     inter_chunk_timeout,
                 )
                 .await
@@ -1245,6 +1251,7 @@ async fn call_llm_endpoint_streaming(
     assistive: bool,
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
+    initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
 ) -> Result<ProviderOutput> {
     use futures_util::StreamExt;
@@ -1308,18 +1315,26 @@ async fn call_llm_endpoint_streaming(
         stream: true,
     };
 
-    let response = get_client()
+    let request_builder = get_client()
         .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
-        // Override client-level timeout (90s) for streaming.
-        // Streams can run indefinitely; inter_chunk_timeout guards liveness.
+        // Keep a broad request timeout for very long streams.
+        // Initial response latency is guarded separately via tokio::time::timeout.
         .timeout(Duration::from_secs(3600))
-        .json(&request)
-        .send()
-        .await
-        .context("SSE request failed")?;
+        .json(&request);
+    let response =
+        match tokio::time::timeout(initial_response_timeout, request_builder.send()).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => return Err(e).context("SSE request failed"),
+            Err(_) => {
+                anyhow::bail!(
+                    "SSE initial response timeout after {:?}",
+                    initial_response_timeout
+                );
+            }
+        };
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1361,7 +1376,7 @@ async fn call_llm_endpoint_streaming(
             Ok(chunk) => chunk,
             Err(_) => {
                 // Inter-chunk timeout — stream stalled.
-                // If we have partial text, try resume or return what we have.
+                // If we have partial text, try resume; otherwise fail and let outer retry decide.
                 if !assistant_text.is_empty() || assistant_done.is_some() {
                     let partial_len = assistant_text.len();
                     if !response_id.is_empty()
@@ -1392,17 +1407,22 @@ async fn call_llm_endpoint_streaming(
                                 break;
                             }
                             Err(e) => {
-                                warn!("Resume failed: {}; returning partial text", e);
-                                break;
+                                anyhow::bail!(
+                                    "SSE inter-chunk timeout after {:?} with {}B partial text; \
+                                     resume failed: {}",
+                                    inter_chunk_timeout,
+                                    partial_len,
+                                    e
+                                );
                             }
                         }
                     }
-                    warn!(
-                        "SSE inter-chunk timeout after {:?} with {}B partial text; \
-                         returning partial result",
-                        inter_chunk_timeout, partial_len
+                    anyhow::bail!(
+                        "SSE inter-chunk timeout after {:?} with {}B partial text \
+                         (resume unavailable)",
+                        inter_chunk_timeout,
+                        partial_len
                     );
-                    break;
                 } else {
                     anyhow::bail!(
                         "SSE stream inter-chunk timeout after {:?} (no data received)",
