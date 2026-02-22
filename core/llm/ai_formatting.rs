@@ -27,6 +27,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 
+use super::responses_streaming_manager::{ResponsesStreamingManager, StreamCallbacks};
+
 /// HTTP client for AI providers
 static AI_CLIENT: OnceLock<Client> = OnceLock::new();
 
@@ -54,9 +56,10 @@ struct ProviderOutput {
 }
 
 #[derive(Clone)]
-struct StreamChannels {
-    assistant: Option<AiStreamCallback>,
-    reasoning: Option<AiReasoningCallback>,
+struct StreamRequestContext {
+    callbacks: StreamCallbacks,
+    initial_response_timeout: Duration,
+    inter_chunk_timeout: Duration,
 }
 
 #[derive(Clone)]
@@ -556,30 +559,6 @@ struct ContentPart {
     summary: Option<String>,
 }
 
-/// SSE streaming chunk from Responses API
-#[derive(Debug, Deserialize)]
-struct StreamChunk {
-    #[serde(rename = "type")]
-    chunk_type: String,
-    #[serde(default)]
-    delta: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    response: Option<StreamResponse>,
-    #[serde(default)]
-    sequence_number: Option<u64>,
-}
-
-/// Response object in stream chunks (for response.completed event)
-#[derive(Debug, Deserialize)]
-struct StreamResponse {
-    #[serde(default)]
-    id: String,
-    #[serde(default)]
-    output: Vec<OutputItem>,
-}
-
 /// Legacy chat message (for Ollama compatibility)
 #[derive(Debug, Serialize, Clone)]
 struct ChatMessage {
@@ -933,6 +912,14 @@ pub async fn format_text_with_status_channels(
         //
         // Non-streaming / Ollama calls: attempt_timeout caps the total wait for a
         // single JSON response.
+        let stream_context = StreamRequestContext {
+            callbacks: StreamCallbacks {
+                assistant: on_assistant_delta.clone(),
+                reasoning: on_reasoning_delta.clone(),
+            },
+            initial_response_timeout: retry_policy.attempt_timeout,
+            inter_chunk_timeout: retry_policy.inter_chunk_timeout,
+        };
         let result_opt = if streaming_enabled && endpoint_format != EndpointFormat::OllamaChat {
             match call_provider_once(
                 endpoint_format,
@@ -940,12 +927,7 @@ pub async fn format_text_with_status_channels(
                 &system_prompt,
                 assistive,
                 streaming_enabled,
-                StreamChannels {
-                    assistant: on_assistant_delta.clone(),
-                    reasoning: on_reasoning_delta.clone(),
-                },
-                retry_policy.attempt_timeout,
-                retry_policy.inter_chunk_timeout,
+                stream_context.clone(),
             )
             .await
             {
@@ -975,12 +957,7 @@ pub async fn format_text_with_status_channels(
                     &system_prompt,
                     assistive,
                     streaming_enabled,
-                    StreamChannels {
-                        assistant: on_assistant_delta.clone(),
-                        reasoning: on_reasoning_delta.clone(),
-                    },
-                    attempt_timeout,
-                    retry_policy.inter_chunk_timeout,
+                    stream_context.clone(),
                 ),
             )
             .await
@@ -1106,31 +1083,20 @@ pub async fn format_text_with_status_channels(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn call_provider_once(
     endpoint_format: EndpointFormat,
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
     streaming_enabled: bool,
-    stream_channels: StreamChannels,
-    initial_response_timeout: Duration,
-    inter_chunk_timeout: Duration,
+    stream_context: StreamRequestContext,
 ) -> Result<ProviderOutput> {
     match endpoint_format {
         EndpointFormat::OllamaChat => call_ollama(user_message, system_prompt, assistive).await,
         EndpointFormat::ResponsesApi => {
             if streaming_enabled {
-                call_llm_endpoint_streaming(
-                    user_message,
-                    system_prompt,
-                    assistive,
-                    stream_channels.assistant,
-                    stream_channels.reasoning,
-                    initial_response_timeout,
-                    inter_chunk_timeout,
-                )
-                .await
+                call_llm_endpoint_streaming(user_message, system_prompt, assistive, stream_context)
+                    .await
             } else {
                 call_llm_endpoint(user_message, system_prompt, assistive).await
             }
@@ -1249,13 +1215,8 @@ async fn call_llm_endpoint_streaming(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
-    on_assistant_delta: Option<AiStreamCallback>,
-    on_reasoning_delta: Option<AiReasoningCallback>,
-    initial_response_timeout: Duration,
-    inter_chunk_timeout: Duration,
+    stream_context: StreamRequestContext,
 ) -> Result<ProviderOutput> {
-    use futures_util::StreamExt;
-
     // Mode-aware config: formatting vs assistive use different providers
     let (endpoint, model, api_key) = if assistive {
         (
@@ -1315,277 +1276,31 @@ async fn call_llm_endpoint_streaming(
         stream: true,
     };
 
-    let request_builder = get_client()
-        .post(&endpoint)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .header("Accept", "text/event-stream")
-        // Keep a broad request timeout for very long streams.
-        // Initial response latency is guarded separately via tokio::time::timeout.
-        .timeout(Duration::from_secs(3600))
-        .json(&request);
-    let response =
-        match tokio::time::timeout(initial_response_timeout, request_builder.send()).await {
-            Ok(Ok(resp)) => resp,
-            Ok(Err(e)) => return Err(e).context("SSE request failed"),
-            Err(_) => {
-                anyhow::bail!(
-                    "SSE initial response timeout after {:?}",
-                    initial_response_timeout
-                );
-            }
-        };
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("HTTP {} - {}", status, body);
-    }
-
-    // Parse SSE stream with strict channel separation:
-    // - response.output_text.* -> assistant_text
-    // - response.reasoning_summary_text.* -> reasoning_text
-    let mut assistant_text = String::new();
-    let mut reasoning_text = String::new();
-    let mut assistant_done: Option<String> = None;
-    let mut reasoning_done: Option<String> = None;
-    let mut completed_output: Option<ProviderOutput> = None;
-    let mut saw_completed = false;
-    let mut response_id = String::new();
-    let mut stream = response.bytes_stream();
-
-    let mut buffer = String::new();
-
-    let mut saw_done = false;
-    let mut last_sequence_number: Option<u64> = None;
-
-    // Safety timeout: cap total stream duration to prevent zombie connections.
-    // inter_chunk_timeout guards per-chunk stalls; this guards runaway streams
-    // that keep trickling data indefinitely.
-    let stream_deadline = tokio::time::Instant::now() + Duration::from_secs(10 * 60);
-
-    loop {
-        if tokio::time::Instant::now() > stream_deadline {
-            warn!(
-                "SSE global safety timeout (10min); returning {}B partial text",
-                assistant_text.len()
-            );
-            break;
-        }
-        let next_chunk = match tokio::time::timeout(inter_chunk_timeout, stream.next()).await {
-            Ok(chunk) => chunk,
-            Err(_) => {
-                // Inter-chunk timeout — stream stalled.
-                // If we have partial text, try resume; otherwise fail and let outer retry decide.
-                if !assistant_text.is_empty() || assistant_done.is_some() {
-                    let partial_len = assistant_text.len();
-                    if !response_id.is_empty()
-                        && let Some(seq) = last_sequence_number
-                    {
-                        info!(
-                            "SSE inter-chunk timeout with {}B partial text; \
-                             attempting resume (response_id={}, seq={})",
-                            partial_len, response_id, seq
-                        );
-                        match resume_sse_stream(
-                            &endpoint,
-                            &api_key,
-                            &response_id,
-                            seq,
-                            inter_chunk_timeout,
-                            &on_assistant_delta,
-                            &on_reasoning_delta,
-                        )
-                        .await
-                        {
-                            Ok(resumed) => {
-                                assistant_text.push_str(&resumed.assistant_text);
-                                if let Some(r) = resumed.reasoning_text {
-                                    reasoning_text.push_str(&r);
-                                }
-                                saw_completed = true;
-                                break;
-                            }
-                            Err(e) => {
-                                anyhow::bail!(
-                                    "SSE inter-chunk timeout after {:?} with {}B partial text; \
-                                     resume failed: {}",
-                                    inter_chunk_timeout,
-                                    partial_len,
-                                    e
-                                );
-                            }
-                        }
-                    }
-                    anyhow::bail!(
-                        "SSE inter-chunk timeout after {:?} with {}B partial text \
-                         (resume unavailable)",
-                        inter_chunk_timeout,
-                        partial_len
-                    );
-                } else {
-                    anyhow::bail!(
-                        "SSE stream inter-chunk timeout after {:?} (no data received)",
-                        inter_chunk_timeout
-                    );
-                }
-            }
-        };
-
-        let Some(chunk_result) = next_chunk else {
-            break;
-        };
-
-        let chunk = chunk_result.context("Stream read error")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-        // Process complete lines
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
-
-            if line.is_empty() || line.starts_with(':') {
-                continue;
-            }
-
-            // Parse SSE data lines
-            if let Some(data) = line
-                .strip_prefix("data: ")
-                .or_else(|| line.strip_prefix("data:"))
-            {
-                let data = data.trim_start();
-                if data == "[DONE]" {
-                    saw_done = true;
-                    break;
-                }
-
-                if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
-                    // Track sequence_number for stream resume capability
-                    if let Some(seq) = chunk.sequence_number {
-                        last_sequence_number = Some(seq);
-                    }
-                    // Capture response ID whenever it appears in stream metadata.
-                    // Some providers/chunk orders can surface it before completion events.
-                    if let Some(resp) = &chunk.response
-                        && !resp.id.is_empty()
-                    {
-                        response_id = resp.id.clone();
-                    }
-                    match chunk.chunk_type.as_str() {
-                        "response.output_text.delta" => {
-                            if let Some(delta) = chunk.delta {
-                                if let Some(cb) = &on_assistant_delta {
-                                    cb(&delta);
-                                }
-                                assistant_text.push_str(&delta);
-                            }
-                        }
-                        "response.output_text.done" => {
-                            if let Some(text) = chunk.text {
-                                let text = text.trim().to_string();
-                                if !text.is_empty() {
-                                    if assistant_text.is_empty()
-                                        && let Some(cb) = &on_assistant_delta
-                                    {
-                                        cb(&text);
-                                    }
-                                    assistant_done = Some(text);
-                                }
-                            }
-                        }
-                        "response.reasoning_summary_text.delta" => {
-                            if let Some(delta) = chunk.delta {
-                                if let Some(cb) = &on_reasoning_delta {
-                                    cb(&delta);
-                                }
-                                reasoning_text.push_str(&delta);
-                            }
-                        }
-                        "response.reasoning_summary_text.done" => {
-                            if let Some(text) = chunk.text {
-                                let text = text.trim().to_string();
-                                if !text.is_empty() {
-                                    if reasoning_text.is_empty()
-                                        && let Some(cb) = &on_reasoning_delta
-                                    {
-                                        cb(&text);
-                                    }
-                                    reasoning_done = Some(text);
-                                }
-                            }
-                        }
-                        "response.completed" | "response.done" => {
-                            saw_completed = true;
-                            if let Some(resp) = &chunk.response {
-                                let parsed = extract_output_channels(&resp.output);
-                                if !parsed.assistant_text.is_empty() {
-                                    completed_output = Some(parsed);
-                                } else {
-                                    warn!(
-                                        "SSE response.completed without parseable output_text payload; falling back to channel buffers"
-                                    );
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        if saw_done {
-            break;
-        }
-    }
-
-    let mut output = if saw_completed {
-        if let Some(completed) = completed_output {
-            completed
-        } else {
-            let fallback_assistant = assistant_done.unwrap_or(assistant_text);
-            let fallback_reasoning = reasoning_done.or_else(|| {
-                let trimmed = reasoning_text.trim().to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            });
-            ProviderOutput {
-                assistant_text: fallback_assistant,
-                reasoning_text: fallback_reasoning,
-            }
-        }
-    } else {
-        let fallback_assistant = assistant_done.unwrap_or(assistant_text);
-        let fallback_reasoning = reasoning_done.or_else(|| {
-            let trimmed = reasoning_text.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        });
-        ProviderOutput {
-            assistant_text: fallback_assistant,
-            reasoning_text: fallback_reasoning,
-        }
+    let StreamRequestContext {
+        callbacks,
+        initial_response_timeout,
+        inter_chunk_timeout,
+    } = stream_context;
+    let manager = ResponsesStreamingManager::new(
+        get_client(),
+        &endpoint,
+        &api_key,
+        callbacks,
+        initial_response_timeout,
+        inter_chunk_timeout,
+    );
+    let streamed = manager.stream(&request).await?;
+    let output = ProviderOutput {
+        assistant_text: streamed.assistant_text,
+        reasoning_text: streamed.reasoning_text,
     };
-    output.assistant_text = output.assistant_text.trim().to_string();
-    output.reasoning_text = output
-        .reasoning_text
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string);
-
-    if output.assistant_text.is_empty() {
-        anyhow::bail!("No text content in SSE stream");
-    }
-
-    // Store response_id for this mode's conversation chain (separate streams)
-    if !response_id.is_empty() {
+    if let Some(response_id) = streamed.response_id.filter(|id| !id.is_empty()) {
         crate::state::conversation::set_response_id_for_mode(ai_mode, response_id.clone());
+        debug!(
+            "SSE complete, response_id ({}): {}",
+            if assistive { "assistive" } else { "formatting" },
+            response_id
+        );
     } else if let Some(prev_id) = previous_response_id.as_deref()
         && !prev_id.is_empty()
     {
@@ -1600,150 +1315,7 @@ async fn call_llm_endpoint_streaming(
             if assistive { "assistive" } else { "formatting" }
         );
     }
-
-    debug!(
-        "SSE complete, response_id ({}): {}",
-        if assistive { "assistive" } else { "formatting" },
-        response_id
-    );
     Ok(output)
-}
-
-/// Resume an interrupted SSE stream using Responses API GET endpoint.
-///
-/// `GET /responses/{response_id}?stream=true&starting_after={sequence_number}`
-/// Picks up from where the stream broke, preserving all context.
-/// Falls back gracefully if the provider doesn't support resume.
-async fn resume_sse_stream(
-    endpoint: &str,
-    api_key: &str,
-    response_id: &str,
-    starting_after: u64,
-    inter_chunk_timeout: Duration,
-    on_assistant_delta: &Option<AiStreamCallback>,
-    on_reasoning_delta: &Option<AiReasoningCallback>,
-) -> Result<ProviderOutput> {
-    use futures_util::StreamExt;
-
-    // Derive resume URL from endpoint: /v1/responses → /v1/responses/{id}
-    let base = endpoint.trim_end_matches('/');
-    let resume_url = format!(
-        "{}/{}?stream=true&starting_after={}",
-        base, response_id, starting_after
-    );
-
-    debug!(
-        "Resuming SSE stream: {} (after seq={})",
-        resume_url, starting_after
-    );
-
-    let response = get_client()
-        .get(&resume_url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Accept", "text/event-stream")
-        .timeout(Duration::from_secs(3600))
-        .send()
-        .await
-        .context("SSE resume request failed")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Resume HTTP {} - {}", status, body);
-    }
-
-    let mut assistant_text = String::new();
-    let mut reasoning_text = String::new();
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
-
-    loop {
-        let next_chunk = match tokio::time::timeout(inter_chunk_timeout, stream.next()).await {
-            Ok(chunk) => chunk,
-            Err(_) => {
-                warn!(
-                    "Resume stream inter-chunk timeout after {:?}; returning what we have ({}B)",
-                    inter_chunk_timeout,
-                    assistant_text.len()
-                );
-                break;
-            }
-        };
-
-        let Some(chunk_result) = next_chunk else {
-            break;
-        };
-        let chunk = chunk_result.context("Resume stream read error")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
-
-            if line.is_empty() || line.starts_with(':') {
-                continue;
-            }
-
-            if let Some(data) = line
-                .strip_prefix("data: ")
-                .or_else(|| line.strip_prefix("data:"))
-            {
-                let data = data.trim_start();
-                if data == "[DONE]" {
-                    return Ok(ProviderOutput {
-                        assistant_text,
-                        reasoning_text: if reasoning_text.is_empty() {
-                            None
-                        } else {
-                            Some(reasoning_text)
-                        },
-                    });
-                }
-
-                if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
-                    match chunk.chunk_type.as_str() {
-                        "response.output_text.delta" => {
-                            if let Some(delta) = chunk.delta {
-                                if let Some(cb) = on_assistant_delta {
-                                    cb(&delta);
-                                }
-                                assistant_text.push_str(&delta);
-                            }
-                        }
-                        "response.reasoning_summary_text.delta" => {
-                            if let Some(delta) = chunk.delta {
-                                if let Some(cb) = on_reasoning_delta {
-                                    cb(&delta);
-                                }
-                                reasoning_text.push_str(&delta);
-                            }
-                        }
-                        "response.completed" | "response.done" => {
-                            // completed event carries the FULL response, not a
-                            // continuation.  Accumulated deltas already captured
-                            // the new content; returning the full text here would
-                            // cause duplication when the caller appends.
-                            debug!(
-                                "Resume stream completed ({}B accumulated text)",
-                                assistant_text.len()
-                            );
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(ProviderOutput {
-        assistant_text,
-        reasoning_text: if reasoning_text.is_empty() {
-            None
-        } else {
-            Some(reasoning_text)
-        },
-    })
 }
 
 /// Call Ollama/local LLM for text formatting/assistive mode
