@@ -906,6 +906,132 @@ mod tests {
         assert!(all_pass, "Some files had zero speech detection");
     }
 
+    /// Test the categorical silence gate on data_assets WAV files.
+    ///
+    /// Simulates the live recording pipeline: feeds audio through SpeechSession
+    /// in Supervisor/Utterance mode, collects events with their speech_vad_samples,
+    /// and checks which chunks the silence gate would drop.
+    #[test]
+    #[serial]
+    fn test_silence_gate_on_data_assets() {
+        use crate::pipeline::streaming::should_drop_silence_chunk;
+
+        let data_dir =
+            std::path::PathBuf::from(shellexpand::tilde("~/.codescribe/data_assets").as_ref());
+        if !data_dir.exists() {
+            eprintln!("Skipping: no data_assets dir");
+            return;
+        }
+
+        let wavs: Vec<_> = [
+            "01_no-to-dobra.wav",
+            "02_kubernetes-wymaga-konfiguracji.wav",
+            "03_algorytm-ma-zlozonosc.wav",
+            "04_runda-3-czyli.wav",
+        ]
+        .iter()
+        .map(|f| data_dir.join(f))
+        .filter(|p| p.exists())
+        .collect();
+
+        if wavs.is_empty() {
+            eprintln!("Skipping: no WAV files found in data_assets");
+            return;
+        }
+
+        println!("\n╭─── Silence Gate Test (data_assets) ────────────────╮");
+
+        for wav_path in &wavs {
+            let fname = wav_path.file_name().unwrap_or_default().to_string_lossy();
+            let (samples, sample_rate) = match load_audio_file(wav_path) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("│ SKIP {} — {}", fname, e);
+                    continue;
+                }
+            };
+            let audio_sec = samples.len() as f32 / sample_rate as f32;
+
+            // Simulate live recording: feed audio in ~1024-sample callbacks
+            let callback_size = 1024usize;
+            let mut session = SpeechSession::new_utterance(sample_rate);
+            assert_eq!(session.gate_mode(), VadGateMode::Supervisor);
+
+            let mut events_with_speech = Vec::new();
+            let mut offset = 0usize;
+            while offset < samples.len() {
+                let end = (offset + callback_size).min(samples.len());
+                for event in session.feed(&samples[offset..end], sample_rate) {
+                    let speech_vad = session.take_event_speech_vad_samples();
+                    events_with_speech.push((event, speech_vad));
+                }
+                offset = end;
+            }
+            if let Some(event) = session.flush() {
+                let speech_vad = session.take_event_speech_vad_samples();
+                events_with_speech.push((event, speech_vad));
+            }
+
+            let mut dropped = 0usize;
+            let mut kept = 0usize;
+            let mut dropped_sec = 0.0f32;
+
+            println!("│");
+            println!("│ {} ({:.1}s)", fname, audio_sec);
+
+            for (i, (event, speech_vad_samples)) in events_with_speech.iter().enumerate() {
+                let chunk_len = match event {
+                    SpeechEvent::Utterance(s)
+                    | SpeechEvent::UtteranceFinal(s)
+                    | SpeechEvent::Chunk(s) => s.len(),
+                };
+                let is_final = matches!(event, SpeechEvent::UtteranceFinal(_));
+                let chunk_sec = chunk_len as f32 / sample_rate as f32;
+                let audio_16k = (chunk_len as f64 * f64::from(vad::VAD_SAMPLE_RATE)
+                    / f64::from(sample_rate)) as u64;
+                let ratio = if audio_16k > 0 {
+                    *speech_vad_samples as f32 / audio_16k as f32
+                } else {
+                    0.0
+                };
+
+                let would_drop = should_drop_silence_chunk(
+                    chunk_len,
+                    sample_rate,
+                    *speech_vad_samples,
+                    is_final,
+                );
+
+                let tag = if would_drop { "DROP" } else { "KEEP" };
+                let kind = if is_final { "Final" } else { "Interim" };
+                println!(
+                    "│   [{:2}] {} {}: {:.2}s speech_ratio={:.0}% (vad_samples={})",
+                    i,
+                    tag,
+                    kind,
+                    chunk_sec,
+                    ratio * 100.0,
+                    speech_vad_samples,
+                );
+
+                if would_drop {
+                    dropped += 1;
+                    dropped_sec += chunk_sec;
+                } else {
+                    kept += 1;
+                }
+            }
+
+            println!(
+                "│   → kept={} dropped={} (saved {:.1}s of Whisper inference on silence)",
+                kept, dropped, dropped_sec,
+            );
+        }
+
+        println!("│");
+        println!("╰────────────────────────────────────────────────────╯\n");
+    }
+
     fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
         let mut prev: Vec<usize> = (0..=b.len()).collect();
         let mut cur = vec![0usize; b.len() + 1];

@@ -30,9 +30,18 @@ lazy_static! {
 }
 
 #[derive(Debug, Deserialize)]
+struct LexiconExtras {
+    #[serde(default)]
+    mispronunciations: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct LexiconEntry {
     term: String,
+    #[serde(default)]
     mispronunciations: Vec<String>,
+    #[serde(default)]
+    extras: Option<LexiconExtras>,
 }
 
 #[derive(Debug)]
@@ -141,7 +150,14 @@ fn load_rules_from_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>
             }
         };
 
-        for mis in entry.mispronunciations.iter() {
+        // Merge top-level mispronunciations with extras.mispronunciations
+        // (veterinary.jsonl stores them in extras, programming.jsonl at top level)
+        let mut all_mis = entry.mispronunciations;
+        if let Some(extras) = entry.extras {
+            all_mis.extend(extras.mispronunciations);
+        }
+
+        for mis in all_mis.iter() {
             if mis.eq_ignore_ascii_case(&entry.term) {
                 continue;
             }
@@ -683,5 +699,42 @@ mod tests {
         let _ = processor.process("test dwa trzy cztery");
         let stats = processor.stats();
         assert_eq!(stats.input_chunks, 2, "Both chunks should be counted");
+    }
+
+    #[test]
+    fn test_extras_mispronunciations_format() {
+        // Veterinary entries store mispronunciations in extras.mispronunciations
+        let vet_json = r#"{"term":"Acepromazyna","ipa":"/x/","category":"drug","definition":"x","synonyms":[],"extras":{"mispronunciations":["acepromasyna","acepramazyna"]},"mispronunciations":[]}"#;
+
+        let mut rules = Vec::new();
+        let count = load_rules_from_jsonl(vet_json, "test-vet", &mut rules);
+        assert_eq!(
+            count, 2,
+            "Should extract 2 rules from extras.mispronunciations"
+        );
+        assert_eq!(rules[0].replacement, "Acepromazyna");
+        assert_eq!(rules[1].replacement, "Acepromazyna");
+    }
+
+    #[test]
+    fn test_merged_mispronunciations() {
+        // Entry with mispronunciations in both top-level and extras
+        let json = r#"{"term":"Anemia","mispronunciations":["anemia"],"extras":{"mispronunciations":["abemia","amemia"]}}"#;
+
+        let mut rules = Vec::new();
+        let count = load_rules_from_jsonl(json, "test-merge", &mut rules);
+        // "anemia" == "Anemia" case-insensitive → skipped; "abemia" + "amemia" → 2 rules
+        assert_eq!(count, 2, "Should skip case-equal + extract 2 from extras");
+    }
+
+    #[test]
+    fn test_builtin_lexicon_loads_vet_extras() {
+        // Integration test: the real builtin lexicon must produce > 798 rules now
+        let lexicon = Lexicon::from_builtin();
+        assert!(
+            lexicon.rules.len() > 5000,
+            "Expected >5000 rules with extras fix, got {}",
+            lexicon.rules.len()
+        );
     }
 }

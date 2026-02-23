@@ -42,6 +42,11 @@ const PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS: u32 = 2;
 const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 3_500;
 const PARTIAL_PASS_TRIGGER_WATCHDOG_MS: u64 = 6_500;
 
+/// Minimum audio to accumulate before running extract_speech + Whisper inference.
+/// Interim chunks below this threshold are buffered; only speech-extracted audio
+/// is submitted to Whisper, eliminating hallucinations on silence.
+const DEFAULT_INTERIM_VAD_ACCUMULATE_SEC: f32 = 3.0;
+
 lazy_static! {
     static ref TOKEN_RE: Regex = Regex::new(r"\s+|\S+\s*").expect("token regex");
 }
@@ -96,6 +101,12 @@ const SHORT_UTTERANCE_LOW_CONFIDENCE: f32 = 0.55;
 const MAX_WORDS_PER_SEC: f32 = 5.0;
 const WORD_RATE_MIN_WORDS: usize = 6;
 
+/// Minimum fraction of Silero-positive VAD frames required in an interim chunk
+/// before sending it to Whisper. Chunks below this ratio are categorically
+/// classified as silence and skipped — Silero is SoTA for this binary decision.
+/// Only applies to non-final (interim) emissions; final/flush always transcribes.
+const MIN_SPEECH_RATIO_FOR_INFERENCE: f32 = 0.15;
+
 fn is_polish_language(language: Option<&str>) -> bool {
     language
         .map(|lang| {
@@ -138,6 +149,34 @@ fn emit_vad_warning(event_sink: &Arc<dyn EventSink>, session: &mut SpeechSession
 fn should_drop_short_utterance(audio_samples: usize, sample_rate: u32, speech_prob: f32) -> bool {
     let duration_s = audio_samples as f32 / sample_rate as f32;
     duration_s < MIN_UTTERANCE_SEC && speech_prob < SHORT_UTTERANCE_LOW_CONFIDENCE
+}
+
+/// Categorical speech-ratio gate: use Silero VAD as a binary classifier.
+///
+/// Computes the fraction of the chunk that Silero classified as speech
+/// (prob >= threshold). If the ratio falls below `MIN_SPEECH_RATIO_FOR_INFERENCE`,
+/// the chunk is predominantly silence and should not be sent to Whisper
+/// (which would hallucinate on it).
+///
+/// Returns `true` when the chunk should be **dropped** (too little speech).
+pub(crate) fn should_drop_silence_chunk(
+    audio_samples: usize,
+    sample_rate: u32,
+    speech_vad_samples: u64,
+    is_final: bool,
+) -> bool {
+    // Never gate final emissions (user explicitly released key / segment closed).
+    if is_final {
+        return false;
+    }
+    // Convert audio length to 16kHz domain to match Silero's sample counting.
+    let audio_16k =
+        (audio_samples as f64 * f64::from(vad::VAD_SAMPLE_RATE) / f64::from(sample_rate)) as u64;
+    if audio_16k == 0 {
+        return false;
+    }
+    let speech_ratio = speech_vad_samples as f32 / audio_16k as f32;
+    speech_ratio < MIN_SPEECH_RATIO_FOR_INFERENCE
 }
 
 fn silero_vad_samples_to_ms(samples: u64) -> u64 {
@@ -867,6 +906,17 @@ pub(crate) async fn transcription_session(
     // Scheduler enforces unconditional Commit-lane VAD prefilter before inference.
     let mut current_utterance_audio: Vec<f32> = Vec::new();
 
+    // VAD-first accumulation buffer: collects interim audio chunks and only
+    // submits to Whisper after running extract_speech on the accumulated buffer.
+    // This eliminates hallucinations by never feeding silence to Whisper.
+    let interim_vad_threshold = interim_vad_accumulate_samples(output_sample_rate);
+    let mut interim_vad_buf: Vec<f32> = Vec::with_capacity(interim_vad_threshold);
+    let mut interim_vad_speech_samples: u64 = 0;
+    debug!(
+        interim_vad_sec = interim_vad_threshold as f32 / output_sample_rate as f32,
+        "VAD-first accumulation configured"
+    );
+
     // Phase 1 (streaming preview/commit) — Pipelined execution using FuturesOrdered.
     // This allows submitting multiple chunks to the Scheduler (up to concurrency limit)
     // to utilize the worker queue and avoid backpressure on the VAD/Audio thread.
@@ -909,6 +959,43 @@ pub(crate) async fn transcription_session(
                         "Short utterance dropped: {:.3}s with low VAD prob {:.2}",
                         audio.len() as f32 / output_sample_rate as f32,
                         max_speech_prob
+                    ),
+                });
+                continue;
+            }
+
+            // Categorical speech-ratio gate (Silero as binary SoTA classifier).
+            // Interim chunks with insufficient speech are pure silence — skip
+            // Whisper inference entirely to prevent hallucinations.
+            if should_drop_silence_chunk(
+                audio.len(),
+                output_sample_rate,
+                speech_vad_samples,
+                is_final,
+            ) {
+                let audio_16k = (audio.len() as f64 * f64::from(vad::VAD_SAMPLE_RATE)
+                    / f64::from(output_sample_rate)) as u64;
+                let ratio = if audio_16k > 0 {
+                    speech_vad_samples as f32 / audio_16k as f32
+                } else {
+                    0.0
+                };
+                debug!(
+                    "Silence gate: dropping {:.3}s chunk (speech_ratio={:.1}%, vad_samples={}, threshold={:.0}%)",
+                    audio.len() as f32 / output_sample_rate as f32,
+                    ratio * 100.0,
+                    speech_vad_samples,
+                    MIN_SPEECH_RATIO_FOR_INFERENCE * 100.0,
+                );
+                pipeline.hallucination_drops = pipeline.hallucination_drops.saturating_add(1);
+                event_sink.on_event(&EngineEvent::Drop {
+                    kind: DropKind::Hallucination,
+                    text: String::new(),
+                    reason: format!(
+                        "Silence chunk dropped: speech_ratio={:.1}% < {:.0}% in {:.3}s",
+                        ratio * 100.0,
+                        MIN_SPEECH_RATIO_FOR_INFERENCE * 100.0,
+                        audio.len() as f32 / output_sample_rate as f32,
                     ),
                 });
                 continue;
@@ -990,99 +1077,166 @@ pub(crate) async fn transcription_session(
                     Some(data) => {
                         for event in session.feed(&data, sample_rate) {
                             let speech_vad_samples = session.take_event_speech_vad_samples();
-                            let (utterance, inference_audio, is_final, max_speech_prob) = match event {
+                            let max_speech_prob = session.segment_speech_prob();
+                            match event {
                                 SpeechEvent::Utterance(u) => {
                                     current_utterance_audio.extend_from_slice(&u);
-                                    (u.clone(), u, false, session.segment_speech_prob())
+                                    interim_vad_buf.extend_from_slice(&u);
+                                    interim_vad_speech_samples += speech_vad_samples;
+                                    speech_activity_observed = true;
+
+                                    if !vad_started {
+                                        event_sink.on_event(&EngineEvent::VadStart {
+                                            speech_prob: session.boundary_prob(),
+                                            ts_ms: session.session_elapsed_ms(),
+                                        });
+                                        vad_started = true;
+                                    }
+
+                                    // Accumulate until threshold, then extract_speech + submit.
+                                    if interim_vad_buf.len() >= interim_vad_threshold {
+                                        let buf = std::mem::take(&mut interim_vad_buf);
+                                        let buf_vad = interim_vad_speech_samples;
+                                        interim_vad_speech_samples = 0;
+                                        let buf_len = buf.len();
+                                        let (speech, stats) = vad::extract_speech(&buf, output_sample_rate);
+                                        if speech.is_empty() {
+                                            debug!(
+                                                "VAD-first: dropping {:.1}s accumulated buffer (0% speech, {} windows)",
+                                                buf_len as f32 / output_sample_rate as f32,
+                                                stats.total_windows,
+                                            );
+                                            pipeline.hallucination_drops = pipeline.hallucination_drops.saturating_add(1);
+                                            event_sink.on_event(&EngineEvent::Drop {
+                                                kind: DropKind::Hallucination,
+                                                text: String::new(),
+                                                reason: format!(
+                                                    "VAD-first: no speech in {:.1}s buffer ({} windows analysed)",
+                                                    buf_len as f32 / output_sample_rate as f32,
+                                                    stats.total_windows,
+                                                ),
+                                            });
+                                            continue;
+                                        }
+                                        debug!(
+                                            "VAD-first: {:.1}s speech / {:.1}s buffer ({:.0}% speech, {}/{} windows)",
+                                            speech.len() as f32 / output_sample_rate as f32,
+                                            buf_len as f32 / output_sample_rate as f32,
+                                            stats.speech_pct,
+                                            stats.speech_windows,
+                                            stats.total_windows,
+                                        );
+                                        let outcome = enqueue_pending_utterance(
+                                            &mut pending_utterances,
+                                            PendingUtteranceWorkItem {
+                                                audio: buf,
+                                                inference_audio: speech,
+                                                is_final: false,
+                                                max_speech_prob,
+                                                speech_vad_samples: buf_vad,
+                                            },
+                                            MAX_PENDING_UTTERANCES,
+                                        );
+                                        if outcome.dropped > 0 {
+                                            dropped_utterances = dropped_utterances.saturating_add(outcome.dropped);
+                                            warn!(
+                                                queue_len = pending_utterances.len(),
+                                                enqueued = outcome.enqueued,
+                                                dropped = outcome.dropped,
+                                                "Pending utterance backpressure (interim VAD-first)"
+                                            );
+                                        }
+                                    }
                                 }
                                 SpeechEvent::UtteranceFinal(u) => {
                                     current_utterance_audio.extend_from_slice(&u);
+                                    // Flush any accumulated interim audio + this final chunk
+                                    // into a single Commit-lane request (extract_speech in prefilter).
                                     let full = std::mem::take(&mut current_utterance_audio);
-                                    (u, full, true, session.segment_speech_prob())
+                                    interim_vad_buf.clear();
+                                    interim_vad_speech_samples = 0;
+                                    speech_activity_observed = true;
+
+                                    if !vad_started {
+                                        event_sink.on_event(&EngineEvent::VadStart {
+                                            speech_prob: session.boundary_prob(),
+                                            ts_ms: session.session_elapsed_ms(),
+                                        });
+                                        vad_started = true;
+                                    }
+
+                                    let outcome = enqueue_pending_utterance(
+                                        &mut pending_utterances,
+                                        PendingUtteranceWorkItem {
+                                            audio: u,
+                                            inference_audio: full,
+                                            is_final: true,
+                                            max_speech_prob,
+                                            speech_vad_samples,
+                                        },
+                                        MAX_PENDING_UTTERANCES,
+                                    );
+                                    if outcome.dropped > 0 {
+                                        dropped_utterances = dropped_utterances.saturating_add(outcome.dropped);
+                                        let message = if outcome.enqueued {
+                                            if outcome.evicted_final {
+                                                format!(
+                                                    "Pending utterance queue full (limit={}): evicted an older final item to preserve latest final boundary",
+                                                    MAX_PENDING_UTTERANCES
+                                                )
+                                            } else {
+                                                format!(
+                                                    "Pending utterance queue full (limit={}): evicted a non-final item to preserve latest final boundary",
+                                                    MAX_PENDING_UTTERANCES
+                                                )
+                                            }
+                                        } else {
+                                            format!(
+                                                "Pending utterance queue full (limit={}): dropped incoming non-final item",
+                                                MAX_PENDING_UTTERANCES
+                                            )
+                                        };
+                                        warn!(
+                                            queue_len = pending_utterances.len(),
+                                            is_final = true,
+                                            enqueued = outcome.enqueued,
+                                            evicted_final = outcome.evicted_final,
+                                            dropped = outcome.dropped,
+                                            "{}",
+                                            message
+                                        );
+                                        event_sink.on_event(&EngineEvent::Warning {
+                                            code: "pending_utterance_backpressure".to_string(),
+                                            message,
+                                        });
+                                    }
                                 }
                                 _ => continue,
                             };
-                            speech_activity_observed = true;
-
-                            if !vad_started {
-                                event_sink.on_event(&EngineEvent::VadStart {
-                                    speech_prob: session.boundary_prob(),
-                                    ts_ms: session.session_elapsed_ms(),
-                                });
-                                vad_started = true;
-                            }
-
-                            let outcome = enqueue_pending_utterance(
-                                &mut pending_utterances,
-                                PendingUtteranceWorkItem {
-                                    audio: utterance,
-                                    inference_audio,
-                                    is_final,
-                                    max_speech_prob,
-                                    speech_vad_samples,
-                                },
-                                MAX_PENDING_UTTERANCES,
-                            );
-                            if outcome.dropped > 0 {
-                                dropped_utterances = dropped_utterances.saturating_add(outcome.dropped);
-                                let message = if outcome.enqueued {
-                                    if outcome.evicted_final {
-                                        format!(
-                                            "Pending utterance queue full (limit={}): evicted an older final item to preserve latest final boundary",
-                                            MAX_PENDING_UTTERANCES
-                                        )
-                                    } else {
-                                        format!(
-                                            "Pending utterance queue full (limit={}): evicted a non-final item to preserve latest final boundary",
-                                            MAX_PENDING_UTTERANCES
-                                        )
-                                    }
-                                } else {
-                                    format!(
-                                        "Pending utterance queue full (limit={}): dropped incoming non-final item",
-                                        MAX_PENDING_UTTERANCES
-                                    )
-                                };
-                                warn!(
-                                    queue_len = pending_utterances.len(),
-                                    is_final,
-                                    enqueued = outcome.enqueued,
-                                    evicted_final = outcome.evicted_final,
-                                    dropped = outcome.dropped,
-                                    "{}",
-                                    message
-                                );
-                                event_sink.on_event(&EngineEvent::Warning {
-                                    code: "pending_utterance_backpressure".to_string(),
-                                    message,
-                                });
-                            }
-                            if !outcome.enqueued {
-                                continue;
-                            }
                         }
                         emit_vad_warning(&event_sink, &mut session);
                     }
                     None => {
                         audio_closed = true;
+                        // Flush any remaining interim VAD buffer into final audio.
+                        interim_vad_buf.clear();
+                        interim_vad_speech_samples = 0;
+
                         if let Some(event) = session.flush() {
                             let speech_vad_samples = session.take_event_speech_vad_samples();
-                            let (utterance, inference_audio, is_final, max_speech_prob) = match event {
-                                SpeechEvent::Utterance(u) => {
-                                    current_utterance_audio.extend_from_slice(&u);
-                                    (u.clone(), u, false, session.segment_speech_prob())
-                                }
-                                SpeechEvent::UtteranceFinal(u) => {
+                            let max_speech_prob = session.segment_speech_prob();
+                            // On flush, always treat as final (Commit lane with extract_speech).
+                            let (utterance, inference_audio) = match event {
+                                SpeechEvent::Utterance(u) | SpeechEvent::UtteranceFinal(u) => {
                                     current_utterance_audio.extend_from_slice(&u);
                                     let full = std::mem::take(&mut current_utterance_audio);
-                                    (u, full, true, session.segment_speech_prob())
+                                    (u, full)
                                 }
-                                _ => (Vec::new(), Vec::new(), false, 0.0),
+                                _ => (Vec::new(), Vec::new()),
                             };
 
                             if !utterance.is_empty() {
                                 speech_activity_observed = true;
-                                // Emit VadStart if this is the first speech (e.g. from flush).
                                 if !vad_started {
                                     event_sink.on_event(&EngineEvent::VadStart {
                                         speech_prob: session.boundary_prob(),
@@ -1095,7 +1249,7 @@ pub(crate) async fn transcription_session(
                                     PendingUtteranceWorkItem {
                                         audio: utterance,
                                         inference_audio,
-                                        is_final,
+                                        is_final: true,
                                         max_speech_prob,
                                         speech_vad_samples,
                                     },
@@ -1123,7 +1277,7 @@ pub(crate) async fn transcription_session(
                                     };
                                     warn!(
                                         queue_len = pending_utterances.len(),
-                                        is_final,
+                                        is_final = true,
                                         enqueued = outcome.enqueued,
                                         evicted_final = outcome.evicted_final,
                                         dropped = outcome.dropped,
@@ -1885,6 +2039,10 @@ fn inference_max_concurrency() -> usize {
     .clamp(1, HARD_MAX_INFERENCE_CONCURRENCY)
 }
 
+fn interim_vad_accumulate_samples(sample_rate: u32) -> usize {
+    (DEFAULT_INTERIM_VAD_ACCUMULATE_SEC * sample_rate as f32) as usize
+}
+
 fn buffered_correction_prefix_ratio() -> f64 {
     env_f32("CODESCRIBE_BUFFERED_CORRECTION_PREFIX", 0.50).clamp(0.4, 0.9) as f64
 }
@@ -1948,6 +2106,34 @@ mod tests {
 
         let res = pipeline.strip_overlap("Hello world");
         assert_eq!(res, "Hello world");
+    }
+
+    #[test]
+    fn test_silence_chunk_gate() {
+        // 1s at 48kHz = 48000 samples. 16kHz equivalent = 16000 samples.
+        let one_sec_48k = 48000usize;
+
+        // Chunk with 0% speech → drop
+        assert!(should_drop_silence_chunk(one_sec_48k, 48000, 0, false));
+
+        // Chunk with ~5% speech (800 out of 16000) → drop
+        assert!(should_drop_silence_chunk(one_sec_48k, 48000, 800, false));
+
+        // Chunk with ~20% speech (3200 out of 16000) → keep
+        assert!(!should_drop_silence_chunk(one_sec_48k, 48000, 3200, false));
+
+        // Chunk with 100% speech → keep
+        assert!(!should_drop_silence_chunk(one_sec_48k, 48000, 16000, false));
+
+        // Final emission always passes (user released key)
+        assert!(!should_drop_silence_chunk(one_sec_48k, 48000, 0, true));
+
+        // 16kHz input: same domain
+        assert!(should_drop_silence_chunk(16000, 16000, 0, false));
+        assert!(!should_drop_silence_chunk(16000, 16000, 3200, false));
+
+        // Zero-length audio → never drop (edge case)
+        assert!(!should_drop_silence_chunk(0, 48000, 0, false));
     }
 
     #[test]
