@@ -33,8 +33,8 @@ use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
     add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position,
     create_button, create_glass_effect_view_with, create_label, create_scrollable_text_view,
-    ns_string, set_hidden, set_text, set_text_view_string, set_tooltip, ui_colors, ui_tokens,
-    window_close, window_set_alpha, window_show,
+    ns_string, set_glass_effect_content_view, set_hidden, set_text, set_text_view_string,
+    set_tooltip, ui_colors, ui_tokens, window_close, window_set_alpha, window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -1020,8 +1020,8 @@ fn show_transcription_overlay_impl() {
         let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
 
         // Get content view
-        let content_view: Id = msg_send![window, contentView];
-        if content_view.is_null() {
+        let window_content_view: Id = msg_send![window, contentView];
+        if window_content_view.is_null() {
             warn!("Failed to get content view");
             return;
         }
@@ -1047,8 +1047,12 @@ fn show_transcription_overlay_impl() {
             let _: () = msg_send![layer, setBorderWidth: 1.0f64];
         }
 
-        // Add blur view as background
-        add_subview(content_view, blur_view);
+        // Add blur view as background, then mount overlay controls via glass `contentView`.
+        add_subview(window_content_view, blur_view);
+        let content_view: Id = msg_send![Class::get("NSView").unwrap(), alloc];
+        let content_view: Id = msg_send![content_view, initWithFrame: blur_frame];
+        let _: () = msg_send![content_view, setAutoresizingMask: 2_isize | 16_isize]; // Width | Height
+        let _: bool = set_glass_effect_content_view(blur_view, content_view);
 
         let _: () = msg_send![window, setTitle: ns_string(OVERLAY_HEADER_LABEL)];
 
@@ -1222,10 +1226,10 @@ fn show_transcription_overlay_impl() {
             },
         };
 
-        let save_button = create_button(save_frame, "Save", button_style::ROUNDED);
+        let save_button = create_button(save_frame, "Save", button_style::GLASS);
         let copy_button = create_button(copy_frame, "Copy", button_style::ROUNDED);
         let augment_button = create_button(augment_frame, "Augment", button_style::ROUNDED);
-        let commit_button = create_button(commit_frame, "Finish", button_style::ROUNDED);
+        let commit_button = create_button(commit_frame, "Finish", button_style::GLASS);
         set_tooltip(
             copy_button,
             copy_action_tooltip(TranscriptionActionContractMode::Raw),

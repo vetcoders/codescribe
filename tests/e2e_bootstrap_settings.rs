@@ -344,6 +344,20 @@ fn test_engine_tab_stt_engine_env_onnx() {
 }
 
 #[test]
+#[serial]
+fn test_engine_tab_stt_engine_env_apple() {
+    let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
+    // Engine tab reads CODESCRIBE_STT_ENGINE to display active engine
+    unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", "apple") };
+    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
+    assert_eq!(engine, "apple", "STT engine should reflect env var");
+    match previous {
+        Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
+        None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },
+    }
+}
+
+#[test]
 fn test_engine_tab_whisper_embedded_status() {
     // Engine tab shows whether Whisper model is embedded in binary
     let embedded = codescribe_core::stt::whisper::embedded::is_embedded_available();

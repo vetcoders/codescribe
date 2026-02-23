@@ -188,8 +188,11 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     fs::create_dir_all(&artifacts_dir)?;
     fs::create_dir_all(&audio_dir)?;
 
-    let use_onnx = std::env::var("CODESCRIBE_STT_ENGINE").as_deref() == Ok("onnx");
-    if !use_onnx {
+    let stt_engine = std::env::var("CODESCRIBE_STT_ENGINE")
+        .unwrap_or_else(|_| "candle".to_string())
+        .to_ascii_lowercase();
+    let uses_candle_assets = stt_engine != "onnx" && stt_engine != "apple";
+    if uses_candle_assets {
         ensure_model_path()?;
     }
     crate::stt::init_active_engine().context("Failed to init active STT engine")?;

@@ -351,7 +351,28 @@ default = "candle"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "STT engine: candle (default) or onnx"
+description = "STT engine: candle (default), onnx, or apple (SpeechAnalyzer on macOS 26+)"
+
+[vars.CODESCRIBE_APPLE_STT_BRIDGE]
+default = "codescribe-stt-bridge"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Executable path for SpeechAnalyzer bridge binary"
+
+[vars.CODESCRIBE_APPLE_STT_LOCALE]
+default = "pl-PL"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Locale override for Apple SpeechAnalyzer (e.g. pl-PL, en-US)"
+
+[vars.CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Allow SpeechAnalyzer bridge to auto-install missing Apple speech assets"
 
 [vars.CODESCRIBE_NO_EMBED_WHISPER]
 default = "0"

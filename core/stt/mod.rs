@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod apple_stt;
 pub mod onnx_adapter;
 pub mod scheduler;
 pub mod whisper;
@@ -6,43 +7,140 @@ pub mod whisper;
 use crate::pipeline::contracts::RawTranscript;
 use crate::pipeline::contracts::TranscriptionAdapter;
 use std::sync::OnceLock;
+use tracing::warn;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SttEngine {
+    Candle,
+    Onnx,
+    Apple,
+}
+
+fn selected_engine() -> SttEngine {
+    match std::env::var("CODESCRIBE_STT_ENGINE")
+        .unwrap_or_else(|_| "candle".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "onnx" => SttEngine::Onnx,
+        "apple" => SttEngine::Apple,
+        _ => SttEngine::Candle,
+    }
+}
 
 /// Get the active STT adapter based on `CODESCRIBE_STT_ENGINE` env var.
 ///
 /// - `"onnx"` → initializes ONNX engine + returns `OnnxWhisperAdapter`
+/// - `"apple"` → initializes SpeechAnalyzer bridge + returns Apple adapter
 /// - anything else → `WhisperSingletonAdapter` (candle, default)
 ///
-/// For ONNX, this calls `onnx_adapter::init()` automatically on first use.
-/// Returns an error if the ONNX model is not available.
+/// Apple path gracefully falls back to Candle if unavailable.
 pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
-    if is_onnx_engine() {
-        onnx_adapter::init()?;
-        Ok(Box::new(onnx_adapter::OnnxWhisperAdapter::new()))
-    } else {
-        Ok(Box::new(adapter::WhisperSingletonAdapter::new()))
+    match selected_engine() {
+        SttEngine::Onnx => {
+            onnx_adapter::init()?;
+            Ok(Box::new(onnx_adapter::OnnxWhisperAdapter::new()))
+        }
+        SttEngine::Apple => run_apple_or_whisper(
+            "get_adapter",
+            || {
+                apple_stt::init()?;
+                Ok(Box::new(apple_stt::AppleSpeechAnalyzerAdapter::new())
+                    as Box<dyn TranscriptionAdapter>)
+            },
+            || {
+                Ok(Box::new(adapter::WhisperSingletonAdapter::new())
+                    as Box<dyn TranscriptionAdapter>)
+            },
+        ),
+        SttEngine::Candle => Ok(Box::new(adapter::WhisperSingletonAdapter::new())),
     }
 }
 
 // ── Engine-level router ──────────────────────────────────────────────────────
 //
-// These functions dispatch to either candle or ONNX engine based on
-// `CODESCRIBE_STT_ENGINE` env var. They match the call semantics of
+// These functions dispatch to candle, ONNX, or Apple SpeechAnalyzer based on
+// `CODESCRIBE_STT_ENGINE`. They match the call semantics of
 // `LocalWhisperEngine::transcribe_with_language` (chunk) and
 // `transcribe_long_with_language` (utterance/correction).
 //
-// Used by `pipeline::streaming` to make the dual-engine switch transparent.
+// Used by `pipeline::streaming` to keep backend selection transparent.
 
-fn is_onnx_engine() -> bool {
-    static IS_ONNX_ENGINE: OnceLock<bool> = OnceLock::new();
-    *IS_ONNX_ENGINE.get_or_init(|| std::env::var("CODESCRIBE_STT_ENGINE").as_deref() == Ok("onnx"))
+fn warn_apple_fallback(context: &str, error: &anyhow::Error) {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        warn!(
+            "Apple STT requested but unavailable during {}: {}. Falling back to Candle Whisper.",
+            context, error
+        );
+    });
+}
+
+fn run_apple_or_whisper<T>(
+    context: &str,
+    apple_path: impl FnOnce() -> anyhow::Result<T>,
+    whisper_fallback: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if !apple_stt::is_runtime_available() {
+        let err = anyhow::anyhow!("SpeechAnalyzer runtime not available on this host");
+        warn_apple_fallback(context, &err);
+        return whisper_fallback();
+    }
+
+    match apple_path() {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            warn_apple_fallback(context, &err);
+            whisper_fallback()
+        }
+    }
+}
+
+fn candle_transcribe_chunk(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+) -> anyhow::Result<String> {
+    let engine = whisper::singleton::engine()?;
+    let mut guard = engine
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Candle lock error: {}", e))?;
+    guard.transcribe_with_language(audio, sample_rate, language)
+}
+
+fn candle_transcribe_long_with_segments(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+) -> anyhow::Result<RawTranscript> {
+    let engine = whisper::singleton::engine()?;
+    let mut guard = engine
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Candle lock error: {}", e))?;
+    guard.transcribe_long_with_language_segments(audio, sample_rate, language)
+}
+
+fn candle_try_transcribe_long_with_segments(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+) -> anyhow::Result<RawTranscript> {
+    let engine = whisper::singleton::engine()?;
+    let mut guard = engine
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("Whisper engine busy, skipping correction"))?;
+    guard.transcribe_long_with_language_segments(audio, sample_rate, language)
 }
 
 /// Initialize whichever STT engine is active by env.
 pub(crate) fn init_active_engine() -> anyhow::Result<()> {
-    if is_onnx_engine() {
-        onnx_adapter::init()
-    } else {
-        whisper::init()
+    match selected_engine() {
+        SttEngine::Onnx => onnx_adapter::init(),
+        SttEngine::Apple => {
+            run_apple_or_whisper("init_active_engine", apple_stt::init, whisper::init)
+        }
+        SttEngine::Candle => whisper::init(),
     }
 }
 
@@ -52,10 +150,14 @@ pub(crate) fn transcribe_long(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<String> {
-    if is_onnx_engine() {
-        onnx_adapter::transcribe_long(audio, sample_rate, language)
-    } else {
-        whisper::transcribe(audio, sample_rate, language)
+    match selected_engine() {
+        SttEngine::Onnx => onnx_adapter::transcribe_long(audio, sample_rate, language),
+        SttEngine::Apple => run_apple_or_whisper(
+            "transcribe_long",
+            || apple_stt::transcribe_long(audio, sample_rate, language),
+            || whisper::transcribe(audio, sample_rate, language),
+        ),
+        SttEngine::Candle => whisper::transcribe(audio, sample_rate, language),
     }
 }
 
@@ -66,14 +168,14 @@ pub(crate) fn transcribe_chunk(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<String> {
-    if is_onnx_engine() {
-        onnx_adapter::transcribe_chunk(audio, sample_rate, language)
-    } else {
-        let engine = whisper::singleton::engine()?;
-        let mut guard = engine
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Candle lock error: {}", e))?;
-        guard.transcribe_with_language(audio, sample_rate, language)
+    match selected_engine() {
+        SttEngine::Onnx => onnx_adapter::transcribe_chunk(audio, sample_rate, language),
+        SttEngine::Apple => run_apple_or_whisper(
+            "transcribe_chunk",
+            || apple_stt::transcribe_chunk(audio, sample_rate, language),
+            || candle_transcribe_chunk(audio, sample_rate, language),
+        ),
+        SttEngine::Candle => candle_transcribe_chunk(audio, sample_rate, language),
     }
 }
 
@@ -83,17 +185,17 @@ pub(crate) fn transcribe_long_with_segments(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
-    if is_onnx_engine() {
-        Ok(RawTranscript {
+    match selected_engine() {
+        SttEngine::Onnx => Ok(RawTranscript {
             text: onnx_adapter::transcribe_long(audio, sample_rate, language)?,
             segments: Vec::new(),
-        })
-    } else {
-        let engine = whisper::singleton::engine()?;
-        let mut guard = engine
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Candle lock error: {}", e))?;
-        guard.transcribe_long_with_language_segments(audio, sample_rate, language)
+        }),
+        SttEngine::Apple => run_apple_or_whisper(
+            "transcribe_long_with_segments",
+            || apple_stt::transcribe_long_with_segments(audio, sample_rate, language),
+            || candle_transcribe_long_with_segments(audio, sample_rate, language),
+        ),
+        SttEngine::Candle => candle_transcribe_long_with_segments(audio, sample_rate, language),
     }
 }
 
@@ -104,13 +206,15 @@ pub(crate) fn try_transcribe_long_with_segments(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
-    if is_onnx_engine() {
-        onnx_adapter::try_transcribe_long_with_segments(audio, sample_rate, language)
-    } else {
-        let engine = whisper::singleton::engine()?;
-        let mut guard = engine
-            .try_lock()
-            .map_err(|_| anyhow::anyhow!("Whisper engine busy, skipping correction"))?;
-        guard.transcribe_long_with_language_segments(audio, sample_rate, language)
+    match selected_engine() {
+        SttEngine::Onnx => {
+            onnx_adapter::try_transcribe_long_with_segments(audio, sample_rate, language)
+        }
+        SttEngine::Apple => run_apple_or_whisper(
+            "try_transcribe_long_with_segments",
+            || apple_stt::try_transcribe_long_with_segments(audio, sample_rate, language),
+            || candle_try_transcribe_long_with_segments(audio, sample_rate, language),
+        ),
+        SttEngine::Candle => candle_try_transcribe_long_with_segments(audio, sample_rate, language),
     }
 }

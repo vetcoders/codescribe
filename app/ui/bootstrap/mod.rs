@@ -28,10 +28,11 @@ use crate::ui::onboarding::{
     request_permission,
 };
 use crate::ui_helpers::{
-    LabelConfig, add_subview, button, button_set_action, create_floating_window,
-    create_glass_effect_view_with, create_label, create_secure_text_input, create_slider,
-    create_text_input, create_toggle, ns_string, set_text_field_string, ui_colors, ui_tokens,
-    window_close, window_content_view, window_show,
+    LabelConfig, add_subview, button, button_set_action, button_style, create_button,
+    create_floating_window, create_glass_effect_container_view, create_glass_effect_view_with,
+    create_label, create_secure_text_input, create_slider, create_text_input, create_toggle,
+    ns_string, set_glass_container_content_view, set_glass_effect_content_view,
+    set_text_field_string, ui_colors, ui_tokens, window_close, window_content_view, window_show,
 };
 
 mod handlers;
@@ -1053,52 +1054,97 @@ unsafe fn build_settings_ui(
         let settings_height = settings_height.max(280.0);
         let body_h = settings_height;
 
-        // Single root glass panel to avoid seam artifacts between split sections.
-        // Use the stronger FullScreenUI material to match the previous stable glass state.
-        let root_glass = create_glass_effect_view_with(
-            CGRect::new(
-                &CGPoint::new(0.0, 0.0),
-                &CGSize::new(settings_width, settings_height),
-            ),
-            NSVisualEffectMaterial::FullScreenUI,
+        // Group adjacent glass panes so Tahoe can merge boundaries naturally.
+        let root_frame = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(settings_width, settings_height),
+        );
+        let root_glass_group = create_glass_effect_container_view(root_frame, 0.0);
+        let _: () = msg_send![
+            root_glass_group,
+            setAutoresizingMask: 2_isize | 16_isize // Width | Height
+        ];
+        add_subview(root_view, root_glass_group);
+
+        let root_content: Id = msg_send![ns_view, alloc];
+        let root_content: Id = msg_send![root_content, initWithFrame: root_frame];
+        let _: () = msg_send![
+            root_content,
+            setAutoresizingMask: 2_isize | 16_isize // Width | Height
+        ];
+        let _: bool = set_glass_container_content_view(root_glass_group, root_content);
+
+        // Left: Sidebar glass pane
+        let sidebar_frame =
+            CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, body_h));
+        let sidebar_glass = create_glass_effect_view_with(
+            sidebar_frame,
+            NSVisualEffectMaterial::Sidebar,
             objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
             objc2_app_kit::NSVisualEffectState::Active,
         );
-        let _: () = msg_send![root_glass, setAlphaValue: SETTINGS_MAX_OPACITY];
-        intensify_settings_glass(root_glass);
+        let _: () = msg_send![sidebar_glass, setAlphaValue: SETTINGS_MAX_OPACITY];
+        intensify_settings_glass(sidebar_glass);
         let _: () = msg_send![
-            root_glass,
-            setAutoresizingMask: 2_isize | 16_isize // Width | Height
+            sidebar_glass,
+            setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin
         ];
-        let root_glass_layer: Id = msg_send![root_glass, layer];
-        if !root_glass_layer.is_null() {
-            let _: () = msg_send![root_glass_layer, setMasksToBounds: true];
+        let sidebar_glass_layer: Id = msg_send![sidebar_glass, layer];
+        if !sidebar_glass_layer.is_null() {
+            let _: () = msg_send![sidebar_glass_layer, setMasksToBounds: true];
         }
-        add_subview(root_view, root_glass);
+        add_subview(root_content, sidebar_glass);
 
-        // Left: Sidebar
-        let sidebar_frame =
-            CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, body_h));
         let sidebar_container: Id = msg_send![ns_view, alloc];
-        let sidebar_container: Id = msg_send![sidebar_container, initWithFrame: sidebar_frame];
+        let sidebar_container: Id = msg_send![
+            sidebar_container,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(SIDEBAR_WIDTH, body_h),
+            )
+        ];
         let _: () = msg_send![
             sidebar_container,
-            setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin (fixed left)
+            setAutoresizingMask: 2_isize | 16_isize // Width | Height
         ];
-        add_subview(root_glass, sidebar_container);
+        let _: bool = set_glass_effect_content_view(sidebar_glass, sidebar_container);
 
-        // Right: Content
+        // Right: Content glass pane
         let content_bg_frame = CGRect::new(
             &CGPoint::new(SIDEBAR_WIDTH, 0.0),
             &CGSize::new(settings_width - SIDEBAR_WIDTH, body_h),
         );
+        let content_glass = create_glass_effect_view_with(
+            content_bg_frame,
+            NSVisualEffectMaterial::FullScreenUI,
+            objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
+            objc2_app_kit::NSVisualEffectState::Active,
+        );
+        let _: () = msg_send![content_glass, setAlphaValue: SETTINGS_MAX_OPACITY];
+        intensify_settings_glass(content_glass);
+        let _: () = msg_send![
+            content_glass,
+            setAutoresizingMask: 2_isize | 16_isize // Width | Height
+        ];
+        let content_glass_layer: Id = msg_send![content_glass, layer];
+        if !content_glass_layer.is_null() {
+            let _: () = msg_send![content_glass_layer, setMasksToBounds: true];
+        }
+        add_subview(root_content, content_glass);
+
         let content_container: Id = msg_send![ns_view, alloc];
-        let content_container: Id = msg_send![content_container, initWithFrame: content_bg_frame];
+        let content_container: Id = msg_send![
+            content_container,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(content_bg_frame.size.width, body_h),
+            )
+        ];
         let _: () = msg_send![
             content_container,
             setAutoresizingMask: 2_isize | 16_isize // Width | Height
         ];
-        add_subview(root_glass, content_container);
+        let _: bool = set_glass_effect_content_view(content_glass, content_container);
 
         let split_divider = create_label(LabelConfig {
             frame: CGRect::new(
@@ -1113,7 +1159,7 @@ unsafe fn build_settings_ui(
             split_divider,
             setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin
         ];
-        add_subview(root_glass, split_divider);
+        add_subview(root_content, split_divider);
 
         let content_area_w = content_bg_frame.size.width;
         let content_area_h = body_h;
@@ -2299,12 +2345,13 @@ unsafe fn build_api_tab(
         state.assistive_key_status_label = Some(assist_status_label as usize);
         y -= 16.0 + gap;
 
-        let save_btn = button(
+        let save_btn = create_button(
             CGRect::new(
                 &CGPoint::new(frame.size.width - pad - 90.0, y - 2.0),
                 &CGSize::new(90.0, 24.0),
             ),
             "Save",
+            button_style::GLASS,
         );
         button_set_action(save_btn, action_handler, sel!(onSaveApiSettings:));
         add_subview(container, save_btn);
@@ -2776,6 +2823,7 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect, config: &Conf
             std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
         let stt_label = match stt_engine.as_str() {
             "onnx" => "ONNX Runtime (Whisper)",
+            "apple" => "Apple SpeechAnalyzer (on-device)",
             _ => "Candle + Metal GPU",
         };
         add_row("STT Engine", stt_label, true);
@@ -2915,7 +2963,7 @@ unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect, config: &Conf
         // ── Env hint ───────────────────────────────────────────
         let hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 14.0)),
-            text: "Switch STT: set CODESCRIBE_STT_ENGINE=onnx in .env".to_string(),
+            text: "Switch STT: set CODESCRIBE_STT_ENGINE=apple|onnx in .env".to_string(),
             font_size: 10.0,
             text_color: secondary,
             ..Default::default()

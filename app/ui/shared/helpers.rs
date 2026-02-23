@@ -30,7 +30,7 @@ use objc2_core_foundation::{
     CGPoint as Objc2CGPoint, CGRect as Objc2CGRect, CGSize as Objc2CGSize,
 };
 use std::ffi::CString;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 
 /// Type alias for Objective-C object pointers
 pub type Id = *mut Object;
@@ -568,6 +568,15 @@ pub struct NSEdgeInsets {
     pub right: f64,
 }
 
+#[cfg(feature = "liquid_glass")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct NSOperatingSystemVersion {
+    major_version: isize,
+    minor_version: isize,
+    patch_version: isize,
+}
+
 /// Create an NSColor from RGBA values (0.0-1.0)
 pub fn color_rgba(r: f64, g: f64, b: f64, a: f64) -> Id {
     unsafe {
@@ -696,12 +705,60 @@ fn glass_effect_style_for_material(material: NSVisualEffectMaterial) -> NSGlassE
 }
 
 fn glass_effect_view_class_available() -> bool {
-    Class::get("NSGlassEffectView").is_some()
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| Class::get("NSGlassEffectView").is_some())
+}
+
+#[cfg(feature = "liquid_glass")]
+#[derive(Clone, Copy)]
+struct GlassRuntimeProbe {
+    appkit_version: f64,
+    appkit_supported: bool,
+    class_available: bool,
+    os_version: NSOperatingSystemVersion,
+    os_supported: bool,
+}
+
+#[cfg(feature = "liquid_glass")]
+impl GlassRuntimeProbe {
+    fn runtime_supported(self) -> bool {
+        self.appkit_supported || self.os_supported
+    }
+}
+
+#[cfg(feature = "liquid_glass")]
+fn probe_glass_runtime() -> GlassRuntimeProbe {
+    unsafe {
+        let appkit_version = NSAppKitVersionNumber;
+        let appkit_supported = appkit_version >= NS_APPKIT_VERSION_26_0;
+        let os_version = Class::get("NSProcessInfo")
+            .map(|cls| {
+                let process_info: Id = msg_send![cls, processInfo];
+                if process_info.is_null() {
+                    NSOperatingSystemVersion::default()
+                } else {
+                    let version: NSOperatingSystemVersion =
+                        msg_send![process_info, operatingSystemVersion];
+                    version
+                }
+            })
+            .unwrap_or_default();
+        let os_supported = os_version.major_version >= 26;
+
+        GlassRuntimeProbe {
+            appkit_version,
+            appkit_supported,
+            class_available: glass_effect_view_class_available(),
+            os_version,
+            os_supported,
+        }
+    }
 }
 
 #[cfg(feature = "liquid_glass")]
 fn glass_effect_runtime_supported() -> bool {
-    unsafe { NSAppKitVersionNumber >= NS_APPKIT_VERSION_26_0 }
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| probe_glass_runtime().runtime_supported())
 }
 
 #[cfg(not(feature = "liquid_glass"))]
@@ -711,10 +768,37 @@ fn glass_effect_runtime_supported() -> bool {
 
 #[cfg(feature = "liquid_glass")]
 fn create_typed_glass_effect_view(frame: CGRect, material: NSVisualEffectMaterial) -> Option<Id> {
-    if !glass_effect_supported() {
+    let runtime = probe_glass_runtime();
+    if !runtime.runtime_supported() || !runtime.class_available {
+        tracing::info!(
+            "NSGlassEffectView fallback to NSVisualEffectView: runtime_supported={} appkit_supported={} appkit_version={:.1} threshold={:.1} os_version={}.{}.{} os_supported={} class_available={}",
+            runtime.runtime_supported(),
+            runtime.appkit_supported,
+            runtime.appkit_version,
+            NS_APPKIT_VERSION_26_0,
+            runtime.os_version.major_version,
+            runtime.os_version.minor_version,
+            runtime.os_version.patch_version,
+            runtime.os_supported,
+            runtime.class_available
+        );
         return None;
     }
-    let mtm = MainThreadMarker::new()?;
+    let mtm = match MainThreadMarker::new() {
+        Some(marker) => marker,
+        None => {
+            let is_main_thread = if let Some(ns_thread) = Class::get("NSThread") {
+                unsafe { msg_send![ns_thread, isMainThread] }
+            } else {
+                false
+            };
+            tracing::warn!(
+                "NSGlassEffectView fallback to NSVisualEffectView: MainThreadMarker::new() returned None (NSThread.isMainThread={})",
+                is_main_thread
+            );
+            return None;
+        }
+    };
     let frame = Objc2CGRect::new(
         Objc2CGPoint::new(frame.origin.x, frame.origin.y),
         Objc2CGSize::new(frame.size.width, frame.size.height),
@@ -724,6 +808,11 @@ fn create_typed_glass_effect_view(frame: CGRect, material: NSVisualEffectMateria
     let view: Id = Retained::into_raw(view).cast::<Object>();
     unsafe {
         let _: () = msg_send![view, setWantsLayer: true];
+        let supports_corner_radius: bool =
+            msg_send![view, respondsToSelector: sel!(setCornerRadius:)];
+        if supports_corner_radius {
+            let _: () = msg_send![view, setCornerRadius: ui_tokens::SURFACE_RADIUS];
+        }
     }
     Some(view)
 }
@@ -841,6 +930,60 @@ pub fn create_glass_effect_view_with(
         let _: () = msg_send![view, setWantsLayer: true];
         view
     }
+}
+
+/// Create an `NSGlassEffectContainerView` when available, otherwise fallback to `NSView`.
+pub fn create_glass_effect_container_view(frame: CGRect, spacing: f64) -> Id {
+    unsafe {
+        let view: Id = if let Some(container_class) = Class::get("NSGlassEffectContainerView") {
+            let view: Id = msg_send![container_class, alloc];
+            let view: Id = msg_send![view, initWithFrame: frame];
+            let supports_spacing: bool = msg_send![view, respondsToSelector: sel!(setSpacing:)];
+            if supports_spacing {
+                let _: () = msg_send![view, setSpacing: spacing.max(0.0)];
+            }
+            view
+        } else {
+            let ns_view = Class::get("NSView").unwrap();
+            let view: Id = msg_send![ns_view, alloc];
+            msg_send![view, initWithFrame: frame]
+        };
+        let _: () = msg_send![view, setWantsLayer: true];
+        view
+    }
+}
+
+unsafe fn set_content_view_or_subview(host: Id, content_view: Id) -> bool {
+    if host.is_null() || content_view.is_null() {
+        return false;
+    }
+    let supports_content_view: bool =
+        unsafe { msg_send![host, respondsToSelector: sel!(setContentView:)] };
+    if supports_content_view {
+        let _: () = unsafe { msg_send![host, setContentView: content_view] };
+        true
+    } else {
+        let _: () = unsafe { msg_send![host, addSubview: content_view] };
+        false
+    }
+}
+
+/// Attach content to a glass effect view using WWDC25 `contentView` semantics when available.
+///
+/// Returns `true` when `setContentView:` was used; `false` when it fell back to `addSubview:`.
+/// # Safety
+/// `glass_view` and `content_view` must be valid Objective-C view objects.
+pub unsafe fn set_glass_effect_content_view(glass_view: Id, content_view: Id) -> bool {
+    unsafe { set_content_view_or_subview(glass_view, content_view) }
+}
+
+/// Attach content to a glass container view using `contentView` when available.
+///
+/// Returns `true` when `setContentView:` was used; `false` when it fell back to `addSubview:`.
+/// # Safety
+/// `container_view` and `content_view` must be valid Objective-C view objects.
+pub unsafe fn set_glass_container_content_view(container_view: Id, content_view: Id) -> bool {
+    unsafe { set_content_view_or_subview(container_view, content_view) }
 }
 
 /// # Safety
@@ -1079,6 +1222,7 @@ pub mod button_style {
     pub const SHADOWLESS_SQUARE: isize = 6;
     pub const SMALL_SQUARE: isize = 10;
     pub const INLINE: isize = 15;
+    pub const GLASS: isize = 16;
 }
 
 /// Create a button with title and action

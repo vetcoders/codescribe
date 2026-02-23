@@ -45,8 +45,8 @@ use crate::ui_helpers::{
     color_secondary_label, create_button, create_flipped_vertical_stack_view,
     create_glass_effect_view_with, create_label, create_scrollable_text_view,
     create_vertical_stack_view, layout_region_frame_for_view, ns_string, set_button_symbol,
-    set_focus_ring, set_hidden, set_tooltip, style_toolbar_icon_button, ui_colors, ui_tokens,
-    window_set_alpha, window_show,
+    set_focus_ring, set_glass_effect_content_view, set_hidden, set_tooltip,
+    style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -243,7 +243,7 @@ fn show_voice_chat_overlay_impl() {
         let window_delegate: Id = msg_send![delegate_class, new];
         let _: () = msg_send![window, setDelegate: window_delegate];
 
-        let content_view: Id = msg_send![window, contentView];
+        let window_content_view: Id = msg_send![window, contentView];
         let ns_mut_array = Class::get("NSMutableArray").unwrap();
         let window_drag_types: Id = msg_send![ns_mut_array, array];
         let _: () = msg_send![window_drag_types, addObject: ns_string("public.file-url")];
@@ -272,7 +272,14 @@ fn show_voice_chat_overlay_impl() {
             apply_tafla_surface(layer, true);
             let _: () = msg_send![layer, setMasksToBounds: true];
         }
-        add_subview(content_view, blur_view);
+        add_subview(window_content_view, blur_view);
+        let glass_content_view: Id = msg_send![Class::get("NSView").unwrap(), alloc];
+        let glass_content_view: Id = msg_send![glass_content_view, initWithFrame: blur_frame];
+        let _: () = msg_send![
+            glass_content_view,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
+        ];
+        let _: bool = set_glass_effect_content_view(blur_view, glass_content_view);
         let bounds: CGRect = msg_send![blur_view, bounds];
         let content_bounds = layout_region_frame_for_view(blur_view).unwrap_or(bounds);
 
@@ -744,9 +751,9 @@ fn show_voice_chat_overlay_impl() {
                 let _: () = msg_send![split_view, setDividerColor: divider_color];
             }
         }
-        add_subview(blur_view, split_view);
+        add_subview(glass_content_view, split_view);
         // Ensure header controls stay above the split view content.
-        add_subview(blur_view, header_bg);
+        add_subview(glass_content_view, header_bg);
         add_subview(header_bg, header_separator);
         add_subview(header_bg, header_controls);
 
@@ -853,7 +860,7 @@ fn show_voice_chat_overlay_impl() {
             search_label,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN
         ];
-        add_subview(blur_view, search_label);
+        add_subview(glass_content_view, search_label);
 
         let ns_search = Class::get("NSSearchField").unwrap();
         let search_field: Id = msg_send![ns_search, alloc];
@@ -885,7 +892,7 @@ fn show_voice_chat_overlay_impl() {
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN
         ];
         set_focus_ring(search_field);
-        add_subview(blur_view, search_field);
+        add_subview(glass_content_view, search_field);
 
         // Agent input bar
         let drop_target_cls = drop_target_view_class();

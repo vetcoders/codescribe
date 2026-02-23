@@ -562,6 +562,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_vad_index_sync_no_drift() {
         let input_sr = 48000u32;
         let callback_size = 1024usize;
@@ -618,6 +619,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_supervisor_busy_flush_keeps_boundary_and_speech_accounting() {
         let input_sr = 48000u32;
         let callback_size = 1024usize;
