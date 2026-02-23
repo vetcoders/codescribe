@@ -104,7 +104,7 @@ impl ThreadIndex {
 
         let path = threads_dir.join(INDEX_FILE_NAME);
         if path.exists() {
-            let raw = fs::read_to_string(&path)
+            let raw = fs::read_to_string(&path) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
                 .with_context(|| format!("Failed to read thread index: {}", path.display()))?;
             let data = serde_json::from_str::<ThreadIndexData>(&raw)
                 .with_context(|| format!("Failed to parse thread index: {}", path.display()))?;

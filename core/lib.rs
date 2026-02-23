@@ -28,6 +28,8 @@
 // Core modules (namespaced)
 // ═══════════════════════════════════════════════════════════
 
+pub mod agent;
+pub mod agent;
 pub mod attachment;
 pub mod audio;
 pub mod config;

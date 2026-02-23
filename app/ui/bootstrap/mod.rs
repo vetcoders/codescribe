@@ -855,6 +855,10 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
 
         drop(state); // Release lock before permission calls to avoid deadlock.
 
+        refresh_hotkey_conflict_indicator();
+        refresh_quality_dashboard();
+        refresh_diagnostics_dashboard();
+        refresh_prompt_editor_labels();
         refresh_permission_indicators();
         start_permission_polling();
         Some(root)
@@ -1120,6 +1124,8 @@ pub(super) fn refresh_permission_indicators() {
         if permissions_all_granted() {
             mark_setup_done();
         }
+
+        refresh_diagnostics_dashboard();
     });
 }
 
@@ -1712,6 +1718,14 @@ pub(super) fn switch_tab(index: usize) {
                 let _: () = msg_send![btn, setContentTintColor: tint];
             }
         }
+
+        if index == TAB_QUALITY {
+            refresh_quality_dashboard();
+        } else if index == TAB_DIAGNOSTICS {
+            refresh_diagnostics_dashboard();
+        } else if index == TAB_AI_PROMPTS {
+            refresh_prompt_editor_labels();
+        }
     });
 }
 
@@ -2249,6 +2263,222 @@ fn show_hotkey_conflicts_sheet() {
 
         let _: isize = msg_send![alert, runModal];
     }
+}
+
+fn prompt_type_from_index(index: isize) -> &'static str {
+    if index == 1 {
+        "assistive"
+    } else {
+        "formatting"
+    }
+}
+
+fn selected_prompt_type() -> &'static str {
+    let popup_ptr = {
+        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.prompt_type_popup
+    };
+    let Some(popup_ptr) = popup_ptr else {
+        return "formatting";
+    };
+    unsafe {
+        let popup = popup_ptr as Id;
+        let idx: isize = msg_send![popup, indexOfSelectedItem];
+        prompt_type_from_index(idx)
+    }
+}
+
+fn prompt_path_text(prompt_type: &str) -> String {
+    if prompt_type == "assistive" {
+        crate::get_assistive_prompt_path().display().to_string()
+    } else {
+        crate::get_formatting_prompt_path().display().to_string()
+    }
+}
+
+fn load_prompt_content(prompt_type: &str) -> Result<String, String> {
+    match send_ipc(IpcCommand::GetPrompt {
+        prompt_type: prompt_type.to_string(),
+    }) {
+        Ok(IpcResponse::Prompt(content)) => Ok(content),
+        Ok(IpcResponse::Error(err)) => Err(err),
+        Ok(other) => Err(format!("Unexpected IPC response: {other:?}")),
+        Err(err) => {
+            warn!("Settings: prompt IPC unavailable, using config fallback: {err}");
+            Ok(if prompt_type == "assistive" {
+                crate::config::get_assistive_prompt()
+            } else {
+                crate::config::get_formatting_prompt()
+            })
+        }
+    }
+}
+
+fn set_prompt_editor_content(text: &str) {
+    let text_view_ptr = {
+        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.prompt_editor_text_view
+    };
+    let Some(text_view_ptr) = text_view_ptr else {
+        return;
+    };
+    unsafe {
+        set_text_view_string(text_view_ptr as Id, text);
+    }
+}
+
+fn read_prompt_editor_content() -> String {
+    let text_view_ptr = {
+        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.prompt_editor_text_view
+    };
+    let Some(text_view_ptr) = text_view_ptr else {
+        return String::new();
+    };
+    unsafe { get_text_view_string(text_view_ptr as Id) }
+}
+
+fn set_prompt_editor_status(text: &str, is_error: bool) {
+    let status_ptr = {
+        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.prompt_status_label
+    };
+    let Some(status_ptr) = status_ptr else {
+        return;
+    };
+    unsafe {
+        let label = status_ptr as Id;
+        set_text_field_string(label, text);
+        let color = if is_error {
+            ui_colors::bubble_error_text()
+        } else {
+            crate::ui_helpers::color_secondary_label()
+        };
+        let _: () = msg_send![label, setTextColor: color];
+    }
+}
+
+fn refresh_prompt_editor_labels() {
+    Queue::main().exec_async(move || unsafe {
+        let (path_ptr, status_ptr) = {
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            (state.prompt_path_label, state.prompt_status_label)
+        };
+        let prompt_type = selected_prompt_type();
+        if let Some(ptr) = path_ptr {
+            let path_text = format!("Path: {}", prompt_path_text(prompt_type));
+            set_text_field_string(ptr as Id, &path_text);
+        }
+        if let Some(ptr) = status_ptr {
+            let hint = if prompt_type == "assistive" {
+                "Editing assistive prompt."
+            } else {
+                "Editing formatting prompt."
+            };
+            set_text_field_string(ptr as Id, hint);
+            let _: () =
+                msg_send![ptr as Id, setTextColor: crate::ui_helpers::color_secondary_label()];
+        }
+    });
+}
+
+fn refresh_quality_dashboard() {
+    Queue::main().exec_async(move || unsafe {
+        let (available_label, pending_label, last_check_label, report_label, open_report_button) = {
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.quality_available_label,
+                state.quality_pending_label,
+                state.quality_last_check_label,
+                state.quality_report_label,
+                state.quality_open_report_button,
+            )
+        };
+
+        let daemon_state = crate::quality_loop::read_daemon_state();
+
+        if let Some(ptr) = available_label {
+            let label = ptr as Id;
+            set_text_field_string(
+                label,
+                if daemon_state.available {
+                    "Available"
+                } else {
+                    "Unavailable"
+                },
+            );
+            let _: () = msg_send![
+                label,
+                setTextColor: if daemon_state.available {
+                    ui_colors::status_granted()
+                } else {
+                    ui_colors::status_warning()
+                }
+            ];
+        }
+
+        if let Some(ptr) = pending_label {
+            let label = ptr as Id;
+            set_text_field_string(label, &daemon_state.pending_mismatches.to_string());
+            let _: () = msg_send![
+                label,
+                setTextColor: if daemon_state.pending_mismatches > 0 {
+                    ui_colors::status_warning()
+                } else {
+                    crate::ui_helpers::color_secondary_label()
+                }
+            ];
+        }
+
+        if let Some(ptr) = last_check_label {
+            set_text_field_string(
+                ptr as Id,
+                &quality_last_check_text(&daemon_state.last_check),
+            );
+        }
+
+        if let Some(ptr) = report_label {
+            set_text_field_string(ptr as Id, &quality_report_text(&daemon_state));
+        }
+
+        if let Some(ptr) = open_report_button {
+            let _: () = msg_send![ptr as Id, setEnabled: quality_report_exists(&daemon_state)];
+        }
+    });
+}
+
+fn refresh_diagnostics_dashboard() {
+    Queue::main().exec_async(move || unsafe {
+        let (permission_labels, conflict_label, conflict_button, status_label) = {
+            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.diagnostics_permission_labels,
+                state.diagnostics_conflict_label,
+                state.diagnostics_conflict_details_button,
+                state.diagnostics_status_label,
+            )
+        };
+
+        for kind in PERMISSION_ORDER {
+            let idx = kind.index();
+            let status = permission_status(kind);
+            if let Some(ptr) = permission_labels[idx] {
+                let label = ptr as Id;
+                set_text_field_string(label, permission_status_text(status));
+                let _: () = msg_send![label, setTextColor: permission_status_color(status)];
+            }
+        }
+
+        let config = Config::load();
+        apply_hotkey_conflict_indicator(conflict_label, conflict_button, &config);
+
+        if let Some(ptr) = status_label {
+            set_text_field_string(
+                ptr as Id,
+                "Use Copy diagnostics to capture a full environment + permission report.",
+            );
+        }
+    });
 }
 
 // ============================================================================
@@ -3286,280 +3516,44 @@ unsafe fn build_advanced_tab(
 }
 
 // ============================================================================
-// Engine tab — read-only engine status panel
+// Quality tab
 // ============================================================================
 
-unsafe fn build_engine_tab(frame: core_graphics::geometry::CGRect, config: &Config) -> Id {
-    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
-    unsafe {
-        let ns_view = objc_class("NSView");
-
-        let container: Id = msg_send![ns_view, alloc];
-        let container: Id = msg_send![container, initWithFrame: frame];
-
-        let pad = ui_tokens::EDGE_PADDING;
-        let content_w = frame.size.width - pad * 2.0;
-        let gap = ui_tokens::DENSITY_COMPACT;
-        let mut y = frame.size.height - (22.0 + gap);
-        let primary = crate::ui_helpers::color_label();
-        let secondary = crate::ui_helpers::color_secondary_label();
-        let mono = crate::ui_helpers::monospace_font(ui_tokens::SMALL_FONT_SIZE);
-        let user_settings = UserSettings::load();
-        let read_setting =
-            |primary: Option<&String>, fallback: Option<&String>, shared: Option<&String>| {
-                primary
-                    .or(fallback)
-                    .or(shared)
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or_default()
-            };
-        let compact_endpoint = |endpoint: &str| -> String {
-            let trimmed = endpoint.trim();
-            if trimmed.is_empty() {
-                return "(not set)".to_string();
-            }
-            let without_scheme = trimmed
-                .strip_prefix("https://")
-                .or_else(|| trimmed.strip_prefix("http://"))
-                .unwrap_or(trimmed);
-            const MAX_LEN: usize = 48;
-            if without_scheme.len() <= MAX_LEN {
-                without_scheme.to_string()
-            } else {
-                format!("{}…", &without_scheme[..MAX_LEN])
-            }
-        };
-
-        // ── Title ──────────────────────────────────────────────
-        let title = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
-            text: "Engine".to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
-            bold: true,
-            text_color: primary,
-            ..Default::default()
-        });
-        add_subview(container, title);
-        y -= 22.0 + gap;
-
-        y = add_tafla_header_separator(container, pad, y, content_w);
-        y -= gap;
-
-        let subtitle = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Runtime engine status (read-only)".to_string(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            text_color: secondary,
-            ..Default::default()
-        });
-        add_subview(container, subtitle);
-        y -= 16.0 + gap;
-
-        // ── Helper: add a status row (dot + label + mono value) ─
-        let mut add_row = |label_text: &str, value_text: &str, ok: bool| {
-            let dot = if ok { "\u{25CF}" } else { "\u{25CB}" };
-            let dot_color: Id = if ok {
-                ui_colors::status_granted()
-            } else {
-                ui_colors::status_warning()
-            };
-
-            let dot_lbl = create_label(LabelConfig {
-                frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(18.0, 18.0)),
-                text: dot.to_string(),
-                font_size: 14.0,
-                text_color: dot_color,
-                ..Default::default()
-            });
-            add_subview(container, dot_lbl);
-
-            let lbl = create_label(LabelConfig {
-                frame: CGRect::new(&CGPoint::new(pad + 20.0, y), &CGSize::new(120.0, 18.0)),
-                text: label_text.to_string(),
-                font_size: ui_tokens::SMALL_FONT_SIZE,
-                bold: true,
-                text_color: primary,
-                ..Default::default()
-            });
-            add_subview(container, lbl);
-
-            let val = create_label(LabelConfig {
-                frame: CGRect::new(
-                    &CGPoint::new(pad + 142.0, y),
-                    &CGSize::new(content_w - 142.0, 18.0),
-                ),
-                text: value_text.to_string(),
-                font_size: ui_tokens::SMALL_FONT_SIZE,
-                text_color: secondary,
-                ..Default::default()
-            });
-            let _: () = msg_send![val, setFont: mono];
-            add_subview(container, val);
-            y -= 18.0 + gap;
-        };
-
-        // ── STT Engine ─────────────────────────────────────────
-        let stt_engine =
-            std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
-        let stt_label = match stt_engine.as_str() {
-            "onnx" => "ONNX Runtime (Whisper)",
-            "apple" => "Apple SpeechAnalyzer (on-device)",
-            _ => "Candle + Metal GPU",
-        };
-        add_row("STT Engine", stt_label, true);
-
-        // ── Whisper Model ──────────────────────────────────────
-        let whisper_embedded = codescribe_core::stt::whisper::embedded::is_embedded_available();
-        let whisper_status = if whisper_embedded {
-            "Embedded (~894 MB in binary)".to_string()
-        } else {
-            let path =
-                std::env::var("CODESCRIBE_MODEL_PATH").unwrap_or_else(|_| "(not set)".to_string());
-            let filename = path.rsplit('/').next().unwrap_or(&path);
-            format!("External: {filename}")
-        };
-        add_row("Whisper", &whisper_status, whisper_embedded);
-
-        // ── VAD (Silero) ───────────────────────────────────────
-        let vad_embedded = codescribe_core::vad::embedded::is_embedded_available();
-        let vad_status = if vad_embedded {
-            "Silero v6 embedded (2.3 MB)".to_string()
-        } else {
-            let path = codescribe_core::vad::user_model_path();
-            if path.exists() {
-                let filename = path
-                    .file_name()
-                    .unwrap_or(path.as_os_str())
-                    .to_string_lossy();
-                format!("Silero v6: {filename}")
-            } else {
-                "Not found (will auto-download)".to_string()
-            }
-        };
-        add_row(
-            "VAD",
-            &vad_status,
-            vad_embedded || codescribe_core::vad::user_model_path().exists(),
-        );
-
-        // ── TTS Engine ─────────────────────────────────────────
-        let tts_embedded = codescribe_core::tts::embedded::is_embedded_available();
-        let tts_status = if tts_embedded {
-            "CSM-1B embedded (~1 GB)"
-        } else {
-            "Not available"
-        };
-        add_row("TTS", tts_status, tts_embedded);
-
-        // ── Embedder ───────────────────────────────────────────
-        let embedder_ready = codescribe_core::embedder::is_initialized();
-        add_row(
-            "Embedder",
-            if embedder_ready {
-                "MiniLM ready"
-            } else {
-                "MiniLM (lazy init)"
-            },
-            true,
-        );
-
-        // ── LLM Runtime (read-only mirror of API Keys tab) ────
-        let fmt_endpoint = read_setting(
-            user_settings.llm_formatting_endpoint.as_ref(),
-            user_settings.llm_endpoint.as_ref(),
-            config.llm_endpoint.as_ref(),
-        );
-        let fmt_model = read_setting(
-            user_settings.llm_formatting_model.as_ref(),
-            user_settings.llm_model.as_ref(),
-            None,
-        );
-        let fmt_key_set = keychain::load_key("LLM_FORMATTING_API_KEY").is_some()
-            || keychain::load_key("LLM_API_KEY").is_some()
-            || config.llm_api_key.is_some();
-        let fmt_status = format!(
-            "{} | model={} | key={}",
-            compact_endpoint(&fmt_endpoint),
-            if fmt_model.is_empty() {
-                "(not set)"
-            } else {
-                fmt_model.as_str()
-            },
-            if fmt_key_set { "set" } else { "not set" }
-        );
-        add_row(
-            "Fmt LLM",
-            &fmt_status,
-            !fmt_endpoint.is_empty() && !fmt_model.is_empty(),
-        );
-
-        let assist_endpoint = read_setting(
-            user_settings.llm_assistive_endpoint.as_ref(),
-            user_settings.llm_endpoint.as_ref(),
-            config.llm_endpoint.as_ref(),
-        );
-        let assist_model = read_setting(
-            user_settings.llm_assistive_model.as_ref(),
-            user_settings.llm_model.as_ref(),
-            None,
-        );
-        let assist_key_set = keychain::load_key("LLM_ASSISTIVE_API_KEY").is_some()
-            || keychain::load_key("LLM_API_KEY").is_some()
-            || config.llm_api_key.is_some();
-        let assist_status = format!(
-            "{} | model={} | key={}",
-            compact_endpoint(&assist_endpoint),
-            if assist_model.is_empty() {
-                "(not set)"
-            } else {
-                assist_model.as_str()
-            },
-            if assist_key_set { "set" } else { "not set" }
-        );
-        add_row(
-            "Assist LLM",
-            &assist_status,
-            !assist_endpoint.is_empty() && !assist_model.is_empty(),
-        );
-
-        // ── Separator ──────────────────────────────────────────
-        y -= 4.0;
-        let sep = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 1.0)),
-            text: String::new(),
-            font_size: 1.0,
-            ..Default::default()
-        });
-        let _: () = msg_send![sep, setWantsLayer: true];
-        let layer: Id = msg_send![sep, layer];
-        if !layer.is_null() {
-            let bg = ui_colors::surface_border();
-            let cg: Id = msg_send![bg, CGColor];
-            let _: () = msg_send![layer, setBackgroundColor: cg];
-        }
-        add_subview(container, sep);
-        y -= gap;
-
-        // ── Env hint ───────────────────────────────────────────
-        let hint = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 14.0)),
-            text: "Switch STT: set CODESCRIBE_STT_ENGINE=apple|onnx in .env".to_string(),
-            font_size: 10.0,
-            text_color: secondary,
-            ..Default::default()
-        });
-        let _: () = msg_send![hint, setFont: mono];
-        add_subview(container, hint);
-
-        container
+fn quality_last_check_text(last_check: &str) -> String {
+    let trimmed = last_check.trim();
+    if trimmed.is_empty() {
+        "Never".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
-unsafe fn build_user_tab(
+fn quality_report_exists(state: &crate::quality_loop::QualityDaemonState) -> bool {
+    state
+        .latest_report
+        .as_ref()
+        .map(|dir| PathBuf::from(dir).join("index.html").exists())
+        .unwrap_or(false)
+}
+
+fn quality_report_text(state: &crate::quality_loop::QualityDaemonState) -> String {
+    match state.latest_report.as_ref() {
+        Some(dir) => {
+            let html_path = PathBuf::from(dir).join("index.html");
+            if html_path.exists() {
+                html_path.display().to_string()
+            } else {
+                format!("{dir} (missing index.html)")
+            }
+        }
+        None => "(none)".to_string(),
+    }
+}
+
+unsafe fn build_quality_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
-    config: &Config,
+    _config: &Config,
     state: &mut BootstrapState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
@@ -3578,7 +3572,7 @@ unsafe fn build_user_tab(
 
         let title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
-            text: "User".to_string(),
+            text: "Quality".to_string(),
             font_size: ui_tokens::BODY_FONT_SIZE,
             bold: true,
             text_color: primary,
@@ -3592,85 +3586,14 @@ unsafe fn build_user_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Customization and quality controls".to_string(),
+            text: "Quality daemon dashboard with live status, pending mismatch signal, and report actions."
+                .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
         });
         add_subview(container, subtitle);
         y -= 16.0 + gap;
-
-        let app_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
-            text: "App".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: primary,
-            ..Default::default()
-        });
-        add_subview(container, app_header);
-        y -= 18.0 + gap;
-
-        let _dock_check = add_toggle_row(
-            container,
-            action_handler,
-            pad,
-            &mut y,
-            field_w,
-            secondary,
-            ToggleRowSpec {
-                title: "Show dock icon",
-                checked: config.show_dock_icon,
-                action: sel!(onShowDockIconToggled:),
-                description: Some(
-                    "Best effort at runtime; some launch modes keep current behavior.",
-                ),
-                tag: None,
-                gap,
-            },
-        );
-
-        let app_divider = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 1.0)),
-            text: String::new(),
-            background_color: Some(ui_colors::surface_border()),
-            ..Default::default()
-        });
-        let _: () = msg_send![app_divider, setAlphaValue: 0.9f64];
-        add_subview(container, app_divider);
-        y -= gap;
-
-        let quality_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
-            text: "Transcription Quality".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: primary,
-            ..Default::default()
-        });
-        add_subview(container, quality_header);
-        y -= 18.0 + gap;
-
-        let ultra_on = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS")
-            .map(|v| parse_env_bool(&v))
-            .unwrap_or(false);
-        let ultra_check = add_toggle_row(
-            container,
-            action_handler,
-            pad,
-            &mut y,
-            field_w,
-            secondary,
-            ToggleRowSpec {
-                title: "Ultra Quality (slow final pass, explicit opt-in)",
-                checked: ultra_on,
-                action: sel!(onUltraQualityToggled:),
-                description: Some("Runs legacy end-of-session pass for max quality (slower)."),
-                tag: None,
-                gap,
-            },
-        );
-        state.ultra_quality_checkbox = Some(ultra_check as usize);
 
         let quality_on = UserSettings::load()
             .quality_daemon_autostart
@@ -3690,13 +3613,33 @@ unsafe fn build_user_tab(
                 title: "Auto-tune transcription quality (recommended)",
                 checked: quality_on,
                 action: sel!(onQualityDaemonToggled:),
-                description: Some("Runs quality analysis every 30min in background."),
+                description: Some("Runs quality analysis every 30 minutes in the background."),
                 tag: None,
                 gap,
             },
         );
         state.quality_daemon_checkbox = Some(quality_check as usize);
-        y -= gap;
+
+        let ultra_on = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS")
+            .map(|v| parse_env_bool(&v))
+            .unwrap_or(false);
+        let ultra_check = add_toggle_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            field_w,
+            secondary,
+            ToggleRowSpec {
+                title: "Ultra Quality (slow final pass)",
+                checked: ultra_on,
+                action: sel!(onUltraQualityToggled:),
+                description: Some("Runs a slower explicit final pass for maximum text quality."),
+                tag: None,
+                gap,
+            },
+        );
+        state.ultra_quality_checkbox = Some(ultra_check as usize);
 
         let divider = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 1.0)),
@@ -3708,67 +3651,350 @@ unsafe fn build_user_tab(
         add_subview(container, divider);
         y -= gap;
 
-        let user_hint = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: "Assistant endpoints and models are configured in API Keys tab.".to_string(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            text_color: secondary,
+        let dashboard_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "Daemon State".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: primary,
             ..Default::default()
         });
-        add_subview(container, user_hint);
+        add_subview(container, dashboard_header);
+        y -= 18.0 + gap;
+
+        let daemon_state = crate::quality_loop::read_daemon_state();
+
+        let add_metric_row = |container: Id,
+                              y: &mut f64,
+                              label: &str,
+                              value: &str,
+                              value_color: Id,
+                              width: f64,
+                              pad: f64,
+                              gap: f64|
+         -> usize {
+            let label_view = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(pad, *y), &CGSize::new(124.0, 18.0)),
+                text: label.to_string(),
+                font_size: ui_tokens::SMALL_FONT_SIZE,
+                text_color: crate::ui_helpers::color_secondary_label(),
+                ..Default::default()
+            });
+            add_subview(container, label_view);
+
+            let value_view = create_label(LabelConfig {
+                frame: CGRect::new(
+                    &CGPoint::new(pad + 126.0, *y),
+                    &CGSize::new((width - 126.0).max(120.0), 18.0),
+                ),
+                text: value.to_string(),
+                font_size: ui_tokens::SMALL_FONT_SIZE,
+                text_color: value_color,
+                ..Default::default()
+            });
+            add_subview(container, value_view);
+            *y -= 18.0 + gap;
+            value_view as usize
+        };
+
+        let available_text = if daemon_state.available {
+            "Available"
+        } else {
+            "Unavailable"
+        };
+        let available_color = if daemon_state.available {
+            ui_colors::status_granted()
+        } else {
+            ui_colors::status_warning()
+        };
+        state.quality_available_label = Some(add_metric_row(
+            container,
+            &mut y,
+            "Availability:",
+            available_text,
+            available_color,
+            content_w,
+            pad,
+            gap,
+        ));
+        state.quality_pending_label = Some(add_metric_row(
+            container,
+            &mut y,
+            "Pending:",
+            &daemon_state.pending_mismatches.to_string(),
+            if daemon_state.pending_mismatches > 0 {
+                ui_colors::status_warning()
+            } else {
+                secondary
+            },
+            content_w,
+            pad,
+            gap,
+        ));
+        state.quality_last_check_label = Some(add_metric_row(
+            container,
+            &mut y,
+            "Last check:",
+            &quality_last_check_text(&daemon_state.last_check),
+            secondary,
+            content_w,
+            pad,
+            gap,
+        ));
+        state.quality_report_label = Some(add_metric_row(
+            container,
+            &mut y,
+            "Latest report:",
+            &quality_report_text(&daemon_state),
+            secondary,
+            content_w,
+            pad,
+            gap,
+        ));
+
+        let refresh_btn = create_button(
+            CGRect::new(&CGPoint::new(pad, y - 2.0), &CGSize::new(116.0, 24.0)),
+            "Refresh status",
+            button_style::GLASS,
+        );
+        button_set_action(refresh_btn, action_handler, sel!(onQualityRefresh:));
+        add_subview(container, refresh_btn);
+
+        let open_report_btn = create_button(
+            CGRect::new(
+                &CGPoint::new(pad + 126.0, y - 2.0),
+                &CGSize::new(128.0, 24.0),
+            ),
+            "Open report",
+            button_style::GLASS,
+        );
+        button_set_action(open_report_btn, action_handler, sel!(onOpenQualityReport:));
+        let _: () = msg_send![open_report_btn, setEnabled: quality_report_exists(&daemon_state)];
+        add_subview(container, open_report_btn);
+        state.quality_open_report_button = Some(open_report_btn as usize);
 
         container
     }
 }
 
-// Temporary compatibility adapters for Settings V3 naming.
-// They preserve the new tab labels while reusing existing builders.
-unsafe fn build_ai_prompts_tab(
-    action_handler: Id,
-    frame: core_graphics::geometry::CGRect,
-    config: &Config,
-    state: &mut BootstrapState,
-) -> Id {
-    unsafe { build_api_tab(action_handler, frame, config, state) }
+// ============================================================================
+// Diagnostics tab
+// ============================================================================
+
+fn permission_status_text(status: PermissionStatus) -> &'static str {
+    match status {
+        PermissionStatus::Granted => "Granted",
+        PermissionStatus::Denied => "Denied",
+        PermissionStatus::NotDetermined => "Not determined",
+        PermissionStatus::Unknown => "Unknown",
+    }
 }
 
-unsafe fn build_audio_input_tab(
-    action_handler: Id,
-    frame: core_graphics::geometry::CGRect,
-    config: &Config,
-) -> Id {
-    unsafe { build_audio_tab(action_handler, frame, config) }
-}
-
-unsafe fn build_quality_tab(
-    action_handler: Id,
-    frame: core_graphics::geometry::CGRect,
-    _config: &Config,
-    _state: &mut BootstrapState,
-) -> Id {
-    unsafe { build_voice_lab_tab(action_handler, frame) }
+fn permission_status_color(status: PermissionStatus) -> Id {
+    match status {
+        PermissionStatus::Granted => ui_colors::status_granted(),
+        PermissionStatus::Denied => ui_colors::status_denied(),
+        PermissionStatus::NotDetermined | PermissionStatus::Unknown => ui_colors::status_warning(),
+    }
 }
 
 unsafe fn build_diagnostics_tab(
-    _action_handler: Id,
-    frame: core_graphics::geometry::CGRect,
-    config: &Config,
-    _state: &mut BootstrapState,
-) -> Id {
-    unsafe { build_engine_tab(frame, config) }
-}
-
-unsafe fn build_advanced_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
     config: &Config,
     state: &mut BootstrapState,
 ) -> Id {
-    unsafe { build_user_tab(action_handler, frame, config, state) }
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    unsafe {
+        let ns_view = objc_class("NSView");
+        let container: Id = msg_send![ns_view, alloc];
+        let container: Id = msg_send![container, initWithFrame: frame];
+
+        let pad = ui_tokens::EDGE_PADDING;
+        let content_w = frame.size.width - pad * 2.0;
+        let gap = ui_tokens::DENSITY_MEDIUM;
+        let mut y = frame.size.height - (22.0 + gap);
+        let primary = crate::ui_helpers::color_label();
+        let secondary = crate::ui_helpers::color_secondary_label();
+
+        let title = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            text: "Diagnostics".to_string(),
+            font_size: ui_tokens::BODY_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, title);
+        y -= 22.0 + gap;
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= gap;
+
+        let subtitle = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: "Permission matrix, hotkey conflict clarity, and one-click diagnostics copy."
+                .to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, subtitle);
+        y -= 16.0 + gap;
+
+        let matrix_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "Permission Matrix".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, matrix_header);
+        y -= 18.0 + gap;
+
+        let mut diagnostics_permission_labels: [Option<usize>; 5] = [None; 5];
+        for kind in PERMISSION_ORDER {
+            let idx = kind.index();
+            let status = permission_status(kind);
+
+            let name_label = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(188.0, 20.0)),
+                text: permission_row_label(kind).to_string(),
+                font_size: ui_tokens::SMALL_FONT_SIZE,
+                text_color: secondary,
+                ..Default::default()
+            });
+            add_subview(container, name_label);
+
+            let value_label = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(pad + 192.0, y), &CGSize::new(200.0, 20.0)),
+                text: permission_status_text(status).to_string(),
+                font_size: ui_tokens::SMALL_FONT_SIZE,
+                text_color: permission_status_color(status),
+                ..Default::default()
+            });
+            add_subview(container, value_label);
+            diagnostics_permission_labels[idx] = Some(value_label as usize);
+
+            y -= 20.0 + gap;
+        }
+        state.diagnostics_permission_labels = diagnostics_permission_labels;
+
+        let matrix_actions_y = y - 2.0;
+        let refresh_matrix_btn = create_button(
+            CGRect::new(
+                &CGPoint::new(pad, matrix_actions_y),
+                &CGSize::new(124.0, 24.0),
+            ),
+            "Refresh matrix",
+            button_style::GLASS,
+        );
+        button_set_action(
+            refresh_matrix_btn,
+            action_handler,
+            sel!(onDiagnosticsRefresh:),
+        );
+        add_subview(container, refresh_matrix_btn);
+
+        let open_settings_btn = create_button(
+            CGRect::new(
+                &CGPoint::new(pad + 134.0, matrix_actions_y),
+                &CGSize::new(154.0, 24.0),
+            ),
+            "Open System Settings",
+            button_style::GLASS,
+        );
+        button_set_action(
+            open_settings_btn,
+            action_handler,
+            sel!(onOpenSystemSettings:),
+        );
+        add_subview(container, open_settings_btn);
+
+        let copy_diag_btn = create_button(
+            CGRect::new(
+                &CGPoint::new(pad + 298.0, matrix_actions_y),
+                &CGSize::new(138.0, 24.0),
+            ),
+            "Copy diagnostics",
+            button_style::GLASS,
+        );
+        button_set_action(copy_diag_btn, action_handler, sel!(onCopyDiagnostics:));
+        add_subview(container, copy_diag_btn);
+        y -= 24.0 + gap;
+
+        let divider = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 1.0)),
+            text: String::new(),
+            background_color: Some(ui_colors::surface_border()),
+            ..Default::default()
+        });
+        let _: () = msg_send![divider, setAlphaValue: 0.9f64];
+        add_subview(container, divider);
+        y -= gap;
+
+        let conflicts_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "Hotkey Conflicts".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, conflicts_header);
+        y -= 18.0 + gap;
+
+        let (conflict_text, has_conflict) = hotkey_conflict_status(config);
+        let conflict_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w - 130.0, 28.0)),
+            text: conflict_text,
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: if has_conflict {
+                ui_colors::bubble_error_text()
+            } else {
+                secondary
+            },
+            ..Default::default()
+        });
+        add_subview(container, conflict_label);
+        state.diagnostics_conflict_label = Some(conflict_label as usize);
+
+        let conflict_details_button = create_button(
+            CGRect::new(
+                &CGPoint::new(pad + content_w - 120.0, y + 2.0),
+                &CGSize::new(120.0, 24.0),
+            ),
+            "View conflicts",
+            button_style::GLASS,
+        );
+        button_set_action(
+            conflict_details_button,
+            action_handler,
+            sel!(onShowHotkeyConflicts:),
+        );
+        let _: () = msg_send![conflict_details_button, setEnabled: has_conflict];
+        add_subview(container, conflict_details_button);
+        state.diagnostics_conflict_details_button = Some(conflict_details_button as usize);
+        y -= 28.0 + gap;
+
+        let status_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: "Use Copy diagnostics to capture a full environment + permission report."
+                .to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, status_label);
+        state.diagnostics_status_label = Some(status_label as usize);
+
+        container
+    }
 }
 
 // ============================================================================
-// Settings handler stubs (Keys + Audio + Voice Lab tabs)
+// Settings handlers
 // ============================================================================
 
 pub(super) extern "C" fn on_mode_binding_change(
@@ -3962,6 +4188,174 @@ pub(super) extern "C" fn on_save_api_settings(
     }
     update_keychain_status_labels();
     info!("Settings: API settings saved");
+}
+
+pub(super) extern "C" fn on_prompt_type_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    _sender: Id,
+) {
+    refresh_prompt_editor_labels();
+    on_prompt_load(_this, _cmd, _sender);
+}
+
+pub(super) extern "C" fn on_prompt_load(_this: &Object, _cmd: objc::runtime::Sel, _sender: Id) {
+    let prompt_type = selected_prompt_type();
+    match load_prompt_content(prompt_type) {
+        Ok(content) => {
+            set_prompt_editor_content(&content);
+            set_prompt_editor_status(
+                &format!(
+                    "{} prompt loaded.",
+                    if prompt_type == "assistive" {
+                        "Assistive"
+                    } else {
+                        "Formatting"
+                    }
+                ),
+                false,
+            );
+        }
+        Err(err) => {
+            set_prompt_editor_status(&format!("Failed to load prompt: {err}"), true);
+        }
+    }
+    refresh_prompt_editor_labels();
+}
+
+pub(super) extern "C" fn on_prompt_save(_this: &Object, _cmd: objc::runtime::Sel, _sender: Id) {
+    let prompt_type = selected_prompt_type();
+    let content = read_prompt_editor_content();
+    if content.trim().is_empty() {
+        set_prompt_editor_status("Prompt is empty. Add content before saving.", true);
+        return;
+    }
+
+    match send_ipc(IpcCommand::SavePrompt {
+        prompt_type: prompt_type.to_string(),
+        content: content.clone(),
+    }) {
+        Ok(IpcResponse::Ok) => {
+            set_prompt_editor_status("Prompt saved.", false);
+            return;
+        }
+        Ok(IpcResponse::Error(err)) => {
+            warn!("Settings: prompt save IPC error: {err}");
+        }
+        Ok(other) => {
+            warn!("Settings: unexpected prompt save response: {other:?}");
+        }
+        Err(err) => {
+            warn!("Settings: prompt save IPC unavailable: {err}");
+        }
+    }
+
+    let target_path = if prompt_type == "assistive" {
+        crate::get_assistive_prompt_path()
+    } else {
+        crate::get_formatting_prompt_path()
+    };
+    match std::fs::write(&target_path, content) {
+        Ok(()) => set_prompt_editor_status("Prompt saved via config fallback.", false),
+        Err(err) => set_prompt_editor_status(
+            &format!("Failed to save prompt to {}: {err}", target_path.display()),
+            true,
+        ),
+    }
+}
+
+pub(super) extern "C" fn on_prompt_reset(_this: &Object, _cmd: objc::runtime::Sel, _sender: Id) {
+    let prompt_type = selected_prompt_type();
+    match send_ipc(IpcCommand::ResetPrompt {
+        prompt_type: prompt_type.to_string(),
+    }) {
+        Ok(IpcResponse::Prompt(content)) => {
+            set_prompt_editor_content(&content);
+            set_prompt_editor_status("Prompt reset to default.", false);
+            return;
+        }
+        Ok(IpcResponse::Error(err)) => {
+            warn!("Settings: prompt reset IPC error: {err}");
+        }
+        Ok(other) => {
+            warn!("Settings: unexpected prompt reset response: {other:?}");
+        }
+        Err(err) => {
+            warn!("Settings: prompt reset IPC unavailable: {err}");
+        }
+    }
+
+    let fallback_result = crate::reset_to_defaults();
+    if let Err(err) = fallback_result {
+        set_prompt_editor_status(&format!("Failed to reset defaults: {err}"), true);
+        return;
+    }
+    let content = if prompt_type == "assistive" {
+        crate::config::get_assistive_prompt()
+    } else {
+        crate::config::get_formatting_prompt()
+    };
+    set_prompt_editor_content(&content);
+    set_prompt_editor_status("Prompt reset using config fallback.", false);
+}
+
+pub(super) extern "C" fn on_quality_refresh(_this: &Object, _cmd: objc::runtime::Sel, _sender: Id) {
+    refresh_quality_dashboard();
+}
+
+pub(super) extern "C" fn on_open_quality_report(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    _sender: Id,
+) {
+    if !crate::quality_loop::open_latest_report() {
+        warn!("Settings: no quality report available");
+    }
+    refresh_quality_dashboard();
+}
+
+pub(super) extern "C" fn on_diagnostics_refresh(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    _sender: Id,
+) {
+    refresh_permission_indicators();
+    refresh_diagnostics_dashboard();
+}
+
+pub(super) extern "C" fn on_copy_diagnostics(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    _sender: Id,
+) {
+    let report = crate::os::permissions::diagnostics_report();
+    let (status_ptr, secondary) = {
+        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            state.diagnostics_status_label,
+            crate::ui_helpers::color_secondary_label(),
+        )
+    };
+    match crate::os::clipboard::set_clipboard(&report) {
+        Ok(()) => {
+            if let Some(ptr) = status_ptr {
+                unsafe {
+                    let label = ptr as Id;
+                    set_text_field_string(label, "Diagnostics copied to clipboard.");
+                    let _: () = msg_send![label, setTextColor: secondary];
+                }
+            }
+        }
+        Err(err) => {
+            if let Some(ptr) = status_ptr {
+                unsafe {
+                    let label = ptr as Id;
+                    set_text_field_string(label, &format!("Failed to copy diagnostics: {err}"));
+                    let _: () = msg_send![label, setTextColor: ui_colors::bubble_error_text()];
+                }
+            }
+        }
+    }
 }
 
 pub(super) extern "C" fn on_delay_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
@@ -4197,6 +4591,7 @@ pub(super) extern "C" fn on_quality_daemon_toggled(
             "CODESCRIBE_AUTOSTART_QUALITY_DAEMON",
             if enabled { "1" } else { "0" },
         );
+        refresh_quality_dashboard();
     }
 }
 
@@ -4214,6 +4609,7 @@ pub(super) extern "C" fn on_ultra_quality_toggled(
             "CODESCRIBE_LOCAL_STT_FINAL_PASS",
             if enabled { "1" } else { "0" },
         );
+        refresh_quality_dashboard();
     }
 }
 

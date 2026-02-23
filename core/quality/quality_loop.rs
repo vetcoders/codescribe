@@ -1160,9 +1160,14 @@ fn read_latest_report_from_history(path: &Path, root: &Path) -> Option<String> {
 fn write_daemon_state_file(path: &Path, root: &Path, state: &QualityDaemonState) -> Result<()> {
     fs::create_dir_all(root)
         .with_context(|| format!("Failed to create config directory {}", root.display()))?;
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let target_path = path
+        .strip_prefix(root)
+        .map(|relative| root_canon.join(relative))
+        .unwrap_or_else(|_| path.to_path_buf());
     let json = serde_json::to_string_pretty(state)?;
-    crate::safe_path::safe_write_bounded(path, root, &json)
-        .with_context(|| format!("Failed to write daemon state {}", path.display()))
+    crate::safe_path::safe_write_bounded(&target_path, &root_canon, &json)
+        .with_context(|| format!("Failed to write daemon state {}", target_path.display()))
 }
 
 fn write_daemon_state_with_paths(
