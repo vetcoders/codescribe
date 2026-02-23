@@ -1600,9 +1600,10 @@ mod tests {
             ToggleTrigger::DoubleLeftOption => {
                 (ShortcutBinding::DoubleLeftOption, ShortcutBinding::Disabled)
             }
-            ToggleTrigger::DoubleRightOption => {
-                (ShortcutBinding::Disabled, ShortcutBinding::DoubleRightOption)
-            }
+            ToggleTrigger::DoubleRightOption => (
+                ShortcutBinding::Disabled,
+                ShortcutBinding::DoubleRightOption,
+            ),
             ToggleTrigger::None => (ShortcutBinding::Disabled, ShortcutBinding::Disabled),
             ToggleTrigger::DoubleCtrl => unreachable!("handled above"),
         };

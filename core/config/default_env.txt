@@ -13,12 +13,14 @@ LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
 WHISPER_LANGUAGE=pl
 
 # === Hotkeys ===
-HOLD_MODS=fn
 HOLD_EXCLUSIVE=1
-TOGGLE_TRIGGER=double_option
 HOLD_START_DELAY_MS=800
 DOUBLE_TAP_INTERVAL_MS=200
 TOGGLE_SILENCE_SEC=5.0
+# Mode bindings are canonical and persisted in settings.json:
+# - dictation: hold_fn
+# - formatting: double_left_option
+# - assistive: double_right_option
 
 # === Overlay / UI ===
 OVERLAY_POSITION_MODE=snapped_top_right

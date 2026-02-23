@@ -170,6 +170,17 @@ impl ThreadStore {
         Ok(())
     }
 
+    pub fn set_thread_favorite(&self, id: &str, is_favorite: bool) -> Result<bool> {
+        validate_thread_id(id)?;
+        let mut index = ThreadIndex::load_or_create(&self.threads_dir)?;
+        index.set_favorite(id, is_favorite)
+    }
+
+    pub fn thread_file_path(&self, id: &str) -> Result<PathBuf> {
+        validate_thread_id(id)?;
+        Ok(self.thread_path(id))
+    }
+
     pub fn save_blob(&self, data: &[u8], name: &str) -> Result<PathBuf> {
         let sanitized = sanitize_filename(name);
         let path = self.unique_blob_path(&sanitized);
@@ -531,5 +542,75 @@ mod tests {
 
         assert_eq!(note.anchored_to_message, Some(1));
         assert!(thread.notes.iter().any(|value| value.id == note.id));
+    }
+
+    #[test]
+    fn save_thread_updates_index_search_results() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let id = ThreadStore::generate_id();
+
+        let mut thread = sample_thread(id.clone(), Utc::now() - Duration::minutes(30));
+        thread.title = "Dermatology intake".to_string();
+        thread.summary = Some("initial allergy note".to_string());
+        store.save_thread(&thread)?;
+
+        thread.updated_at = Utc::now();
+        thread.title = "Dermatology urgent handoff".to_string();
+        thread.summary = Some("cat urgent follow-up tomorrow".to_string());
+        store.save_thread(&thread)?;
+
+        let index = ThreadIndex::load_or_create(store.threads_dir())?;
+        assert_eq!(
+            index.data().threads.len(),
+            1,
+            "save should upsert by thread id"
+        );
+
+        let urgent_results = index.search("cat urgent");
+        assert_eq!(urgent_results.len(), 1);
+        assert_eq!(urgent_results[0].id, id);
+
+        let stale_results = index.search("initial allergy");
+        assert!(
+            stale_results.is_empty(),
+            "stale pre-update summary should not remain searchable"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn set_thread_favorite_updates_index_entry() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        let id = thread.id.clone();
+        store.save_thread(&thread)?;
+
+        let updated = store.set_thread_favorite(&id, true)?;
+        assert!(updated);
+
+        let index = ThreadIndex::load_or_create(store.threads_dir())?;
+        let summary = index
+            .data()
+            .threads
+            .iter()
+            .find(|value| value.id == id)
+            .expect("summary should exist");
+        assert!(summary.is_favorite);
+
+        Ok(())
+    }
+
+    #[test]
+    fn thread_file_path_validates_id() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let id = ThreadStore::generate_id();
+        let path = store.thread_file_path(&id)?;
+        assert!(path.ends_with(format!("{id}.json")));
+        assert!(store.thread_file_path("../bad").is_err());
+        Ok(())
     }
 }

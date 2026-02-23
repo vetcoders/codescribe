@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo run --example config_demo
 
-use codescribe::config::{Config, HoldMods, Language};
+use codescribe::config::{Config, Language};
 
 fn main() -> anyhow::Result<()> {
     println!("CodeScribe Config Demo\n");
@@ -18,10 +18,6 @@ fn main() -> anyhow::Result<()> {
 
     // Demonstrate enum parsing
     println!("Enum parsing examples:");
-    println!(
-        "  \"ctrl_alt\".parse::<HoldMods>() = {:?}",
-        "ctrl_alt".parse::<HoldMods>()
-    );
     println!(
         "  \"pl\".parse::<Language>() = {:?}",
         "pl".parse::<Language>()

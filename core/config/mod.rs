@@ -24,8 +24,7 @@ mod types;
 
 // Re-export types
 pub use types::{
-    Config, HoldMods, ModeBinding, OverlayPositionMode, ShortcutBinding, ToggleTrigger,
-    TranscriptSendMode, WorkMode,
+    Config, ModeBinding, OverlayPositionMode, ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
 pub use settings::UserSettings;
@@ -68,15 +67,6 @@ mod tests {
         } else {
             unsafe { std::env::remove_var("SHOW_DOCK_ICON") };
         }
-    }
-
-    #[test]
-    fn test_hold_mods_parsing() {
-        assert_eq!("ctrl".parse::<HoldMods>(), Ok(HoldMods::Ctrl));
-        assert_eq!("ctrl_alt".parse::<HoldMods>(), Ok(HoldMods::CtrlAlt));
-        assert_eq!("ctrl+shift".parse::<HoldMods>(), Ok(HoldMods::CtrlShift));
-        assert_eq!("none".parse::<HoldMods>(), Ok(HoldMods::None));
-        assert!("invalid".parse::<HoldMods>().is_err());
     }
 
     #[test]

@@ -2,6 +2,8 @@ use anyhow::Result;
 use codescribe_core::agent::AgentProvider;
 
 pub mod openai_provider;
+#[cfg(target_os = "macos")]
+pub mod tools;
 
 pub use openai_provider::OpenAiProvider;
 

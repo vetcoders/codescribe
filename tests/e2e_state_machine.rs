@@ -116,35 +116,6 @@ fn test_mode_bindings_reload_from_settings_storage() {
 
 #[test]
 #[serial]
-fn test_legacy_env_hotkeys_are_ignored_history_only() {
-    let tmp = setup_test_env();
-
-    let _config = Config::load();
-    let env_path = tmp.path().join(".env");
-    std::fs::write(
-        &env_path,
-        "HOLD_MODS=ctrl_cmd\nTOGGLE_TRIGGER=double_ralt\n",
-    )
-    .expect("write");
-
-    unsafe {
-        std::env::remove_var("HOLD_MODS");
-        std::env::remove_var("TOGGLE_TRIGGER");
-    }
-
-    let reloaded = UserSettings::load();
-    assert_eq!(
-        reloaded.mode_binding_for(WorkMode::Dictation),
-        ShortcutBinding::HoldFn
-    );
-    assert_eq!(
-        reloaded.mode_binding_for(WorkMode::Assistive),
-        ShortcutBinding::DoubleRightOption
-    );
-}
-
-#[test]
-#[serial]
 fn test_assistive_mode_concept() {
     let _tmp = setup_test_env();
 

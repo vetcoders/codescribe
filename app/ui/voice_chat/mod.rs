@@ -37,7 +37,8 @@ use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use crate::config::{HoldMods, ToggleTrigger};
+use crate::config::ShortcutBinding;
+use crate::os::hotkeys::ModeHotkeyBindings;
 
 use crate::ui_helpers::{
     LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, apply_tafla_surface, button_set_action,
@@ -66,24 +67,32 @@ const NSVIEW_MIN_Y_MARGIN: isize = 8;
 const NSVIEW_HEIGHT_SIZABLE: isize = 16;
 const NSVIEW_MAX_Y_MARGIN: isize = 32;
 
-pub(super) fn shortcuts_lines(hold: HoldMods, toggle: ToggleTrigger) -> (String, String) {
-    let hold_line = match hold {
-        HoldMods::Fn => "Hold Fn — record • Fn+Shift — chat • Fn+Cmd — selection",
-        HoldMods::None => "Hold-to-talk disabled",
-        HoldMods::Ctrl => "Hold Ctrl — record",
-        HoldMods::CtrlAlt => {
+pub(super) fn shortcuts_lines(bindings: ModeHotkeyBindings) -> (String, String) {
+    let hold_line = match bindings.dictation {
+        ShortcutBinding::HoldFn => "Hold Fn — record • Fn+Shift — chat • Fn+Cmd — selection",
+        ShortcutBinding::HoldCtrl => "Hold Ctrl — record",
+        ShortcutBinding::HoldCtrlAlt => {
             "Hold Ctrl — record • Ctrl+Option — format • Ctrl+Shift — chat • Ctrl+Cmd — selection"
         }
-        HoldMods::CtrlShift => "Hold Ctrl+Shift — record",
-        HoldMods::CtrlCmd => "Hold Ctrl+Cmd — record",
+        ShortcutBinding::HoldCtrlShift => "Hold Ctrl+Shift — record",
+        ShortcutBinding::HoldCtrlCmd => "Hold Ctrl+Cmd — record",
+        ShortcutBinding::Disabled
+        | ShortcutBinding::DoubleCtrl
+        | ShortcutBinding::DoubleLeftOption
+        | ShortcutBinding::DoubleRightOption => "Hold-to-talk disabled",
     };
 
-    let toggle_line = match toggle {
-        ToggleTrigger::DoubleOption => "⌥⌥ — toggle • Right ⌥⌥ — AI",
-        ToggleTrigger::DoubleLeftOption => "Left ⌥⌥ — toggle",
-        ToggleTrigger::DoubleRightOption => "Right ⌥⌥ — AI",
-        ToggleTrigger::DoubleCtrl => "Ctrl Ctrl — toggle (raw)",
-        ToggleTrigger::None => "Toggle disabled",
+    let toggle_line = if bindings.dictation == ShortcutBinding::DoubleCtrl {
+        "Ctrl Ctrl — toggle (raw)"
+    } else {
+        let formatting_left = bindings.formatting == ShortcutBinding::DoubleLeftOption;
+        let assistive_right = bindings.assistive == ShortcutBinding::DoubleRightOption;
+        match (formatting_left, assistive_right) {
+            (true, true) => "⌥⌥ — toggle • Right ⌥⌥ — AI",
+            (true, false) => "Left ⌥⌥ — toggle",
+            (false, true) => "Right ⌥⌥ — AI",
+            (false, false) => "Toggle disabled",
+        }
     };
 
     (hold_line.to_string(), toggle_line.to_string())
@@ -1215,7 +1224,11 @@ mod tests {
 
     #[test]
     fn shortcuts_lines_reflect_modifiers() {
-        let (hold, toggle) = shortcuts_lines(HoldMods::CtrlAlt, ToggleTrigger::DoubleRightOption);
+        let (hold, toggle) = shortcuts_lines(ModeHotkeyBindings {
+            dictation: ShortcutBinding::HoldCtrlAlt,
+            formatting: ShortcutBinding::Disabled,
+            assistive: ShortcutBinding::DoubleRightOption,
+        });
         assert!(hold.contains("Ctrl+Option"));
         assert!(toggle.contains("Right"));
     }

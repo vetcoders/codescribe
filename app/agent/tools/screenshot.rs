@@ -198,8 +198,8 @@ fn cgimage_to_rgba(image: &CGImage) -> Result<RgbaImage> {
         );
     }
 
-    let width = usize::try_from(image.width()).context("Screenshot width exceeds usize")?;
-    let height = usize::try_from(image.height()).context("Screenshot height exceeds usize")?;
+    let width = image.width();
+    let height = image.height();
     let bytes_per_row = image.bytes_per_row();
 
     let min_row_bytes = width
@@ -301,7 +301,8 @@ fn encode_png(image: &CGImage) -> Result<Vec<u8>> {
     }
 
     let finalized = unsafe {
-        CGImageDestinationAddImage(destination, image.as_ptr(), ptr::null());
+        let image_ref = image.as_ref() as *const _ as core_graphics::sys::CGImageRef;
+        CGImageDestinationAddImage(destination, image_ref, ptr::null());
         let finalized = CGImageDestinationFinalize(destination);
         CFRelease(destination as _);
         finalized

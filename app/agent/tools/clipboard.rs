@@ -94,10 +94,10 @@ where
 
 fn write_clipboard_with<SetClipboard>(
     input: &Value,
-    setter: SetClipboard,
+    mut setter: SetClipboard,
 ) -> Result<ToolResultContent>
 where
-    SetClipboard: Fn(&str) -> Result<()>,
+    SetClipboard: FnMut(&str) -> Result<()>,
 {
     let text = input
         .get("text")

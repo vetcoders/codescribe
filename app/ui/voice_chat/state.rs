@@ -88,11 +88,19 @@ pub enum ConversationModeState {
     Interrupted,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrawerEntrySource {
+    LegacyFile,
+    Thread { id: String },
+}
+
 pub struct DrawerEntry {
+    pub source: DrawerEntrySource,
     pub path: PathBuf,
     pub timestamp: SystemTime,
     pub mode: TranscriptionMode,
     pub preview: String,
+    pub search_corpus: String,
     pub is_ai_formatted: bool,
     pub is_favorite: bool,
 }

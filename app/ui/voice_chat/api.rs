@@ -7,12 +7,14 @@ use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 use chrono::{DateTime, Local};
 
+use codescribe_core::agent::{Thread, ThreadIndex, ThreadStore};
 use codescribe_core::attachment::Attachment;
 
 use crate::ui::shared::status::{UiStatus, status_from_detail};
@@ -28,8 +30,8 @@ use crate::ui_helpers::{
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
 use super::state::{
-    ChatMessage, ChatRole, ConversationModeState, DrawerEntry, OVERLAY_STATE, SEND_CALLBACK, Tab,
-    TranscriptionMode, VoiceChatOverlayState,
+    ChatMessage, ChatRole, ConversationModeState, DrawerEntry, DrawerEntrySource, OVERLAY_STATE,
+    SEND_CALLBACK, Tab, TranscriptionMode, VoiceChatOverlayState,
 };
 
 // Type alias for Objective-C object pointers
@@ -290,7 +292,7 @@ pub fn filter_drawer(query: &str) {
     let query_owned = query.to_string();
     Queue::main().exec_async(move || {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.drawer_entries = load_drawer_entries();
+        state.drawer_entries = load_drawer_entries_with_query(&query_owned);
         render_drawer_entries(&mut state, &query_owned);
     });
 }
@@ -2612,17 +2614,32 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
 fn refresh_drawer_impl() {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.favorites = load_favorites_from_disk();
-    state.drawer_entries = load_drawer_entries();
     let query = drawer_query_from_state(&state);
+    state.drawer_entries = load_drawer_entries();
     render_drawer_entries(&mut state, &query);
 }
 
 pub fn handle_card_copy(index: usize) {
     let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(entry) = state.drawer_entries.get(index)
-        && let Ok(contents) = std::fs::read_to_string(&entry.path)
-    {
-        copy_to_clipboard(&contents);
+    if let Some(entry) = state.drawer_entries.get(index) {
+        match &entry.source {
+            DrawerEntrySource::Thread { id } => {
+                if let Ok(store) = ThreadStore::new() {
+                    if let Ok(thread) = store.load_thread(id) {
+                        copy_to_clipboard(&thread_markdown_for_copy(&thread));
+                        return;
+                    }
+                    if let Ok(raw) = std::fs::read_to_string(&entry.path) {
+                        copy_to_clipboard(&raw);
+                    }
+                }
+            }
+            DrawerEntrySource::LegacyFile => {
+                if let Ok(contents) = std::fs::read_to_string(&entry.path) {
+                    copy_to_clipboard(&contents);
+                }
+            }
+        }
     }
 }
 
@@ -2704,28 +2721,63 @@ pub fn handle_card_edit(index: usize) {
 
 pub fn handle_card_delete(index: usize) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(entry) = state.drawer_entries.get(index)
-        && let Err(err) = std::fs::remove_file(&entry.path)
-    {
-        warn!("Failed to delete {}: {}", entry.path.display(), err);
+    if let Some(entry) = state.drawer_entries.get(index) {
+        let favorite_key = drawer_entry_favorite_key(entry);
+        match &entry.source {
+            DrawerEntrySource::Thread { id } => {
+                if let Ok(store) = ThreadStore::new() {
+                    if let Err(err) = store.delete_thread(id) {
+                        warn!("Failed to delete thread {id}: {err}");
+                    }
+                } else if let Err(err) = std::fs::remove_file(&entry.path) {
+                    warn!(
+                        "Failed to delete thread fallback {}: {}",
+                        entry.path.display(),
+                        err
+                    );
+                }
+            }
+            DrawerEntrySource::LegacyFile => {
+                if let Err(err) = std::fs::remove_file(&entry.path) {
+                    warn!("Failed to delete {}: {}", entry.path.display(), err);
+                }
+            }
+        }
+        state.favorites.remove(&favorite_key);
+        save_favorites_to_disk(&state.favorites);
     }
     state.favorites = load_favorites_from_disk();
-    state.drawer_entries = load_drawer_entries();
     let query = drawer_query_from_state(&state);
+    state.drawer_entries = load_drawer_entries_with_query(&query);
     render_drawer_entries(&mut state, &query);
 }
 
 pub fn handle_card_favorite(index: usize) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(entry) = state.drawer_entries.get_mut(index) {
-        entry.is_favorite = !entry.is_favorite;
-        let key = entry.path.to_string_lossy().to_string();
-        if entry.is_favorite {
-            state.favorites.insert(key);
-        } else {
-            state.favorites.remove(&key);
-        }
-        save_favorites_to_disk(&state.favorites);
+    let Some(entry) = state.drawer_entries.get_mut(index) else {
+        return;
+    };
+
+    entry.is_favorite = !entry.is_favorite;
+    let is_favorite = entry.is_favorite;
+    let key = drawer_entry_favorite_key(entry);
+    let thread_id = match &entry.source {
+        DrawerEntrySource::Thread { id } => Some(id.clone()),
+        DrawerEntrySource::LegacyFile => None,
+    };
+
+    if is_favorite {
+        state.favorites.insert(key);
+    } else {
+        state.favorites.remove(&key);
+    }
+    save_favorites_to_disk(&state.favorites);
+
+    if let Some(id) = thread_id
+        && let Ok(store) = ThreadStore::new()
+        && let Err(err) = store.set_thread_favorite(&id, is_favorite)
+    {
+        warn!("Failed to update thread favorite {id}: {err}");
     }
     update_favorites_button_with_state(&mut state);
     let query = drawer_query_from_state(&state);
@@ -2781,7 +2833,8 @@ fn drawer_entry_matches_query(entry: &DrawerEntry, query_lower: &str) -> bool {
         return true;
     }
     let path = entry.path.to_string_lossy();
-    let mut haystack = String::with_capacity(path.len() + entry.preview.len() + 64);
+    let mut haystack =
+        String::with_capacity(path.len() + entry.preview.len() + entry.search_corpus.len() + 96);
     haystack.push_str(entry_type_label(entry));
     haystack.push(' ');
     haystack.push_str(mode_label(entry.mode));
@@ -2792,7 +2845,13 @@ fn drawer_entry_matches_query(entry: &DrawerEntry, query_lower: &str) -> bool {
         haystack.push_str(file_name);
         haystack.push(' ');
     }
+    if let DrawerEntrySource::Thread { id } = &entry.source {
+        haystack.push_str(id);
+        haystack.push(' ');
+    }
     haystack.push_str(&entry.preview);
+    haystack.push(' ');
+    haystack.push_str(&entry.search_corpus);
     haystack.to_lowercase().contains(query_lower)
 }
 
@@ -2998,11 +3057,22 @@ mod tests {
         is_ai_formatted: bool,
         is_favorite: bool,
     ) -> DrawerEntry {
+        let mode_label = match mode {
+            TranscriptionMode::Hold => "Ctrl+Hold",
+            TranscriptionMode::Assistive => "Shift/Cmd",
+            TranscriptionMode::Toggle => "Toggle",
+            TranscriptionMode::Conversation => "Moshi",
+        };
+        let entry_type = if is_ai_formatted { "AI" } else { "Tt" };
+        let search_corpus =
+            format!("{entry_type} {mode_label} {path} {preview}").to_ascii_lowercase();
         DrawerEntry {
+            source: DrawerEntrySource::LegacyFile,
             path: PathBuf::from(path),
             timestamp: SystemTime::now(),
             mode,
             preview: preview.to_string(),
+            search_corpus,
             is_ai_formatted,
             is_favorite,
         }
@@ -3218,7 +3288,7 @@ fn create_drawer_card(
             entry_type_label(entry),
             format_relative_time(entry.timestamp)
         );
-        let subtitle = format!("{} • {}", mode_label(entry.mode), entry.path.display());
+        let subtitle = drawer_entry_subtitle(entry);
         let preview = entry.preview.clone();
         let card = create_card_view(frame, &title, &subtitle, &preview);
         // Highlight matching query text in the preview field (last NSTextField subview).
@@ -3363,7 +3433,25 @@ unsafe fn apply_search_highlight(field: Id, text: &str, query: &str) {
     let _: () = msg_send![field, setAttributedStringValue: attr_str];
 }
 fn entry_type_label(entry: &DrawerEntry) -> &'static str {
-    if entry.is_ai_formatted { "AI" } else { "Tt" }
+    match entry.source {
+        DrawerEntrySource::Thread { .. } => "Th",
+        DrawerEntrySource::LegacyFile => {
+            if entry.is_ai_formatted {
+                "AI"
+            } else {
+                "Tt"
+            }
+        }
+    }
+}
+
+fn drawer_entry_subtitle(entry: &DrawerEntry) -> String {
+    match &entry.source {
+        DrawerEntrySource::Thread { id } => format!("{} • thread:{id}", mode_label(entry.mode)),
+        DrawerEntrySource::LegacyFile => {
+            format!("{} • {}", mode_label(entry.mode), entry.path.display())
+        }
+    }
 }
 
 fn mode_label(mode: TranscriptionMode) -> &'static str {
@@ -3393,11 +3481,110 @@ fn format_relative_time(timestamp: SystemTime) -> String {
 }
 
 pub fn load_drawer_entries() -> Vec<DrawerEntry> {
+    load_drawer_entries_with_query("")
+}
+
+fn load_drawer_entries_with_query(query: &str) -> Vec<DrawerEntry> {
+    let favorites = load_favorites_from_disk();
+    let mut entries = load_thread_drawer_entries(&favorites, query);
+    entries.extend(load_legacy_drawer_entries(&favorites));
+    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    let query_lower = query.trim().to_ascii_lowercase();
+    if !query_lower.is_empty() {
+        entries.retain(|entry| drawer_entry_matches_query(entry, &query_lower));
+    }
+
+    entries
+}
+
+fn load_thread_drawer_entries(favorites: &HashSet<String>, query: &str) -> Vec<DrawerEntry> {
+    let Ok(store) = ThreadStore::new() else {
+        return Vec::new();
+    };
+    let Ok(index) = ThreadIndex::load_or_create(store.threads_dir()) else {
+        return Vec::new();
+    };
+
+    let summaries = if query.trim().is_empty() {
+        index.list(None)
+    } else {
+        index.search(query)
+    };
+
+    summaries
+        .into_iter()
+        .map(|summary| {
+            let id = summary.id.clone();
+            let source = DrawerEntrySource::Thread { id: id.clone() };
+            let favorite_key = format!("thread:{id}");
+            let preview = summary
+                .latest_note
+                .as_deref()
+                .or(summary.latest_message.as_deref())
+                .or(summary.summary.as_deref())
+                .unwrap_or(summary.title.as_str())
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(120)
+                .collect::<String>();
+            let mut search_corpus = summary.search_text.clone();
+            if search_corpus.trim().is_empty() {
+                search_corpus = format!(
+                    "{} {} {} {}",
+                    summary.title,
+                    summary.mode,
+                    summary.summary.as_deref().unwrap_or_default(),
+                    preview
+                )
+                .to_ascii_lowercase();
+            }
+
+            let path = store
+                .thread_file_path(&id)
+                .unwrap_or_else(|_| PathBuf::from(format!("thread_{id}.json")));
+            let timestamp = if summary.updated_at.timestamp_millis() >= 0 {
+                UNIX_EPOCH + Duration::from_millis(summary.updated_at.timestamp_millis() as u64)
+            } else {
+                SystemTime::now()
+            };
+            let mode = if summary.mode.eq_ignore_ascii_case("conversation")
+                || summary.mode.eq_ignore_ascii_case("moshi")
+            {
+                TranscriptionMode::Conversation
+            } else if summary.mode.eq_ignore_ascii_case("assistive")
+                || summary.mode.eq_ignore_ascii_case("chat")
+            {
+                TranscriptionMode::Assistive
+            } else if summary.mode.eq_ignore_ascii_case("hold")
+                || summary.mode.eq_ignore_ascii_case("raw")
+            {
+                TranscriptionMode::Hold
+            } else {
+                TranscriptionMode::Toggle
+            };
+
+            DrawerEntry {
+                source,
+                path,
+                timestamp,
+                mode,
+                preview,
+                search_corpus,
+                is_ai_formatted: true,
+                is_favorite: summary.is_favorite || favorites.contains(&favorite_key),
+            }
+        })
+        .collect()
+}
+
+fn load_legacy_drawer_entries(favorites: &HashSet<String>) -> Vec<DrawerEntry> {
     let config_dir = codescribe_core::config::Config::config_dir();
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let dir = config_dir.join("transcriptions").join(today);
 
-    let favorites = load_favorites_from_disk();
     let files = list_draft_files(&dir);
     files
         .into_iter()
@@ -3425,16 +3612,134 @@ pub fn load_drawer_entries() -> Vec<DrawerEntry> {
             };
             let is_ai_formatted = name.contains("_ai") && !name.contains("ai-failed");
             let is_favorite = favorites.contains(&path.to_string_lossy().to_string());
+            let mode_label = mode_label(mode);
+            let entry_type = if is_ai_formatted { "AI" } else { "Tt" };
+            let search_corpus = format!(
+                "{entry_type} {mode_label} {} {} {}",
+                path.to_string_lossy(),
+                path.file_name()
+                    .and_then(|file| file.to_str())
+                    .unwrap_or_default(),
+                preview
+            )
+            .to_ascii_lowercase();
             DrawerEntry {
+                source: DrawerEntrySource::LegacyFile,
                 path,
                 timestamp,
                 mode,
                 preview,
+                search_corpus,
                 is_ai_formatted,
                 is_favorite,
             }
         })
         .collect()
+}
+
+fn drawer_entry_favorite_key(entry: &DrawerEntry) -> String {
+    match &entry.source {
+        DrawerEntrySource::Thread { id } => format!("thread:{id}"),
+        DrawerEntrySource::LegacyFile => entry.path.to_string_lossy().to_string(),
+    }
+}
+
+fn thread_markdown_for_copy(thread: &Thread) -> String {
+    let mut out = String::new();
+    let title = thread.title.trim();
+    let title = if title.is_empty() {
+        "Untitled Thread"
+    } else {
+        title
+    };
+    out.push_str("# ");
+    out.push_str(title);
+    out.push_str("\n\n");
+
+    if let Some(summary) = &thread.summary
+        && !summary.trim().is_empty()
+    {
+        out.push_str("## Summary\n");
+        out.push_str(summary.trim());
+        out.push_str("\n\n");
+    }
+
+    if !thread.notes.is_empty() {
+        out.push_str("## Notes\n");
+        for note in &thread.notes {
+            out.push_str("- ");
+            out.push_str(note.text.trim());
+            if let Some(anchor) = note.anchored_to_message {
+                out.push_str(&format!(" (anchor: #{anchor})"));
+            }
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
+    if !thread.messages.is_empty() {
+        out.push_str("## Messages\n");
+        for message in &thread.messages {
+            out.push_str("### ");
+            out.push_str(&message.role.to_ascii_uppercase());
+            out.push('\n');
+            out.push_str(thread_message_text_for_copy(message).trim());
+            out.push_str("\n\n");
+        }
+    }
+
+    out.trim_end().to_string()
+}
+
+fn thread_message_text_for_copy(message: &codescribe_core::agent::ThreadMessage) -> String {
+    let mut chunks = Vec::new();
+    for value in &message.content {
+        collect_copy_text(value, &mut chunks);
+    }
+    let text = chunks.join(" ");
+    if text.trim().is_empty() {
+        "(non-text content)".to_string()
+    } else {
+        text
+    }
+}
+
+fn collect_copy_text(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => {
+            if !text.trim().is_empty() {
+                out.push(text.to_string());
+            }
+        }
+        serde_json::Value::Array(items) => {
+            if items.iter().all(serde_json::Value::is_number) {
+                return;
+            }
+            for item in items {
+                collect_copy_text(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(text) = map.get("text").and_then(serde_json::Value::as_str)
+                && !text.trim().is_empty()
+            {
+                out.push(text.to_string());
+            }
+            if let Some(content) = map.get("content") {
+                collect_copy_text(content, out);
+            }
+            if let Some(input) = map.get("input") {
+                collect_copy_text(input, out);
+            }
+            for (key, nested) in map {
+                if matches!(key.as_str(), "text" | "content" | "input" | "data") {
+                    continue;
+                }
+                collect_copy_text(nested, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -3448,8 +3753,7 @@ fn favorites_path() -> std::path::PathBuf {
     dir.join("voice_chat_favorites.json")
 }
 
-fn load_favorites_from_disk() -> std::collections::HashSet<String> {
-    use std::collections::HashSet;
+fn load_favorites_from_disk() -> HashSet<String> {
     let path = favorites_path();
     let Ok(data) = std::fs::read_to_string(&path) else {
         return HashSet::new();
@@ -3460,7 +3764,7 @@ fn load_favorites_from_disk() -> std::collections::HashSet<String> {
     file.paths.into_iter().collect()
 }
 
-fn save_favorites_to_disk(favorites: &std::collections::HashSet<String>) {
+fn save_favorites_to_disk(favorites: &HashSet<String>) {
     let path = favorites_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);

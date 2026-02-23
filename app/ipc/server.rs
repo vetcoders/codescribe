@@ -359,16 +359,6 @@ fn persist_config(config: &Config) -> Result<()> {
     let mut settings: Option<UserSettings> = None;
     let mut promoted_keys: Vec<String> = Vec::new();
 
-    for legacy_key in [
-        "HOLD_MODS",
-        "TOGGLE_TRIGGER",
-        "HOTKEY_DOUBLE_TAP_LEFT",
-        "HOTKEY_DOUBLE_TAP_RIGHT",
-    ] {
-        env_vars.remove(legacy_key);
-        updated.push(EnvUpdate::Remove(legacy_key.to_string()));
-    }
-
     let mut put = |key: &str, value: String, env_vars: &mut HashMap<String, String>| {
         if is_promoted_key(key) {
             let settings = settings.get_or_insert_with(UserSettings::load);

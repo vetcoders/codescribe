@@ -145,14 +145,10 @@ fn required_model_path_when_no_embed() {
 
 #[test]
 #[serial]
-fn legacy_hotkey_env_path_override_is_respected_history_only() {
+fn mode_binding_contract_uses_settings_when_env_path_is_overridden() {
     let tmp = TempDir::new().expect("tempdir");
     let env_path = tmp.path().join("custom.env");
-    fs::write(
-        &env_path,
-        "WHISPER_LANGUAGE=en\nHOLD_MODS=ctrl_alt\nTOGGLE_TRIGGER=double_ctrl\n",
-    )
-    .expect("write env");
+    fs::write(&env_path, "WHISPER_LANGUAGE=en\n").expect("write env");
 
     let _g0 = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path().to_string_lossy().as_ref());
     let _g1 = EnvGuard::set("CODESCRIBE_ENV_PATH", env_path.to_string_lossy().as_ref());

@@ -155,44 +155,6 @@ fn test_save_config_multiple_fields() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Compatibility History Tests (legacy env fallback only)
-// ═══════════════════════════════════════════════════════════
-
-#[test]
-#[serial]
-fn test_legacy_hold_mods_is_ignored_history_only() {
-    let _tmp = setup_test_env();
-
-    unsafe {
-        std::env::set_var("HOLD_MODS", "ctrl_alt");
-    }
-
-    let settings = UserSettings::load();
-    assert_eq!(
-        settings.mode_binding_for(WorkMode::Dictation),
-        ShortcutBinding::HoldFn,
-        "Legacy HOLD_MODS no longer drives mode bindings"
-    );
-}
-
-#[test]
-#[serial]
-fn test_legacy_toggle_trigger_is_ignored_history_only() {
-    let _tmp = setup_test_env();
-
-    unsafe {
-        std::env::set_var("TOGGLE_TRIGGER", "double_ctrl");
-    }
-
-    let settings = UserSettings::load();
-    assert_eq!(
-        settings.mode_binding_for(WorkMode::Formatting),
-        ShortcutBinding::DoubleLeftOption,
-        "Legacy TOGGLE_TRIGGER no longer drives mode bindings"
-    );
-}
-
-// ═══════════════════════════════════════════════════════════
 // Generic Config Validation Tests
 // ═══════════════════════════════════════════════════════════
 

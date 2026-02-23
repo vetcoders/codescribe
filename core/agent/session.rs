@@ -369,15 +369,17 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::Arc;
+    use std::sync::Mutex;
 
     use async_trait::async_trait;
     use serde_json::json;
     use tokio::sync::mpsc;
 
     use crate::agent::{
-        AgentEvent, AgentProvider, AgentSession, ContentBlock, Message, Role, StreamOptions,
-        ToolDefinition, ToolRegistry, ToolResultContent,
+        AgentEvent, AgentProvider, AgentSession, AgentUiEvent, ContentBlock, Message, Role,
+        StreamOptions, ToolDefinition, ToolRegistry, ToolResultContent,
     };
 
     struct LoopingProvider;
@@ -434,6 +436,70 @@ mod tests {
         }
     }
 
+    struct ScriptedProvider {
+        scripted_events: Mutex<VecDeque<Vec<AgentEvent>>>,
+    }
+
+    impl ScriptedProvider {
+        fn new(scripted_events: Vec<Vec<AgentEvent>>) -> Self {
+            Self {
+                scripted_events: Mutex::new(scripted_events.into()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AgentProvider for ScriptedProvider {
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &StreamOptions,
+        ) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
+            let events = self
+                .scripted_events
+                .lock()
+                .expect("script lock should not be poisoned")
+                .pop_front()
+                .unwrap_or_default();
+
+            let (tx, rx) = mpsc::channel(16);
+            for event in events {
+                tx.send(event)
+                    .await
+                    .expect("test stream channel should accept scripted event");
+            }
+            Ok(rx)
+        }
+
+        fn build_tool_result(
+            &self,
+            call_id: &str,
+            content: Vec<ContentBlock>,
+            is_error: bool,
+        ) -> Message {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: call_id.to_string(),
+                    content,
+                    is_error,
+                }],
+            )
+        }
+
+        fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+            ContentBlock::Image {
+                data: data.to_vec(),
+                media_type: media_type.to_string(),
+            }
+        }
+
+        fn name(&self) -> &str {
+            "scripted-provider"
+        }
+    }
+
     #[tokio::test]
     async fn stops_when_iteration_limit_is_reached() {
         let mut registry = ToolRegistry::new();
@@ -472,6 +538,175 @@ mod tests {
             error.to_string().contains("max iterations"),
             "expected max iteration error, got: {}",
             error
+        );
+    }
+
+    #[tokio::test]
+    async fn send_completes_successfully_without_tool_calls() {
+        let provider = ScriptedProvider::new(vec![vec![
+            AgentEvent::TextDelta("Hello ".to_string()),
+            AgentEvent::TextDone("Hello from agent".to_string()),
+            AgentEvent::ResponseDone {
+                response_id: Some("resp_success_1".to_string()),
+            },
+        ]]);
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+        let mut session =
+            AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+
+        session
+            .send(
+                "status update".to_string(),
+                Vec::new(),
+                &StreamOptions {
+                    model: "gpt-test".to_string(),
+                    system_prompt: None,
+                    max_tokens: None,
+                    temperature: None,
+                },
+            )
+            .await
+            .expect("agent session should complete");
+
+        assert_eq!(session.thread_id(), Some("resp_success_1"));
+        assert_eq!(session.messages().len(), 2);
+
+        let assistant = &session.messages()[1];
+        assert_eq!(assistant.role, Role::Assistant);
+        assert_eq!(
+            assistant.content,
+            vec![ContentBlock::Text("Hello from agent".to_string())]
+        );
+
+        let mut ui_events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            ui_events.push(event);
+        }
+        assert!(
+            ui_events.contains(&AgentUiEvent::TextDone("Hello from agent".to_string())),
+            "expected TextDone event, got {ui_events:?}"
+        );
+        assert!(
+            ui_events.contains(&AgentUiEvent::Done),
+            "expected Done event, got {ui_events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_executes_buffered_tool_call_and_handles_tool_failure_fallback() {
+        let provider = ScriptedProvider::new(vec![
+            vec![
+                AgentEvent::ToolCallStart {
+                    id: "call_missing".to_string(),
+                    name: "missing_tool".to_string(),
+                },
+                AgentEvent::ToolCallArgsDelta {
+                    id: "call_missing".to_string(),
+                    delta: "{\"animal\":\"cat\"}".to_string(),
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_after_tool".to_string()),
+                },
+            ],
+            vec![
+                AgentEvent::TextDone("Recovered after tool fallback".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_final".to_string()),
+                },
+            ],
+        ]);
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(32);
+        let mut session =
+            AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx)
+                .with_max_iterations(3);
+
+        session
+            .send(
+                "run missing tool".to_string(),
+                Vec::new(),
+                &StreamOptions {
+                    model: "gpt-test".to_string(),
+                    system_prompt: None,
+                    max_tokens: None,
+                    temperature: None,
+                },
+            )
+            .await
+            .expect("agent session should recover from missing tool dispatch");
+
+        assert_eq!(session.thread_id(), Some("resp_final"));
+        assert_eq!(session.messages().len(), 4);
+
+        let tool_use = session
+            .messages()
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .find_map(|block| match block {
+                ContentBlock::ToolUse { id, name, input } => {
+                    Some((id.clone(), name.clone(), input.clone()))
+                }
+                _ => None,
+            })
+            .expect("tool_use block should be persisted");
+        assert_eq!(tool_use.0, "call_missing");
+        assert_eq!(tool_use.1, "missing_tool");
+        assert_eq!(tool_use.2, json!({"animal":"cat"}));
+
+        let tool_result = session
+            .messages()
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .find_map(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => Some((tool_use_id.clone(), content.clone(), *is_error)),
+                _ => None,
+            })
+            .expect("tool_result block should be persisted");
+        assert_eq!(tool_result.0, "call_missing");
+        assert!(
+            tool_result.2,
+            "missing tool dispatch should emit error tool result"
+        );
+        assert!(
+            tool_result.1.iter().any(
+                |value| matches!(value, ContentBlock::Text(text) if text.contains("not registered"))
+            ),
+            "expected missing tool error text, got {:?}",
+            tool_result.1
+        );
+
+        let mut ui_events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            ui_events.push(event);
+        }
+        assert!(
+            ui_events.contains(&AgentUiEvent::ToolExecuting {
+                name: "missing_tool".to_string(),
+                id: "call_missing".to_string(),
+            }),
+            "expected ToolExecuting event, got {ui_events:?}"
+        );
+        assert!(
+            ui_events.contains(&AgentUiEvent::ToolResult {
+                name: "missing_tool".to_string(),
+                id: "call_missing".to_string(),
+                summary: "1 error result(s)".to_string(),
+            }),
+            "expected ToolResult fallback summary, got {ui_events:?}"
+        );
+        assert!(
+            ui_events
+                .iter()
+                .all(|event| !matches!(event, AgentUiEvent::Error(_))),
+            "fallback path should not surface a fatal UI error: {ui_events:?}"
+        );
+        assert!(
+            ui_events.contains(&AgentUiEvent::Done),
+            "expected Done event, got {ui_events:?}"
         );
     }
 }
