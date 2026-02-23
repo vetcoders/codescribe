@@ -65,11 +65,12 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 
 **VAD (Silero neural network)**
 
-- `CODESCRIBE_VAD_THRESHOLD` – próg detekcji mowy 0.0-1.0, domyślnie `0.5` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MIN_SPEECH_SEC` – min. czas mowy przed detekcją, domyślnie `0.1` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_SILENCE_SEC` – max. cisza przed końcem, domyślnie `1.2` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` – max. czas wypowiedzi, domyślnie `60` (RESTART NEEDED)
-- `CODESCRIBE_VAD_PRE_ROLL_SEC` – pre-roll w sekundach, domyślnie `0.3` (RESTART NEEDED)
+- brak runtime envów: VAD używa hardcoded defaults z `core/vad/config.rs` (RESTART NEEDED)
+- `threshold=0.5`
+- `min_speech_duration=0.064s`
+- `min_silence_duration=0.0s`
+- `speech_pad/pre_roll=0.064s`
+- `max_speech_duration=∞`
 
 > **Uwaga:** VAD config jest read-only po inicjalizacji (OnceLock). Zmiana wymaga restartu aplikacji.
 
@@ -148,7 +149,7 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 ### Audio
 
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)
-- `CODESCRIBE_VAD_THRESHOLD`, `CODESCRIBE_VAD_MAX_SILENCE_SEC`, `AUTO_SILENCE` (RESTART NEEDED)
+- `AUTO_SILENCE` (RESTART NEEDED)
 
 ### Transkrypcja (local/cloud)
 
@@ -163,11 +164,7 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 - `CODESCRIBE_STREAM_OVERLAP_RATIO` (HOT RELOADED)
 - `CODESCRIBE_BUFFER_DELAY_MS` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
-- `CODESCRIBE_VAD_THRESHOLD` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MIN_SPEECH_SEC` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_SILENCE_SEC` (RESTART NEEDED)
-- `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` (RESTART NEEDED)
-- `CODESCRIBE_VAD_PRE_ROLL_SEC` (RESTART NEEDED)
+- VAD internals: hardcoded (no env knobs)
 
 ### Post‑process (gating / embeddings)
 

@@ -201,7 +201,7 @@ impl Config {
         if let Ok(val) = std::env::var("AUDIO_INPUT_DEVICE") {
             self.audio_input_device = (!val.trim().is_empty()).then_some(val);
         }
-        // VAD config is managed by core/vad/config.rs (CODESCRIBE_VAD_* env vars)
+        // VAD config is managed by core/vad/config.rs (hardcoded Silero defaults)
         // No legacy SILENCE_* variables - single source of truth
 
         // History (default: on to avoid data loss)

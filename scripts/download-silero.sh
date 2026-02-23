@@ -67,7 +67,5 @@ echo "╔═══════════════════════�
 echo "║  Silero VAD is ready!                                     ║"
 echo "║                                                           ║"
 echo "║  VAD will auto-initialize when recording starts.          ║"
-echo "║  Config via env vars:                                     ║"
-echo "║    CODESCRIBE_VAD_THRESHOLD=0.5     (speech probability)  ║"
-echo "║    CODESCRIBE_VAD_MAX_SILENCE_SEC=1.2  (auto-stop delay)  ║"
+echo "║  VAD defaults are hardcoded in core/vad/config.rs.        ║"
 echo "╚═══════════════════════════════════════════════════════════╝"

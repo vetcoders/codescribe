@@ -458,10 +458,10 @@
           </div>
         </section>
 
-        <!-- Streaming / VAD -->
+        <!-- Streaming -->
         <section class="card optional">
-          <h2>📊 Streaming & VAD (Advanced)</h2>
-          <div class="split-3 split">
+          <h2>📊 Streaming (Advanced)</h2>
+          <div class="split">
             <div class="field">
               <label>CHUNK_SEC <span class="default">15.0</span></label>
               <input
@@ -471,28 +471,6 @@
                 step="0.5"
                 min="5"
                 max="30"
-              />
-            </div>
-            <div class="field">
-              <label>VAD_THRESHOLD <span class="default">0.5</span></label>
-              <input
-                id="vad-threshold"
-                type="number"
-                value="0.5"
-                step="0.05"
-                min="0.1"
-                max="0.9"
-              />
-            </div>
-            <div class="field">
-              <label>MAX_SILENCE_SEC <span class="default">1.2</span></label>
-              <input
-                id="vad-silence"
-                type="number"
-                value="1.2"
-                step="0.1"
-                min="0.5"
-                max="3"
               />
             </div>
           </div>
@@ -670,27 +648,17 @@
         );
         lines.push(``);
 
-        // Streaming / VAD
+        // Streaming
         lines.push(
           `# =============================================================================`
         );
-        lines.push(`# STREAMING / VAD`);
+        lines.push(`# STREAMING`);
         lines.push(
           `# =============================================================================`
         );
         lines.push(
           `CODESCRIBE_STREAM_CHUNK_SEC=${
             document.getElementById("chunk-sec").value
-          }`
-        );
-        lines.push(
-          `CODESCRIBE_VAD_THRESHOLD=${
-            document.getElementById("vad-threshold").value
-          }`
-        );
-        lines.push(
-          `CODESCRIBE_VAD_MAX_SILENCE_SEC=${
-            document.getElementById("vad-silence").value
           }`
         );
         lines.push(``);
@@ -792,8 +760,6 @@
           "whisper-large-v3-turbo-mlx-q8";
         document.getElementById("hold-delay").value = "800";
         document.getElementById("chunk-sec").value = "15";
-        document.getElementById("vad-threshold").value = "0.5";
-        document.getElementById("vad-silence").value = "1.2";
         document.getElementById("sound-volume").value = "1.0";
 
         document.querySelectorAll(".chips .chip").forEach((c, i) => {

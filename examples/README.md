@@ -39,15 +39,9 @@ cargo run --example record_streaming
 
 Both examples respect these environment variables:
 
-- `CODESCRIBE_VAD_THRESHOLD` - Speech probability threshold 0.0-1.0 (default: 0.5)
-- `CODESCRIBE_VAD_MAX_SILENCE_SEC` - Silence duration before auto-stop (default: 1.2)
 - `AUTO_SILENCE` - Enable/disable silence detection (default: true)
 
-Example:
-
-```bash
-CODESCRIBE_VAD_THRESHOLD=0.4 CODESCRIBE_VAD_MAX_SILENCE_SEC=1.5 cargo run --example record_test
-```
+VAD internals are hardcoded in `core/vad/config.rs` (Silero defaults).
 
 ## Requirements
 

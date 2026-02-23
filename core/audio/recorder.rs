@@ -51,9 +51,9 @@
 //   }
 //   ```
 //
-// configuration via environment variables:
-//   - CODESCRIBE_VAD_THRESHOLD: speech probability threshold 0.0-1.0 (default: 0.5)
-//   - CODESCRIBE_VAD_MAX_SILENCE_SEC: silence duration before auto-stop (default: 1.2)
+// configuration via constants in `core/vad/config.rs`:
+//   - speech probability threshold (Silero default: 0.5)
+//   - silence duration before auto-stop (Silero default profile)
 //   - AUTO_SILENCE: enable/disable silence detection (default: true)
 
 use crate::vad;
@@ -179,8 +179,7 @@ pub struct RecorderConfig {
 impl Default for RecorderConfig {
     fn default() -> Self {
         // Keep a single source of truth for VAD thresholds/silence durations.
-        // This matches streaming segmentation + tray presets and also supports
-        // the "simple" sensitivity knobs (CODESCRIBE_VAD_SENSITIVITY, etc.).
+        // VAD internals are hardcoded in `vad::VadConfig`.
         let vad_cfg = vad::VadConfig::default();
         Self {
             sample_rate: SAMPLE_RATE,

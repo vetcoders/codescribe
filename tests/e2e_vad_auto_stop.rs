@@ -178,7 +178,7 @@ fn test_recorder_vad_config_defaults() {
     );
 
     // Speech threshold should be probability (0.0-1.0)
-    // Default is 0.5 from CODESCRIBE_VAD_THRESHOLD env var
+    // Default is 0.5 from hardcoded Silero settings.
     assert!(
         config.speech_threshold >= 0.1 && config.speech_threshold <= 0.9,
         "speech_threshold should be between 0.1 and 0.9, got: {}",
@@ -186,7 +186,7 @@ fn test_recorder_vad_config_defaults() {
     );
 
     // Hang time should be within the valid clamp range (0.1-10.0 seconds)
-    // Default is 1.2s, but env overrides (CODESCRIBE_VAD_SILENCE_SEC) can set lower
+    // Source of truth is hardcoded Silero settings in core/vad/config.rs.
     assert!(
         config.hang_sec >= 0.1 && config.hang_sec <= 10.0,
         "hang_sec should be between 0.1 and 10.0s, got: {}",
@@ -243,12 +243,12 @@ fn test_vad_flow_documentation() {
     //
     // 2. User speaks into microphone
     //    - Audio chunks are processed by Silero VAD
-    //    - Speech probability is above threshold (CODESCRIBE_VAD_THRESHOLD, default 0.5)
+    //    - Speech probability is above threshold (default 0.5)
     //    - VAD does not trigger
     //
     // 3. User stops speaking (silence for hang_sec seconds)
     //    - Speech probability drops below threshold
-    //    - After hang_sec (CODESCRIBE_VAD_MAX_SILENCE_SEC, default 1.2s), VAD triggers
+    //    - After hang_sec derived from VAD defaults, VAD triggers
     //    - on_vad_stop callback is invoked
     //    - vad_triggered atomic flag set to true
     //
@@ -273,7 +273,7 @@ fn test_vad_flow_documentation() {
 fn test_vad_probability_threshold() {
     // Silero VAD outputs speech probability (0.0 - 1.0)
     //
-    // CODESCRIBE_VAD_THRESHOLD controls sensitivity:
+    // Threshold controls sensitivity:
     // - 0.3 = sensitive (catches quiet speech, more false positives)
     // - 0.5 = balanced (default)
     // - 0.7 = conservative (fewer false positives, may miss quiet speech)

@@ -162,7 +162,7 @@ flowchart LR
     subgraph ToggleMode["👐 TOGGLE Mode"]
         T_VAD["VAD: ✅ ON"]
         T_Silero["Silero Neural VAD"]
-        T_Config["CODESCRIBE_VAD_SILENCE_SEC"]
+        T_Config["Hardcoded Silero defaults"]
     end
 
     subgraph ConvMode["💬 CONVERSATION Mode"]
@@ -203,10 +203,7 @@ flowchart LR
 
 ### VAD Configuration
 
-| Variable                     | Default | Range    | Description                       |
-| ---------------------------- | ------- | -------- | --------------------------------- |
-| `CODESCRIBE_VAD_THRESHOLD`   | `0.5`   | 0.1-0.95 | Speech probability threshold      |
-| `CODESCRIBE_VAD_SILENCE_SEC` | `1.2`   | 0.1-10.0 | Silence before utterance boundary |
+VAD internals are hardcoded in `core/vad/config.rs` (no runtime env knobs).
 
 ---
 
@@ -357,7 +354,7 @@ When `HOLD_EXCLUSIVE=true` (default):
 | Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable CodeScribe |
 | Double-tap too sensitive     | Interval too short              | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
 | Recording won't stop (hold)  | Key stuck in system             | Release all modifiers, try again                              |
-| VAD cuts utterance too early | Threshold too high              | Lower `CODESCRIBE_VAD_THRESHOLD`                              |
+| VAD cuts utterance too early | VAD defaults too conservative   | Tune constants in `core/vad/config.rs` and rebuild            |
 
 ---
 

@@ -24,42 +24,20 @@ pub struct VadConfig {
     pub pre_roll_sec: f32,
 }
 
+pub const SILERO_DEFAULT_THRESHOLD: f32 = 0.5;
+pub const SILERO_DEFAULT_MIN_SPEECH_SEC: f32 = 0.064;
+pub const SILERO_DEFAULT_MAX_SILENCE_SEC: f32 = 0.0;
+pub const SILERO_DEFAULT_MAX_UTTERANCE_SEC: f32 = f32::INFINITY;
+pub const SILERO_DEFAULT_PRE_ROLL_SEC: f32 = 0.064;
+
 impl Default for VadConfig {
     fn default() -> Self {
-        // Sentinel-based overrides: use raw env_f32 (no clamp) so -1.0 stays negative
-        // and the >= 0.0 check correctly detects "not set".
-        let sensitivity = env_f32("CODESCRIBE_VAD_SENSITIVITY", -1.0);
-        let simple_silence = env_f32("CODESCRIBE_VAD_SILENCE_SEC", -1.0);
         Self {
-            // Simple overrides (preferred): sensitivity + silence
-            threshold: if sensitivity >= 0.0 {
-                // Map sensitivity [0..1] to threshold [0.85..0.2] (lower = more sensitive)
-                (0.85 - (0.65 * sensitivity.clamp(0.0, 1.0))).clamp(0.2, 0.85)
-            } else {
-                // Clamp threshold to valid probability range [0.1, 0.95]
-                env_f32_clamped("CODESCRIBE_VAD_THRESHOLD", 0.5, 0.1, 0.95)
-            },
-            // Clamp durations to reasonable ranges
-            min_speech_duration_sec: env_f32_clamped(
-                "CODESCRIBE_VAD_MIN_SPEECH_SEC",
-                0.1,
-                0.01,
-                1.0,
-            ),
-            // Sync with default_env.txt: 1.2s (was 0.8s)
-            max_silence_duration_sec: if simple_silence >= 0.0 {
-                simple_silence.clamp(0.1, 10.0)
-            } else {
-                env_f32_clamped("CODESCRIBE_VAD_MAX_SILENCE_SEC", 1.2, 0.1, 10.0)
-            },
-            // Sync with default_env.txt: 60s (was 30s)
-            max_utterance_sec: env_f32_clamped(
-                "CODESCRIBE_VAD_MAX_UTTERANCE_SEC",
-                60.0,
-                1.0,
-                300.0,
-            ),
-            pre_roll_sec: env_f32_clamped("CODESCRIBE_VAD_PRE_ROLL_SEC", 0.3, 0.0, 2.0),
+            threshold: SILERO_DEFAULT_THRESHOLD,
+            min_speech_duration_sec: SILERO_DEFAULT_MIN_SPEECH_SEC,
+            max_silence_duration_sec: SILERO_DEFAULT_MAX_SILENCE_SEC,
+            max_utterance_sec: SILERO_DEFAULT_MAX_UTTERANCE_SEC,
+            pre_roll_sec: SILERO_DEFAULT_PRE_ROLL_SEC,
         }
     }
 }
@@ -102,18 +80,6 @@ impl VadConfig {
     }
 }
 
-fn env_f32(key: &str, default: f32) -> f32 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(default)
-}
-
-/// Parse env var as f32 with clamping to valid range
-fn env_f32_clamped(key: &str, default: f32, min: f32, max: f32) -> f32 {
-    env_f32(key, default).clamp(min, max)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,21 +87,15 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = VadConfig::default();
-        assert!(config.threshold >= 0.0 && config.threshold <= 1.0);
-        assert!(config.min_speech_duration_sec > 0.0);
-        assert!(config.max_silence_duration_sec > 0.0);
-    }
-
-    /// Regression: sentinel -1.0 must NOT be clamped before the >= 0.0 check.
-    /// Without fix, max_silence_duration_sec would be 0.1 instead of 1.2.
-    #[test]
-    fn test_default_silence_uses_fallback_not_sentinel() {
-        let config = VadConfig::default();
+        assert!((config.threshold - SILERO_DEFAULT_THRESHOLD).abs() < f32::EPSILON);
         assert!(
-            config.max_silence_duration_sec >= 0.3,
-            "max_silence_duration_sec should use fallback (1.2s), not clamped sentinel (0.1s), got: {}",
-            config.max_silence_duration_sec
+            (config.min_speech_duration_sec - SILERO_DEFAULT_MIN_SPEECH_SEC).abs() < f32::EPSILON
         );
+        assert!(
+            (config.max_silence_duration_sec - SILERO_DEFAULT_MAX_SILENCE_SEC).abs() < f32::EPSILON
+        );
+        assert!(config.max_utterance_sec.is_infinite());
+        assert!((config.pre_roll_sec - SILERO_DEFAULT_PRE_ROLL_SEC).abs() < f32::EPSILON);
     }
 
     #[test]

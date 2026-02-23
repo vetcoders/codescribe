@@ -29,6 +29,8 @@ use crate::vad;
 // Constants
 // ═══════════════════════════════════════════════════════════
 
+const SILERO_GATE_MODE: VadGateMode = VadGateMode::Supervisor;
+
 // ═══════════════════════════════════════════════════════════
 // Public types
 // ═══════════════════════════════════════════════════════════
@@ -60,6 +62,7 @@ pub(crate) enum SpeechMode {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum VadGateMode {
     /// Gate audio before it reaches Whisper (legacy).
     Simple,
@@ -1093,77 +1096,35 @@ fn utterance_silence_sec_override() -> Option<f32> {
 
 #[allow(dead_code)]
 pub(crate) fn hardcoded_gate_config() -> GateConfig {
-    // Start from env-aware VadConfig::default() so CODESCRIBE_VAD_* env vars
-    // are always respected. Then apply streaming-specific overrides only for
-    // fields that don't have an explicit env override set.
-    let mut vad_cfg = vad::VadConfig::default();
-
-    // Threshold stays at VadConfig default unless explicitly overridden.
-    // Short min-speech for responsive streaming.
-    if std::env::var("CODESCRIBE_VAD_MIN_SPEECH_SEC").is_err() {
-        vad_cfg.min_speech_duration_sec = 0.05;
-    }
-    // Short silence tolerance for streaming chunk boundaries.
-    if std::env::var("CODESCRIBE_VAD_SILENCE_SEC").is_err()
-        && std::env::var("CODESCRIBE_VAD_MAX_SILENCE_SEC").is_err()
-    {
-        vad_cfg.max_silence_duration_sec = 0.20;
-    }
-    // Silero reference pre-roll (64ms) for tight boundary padding.
-    if std::env::var("CODESCRIBE_VAD_PRE_ROLL_SEC").is_err() {
-        vad_cfg.pre_roll_sec = 0.064;
-    }
-
-    // Derive gate-level pre_roll/speech_pad from the (env-aware) vad config,
-    // with a dedicated env override for speech_pad (not in VadConfig).
+    let vad_cfg = vad::VadConfig::default();
     let pre_roll = vad_cfg.pre_roll_sec;
-    let speech_pad = std::env::var("CODESCRIBE_VAD_SPEECH_PAD_SEC")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .map(|v| v.clamp(0.0, 2.0))
-        .unwrap_or(pre_roll); // default: mirror pre_roll
+    let speech_pad = pre_roll;
 
     GateConfig {
         vad: vad_cfg,
         pre_roll_sec: pre_roll,
         speech_pad_sec: speech_pad,
-        mode: gate_mode_from_env(),
+        mode: SILERO_GATE_MODE,
     }
 }
 
 pub(crate) fn hardcoded_utterance_gate_config() -> GateConfig {
-    // Base from env-aware VadConfig::default() so CODESCRIBE_VAD_* env vars are respected.
-    // Utterance mode intentionally does NOT force streaming silence defaults (0.20s).
     let mut vad_cfg = vad::VadConfig::default();
 
-    // Keep fast start + tight pre-roll like streaming, unless explicitly overridden.
-    if std::env::var("CODESCRIBE_VAD_MIN_SPEECH_SEC").is_err() {
-        // In utterance mode keep enough robustness against micro-bursts, but lower
-        // startup floor so live preview appears sooner in real speech.
-        vad_cfg.min_speech_duration_sec = 0.30;
-    }
-    if std::env::var("CODESCRIBE_VAD_PRE_ROLL_SEC").is_err() {
-        vad_cfg.pre_roll_sec = 0.064;
-    }
-
     // Optional per-utterance override (buffered mode). This is separate from global VAD silence
-    // so streaming can keep short chunking silence while utterances wait longer by default.
+    // and exists for buffered mode only.
     if let Some(sec) = utterance_silence_sec_override() {
         vad_cfg.max_silence_duration_sec = sec;
     }
 
     let pre_roll = vad_cfg.pre_roll_sec;
-    let speech_pad = std::env::var("CODESCRIBE_VAD_SPEECH_PAD_SEC")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        .map(|v| v.clamp(0.0, 2.0))
-        .unwrap_or(pre_roll);
+    let speech_pad = pre_roll;
 
     GateConfig {
         vad: vad_cfg,
         pre_roll_sec: pre_roll,
         speech_pad_sec: speech_pad,
-        mode: gate_mode_from_env(),
+        mode: SILERO_GATE_MODE,
     }
 }
 
@@ -1179,19 +1140,6 @@ pub(crate) fn init_silero_vad(sample_rate: u32, config: &vad::VadConfig) -> Opti
             tracing::warn!("Silero VAD init failed ({}): {}", model_path.display(), e);
             None
         }
-    }
-}
-
-fn gate_mode_from_env() -> VadGateMode {
-    match std::env::var("CODESCRIBE_VAD_GATE_MODE")
-        .ok()
-        .map(|v| v.to_lowercase())
-        .as_deref()
-    {
-        Some("supervisor") | Some("quality") | Some("managed") => VadGateMode::Supervisor,
-        Some("iter") | Some("vad_iter") | Some("silero_iter") => VadGateMode::Iter,
-        Some("simple") | Some("gate") | Some("basic") => VadGateMode::Simple,
-        _ => VadGateMode::Supervisor,
     }
 }
 
@@ -1473,64 +1421,45 @@ mod tests {
     #[test]
     #[serial]
     fn gate_mode_default_is_supervisor() {
-        // Without env vars set, default should be Supervisor
         let config = hardcoded_gate_config();
         assert_eq!(config.mode, VadGateMode::Supervisor);
     }
 
     #[test]
     #[serial]
-    fn test_gate_mode_respects_env() {
-        // Set env to Iter — constructors must NOT override to Supervisor.
-        let _g = EnvGuard::set("CODESCRIBE_VAD_GATE_MODE", "iter");
-        let stream = SpeechSession::new_stream(16000, 6.0, 1.0);
-        assert_eq!(stream.gate_mode(), VadGateMode::Iter);
-        let utterance = SpeechSession::new_utterance(16000);
-        assert_eq!(utterance.gate_mode(), VadGateMode::Iter);
-        drop(_g);
-    }
-
-    #[test]
-    #[serial]
     fn utterance_default_silence_is_not_forced_to_stream_default() {
-        // Ensure a clean baseline for this test (do not inherit user shell env).
-        let _g1 = EnvGuard::unset("CODESCRIBE_VAD_SILENCE_SEC");
-        let _g2 = EnvGuard::unset("CODESCRIBE_VAD_MAX_SILENCE_SEC");
-        let _g3 = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
+        let _g = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
 
         let sr = 16000u32;
 
         let stream = SpeechSession::new_stream(sr, 6.0, 1.0);
         let utterance = SpeechSession::new_utterance(sr);
 
-        // Stream keeps the short silence default unless user overrides global VAD silence.
-        let stream_expected = (0.20 * vad::VAD_SAMPLE_RATE as f32).round().max(1.0) as usize;
+        let base = vad::VadConfig::default();
+        let stream_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
+            .round()
+            .max(1.0) as usize;
         assert_eq!(stream.min_silence_samples(), stream_expected);
 
-        // Utterance uses VadConfig::default() silence (env-aware) unless overridden by utterance env.
-        let base = vad::VadConfig::default();
         let utter_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
             .round()
             .max(1.0) as usize;
         assert_eq!(utterance.min_silence_samples(), utter_expected);
-        assert!(
-            utterance.min_silence_samples() >= stream.min_silence_samples(),
-            "utterance silence should be >= stream silence by default"
-        );
     }
 
     #[test]
     #[serial]
     fn utterance_silence_env_override_does_not_change_stream_default() {
-        let _g1 = EnvGuard::unset("CODESCRIBE_VAD_SILENCE_SEC");
-        let _g2 = EnvGuard::unset("CODESCRIBE_VAD_MAX_SILENCE_SEC");
-        let _g3 = EnvGuard::set("CODESCRIBE_BUFFERED_SILENCE_SEC", "0.45");
+        let _g = EnvGuard::set("CODESCRIBE_BUFFERED_SILENCE_SEC", "0.45");
 
         let sr = 16000u32;
         let stream = SpeechSession::new_stream(sr, 6.0, 1.0);
         let utterance = SpeechSession::new_utterance(sr);
 
-        let stream_expected = (0.20 * vad::VAD_SAMPLE_RATE as f32).round().max(1.0) as usize;
+        let base = vad::VadConfig::default();
+        let stream_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
+            .round()
+            .max(1.0) as usize;
         assert_eq!(stream.min_silence_samples(), stream_expected);
 
         let utter_expected = (0.45 * vad::VAD_SAMPLE_RATE as f32).round().max(1.0) as usize;

@@ -55,43 +55,39 @@ fn read_workspace_source(relative_path: &str) -> String {
 #[serial]
 fn utterance_silence_default_regression() {
     // Ensure a clean baseline for this test (do not inherit user shell env).
-    let _g1 = EnvGuard::unset("CODESCRIBE_VAD_SILENCE_SEC");
-    let _g2 = EnvGuard::unset("CODESCRIBE_VAD_MAX_SILENCE_SEC");
-    let _g3 = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
+    let _g = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
 
     let sr = 16000u32;
     let stream = SpeechSession::new_stream(sr, 3.0, 0.6);
     let utterance = SpeechSession::new_utterance(sr);
 
-    // Streaming uses a short silence tolerance by default (chunk boundary responsiveness).
-    let stream_expected = (0.20 * vad::VAD_SAMPLE_RATE as f32).round().max(1.0) as usize;
+    let base = vad::VadConfig::default();
+    let stream_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
+        .round()
+        .max(1.0) as usize;
     assert_eq!(stream.min_silence_samples(), stream_expected);
 
     // Utterance mode should keep VadConfig default silence unless explicitly overridden.
-    let base = vad::VadConfig::default();
     let utter_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
         .round()
         .max(1.0) as usize;
     assert_eq!(utterance.min_silence_samples(), utter_expected);
-    assert!(
-        utterance.min_silence_samples() >= stream.min_silence_samples(),
-        "utterance silence should be >= stream silence by default"
-    );
 }
 
 #[test]
 #[serial]
 fn utterance_silence_override_env_regression() {
-    let _g1 = EnvGuard::unset("CODESCRIBE_VAD_SILENCE_SEC");
-    let _g2 = EnvGuard::unset("CODESCRIBE_VAD_MAX_SILENCE_SEC");
-    let _g3 = EnvGuard::set("CODESCRIBE_BUFFERED_SILENCE_SEC", "0.45");
+    let _g = EnvGuard::set("CODESCRIBE_BUFFERED_SILENCE_SEC", "0.45");
 
     let sr = 16000u32;
     let stream = SpeechSession::new_stream(sr, 3.0, 0.6);
     let utterance = SpeechSession::new_utterance(sr);
 
-    // Stream default should remain the short streaming silence if global VAD silence isn't set.
-    let stream_expected = (0.20 * vad::VAD_SAMPLE_RATE as f32).round().max(1.0) as usize;
+    // Stream default should remain at the hardcoded Silero base.
+    let base = vad::VadConfig::default();
+    let stream_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
+        .round()
+        .max(1.0) as usize;
     assert_eq!(stream.min_silence_samples(), stream_expected);
 
     // Utterance should respect the buffered/utterance-specific override.

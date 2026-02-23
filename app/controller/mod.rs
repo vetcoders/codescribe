@@ -1437,7 +1437,7 @@ impl RecordingController {
             let is_assistive = matches!(hold_mode, HoldMode::Chat | HoldMode::Selection);
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
-            // hang_sec is configured via CODESCRIBE_VAD_MAX_SILENCE_SEC env var (single source of truth)
+            // hang_sec is derived from hardcoded VAD defaults (single source of truth).
             let mut rec = recorder.lock().await;
             if let Err(e) =
                 Self::ensure_recorder_ready_for_start(&mut rec, "Hold-start preflight").await

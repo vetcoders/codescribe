@@ -94,15 +94,15 @@ silence_counter ≥ min_silence      → END segment, discard silence
 silence_counter < min_silence      → keep buffering (might be mid-sentence pause)
 ```
 
-### Key parameters (env-configurable)
+### Key parameters (hardcoded)
 
-| Env Variable                       | Default | Effect                              |
-| ---------------------------------- | ------- | ----------------------------------- |
-| `CODESCRIBE_VAD_THRESHOLD`         | 0.5     | Speech probability threshold        |
-| `CODESCRIBE_VAD_SILENCE_SEC`       | 1.2     | Seconds of silence before auto-stop |
-| `CODESCRIBE_VAD_MIN_SPEECH_SEC`    | 0.25    | Minimum speech duration to emit     |
-| `CODESCRIBE_VAD_MAX_UTTERANCE_SEC` | 300     | Maximum utterance length            |
-| `CODESCRIBE_VAD_SPEECH_PAD_SEC`    | 0.0     | Padding after speech end            |
+| Parameter                | Value     | Source                  |
+| ------------------------ | --------- | ----------------------- |
+| `threshold`              | 0.5       | Silero default profile  |
+| `min_speech_duration`    | 0.064s    | Silero Rust example     |
+| `min_silence_duration`   | 0.0s      | Silero Rust example     |
+| `max_utterance_duration` | ∞         | Silero Rust example     |
+| `speech_pad / pre_roll`  | 0.064s    | Silero Rust example     |
 
 ### Pre-roll buffer
 
