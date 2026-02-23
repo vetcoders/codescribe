@@ -10,11 +10,12 @@ use super::{
     TAB_QUALITY, TAB_SETUP, handle_bootstrap_window_closed, handle_hotkey_done,
     handle_show_overlay, handle_test_mic, on_assistive_endpoint_changed, on_assistive_key_changed,
     on_assistive_model_changed, on_beep_toggled, on_clear_assistive_key, on_clear_llm_key,
-    on_delay_changed, on_double_tap_interval_changed, on_enter_send_toggled,
-    on_formatting_level_changed, on_formatting_toggled, on_language_changed,
+    on_copy_diagnostics, on_delay_changed, on_diagnostics_refresh, on_double_tap_interval_changed,
+    on_enter_send_toggled, on_formatting_level_changed, on_formatting_toggled, on_language_changed,
     on_llm_endpoint_changed, on_llm_key_changed, on_llm_model_changed, on_mode_binding_change,
-    on_open_system_settings, on_permission_action, on_quality_daemon_toggled,
-    on_refresh_permissions, on_save_api_settings, on_show_dock_icon_toggled,
+    on_open_quality_report, on_open_system_settings, on_permission_action, on_prompt_load,
+    on_prompt_reset, on_prompt_save, on_prompt_type_changed, on_quality_daemon_toggled,
+    on_quality_refresh, on_refresh_permissions, on_save_api_settings, on_show_dock_icon_toggled,
     on_show_hotkey_conflicts, on_ultra_quality_toggled, on_voice_lab_field_changed,
     on_voice_lab_toggle_changed, on_volume_changed, switch_tab,
 };
@@ -57,28 +58,28 @@ pub fn action_handler_class() -> *const Class {
                 on_tab_setup as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabKeys:),
-                on_tab_keys as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabModesShortcuts:),
+                on_tab_modes_shortcuts as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabApi:),
-                on_tab_api as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabAiPrompts:),
+                on_tab_ai_prompts as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabAudio:),
-                on_tab_audio as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabAudioInput:),
+                on_tab_audio_input as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabVoiceLab:),
-                on_tab_voice_lab as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabQuality:),
+                on_tab_quality as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabEngine:),
-                on_tab_engine as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabDiagnostics:),
+                on_tab_diagnostics as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabUser:),
-                on_tab_user as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabAdvanced:),
+                on_tab_advanced as extern "C" fn(&Object, Sel, Id),
             );
 
             // Keys tab actions
@@ -133,6 +134,22 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onSaveApiSettings:),
                 on_save_api_settings as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPromptTypeChanged:),
+                on_prompt_type_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPromptLoad:),
+                on_prompt_load as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPromptSave:),
+                on_prompt_save as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPromptReset:),
+                on_prompt_reset as extern "C" fn(&Object, Sel, Id),
             );
 
             // Keys tab: delay slider
@@ -190,6 +207,14 @@ pub fn action_handler_class() -> *const Class {
                 sel!(onUltraQualityToggled:),
                 on_ultra_quality_toggled as extern "C" fn(&Object, Sel, Id),
             );
+            decl.add_method(
+                sel!(onQualityRefresh:),
+                on_quality_refresh as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onOpenQualityReport:),
+                on_open_quality_report as extern "C" fn(&Object, Sel, Id),
+            );
 
             // Permission refresh
             decl.add_method(
@@ -203,6 +228,14 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onOpenSystemSettings:),
                 on_open_system_settings as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onDiagnosticsRefresh:),
+                on_diagnostics_refresh as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onCopyDiagnostics:),
+                on_copy_diagnostics as extern "C" fn(&Object, Sel, Id),
             );
 
             ACTION_HANDLER_CLASS = decl.register();
@@ -270,27 +303,27 @@ extern "C" fn on_tab_setup(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_SETUP);
 }
 
-extern "C" fn on_tab_keys(_this: &Object, _sel: Sel, _sender: Id) {
+extern "C" fn on_tab_modes_shortcuts(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_MODES_SHORTCUTS);
 }
 
-extern "C" fn on_tab_api(_this: &Object, _sel: Sel, _sender: Id) {
+extern "C" fn on_tab_ai_prompts(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_AI_PROMPTS);
 }
 
-extern "C" fn on_tab_audio(_this: &Object, _sel: Sel, _sender: Id) {
+extern "C" fn on_tab_audio_input(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_AUDIO_INPUT);
 }
 
-extern "C" fn on_tab_voice_lab(_this: &Object, _sel: Sel, _sender: Id) {
+extern "C" fn on_tab_quality(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_QUALITY);
 }
 
-extern "C" fn on_tab_engine(_this: &Object, _sel: Sel, _sender: Id) {
+extern "C" fn on_tab_diagnostics(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_DIAGNOSTICS);
 }
 
-extern "C" fn on_tab_user(_this: &Object, _sel: Sel, _sender: Id) {
+extern "C" fn on_tab_advanced(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_ADVANCED);
 }
 

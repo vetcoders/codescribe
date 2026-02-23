@@ -2,8 +2,12 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+
+use crate::agent::AgentEvent;
 
 use super::ai_formatting::{AiReasoningCallback, AiStreamCallback};
 
@@ -11,19 +15,19 @@ const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(3600);
 const STREAM_DEADLINE: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone)]
-pub(super) struct ResponsesStreamOutput {
+pub struct ResponsesStreamOutput {
     pub assistant_text: String,
     pub reasoning_text: Option<String>,
     pub response_id: Option<String>,
 }
 
 #[derive(Clone)]
-pub(super) struct StreamCallbacks {
+pub struct StreamCallbacks {
     pub assistant: Option<AiStreamCallback>,
     pub reasoning: Option<AiReasoningCallback>,
 }
 
-pub(super) struct ResponsesStreamingManager<'a> {
+pub struct ResponsesStreamingManager<'a> {
     client: &'a Client,
     endpoint: &'a str,
     api_key: &'a str,
@@ -33,7 +37,7 @@ pub(super) struct ResponsesStreamingManager<'a> {
 }
 
 impl<'a> ResponsesStreamingManager<'a> {
-    pub(super) fn new(
+    pub fn new(
         client: &'a Client,
         endpoint: &'a str,
         api_key: &'a str,
@@ -51,7 +55,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         }
     }
 
-    pub(super) async fn stream<T: Serialize>(&self, request: &T) -> Result<ResponsesStreamOutput> {
+    pub async fn stream<T: Serialize>(&self, request: &T) -> Result<ResponsesStreamOutput> {
         let request_builder = self
             .client
             .post(self.endpoint)
@@ -285,6 +289,42 @@ impl<'a> ResponsesStreamingManager<'a> {
         })
     }
 
+    pub async fn stream_agent<T: Serialize>(
+        &self,
+        request: &T,
+    ) -> Result<mpsc::Receiver<AgentEvent>> {
+        let request_payload =
+            serde_json::to_value(request).context("Failed to serialize agent stream request")?;
+
+        let (tx, rx) = mpsc::channel(256);
+
+        let client = self.client.clone();
+        let endpoint = self.endpoint.to_string();
+        let api_key = self.api_key.to_string();
+        let callbacks = self.callbacks.clone();
+        let initial_response_timeout = self.initial_response_timeout;
+        let inter_chunk_timeout = self.inter_chunk_timeout;
+
+        tokio::spawn(async move {
+            if let Err(error) = run_agent_stream(
+                client,
+                endpoint,
+                api_key,
+                callbacks,
+                initial_response_timeout,
+                inter_chunk_timeout,
+                request_payload,
+                tx.clone(),
+            )
+            .await
+            {
+                let _ = tx.send(AgentEvent::Error(error.to_string())).await;
+            }
+        });
+
+        Ok(rx)
+    }
+
     async fn resume_stream(
         &self,
         response_id: &str,
@@ -410,6 +450,353 @@ impl<'a> ResponsesStreamingManager<'a> {
     }
 }
 
+async fn run_agent_stream(
+    client: Client,
+    endpoint: String,
+    api_key: String,
+    callbacks: StreamCallbacks,
+    initial_response_timeout: Duration,
+    inter_chunk_timeout: Duration,
+    request_payload: serde_json::Value,
+    tx: mpsc::Sender<AgentEvent>,
+) -> Result<()> {
+    let request_builder = client
+        .post(&endpoint)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .timeout(STREAM_REQUEST_TIMEOUT)
+        .json(&request_payload);
+
+    let response =
+        match tokio::time::timeout(initial_response_timeout, request_builder.send()).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(error)) => return Err(error).context("Agent SSE request failed"),
+            Err(_) => anyhow::bail!(
+                "Agent SSE initial response timeout after {:?}",
+                initial_response_timeout
+            ),
+        };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Agent SSE HTTP {} - {}", status, body);
+    }
+
+    let mut tool_tracker = ToolCallTracker::default();
+    let mut response_id: Option<String> = None;
+    let mut sent_done_event = false;
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut saw_done = false;
+    let stream_deadline = tokio::time::Instant::now() + STREAM_DEADLINE;
+
+    loop {
+        if tokio::time::Instant::now() > stream_deadline {
+            anyhow::bail!(
+                "Agent SSE global safety timeout after {:?}",
+                STREAM_DEADLINE
+            );
+        }
+
+        let next_chunk = match tokio::time::timeout(inter_chunk_timeout, stream.next()).await {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                anyhow::bail!(
+                    "Agent SSE inter-chunk timeout after {:?}",
+                    inter_chunk_timeout
+                );
+            }
+        };
+
+        let Some(chunk_result) = next_chunk else {
+            break;
+        };
+        let chunk = chunk_result.context("Agent SSE stream read error")?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(newline_pos) = buffer.find('\n') {
+            let line = buffer[..newline_pos].trim().to_string();
+            buffer = buffer[newline_pos + 1..].to_string();
+
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
+
+            let Some(data) = line
+                .strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+            else {
+                continue;
+            };
+            let data = data.trim_start();
+            if data == "[DONE]" {
+                saw_done = true;
+                break;
+            }
+
+            let chunk = match serde_json::from_str::<StreamChunk>(data) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    warn!("Skipping malformed SSE chunk: {}", error);
+                    continue;
+                }
+            };
+
+            if let Some(response_meta) = &chunk.response
+                && !response_meta.id.is_empty()
+            {
+                response_id = Some(response_meta.id.clone());
+            }
+
+            if let Some(event) =
+                parse_agent_event(&chunk, &mut tool_tracker, response_id.as_deref())
+            {
+                match &event {
+                    AgentEvent::TextDelta(delta) => {
+                        if let Some(callback) = &callbacks.assistant {
+                            callback(delta);
+                        }
+                    }
+                    AgentEvent::ReasoningDelta(delta) => {
+                        if let Some(callback) = &callbacks.reasoning {
+                            callback(delta);
+                        }
+                    }
+                    AgentEvent::ResponseDone { .. } => {
+                        sent_done_event = true;
+                    }
+                    AgentEvent::TextDone(_)
+                    | AgentEvent::ToolCallStart { .. }
+                    | AgentEvent::ToolCallArgsDelta { .. }
+                    | AgentEvent::ToolCallReady { .. }
+                    | AgentEvent::Error(_) => {}
+                }
+
+                if tx.send(event).await.is_err() {
+                    return Ok(());
+                }
+            }
+        }
+
+        if saw_done {
+            break;
+        }
+    }
+
+    if !sent_done_event
+        && tx
+            .send(AgentEvent::ResponseDone { response_id })
+            .await
+            .is_err()
+    {
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default)]
+struct ToolCallTracker {
+    by_item_id: HashMap<String, ToolCallMeta>,
+    names_by_call_id: HashMap<String, String>,
+    arguments_by_call_id: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct ToolCallMeta {
+    call_id: String,
+    name: String,
+}
+
+fn parse_agent_event(
+    chunk: &StreamChunk,
+    tracker: &mut ToolCallTracker,
+    fallback_response_id: Option<&str>,
+) -> Option<AgentEvent> {
+    match chunk.chunk_type.as_str() {
+        "response.output_text.delta" => chunk.delta.clone().map(AgentEvent::TextDelta),
+        "response.output_text.done" => chunk
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| AgentEvent::TextDone(text.to_string())),
+        "response.reasoning_summary_text.delta" => {
+            chunk.delta.clone().map(AgentEvent::ReasoningDelta)
+        }
+        "response.output_item.added" => parse_tool_call_start(chunk, tracker),
+        "response.function_call_arguments.delta" => parse_tool_call_args_delta(chunk, tracker),
+        "response.function_call_arguments.done" => parse_tool_call_ready(chunk, tracker),
+        "response.completed" | "response.done" => {
+            let response_id = chunk
+                .response
+                .as_ref()
+                .map(|response| response.id.clone())
+                .filter(|id| !id.is_empty())
+                .or_else(|| {
+                    fallback_response_id
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                        .map(ToString::to_string)
+                });
+            Some(AgentEvent::ResponseDone { response_id })
+        }
+        _ => None,
+    }
+}
+
+fn parse_tool_call_start(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> Option<AgentEvent> {
+    let item = chunk.item.as_ref()?;
+    if item.item_type != "function_call" {
+        return None;
+    }
+
+    let call_id = item
+        .call_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            item.id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(ToString::to_string)
+        });
+
+    let Some(call_id) = call_id else {
+        return Some(AgentEvent::Error(
+            "Received function_call item without an id".to_string(),
+        ));
+    };
+
+    let name = item
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "unknown_tool".to_string());
+
+    if let Some(item_id) = item
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        tracker.by_item_id.insert(
+            item_id.to_string(),
+            ToolCallMeta {
+                call_id: call_id.clone(),
+                name: name.clone(),
+            },
+        );
+    }
+    tracker
+        .names_by_call_id
+        .insert(call_id.clone(), name.clone());
+    tracker
+        .arguments_by_call_id
+        .entry(call_id.clone())
+        .or_default();
+
+    Some(AgentEvent::ToolCallStart { id: call_id, name })
+}
+
+fn parse_tool_call_args_delta(
+    chunk: &StreamChunk,
+    tracker: &mut ToolCallTracker,
+) -> Option<AgentEvent> {
+    let delta = chunk
+        .delta
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)?;
+
+    let (call_id, name) = resolve_call_id_and_name(chunk, tracker)?;
+    tracker
+        .names_by_call_id
+        .entry(call_id.clone())
+        .or_insert(name);
+    tracker
+        .arguments_by_call_id
+        .entry(call_id.clone())
+        .or_default()
+        .push_str(&delta);
+
+    Some(AgentEvent::ToolCallArgsDelta { id: call_id, delta })
+}
+
+fn parse_tool_call_ready(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> Option<AgentEvent> {
+    let (call_id, name) = resolve_call_id_and_name(chunk, tracker)?;
+
+    let raw_arguments = chunk
+        .arguments
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| tracker.arguments_by_call_id.get(&call_id).cloned())
+        .unwrap_or_else(|| "{}".to_string());
+
+    tracker.arguments_by_call_id.remove(&call_id);
+    tracker
+        .names_by_call_id
+        .insert(call_id.clone(), name.clone());
+
+    match serde_json::from_str::<serde_json::Value>(&raw_arguments) {
+        Ok(arguments) => Some(AgentEvent::ToolCallReady {
+            id: call_id,
+            name,
+            arguments,
+        }),
+        Err(error) => Some(AgentEvent::Error(format!(
+            "Failed to parse arguments for tool '{}': {}",
+            name, error
+        ))),
+    }
+}
+
+fn resolve_call_id_and_name(
+    chunk: &StreamChunk,
+    tracker: &ToolCallTracker,
+) -> Option<(String, String)> {
+    if let Some(call_id) = chunk
+        .call_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        let name = chunk
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| tracker.names_by_call_id.get(call_id).cloned())
+            .unwrap_or_else(|| "unknown_tool".to_string());
+        return Some((call_id.to_string(), name));
+    }
+
+    if let Some(item_id) = chunk
+        .item_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Some(meta) = tracker.by_item_id.get(item_id) {
+            return Some((meta.call_id.clone(), meta.name.clone()));
+        }
+        return Some((item_id.to_string(), "unknown_tool".to_string()));
+    }
+
+    None
+}
+
 fn fallback_reasoning(reasoning_done: Option<String>, reasoning_text: String) -> Option<String> {
     reasoning_done.or_else(|| {
         let trimmed = reasoning_text.trim().to_string();
@@ -430,6 +817,16 @@ struct StreamChunk {
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
+    arguments: Option<String>,
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    item_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    item: Option<StreamItem>,
+    #[serde(default)]
     response: Option<StreamResponse>,
     #[serde(default)]
     sequence_number: Option<u64>,
@@ -441,6 +838,18 @@ struct StreamResponse {
     id: String,
     #[serde(default)]
     output: Vec<StreamOutputItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamItem {
+    #[serde(rename = "type")]
+    item_type: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -505,7 +914,10 @@ fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{StreamOutputItem, extract_output_channels, fallback_reasoning};
+    use super::{
+        AgentEvent, StreamChunk, StreamOutputItem, ToolCallTracker, extract_output_channels,
+        fallback_reasoning, parse_agent_event,
+    };
     use serde_json::json;
 
     #[test]
@@ -571,5 +983,116 @@ mod tests {
         let (assistant, reasoning) = extract_output_channels(&output);
         assert!(assistant.is_empty());
         assert_eq!(reasoning, None);
+    }
+
+    #[test]
+    fn parse_agent_event_handles_function_call_lifecycle() {
+        let mut tracker = ToolCallTracker::default();
+
+        let start_chunk: StreamChunk = serde_json::from_value(json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "function_call",
+                "id": "item_1",
+                "call_id": "call_1",
+                "name": "search_notes"
+            }
+        }))
+        .expect("valid start chunk");
+
+        let event =
+            parse_agent_event(&start_chunk, &mut tracker, None).expect("expected tool start event");
+        assert_eq!(
+            event,
+            AgentEvent::ToolCallStart {
+                id: "call_1".to_string(),
+                name: "search_notes".to_string(),
+            }
+        );
+
+        let delta_chunk: StreamChunk = serde_json::from_value(json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item_1",
+            "delta": "{\"query\":\"vet"
+        }))
+        .expect("valid delta chunk");
+
+        let event =
+            parse_agent_event(&delta_chunk, &mut tracker, None).expect("expected tool args delta");
+        assert_eq!(
+            event,
+            AgentEvent::ToolCallArgsDelta {
+                id: "call_1".to_string(),
+                delta: "{\"query\":\"vet".to_string(),
+            }
+        );
+
+        let done_chunk: StreamChunk = serde_json::from_value(json!({
+            "type": "response.function_call_arguments.done",
+            "item_id": "item_1",
+            "arguments": "{\"query\":\"vetcoders\"}"
+        }))
+        .expect("valid done chunk");
+
+        let event = parse_agent_event(&done_chunk, &mut tracker, None)
+            .expect("expected tool call ready event");
+        assert_eq!(
+            event,
+            AgentEvent::ToolCallReady {
+                id: "call_1".to_string(),
+                name: "search_notes".to_string(),
+                arguments: json!({"query": "vetcoders"}),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_agent_event_uses_delta_buffer_when_done_has_no_arguments() {
+        let mut tracker = ToolCallTracker::default();
+
+        let start_chunk: StreamChunk = serde_json::from_value(json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "function_call",
+                "id": "item_2",
+                "call_id": "call_2",
+                "name": "fetch_summary"
+            }
+        }))
+        .expect("valid start chunk");
+        let _ = parse_agent_event(&start_chunk, &mut tracker, None);
+
+        let first_delta: StreamChunk = serde_json::from_value(json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item_2",
+            "delta": "{\"id\":"
+        }))
+        .expect("valid first delta");
+        let _ = parse_agent_event(&first_delta, &mut tracker, None);
+
+        let second_delta: StreamChunk = serde_json::from_value(json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item_2",
+            "delta": "\"abc\"}"
+        }))
+        .expect("valid second delta");
+        let _ = parse_agent_event(&second_delta, &mut tracker, None);
+
+        let done_chunk: StreamChunk = serde_json::from_value(json!({
+            "type": "response.function_call_arguments.done",
+            "item_id": "item_2"
+        }))
+        .expect("valid done chunk");
+
+        let event = parse_agent_event(&done_chunk, &mut tracker, None)
+            .expect("expected tool call ready event");
+        assert_eq!(
+            event,
+            AgentEvent::ToolCallReady {
+                id: "call_2".to_string(),
+                name: "fetch_summary".to_string(),
+                arguments: json!({"id": "abc"}),
+            }
+        );
     }
 }

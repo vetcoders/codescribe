@@ -2273,6 +2273,14 @@ fn prompt_type_from_index(index: isize) -> &'static str {
     }
 }
 
+fn prompt_display_name(prompt_type: &str) -> &'static str {
+    if prompt_type == "assistive" {
+        "Assistive"
+    } else {
+        "Formatting"
+    }
+}
+
 fn selected_prompt_type() -> &'static str {
     let popup_ptr = {
         let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -2310,6 +2318,60 @@ fn load_prompt_content(prompt_type: &str) -> Result<String, String> {
             } else {
                 crate::config::get_formatting_prompt()
             })
+        }
+    }
+}
+
+fn save_prompt_content(prompt_type: &str, content: &str) -> Result<(), String> {
+    match send_ipc(IpcCommand::SavePrompt {
+        prompt_type: prompt_type.to_string(),
+        content: content.to_string(),
+    }) {
+        Ok(IpcResponse::Ok) => Ok(()),
+        Ok(IpcResponse::Error(err)) => Err(err),
+        Ok(other) => Err(format!("Unexpected IPC response: {other:?}")),
+        Err(err) => {
+            warn!("Settings: prompt IPC unavailable, using config fallback: {err}");
+            let path = if prompt_type == "assistive" {
+                crate::config::get_assistive_prompt_path()
+            } else {
+                crate::config::get_formatting_prompt_path()
+            };
+            if let Some(parent) = path.parent()
+                && let Err(e) = fs::create_dir_all(parent)
+            {
+                return Err(e.to_string());
+            }
+            fs::write(path, content).map_err(|e| e.to_string())
+        }
+    }
+}
+
+fn reset_prompt_content(prompt_type: &str) -> Result<(), String> {
+    match send_ipc(IpcCommand::ResetPrompt {
+        prompt_type: prompt_type.to_string(),
+    }) {
+        Ok(IpcResponse::Ok) => Ok(()),
+        Ok(IpcResponse::Error(err)) => Err(err),
+        Ok(other) => Err(format!("Unexpected IPC response: {other:?}")),
+        Err(err) => {
+            warn!("Settings: prompt IPC unavailable, using config fallback: {err}");
+            let path = if prompt_type == "assistive" {
+                crate::config::get_assistive_prompt_path()
+            } else {
+                crate::config::get_formatting_prompt_path()
+            };
+            let default = if prompt_type == "assistive" {
+                crate::config::DEFAULT_ASSISTIVE_PROMPT
+            } else {
+                crate::config::DEFAULT_FORMATTING_PROMPT
+            };
+            if let Some(parent) = path.parent()
+                && let Err(e) = fs::create_dir_all(parent)
+            {
+                return Err(e.to_string());
+            }
+            fs::write(path, default).map_err(|e| e.to_string())
         }
     }
 }
@@ -4191,12 +4253,12 @@ pub(super) extern "C" fn on_save_api_settings(
 }
 
 pub(super) extern "C" fn on_prompt_type_changed(
-    _this: &Object,
-    _cmd: objc::runtime::Sel,
-    _sender: Id,
+    this: &Object,
+    cmd: objc::runtime::Sel,
+    sender: Id,
 ) {
     refresh_prompt_editor_labels();
-    on_prompt_load(_this, _cmd, _sender);
+    on_prompt_load(this, cmd, sender);
 }
 
 pub(super) extern "C" fn on_prompt_load(_this: &Object, _cmd: objc::runtime::Sel, _sender: Id) {
