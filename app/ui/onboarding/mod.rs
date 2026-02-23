@@ -74,9 +74,9 @@ enum HotkeyModeChoice {
 impl HotkeyModeChoice {
     fn label(self) -> &'static str {
         match self {
-            Self::HoldToTalk => "Hold to Talk",
-            Self::Toggle => "Toggle (Double-tap)",
-            Self::Both => "Both",
+            Self::HoldToTalk => "Dictation (Hold)",
+            Self::Toggle => "Hands-off (Toggle)",
+            Self::Both => "Hybrid",
         }
     }
 }
@@ -833,7 +833,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let hotkey_hold = create_radio_button(
             CGRect::new(&CGPoint::new(0.0, 90.0), &CGSize::new(390.0, 24.0)),
-            "Hold to Talk (Fn/Globe)",
+            "Dictation mode: Hold (Fn/Globe)",
             false,
         );
         let _: () = msg_send![hotkey_hold, setTag: 0_isize];
@@ -843,7 +843,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let hotkey_toggle = create_radio_button(
             CGRect::new(&CGPoint::new(0.0, 58.0), &CGSize::new(390.0, 24.0)),
-            "Toggle (Double-tap Option)",
+            "Hands-off mode: Toggle (Double-tap Option)",
             false,
         );
         let _: () = msg_send![hotkey_toggle, setTag: 1_isize];
@@ -853,7 +853,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let hotkey_both = create_radio_button(
             CGRect::new(&CGPoint::new(0.0, 26.0), &CGSize::new(390.0, 24.0)),
-            "Both",
+            "Hybrid mode: Hold + Toggle",
             true,
         );
         let _: () = msg_send![hotkey_both, setTag: 2_isize];
@@ -1098,10 +1098,10 @@ fn render_current_step() {
         }
         WizardStep::HotkeyMode => {
             set_text_if_present(ui.icon_label, "HOTKEY");
-            set_text_if_present(ui.title_label, "Choose Hotkey Mode");
+            set_text_if_present(ui.title_label, "Customize Mode Shortcuts");
             set_text_if_present(
                 ui.description_label,
-                "Pick how you want to start and stop recording. Hold mode uses Fn/Globe.",
+                "Mode first, keys second. Pick a starter profile now; you can refine each mode shortcut later in Settings.",
             );
             set_hidden_if_present(ui.hotkey_view, false);
             set_button_title_if_present(ui.primary_button, "Continue");
@@ -1890,7 +1890,7 @@ fn update_summary_view(
     set_text_if_present(
         ui.summary_config_label,
         &format!(
-            "Language: {}\nAPI key: {}\nHotkey mode: {}",
+            "Language: {}\nAPI key: {}\nMode profile: {}",
             language.label(),
             api_status,
             hotkey_mode.label()

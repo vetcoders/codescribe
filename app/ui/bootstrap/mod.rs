@@ -16,10 +16,12 @@ use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{NSVisualEffectMaterial, NSWindowButton, NSWindowCollectionBehavior};
 use tracing::{info, warn};
 
-use crate::config::{Config, HoldMods, ToggleTrigger, UserSettings, keychain};
+use crate::config::{
+    Config, HoldMods, ShortcutBinding, ToggleTrigger, UserSettings, WorkMode, keychain,
+};
 use crate::ipc::{IpcCommand, IpcResponse};
-use crate::os::hotkeys;
 use crate::os::permissions::PermissionStatus;
+use crate::os::{hotkeys, shortcut_registry};
 use crate::ui::bootstrap::handlers::{
     action_handler_class, toolbar_delegate_class, window_delegate_class,
 };
@@ -80,6 +82,21 @@ const KEY_STATUS_ICON_SIZE: f64 = 14.0;
 const STEP_TEST_MIC: usize = 0;
 const STEP_SHOW_OVERLAY: usize = 1;
 const STEP_PRESS_HOTKEY: usize = 2;
+const MODE_DICTATION_TAG: isize = 0;
+const MODE_FORMATTING_TAG: isize = 1;
+const MODE_ASSISTIVE_TAG: isize = 2;
+const MODE_DICTATION_DOUBLE_CTRL_TAG: isize = 100;
+
+#[derive(Default)]
+struct ModeBindingRecorderState {
+    monitor_installed: bool,
+    target_mode: Option<WorkMode>,
+}
+
+lazy_static! {
+    static ref MODE_BINDING_RECORDER_STATE: Mutex<ModeBindingRecorderState> =
+        Mutex::new(ModeBindingRecorderState::default());
+}
 
 #[inline]
 fn objc_class(name: &'static str) -> &'static Class {
@@ -456,6 +473,9 @@ struct BootstrapState {
     keys_toggle_popup: Option<usize>,
     keys_preset_popup: Option<usize>,
     keys_exclusive_checkbox: Option<usize>,
+    keys_mode_binding_labels: [Option<usize>; 3],
+    keys_recorder_hint_label: Option<usize>,
+    keys_conflict_label: Option<usize>,
     hold_delay_value_label: Option<usize>,
     double_tap_value_label: Option<usize>,
     config_cache: Option<Config>,
@@ -750,6 +770,9 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
         state.keys_toggle_popup = built_state.keys_toggle_popup;
         state.keys_preset_popup = built_state.keys_preset_popup;
         state.keys_exclusive_checkbox = built_state.keys_exclusive_checkbox;
+        state.keys_mode_binding_labels = built_state.keys_mode_binding_labels;
+        state.keys_recorder_hint_label = built_state.keys_recorder_hint_label;
+        state.keys_conflict_label = built_state.keys_conflict_label;
         state.config_cache = built_state.config_cache;
         state.permission_labels = built_state.permission_labels;
         state.permission_action_buttons = built_state.permission_action_buttons;
@@ -1664,6 +1687,9 @@ pub(super) fn handle_bootstrap_window_closed() {
     state.keys_toggle_popup = None;
     state.keys_preset_popup = None;
     state.keys_exclusive_checkbox = None;
+    state.keys_mode_binding_labels = [None; 3];
+    state.keys_recorder_hint_label = None;
+    state.keys_conflict_label = None;
     state.hold_delay_value_label = None;
     state.double_tap_value_label = None;
     state.permission_labels = [None, None, None, None, None];
@@ -1701,6 +1727,9 @@ pub fn hide_bootstrap_overlay() {
                 state.keys_toggle_popup = None;
                 state.keys_preset_popup = None;
                 state.keys_exclusive_checkbox = None;
+                state.keys_mode_binding_labels = [None; 3];
+                state.keys_recorder_hint_label = None;
+                state.keys_conflict_label = None;
                 state.hold_delay_value_label = None;
                 state.double_tap_value_label = None;
                 state.permission_labels = [None, None, None, None, None];
@@ -1773,6 +1802,9 @@ pub fn reset_embedded_bootstrap_state() {
     state.keys_toggle_popup = None;
     state.keys_preset_popup = None;
     state.keys_exclusive_checkbox = None;
+    state.keys_mode_binding_labels = [None; 3];
+    state.keys_recorder_hint_label = None;
+    state.keys_conflict_label = None;
     state.hold_delay_value_label = None;
     state.double_tap_value_label = None;
     state.permission_labels = [None, None, None, None, None];
@@ -1827,6 +1859,385 @@ fn mark_keys_preset_custom() {
     set_keys_popup_index(state.keys_preset_popup, 2);
 }
 
+fn mode_from_tag(tag: isize) -> Option<WorkMode> {
+    match tag {
+        MODE_DICTATION_TAG => Some(WorkMode::Dictation),
+        MODE_FORMATTING_TAG => Some(WorkMode::Formatting),
+        MODE_ASSISTIVE_TAG => Some(WorkMode::Assistive),
+        _ => None,
+    }
+}
+
+fn mode_from_disable_tag(tag: isize) -> Option<WorkMode> {
+    mode_from_tag(tag - 10)
+}
+
+fn mode_label_slot(mode: WorkMode) -> usize {
+    match mode {
+        WorkMode::Dictation => 0,
+        WorkMode::Formatting => 1,
+        WorkMode::Assistive => 2,
+    }
+}
+
+fn hold_popup_index(mods: HoldMods) -> isize {
+    match mods {
+        HoldMods::Fn => 0,
+        HoldMods::Ctrl => 1,
+        HoldMods::CtrlAlt => 2,
+        HoldMods::CtrlShift => 3,
+        HoldMods::CtrlCmd => 4,
+        HoldMods::None => 5,
+    }
+}
+
+fn toggle_popup_index(trigger: ToggleTrigger) -> isize {
+    match trigger {
+        ToggleTrigger::None => 0,
+        ToggleTrigger::DoubleCtrl => 1,
+        ToggleTrigger::DoubleLeftOption => 2,
+        ToggleTrigger::DoubleRightOption => 3,
+        ToggleTrigger::DoubleOption => 4,
+    }
+}
+
+fn refresh_hotkey_popups_from_config(config: &Config) {
+    let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    set_keys_popup_index(state.keys_hold_popup, hold_popup_index(config.hold_mods));
+    set_keys_popup_index(
+        state.keys_toggle_popup,
+        toggle_popup_index(config.toggle_trigger),
+    );
+}
+
+fn set_mode_recorder_hint(text: &str, is_error: bool) {
+    let hint_ptr = {
+        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.keys_recorder_hint_label
+    };
+    let Some(hint_ptr) = hint_ptr else {
+        return;
+    };
+    unsafe {
+        let hint_label = hint_ptr as Id;
+        set_text_field_string(hint_label, text);
+        let color = if is_error {
+            ui_colors::bubble_error_text()
+        } else {
+            crate::ui_helpers::color_secondary_label()
+        };
+        let _: () = msg_send![hint_label, setTextColor: color];
+    }
+}
+
+fn refresh_mode_binding_labels() {
+    let settings = UserSettings::load();
+    let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    for mode in [
+        WorkMode::Dictation,
+        WorkMode::Formatting,
+        WorkMode::Assistive,
+    ] {
+        if let Some(label_ptr) = state.keys_mode_binding_labels[mode_label_slot(mode)] {
+            let text = settings.mode_binding_for(mode).label().to_string();
+            unsafe {
+                set_text_field_string(label_ptr as Id, &text);
+            }
+        }
+    }
+}
+
+fn binding_from_recorded_event(
+    mode: WorkMode,
+    event_type: u64,
+    keycode: u16,
+    flags: u64,
+) -> Option<ShortcutBinding> {
+    // NSEventModifierFlagShift/Control/Option/Command
+    const SHIFT: u64 = 1 << 17;
+    const OPTION: u64 = 1 << 19;
+    const COMMAND: u64 = 1 << 20;
+    const EVENT_TYPE_FLAGS_CHANGED: u64 = 12;
+
+    match mode {
+        WorkMode::Dictation => match keycode {
+            63 => Some(ShortcutBinding::HoldFn),
+            59 | 62 => {
+                if (flags & OPTION) != 0 {
+                    Some(ShortcutBinding::HoldCtrlAlt)
+                } else if (flags & SHIFT) != 0 {
+                    Some(ShortcutBinding::HoldCtrlShift)
+                } else if (flags & COMMAND) != 0 {
+                    Some(ShortcutBinding::HoldCtrlCmd)
+                } else if event_type == EVENT_TYPE_FLAGS_CHANGED {
+                    Some(ShortcutBinding::HoldCtrl)
+                } else {
+                    None
+                }
+            }
+            // Double Ctrl is enabled via recorder from plain Ctrl key when no modifiers.
+            // Using event_type keyDown for Control is unreliable, so we map by flags-changed path.
+            59 | 62
+                if event_type == EVENT_TYPE_FLAGS_CHANGED
+                    && (flags & (SHIFT | OPTION | COMMAND)) == 0 =>
+            {
+                Some(ShortcutBinding::DoubleCtrl)
+            }
+            _ => None,
+        },
+        WorkMode::Formatting => match keycode {
+            58 => Some(ShortcutBinding::DoubleLeftOption),
+            _ => None,
+        },
+        WorkMode::Assistive => match keycode {
+            61 => Some(ShortcutBinding::DoubleRightOption),
+            _ => None,
+        },
+    }
+}
+
+fn mode_accepts_binding(mode: WorkMode, binding: ShortcutBinding) -> bool {
+    match mode {
+        WorkMode::Dictation => matches!(
+            binding,
+            ShortcutBinding::Disabled
+                | ShortcutBinding::HoldFn
+                | ShortcutBinding::HoldCtrl
+                | ShortcutBinding::HoldCtrlAlt
+                | ShortcutBinding::HoldCtrlShift
+                | ShortcutBinding::HoldCtrlCmd
+                | ShortcutBinding::DoubleCtrl
+        ),
+        WorkMode::Formatting => {
+            matches!(
+                binding,
+                ShortcutBinding::Disabled | ShortcutBinding::DoubleLeftOption
+            )
+        }
+        WorkMode::Assistive => {
+            matches!(
+                binding,
+                ShortcutBinding::Disabled | ShortcutBinding::DoubleRightOption
+            )
+        }
+    }
+}
+
+fn mode_binding_selection_error(
+    mode: WorkMode,
+    binding: ShortcutBinding,
+    settings: &UserSettings,
+) -> Option<String> {
+    if !mode_accepts_binding(mode, binding) {
+        return Some(format!(
+            "{} mode supports only {} bindings.",
+            mode.label(),
+            match mode {
+                WorkMode::Dictation => "hold modifiers or Double Ctrl",
+                WorkMode::Formatting => "Double Left Option",
+                WorkMode::Assistive => "Double Right Option",
+            }
+        ));
+    }
+
+    if mode != WorkMode::Dictation
+        && binding != ShortcutBinding::Disabled
+        && settings.mode_binding_for(WorkMode::Dictation) == ShortcutBinding::DoubleCtrl
+    {
+        return Some(
+            "Dictation is currently on Double Ctrl. Disable it first to use Option bindings."
+                .to_string(),
+        );
+    }
+
+    None
+}
+
+fn apply_mode_binding(mode: WorkMode, binding: ShortcutBinding) {
+    let mut settings = UserSettings::load();
+    if let Some(message) = mode_binding_selection_error(mode, binding, &settings) {
+        set_mode_recorder_hint(&message, true);
+        return;
+    }
+
+    settings.set_mode_binding(mode, binding);
+
+    if mode == WorkMode::Dictation && binding == ShortcutBinding::DoubleCtrl {
+        settings.set_mode_binding(WorkMode::Formatting, ShortcutBinding::Disabled);
+        settings.set_mode_binding(WorkMode::Assistive, ShortcutBinding::Disabled);
+    }
+
+    let config = Config::load();
+    hotkeys::apply_hotkey_runtime_config(hotkeys::HotkeyRuntimeConfig::from(&config));
+    refresh_hotkey_popups_from_config(&config);
+    mark_keys_preset_custom();
+    sync_runtime_config_via_ipc();
+
+    refresh_mode_binding_labels();
+    refresh_hotkey_conflict_indicator();
+    set_mode_recorder_hint(
+        &format!("{} mode -> {}", mode.label(), binding.label()),
+        false,
+    );
+}
+
+fn apply_recorded_mode_binding(mode: WorkMode, binding: ShortcutBinding) {
+    apply_mode_binding(mode, binding);
+}
+
+fn recorder_capture_mode() -> Option<WorkMode> {
+    let recorder = MODE_BINDING_RECORDER_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    recorder.target_mode
+}
+
+fn recorder_clear_target_mode() {
+    let mut recorder = MODE_BINDING_RECORDER_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    recorder.target_mode = None;
+}
+
+fn handle_mode_binding_recorder_event(event: Id) -> Id {
+    let Some(mode) = recorder_capture_mode() else {
+        return event;
+    };
+
+    unsafe {
+        let event_type: u64 = msg_send![event, type];
+        let keycode: u16 = msg_send![event, keyCode];
+        let flags: u64 = msg_send![event, modifierFlags];
+
+        // Escape cancels recording.
+        if event_type == 10 && keycode == 53 {
+            recorder_clear_target_mode();
+            set_mode_recorder_hint("Mode binding capture cancelled.", false);
+            return std::ptr::null_mut();
+        }
+
+        if let Some(binding) = binding_from_recorded_event(mode, event_type, keycode, flags) {
+            recorder_clear_target_mode();
+            apply_recorded_mode_binding(mode, binding);
+            return std::ptr::null_mut();
+        }
+    }
+
+    set_mode_recorder_hint(
+        "Unsupported shortcut for this mode. Press Esc to cancel capture.",
+        true,
+    );
+    std::ptr::null_mut()
+}
+
+fn ensure_mode_binding_recorder_monitor() -> bool {
+    let should_install = {
+        let recorder = MODE_BINDING_RECORDER_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        !recorder.monitor_installed
+    };
+    if !should_install {
+        return true;
+    }
+
+    unsafe {
+        let ns_event = objc_class("NSEvent");
+        let mask: u64 = (1_u64 << 10) | (1_u64 << 12); // keyDown + flagsChanged
+        let handler = block::ConcreteBlock::new(|event: Id| -> Id {
+            handle_mode_binding_recorder_event(event)
+        })
+        .copy();
+        let monitor: Id =
+            msg_send![ns_event, addLocalMonitorForEventsMatchingMask: mask handler: &*handler];
+        if monitor.is_null() {
+            warn!("Mode binding recorder: failed to install local event monitor");
+            return false;
+        }
+        std::mem::forget(handler);
+    }
+
+    let mut recorder = MODE_BINDING_RECORDER_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    recorder.monitor_installed = true;
+    true
+}
+
+fn start_mode_binding_recorder(mode: WorkMode) {
+    if !ensure_mode_binding_recorder_monitor() {
+        set_mode_recorder_hint("Mode binding recorder failed to initialize.", true);
+        return;
+    }
+    {
+        let mut recorder = MODE_BINDING_RECORDER_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        recorder.target_mode = Some(mode);
+    }
+    set_mode_recorder_hint(
+        &format!(
+            "Recording {} binding... Press Fn/Ctrl/Option (Esc to cancel).",
+            mode.label()
+        ),
+        false,
+    );
+}
+
+fn hotkey_conflict_status(config: &Config) -> (String, bool) {
+    let conflicts = shortcut_registry::detect_hotkey_conflicts(config);
+    if conflicts.is_empty() {
+        return (
+            "Mode shortcuts: no conflicts in macOS Keyboard Shortcuts registry.".to_string(),
+            false,
+        );
+    }
+
+    let first = &conflicts[0];
+    let extra = conflicts.len().saturating_sub(1);
+    let suffix = if extra > 0 {
+        format!(" (+{} more)", extra)
+    } else {
+        String::new()
+    };
+
+    (
+        format!(
+            "Conflict: {} -> {}{}",
+            first.gesture.label(),
+            first.message,
+            suffix
+        ),
+        true,
+    )
+}
+
+fn refresh_hotkey_conflict_indicator() {
+    let config = Config::load();
+    let label_ptr = {
+        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.keys_conflict_label
+    };
+    apply_hotkey_conflict_indicator(label_ptr, &config);
+}
+
+fn apply_hotkey_conflict_indicator(label_ptr: Option<usize>, config: &Config) {
+    let Some(label_ptr) = label_ptr else {
+        return;
+    };
+    let (text, has_conflict) = hotkey_conflict_status(config);
+    unsafe {
+        let label = label_ptr as Id;
+        set_text_field_string(label, &text);
+        let color = if has_conflict {
+            ui_colors::bubble_error_text()
+        } else {
+            crate::ui_helpers::color_secondary_label()
+        };
+        let _: () = msg_send![label, setTextColor: color];
+    }
+}
+
 // ============================================================================
 // Hotkeys tab
 // ============================================================================
@@ -1868,7 +2279,7 @@ unsafe fn build_hotkeys_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Recording trigger and shortcut behavior.".to_string(),
+            text: "Customize work modes first, then assign shortcuts.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1876,9 +2287,61 @@ unsafe fn build_hotkeys_tab(
         add_subview(container, subtitle);
         y -= 16.0 + gap;
 
+        let mode_specs = [
+            (WorkMode::Dictation, MODE_DICTATION_TAG),
+            (WorkMode::Formatting, MODE_FORMATTING_TAG),
+            (WorkMode::Assistive, MODE_ASSISTIVE_TAG),
+        ];
+        let settings_snapshot = UserSettings::load();
+        let mut mode_binding_labels: [Option<usize>; 3] = [None; 3];
+        for (mode, tag) in mode_specs {
+            let row_title = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(126.0, 20.0)),
+                text: format!("{}:", mode.label()),
+                font_size: ui_tokens::SMALL_FONT_SIZE,
+                text_color: secondary,
+                ..Default::default()
+            });
+            add_subview(container, row_title);
+
+            let binding_label = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(pad + 128.0, y), &CGSize::new(220.0, 20.0)),
+                text: settings_snapshot.mode_binding_for(mode).label().to_string(),
+                font_size: ui_tokens::SMALL_FONT_SIZE,
+                text_color: secondary,
+                ..Default::default()
+            });
+            add_subview(container, binding_label);
+            mode_binding_labels[mode_label_slot(mode)] = Some(binding_label as usize);
+
+            let change_button = create_button(
+                CGRect::new(
+                    &CGPoint::new(pad + content_w - 96.0, y - 2.0),
+                    &CGSize::new(96.0, 24.0),
+                ),
+                "\u{2328} Change",
+                button_style::GLASS,
+            );
+            let _: () = msg_send![change_button, setTag: tag];
+            button_set_action(change_button, action_handler, sel!(onModeBindingChange:));
+            add_subview(container, change_button);
+
+            y -= 24.0 + gap;
+        }
+
+        let recorder_hint = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: "Mode recorder: click [⌨ Change], then press Fn/Ctrl/Option.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, recorder_hint);
+        y -= 16.0 + gap;
+
         let preset_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
-            text: "Hotkey preset:".to_string(),
+            text: "Mode profile:".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1915,7 +2378,7 @@ unsafe fn build_hotkeys_tab(
 
         let hold_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
-            text: "Hold base:".to_string(),
+            text: "Mode key (hold):".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1971,7 +2434,7 @@ unsafe fn build_hotkeys_tab(
 
         let toggle_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
-            text: "Hands-off toggle:".to_string(),
+            text: "Mode key (toggle):".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -2081,6 +2544,21 @@ unsafe fn build_hotkeys_tab(
         add_subview(container, double_tap_value);
         y -= 20.0 + gap;
 
+        let (conflict_text, has_conflict) = hotkey_conflict_status(config);
+        let conflict_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 28.0)),
+            text: conflict_text,
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: if has_conflict {
+                ui_colors::bubble_error_text()
+            } else {
+                secondary
+            },
+            ..Default::default()
+        });
+        add_subview(container, conflict_label);
+        y -= 28.0 + gap;
+
         let config_divider = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 1.0)),
             text: String::new(),
@@ -2104,6 +2582,9 @@ unsafe fn build_hotkeys_tab(
         state.keys_toggle_popup = Some(toggle_popup as usize);
         state.keys_preset_popup = Some(preset_popup as usize);
         state.keys_exclusive_checkbox = Some(modes_check as usize);
+        state.keys_mode_binding_labels = mode_binding_labels;
+        state.keys_recorder_hint_label = Some(recorder_hint as usize);
+        state.keys_conflict_label = Some(conflict_label as usize);
         state.hold_delay_value_label = Some(delay_value as usize);
         state.double_tap_value_label = Some(double_tap_value as usize);
 
@@ -3144,6 +3625,19 @@ unsafe fn build_user_tab(
 // Settings handler stubs (Keys + Audio + Voice Lab tabs)
 // ============================================================================
 
+pub(super) extern "C" fn on_mode_binding_change(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let tag: isize = msg_send![sender, tag];
+        if let Some(mode) = mode_from_tag(tag) {
+            start_mode_binding_recorder(mode);
+        }
+    }
+}
+
 pub(super) extern "C" fn on_hold_mod_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
     unsafe {
         let idx: isize = msg_send![sender, indexOfSelectedItem];
@@ -3177,6 +3671,8 @@ pub(super) extern "C" fn on_hold_mod_changed(_this: &Object, _cmd: objc::runtime
         hotkeys::apply_hotkey_runtime_config(runtime_config);
         mark_keys_preset_custom();
         sync_runtime_config_via_ipc();
+        refresh_mode_binding_labels();
+        refresh_hotkey_conflict_indicator();
     }
 }
 
@@ -3204,6 +3700,8 @@ pub(super) extern "C" fn on_preset_changed(_this: &Object, _cmd: objc::runtime::
                 set_keys_popup_index(state.keys_toggle_popup, 4);
                 set_keys_checkbox_state(state.keys_exclusive_checkbox, true);
                 sync_runtime_config_via_ipc();
+                refresh_mode_binding_labels();
+                refresh_hotkey_conflict_indicator();
             }
             // Safe (no toggles)
             1 => {
@@ -3225,9 +3723,13 @@ pub(super) extern "C" fn on_preset_changed(_this: &Object, _cmd: objc::runtime::
                 set_keys_popup_index(state.keys_toggle_popup, 0);
                 set_keys_checkbox_state(state.keys_exclusive_checkbox, false);
                 sync_runtime_config_via_ipc();
+                refresh_mode_binding_labels();
+                refresh_hotkey_conflict_indicator();
             }
             _ => {
                 info!("Settings: hotkey preset -> custom");
+                refresh_mode_binding_labels();
+                refresh_hotkey_conflict_indicator();
             }
         }
     }
@@ -3250,6 +3752,7 @@ pub(super) extern "C" fn on_hold_exclusive_changed(
         hotkeys::apply_hotkey_runtime_config(runtime_config);
         mark_keys_preset_custom();
         sync_runtime_config_via_ipc();
+        refresh_hotkey_conflict_indicator();
     }
 }
 
@@ -3291,6 +3794,8 @@ pub(super) extern "C" fn on_toggle_trigger_changed(
 
         mark_keys_preset_custom();
         sync_runtime_config_via_ipc();
+        refresh_mode_binding_labels();
+        refresh_hotkey_conflict_indicator();
     }
 }
 pub(super) extern "C" fn on_language_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {

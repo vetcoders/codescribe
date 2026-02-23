@@ -635,6 +635,7 @@ impl Config {
         }
 
         let mut settings: Option<super::settings::UserSettings> = None;
+        let mut legacy_hotkeys_touched = false;
         let mut env_vars: Option<HashMap<String, String>> = None;
         let mut env_path: Option<PathBuf> = None;
 
@@ -656,8 +657,14 @@ impl Config {
                     "WHISPER_LANGUAGE" => {
                         settings_ref.whisper_language = Some((*value).to_string())
                     }
-                    "HOLD_MODS" => settings_ref.hold_mods = Some((*value).to_string()),
-                    "TOGGLE_TRIGGER" => settings_ref.toggle_trigger = Some((*value).to_string()),
+                    "HOLD_MODS" => {
+                        settings_ref.hold_mods = Some((*value).to_string());
+                        legacy_hotkeys_touched = true;
+                    }
+                    "TOGGLE_TRIGGER" => {
+                        settings_ref.toggle_trigger = Some((*value).to_string());
+                        legacy_hotkeys_touched = true;
+                    }
                     "LLM_ENDPOINT" => settings_ref.llm_endpoint = Some((*value).to_string()),
                     "LLM_MODEL" => settings_ref.llm_model = Some((*value).to_string()),
                     "LLM_ASSISTIVE_ENDPOINT" => {
@@ -754,8 +761,14 @@ impl Config {
                             "BEEP_ON_START" => settings_ref.beep_on_start = Some(bv),
                             "SHOW_DOCK_ICON" => settings_ref.show_dock_icon = Some(bv),
                             "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),
-                            "HOTKEY_DOUBLE_TAP_LEFT" => settings_ref.double_tap_left = Some(bv),
-                            "HOTKEY_DOUBLE_TAP_RIGHT" => settings_ref.double_tap_right = Some(bv),
+                            "HOTKEY_DOUBLE_TAP_LEFT" => {
+                                settings_ref.double_tap_left = Some(bv);
+                                legacy_hotkeys_touched = true;
+                            }
+                            "HOTKEY_DOUBLE_TAP_RIGHT" => {
+                                settings_ref.double_tap_right = Some(bv);
+                                legacy_hotkeys_touched = true;
+                            }
                             "USE_LOCAL_STT" => settings_ref.use_local_stt = Some(bv),
                             "HISTORY_ENABLED" => settings_ref.history_enabled = Some(bv),
                             "QUICK_NOTES_ENABLED" => settings_ref.quick_notes_enabled = Some(bv),
@@ -789,10 +802,13 @@ impl Config {
             unsafe { std::env::set_var(key, value) };
         }
 
-        if let Some(settings) = settings
-            && let Err(e) = settings.save()
-        {
-            warn!("Failed to save settings batch: {e}");
+        if let Some(mut settings) = settings {
+            if legacy_hotkeys_touched {
+                settings.force_mode_bindings_from_legacy();
+            }
+            if let Err(e) = settings.save() {
+                warn!("Failed to save settings batch: {e}");
+            }
         }
         if let (Some(path), Some(vars)) = (env_path, env_vars) {
             if let Some(parent) = path.parent() {

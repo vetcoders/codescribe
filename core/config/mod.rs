@@ -23,7 +23,10 @@ pub mod settings;
 mod types;
 
 // Re-export types
-pub use types::{Config, HoldMods, OverlayPositionMode, ToggleTrigger, TranscriptSendMode};
+pub use types::{
+    Config, HoldMods, ModeBinding, OverlayPositionMode, ShortcutBinding, ToggleTrigger,
+    TranscriptSendMode, WorkMode,
+};
 // Language re-exported for external consumers (GUI apps)
 pub use settings::UserSettings;
 pub use types::Language;

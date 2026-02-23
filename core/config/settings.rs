@@ -2,6 +2,10 @@
 //!
 //! These are the "regular user" tier. Power users override via ~/.codescribe/.env.
 
+use super::types::{
+    HoldMods, ModeBinding, ShortcutBinding, ToggleTrigger, WorkMode, mode_bindings_from_legacy,
+    mode_bindings_to_legacy,
+};
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -21,6 +25,8 @@ pub struct UserSettings {
     pub hold_exclusive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toggle_trigger: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode_bindings: Option<Vec<ModeBinding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold_start_delay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,6 +128,8 @@ struct InteractionV2 {
     trigger: Option<TriggerV2>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hold: Option<HoldV2>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode_bindings: Option<Vec<ModeBinding>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -331,8 +339,9 @@ pub fn is_promoted_key(key: &str) -> bool {
 
 impl UserSettings {
     fn to_v2(&self) -> SettingsV2 {
+        let normalized_mode_bindings = self.mode_bindings_normalized();
         SettingsV2 {
-            schema_version: 2,
+            schema_version: 3,
             interaction: Some(InteractionV2 {
                 trigger: Some(TriggerV2 {
                     mode: self.toggle_trigger.clone(),
@@ -352,6 +361,7 @@ impl UserSettings {
                     exclusive: self.hold_exclusive,
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
+                mode_bindings: Some(normalized_mode_bindings),
             }),
             speech: Some(SpeechV2 {
                 language: self.whisper_language.clone(),
@@ -405,7 +415,7 @@ impl UserSettings {
     }
 
     fn from_v2(v2: SettingsV2) -> Self {
-        Self {
+        let mut settings = Self {
             whisper_language: v2.speech.as_ref().and_then(|s| s.language.clone()),
             hold_mods: v2
                 .interaction
@@ -423,6 +433,10 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|i| i.trigger.as_ref())
                 .and_then(|t| t.mode.clone()),
+            mode_bindings: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.mode_bindings.clone()),
             hold_start_delay_ms: v2
                 .interaction
                 .as_ref()
@@ -549,12 +563,16 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.cloud_max_upload_mb),
-        }
+        };
+
+        settings.sync_mode_bindings_from_legacy();
+        settings.sync_legacy_hotkeys_from_mode_bindings();
+        settings
     }
 
     fn validate_v2(v2: &SettingsV2) -> anyhow::Result<()> {
-        if v2.schema_version != 2 {
-            anyhow::bail!("settings schema_version must be 2")
+        if v2.schema_version != 2 && v2.schema_version != 3 {
+            anyhow::bail!("settings schema_version must be 2 or 3")
         }
         if let Some(chat_zoom) = v2.ui.as_ref().and_then(|ui| ui.chat_zoom)
             && !(0.75..=2.0).contains(&chat_zoom)
@@ -694,6 +712,80 @@ impl UserSettings {
         }
     }
 
+    fn mode_bindings_normalized(&self) -> Vec<ModeBinding> {
+        if let Some(bindings) = self.mode_bindings.as_ref()
+            && !bindings.is_empty()
+        {
+            return bindings.clone();
+        }
+
+        let hold_mods = self
+            .hold_mods
+            .as_deref()
+            .and_then(|raw| raw.parse::<HoldMods>().ok())
+            .unwrap_or(HoldMods::Fn);
+        let toggle_trigger = self
+            .toggle_trigger
+            .as_deref()
+            .and_then(|raw| raw.parse::<ToggleTrigger>().ok())
+            .unwrap_or(ToggleTrigger::DoubleOption);
+        mode_bindings_from_legacy(hold_mods, toggle_trigger)
+    }
+
+    pub(crate) fn force_mode_bindings_from_legacy(&mut self) {
+        let hold_mods = self
+            .hold_mods
+            .as_deref()
+            .and_then(|raw| raw.parse::<HoldMods>().ok())
+            .unwrap_or(HoldMods::Fn);
+        let toggle_trigger = self
+            .toggle_trigger
+            .as_deref()
+            .and_then(|raw| raw.parse::<ToggleTrigger>().ok())
+            .unwrap_or(ToggleTrigger::DoubleOption);
+        self.mode_bindings = Some(mode_bindings_from_legacy(hold_mods, toggle_trigger));
+    }
+
+    fn sync_mode_bindings_from_legacy(&mut self) {
+        if self
+            .mode_bindings
+            .as_ref()
+            .is_some_and(|bindings| !bindings.is_empty())
+        {
+            return;
+        }
+        self.force_mode_bindings_from_legacy();
+    }
+
+    fn sync_legacy_hotkeys_from_mode_bindings(&mut self) {
+        let bindings = self.mode_bindings_normalized();
+        let (hold_mods, toggle_trigger) = mode_bindings_to_legacy(&bindings);
+        self.hold_mods = Some(hold_mods.as_str().to_string());
+        self.toggle_trigger = Some(toggle_trigger.as_str().to_string());
+        self.mode_bindings = Some(bindings);
+    }
+
+    pub fn mode_binding_for(&self, mode: WorkMode) -> ShortcutBinding {
+        self.mode_bindings_normalized()
+            .into_iter()
+            .find(|binding| binding.mode == mode)
+            .map(|binding| binding.binding)
+            .unwrap_or(ShortcutBinding::Disabled)
+    }
+
+    pub fn set_mode_binding(&mut self, mode: WorkMode, binding: ShortcutBinding) {
+        let before = self.clone();
+        let mut mode_bindings = self.mode_bindings_normalized();
+        if let Some(existing) = mode_bindings.iter_mut().find(|entry| entry.mode == mode) {
+            existing.binding = binding;
+        } else {
+            mode_bindings.push(ModeBinding { mode, binding });
+        }
+        self.mode_bindings = Some(mode_bindings);
+        self.sync_legacy_hotkeys_from_mode_bindings();
+        self.save_if_changed(&before, "set_mode_binding", mode.as_str());
+    }
+
     /// Normalize zoom value into persisted representation.
     ///
     /// - Clamps to [0.75, 2.0]
@@ -731,8 +823,16 @@ impl UserSettings {
         let before = self.clone();
         match key {
             "WHISPER_LANGUAGE" => self.whisper_language = Some(value.to_owned()),
-            "HOLD_MODS" => self.hold_mods = Some(value.to_owned()),
-            "TOGGLE_TRIGGER" => self.toggle_trigger = Some(value.to_owned()),
+            "HOLD_MODS" => {
+                self.hold_mods = Some(value.to_owned());
+                self.mode_bindings = None;
+                self.sync_mode_bindings_from_legacy();
+            }
+            "TOGGLE_TRIGGER" => {
+                self.toggle_trigger = Some(value.to_owned());
+                self.mode_bindings = None;
+                self.sync_mode_bindings_from_legacy();
+            }
             "LLM_ENDPOINT" => self.llm_endpoint = Some(value.to_owned()),
             "LLM_MODEL" => self.llm_model = Some(value.to_owned()),
             "LLM_ASSISTIVE_ENDPOINT" => self.llm_assistive_endpoint = Some(value.to_owned()),
@@ -816,6 +916,7 @@ impl UserSettings {
 #[cfg(test)]
 mod tests {
     use super::UserSettings;
+    use crate::config::{ShortcutBinding, WorkMode};
     use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
@@ -886,7 +987,7 @@ mod tests {
                 .expect("parse migrated settings");
         assert_eq!(
             migrated.get("schema_version").and_then(|v| v.as_u64()),
-            Some(2)
+            Some(3)
         );
         assert_eq!(
             migrated
@@ -932,5 +1033,27 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_mode_binding_updates_legacy_hotkey_fields() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+
+        settings.set_mode_binding(WorkMode::Dictation, ShortcutBinding::DoubleCtrl);
+        assert_eq!(settings.hold_mods.as_deref(), Some("none"));
+        assert_eq!(settings.toggle_trigger.as_deref(), Some("double_ctrl"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_mode_binding_partial_toggle_maps_to_right_option() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+
+        settings.set_mode_binding(WorkMode::Formatting, ShortcutBinding::Disabled);
+        settings.set_mode_binding(WorkMode::Assistive, ShortcutBinding::DoubleRightOption);
+        assert_eq!(settings.toggle_trigger.as_deref(), Some("double_ralt"));
     }
 }

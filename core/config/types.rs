@@ -7,6 +7,278 @@ use std::str::FromStr;
 
 use super::defaults::*;
 
+/// First-class work modes used by the runtime and settings UI.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkMode {
+    Dictation,
+    Formatting,
+    Assistive,
+}
+
+impl WorkMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Dictation => "dictation",
+            Self::Formatting => "formatting",
+            Self::Assistive => "assistive",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Dictation => "Dictation",
+            Self::Formatting => "Formatting",
+            Self::Assistive => "Assistive",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Dictation => "Fast transcript / auto-paste mode.",
+            Self::Formatting => "AI formatting pass for dictation text.",
+            Self::Assistive => "AI assistive conversation mode.",
+        }
+    }
+
+    pub fn is_assistive(&self) -> bool {
+        matches!(self, Self::Assistive)
+    }
+
+    pub fn defaults_to_auto_paste(&self) -> bool {
+        !self.is_assistive()
+    }
+
+    pub fn forces_ai(&self) -> bool {
+        matches!(self, Self::Formatting | Self::Assistive)
+    }
+}
+
+impl FromStr for WorkMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "dictation" | "raw" => Ok(Self::Dictation),
+            "formatting" | "format" => Ok(Self::Formatting),
+            "assistive" | "chat" => Ok(Self::Assistive),
+            _ => Err(format!("Unknown WorkMode: {}", s)),
+        }
+    }
+}
+
+/// Normalized binding gesture persisted per work mode.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ShortcutBinding {
+    Disabled,
+    HoldFn,
+    HoldCtrl,
+    HoldCtrlAlt,
+    HoldCtrlShift,
+    HoldCtrlCmd,
+    DoubleCtrl,
+    DoubleLeftOption,
+    DoubleRightOption,
+}
+
+impl ShortcutBinding {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::HoldFn => "Hold Fn/Globe",
+            Self::HoldCtrl => "Hold Ctrl",
+            Self::HoldCtrlAlt => "Hold Ctrl+Option",
+            Self::HoldCtrlShift => "Hold Ctrl+Shift",
+            Self::HoldCtrlCmd => "Hold Ctrl+Command",
+            Self::DoubleCtrl => "Double-tap Ctrl",
+            Self::DoubleLeftOption => "Double-tap Left Option",
+            Self::DoubleRightOption => "Double-tap Right Option",
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::HoldFn => "hold_fn",
+            Self::HoldCtrl => "hold_ctrl",
+            Self::HoldCtrlAlt => "hold_ctrl_alt",
+            Self::HoldCtrlShift => "hold_ctrl_shift",
+            Self::HoldCtrlCmd => "hold_ctrl_cmd",
+            Self::DoubleCtrl => "double_ctrl",
+            Self::DoubleLeftOption => "double_left_option",
+            Self::DoubleRightOption => "double_right_option",
+        }
+    }
+}
+
+impl FromStr for ShortcutBinding {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "disabled" | "none" => Ok(Self::Disabled),
+            "hold_fn" | "fn" => Ok(Self::HoldFn),
+            "hold_ctrl" => Ok(Self::HoldCtrl),
+            "hold_ctrl_alt" => Ok(Self::HoldCtrlAlt),
+            "hold_ctrl_shift" => Ok(Self::HoldCtrlShift),
+            "hold_ctrl_cmd" => Ok(Self::HoldCtrlCmd),
+            "double_ctrl" => Ok(Self::DoubleCtrl),
+            "double_left_option" | "double_lalt" => Ok(Self::DoubleLeftOption),
+            "double_right_option" | "double_ralt" => Ok(Self::DoubleRightOption),
+            _ => Err(format!("Unknown ShortcutBinding: {}", s)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModeBinding {
+    pub mode: WorkMode,
+    pub binding: ShortcutBinding,
+}
+
+pub fn default_mode_bindings() -> Vec<ModeBinding> {
+    vec![
+        ModeBinding {
+            mode: WorkMode::Dictation,
+            binding: ShortcutBinding::HoldFn,
+        },
+        ModeBinding {
+            mode: WorkMode::Formatting,
+            binding: ShortcutBinding::DoubleLeftOption,
+        },
+        ModeBinding {
+            mode: WorkMode::Assistive,
+            binding: ShortcutBinding::DoubleRightOption,
+        },
+    ]
+}
+
+pub fn mode_bindings_from_legacy(
+    hold_mods: HoldMods,
+    toggle_trigger: ToggleTrigger,
+) -> Vec<ModeBinding> {
+    let mut mode_bindings = default_mode_bindings();
+
+    let dictation_binding = match hold_mods {
+        HoldMods::Fn => ShortcutBinding::HoldFn,
+        HoldMods::None => ShortcutBinding::Disabled,
+        HoldMods::Ctrl => ShortcutBinding::HoldCtrl,
+        HoldMods::CtrlAlt => ShortcutBinding::HoldCtrlAlt,
+        HoldMods::CtrlShift => ShortcutBinding::HoldCtrlShift,
+        HoldMods::CtrlCmd => ShortcutBinding::HoldCtrlCmd,
+    };
+    if let Some(binding) = mode_bindings
+        .iter_mut()
+        .find(|binding| binding.mode == WorkMode::Dictation)
+    {
+        binding.binding = dictation_binding;
+    }
+
+    if let Some(binding) = mode_bindings
+        .iter_mut()
+        .find(|binding| binding.mode == WorkMode::Formatting)
+    {
+        binding.binding = ShortcutBinding::Disabled;
+    }
+    if let Some(binding) = mode_bindings
+        .iter_mut()
+        .find(|binding| binding.mode == WorkMode::Assistive)
+    {
+        binding.binding = ShortcutBinding::Disabled;
+    }
+
+    match toggle_trigger {
+        ToggleTrigger::None => {}
+        ToggleTrigger::DoubleCtrl => {
+            if dictation_binding == ShortcutBinding::Disabled
+                && let Some(binding) = mode_bindings
+                    .iter_mut()
+                    .find(|binding| binding.mode == WorkMode::Dictation)
+            {
+                binding.binding = ShortcutBinding::DoubleCtrl;
+            }
+        }
+        ToggleTrigger::DoubleLeftOption => {
+            if let Some(binding) = mode_bindings
+                .iter_mut()
+                .find(|binding| binding.mode == WorkMode::Formatting)
+            {
+                binding.binding = ShortcutBinding::DoubleLeftOption;
+            }
+        }
+        ToggleTrigger::DoubleRightOption => {
+            if let Some(binding) = mode_bindings
+                .iter_mut()
+                .find(|binding| binding.mode == WorkMode::Assistive)
+            {
+                binding.binding = ShortcutBinding::DoubleRightOption;
+            }
+        }
+        ToggleTrigger::DoubleOption => {
+            if let Some(binding) = mode_bindings
+                .iter_mut()
+                .find(|binding| binding.mode == WorkMode::Formatting)
+            {
+                binding.binding = ShortcutBinding::DoubleLeftOption;
+            }
+            if let Some(binding) = mode_bindings
+                .iter_mut()
+                .find(|binding| binding.mode == WorkMode::Assistive)
+            {
+                binding.binding = ShortcutBinding::DoubleRightOption;
+            }
+        }
+    }
+
+    mode_bindings
+}
+
+pub fn mode_bindings_to_legacy(mode_bindings: &[ModeBinding]) -> (HoldMods, ToggleTrigger) {
+    let dictation = mode_bindings
+        .iter()
+        .find(|binding| binding.mode == WorkMode::Dictation)
+        .map(|binding| binding.binding)
+        .unwrap_or(ShortcutBinding::HoldFn);
+    let formatting = mode_bindings
+        .iter()
+        .find(|binding| binding.mode == WorkMode::Formatting)
+        .map(|binding| binding.binding)
+        .unwrap_or(ShortcutBinding::DoubleLeftOption);
+    let assistive = mode_bindings
+        .iter()
+        .find(|binding| binding.mode == WorkMode::Assistive)
+        .map(|binding| binding.binding)
+        .unwrap_or(ShortcutBinding::DoubleRightOption);
+
+    let hold_mods = match dictation {
+        ShortcutBinding::HoldFn => HoldMods::Fn,
+        ShortcutBinding::HoldCtrl => HoldMods::Ctrl,
+        ShortcutBinding::HoldCtrlAlt => HoldMods::CtrlAlt,
+        ShortcutBinding::HoldCtrlShift => HoldMods::CtrlShift,
+        ShortcutBinding::HoldCtrlCmd => HoldMods::CtrlCmd,
+        ShortcutBinding::Disabled
+        | ShortcutBinding::DoubleCtrl
+        | ShortcutBinding::DoubleLeftOption
+        | ShortcutBinding::DoubleRightOption => HoldMods::None,
+    };
+
+    let toggle_trigger = if matches!(dictation, ShortcutBinding::DoubleCtrl) {
+        ToggleTrigger::DoubleCtrl
+    } else {
+        let format_left = matches!(formatting, ShortcutBinding::DoubleLeftOption);
+        let assistive_right = matches!(assistive, ShortcutBinding::DoubleRightOption);
+        match (format_left, assistive_right) {
+            (true, true) => ToggleTrigger::DoubleOption,
+            (true, false) => ToggleTrigger::DoubleLeftOption,
+            (false, true) => ToggleTrigger::DoubleRightOption,
+            (false, false) => ToggleTrigger::None,
+        }
+    };
+
+    (hold_mods, toggle_trigger)
+}
+
 /// Modifier key combinations for hold-to-talk
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
