@@ -60,8 +60,8 @@ use crate::voice_chat_ui::ConversationModeState;
 
 use helpers::{
     SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
-    request_new_agent_thread_boundary, reset_session_telemetry, setup_voice_chat_send_callback,
-    snapshot_session_telemetry,
+    request_new_agent_thread_boundary, reset_session_telemetry, send_assistive_with_agent_runtime,
+    setup_voice_chat_send_callback, snapshot_session_telemetry,
 };
 use types::ValidatedAudioPath;
 
@@ -164,6 +164,7 @@ fn should_allow_full_user_bubble_rewrite(
     !skip_user_bubble && !append_mode && !live_stream_session
 }
 
+#[allow(dead_code)]
 fn should_allow_full_assistant_rewrite(append_mode: bool, live_stream_session: bool) -> bool {
     !append_mode && !live_stream_session
 }
@@ -2318,7 +2319,7 @@ impl RecordingController {
             append_mode,
             live_stream_session,
             user_needs_separator,
-            assistant_needs_separator,
+            assistant_needs_separator: _assistant_needs_separator,
             skip_user_bubble,
         } = p;
         let language_opt = language_opt.as_deref();
@@ -2468,99 +2469,22 @@ impl RecordingController {
             // - Chat: ignore selection.
             // - Selection: if no selection was captured, we already downgraded to Chat mode.
             let assistive_input = build_assistive_input(&clean_text, &ctx);
-            let dispatched = if chat_active {
+            if chat_active {
                 crate::voice_chat_ui::finalize_voice_chat_user_message();
                 crate::voice_chat_ui::set_voice_chat_sending(true);
-                crate::voice_chat_ui::dispatch_voice_chat_send(&assistive_input)
-            } else {
-                false
-            };
-
-            if dispatched {
-                // Agent runtime path persists full conversation in ThreadStore.
-                (
-                    clean_text.clone(),
-                    crate::state::history::TranscriptKind::Raw,
-                    false,
-                )
-            } else {
-                warn!(
-                    "Assistive runtime callback unavailable; falling back to legacy formatter path"
-                );
-                let lang_str = language_opt.map(String::from);
-                let streamed_any_delta = Arc::new(AtomicBool::new(false));
-                let delta_callback = if chat_active {
-                    let needs_prefix = append_mode && assistant_needs_separator;
-                    let prefix_sent = Arc::new(AtomicBool::new(false));
-                    let assistant_has_text = self.toggle_assistant_has_text.clone();
-                    let streamed_any_delta = Arc::clone(&streamed_any_delta);
-                    Some(Arc::new(move |text: &str| {
-                        if needs_prefix && !prefix_sent.swap(true, Ordering::SeqCst) {
-                            crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
-                        }
-                        if !text.trim().is_empty() {
-                            crate::voice_chat_ui::update_voice_chat_status("Answering… (80%)");
-                        }
-                        streamed_any_delta.store(true, Ordering::SeqCst);
-                        crate::voice_chat_ui::append_voice_chat_assistant_delta(text);
-                        assistant_has_text.store(true, Ordering::SeqCst);
-                    }) as Arc<dyn Fn(&str) + Send + Sync>)
-                } else {
-                    None
-                };
-
-                let result = crate::ai_formatting::format_text_with_status_channels(
-                    &assistive_input,
-                    lang_str.as_deref(),
-                    true,
-                    delta_callback,
-                    None,
+                send_assistive_with_agent_runtime(
+                    assistive_input,
+                    config.whisper_language,
+                    config.ai_assistive_max_tokens,
                 )
                 .await;
-                let kind = match result.status {
-                    crate::ai_formatting::AiFormatStatus::Applied => {
-                        if chat_active {
-                            let streamed = streamed_any_delta.load(Ordering::SeqCst);
-                            crate::show_voice_chat_overlay();
-                            crate::voice_chat_ui::update_voice_chat_status(
-                                "AI Response (legacy fallback)",
-                            );
-                            if streamed {
-                                crate::voice_chat_ui::finalize_voice_chat_assistant_message();
-                            } else if !should_allow_full_assistant_rewrite(
-                                append_mode,
-                                live_stream_session,
-                            ) {
-                                if assistant_needs_separator {
-                                    crate::voice_chat_ui::append_voice_chat_assistant_delta("\n\n");
-                                }
-                                crate::voice_chat_ui::append_voice_chat_assistant_delta(
-                                    &result.text,
-                                );
-                                self.toggle_assistant_has_text.store(true, Ordering::SeqCst);
-                            } else {
-                                crate::voice_chat_ui::set_voice_chat_text(&result.text);
-                            }
-                        }
-                        crate::state::history::TranscriptKind::Ai
-                    }
-                    crate::ai_formatting::AiFormatStatus::Failed => {
-                        if chat_active {
-                            crate::show_voice_chat_overlay();
-                            crate::voice_chat_ui::update_voice_chat_status("AI Failed");
-                            crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
-                        }
-                        crate::state::history::TranscriptKind::AiFailed
-                    }
-                    crate::ai_formatting::AiFormatStatus::Skipped => {
-                        if chat_active {
-                            crate::voice_chat_ui::set_voice_chat_sending(false);
-                        }
-                        crate::state::history::TranscriptKind::Raw
-                    }
-                };
-                (result.text, kind, false)
             }
+            // Agent runtime path persists full conversation in ThreadStore.
+            (
+                clean_text.clone(),
+                crate::state::history::TranscriptKind::Raw,
+                false,
+            )
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
             // Post-processed clean_text is used (lexicon + cleanup already applied)
