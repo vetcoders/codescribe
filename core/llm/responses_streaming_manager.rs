@@ -56,9 +56,12 @@ impl<'a> ResponsesStreamingManager<'a> {
     }
 
     pub async fn stream<T: Serialize>(&self, request: &T) -> Result<ResponsesStreamOutput> {
+        let endpoint_url =
+            validated_endpoint_url(self.endpoint).context("Invalid Responses API endpoint URL")?;
         let request_builder = self
             .client
-            .post(self.endpoint)
+            // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
+            .post(endpoint_url.clone())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
@@ -461,8 +464,11 @@ async fn run_agent_stream(
     request_payload: serde_json::Value,
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<()> {
+    let endpoint_url =
+        validated_endpoint_url(&endpoint).context("Invalid agent streaming endpoint URL")?;
     let request_builder = client
-        .post(&endpoint)
+        // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
+        .post(endpoint_url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
@@ -597,6 +603,25 @@ async fn run_agent_stream(
     }
 
     Ok(())
+}
+
+fn validated_endpoint_url(endpoint: &str) -> Result<reqwest::Url> {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        anyhow::bail!("Endpoint URL is empty");
+    }
+
+    let url = reqwest::Url::parse(endpoint).context("Endpoint is not a valid URL")?;
+    match url.scheme() {
+        "https" | "http" => {}
+        other => anyhow::bail!("Unsupported endpoint URL scheme: {}", other),
+    }
+
+    if url.host_str().is_none() {
+        anyhow::bail!("Endpoint URL is missing a host");
+    }
+
+    Ok(url)
 }
 
 #[derive(Debug, Clone, Default)]

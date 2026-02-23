@@ -506,6 +506,13 @@ reload = "hot"
 category = "llm"
 description = "Max idle time between SSE chunks before attempt is failed (ms)"
 
+[vars.CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "llm"
+description = "Reuse previous OpenAI Responses API response_id to continue the same thread"
+
 [vars.CODESCRIBE_AI_CLIENT_TIMEOUT_MS]
 default = "90000"
 type = "u64"
