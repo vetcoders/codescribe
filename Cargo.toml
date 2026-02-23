@@ -68,6 +68,8 @@ reqwest = { version = "0.12", features = ["json", "multipart", "blocking", "stre
 # WebSocket client for voice chat
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 futures-util = "0.3"
+async-trait = "0.1"
+base64 = "0.22"
 
 # Clipboard
 arboard = "3"

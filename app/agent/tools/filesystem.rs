@@ -50,6 +50,7 @@ fn read_file_from_input(input: &Value) -> Result<String> {
         .context("Missing required string field 'path'")?;
 
     let path = validate_path_for_read(path_str)?;
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Path is canonicalized and restricted to $HOME or /tmp in validate_path_for_read().
     let mut content = fs::read_to_string(&path)
         .with_context(|| format!("Failed to read UTF-8 text from {}", path.display()))?;
 
@@ -61,6 +62,7 @@ fn read_file_from_input(input: &Value) -> Result<String> {
 }
 
 fn validate_path_for_read(path_str: &str) -> Result<PathBuf> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Input path is validated below (absolute, canonicalized, file-only, root-restricted).
     let path = PathBuf::from(path_str);
     if !path.is_absolute() {
         bail!("Path must be absolute: {path_str}");

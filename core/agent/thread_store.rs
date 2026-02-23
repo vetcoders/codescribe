@@ -7,7 +7,7 @@ use directories::BaseDirs;
 use rand::distributions::Alphanumeric;
 use rand::{Rng, thread_rng};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tracing::debug;
 
 use super::thread_index::ThreadIndex;
@@ -65,10 +65,7 @@ impl From<&Message> for ThreadMessage {
         let content = message
             .content
             .iter()
-            .map(|block| match serde_json::to_value(block) {
-                Ok(value) => value,
-                Err(err) => Value::String(format!("[content_serialize_error:{err}]")),
-            })
+            .map(content_block_to_value)
             .collect::<Vec<_>>();
 
         Self {
@@ -85,10 +82,7 @@ impl ThreadMessage {
         let content = self
             .content
             .iter()
-            .map(|value| {
-                serde_json::from_value::<ContentBlock>(value.clone())
-                    .unwrap_or_else(|_| ContentBlock::Text(value.to_string()))
-            })
+            .map(value_to_content_block)
             .collect::<Vec<_>>();
 
         Message {
@@ -295,6 +289,103 @@ fn role_from_string(value: &str) -> Role {
         "assistant" => Role::Assistant,
         "system" => Role::System,
         _ => Role::User,
+    }
+}
+
+fn content_block_to_value(block: &ContentBlock) -> Value {
+    match block {
+        ContentBlock::Text(text) => json!({
+            "type": "text",
+            "text": text,
+        }),
+        ContentBlock::Image { data, media_type } => json!({
+            "type": "image",
+            "data": data,
+            "media_type": media_type,
+        }),
+        ContentBlock::ToolUse { id, name, input } => json!({
+            "type": "tool_use",
+            "id": id,
+            "name": name,
+            "input": input,
+        }),
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => json!({
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": content.iter().map(content_block_to_value).collect::<Vec<_>>(),
+            "is_error": is_error,
+        }),
+    }
+}
+
+fn value_to_content_block(value: &Value) -> ContentBlock {
+    let Some(value_type) = value.get("type").and_then(Value::as_str) else {
+        return ContentBlock::Text(value.to_string());
+    };
+
+    match value_type {
+        "text" => ContentBlock::Text(
+            value
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        "image" => {
+            let data = value
+                .get("data")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|byte| byte.as_u64().and_then(|raw| u8::try_from(raw).ok()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let media_type = value
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            ContentBlock::Image { data, media_type }
+        }
+        "tool_use" => ContentBlock::ToolUse {
+            id: value
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            name: value
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown_tool")
+                .to_string(),
+            input: value.get("input").cloned().unwrap_or_else(|| json!({})),
+        },
+        "tool_result" => {
+            let nested = value
+                .get("content")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().map(value_to_content_block).collect::<Vec<_>>())
+                .unwrap_or_default();
+            ContentBlock::ToolResult {
+                tool_use_id: value
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                content: nested,
+                is_error: value
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            }
+        }
+        _ => ContentBlock::Text(value.to_string()),
     }
 }
 

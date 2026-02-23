@@ -3848,7 +3848,6 @@ fn permission_status_text(status: PermissionStatus) -> &'static str {
         PermissionStatus::Granted => "Granted",
         PermissionStatus::Denied => "Denied",
         PermissionStatus::NotDetermined => "Not determined",
-        PermissionStatus::Unknown => "Unknown",
     }
 }
 
@@ -3856,7 +3855,7 @@ fn permission_status_color(status: PermissionStatus) -> Id {
     match status {
         PermissionStatus::Granted => ui_colors::status_granted(),
         PermissionStatus::Denied => ui_colors::status_denied(),
-        PermissionStatus::NotDetermined | PermissionStatus::Unknown => ui_colors::status_warning(),
+        PermissionStatus::NotDetermined => ui_colors::status_warning(),
     }
 }
 

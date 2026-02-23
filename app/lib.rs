@@ -29,9 +29,6 @@ pub mod os;
 pub mod controller;
 
 #[cfg(target_os = "macos")]
-pub mod agent;
-
-#[cfg(target_os = "macos")]
 pub mod presentation;
 
 #[cfg(target_os = "macos")]
