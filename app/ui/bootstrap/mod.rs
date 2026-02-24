@@ -46,10 +46,11 @@ const SETTINGS_WINDOW_WIDTH: f64 = 760.0;
 const SETTINGS_WINDOW_HEIGHT: f64 = 660.0;
 // Keep Settings readable while restoring stronger system glass.
 const SETTINGS_MAX_OPACITY: f64 = ui_tokens::SETTINGS_WINDOW_OPACITY;
-const SETTINGS_CONTENT_INSET_X: f64 = 20.0;
-const SETTINGS_CONTENT_INSET_Y: f64 = 12.0;
+const SETTINGS_CONTENT_INSET_X: f64 = 24.0;
+const SETTINGS_CONTENT_INSET_Y: f64 = 16.0;
 const TAB_BUTTON_HEIGHT: f64 = 38.0;
-const TAB_BUTTON_GAP: f64 = 6.0;
+const TAB_BUTTON_GAP: f64 = 8.0;
+const SIDEBAR_GROUP_GAP: f64 = 14.0;
 const TAB_ACTIVE_BG_ALPHA: f64 = 0.10;
 const TAB_ACTIVE_BORDER_ALPHA: f64 = 0.22;
 const SIDEBAR_INSET: f64 = 10.0;
@@ -201,7 +202,7 @@ fn toggle_row_step(has_description: bool, gap: f64) -> f64 {
 fn setup_content_height(min_visible_height: f64, gap: f64) -> f64 {
     let permission_rows = PERMISSION_ORDER.len() as f64;
     let quick_start_steps = (STEP_PRESS_HOTKEY + 1) as f64;
-    let flow_before_save = (22.0 + gap) // setup title
+    let flow_before_save = (24.0 + gap) // setup title
         + (1.0 + gap) // header separator
         + (16.0 + gap) // optional/non-blocking note
         + (20.0 + gap) // permissions header
@@ -1260,21 +1261,8 @@ unsafe fn build_settings_ui(
         // manually avoid the traffic lights area.
         let titlebar_inset = 52.0;
 
-        let sidebar_title = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(18.0, body_h - titlebar_inset - 2.0),
-                &CGSize::new(SIDEBAR_WIDTH - 26.0, 20.0),
-            ),
-            text: "Settings".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: crate::ui_helpers::color_label(),
-            ..Default::default()
-        });
-        add_subview(sidebar_container, sidebar_title);
-
-        // Sidebar tab buttons (inside sidebar container)
-        let tab_start_y = body_h - titlebar_inset - 54.0;
+        // Sidebar tab buttons (inside sidebar container, no redundant title label)
+        let tab_start_y = body_h - titlebar_inset - 24.0;
         let tab_names = [
             "Setup",
             "Modes & Shortcuts",
@@ -1295,10 +1283,27 @@ unsafe fn build_settings_ui(
         ];
         let mut tab_buttons: [Option<usize>; TAB_COUNT] = [None; TAB_COUNT];
 
+        let mut cursor_y = tab_start_y;
         for (i, (name, sel)) in tab_names.iter().zip(tab_sels.iter()).enumerate() {
-            let btn_y = tab_start_y - (TAB_BUTTON_HEIGHT + TAB_BUTTON_GAP) * (i as f64);
+            // Group separators: after Setup (index 0) and after Audio & Input (index 3)
+            if i == 1 || i == 4 {
+                cursor_y -= SIDEBAR_GROUP_GAP / 2.0;
+                let sep_line = create_label(LabelConfig {
+                    frame: CGRect::new(
+                        &CGPoint::new(SIDEBAR_INSET + 4.0, cursor_y),
+                        &CGSize::new(SIDEBAR_WIDTH - SIDEBAR_INSET * 2.0 - 8.0, 1.0),
+                    ),
+                    text: String::new(),
+                    background_color: Some(ui_colors::header_border()),
+                    ..Default::default()
+                });
+                add_subview(sidebar_container, sep_line);
+                cursor_y -= SIDEBAR_GROUP_GAP / 2.0;
+            }
+
+            cursor_y -= TAB_BUTTON_HEIGHT;
             let btn_frame = CGRect::new(
-                &CGPoint::new(SIDEBAR_INSET, btn_y),
+                &CGPoint::new(SIDEBAR_INSET, cursor_y),
                 &CGSize::new(SIDEBAR_WIDTH - SIDEBAR_INSET * 2.0, TAB_BUTTON_HEIGHT),
             );
 
@@ -1306,6 +1311,7 @@ unsafe fn build_settings_ui(
             button_set_action(tab_btn, action_handler, *sel);
             add_subview(sidebar_container, tab_btn);
             tab_buttons[i] = Some(tab_btn as usize);
+            cursor_y -= TAB_BUTTON_GAP;
         }
 
         // ====================================================================
@@ -1349,15 +1355,15 @@ unsafe fn build_settings_ui(
         let mut perm_action_buttons: [Option<usize>; 5] = [None; 5];
 
         let setup_title = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 24.0)),
             text: "Setup".to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
+            font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(setup_view, setup_title);
-        y -= 22.0 + setup_gap;
+        y -= 24.0 + setup_gap;
 
         y = add_tafla_header_separator(setup_view, pad, y, field_w);
         y -= setup_gap;
@@ -1448,10 +1454,22 @@ unsafe fn build_settings_ui(
         y -= 20.0 + setup_gap;
 
         // ── Quick-start steps ────────────────────────────────────────
-        let step_defs: [(&str, objc::runtime::Sel, &str); 3] = [
-            ("1) Test mic", sel!(onTestMic:), "Test"),
-            ("2) Show agent overlay", sel!(onShowOverlay:), "Show"),
-            ("3) Press hotkey", sel!(onHotkeyDone:), "Done"),
+        // Make hotkey discovery explicit by showing the current Assistive binding
+        // (the most "agent-like" mode).
+        let settings_snapshot = UserSettings::load();
+        let assistive_binding = settings_snapshot.mode_binding_for(WorkMode::Assistive);
+        let step_defs: [(String, objc::runtime::Sel, &str); 3] = [
+            ("1) Test mic".to_string(), sel!(onTestMic:), "Test"),
+            (
+                "2) Show agent overlay".to_string(),
+                sel!(onShowOverlay:),
+                "Show",
+            ),
+            (
+                "3) Trigger Assistive".to_string(),
+                sel!(onHotkeyDone:),
+                "Done",
+            ),
         ];
         let mut step_status_labels: [Option<usize>; 3] = [None; 3];
 
@@ -1491,7 +1509,10 @@ unsafe fn build_settings_ui(
 
         let checklist_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: "Permissions update live as macOS grants access.".to_string(),
+            text: format!(
+                "Assistive hotkey: {} (Modes & Shortcuts). Permissions update live as macOS grants access.",
+                assistive_binding.label()
+            ),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1514,9 +1535,7 @@ unsafe fn build_settings_ui(
                 &CGPoint::new(pad, (y - 6.0).max(SETUP_HINT_MIN_Y)),
                 &CGSize::new(field_w, 16.0),
             ),
-            text:
-                "Continue in Modes & Shortcuts, AI & Prompts, and Quality to finish runtime setup."
-                    .to_string(),
+            text: "Hotkeys live in Modes & Shortcuts. Agent provider + prompts live in AI & Prompts. Timing lives in Advanced.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1933,6 +1952,20 @@ fn binding_from_recorded_event(
             _ => None,
         },
         WorkMode::Assistive => match keycode {
+            63 => Some(ShortcutBinding::HoldFn),
+            59 | 62 => {
+                if (flags & OPTION) != 0 {
+                    Some(ShortcutBinding::HoldCtrlAlt)
+                } else if (flags & SHIFT) != 0 {
+                    Some(ShortcutBinding::HoldCtrlShift)
+                } else if (flags & COMMAND) != 0 {
+                    Some(ShortcutBinding::HoldCtrlCmd)
+                } else if event_type == EVENT_TYPE_FLAGS_CHANGED && (flags & CONTROL) != 0 {
+                    Some(ShortcutBinding::HoldCtrl)
+                } else {
+                    None
+                }
+            }
             61 => Some(ShortcutBinding::DoubleRightOption),
             _ => None,
         },
@@ -1960,7 +1993,13 @@ fn mode_accepts_binding(mode: WorkMode, binding: ShortcutBinding) -> bool {
         WorkMode::Assistive => {
             matches!(
                 binding,
-                ShortcutBinding::Disabled | ShortcutBinding::DoubleRightOption
+                ShortcutBinding::Disabled
+                    | ShortcutBinding::HoldFn
+                    | ShortcutBinding::HoldCtrl
+                    | ShortcutBinding::HoldCtrlAlt
+                    | ShortcutBinding::HoldCtrlShift
+                    | ShortcutBinding::HoldCtrlCmd
+                    | ShortcutBinding::DoubleRightOption
             )
         }
     }
@@ -1978,7 +2017,7 @@ fn mode_binding_selection_error(
             match mode {
                 WorkMode::Dictation => "hold modifiers or Double Ctrl",
                 WorkMode::Formatting => "Double Left Option",
-                WorkMode::Assistive => "Double Right Option",
+                WorkMode::Assistive => "hold modifiers or Double Right Option",
             }
         ));
     }
@@ -1986,6 +2025,10 @@ fn mode_binding_selection_error(
     if mode != WorkMode::Dictation
         && binding != ShortcutBinding::Disabled
         && settings.mode_binding_for(WorkMode::Dictation) == ShortcutBinding::DoubleCtrl
+        && matches!(
+            binding,
+            ShortcutBinding::DoubleLeftOption | ShortcutBinding::DoubleRightOption
+        )
     {
         return Some(
             "Dictation is currently on Double Ctrl. Disable it first to use Option bindings."
@@ -2563,21 +2606,21 @@ unsafe fn build_modes_shortcuts_tab(
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let gap = ui_tokens::DENSITY_MEDIUM;
-        let mut y = frame.size.height - (22.0 + gap);
+        let gap = ui_tokens::DENSITY_COMFORTABLE;
+        let mut y = frame.size.height - (24.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
 
         let title = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
             text: "Modes & Shortcuts".to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
+            font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 22.0 + gap;
+        y -= 24.0 + gap;
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= gap;
@@ -2593,6 +2636,16 @@ unsafe fn build_modes_shortcuts_tab(
         });
         add_subview(container, subtitle);
         y -= 16.0 + gap;
+
+        let usage_hint = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 28.0)),
+            text: "Usage: hold bindings record while held (release to send). Double-tap bindings are hands-free: pause to auto-send an utterance, double-tap again to stop.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, usage_hint);
+        y -= 28.0 + gap;
 
         let mode_specs = [
             (WorkMode::Dictation, MODE_DICTATION_TAG),
@@ -2680,6 +2733,18 @@ unsafe fn build_modes_shortcuts_tab(
             });
             add_subview(container, mode_hint);
             y -= 14.0 + gap;
+
+            if mode == WorkMode::Assistive {
+                let selection_hint = create_label(LabelConfig {
+                    frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 14.0)),
+                    text: "Tip: Select text in the frontmost app before triggering Assistive to operate on the selection.".to_string(),
+                    font_size: ui_tokens::MICRO_FONT_SIZE,
+                    text_color: secondary,
+                    ..Default::default()
+                });
+                add_subview(container, selection_hint);
+                y -= 14.0 + gap;
+            }
         }
 
         let recorder_hint = create_label(LabelConfig {
@@ -2771,29 +2836,29 @@ unsafe fn build_ai_prompts_tab(
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let gap = ui_tokens::DENSITY_MEDIUM;
-        let mut y = frame.size.height - (22.0 + gap);
+        let gap = ui_tokens::DENSITY_COMFORTABLE;
+        let mut y = frame.size.height - (24.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
         let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
 
         let title = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
             text: "AI & Prompts".to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
+            font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 22.0 + gap;
+        y -= 24.0 + gap;
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= gap;
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Runtime AI endpoints plus an in-app prompt editor for formatting and assistive modes."
+            text: "Runtime AI endpoints plus an in-app prompt editor for formatting + assistive (agent) modes."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -2894,9 +2959,13 @@ unsafe fn build_ai_prompts_tab(
         state.llm_key_status_label = Some(llm_status_label as usize);
         y -= 16.0 + gap;
 
+        // Section divider + extra gap before Assistive AI section
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= ui_tokens::SECTION_GAP;
+
         let assist_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
-            text: "Assistive AI (optional)".to_string(),
+            text: "Assistive AI (agent chat)".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: true,
             text_color: secondary,
@@ -3019,7 +3088,7 @@ unsafe fn build_ai_prompts_tab(
         });
         let _: () = msg_send![section_divider, setAlphaValue: 0.9f64];
         add_subview(container, section_divider);
-        y -= gap;
+        y -= ui_tokens::SECTION_GAP;
 
         let prompt_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
@@ -3181,22 +3250,22 @@ unsafe fn build_audio_input_tab(
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let gap = ui_tokens::DENSITY_MEDIUM;
-        let mut y = frame.size.height - (22.0 + gap);
+        let gap = ui_tokens::DENSITY_COMFORTABLE;
+        let mut y = frame.size.height - (24.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
 
         // Section title
         let title = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
             text: "Audio & Input".to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
+            font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 22.0 + gap;
+        y -= 24.0 + gap;
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= gap;
@@ -3363,21 +3432,21 @@ unsafe fn build_advanced_tab(
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let gap = ui_tokens::DENSITY_MEDIUM;
-        let mut y = frame.size.height - (22.0 + gap);
+        let gap = ui_tokens::DENSITY_COMFORTABLE;
+        let mut y = frame.size.height - (24.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
 
         let title = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
             text: "Advanced".to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
+            font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 22.0 + gap;
+        y -= 24.0 + gap;
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= gap;
@@ -3489,7 +3558,7 @@ unsafe fn build_advanced_tab(
         });
         let _: () = msg_send![advanced_divider, setAlphaValue: 0.9f64];
         add_subview(container, advanced_divider);
-        y -= gap;
+        y -= ui_tokens::SECTION_GAP;
 
         let voice_lab_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
@@ -3629,20 +3698,20 @@ unsafe fn build_quality_tab(
         let content_w = frame.size.width - pad * 2.0;
         let field_w = content_w;
         let gap = ui_tokens::DENSITY_COMFORTABLE;
-        let mut y = frame.size.height - (22.0 + gap);
+        let mut y = frame.size.height - (24.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
 
         let title = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
             text: "Quality".to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
+            font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 22.0 + gap;
+        y -= 24.0 + gap;
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= gap;
@@ -3712,7 +3781,7 @@ unsafe fn build_quality_tab(
         });
         let _: () = msg_send![divider, setAlphaValue: 0.9f64];
         add_subview(container, divider);
-        y -= gap;
+        y -= ui_tokens::SECTION_GAP;
 
         let dashboard_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
@@ -3874,21 +3943,21 @@ unsafe fn build_diagnostics_tab(
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let gap = ui_tokens::DENSITY_MEDIUM;
-        let mut y = frame.size.height - (22.0 + gap);
+        let gap = ui_tokens::DENSITY_COMFORTABLE;
+        let mut y = frame.size.height - (24.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
 
         let title = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 22.0)),
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
             text: "Diagnostics".to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
+            font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
             ..Default::default()
         });
         add_subview(container, title);
-        y -= 22.0 + gap;
+        y -= 24.0 + gap;
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= gap;
@@ -3994,7 +4063,7 @@ unsafe fn build_diagnostics_tab(
         });
         let _: () = msg_send![divider, setAlphaValue: 0.9f64];
         add_subview(container, divider);
-        y -= gap;
+        y -= ui_tokens::SECTION_GAP;
 
         let conflicts_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
@@ -4766,6 +4835,36 @@ mod tests {
         let err =
             mode_binding_selection_error(WorkMode::Formatting, ShortcutBinding::HoldFn, &settings);
         assert!(err.is_some());
+    }
+
+    #[test]
+    fn assistive_mode_accepts_hold_bindings() {
+        for binding in [
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::HoldCtrl,
+            ShortcutBinding::HoldCtrlAlt,
+            ShortcutBinding::HoldCtrlShift,
+            ShortcutBinding::HoldCtrlCmd,
+        ] {
+            assert!(
+                mode_accepts_binding(WorkMode::Assistive, binding),
+                "assistive should accept {:?}",
+                binding
+            );
+        }
+    }
+
+    #[test]
+    fn binding_from_recorded_event_maps_assistive_hold_ctrl_cmd() {
+        // NSEventModifierFlagControl | NSEventModifierFlagCommand
+        let flags = (1_u64 << 18) | (1_u64 << 20);
+        let binding = binding_from_recorded_event(
+            WorkMode::Assistive,
+            12, // NSEventTypeFlagsChanged
+            59, // Left Control
+            flags,
+        );
+        assert_eq!(binding, Some(ShortcutBinding::HoldCtrlCmd));
     }
 
     #[test]

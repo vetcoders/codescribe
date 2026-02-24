@@ -16,7 +16,7 @@
 
 [meta]
 version = "1.0.0"
-updated = "2026-02-23"
+updated = "2026-02-24"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VAD (Voice Activity Detection) - Silero Neural Network
@@ -88,6 +88,14 @@ type = "u64"
 reload = "hot"
 category = "streaming"
 description = "Maximum words emitted per tick (buffered mode)"
+
+[vars.CODESCRIBE_MAX_INFERENCE_CONCURRENCY]
+default = "1"
+type = "u64"
+reload = "hot"
+category = "streaming"
+description = "Maximum number of concurrent inference tasks in streaming pipeline (clamped to 1-4)"
+range = "1-4"
 
 [vars.CODESCRIBE_STREAM_CHUNK_SEC]
 default = "4.0"
@@ -203,12 +211,20 @@ reload = "restart"
 category = "stt"
 description = "Whisper transcription language code"
 
+[vars.CODESCRIBE_WHISPER_INITIAL_PROMPT]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Initial prompt hint for Whisper decoding (ignored by ONNX adapter)"
+
 [vars.WHISPER_INITIAL_PROMPT]
 default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Initial prompt for Whisper (domain vocabulary, formatting hints)"
+description = "Legacy alias for CODESCRIBE_WHISPER_INITIAL_PROMPT"
+deprecated = "CODESCRIBE_WHISPER_INITIAL_PROMPT"
 
 [vars.CODESCRIBE_MODEL_PATH]
 default = ""

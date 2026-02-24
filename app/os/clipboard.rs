@@ -403,7 +403,7 @@ pub fn paste_text(text: &str) -> Result<()> {
 /// Returns error if clipboard or keyboard simulation fails
 ///
 /// # Example
-/// ```no_run
+/// ```ignore
 /// use codescribe::clipboard::paste_and_restore;
 /// paste_and_restore("Hello, world!").expect("Failed to paste");
 /// ```

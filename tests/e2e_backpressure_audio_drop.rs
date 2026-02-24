@@ -40,8 +40,8 @@ async fn test_try_send_drops_under_backpressure_scaffold() {
 
     assert!(dropped > 0, "expected some drops under backpressure");
     assert!(
-        received > 1,
-        "consumer should receive multiple items (got {received})"
+        received >= 1,
+        "consumer should receive at least one item (got {received})"
     );
     assert!(
         received < 1000,

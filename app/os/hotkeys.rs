@@ -18,25 +18,6 @@ use crossbeam_channel::Sender;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HoldMods {
-    Fn,
-    None,
-    Ctrl,
-    CtrlAlt,
-    CtrlShift,
-    CtrlCmd,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ToggleTrigger {
-    DoubleOption,
-    DoubleLeftOption,
-    DoubleRightOption,
-    DoubleCtrl,
-    None,
-}
-
 const BIND_DISABLED: u16 = 0;
 const BIND_HOLD_FN: u16 = 1;
 const BIND_HOLD_CTRL: u16 = 2;
@@ -174,16 +155,6 @@ pub struct HotkeyRuntimeConfig {
     pub double_tap_interval_ms: u64,
 }
 
-impl HotkeyRuntimeConfig {
-    fn hold_mods(self) -> HoldMods {
-        self.mode_bindings.runtime_projection().0
-    }
-
-    fn toggle_trigger(self) -> ToggleTrigger {
-        self.mode_bindings.runtime_projection().1
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModeHotkeyBindings {
     pub dictation: ShortcutBinding,
@@ -202,35 +173,6 @@ impl ModeHotkeyBindings {
 
     pub fn load() -> Self {
         Self::from_settings(&UserSettings::load())
-    }
-
-    fn runtime_projection(self) -> (HoldMods, ToggleTrigger) {
-        let hold_mods = match self.dictation {
-            ShortcutBinding::HoldFn => HoldMods::Fn,
-            ShortcutBinding::HoldCtrl => HoldMods::Ctrl,
-            ShortcutBinding::HoldCtrlAlt => HoldMods::CtrlAlt,
-            ShortcutBinding::HoldCtrlShift => HoldMods::CtrlShift,
-            ShortcutBinding::HoldCtrlCmd => HoldMods::CtrlCmd,
-            ShortcutBinding::Disabled
-            | ShortcutBinding::DoubleCtrl
-            | ShortcutBinding::DoubleLeftOption
-            | ShortcutBinding::DoubleRightOption => HoldMods::None,
-        };
-
-        let toggle_trigger = if self.dictation == ShortcutBinding::DoubleCtrl {
-            ToggleTrigger::DoubleCtrl
-        } else {
-            let formatting_left = self.formatting == ShortcutBinding::DoubleLeftOption;
-            let assistive_right = self.assistive == ShortcutBinding::DoubleRightOption;
-            match (formatting_left, assistive_right) {
-                (true, true) => ToggleTrigger::DoubleOption,
-                (true, false) => ToggleTrigger::DoubleLeftOption,
-                (false, true) => ToggleTrigger::DoubleRightOption,
-                (false, false) => ToggleTrigger::None,
-            }
-        };
-
-        (hold_mods, toggle_trigger)
     }
 }
 
@@ -481,9 +423,12 @@ impl HotkeyDetector {
         modifiers: HotkeyModifierSnapshot,
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
-        let hold_mods = config.hold_mods();
+        let dictation_binding = config.mode_bindings.dictation;
+        let assistive_binding = config.mode_bindings.assistive;
         let mut emitted = None;
-        let base_held = hold_base_pressed(modifiers, hold_mods);
+        let base_held = hold_base_pressed(modifiers, dictation_binding)
+            || assistive_hold_binding(assistive_binding)
+                .is_some_and(|binding| hold_base_pressed(modifiers, binding));
         if base_held && self.hold_active {
             let in_delay_window = self
                 .hold_active_ts
@@ -529,22 +474,37 @@ impl HotkeyDetector {
         modifiers: HotkeyModifierSnapshot,
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
-        let hold_mods = config.hold_mods();
-        let toggle_trigger = config.toggle_trigger();
-        let raw_toggle_enabled = matches!(toggle_trigger, ToggleTrigger::DoubleCtrl);
-        let combo_active = if raw_toggle_enabled && matches!(hold_mods, HoldMods::Ctrl) {
+        let dictation_binding = config.mode_bindings.dictation;
+        let assistive_binding = config.mode_bindings.assistive;
+        let raw_toggle_enabled = dictation_binding == ShortcutBinding::DoubleCtrl;
+        let normal_toggle_enabled =
+            config.mode_bindings.formatting == ShortcutBinding::DoubleLeftOption;
+        let assistive_toggle_enabled =
+            config.mode_bindings.assistive == ShortcutBinding::DoubleRightOption;
+        let assistive_selection_combo_active = assistive_hold_binding(assistive_binding)
+            .is_some_and(|binding| check_hold_combo(modifiers, binding));
+        let dictation_combo_active = check_hold_combo(modifiers, dictation_binding);
+        let combo_active = assistive_selection_combo_active || dictation_combo_active;
+        let mode_now = if assistive_selection_combo_active {
+            HoldMode::Selection
+        } else {
+            compute_hold_mode(
+                modifiers.shift,
+                modifiers.cmd,
+                dictation_binding,
+                config.hold_exclusive,
+            )
+        };
+        let force_ai_now = if assistive_selection_combo_active {
             false
         } else {
-            check_hold_combo(modifiers, hold_mods)
+            compute_hold_force_ai(
+                modifiers.option,
+                modifiers.shift,
+                modifiers.cmd,
+                dictation_binding,
+            )
         };
-        let mode_now = compute_hold_mode(
-            modifiers.shift,
-            modifiers.cmd,
-            hold_mods,
-            config.hold_exclusive,
-        );
-        let force_ai_now =
-            compute_hold_force_ai(modifiers.option, modifiers.shift, modifiers.cmd, hold_mods);
 
         let mut emitted = None;
         if combo_active && !self.hold_active {
@@ -619,7 +579,7 @@ impl HotkeyDetector {
             return emitted.or(toggle_event);
         }
 
-        if matches!(toggle_trigger, ToggleTrigger::None) {
+        if !normal_toggle_enabled && !assistive_toggle_enabled {
             if key.is_option() {
                 if modifiers.option {
                     self.option_down = true;
@@ -658,8 +618,8 @@ impl HotkeyDetector {
                 return emitted;
             }
 
-            let hold_mods_block_toggle = match hold_mods {
-                HoldMods::CtrlAlt => modifiers.ctrl || self.hold_active,
+            let hold_binding_blocks_toggle = match dictation_binding {
+                ShortcutBinding::HoldCtrlAlt => modifiers.ctrl || self.hold_active,
                 _ => modifiers.ctrl || modifiers.cmd || self.hold_active,
             };
 
@@ -668,16 +628,7 @@ impl HotkeyDetector {
                 return emitted;
             }
 
-            if !hold_mods_block_toggle {
-                let normal_toggle_enabled = matches!(
-                    toggle_trigger,
-                    ToggleTrigger::DoubleOption | ToggleTrigger::DoubleLeftOption
-                );
-                let assistive_toggle_enabled = matches!(
-                    toggle_trigger,
-                    ToggleTrigger::DoubleOption | ToggleTrigger::DoubleRightOption
-                );
-
+            if !hold_binding_blocks_toggle {
                 let toggle_event = if released_right {
                     self.last_left_tap_ts = None;
                     if assistive_toggle_enabled {
@@ -735,47 +686,79 @@ fn register_double_tap(
     None
 }
 
-fn hold_base_pressed(modifiers: HotkeyModifierSnapshot, hold_mods: HoldMods) -> bool {
-    match hold_mods {
-        HoldMods::Fn => modifiers.fn_key,
-        HoldMods::None => false,
-        HoldMods::Ctrl => modifiers.ctrl,
-        HoldMods::CtrlAlt => modifiers.ctrl,
-        HoldMods::CtrlShift => modifiers.ctrl && modifiers.shift,
-        HoldMods::CtrlCmd => modifiers.ctrl && modifiers.cmd,
+fn hold_base_pressed(
+    modifiers: HotkeyModifierSnapshot,
+    dictation_binding: ShortcutBinding,
+) -> bool {
+    match dictation_binding {
+        ShortcutBinding::HoldFn => modifiers.fn_key,
+        ShortcutBinding::HoldCtrl => modifiers.ctrl,
+        ShortcutBinding::HoldCtrlAlt => modifiers.ctrl,
+        ShortcutBinding::HoldCtrlShift => modifiers.ctrl && modifiers.shift,
+        ShortcutBinding::HoldCtrlCmd => modifiers.ctrl && modifiers.cmd,
+        ShortcutBinding::Disabled
+        | ShortcutBinding::DoubleCtrl
+        | ShortcutBinding::DoubleLeftOption
+        | ShortcutBinding::DoubleRightOption => false,
     }
 }
 
-fn check_hold_combo(modifiers: HotkeyModifierSnapshot, hold_mods: HoldMods) -> bool {
-    if modifiers.option && !matches!(hold_mods, HoldMods::CtrlAlt | HoldMods::Fn) {
+fn check_hold_combo(modifiers: HotkeyModifierSnapshot, dictation_binding: ShortcutBinding) -> bool {
+    if modifiers.option
+        && !matches!(
+            dictation_binding,
+            ShortcutBinding::HoldCtrlAlt | ShortcutBinding::HoldFn
+        )
+    {
         return false;
     }
 
-    match hold_mods {
-        HoldMods::Fn => modifiers.fn_key,
-        HoldMods::None => false,
-        HoldMods::Ctrl => modifiers.ctrl,
-        HoldMods::CtrlAlt => modifiers.ctrl,
-        HoldMods::CtrlShift => modifiers.ctrl && modifiers.shift,
-        HoldMods::CtrlCmd => modifiers.ctrl && modifiers.cmd,
+    match dictation_binding {
+        ShortcutBinding::HoldFn => modifiers.fn_key,
+        ShortcutBinding::HoldCtrl => modifiers.ctrl,
+        ShortcutBinding::HoldCtrlAlt => modifiers.ctrl,
+        ShortcutBinding::HoldCtrlShift => modifiers.ctrl && modifiers.shift,
+        ShortcutBinding::HoldCtrlCmd => modifiers.ctrl && modifiers.cmd,
+        ShortcutBinding::Disabled
+        | ShortcutBinding::DoubleCtrl
+        | ShortcutBinding::DoubleLeftOption
+        | ShortcutBinding::DoubleRightOption => false,
+    }
+}
+
+fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
+    match binding {
+        ShortcutBinding::HoldFn
+        | ShortcutBinding::HoldCtrl
+        | ShortcutBinding::HoldCtrlAlt
+        | ShortcutBinding::HoldCtrlShift
+        | ShortcutBinding::HoldCtrlCmd => Some(binding),
+        ShortcutBinding::Disabled
+        | ShortcutBinding::DoubleCtrl
+        | ShortcutBinding::DoubleLeftOption
+        | ShortcutBinding::DoubleRightOption => None,
     }
 }
 
 fn compute_hold_mode(
     shift: bool,
     cmd: bool,
-    hold_mods: HoldMods,
+    dictation_binding: ShortcutBinding,
     hold_exclusive: bool,
 ) -> HoldMode {
     if hold_exclusive {
         return HoldMode::Raw;
     }
 
-    match hold_mods {
-        HoldMods::None => HoldMode::Raw,
-        HoldMods::Ctrl => HoldMode::Raw,
-        HoldMods::CtrlShift | HoldMods::CtrlCmd => HoldMode::Raw,
-        HoldMods::CtrlAlt => {
+    match dictation_binding {
+        ShortcutBinding::Disabled
+        | ShortcutBinding::HoldCtrl
+        | ShortcutBinding::HoldCtrlShift
+        | ShortcutBinding::HoldCtrlCmd
+        | ShortcutBinding::DoubleCtrl
+        | ShortcutBinding::DoubleLeftOption
+        | ShortcutBinding::DoubleRightOption => HoldMode::Raw,
+        ShortcutBinding::HoldCtrlAlt => {
             if cmd {
                 HoldMode::Selection
             } else if shift {
@@ -784,7 +767,7 @@ fn compute_hold_mode(
                 HoldMode::Raw
             }
         }
-        HoldMods::Fn => {
+        ShortcutBinding::HoldFn => {
             if shift {
                 HoldMode::Chat
             } else if cmd {
@@ -796,9 +779,14 @@ fn compute_hold_mode(
     }
 }
 
-fn compute_hold_force_ai(option: bool, shift: bool, cmd: bool, hold_mods: HoldMods) -> bool {
-    match hold_mods {
-        HoldMods::CtrlAlt => option && !shift && !cmd,
+fn compute_hold_force_ai(
+    option: bool,
+    shift: bool,
+    cmd: bool,
+    dictation_binding: ShortcutBinding,
+) -> bool {
+    match dictation_binding {
+        ShortcutBinding::HoldCtrlAlt => option && !shift && !cmd,
         _ => false,
     }
 }
@@ -1182,7 +1170,8 @@ mod macos {
                         key,
                         modifiers,
                     },
-                    matches!(runtime_config.hold_mods(), HoldMods::Fn) && key.is_fn(),
+                    runtime_config.mode_bindings.dictation == ShortcutBinding::HoldFn
+                        && key.is_fn(),
                 )
             }
             _ => return event,
@@ -1364,49 +1353,49 @@ mod macos {
         fn compute_hold_mode_respects_modifiers() {
             // Fn base with Shift/Cmd modifiers
             assert_eq!(
-                compute_hold_mode(false, false, HoldMods::Fn, false),
+                compute_hold_mode(false, false, ShortcutBinding::HoldFn, false),
                 HoldMode::Raw
             );
             assert_eq!(
-                compute_hold_mode(true, false, HoldMods::Fn, false),
+                compute_hold_mode(true, false, ShortcutBinding::HoldFn, false),
                 HoldMode::Chat
             );
             assert_eq!(
-                compute_hold_mode(false, true, HoldMods::Fn, false),
+                compute_hold_mode(false, true, ShortcutBinding::HoldFn, false),
                 HoldMode::Selection
             );
 
             // Ctrl-only ignores Shift/Cmd modifiers
             assert_eq!(
-                compute_hold_mode(true, false, HoldMods::Ctrl, false),
+                compute_hold_mode(true, false, ShortcutBinding::HoldCtrl, false),
                 HoldMode::Raw
             );
             assert_eq!(
-                compute_hold_mode(false, true, HoldMods::Ctrl, false),
+                compute_hold_mode(false, true, ShortcutBinding::HoldCtrl, false),
                 HoldMode::Raw
             );
 
             // Ctrl+Option allows modifiers
             assert_eq!(
-                compute_hold_mode(true, false, HoldMods::CtrlAlt, false),
+                compute_hold_mode(true, false, ShortcutBinding::HoldCtrlAlt, false),
                 HoldMode::Chat
             );
             assert_eq!(
-                compute_hold_mode(false, true, HoldMods::CtrlAlt, false),
+                compute_hold_mode(false, true, ShortcutBinding::HoldCtrlAlt, false),
                 HoldMode::Selection
             );
             assert_eq!(
-                compute_hold_mode(false, false, HoldMods::CtrlAlt, false),
+                compute_hold_mode(false, false, ShortcutBinding::HoldCtrlAlt, false),
                 HoldMode::Raw
             );
 
             // Ctrl+Shift/Cmd are fixed to raw
             assert_eq!(
-                compute_hold_mode(true, false, HoldMods::CtrlShift, false),
+                compute_hold_mode(true, false, ShortcutBinding::HoldCtrlShift, false),
                 HoldMode::Raw
             );
             assert_eq!(
-                compute_hold_mode(false, true, HoldMods::CtrlCmd, false),
+                compute_hold_mode(false, true, ShortcutBinding::HoldCtrlCmd, false),
                 HoldMode::Raw
             );
         }
@@ -1414,11 +1403,11 @@ mod macos {
         #[test]
         fn compute_hold_mode_exclusive_forces_raw() {
             assert_eq!(
-                compute_hold_mode(true, true, HoldMods::Fn, true),
+                compute_hold_mode(true, true, ShortcutBinding::HoldFn, true),
                 HoldMode::Raw
             );
             assert_eq!(
-                compute_hold_mode(true, true, HoldMods::CtrlAlt, true),
+                compute_hold_mode(true, true, ShortcutBinding::HoldCtrlAlt, true),
                 HoldMode::Raw
             );
         }
@@ -1571,53 +1560,17 @@ mod tests {
 
     static HOTKEY_ATOMICS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    fn bindings_for_projection(
-        hold_mods: HoldMods,
-        toggle_trigger: ToggleTrigger,
-    ) -> ModeHotkeyBindings {
-        if toggle_trigger == ToggleTrigger::DoubleCtrl {
-            return ModeHotkeyBindings {
-                dictation: ShortcutBinding::DoubleCtrl,
-                formatting: ShortcutBinding::Disabled,
-                assistive: ShortcutBinding::Disabled,
-            };
-        }
-
-        let dictation = match hold_mods {
-            HoldMods::Fn => ShortcutBinding::HoldFn,
-            HoldMods::None => ShortcutBinding::Disabled,
-            HoldMods::Ctrl => ShortcutBinding::HoldCtrl,
-            HoldMods::CtrlAlt => ShortcutBinding::HoldCtrlAlt,
-            HoldMods::CtrlShift => ShortcutBinding::HoldCtrlShift,
-            HoldMods::CtrlCmd => ShortcutBinding::HoldCtrlCmd,
-        };
-
-        let (formatting, assistive) = match toggle_trigger {
-            ToggleTrigger::DoubleOption => (
-                ShortcutBinding::DoubleLeftOption,
-                ShortcutBinding::DoubleRightOption,
-            ),
-            ToggleTrigger::DoubleLeftOption => {
-                (ShortcutBinding::DoubleLeftOption, ShortcutBinding::Disabled)
-            }
-            ToggleTrigger::DoubleRightOption => (
-                ShortcutBinding::Disabled,
-                ShortcutBinding::DoubleRightOption,
-            ),
-            ToggleTrigger::None => (ShortcutBinding::Disabled, ShortcutBinding::Disabled),
-            ToggleTrigger::DoubleCtrl => unreachable!("handled above"),
-        };
-
-        ModeHotkeyBindings {
-            dictation,
-            formatting,
-            assistive,
-        }
-    }
-
-    fn test_config(hold_mods: HoldMods, toggle_trigger: ToggleTrigger) -> HotkeyRuntimeConfig {
+    fn test_config(
+        dictation: ShortcutBinding,
+        formatting: ShortcutBinding,
+        assistive: ShortcutBinding,
+    ) -> HotkeyRuntimeConfig {
         HotkeyRuntimeConfig {
-            mode_bindings: bindings_for_projection(hold_mods, toggle_trigger),
+            mode_bindings: ModeHotkeyBindings {
+                dictation,
+                formatting,
+                assistive,
+            },
             hold_exclusive: false,
             hold_start_delay_ms: 800,
             double_tap_interval_ms: 200,
@@ -1765,40 +1718,16 @@ mod tests {
     }
 
     #[test]
-    fn mode_hotkey_bindings_runtime_projection_hybrid_profile() {
-        let bindings = ModeHotkeyBindings {
-            dictation: ShortcutBinding::HoldFn,
-            formatting: ShortcutBinding::DoubleLeftOption,
-            assistive: ShortcutBinding::DoubleRightOption,
-        };
-
-        assert_eq!(
-            bindings.runtime_projection(),
-            (HoldMods::Fn, ToggleTrigger::DoubleOption)
-        );
-    }
-
-    #[test]
-    fn mode_hotkey_bindings_runtime_projection_double_ctrl_disables_option_toggles() {
-        let bindings = ModeHotkeyBindings {
-            dictation: ShortcutBinding::DoubleCtrl,
-            formatting: ShortcutBinding::DoubleLeftOption,
-            assistive: ShortcutBinding::DoubleRightOption,
-        };
-
-        assert_eq!(
-            bindings.runtime_projection(),
-            (HoldMods::None, ToggleTrigger::DoubleCtrl)
-        );
-    }
-
-    #[test]
     fn detector_option_double_tap_window_table() {
         let table = [(200_u64, true), (201_u64, false)];
 
         for (gap_ms, expect_toggle) in table {
             let mut detector = HotkeyDetector::default();
-            let config = test_config(HoldMods::Fn, ToggleTrigger::DoubleOption);
+            let config = test_config(
+                ShortcutBinding::HoldFn,
+                ShortcutBinding::DoubleLeftOption,
+                ShortcutBinding::DoubleRightOption,
+            );
             let base = Instant::now();
 
             assert_eq!(
@@ -1857,7 +1786,11 @@ mod tests {
     #[test]
     fn detector_cancels_hold_on_keydown_during_delay() {
         let mut detector = HotkeyDetector::default();
-        let mut config = test_config(HoldMods::Ctrl, ToggleTrigger::None);
+        let mut config = test_config(
+            ShortcutBinding::HoldCtrl,
+            ShortcutBinding::Disabled,
+            ShortcutBinding::Disabled,
+        );
         config.hold_start_delay_ms = 800;
         let base = Instant::now();
 
@@ -1907,9 +1840,68 @@ mod tests {
     }
 
     #[test]
+    fn detector_routes_assistive_hold_binding_to_selection_mode() {
+        let mut detector = HotkeyDetector::default();
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::HoldCtrlCmd,
+        );
+        let base = Instant::now();
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::LeftControl,
+                    modifiers: mods(true, false, false, false, false),
+                },
+                config,
+            ),
+            None
+        );
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(1),
+                    key: HotkeyPhysicalKey::Other,
+                    modifiers: mods(true, false, false, true, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Selection,
+                force_ai: false,
+            })
+        );
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(2),
+                    key: HotkeyPhysicalKey::Other,
+                    modifiers: mods(true, false, false, false, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Selection,
+                force_ai: false,
+            })
+        );
+    }
+
+    #[test]
     fn detector_resets_combo_flags_after_option_combo() {
         let mut detector = HotkeyDetector::default();
-        let config = test_config(HoldMods::Fn, ToggleTrigger::DoubleOption);
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
         let base = Instant::now();
 
         assert_eq!(
@@ -2017,7 +2009,11 @@ mod tests {
     #[test]
     fn detector_raw_toggle_double_ctrl_and_combo_reset() {
         let mut detector = HotkeyDetector::default();
-        let config = test_config(HoldMods::Ctrl, ToggleTrigger::DoubleCtrl);
+        let config = test_config(
+            ShortcutBinding::DoubleCtrl,
+            ShortcutBinding::Disabled,
+            ShortcutBinding::Disabled,
+        );
         let base = Instant::now();
 
         let first_event = detector.feed(
@@ -2028,18 +2024,7 @@ mod tests {
             },
             config,
         );
-        assert!(
-            matches!(
-                first_event,
-                None | Some(HotkeyEvent::Hold {
-                    action: HoldAction::Down,
-                    mode: HoldMode::Raw,
-                    force_ai: false
-                })
-            ),
-            "unexpected first ctrl event: {:?}",
-            first_event
-        );
+        assert_eq!(first_event, None);
         assert_eq!(
             detector.feed(
                 HotkeyDetectorInput::KeyDown {

@@ -117,15 +117,15 @@ impl FromStr for ShortcutBinding {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "disabled" | "none" => Ok(Self::Disabled),
-            "hold_fn" | "fn" => Ok(Self::HoldFn),
+            "disabled" => Ok(Self::Disabled),
+            "hold_fn" => Ok(Self::HoldFn),
             "hold_ctrl" => Ok(Self::HoldCtrl),
             "hold_ctrl_alt" => Ok(Self::HoldCtrlAlt),
             "hold_ctrl_shift" => Ok(Self::HoldCtrlShift),
             "hold_ctrl_cmd" => Ok(Self::HoldCtrlCmd),
             "double_ctrl" => Ok(Self::DoubleCtrl),
-            "double_left_option" | "double_lalt" => Ok(Self::DoubleLeftOption),
-            "double_right_option" | "double_ralt" => Ok(Self::DoubleRightOption),
+            "double_left_option" => Ok(Self::DoubleLeftOption),
+            "double_right_option" => Ok(Self::DoubleRightOption),
             _ => Err(format!("Unknown ShortcutBinding: {}", s)),
         }
     }
@@ -469,5 +469,18 @@ impl Config {
         if self.hold_badge_size < 8 || self.hold_badge_size > 64 {
             self.hold_badge_size = 12;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShortcutBinding;
+
+    #[test]
+    fn shortcut_binding_parser_rejects_legacy_aliases() {
+        assert!("none".parse::<ShortcutBinding>().is_err());
+        assert!("fn".parse::<ShortcutBinding>().is_err());
+        assert!("double_lalt".parse::<ShortcutBinding>().is_err());
+        assert!("double_ralt".parse::<ShortcutBinding>().is_err());
     }
 }

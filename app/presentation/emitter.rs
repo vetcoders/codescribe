@@ -61,6 +61,10 @@ pub struct PresentationEmitter {
     vad_start_emitted: std::sync::atomic::AtomicBool,
     /// Last preview text — used to compute incremental segment for push_segment.
     last_preview: std::sync::Mutex<String>,
+    /// Last non-empty preview text for boundary fallback when final text is empty.
+    last_non_empty_preview: std::sync::Mutex<String>,
+    /// Last utterance id delivered to callback (guards duplicate boundary commits).
+    last_dispatched_utterance_id: std::sync::atomic::AtomicU64,
 }
 
 impl PresentationEmitter {
@@ -116,6 +120,8 @@ impl PresentationEmitter {
             vad_start_callback: None,
             vad_start_emitted: std::sync::atomic::AtomicBool::new(false),
             last_preview: std::sync::Mutex::new(String::new()),
+            last_non_empty_preview: std::sync::Mutex::new(String::new()),
+            last_dispatched_utterance_id: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -203,6 +209,13 @@ impl EventSink for PresentationEmitter {
                 let previous_len = last.chars().count();
                 let update = preview_update(last.as_str(), text);
                 *last = text.clone();
+                if !text.trim().is_empty() {
+                    let mut last_non_empty = self
+                        .last_non_empty_preview
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    *last_non_empty = text.clone();
+                }
                 drop(last);
 
                 match update {
@@ -220,25 +233,73 @@ impl EventSink for PresentationEmitter {
                     }
                 }
             }
-            EngineEvent::Correction { text, .. } => {
-                let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
-                // Ignore stale corrections after UtteranceFinal reset last_preview.
-                if last.is_empty() {
-                    debug!("Ignoring Correction with empty last_preview (post-final)");
+            EngineEvent::Correction {
+                text,
+                previous_text,
+                ..
+            } => {
+                if text.trim().is_empty() {
                     return;
                 }
+                let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
+                let mut last_non_empty = self
+                    .last_non_empty_preview
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let baseline = if !last.trim().is_empty() {
+                    last.clone()
+                } else if !previous_text.trim().is_empty() {
+                    previous_text.clone()
+                } else {
+                    last_non_empty.clone()
+                };
                 *last = text.clone();
+                *last_non_empty = text.clone();
+                drop(last_non_empty);
                 drop(last);
-                self.send_cmd(EmitterCmd::PushCorrection(text.clone()));
+                if baseline.trim().is_empty() {
+                    debug!(
+                        "Correction arrived without preview baseline; routing as segment bootstrap"
+                    );
+                    self.send_cmd(EmitterCmd::PushSegment(text.clone()));
+                } else {
+                    self.send_cmd(EmitterCmd::PushCorrection(text.clone()));
+                }
             }
-            EngineEvent::UtteranceFinal { text, .. } => {
+            EngineEvent::UtteranceFinal {
+                utterance_id, text, ..
+            } => {
                 // Reset last_preview — engine clears accumulated_text on utterance boundary.
                 {
                     let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
                     last.clear();
                 }
+                let fallback_preview = {
+                    let mut last_non_empty = self
+                        .last_non_empty_preview
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let value = last_non_empty.trim().to_string();
+                    last_non_empty.clear();
+                    value
+                };
+                let duplicate = self
+                    .last_dispatched_utterance_id
+                    .swap(*utterance_id, std::sync::atomic::Ordering::SeqCst)
+                    == *utterance_id;
+                if duplicate {
+                    debug!(
+                        utterance_id = *utterance_id,
+                        "Ignoring duplicate UtteranceFinal callback dispatch"
+                    );
+                    return;
+                }
                 if let Some(cb) = &self.utterance_callback {
-                    let payload = text.trim();
+                    let payload = if text.trim().is_empty() {
+                        fallback_preview.as_str()
+                    } else {
+                        text.trim()
+                    };
                     if !payload.is_empty() {
                         cb(payload.to_string());
                     }
@@ -248,6 +309,13 @@ impl EventSink for PresentationEmitter {
                 {
                     let mut last = self.last_preview.lock().unwrap_or_else(|e| e.into_inner());
                     last.clear();
+                }
+                {
+                    let mut last_non_empty = self
+                        .last_non_empty_preview
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    last_non_empty.clear();
                 }
                 info!("Engine reported no speech: {}", reason);
             }
@@ -305,7 +373,10 @@ impl EventSink for PresentationEmitter {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreviewUpdate, preview_update};
+    use super::{PresentationEmitter, PreviewUpdate, preview_update};
+    use codescribe_core::pipeline::contracts::{EngineEvent, EventSink};
+    use std::sync::{Arc, Mutex as StdMutex};
+    use tokio::sync::Mutex;
 
     #[test]
     fn preview_update_emits_only_new_suffix_for_prefix_growth() {
@@ -326,5 +397,80 @@ mod tests {
     #[test]
     fn preview_update_ignores_whitespace_only_suffix() {
         assert_eq!(preview_update("tekst", "tekst "), PreviewUpdate::Noop);
+    }
+
+    #[tokio::test]
+    async fn correction_after_final_still_updates_live_buffer() {
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "Ala ma".to_string(),
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "Ala ma".to_string(),
+            raw_text: "Ala ma".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+        });
+        emitter.on_event(&EngineEvent::Correction {
+            rev: 2,
+            text: "Ala ma kota".to_string(),
+            previous_text: "Ala ma".to_string(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        let snapshot = transcript.lock().await.clone();
+        assert!(
+            snapshot.contains("Ala ma kota"),
+            "expected correction to survive utterance boundary, got: {snapshot:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn utterance_callback_falls_back_to_last_preview_and_dedupes() {
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let mut emitter = PresentationEmitter::new(transcript, None, None);
+        let delivered = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let delivered_ref = Arc::clone(&delivered);
+        emitter.set_utterance_callback(Some(Arc::new(move |text: String| {
+            delivered_ref
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(text);
+        })));
+
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "ostatni sensowny preview".to_string(),
+        });
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 7,
+            text: "   ".to_string(),
+            raw_text: String::new(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+        });
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 7,
+            text: "duplikat".to_string(),
+            raw_text: "duplikat".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+        });
+
+        let delivered = delivered.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(
+            delivered,
+            vec!["ostatni sensowny preview".to_string()],
+            "empty final should fallback to preview and duplicate utterance must be ignored"
+        );
     }
 }

@@ -81,12 +81,12 @@ LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1-mini
 LLM_API_KEY=sk-proj-xxx
 
-# Formatting mode overrides (Hold Fn - cleanup only)
+# Formatting mode overrides (Formatting mode / cleanup pass)
 LLM_FORMATTING_ENDPOINT=https://api.libraxis.cloud/v1/responses
 LLM_FORMATTING_MODEL=gpt-4.1-mini
 LLM_FORMATTING_API_KEY=vista-xxx
 
-# Assistive mode overrides (Fn+Shift - AI augmentation)
+# Assistive mode overrides (Assistive mode / agent chat)
 LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
 LLM_ASSISTIVE_MODEL=gpt-4.1
 LLM_ASSISTIVE_API_KEY=sk-proj-xxx
@@ -179,13 +179,11 @@ codescribe transcribe -f audio.mp3  # with AI formatting
 
 ## Default Hotkeys (macOS)
 
-- **Hold Fn** → RAW dictation (fast, no AI)
-- **Hold Fn+Shift** → Assistive chat
-- **Hold Fn+Cmd** → Selection + transcript
-- **Double‑tap Left Option** → hands‑off toggle (normal)
-- **Double‑tap Right Option** → hands‑off toggle (assistive)
+- **Dictation**: hold your configured modifier (default: **Hold Fn/Globe**) → release to send + paste
+- **Formatting**: **Double‑tap Left Option** → hands‑free recording + AI formatting (auto‑paste ON)
+- **Assistive (Agent)**: **Double‑tap Right Option** → voice‑chat overlay + agent response (auto‑paste OFF)
 
-Toggle mode auto‑sends after `TOGGLE_SILENCE_SEC` (default 5s) but keeps recording until the next double‑tap.
+Hotkeys are configured in **Settings → Modes & Shortcuts**. Double‑tap modes auto‑send an utterance when you pause, and stop on the next double‑tap.
 
 ## Settings & Secrets
 
@@ -218,11 +216,9 @@ flowchart TD
 
 | Mode                  | Trigger                   | Description                                    |
 | --------------------- | ------------------------- | ---------------------------------------------- |
-| **Hold-to-talk**      | Hold `Fn` (800ms delay)   | Release to transcribe + paste (raw transcript) |
-| **Hold Assistive**    | Hold `Fn+Shift`           | AI augmentation mode                           |
-| **Hold Selection**    | Hold `Fn+Cmd`             | Send selection + transcript to assistant       |
-| **Toggle Formatting** | Double-tap `Left Option`  | AI-formatted version of speech                 |
-| **Toggle Assistive**  | Double-tap `Right Option` | Augmented AI response                          |
+| **Dictation**         | Hold `Fn/Globe` (default) | Fast transcript (AI optional), auto‑paste      |
+| **Formatting**        | Double‑tap `Left Option`  | AI formatting pass, auto‑paste                 |
+| **Assistive (Agent)** | Double‑tap `Right Option` | Agent chat with optional selection context     |
 
 See [`docs/BACKLOG.md`](docs/BACKLOG.md) for detailed mode descriptions and future enhancements (VAD, Overlay).
 

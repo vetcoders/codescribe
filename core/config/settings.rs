@@ -125,29 +125,14 @@ struct InteractionV2 {
 #[serde(default)]
 struct TriggerV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
-    mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     double_tap_interval_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_silence_timeout_sec: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    double_tap_sides: Option<DoubleTapSidesV2>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-struct DoubleTapSidesV2 {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    left: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    right: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct HoldV2 {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    modifiers: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     exclusive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -329,13 +314,10 @@ impl UserSettings {
             schema_version: 3,
             interaction: Some(InteractionV2 {
                 trigger: Some(TriggerV2 {
-                    mode: None,
                     double_tap_interval_ms: self.double_tap_interval_ms,
                     toggle_silence_timeout_sec: self.toggle_silence_sec,
-                    double_tap_sides: None,
                 }),
                 hold: Some(HoldV2 {
-                    modifiers: None,
                     exclusive: self.hold_exclusive,
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
@@ -874,7 +856,6 @@ mod tests {
         fs::write(
             &path,
             r#"{
-  "hold_mods": "ctrl_shift",
   "chat_zoom": 1.2
 }"#,
         )
@@ -895,14 +876,6 @@ mod tests {
         assert_eq!(
             migrated.get("schema_version").and_then(|v| v.as_u64()),
             Some(3)
-        );
-        assert!(
-            migrated
-                .get("interaction")
-                .and_then(|v| v.get("hold"))
-                .and_then(|v| v.get("modifiers"))
-                .is_none(),
-            "legacy hold modifiers should be omitted in v3 payload"
         );
         assert!(
             migrated

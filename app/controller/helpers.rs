@@ -16,6 +16,7 @@ use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ContentBlock, Message, Role, StreamOptions, Thread, ThreadMessage,
     ThreadStore, ToolRegistry,
 };
+use serde_json::json;
 
 /// Global flag for current session mode.
 /// true = assistive (chat UI), false = non-assistive (simple transcription overlay)
@@ -79,6 +80,8 @@ static SHARED_AGENT_RUNTIME_STATE: OnceLock<StdMutex<Option<Arc<TokioMutex<Agent
 const RUNTIME_DEGRADED_REASON: &str = "Legacy formatter fallback is active.";
 const RUNTIME_RECOVERED_MESSAGE: &str =
     "Agent runtime recovered. Native agent pipeline is active again.";
+const CODESCRIBE_ASSISTIVE_LEGACY_BACKUP_ENV: &str =
+    "CODESCRIBE_ASSISTIVE_LEGACY_TRANSCRIPT_BACKUP";
 
 struct AgentRuntime {
     session: AgentSession,
@@ -140,6 +143,40 @@ impl AgentRuntimeState {
             true
         }
     }
+
+    fn rotate_for_new_thread_with<Init, Persist>(
+        &mut self,
+        runtime_generation: u64,
+        initialize_runtime: Init,
+        persist_runtime: Persist,
+    ) -> Result<bool>
+    where
+        Init: FnOnce() -> Result<AgentRuntime>,
+        Persist: FnOnce(&AgentRuntime) -> Result<()>,
+    {
+        let previous_runtime = self
+            .runtime
+            .as_ref()
+            .filter(|runtime| !runtime.session.messages().is_empty());
+        let should_persist_previous = previous_runtime.is_some();
+        if let Some(runtime) = previous_runtime {
+            persist_runtime(runtime)?;
+        }
+
+        self.runtime_generation = runtime_generation;
+        match initialize_runtime() {
+            Ok(runtime) => {
+                self.runtime = Some(runtime);
+                self.runtime_degraded = false;
+                Ok(should_persist_previous)
+            }
+            Err(error) => {
+                self.runtime = None;
+                self.runtime_degraded = true;
+                Err(error).context("Failed to initialize Agent runtime for new thread")
+            }
+        }
+    }
 }
 
 fn current_agent_thread_generation() -> u64 {
@@ -178,6 +215,33 @@ pub(crate) fn request_new_agent_thread_boundary() -> u64 {
     let generation = AGENT_THREAD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     debug!("Agent runtime thread boundary rotated (generation={generation})");
     generation
+}
+
+pub(crate) async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
+    let generation = request_new_agent_thread_boundary();
+    let runtime_state = shared_agent_runtime_state();
+    let mut guard = runtime_state.lock().await;
+
+    match guard.rotate_for_new_thread_with(
+        generation,
+        initialize_agent_runtime,
+        persist_runtime_thread,
+    ) {
+        Ok(persisted_previous) => {
+            crate::voice_chat_ui::set_voice_chat_runtime_degraded(false, None);
+            if persisted_previous {
+                crate::voice_chat_ui::refresh_drawer();
+            }
+            Ok(generation)
+        }
+        Err(error) => {
+            crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+                true,
+                Some(RUNTIME_DEGRADED_REASON),
+            );
+            Err(error)
+        }
+    }
 }
 
 fn initialize_agent_runtime() -> Result<AgentRuntime> {
@@ -314,6 +378,15 @@ fn derive_thread_summary(messages: &[Message]) -> Option<String> {
         })
 }
 
+fn normalize_assistive_thread_text(text: &str) -> Option<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
 fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
     let store = ThreadStore::new().context("Failed to initialize ThreadStore")?;
     let now = Utc::now();
@@ -351,6 +424,66 @@ fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
     store
         .save_thread(&thread)
         .context("Failed to persist agent thread to ThreadStore")?;
+    Ok(())
+}
+
+fn persist_legacy_assistive_thread(user_text: &str, assistant_text: &str) -> Result<()> {
+    let Some(user_text) = normalize_assistive_thread_text(user_text) else {
+        return Ok(());
+    };
+    let Some(assistant_text) = normalize_assistive_thread_text(assistant_text) else {
+        return Ok(());
+    };
+
+    let store = ThreadStore::new().context("Failed to initialize ThreadStore")?;
+    let now = Utc::now();
+    let model = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_else(|_| "unknown".to_string());
+
+    let mut title = user_text.chars().take(72).collect::<String>();
+    if title.is_empty() {
+        title = "CodeScribe Agent Chat".to_string();
+    }
+    let mut summary = assistant_text.chars().take(240).collect::<String>();
+    if summary.is_empty() {
+        summary = "Assistant response".to_string();
+    }
+    let metadata = Some(json!({"source":"legacy-fallback"}));
+
+    let thread = Thread {
+        id: ThreadStore::generate_id(),
+        created_at: now,
+        updated_at: now,
+        title,
+        mode: "assistive".to_string(),
+        tags: vec![
+            "agent".to_string(),
+            "overlay".to_string(),
+            "fallback".to_string(),
+        ],
+        notes: Vec::new(),
+        messages: vec![
+            ThreadMessage {
+                role: "user".to_string(),
+                content: vec![json!({"type":"input_text","text":user_text})],
+                timestamp: now,
+                metadata: metadata.clone(),
+            },
+            ThreadMessage {
+                role: "assistant".to_string(),
+                content: vec![json!({"type":"output_text","text":assistant_text})],
+                timestamp: now,
+                metadata,
+            },
+        ],
+        summary: Some(summary),
+        total_tokens: None,
+        provider: "legacy-formatter".to_string(),
+        model,
+    };
+
+    store
+        .save_thread(&thread)
+        .context("Failed to persist legacy assistive thread to ThreadStore")?;
     Ok(())
 }
 
@@ -430,7 +563,10 @@ async fn run_agent_send_path(
     }
 }
 
-async fn run_legacy_send_path(text: &str, whisper_language: crate::config::Language) {
+async fn run_legacy_send_path(
+    text: &str,
+    whisper_language: crate::config::Language,
+) -> Option<String> {
     let use_streaming = true;
     let streamed_any_delta = Arc::new(AtomicBool::new(false));
 
@@ -467,13 +603,16 @@ async fn run_legacy_send_path(text: &str, whisper_language: crate::config::Langu
                     reasoning_text
                 ));
             }
+            Some(result.text)
         }
         crate::ai_formatting::AiFormatStatus::Failed => {
             crate::voice_chat_ui::update_voice_chat_status("AI Failed");
             crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
+            Some("AI Failed".to_string())
         }
         crate::ai_formatting::AiFormatStatus::Skipped => {
             crate::voice_chat_ui::set_voice_chat_sending(false);
+            None
         }
     }
 }
@@ -503,7 +642,14 @@ async fn run_agent_send_with_fallback(
         crate::voice_chat_ui::add_voice_chat_system_message(
             "Agent runtime unavailable. Using legacy formatter for this response.",
         );
-        run_legacy_send_path(&text, whisper_language).await;
+        let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
+        if let Some(assistant_text) = fallback_assistant_text {
+            if let Err(error) = persist_legacy_assistive_thread(&text, &assistant_text) {
+                warn!("Failed to persist legacy assistive fallback thread: {error}");
+            } else {
+                crate::voice_chat_ui::refresh_drawer();
+            }
+        }
     }
 }
 
@@ -578,9 +724,23 @@ pub fn setup_voice_chat_send_callback(config: Arc<RwLock<Config>>) {
     })));
 }
 
-/// Raw transcript saving is always enabled to avoid data loss.
-pub fn raw_save_enabled() -> bool {
-    true
+/// Legacy transcript backup for assistive mode is opt-in.
+///
+/// Non-assistive dictation keeps legacy transcript persistence unchanged.
+pub fn raw_save_enabled(is_assistive: bool) -> bool {
+    if !is_assistive {
+        return true;
+    }
+
+    std::env::var(CODESCRIBE_ASSISTIVE_LEGACY_BACKUP_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -772,6 +932,25 @@ mod tests {
         }
     }
 
+    fn seed_runtime_with_user_message(runtime: &mut AgentRuntime) {
+        let options = StreamOptions {
+            model: String::new(),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should initialize");
+        rt.block_on(
+            runtime
+                .session
+                .send("hello".to_string(), Vec::new(), &options),
+        )
+        .expect("seed message should be recorded");
+    }
+
     #[test]
     fn test_session_telemetry_sink_tracks_no_speech_and_stats() {
         let shared = new_session_telemetry();
@@ -910,5 +1089,83 @@ mod tests {
         assert_eq!(runtime.thread_store_id, "thread_after_boundary");
         assert_eq!(runtime_state.runtime_generation, new_generation);
         assert!(!recovered);
+    }
+
+    #[test]
+    fn test_rotate_for_new_thread_persists_previous_thread_with_messages() {
+        let mut old_runtime = runtime_with_thread_id("thread_old");
+        seed_runtime_with_user_message(&mut old_runtime);
+        let mut runtime_state = AgentRuntimeState {
+            runtime: Some(old_runtime),
+            runtime_generation: 21,
+            runtime_degraded: false,
+        };
+        let persist_calls = AtomicUsize::new(0);
+
+        let persisted = runtime_state
+            .rotate_for_new_thread_with(
+                22,
+                || Ok(runtime_with_thread_id("thread_new")),
+                |runtime| {
+                    persist_calls.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(runtime.thread_store_id, "thread_old");
+                    assert_eq!(runtime.session.messages().len(), 1);
+                    Ok(())
+                },
+            )
+            .expect("runtime rotation should succeed");
+
+        assert!(persisted);
+        assert_eq!(persist_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime_state.runtime_generation, 22);
+        assert!(!runtime_state.runtime_degraded);
+        let runtime = runtime_state
+            .runtime
+            .expect("new runtime should be installed");
+        assert_eq!(runtime.thread_store_id, "thread_new");
+        assert!(runtime.session.messages().is_empty());
+    }
+
+    #[test]
+    fn test_rotate_for_new_thread_skips_persist_when_empty() {
+        let mut runtime_state = AgentRuntimeState {
+            runtime: Some(runtime_with_thread_id("thread_old")),
+            runtime_generation: 4,
+            runtime_degraded: false,
+        };
+        let persist_calls = AtomicUsize::new(0);
+
+        let persisted = runtime_state
+            .rotate_for_new_thread_with(
+                5,
+                || Ok(runtime_with_thread_id("thread_new")),
+                |_runtime| {
+                    persist_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .expect("runtime rotation should succeed");
+
+        assert!(!persisted);
+        assert_eq!(persist_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_rotate_for_new_thread_marks_degraded_when_reinit_fails() {
+        let mut runtime_state = AgentRuntimeState {
+            runtime: Some(runtime_with_thread_id("thread_old")),
+            runtime_generation: 11,
+            runtime_degraded: false,
+        };
+        let result = runtime_state.rotate_for_new_thread_with(
+            12,
+            || Err(anyhow::anyhow!("boom")),
+            |_runtime| Ok(()),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(runtime_state.runtime_generation, 12);
+        assert!(runtime_state.runtime_degraded);
+        assert!(runtime_state.runtime.is_none());
     }
 }

@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "codescribe"
-version = "0.7.20"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "codescribe-core"
-version = "0.7.20"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",

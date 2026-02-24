@@ -1,198 +1,104 @@
 # Recording Modes
 
-CodeScribe offers three recording modes, each optimized for different use cases.
+CodeScribe exposes **three work modes**. Each mode has **one shortcut binding** you can customize (or disable) in **Settings → Modes & Shortcuts**.
 
 ---
 
 ## Mode Comparison
 
-| Mode          | Hotkey            | Speed   | AI       | Best For                   |
-| ------------- | ----------------- | ------- | -------- | -------------------------- |
-| **Raw**       | `Ctrl` hold       | Fastest | None     | Quick notes, code comments |
-| **Assistive** | `Ctrl+Shift` hold | Slower  | Always   | Complex tasks, AI help     |
-| **Toggle**    | `Double Option`   | Medium  | Optional | Hands-free, long dictation |
+| Mode                 | Default Shortcut            | Auto‑Paste | AI         | Best For                                  |
+| -------------------- | --------------------------- | ---------- | ---------- | ----------------------------------------- |
+| **Dictation**        | Hold `Fn/Globe`             | ON         | Optional   | Fast dictation into any app               |
+| **Formatting**       | Double‑tap `Left Option`    | ON         | Always     | Cleanup/polish of dictated text           |
+| **Assistive (Agent)**| Double‑tap `Right Option`   | OFF        | Always     | Questions, transformations, selected text |
+
+Notes:
+- **Dictation** runs with or without AI depending on **Settings → Audio & Input → AI Formatting**.
+- **Formatting** and **Assistive** always require AI provider config (see **Settings → AI & Prompts**).
 
 ---
 
-## 1. Raw Mode (Ctrl Hold)
+## 1) Dictation (Hold Binding)
 
-**The fastest way to dictate.**
+**Fast transcript with auto‑paste.**
 
 ### How to Use
 
-1. Hold `Ctrl` key
-2. Wait for red badge to appear (~800ms delay)
-3. Speak clearly
-4. Release `Ctrl`
-5. Text appears at cursor
+1. Hold your Dictation binding (default: hold `Fn/Globe`)
+2. Speak
+3. Release the key(s)
+4. Text is inserted at the cursor in the frontmost app
 
-### Characteristics
+### Behavior
 
-- **No AI processing** - raw Whisper output
-- **Fastest turnaround** - minimal latency
-- **Live preview** - see text as you speak in overlay
-- **Ignores AI settings** - always raw, even if AI formatting is enabled
-
-### Visual Feedback
-
-| Badge             | Meaning          |
-| ----------------- | ---------------- |
-| 🔴 Solid red      | Recording active |
-| 🟠 Pulsing orange | Processing       |
-| 🟢 Green flash    | Success          |
-
-### Why 800ms Delay?
-
-The delay prevents accidental recordings from quick Ctrl taps (common when using keyboard shortcuts). You can customize this in settings.
+- Auto‑paste: **ON**
+- AI: **optional** (controlled by the AI Formatting toggle)
+- Preview: transcription overlay shows live text while you speak
 
 ---
 
-## 2. Assistive Mode (Ctrl+Shift Hold)
+## 2) Formatting (Double‑Tap Left Option)
 
-**AI-enhanced transcription for complex tasks.**
+**Hands‑free dictation with an AI formatting pass.**
 
 ### How to Use
 
-1. Hold `Ctrl+Shift` together
-2. Wait for purple badge to appear
-3. Speak your request or content
-4. Release keys
-5. AI processes and responds
+1. Double‑tap `Left Option` to start
+2. Speak normally
+3. Pause to auto‑send an utterance (silence boundary)
+4. Double‑tap `Left Option` again to stop the session
 
-### Characteristics
+### Behavior
 
-- **Always uses AI** - regardless of AI formatting toggle
-- **Expands content** - AI can elaborate, structure, improve
-- **Opens Chat Overlay** - see AI response with formatting
-- **Streaming response** - see AI typing in real-time
-
-### Visual Feedback
-
-| Badge             | Meaning               |
-| ----------------- | --------------------- |
-| 🟣 Solid purple   | Recording (assistive) |
-| 🟠 Pulsing orange | AI processing         |
-
-### Example Use Cases
-
-- "Write a commit message for adding user authentication"
-- "Explain this error and suggest fixes"
-- "Create a README for this project"
+- Auto‑paste: **ON**
+- AI: **always on** (formatting pass)
+- UI: transcription overlay during recording; formatted result is pasted to the active app
 
 ---
 
-## 3. Toggle Mode (Double Option)
+## 3) Assistive (Agent) (Double‑Tap Right Option)
 
-**Hands-free dictation with automatic stop.**
+**Voice chat overlay with an AI assistant.**
 
 ### How to Use
 
-1. Double-tap `Option` key (left or right)
-2. Badge starts pulsing (recording active)
-3. Speak freely - no keys to hold
-4. Either:
-   - Double-tap `Option` again to stop, OR
-   - Wait 5 seconds of silence (auto-stop)
+1. (Optional) Select text in the frontmost app
+2. Double‑tap `Right Option` to start
+3. Speak your request
+4. Pause to auto‑send an utterance (silence boundary)
+5. Double‑tap `Right Option` again to stop the session
 
-### Characteristics
+### Behavior
 
-- **Hands-free** - no keys to hold while speaking
-- **VAD (Voice Activity Detection)** - auto-stops on silence
-- **Respects AI settings** - uses formatting if enabled
-- **Great for long content** - paragraphs, emails, documentation
-
-### Visual Feedback
-
-| Badge             | Meaning                      |
-| ----------------- | ---------------------------- |
-| 🔴 Pulsing red    | Recording (toggle mode)      |
-| 🟣 Pulsing purple | Recording (assistive toggle) |
-| 🟠 Solid orange   | Processing                   |
-
-### Variants
-
-- `Double Option` → Normal toggle (respects AI setting)
-- `Double Left Option` → Force AI formatting on
-- `Double Option + Shift` → Assistive toggle mode
+- Auto‑paste: **OFF** (agent answers in the overlay)
+- AI: **always on** (assistive model)
+- Selection: best‑effort capture; if selection is present, the agent is instructed to operate **only** on the selected text
+- Threads: use **New thread** in the overlay to reset context
 
 ---
 
-## Mode Decision Tree
+## Customizing Shortcuts
 
-```
-What do you need?
-    │
-    ├─► Quick raw text, no AI
-    │   └─► Hold Ctrl (Raw Mode)
-    │
-    ├─► AI to help/expand/structure
-    │   └─► Hold Ctrl+Shift (Assistive Mode)
-    │
-    └─► Hands-free, long dictation
-        └─► Double-tap Option (Toggle Mode)
-            │
-            ├─► AI formatting enabled? → Formatted output
-            └─► AI formatting disabled? → Raw output
-```
+Open **Settings → Modes & Shortcuts**:
 
----
+- **Dictation** supports:
+  - Hold `Fn/Globe`
+  - Hold `Ctrl`
+  - Hold `Ctrl+Option`
+  - Hold `Ctrl+Shift`
+  - Hold `Ctrl+Command`
+  - Double‑tap `Ctrl`
+  - Disabled
+- **Formatting** supports: Double‑tap `Left Option` or Disabled
+- **Assistive** supports: Double‑tap `Right Option` or Disabled
 
-## Customizing Hotkeys
-
-### Hold Mode Modifiers
-
-Change the hold key combination in menu bar → **Hold Hotkeys**:
-
-| Option         | Hotkey        |
-| -------------- | ------------- |
-| Ctrl (default) | `Ctrl`        |
-| Ctrl+Option    | `Ctrl+Option` |
-| Ctrl+Shift     | `Ctrl+Shift`  |
-| Ctrl+Cmd       | `Ctrl+Cmd`    |
-
-### Toggle Trigger
-
-Change the toggle key in menu bar → **Toggle Trigger**:
-
-| Option                  | Hotkey                     |
-| ----------------------- | -------------------------- |
-| Double Option (default) | Tap `Option` twice quickly |
-| Double Right Option     | Tap right `Option` twice   |
-| Disabled                | Toggle mode off            |
-
-### Hold Delay
-
-Adjust the delay before recording starts (default 800ms):
-
-```bash
-# In ~/.codescribe/.env
-HOLD_START_DELAY_MS=800
-```
-
-Lower = faster start but more accidental triggers.
-Higher = slower start but fewer accidents.
+Use the built‑in conflict detector if macOS already uses the same shortcut.
 
 ---
 
-## Transcription Overlay
+## Advanced Tuning
 
-When recording, a floating overlay appears showing:
-
-1. **Live transcription** - text appears as you speak
-2. **Status indicator** - current mode and state
-3. **Auto-hide** - disappears after successful paste
-
-The overlay appears near your cursor or in a fixed position (configurable).
-
----
-
-## Tips for Best Results
-
-1. **Speak clearly** - Whisper handles accents well but clarity helps
-2. **Pause between sentences** - helps with punctuation
-3. **Use Assistive mode for complex requests** - AI understands context
-4. **Check the overlay** - catch errors before pasting
-5. **Quiet environment** - reduces transcription errors
+- **Hold delay** and **double‑tap interval** are in **Settings → Advanced**.
 
 ---
 

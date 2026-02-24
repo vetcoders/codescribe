@@ -586,16 +586,29 @@ pub fn diagnostics_report() -> String {
     }
 
     // Small, safe config hints (do not print secrets).
-    for key in [
-        "WHISPER_LANGUAGE",
-        "HOLD_START_DELAY_MS",
-        "DOUBLE_TAP_INTERVAL_MS",
-        "TOGGLE_SILENCE_SEC",
-        "CODESCRIBE_STREAM_CHUNK_SEC",
-    ] {
-        if let Ok(val) = std::env::var(key) {
-            let _ = writeln!(&mut out, "{key}: {val}");
-        }
+    let config = crate::config::Config::load();
+    let _ = writeln!(
+        &mut out,
+        "WHISPER_LANGUAGE: {}",
+        config.whisper_language.as_str()
+    );
+    let _ = writeln!(
+        &mut out,
+        "mode_binding.hold_start_delay_ms: {}",
+        config.hold_start_delay_ms
+    );
+    let _ = writeln!(
+        &mut out,
+        "mode_binding.double_tap_interval_ms: {}",
+        config.double_tap_interval_ms
+    );
+    let _ = writeln!(
+        &mut out,
+        "mode_binding.toggle_silence_sec: {}",
+        config.toggle_silence_sec
+    );
+    if let Ok(val) = std::env::var("CODESCRIBE_STREAM_CHUNK_SEC") {
+        let _ = writeln!(&mut out, "CODESCRIBE_STREAM_CHUNK_SEC: {val}");
     }
 
     // Best-effort codesign info (helps debug TCC resets).

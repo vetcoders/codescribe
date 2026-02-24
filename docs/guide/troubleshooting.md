@@ -206,9 +206,9 @@ Common issues and solutions for CodeScribe.
 
 **Solutions**:
 
-1. Check `AI_FORMATTING_ENABLED=1` in config
-2. Remember: Hold mode (Ctrl only) = always raw
-3. Use Ctrl+Shift for forced AI, or Double Option for toggle
+1. Verify provider settings in **Settings → AI & Prompts** (Formatting AI / Assistive AI)
+2. If you're using **Dictation** mode: enable **Settings → Audio & Input → AI Formatting** (optional)
+3. If you want AI every time: use **Formatting** (double‑tap `Left Option`) or **Assistive (Agent)** (double‑tap `Right Option`)
 
 ---
 

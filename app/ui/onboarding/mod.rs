@@ -2,7 +2,7 @@ mod steps;
 
 pub(crate) use self::steps::PermissionKind;
 use self::steps::{TOTAL_STEPS, WizardStep, step_for_index};
-use crate::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode, keychain};
+use crate::config::{Config, ShortcutBinding, UserSettings, WorkMode, keychain};
 use crate::os::hotkeys;
 use crate::os::permissions::{self, PermissionStatus};
 use crate::ui::shared::helpers::{
@@ -1528,26 +1528,9 @@ fn save_hotkey_mode() {
     };
 
     let mut settings = UserSettings::load();
-    settings.mode_bindings = Some(vec![
-        ModeBinding {
-            mode: WorkMode::Dictation,
-            binding: dictation,
-        },
-        ModeBinding {
-            mode: WorkMode::Formatting,
-            binding: formatting,
-        },
-        ModeBinding {
-            mode: WorkMode::Assistive,
-            binding: assistive,
-        },
-    ]);
-    if let Err(e) = settings.save() {
-        warn!(
-            "Onboarding: failed to persist hotkey mode {}: {e}",
-            mode.label()
-        );
-    }
+    settings.set_mode_binding(WorkMode::Dictation, dictation);
+    settings.set_mode_binding(WorkMode::Formatting, formatting);
+    settings.set_mode_binding(WorkMode::Assistive, assistive);
 
     hotkeys::apply_hotkey_config(&Config::load());
 

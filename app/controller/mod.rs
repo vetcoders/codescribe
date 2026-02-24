@@ -60,8 +60,9 @@ use crate::voice_chat_ui::ConversationModeState;
 
 use helpers::{
     SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
-    request_new_agent_thread_boundary, reset_session_telemetry, send_assistive_with_agent_runtime,
-    setup_voice_chat_send_callback, snapshot_session_telemetry,
+    reset_agent_runtime_for_new_thread as reset_agent_runtime_for_new_thread_impl,
+    reset_session_telemetry, send_assistive_with_agent_runtime, setup_voice_chat_send_callback,
+    snapshot_session_telemetry,
 };
 use types::ValidatedAudioPath;
 
@@ -121,6 +122,8 @@ const QUALITY_GATE_MIN_CHARS: usize = 24;
 const QUALITY_GATE_DROP_RATIO: f32 = 0.35;
 const QUALITY_GATE_DIFF_RATIO: f32 = 0.62;
 const QUALITY_GATE_CORRECTION_RATIO: f32 = 0.40;
+const RECORDER_RUNTIME_DEGRADED_REASON: &str =
+    "Microphone recorder unavailable. Voice capture is disabled.";
 
 struct AtomicFlagGuard {
     flag: Arc<AtomicBool>,
@@ -261,8 +264,21 @@ pub fn request_toggle_recording_start(assistive: bool) {
 
 /// Rotate the backend agent thread/runtime boundary for a fresh chat thread.
 pub fn request_new_agent_thread() {
-    let generation = request_new_agent_thread_boundary();
-    debug!("UI requested new agent thread boundary (generation={generation})");
+    tokio::spawn(async {
+        match reset_agent_runtime_for_new_thread_impl().await {
+            Ok(generation) => {
+                debug!("UI requested new agent thread boundary (generation={generation})");
+            }
+            Err(error) => {
+                warn!("Failed to rotate agent thread boundary: {error}");
+            }
+        }
+    });
+}
+
+/// Rotate runtime + thread identity and return generation once backend reset completes.
+pub async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
+    reset_agent_runtime_for_new_thread_impl().await
 }
 
 /// Recording controller managing state machine and lifecycle
@@ -274,7 +290,7 @@ pub struct RecordingController {
     state: Arc<RwLock<State>>,
 
     /// Audio recorder instance
-    recorder: Arc<Mutex<StreamingRecorder>>,
+    recorder: Arc<Mutex<Option<StreamingRecorder>>>,
 
     /// Whether AI assistive mode is enabled for the current session.
     ///
@@ -357,6 +373,47 @@ pub struct RecordingController {
 }
 
 impl RecordingController {
+    fn recorder_unavailable_error(context: &str) -> anyhow::Error {
+        warn!("{context}: streaming recorder unavailable; voice capture is disabled");
+        crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+            true,
+            Some(RECORDER_RUNTIME_DEGRADED_REASON),
+        );
+        anyhow::anyhow!("{context}: streaming recorder unavailable")
+    }
+
+    fn init_streaming_recorder(context: &str) -> Option<StreamingRecorder> {
+        match StreamingRecorder::new() {
+            Ok(recorder) => Some(recorder),
+            Err(error) => {
+                warn!("{context}: failed to initialize streaming recorder: {error}");
+                crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+                    true,
+                    Some(RECORDER_RUNTIME_DEGRADED_REASON),
+                );
+                None
+            }
+        }
+    }
+
+    fn recorder_from_guard_mut<'a>(
+        recorder_guard: &'a mut Option<StreamingRecorder>,
+        context: &str,
+    ) -> Result<&'a mut StreamingRecorder> {
+        recorder_guard
+            .as_mut()
+            .ok_or_else(|| Self::recorder_unavailable_error(context))
+    }
+
+    fn recorder_from_guard<'a>(
+        recorder_guard: &'a Option<StreamingRecorder>,
+        context: &str,
+    ) -> Result<&'a StreamingRecorder> {
+        recorder_guard
+            .as_ref()
+            .ok_or_else(|| Self::recorder_unavailable_error(context))
+    }
+
     /// Create a new recording controller with configuration loaded from disk
     pub fn new() -> Self {
         let config = Config::load();
@@ -366,14 +423,18 @@ impl RecordingController {
             config.hold_start_delay_ms, config.beep_on_start, config.whisper_language
         );
 
-        let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        let recorder = Self::init_streaming_recorder("RecordingController::new");
 
         if !cfg!(test) {
-            let model_manager = ModelManager::new().expect("Failed to initialize model manager");
-            if let Ok(models) = model_manager.list_models()
-                && !models.is_empty()
-            {
-                info!("Available local models: {:?}", models);
+            match ModelManager::new() {
+                Ok(model_manager) => {
+                    if let Ok(models) = model_manager.list_models()
+                        && !models.is_empty()
+                    {
+                        info!("Available local models: {:?}", models);
+                    }
+                }
+                Err(error) => warn!("Model manager unavailable during startup: {error}"),
             }
 
             // Initialize Whisper engine if not already done (daemon pre-inits)
@@ -386,6 +447,12 @@ impl RecordingController {
 
         let config = Arc::new(RwLock::new(config));
         setup_voice_chat_send_callback(Arc::clone(&config));
+        if recorder.is_none() {
+            crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+                true,
+                Some(RECORDER_RUNTIME_DEGRADED_REASON),
+            );
+        }
         let (event_broadcast, _) = broadcast::channel::<IpcEvent>(256);
         let session_telemetry = new_session_telemetry();
 
@@ -430,14 +497,18 @@ impl RecordingController {
             cfg.hold_start_delay_ms, cfg.beep_on_start, cfg.whisper_language
         );
 
-        let recorder = StreamingRecorder::new().expect("Failed to initialize streaming recorder");
+        let recorder = Self::init_streaming_recorder("RecordingController::with_config");
 
         if !cfg!(test) {
-            let model_manager = ModelManager::new().expect("Failed to initialize model manager");
-            if let Ok(models) = model_manager.list_models()
-                && !models.is_empty()
-            {
-                info!("Available local models: {:?}", models);
+            match ModelManager::new() {
+                Ok(model_manager) => {
+                    if let Ok(models) = model_manager.list_models()
+                        && !models.is_empty()
+                    {
+                        info!("Available local models: {:?}", models);
+                    }
+                }
+                Err(error) => warn!("Model manager unavailable during startup: {error}"),
             }
         }
 
@@ -450,6 +521,12 @@ impl RecordingController {
         }
 
         setup_voice_chat_send_callback(Arc::clone(&config));
+        if recorder.is_none() {
+            crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+                true,
+                Some(RECORDER_RUNTIME_DEGRADED_REASON),
+            );
+        }
         let (event_broadcast, _) = broadcast::channel::<IpcEvent>(256);
         let session_telemetry = new_session_telemetry();
 
@@ -631,7 +708,10 @@ impl RecordingController {
             return;
         }
 
-        let mut recorder = self.recorder.lock().await;
+        let mut recorder_guard = self.recorder.lock().await;
+        let Some(recorder) = recorder_guard.as_mut() else {
+            return;
+        };
         if !recorder.recorder.is_active() {
             return;
         }
@@ -640,8 +720,8 @@ impl RecordingController {
         if let Err(e) = recorder.stop_without_saving().await {
             warn!("Recorder recovery: forced stop failed: {e}");
         }
-        Self::clear_recorder_callbacks(&mut recorder);
-        drop(recorder);
+        Self::clear_recorder_callbacks(recorder);
+        drop(recorder_guard);
 
         *self.assistive_mode.write().await = false;
         *self.hold_mode.write().await = HoldMode::Raw;
@@ -985,6 +1065,18 @@ impl RecordingController {
     async fn start_conversation_mode(&self) -> Result<()> {
         info!("Starting conversation mode (Moshi full-duplex)");
 
+        {
+            let recorder_guard = self.recorder.lock().await;
+            if recorder_guard.is_none() {
+                let error = Self::recorder_unavailable_error("Conversation-start");
+                crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
+                crate::voice_chat_ui::add_voice_chat_error_message(
+                    "Mic unavailable: recorder failed to initialize",
+                );
+                return Err(error);
+            }
+        }
+
         // 1. Initialize ConversationEngine if needed (lazy init)
         {
             let mut engine_guard = self.conversation_engine.lock().await;
@@ -1089,7 +1181,7 @@ impl RecordingController {
     async fn conversation_audio_loop(
         engine: Arc<Mutex<Option<ConversationEngine>>>,
         player: Arc<Mutex<Option<AudioPlayer>>>,
-        recorder: Arc<Mutex<StreamingRecorder>>,
+        recorder: Arc<Mutex<Option<StreamingRecorder>>>,
         stop_flag: Arc<AtomicBool>,
         generation_counter: Arc<AtomicU64>,
         my_generation: u64,
@@ -1110,8 +1202,28 @@ impl RecordingController {
         // Start recorder with callback that sends to our channel
         let tx_clone = tx.clone();
         {
-            let mut rec = recorder.lock().await;
-            rec.recorder.set_callback(Box::new(move |data| {
+            let mut rec_guard = recorder.lock().await;
+            let rec = match Self::recorder_from_guard_mut(&mut rec_guard, "Conversation-loop start")
+            {
+                Ok(rec) => rec,
+                Err(error) => {
+                    error!("Conversation mode unavailable: {error}");
+                    drop(rec_guard);
+                    // Full cleanup on failure: state, session flag, badge, UI
+                    Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
+                    helpers::set_conversation_session(false);
+                    hide_hold_badge();
+                    crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
+                    crate::voice_chat_ui::update_conversation_state(
+                        ConversationModeState::Inactive,
+                    );
+                    crate::voice_chat_ui::add_voice_chat_error_message(
+                        "Mic unavailable: recorder failed to initialize",
+                    );
+                    return;
+                }
+            };
+            rec.recorder.set_callback(Box::new(move |data: &[f32]| {
                 let _ = tx_clone.try_send(data.to_vec());
             }));
 
@@ -1130,7 +1242,25 @@ impl RecordingController {
 
         // Get actual sample rate from recorder
         let sample_rate = {
-            let rec = recorder.lock().await;
+            let rec_guard = recorder.lock().await;
+            let rec = match Self::recorder_from_guard(&rec_guard, "Conversation-loop sample rate") {
+                Ok(rec) => rec,
+                Err(error) => {
+                    error!("Conversation mode aborted: {error}");
+                    drop(rec_guard);
+                    Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
+                    helpers::set_conversation_session(false);
+                    hide_hold_badge();
+                    crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
+                    crate::voice_chat_ui::update_conversation_state(
+                        ConversationModeState::Inactive,
+                    );
+                    crate::voice_chat_ui::add_voice_chat_error_message(
+                        "Mic unavailable: recorder failed to initialize",
+                    );
+                    return;
+                }
+            };
             rec.recorder.actual_sample_rate()
         };
         info!("Conversation mode: recording at {}Hz", sample_rate);
@@ -1266,8 +1396,10 @@ impl RecordingController {
 
         // Cleanup: stop recorder
         {
-            let mut rec = recorder.lock().await;
-            let _ = rec.recorder.stop().await;
+            let mut rec_guard = recorder.lock().await;
+            if let Some(rec) = rec_guard.as_mut() {
+                let _ = rec.recorder.stop().await;
+            }
         }
 
         // Full cleanup if loop exits unexpectedly (e.g., channel closed)
@@ -1315,9 +1447,13 @@ impl RecordingController {
 
         // 3. Stop recorder BEFORE waiting for task (prevents leak on abort)
         {
-            let mut rec = self.recorder.lock().await;
-            let _ = rec.recorder.stop().await;
-            info!("Recorder stopped in stop_conversation_mode");
+            let mut rec_guard = self.recorder.lock().await;
+            if let Some(rec) = rec_guard.as_mut() {
+                let _ = rec.recorder.stop().await;
+                info!("Recorder stopped in stop_conversation_mode");
+            } else {
+                warn!("stop_conversation_mode: recorder unavailable during stop");
+            }
         }
 
         // 4. Wait for conversation task to finish (with timeout)
@@ -1446,11 +1582,22 @@ impl RecordingController {
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is derived from hardcoded VAD defaults (single source of truth).
-            let mut rec = recorder.lock().await;
-            if let Err(e) =
-                Self::ensure_recorder_ready_for_start(&mut rec, "Hold-start preflight").await
+            let mut rec_guard = recorder.lock().await;
+            let rec = match Self::recorder_from_guard_mut(&mut rec_guard, "Hold-start") {
+                Ok(rec) => rec,
+                Err(error) => {
+                    error!("Hold-start aborted: {error}");
+                    drop(rec_guard);
+                    *session_id.write().await = None;
+                    set_assistive_session(false);
+                    crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
+                    return;
+                }
+            };
+            if let Err(e) = Self::ensure_recorder_ready_for_start(rec, "Hold-start preflight").await
             {
                 error!("Hold-start aborted: {e}");
+                drop(rec_guard);
                 *session_id.write().await = None;
                 set_assistive_session(false);
                 return;
@@ -1470,7 +1617,7 @@ impl RecordingController {
             // Runtime pipeline is always event-based. Hold mode has no utterance callback;
             // text is finalized on key-up in `finish_recording`.
             Self::configure_hold_event_sink(
-                &mut rec,
+                rec,
                 event_broadcast.clone(),
                 Arc::clone(&session_telemetry),
             );
@@ -1484,9 +1631,9 @@ impl RecordingController {
                         if let Err(stop_err) = rec.stop_without_saving().await {
                             warn!("Hold-start stale-recorder recovery failed: {stop_err}");
                         }
-                        Self::clear_recorder_callbacks(&mut rec);
+                        Self::clear_recorder_callbacks(rec);
                         Self::configure_hold_event_sink(
-                            &mut rec,
+                            rec,
                             event_broadcast.clone(),
                             Arc::clone(&session_telemetry),
                         );
@@ -1495,14 +1642,14 @@ impl RecordingController {
                             .await;
                         if let Err(retry_err) = retry_result {
                             error!("Failed to start recorder after recovery: {retry_err}");
-                            Self::clear_recorder_callbacks(&mut rec);
+                            Self::clear_recorder_callbacks(rec);
                             *session_id.write().await = None;
                             set_assistive_session(false);
                             return;
                         }
                     } else {
                         error!("Failed to start recorder: {e}");
-                        Self::clear_recorder_callbacks(&mut rec);
+                        Self::clear_recorder_callbacks(rec);
                         *session_id.write().await = None;
                         set_assistive_session(false);
                         return;
@@ -1517,12 +1664,12 @@ impl RecordingController {
                 {
                     warn!("Hold-start stale-session stop failed: {stop_err}");
                 }
-                Self::clear_recorder_callbacks(&mut rec);
+                Self::clear_recorder_callbacks(rec);
                 *session_id.write().await = None;
                 set_assistive_session(false);
                 return;
             }
-            drop(rec);
+            drop(rec_guard);
 
             // Transition to REC_HOLD as soon as recorder starts to avoid IDLE/active races.
             Self::set_state_with_broadcast(&state, &event_broadcast, State::RecHold).await;
@@ -1654,11 +1801,20 @@ impl RecordingController {
         let sound_volume = config.sound_volume;
 
         // Start the recorder
-        let mut recorder = self.recorder.lock().await;
+        let mut recorder_guard = self.recorder.lock().await;
+        let recorder = match Self::recorder_from_guard_mut(&mut recorder_guard, "Toggle-start") {
+            Ok(recorder) => recorder,
+            Err(error) => {
+                drop(recorder_guard);
+                self.reset_session_after_start_failure("Toggle-start").await;
+                crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
+                return Err(error);
+            }
+        };
         if let Err(e) =
-            Self::ensure_recorder_ready_for_start(&mut recorder, "Toggle-start preflight").await
+            Self::ensure_recorder_ready_for_start(recorder, "Toggle-start preflight").await
         {
-            drop(recorder);
+            drop(recorder_guard);
             self.reset_session_after_start_failure("Toggle-start preflight")
                 .await;
             return Err(e);
@@ -1676,7 +1832,7 @@ impl RecordingController {
 
         // Runtime pipeline is always event-based.
         Self::configure_toggle_event_sink(
-            &mut recorder,
+            recorder,
             OVERLAY_CONTROLLER.get().cloned(),
             new_session_id.clone(),
             is_assistive,
@@ -1695,9 +1851,9 @@ impl RecordingController {
                 if let Err(stop_err) = recorder.stop_without_saving().await {
                     warn!("Toggle stale-recorder recovery failed: {stop_err}");
                 }
-                Self::clear_recorder_callbacks(&mut recorder);
+                Self::clear_recorder_callbacks(recorder);
                 Self::configure_toggle_event_sink(
-                    &mut recorder,
+                    recorder,
                     OVERLAY_CONTROLLER.get().cloned(),
                     new_session_id.clone(),
                     is_assistive,
@@ -1708,7 +1864,7 @@ impl RecordingController {
                     .start_event_session(Some(language.as_str().to_string()))
                     .await
                 {
-                    drop(recorder);
+                    drop(recorder_guard);
                     self.reset_session_after_start_failure("Toggle-start retry")
                         .await;
                     return Err(anyhow::anyhow!(
@@ -1716,12 +1872,12 @@ impl RecordingController {
                     ));
                 }
             } else {
-                drop(recorder);
+                drop(recorder_guard);
                 self.reset_session_after_start_failure("Toggle-start").await;
                 return Err(e);
             }
         }
-        drop(recorder);
+        drop(recorder_guard);
 
         // Transition to REC_TOGGLE immediately after recorder starts.
         self.set_state(State::RecToggle).await;
@@ -1852,7 +2008,7 @@ impl RecordingController {
                 force_ai,
                 config,
                 language_opt,
-                raw_save_enabled: raw_save_enabled(),
+                raw_save_enabled: raw_save_enabled(is_assistive),
                 audio_path: None,
                 cloud_text_opt: None,
                 cloud_handle: None,
@@ -1882,16 +2038,22 @@ impl RecordingController {
         info!("Stopping toggle recording");
 
         // Stop recording and flush buffered worker
-        let mut recorder = self.recorder.lock().await;
+        let mut recorder_guard = self.recorder.lock().await;
         let mut stop_error: Option<anyhow::Error> = None;
-        if !cfg!(test)
-            && let Err(e) = recorder.stop_without_saving().await
-        {
-            warn!("Toggle stop: recorder stop failed; continuing cleanup: {e}");
-            stop_error = Some(e);
+        if let Some(recorder) = recorder_guard.as_mut() {
+            if !cfg!(test)
+                && let Err(e) = recorder.stop_without_saving().await
+            {
+                warn!("Toggle stop: recorder stop failed; continuing cleanup: {e}");
+                stop_error = Some(e);
+            }
+            Self::clear_recorder_callbacks(recorder);
+        } else {
+            let error = Self::recorder_unavailable_error("Toggle-stop");
+            warn!("Toggle stop: {error}; continuing cleanup");
+            stop_error = Some(error);
         }
-        Self::clear_recorder_callbacks(&mut recorder);
-        drop(recorder);
+        drop(recorder_guard);
 
         // Reset state
         self.set_state(State::Idle).await;
@@ -2081,10 +2243,11 @@ impl RecordingController {
         }
 
         // Stop the recorder and get audio file path
-        let mut recorder = self.recorder.lock().await;
+        let mut recorder_guard = self.recorder.lock().await;
+        let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
         let (streaming_text, raw_audio_path_opt) =
             recorder.stop().await.context("Failed to stop recorder")?;
-        drop(recorder); // Release lock
+        drop(recorder_guard); // Release lock
 
         // Check audio path validity (if present)
         let audio_path = if let Some(path) = raw_audio_path_opt {
@@ -2106,7 +2269,7 @@ impl RecordingController {
         let language = config.whisper_language;
         let language_opt = Some(language.as_str());
         let use_local_stt = config.use_local_stt;
-        let raw_save_enabled = raw_save_enabled();
+        let raw_save_enabled = raw_save_enabled(assistive);
 
         let cloud_config = if use_local_stt {
             None

@@ -113,9 +113,9 @@ pub mod ui_tokens {
     pub const SURFACE_BORDER_ALPHA: f64 = 0.14;
 
     /// Glass background: alpha for vibrancy-backed views.
-    pub const GLASS_BG_ALPHA: f64 = 0.20;
+    pub const GLASS_BG_ALPHA: f64 = 0.24;
     /// Glass fallback: alpha when NSVisualEffectView is not available.
-    pub const GLASS_FALLBACK_ALPHA: f64 = 0.30;
+    pub const GLASS_FALLBACK_ALPHA: f64 = 0.34;
 
     /// Paper tiers are appearance-aware: derived from controlBackgroundColor.
     pub const PAPER_WARM_ALPHA: f64 = 0.74;
@@ -135,9 +135,12 @@ pub mod ui_tokens {
     pub const DENSITY_MEDIUM: f64 = 8.0;
     pub const DENSITY_COMPACT: f64 = 6.0;
 
+    /// Extra vertical gap inserted above section headers within settings tabs.
+    pub const SECTION_GAP: f64 = 20.0;
+
     /// Dictation overlay tuning: lighter sheet + compact action row.
-    pub const OVERLAY_GLASS_BG_ALPHA: f64 = 0.16;
-    pub const OVERLAY_GLASS_FALLBACK_ALPHA: f64 = 0.24;
+    pub const OVERLAY_GLASS_BG_ALPHA: f64 = 0.18;
+    pub const OVERLAY_GLASS_FALLBACK_ALPHA: f64 = 0.28;
     pub const OVERLAY_BORDER_ALPHA: f64 = 0.10;
     pub const OVERLAY_TEXT_PANEL_ALPHA: f64 = 0.74;
     pub const OVERLAY_ACTION_BG_ALPHA: f64 = 0.70;
@@ -168,19 +171,19 @@ pub mod ui_colors {
     }
 
     pub fn sidebar_bg() -> Id {
-        control_bg_tint(adaptive_alpha(0.27, 0.38))
+        control_bg_tint(adaptive_alpha(0.22, 0.32))
     }
 
     pub fn panel_bg() -> Id {
-        control_bg_tint(adaptive_alpha(0.35, 0.46))
+        control_bg_tint(adaptive_alpha(0.28, 0.38))
     }
 
     pub fn settings_glass_bg() -> Id {
-        control_bg_tint(adaptive_alpha(0.30, 0.40))
+        control_bg_tint(adaptive_alpha(0.26, 0.36))
     }
 
     pub fn input_bar_bg() -> Id {
-        control_bg_tint(adaptive_alpha(0.24, 0.34))
+        control_bg_tint(adaptive_alpha(0.22, 0.32))
     }
 
     pub fn input_bar_border() -> Id {
@@ -696,10 +699,9 @@ const NS_APPKIT_VERSION_26_0: f64 = 2685.0;
 #[cfg(feature = "liquid_glass")]
 fn glass_effect_style_for_material(material: NSVisualEffectMaterial) -> NSGlassEffectViewStyle {
     match material {
-        // Keep side panes and title-like strips lighter.
-        NSVisualEffectMaterial::Sidebar | NSVisualEffectMaterial::Titlebar => {
-            NSGlassEffectViewStyle::Clear
-        }
+        // Titlebar stays Clear (light, floating chrome).
+        // Sidebar uses Regular for readability — matches System Settings behaviour.
+        NSVisualEffectMaterial::Titlebar => NSGlassEffectViewStyle::Clear,
         _ => NSGlassEffectViewStyle::Regular,
     }
 }

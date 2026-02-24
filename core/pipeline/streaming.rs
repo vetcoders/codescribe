@@ -38,9 +38,11 @@ const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for stronger context con
 const DEFAULT_BUFFER_DELAY_MS: u64 = 280;
 const DEFAULT_TYPING_CPS: f32 = 90.0;
 const DEFAULT_EMIT_WORDS_MAX: usize = 2;
-const PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS: u32 = 2;
-const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 3_500;
-const PARTIAL_PASS_TRIGGER_WATCHDOG_MS: u64 = 6_500;
+// Partial correction should feel "live" in overlay, not lag by multiple turns.
+// Trigger earlier to improve retranscription visibility in hands-off sessions.
+const PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS: u32 = 1;
+const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 1_800;
+const PARTIAL_PASS_TRIGGER_WATCHDOG_MS: u64 = 3_000;
 
 /// Minimum audio to accumulate before running extract_speech + Whisper inference.
 /// Interim chunks below this threshold are buffered; only speech-extracted audio
@@ -469,6 +471,41 @@ fn correction_is_stale(
     expected_preview_rev != current_preview_rev || expected_text != current_text
 }
 
+/// Build correction baseline text for replacement semantics across boundaries.
+///
+/// Returns `(baseline_text, correction_after_final_boundary)` where
+/// `correction_after_final_boundary` indicates that utterance-local preview state
+/// was already cleared by a boundary commit.
+fn correction_baseline_text(
+    accumulated_text: &str,
+    expected_text: &str,
+    window_text: &str,
+) -> (String, bool) {
+    if !accumulated_text.trim().is_empty() {
+        return (accumulated_text.to_string(), false);
+    }
+    if !expected_text.trim().is_empty() {
+        return (expected_text.to_string(), true);
+    }
+    if !window_text.trim().is_empty() {
+        return (window_text.to_string(), true);
+    }
+    (String::new(), true)
+}
+
+/// Apply final boundary text while preserving a non-empty preview fallback.
+///
+/// Returns `true` when a boundary has usable content after reconciliation.
+fn apply_final_boundary_text(accumulated_text: &mut String, cleaned_final: &str) -> bool {
+    let cleaned = cleaned_final.trim();
+    if cleaned.is_empty() {
+        !accumulated_text.trim().is_empty()
+    } else {
+        *accumulated_text = cleaned.to_string();
+        true
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 struct PartialPassTelemetry {
     runs_total: u64,
@@ -639,11 +676,23 @@ impl BufferedEmitter {
     }
 
     pub fn push_correction(&mut self, corrected: String) {
-        if self.emitted_text.is_empty() {
+        if corrected.trim().is_empty() {
             return;
         }
-        // Guard: reject corrections that would rewrite most of the text.
-        // Common-prefix must cover >= ratio (default: 60%) of the shorter string.
+        if self.emitted_text.is_empty() {
+            // If correction arrives before any typed output, bootstrap the queue from
+            // corrected text instead of dropping the update.
+            self.queue.clear();
+            self.current_segment = None;
+            self.current_tokens.clear();
+            self.current_token_index = 0;
+            self.correction_pending = None;
+            self.push_segment(corrected);
+            return;
+        }
+        // Observe rewrite size for telemetry/debugging. Large rewrites are allowed:
+        // stale guards already run upstream, and dropping here causes visible
+        // "missing correction" regressions in live overlay.
         let prefix_len = self
             .emitted_text
             .chars()
@@ -657,13 +706,12 @@ impl BufferedEmitter {
             .min(corrected.chars().count());
         if min_len > 0 && (prefix_len as f64 / min_len as f64) < self.correction_prefix_ratio {
             debug!(
-                "Correction rejected: common prefix {}/{} ({:.0}%) < {:.0}%",
+                "Applying wide correction: common prefix {}/{} ({:.0}%) < {:.0}%",
                 prefix_len,
                 min_len,
                 prefix_len as f64 / min_len as f64 * 100.0,
                 self.correction_prefix_ratio * 100.0,
             );
-            return;
         }
         self.correction_pending = Some(corrected);
     }
@@ -1347,11 +1395,6 @@ pub(crate) async fn transcription_session(
                                 current_len = window_text.chars().count(),
                                 "Suppressing stale correction (window advanced or text changed)"
                             );
-                        } else if accumulated_text.is_empty() {
-                            // Guard: if accumulated_text was cleared by FINAL but stale
-                            // guard passed (edge case: dropped FINAL), skip — the
-                            // utterance was already committed.
-                            debug!("Skipping correction: accumulated_text is empty after FINAL");
                         } else {
                             match postprocess_correction_with_snapshot(
                                 &mut pipeline,
@@ -1359,8 +1402,13 @@ pub(crate) async fn transcription_session(
                                 &suffix_snapshot,
                             ) {
                                 Ok(cleaned) => {
-                                    if cleaned != accumulated_text {
-                                        let previous_text = accumulated_text.clone();
+                                    let (previous_text, correction_after_boundary) =
+                                        correction_baseline_text(
+                                            &accumulated_text,
+                                            &expected_text,
+                                            &window_text,
+                                        );
+                                    if cleaned != previous_text {
                                         preview_rev += 1;
                                         corrections_applied += 1;
                                         debug!(
@@ -1374,8 +1422,14 @@ pub(crate) async fn transcription_session(
                                             text: cleaned.clone(),
                                             previous_text,
                                         });
-                                        // Update accumulated text so next Preview builds from corrected state.
-                                        accumulated_text = cleaned;
+                                        if correction_after_boundary {
+                                            debug!(
+                                                "Applied correction after boundary without reopening utterance-local preview state"
+                                            );
+                                        } else {
+                                            // Update accumulated text so next Preview builds from corrected state.
+                                            accumulated_text = cleaned;
+                                        }
                                     } else {
                                         debug!("Skipping correction emit: no text delta after postprocess");
                                     }
@@ -1476,15 +1530,26 @@ pub(crate) async fn transcription_session(
                             ) {
                                 Ok(cleaned) => {
                                     if item.is_final {
-                                        // Final boundary commit: use full-utterance cleaned text as source of truth.
-                                        accumulated_text = cleaned.trim().to_string();
-                                        // Fix D: Append FINAL text to window-scoped state
-                                        // (not replace — window spans multiple utterances).
-                                        if !window_text.is_empty() {
-                                            window_text.push(' ');
+                                        let cleaned_final = cleaned.trim();
+                                        if apply_final_boundary_text(&mut accumulated_text, cleaned_final) {
+                                            if !cleaned_final.is_empty() {
+                                                // Fix D: Append FINAL text to window-scoped state
+                                                // (not replace — window spans multiple utterances).
+                                                if !window_text.is_empty() {
+                                                    window_text.push(' ');
+                                                }
+                                                window_text.push_str(cleaned_final);
+                                                window_rev += 1;
+                                            } else {
+                                                // Keep the latest preview when FINAL postprocess is empty.
+                                                // Otherwise silence boundary may never emit UtteranceFinal,
+                                                // which breaks auto-send on pause in toggle mode.
+                                                debug!(
+                                                    preview_len = accumulated_text.chars().count(),
+                                                    "Final cleaned text empty; preserving latest preview for boundary commit"
+                                                );
+                                            }
                                         }
-                                        window_text.push_str(cleaned.trim());
-                                        window_rev += 1;
                                     } else {
                                         preview_rev += 1;
                                         if !accumulated_text.is_empty() {
@@ -2942,7 +3007,7 @@ mod tests {
     }
 
     #[test]
-    fn test_correction_guard_rejects_low_prefix() {
+    fn test_correction_guard_keeps_wide_rewrites_pending() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2952,13 +3017,41 @@ mod tests {
             let mut emitter = BufferedEmitter::new(buf, None, None);
             emitter.emitted_text = "Hello world, this is a test.".to_string();
 
-            // Completely different text — should be rejected (<70% prefix)
+            // Completely different text should still be queued as a correction.
             emitter.push_correction("Goodbye universe, nothing alike.".to_string());
-            assert!(emitter.correction_pending.is_none());
+            assert_eq!(
+                emitter.correction_pending.as_deref(),
+                Some("Goodbye universe, nothing alike.")
+            );
 
-            // Similar text with minor tail fix — should be accepted (>70% prefix)
+            // Similar text with minor tail fix should also be accepted.
             emitter.push_correction("Hello world, this is a test!".to_string());
-            assert!(emitter.correction_pending.is_some());
+            assert_eq!(
+                emitter.correction_pending.as_deref(),
+                Some("Hello world, this is a test!")
+            );
+        });
+    }
+
+    #[test]
+    fn test_correction_bootstraps_when_no_output_emitted_yet() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let mut emitter = BufferedEmitter::new(buf, None, None);
+
+            emitter.push_segment("draft".to_string());
+            emitter.push_correction("draft corrected".to_string());
+
+            assert_eq!(emitter.queue.len(), 1);
+            assert_eq!(
+                emitter.queue.front().map(String::as_str),
+                Some("draft corrected")
+            );
+            assert!(emitter.correction_pending.is_none());
         });
     }
 
@@ -3520,6 +3613,33 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_final_boundary_text_preserves_preview_when_cleaned_final_empty() {
+        let mut accumulated = "to jest preview".to_string();
+        let has_content = apply_final_boundary_text(&mut accumulated, "");
+        assert!(
+            has_content,
+            "non-empty preview should survive empty final cleanup"
+        );
+        assert_eq!(accumulated, "to jest preview");
+    }
+
+    #[test]
+    fn test_apply_final_boundary_text_replaces_preview_with_cleaned_final() {
+        let mut accumulated = "stary preview".to_string();
+        let has_content = apply_final_boundary_text(&mut accumulated, "  finalny tekst  ");
+        assert!(has_content);
+        assert_eq!(accumulated, "finalny tekst");
+    }
+
+    #[test]
+    fn test_apply_final_boundary_text_reports_empty_when_no_preview_and_no_final() {
+        let mut accumulated = String::new();
+        let has_content = apply_final_boundary_text(&mut accumulated, "   ");
+        assert!(!has_content);
+        assert!(accumulated.is_empty());
+    }
+
+    #[test]
     fn test_postprocess_correction_with_snapshot_updates_suffix_on_success() {
         let mut pipeline = TranscriptionPipeline::new(None);
         pipeline.last_suffix = "old-tail".to_string();
@@ -3661,5 +3781,23 @@ mod tests {
             ),
             "window-scoped stale guard must detect FINAL boundary crossing"
         );
+    }
+
+    #[test]
+    fn test_correction_baseline_prefers_live_accumulated_text() {
+        let (baseline, boundary) = correction_baseline_text("draft live", "expected", "window");
+        assert_eq!(baseline, "draft live");
+        assert!(!boundary);
+    }
+
+    #[test]
+    fn test_correction_baseline_falls_back_after_boundary() {
+        let (from_expected, expected_boundary) = correction_baseline_text("", "expected text", "");
+        assert_eq!(from_expected, "expected text");
+        assert!(expected_boundary);
+
+        let (from_window, window_boundary) = correction_baseline_text("", "", "window text");
+        assert_eq!(from_window, "window text");
+        assert!(window_boundary);
     }
 }

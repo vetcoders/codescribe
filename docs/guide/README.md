@@ -11,7 +11,7 @@ CodeScribe is a native macOS menu-bar application that transcribes your speech l
 1. **Install**: `brew install --cask codescribe` or download from [Releases](https://github.com/VetCoders/CodeScribe/releases)
 2. **Launch**: Open CodeScribe from Applications
 3. **Grant permissions**: Microphone + Accessibility (follow prompts)
-4. **Transcribe**: Hold `Ctrl`, speak, release → text appears at cursor
+4. **Transcribe**: Use your **Dictation** hotkey (default: hold `Fn/Globe`), speak, release → text appears at cursor (Settings → Modes & Shortcuts)
 
 That's it. You're transcribing.
 
@@ -60,9 +60,9 @@ That's it. You're transcribing.
 
 | Hotkey            | Mode          | What It Does                                |
 | ----------------- | ------------- | ------------------------------------------- |
-| `Ctrl` hold       | **Raw**       | Fast dictation, no AI, text pasted directly |
-| `Ctrl+Shift` hold | **Assistive** | AI expands/enhances your speech             |
-| `Double Option`   | **Toggle**    | Hands-free, auto-stops on silence           |
+| Hold `Fn/Globe` (default; configurable) | **Dictation** | Fast dictation (AI optional), auto‑paste ON |
+| Double‑tap `Left Option`               | **Formatting** | AI formatting pass, auto‑paste ON           |
+| Double‑tap `Right Option`              | **Assistive (Agent)** | Agent chat (uses selection when available) |
 
 ---
 

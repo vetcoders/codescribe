@@ -22,11 +22,11 @@ use crate::ui_helpers::{
 };
 
 use super::api::{
-    clear_overlay_state, clear_voice_chat_text_impl, commit_last_user_message_impl,
-    discard_last_message_impl, filter_drawer, handle_card_copy, handle_card_delete,
-    handle_card_edit, handle_card_favorite, reflow_agent_after_resize_impl,
-    reflow_overlay_after_resize_impl, render_attachment_chips, send_draft_message_impl,
-    toggle_drawer_favorites_only_impl, update_active_tab_impl, update_attach_button_ui,
+    clear_overlay_state, commit_last_user_message_impl, discard_last_message_impl, filter_drawer,
+    handle_card_copy, handle_card_delete, handle_card_edit, handle_card_favorite,
+    reflow_agent_after_resize_impl, reflow_overlay_after_resize_impl, render_attachment_chips,
+    send_draft_message_impl, start_new_thread_impl, toggle_drawer_favorites_only_impl,
+    update_active_tab_impl, update_attach_button_ui,
 };
 use super::state::{ChatRole, OVERLAY_STATE, Tab, VoiceChatOverlayState};
 
@@ -1193,9 +1193,8 @@ extern "C" fn on_control_text_did_change(_this: &Object, _cmd: Sel, notification
 }
 
 extern "C" fn on_new_thread(_this: &Object, _cmd: Sel, _sender: Id) {
-    clear_voice_chat_text_impl();
-    crate::controller::request_new_agent_thread();
-    info!("New thread started (UI + backend runtime boundary reset)");
+    start_new_thread_impl();
+    info!("New thread requested (backend reset + UI clear)");
 }
 
 extern "C" fn on_toggle_favorites_only(_this: &Object, _cmd: Sel, _sender: Id) {

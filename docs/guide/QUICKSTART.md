@@ -47,29 +47,27 @@ On first launch, grant these permissions in **System Settings → Privacy & Secu
 
 ## 3. Configure
 
-Edit `~/.codescribe/.env` or use the menu:
+Recommended: configure CodeScribe in the **Settings** window.
 
 ```bash
-# Open config in editor
-codescribe --config
+# Menu bar icon → Settings
+# or: codescribe --config (power-user overrides)
 ```
 
 ### Essential Settings
 
-```env
-# Language (REQUIRED - no auto-detect!)
-WHISPER_LANGUAGE=pl                    # pl | en | de | fr | es
+- **Audio & Input**
+  - Set `Whisper language` (no auto-detect; pick the language you speak)
+  - Toggle **AI Formatting** for Dictation (optional)
+- **Modes & Shortcuts**
+  - Dictation: hold a modifier (default: `Fn/Globe`)
+  - Formatting: double‑tap `Left Option`
+  - Assistive (Agent): double‑tap `Right Option`
+- **AI & Prompts**
+  - Configure providers for **Formatting** and **Assistive**
+  - API keys are stored in macOS Keychain
 
-# Hotkeys
-HOLD_MODS=ctrl                         # ctrl | ctrl_alt | ctrl_shift
-TOGGLE_TRIGGER=double_option           # double_option | none
-
-# AI Formatting (optional but recommended)
-AI_FORMATTING_ENABLED=1
-LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1-mini
-LLM_API_KEY=sk-your-key-here
-```
+Power-user overrides still exist via `~/.codescribe/.env`, but you should not need it to get started.
 
 ---
 
@@ -77,11 +75,11 @@ LLM_API_KEY=sk-your-key-here
 
 ### Recording Modes
 
-| Mode          | Hotkey              | What It Does                          |
-| ------------- | ------------------- | ------------------------------------- |
-| **Raw**       | Hold `Ctrl`         | Fastest, no AI, raw Whisper output    |
-| **Assistive** | Hold `Ctrl+Shift`   | AI-enhanced, expands/improves text    |
-| **Toggle**    | Double-tap `Option` | Hands-free, ends utterance on silence |
+| Mode                 | Shortcut                     | What It Does                                  |
+| -------------------- | ---------------------------- | --------------------------------------------- |
+| **Dictation**        | Hold your Dictation binding  | Fast dictation, auto‑paste (AI optional)      |
+| **Formatting**       | Double‑tap `Left Option`     | Hands‑free + AI formatting pass (auto‑paste)  |
+| **Assistive (Agent)**| Double‑tap `Right Option`    | Agent chat overlay (auto‑paste OFF)           |
 
 ### Visual Feedback
 

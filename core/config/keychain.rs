@@ -121,6 +121,22 @@ fn is_test_env() -> bool {
     if cfg!(test) {
         return true;
     }
+    if let Ok(exe_path) = std::env::current_exe() {
+        let exe = exe_path.to_string_lossy();
+        if exe.contains("/target/debug/deps/")
+            || exe.contains("/target/release/deps/")
+            || exe.contains("\\target\\debug\\deps\\")
+            || exe.contains("\\target\\release\\deps\\")
+        {
+            return true;
+        }
+    }
+    // app/* tests link codescribe-core as a dependency, so cfg!(test) is false there.
+    // libtest sets RUST_TEST_THREADS for the harness process; use it as a
+    // non-invasive signal to skip blocking Keychain calls during tests.
+    if std::env::var_os("RUST_TEST_THREADS").is_some() {
+        return true;
+    }
     if std::env::var_os("CODESCRIBE_DISABLE_KEYCHAIN").is_some() {
         return true;
     }

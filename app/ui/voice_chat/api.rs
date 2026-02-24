@@ -22,10 +22,10 @@ use crate::ui_helpers::{
     BubbleConfig, BubbleRole, LabelConfig, add_subview, apply_tafla_surface, button_set_action,
     button_style, chat_header_layout, color_label, color_rgba, color_secondary_label,
     create_bubble_view, create_button, create_card_view, create_label, get_text_field_string,
-    get_text_view_string, layout_region_frame_for_view, list_draft_files, ns_string,
-    open_file_in_editor, resize_bubble_container_for_text, set_button_symbol,
-    set_text_field_string, set_text_view_string, set_tooltip, stack_view_add, stack_view_clear,
-    ui_colors, ui_tokens, update_bubble_text, window_set_alpha, window_show,
+    get_text_view_string, layout_region_frame_for_view, ns_string, open_file_in_editor,
+    resize_bubble_container_for_text, set_button_symbol, set_text_field_string,
+    set_text_view_string, set_tooltip, stack_view_add, stack_view_clear, ui_colors, ui_tokens,
+    update_bubble_text, window_set_alpha, window_show,
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
@@ -240,6 +240,45 @@ pub fn set_voice_chat_sending(is_sending: bool) {
 pub fn clear_voice_chat_text() {
     Queue::main().exec_async(|| {
         clear_voice_chat_text_impl();
+    });
+}
+
+/// Start a fresh Agent thread by rotating backend runtime first, then clearing UI state.
+pub(super) fn start_new_thread_impl() {
+    update_voice_chat_status_impl("Starting new thread...");
+
+    std::thread::spawn(|| {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(error) => {
+                let reason = format!("Unable to initialize async runtime for New thread: {error}");
+                Queue::main().exec_async(move || {
+                    warn!("{reason}");
+                    update_voice_chat_status_impl("Thread reset failed");
+                    add_voice_chat_error_message(&reason);
+                });
+                return;
+            }
+        };
+
+        let reset_result = rt.block_on(crate::controller::reset_agent_runtime_for_new_thread());
+        Queue::main().exec_async(move || match reset_result {
+            Ok(generation) => {
+                clear_voice_chat_text_impl();
+                update_voice_chat_status_impl("Ready");
+                info!("New thread started (generation={generation})");
+            }
+            Err(error) => {
+                warn!("Failed to start new thread: {error}");
+                update_voice_chat_status_impl("Thread reset failed");
+                add_voice_chat_error_message(&format!(
+                    "Unable to start a new thread. Continuing the current thread. {error}"
+                ));
+            }
+        });
     });
 }
 
@@ -844,10 +883,10 @@ fn update_voice_chat_status_impl(status: &str) {
     };
     state.status_text = compose_runtime_status_text(
         &state.status_base_text,
-        state.runtime_degraded,
+        state.is_agent_degraded,
         state.runtime_degraded_reason.as_deref(),
     );
-    let next_kind = status_kind_for_runtime(&state.status_base_text, state.runtime_degraded);
+    let next_kind = status_kind_for_runtime(&state.status_base_text, state.is_agent_degraded);
     state.status_kind = next_kind;
     apply_status_pill(&state);
     let _ = crate::tray::update_tray_status(next_kind.to_tray());
@@ -856,6 +895,7 @@ fn update_voice_chat_status_impl(status: &str) {
 fn set_voice_chat_runtime_degraded_impl(is_degraded: bool, reason: Option<String>) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.runtime_degraded = is_degraded;
+    state.is_agent_degraded = is_degraded;
     state.runtime_degraded_reason = if is_degraded {
         reason.and_then(|text| {
             let trimmed = text.trim();
@@ -870,10 +910,10 @@ fn set_voice_chat_runtime_degraded_impl(is_degraded: bool, reason: Option<String
     };
     state.status_text = compose_runtime_status_text(
         &state.status_base_text,
-        state.runtime_degraded,
+        state.is_agent_degraded,
         state.runtime_degraded_reason.as_deref(),
     );
-    state.status_kind = status_kind_for_runtime(&state.status_base_text, state.runtime_degraded);
+    state.status_kind = status_kind_for_runtime(&state.status_base_text, state.is_agent_degraded);
     apply_status_pill(&state);
     let _ = crate::tray::update_tray_status(state.status_kind.to_tray());
 }
@@ -2715,6 +2755,9 @@ fn refresh_drawer_impl() {
 pub fn handle_card_copy(index: usize) {
     let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(entry) = state.drawer_entries.get(index) {
+        if is_drawer_unavailable_placeholder(entry) {
+            return;
+        }
         match &entry.source {
             DrawerEntrySource::Thread { id } => {
                 if let Ok(store) = ThreadStore::new() {
@@ -2746,6 +2789,9 @@ pub fn handle_card_edit(index: usize) {
     let Some(path) = path else {
         return;
     };
+    if path.as_os_str().is_empty() {
+        return;
+    }
 
     tracing::info!("Drawer Edit clicked: {}", path.display());
     let ok = open_file_in_editor(&path);
@@ -2815,6 +2861,9 @@ pub fn handle_card_edit(index: usize) {
 pub fn handle_card_delete(index: usize) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(entry) = state.drawer_entries.get(index) {
+        if is_drawer_unavailable_placeholder(entry) {
+            return;
+        }
         let favorite_key = drawer_entry_favorite_key(entry);
         match &entry.source {
             DrawerEntrySource::Thread { id } => {
@@ -2850,6 +2899,9 @@ pub fn handle_card_favorite(index: usize) {
     let Some(entry) = state.drawer_entries.get_mut(index) else {
         return;
     };
+    if is_drawer_unavailable_placeholder(entry) {
+        return;
+    }
 
     entry.is_favorite = !entry.is_favorite;
     let is_favorite = entry.is_favorite;
@@ -3294,6 +3346,21 @@ mod tests {
     }
 
     #[test]
+    fn drawer_unavailable_placeholder_entry_has_expected_metadata() {
+        let entry = thread_history_unavailable_drawer_entry();
+
+        assert!(matches!(entry.source, DrawerEntrySource::LegacyFile));
+        assert!(entry.path.as_os_str().is_empty());
+        assert_eq!(entry.preview, "Thread history unavailable — storage error");
+        assert!(!entry.is_ai_formatted);
+        assert!(entry.search_corpus.contains("unavailable"));
+        assert!(entry.search_corpus.contains("error"));
+        assert!(is_drawer_unavailable_placeholder(&entry));
+        assert!(drawer_entry_matches_query(&entry, "unavailable"));
+        assert!(drawer_entry_matches_query(&entry, "error"));
+    }
+
+    #[test]
     #[serial]
     fn runtime_degraded_status_persists_across_status_updates() {
         {
@@ -3310,6 +3377,7 @@ mod tests {
         {
             let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             assert!(state.runtime_degraded);
+            assert!(state.is_agent_degraded);
             assert_eq!(state.status_base_text, "Sending...");
             assert_eq!(state.status_kind, UiStatus::Error);
             assert!(state.status_text.contains("Runtime degraded"));
@@ -3320,6 +3388,7 @@ mod tests {
         {
             let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             assert!(!state.runtime_degraded);
+            assert!(!state.is_agent_degraded);
             assert_eq!(state.status_text, "Sending...");
             assert_eq!(state.status_kind, UiStatus::Processing);
         }
@@ -3644,6 +3713,9 @@ unsafe fn apply_search_highlight(field: Id, text: &str, query: &str) {
     let _: () = msg_send![field, setAttributedStringValue: attr_str];
 }
 fn entry_type_label(entry: &DrawerEntry) -> &'static str {
+    if is_drawer_unavailable_placeholder(entry) {
+        return "Warning";
+    }
     match entry.source {
         DrawerEntrySource::Thread { .. } => "ThreadStore",
         DrawerEntrySource::LegacyFile => {
@@ -3657,6 +3729,9 @@ fn entry_type_label(entry: &DrawerEntry) -> &'static str {
 }
 
 fn drawer_entry_source_label(entry: &DrawerEntry) -> String {
+    if is_drawer_unavailable_placeholder(entry) {
+        return "ThreadStore".to_string();
+    }
     match entry.source {
         DrawerEntrySource::Thread { .. } => {
             if entry.path.exists() {
@@ -3670,6 +3745,9 @@ fn drawer_entry_source_label(entry: &DrawerEntry) -> String {
 }
 
 fn drawer_entry_subtitle(entry: &DrawerEntry) -> String {
+    if is_drawer_unavailable_placeholder(entry) {
+        return "Shift/Cmd • ThreadStore • unavailable".to_string();
+    }
     let source_label = drawer_entry_source_label(entry);
     match &entry.source {
         DrawerEntrySource::Thread { id } => {
@@ -3723,9 +3801,6 @@ pub fn load_drawer_entries() -> Vec<DrawerEntry> {
 fn load_drawer_entries_with_query(query: &str) -> Vec<DrawerEntry> {
     let favorites = load_favorites_from_disk();
     let mut entries = load_thread_drawer_entries(&favorites);
-    if should_include_legacy_drawer_entries() {
-        entries.extend(load_legacy_drawer_entries(&favorites));
-    }
     entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     let query_lower = query.trim().to_ascii_lowercase();
@@ -3736,14 +3811,31 @@ fn load_drawer_entries_with_query(query: &str) -> Vec<DrawerEntry> {
     entries
 }
 
+fn thread_history_unavailable_drawer_entry() -> DrawerEntry {
+    DrawerEntry {
+        source: DrawerEntrySource::LegacyFile,
+        path: PathBuf::from(""),
+        timestamp: SystemTime::now(),
+        mode: TranscriptionMode::Assistive,
+        preview: "Thread history unavailable — storage error".to_string(),
+        search_corpus: "thread history unavailable storage error".to_string(),
+        is_ai_formatted: false,
+        is_favorite: false,
+    }
+}
+
+fn is_drawer_unavailable_placeholder(entry: &DrawerEntry) -> bool {
+    matches!(entry.source, DrawerEntrySource::LegacyFile) && entry.path.as_os_str().is_empty()
+}
+
 fn load_thread_drawer_entries(favorites: &HashSet<String>) -> Vec<DrawerEntry> {
     let Ok(store) = ThreadStore::new() else {
         warn!("Drawer: failed to open ThreadStore; drawer entries unavailable");
-        return Vec::new();
+        return vec![thread_history_unavailable_drawer_entry()];
     };
     let Ok(index) = ThreadIndex::load_or_create(store.threads_dir()) else {
         warn!("Drawer: failed to load ThreadIndex; drawer entries unavailable");
-        return Vec::new();
+        return vec![thread_history_unavailable_drawer_entry()];
     };
 
     index
@@ -3807,81 +3899,6 @@ fn load_thread_drawer_entries(favorites: &HashSet<String>) -> Vec<DrawerEntry> {
         .collect()
 }
 
-fn should_include_legacy_drawer_entries() -> bool {
-    std::env::var("CODESCRIBE_DRAWER_INCLUDE_LEGACY")
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn load_legacy_drawer_entries(favorites: &HashSet<String>) -> Vec<DrawerEntry> {
-    let base_dir = codescribe_core::config::Config::config_dir().join("transcriptions");
-    let today_dir = base_dir.join(chrono::Local::now().format("%Y-%m-%d").to_string());
-
-    let mut dirs = vec![today_dir.clone()];
-    if let Ok(entries) = std::fs::read_dir(&base_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() && path != today_dir {
-                dirs.push(path);
-            }
-        }
-    }
-
-    let mut files: Vec<(PathBuf, SystemTime)> = dirs
-        .into_iter()
-        .flat_map(|dir| list_draft_files(&dir).into_iter())
-        .filter_map(|path| {
-            let modified = path.metadata().ok()?.modified().ok()?;
-            Some((path, modified))
-        })
-        .collect();
-    files.sort_by(|a, b| b.1.cmp(&a.1));
-    files.truncate(500);
-
-    files
-        .into_iter()
-        .map(|(path, timestamp)| {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
-            let preview = normalize_preview(&content, 120);
-            let mode = transcription_mode_from_file_name(&name);
-            let is_ai_formatted = name.contains("_ai") && !name.contains("ai-failed");
-            let is_favorite = favorites.contains(&path.to_string_lossy().to_string());
-            let mode_label = mode_label(mode);
-            let entry_type = if is_ai_formatted { "AI" } else { "Tt" };
-            let search_corpus = format!(
-                "legacy source:legacy_transcript {entry_type} {mode_label} {} {} {}",
-                path.to_string_lossy(),
-                path.file_name()
-                    .and_then(|file| file.to_str())
-                    .unwrap_or_default(),
-                preview
-            )
-            .to_ascii_lowercase();
-            DrawerEntry {
-                source: DrawerEntrySource::LegacyFile,
-                path,
-                timestamp,
-                mode,
-                preview,
-                search_corpus,
-                is_ai_formatted,
-                is_favorite,
-            }
-        })
-        .collect()
-}
-
 fn system_time_from_unix_millis(timestamp_millis: i64) -> SystemTime {
     if timestamp_millis <= 0 {
         return SystemTime::now();
@@ -3895,18 +3912,6 @@ fn transcription_mode_from_thread_mode(mode: &str) -> TranscriptionMode {
     } else if mode.eq_ignore_ascii_case("assistive") || mode.eq_ignore_ascii_case("chat") {
         TranscriptionMode::Assistive
     } else if mode.eq_ignore_ascii_case("hold") || mode.eq_ignore_ascii_case("raw") {
-        TranscriptionMode::Hold
-    } else {
-        TranscriptionMode::Toggle
-    }
-}
-
-fn transcription_mode_from_file_name(name_lower: &str) -> TranscriptionMode {
-    if name_lower.contains("conversation") || name_lower.contains("moshi") {
-        TranscriptionMode::Conversation
-    } else if name_lower.contains("assistive") {
-        TranscriptionMode::Assistive
-    } else if name_lower.contains("_raw") || name_lower.contains("raw") {
         TranscriptionMode::Hold
     } else {
         TranscriptionMode::Toggle

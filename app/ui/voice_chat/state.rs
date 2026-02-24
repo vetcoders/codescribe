@@ -177,6 +177,8 @@ pub struct VoiceChatOverlayState {
     pub context_text: String,
     /// True when agent runtime is unavailable and legacy fallback is active.
     pub runtime_degraded: bool,
+    /// Explicit UI flag for showing persistent "fallback active" indicators.
+    pub is_agent_degraded: bool,
     /// Optional diagnostic context for degraded runtime state.
     pub runtime_degraded_reason: Option<String>,
     /// Best-effort app name to reactivate when performing paste actions.
@@ -251,6 +253,7 @@ impl Default for VoiceChatOverlayState {
             status_kind: UiStatus::Idle,
             context_text: String::new(),
             runtime_degraded: false,
+            is_agent_degraded: false,
             runtime_degraded_reason: None,
             last_target_app: None,
             conversation_state: ConversationModeState::default(),

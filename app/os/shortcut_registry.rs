@@ -51,6 +51,10 @@ pub fn detect_hotkey_conflicts(settings: &UserSettings) -> Vec<HotkeyConflict> {
 fn active_gestures(bindings: ModeHotkeyBindings) -> Vec<HotkeyGesture> {
     let mut gestures = Vec::new();
 
+    if bindings.dictation == ShortcutBinding::DoubleCtrl {
+        gestures.push(HotkeyGesture::ToggleDoubleCtrl);
+    }
+
     match bindings.dictation {
         ShortcutBinding::HoldFn => gestures.push(HotkeyGesture::HoldFn),
         ShortcutBinding::HoldCtrl => gestures.push(HotkeyGesture::HoldCtrl),
@@ -62,15 +66,19 @@ fn active_gestures(bindings: ModeHotkeyBindings) -> Vec<HotkeyGesture> {
         | ShortcutBinding::DoubleLeftOption
         | ShortcutBinding::DoubleRightOption => {}
     }
-
-    if bindings.dictation == ShortcutBinding::DoubleCtrl {
-        gestures.push(HotkeyGesture::ToggleDoubleCtrl);
-    }
     if bindings.formatting == ShortcutBinding::DoubleLeftOption {
         gestures.push(HotkeyGesture::ToggleDoubleLeftOption);
     }
-    if bindings.assistive == ShortcutBinding::DoubleRightOption {
-        gestures.push(HotkeyGesture::ToggleDoubleRightOption);
+    match bindings.assistive {
+        ShortcutBinding::DoubleRightOption => gestures.push(HotkeyGesture::ToggleDoubleRightOption),
+        ShortcutBinding::HoldFn => gestures.push(HotkeyGesture::HoldFn),
+        ShortcutBinding::HoldCtrl => gestures.push(HotkeyGesture::HoldCtrl),
+        ShortcutBinding::HoldCtrlAlt => gestures.push(HotkeyGesture::HoldCtrlAlt),
+        ShortcutBinding::HoldCtrlShift => gestures.push(HotkeyGesture::HoldCtrlShift),
+        ShortcutBinding::HoldCtrlCmd => gestures.push(HotkeyGesture::HoldCtrlCmd),
+        ShortcutBinding::Disabled
+        | ShortcutBinding::DoubleCtrl
+        | ShortcutBinding::DoubleLeftOption => {}
     }
 
     gestures
@@ -96,6 +104,26 @@ fn detect_internal_conflicts(bindings: ModeHotkeyBindings) -> Vec<HotkeyConflict
             gesture: HotkeyGesture::ToggleDoubleRightOption,
             message: "Dictation is set to Double Ctrl, so Right Option toggle is disabled."
                 .to_string(),
+        });
+    }
+
+    if bindings.assistive != ShortcutBinding::Disabled && bindings.dictation == bindings.assistive {
+        let gesture = match bindings.assistive {
+            ShortcutBinding::HoldFn => HotkeyGesture::HoldFn,
+            ShortcutBinding::HoldCtrl => HotkeyGesture::HoldCtrl,
+            ShortcutBinding::HoldCtrlAlt => HotkeyGesture::HoldCtrlAlt,
+            ShortcutBinding::HoldCtrlShift => HotkeyGesture::HoldCtrlShift,
+            ShortcutBinding::HoldCtrlCmd => HotkeyGesture::HoldCtrlCmd,
+            ShortcutBinding::DoubleCtrl => HotkeyGesture::ToggleDoubleCtrl,
+            ShortcutBinding::DoubleLeftOption => HotkeyGesture::ToggleDoubleLeftOption,
+            ShortcutBinding::DoubleRightOption => HotkeyGesture::ToggleDoubleRightOption,
+            ShortcutBinding::Disabled => HotkeyGesture::HoldFn,
+        };
+        conflicts.push(HotkeyConflict {
+            gesture,
+            message:
+                "Dictation and Assistive use the same binding; Assistive selection shortcut may not be reachable."
+                    .to_string(),
         });
     }
 
@@ -348,6 +376,40 @@ mod tests {
         );
         let conflicts = detect_internal_conflicts(ModeHotkeyBindings::from_settings(&settings));
         assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn internal_conflict_detects_assistive_dictation_binding_collision() {
+        let settings = settings_for(
+            ShortcutBinding::HoldCtrlCmd,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::HoldCtrlCmd,
+        );
+        let conflicts = detect_internal_conflicts(ModeHotkeyBindings::from_settings(&settings));
+        assert!(
+            conflicts
+                .iter()
+                .any(|c| c.gesture == HotkeyGesture::HoldCtrlCmd),
+            "shared dictation/assistive hold binding should be reported as conflict"
+        );
+    }
+
+    #[test]
+    fn active_gestures_keeps_assistive_hold_visible_with_double_ctrl_dictation() {
+        let bindings = ModeHotkeyBindings {
+            dictation: ShortcutBinding::DoubleCtrl,
+            formatting: ShortcutBinding::Disabled,
+            assistive: ShortcutBinding::HoldCtrlCmd,
+        };
+        let gestures = active_gestures(bindings);
+        assert!(
+            gestures.contains(&HotkeyGesture::ToggleDoubleCtrl),
+            "dictation double-ctrl toggle must remain visible"
+        );
+        assert!(
+            gestures.contains(&HotkeyGesture::HoldCtrlCmd),
+            "assistive hold binding must remain visible for conflict checks"
+        );
     }
 
     #[cfg(target_os = "macos")]
