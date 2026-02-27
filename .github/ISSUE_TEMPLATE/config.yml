@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: mailto:security@vetcoders.io
+    about: Report security issues privately by email
+  - name: Team contact
+    url: mailto:hello@vetcoders.io
+    about: General project contact

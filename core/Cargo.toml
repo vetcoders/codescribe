@@ -5,6 +5,11 @@ edition.workspace = true
 authors = ["VetCoders <hello@vetcoders.io>"]
 license = "Apache-2.0"
 description = "Core library for CodeScribe (audio, STT, quality pipeline)"
+repository = "https://github.com/VetCoders/CodeScribe"
+homepage = "https://github.com/VetCoders/CodeScribe"
+documentation = "https://github.com/VetCoders/CodeScribe/tree/main/docs"
+keywords = ["speech-to-text", "whisper", "audio", "transcription", "stt"]
+categories = ["multimedia::audio", "multimedia::encoding"]
 
 [lib]
 path = "lib.rs"
