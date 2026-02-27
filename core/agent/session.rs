@@ -1,17 +1,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, warn};
 
 use super::{
     AgentEvent, AgentProvider, AgentUiEvent, ContentBlock, Message, Role, StreamOptions,
-    ToolRegistry, ToolResultContent,
+    ToolDefinition, ToolRegistry, ToolResultContent,
 };
 
 const DEFAULT_MAX_ITERATIONS: usize = 25;
+const AGENT_STREAM_START_RETRY_MAX_ATTEMPTS: usize = 2;
+const AGENT_STREAM_START_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageAttachment {
@@ -65,6 +68,40 @@ impl AgentSession {
         &self.messages
     }
 
+    async fn stream_with_retry(
+        &self,
+        tool_definitions: &[ToolDefinition],
+        options: &StreamOptions,
+    ) -> Result<Receiver<AgentEvent>> {
+        let mut attempt = 1usize;
+        loop {
+            match self
+                .provider
+                .stream(&self.messages, tool_definitions, options)
+                .await
+            {
+                Ok(rx) => return Ok(rx),
+                Err(error) => {
+                    let is_transient = is_transient_stream_start_error(&error);
+                    if is_transient && attempt < AGENT_STREAM_START_RETRY_MAX_ATTEMPTS {
+                        warn!(
+                            "Agent stream start failed (provider={}, attempt={}/{}): {}. Retrying in {:?}",
+                            self.provider.name(),
+                            attempt,
+                            AGENT_STREAM_START_RETRY_MAX_ATTEMPTS,
+                            error,
+                            AGENT_STREAM_START_RETRY_DELAY
+                        );
+                        tokio::time::sleep(AGENT_STREAM_START_RETRY_DELAY).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+    }
+
     pub async fn send(
         &mut self,
         user_text: String,
@@ -94,8 +131,7 @@ impl AgentSession {
 
             let tool_definitions = self.tools.definitions();
             let mut event_rx = self
-                .provider
-                .stream(&self.messages, &tool_definitions, options)
+                .stream_with_retry(&tool_definitions, options)
                 .await
                 .with_context(|| format!("Failed to start '{}' streaming", self.provider.name()))?;
 
@@ -318,6 +354,27 @@ async fn send_ui_event(tx: &Sender<AgentUiEvent>, event: AgentUiEvent) {
     }
 }
 
+fn is_transient_stream_start_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_lowercase();
+    [
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection refused",
+        "temporarily unavailable",
+        "temporary failure",
+        "broken pipe",
+        "eof",
+        "transport",
+        "rate limit",
+        "429",
+        "502",
+        "503",
+    ]
+    .iter()
+    .any(|pattern| message.contains(pattern))
+}
+
 fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
     const SUMMARY_MAX_CHARS: usize = 120;
 
@@ -372,6 +429,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
     use serde_json::json;
@@ -497,6 +555,107 @@ mod tests {
 
         fn name(&self) -> &str {
             "scripted-provider"
+        }
+    }
+
+    struct RetryThenSuccessProvider {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl AgentProvider for RetryThenSuccessProvider {
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &StreamOptions,
+        ) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
+            let current_attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            if current_attempt == 0 {
+                return Err(anyhow::anyhow!("timed out while connecting to upstream"));
+            }
+
+            let (tx, rx) = mpsc::channel(8);
+            tx.send(AgentEvent::TextDone("Recovered response".to_string()))
+                .await
+                .expect("test stream channel should accept completion text");
+            tx.send(AgentEvent::ResponseDone {
+                response_id: Some("resp_retry_success".to_string()),
+            })
+            .await
+            .expect("test stream channel should accept completion event");
+            Ok(rx)
+        }
+
+        fn build_tool_result(
+            &self,
+            call_id: &str,
+            content: Vec<ContentBlock>,
+            is_error: bool,
+        ) -> Message {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: call_id.to_string(),
+                    content,
+                    is_error,
+                }],
+            )
+        }
+
+        fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+            ContentBlock::Image {
+                data: data.to_vec(),
+                media_type: media_type.to_string(),
+            }
+        }
+
+        fn name(&self) -> &str {
+            "retry-then-success-provider"
+        }
+    }
+
+    struct PermanentFailureProvider {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl AgentProvider for PermanentFailureProvider {
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &StreamOptions,
+        ) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::anyhow!("authentication failed"))
+        }
+
+        fn build_tool_result(
+            &self,
+            call_id: &str,
+            content: Vec<ContentBlock>,
+            is_error: bool,
+        ) -> Message {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: call_id.to_string(),
+                    content,
+                    is_error,
+                }],
+            )
+        }
+
+        fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+            ContentBlock::Image {
+                data: data.to_vec(),
+                media_type: media_type.to_string(),
+            }
+        }
+
+        fn name(&self) -> &str {
+            "permanent-failure-provider"
         }
     }
 
@@ -707,6 +866,92 @@ mod tests {
         assert!(
             ui_events.contains(&AgentUiEvent::Done),
             "expected Done event, got {ui_events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_retries_once_for_transient_stream_start_failure() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let provider = RetryThenSuccessProvider {
+            attempts: Arc::clone(&attempts),
+        };
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+        let mut session =
+            AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+
+        session
+            .send(
+                "transient retry".to_string(),
+                Vec::new(),
+                &StreamOptions {
+                    model: "gpt-test".to_string(),
+                    system_prompt: None,
+                    max_tokens: None,
+                    temperature: None,
+                },
+            )
+            .await
+            .expect("session should retry transient start failure");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(session.thread_id(), Some("resp_retry_success"));
+        assert_eq!(session.messages().len(), 2);
+
+        let mut ui_events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            ui_events.push(event);
+        }
+        assert!(
+            ui_events.contains(&AgentUiEvent::TextDone("Recovered response".to_string())),
+            "expected recovered TextDone event, got {ui_events:?}"
+        );
+        assert!(
+            ui_events.contains(&AgentUiEvent::Done),
+            "expected Done event, got {ui_events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_does_not_retry_non_transient_stream_start_failure() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let provider = PermanentFailureProvider {
+            attempts: Arc::clone(&attempts),
+        };
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+        let mut session =
+            AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+
+        let error = session
+            .send(
+                "non transient".to_string(),
+                Vec::new(),
+                &StreamOptions {
+                    model: "gpt-test".to_string(),
+                    system_prompt: None,
+                    max_tokens: None,
+                    temperature: None,
+                },
+            )
+            .await
+            .expect_err("session should fail fast for non-transient start errors");
+
+        assert!(
+            error.to_string().contains("Failed to start"),
+            "expected stream start context, got: {error}"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        let mut ui_events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            ui_events.push(event);
+        }
+        assert!(
+            ui_events
+                .iter()
+                .all(|event| !matches!(event, AgentUiEvent::Done)),
+            "non-transient failure should not emit Done: {ui_events:?}"
         );
     }
 }

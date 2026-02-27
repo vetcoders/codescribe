@@ -31,9 +31,10 @@ use crate::ui_helpers::{
     LabelConfig, add_subview, button, button_set_action, button_style, create_button,
     create_floating_window, create_glass_effect_container_view, create_glass_effect_view_with,
     create_label, create_scrollable_text_view, create_secure_text_input, create_slider,
-    create_text_input, create_toggle, get_text_view_string, ns_string,
-    set_glass_container_content_view, set_glass_effect_content_view, set_text_field_string,
-    set_text_view_string, ui_colors, ui_tokens, window_close, window_content_view, window_show,
+    create_text_input, create_toggle, get_text_view_string, layout_region_frame_for_view,
+    ns_string, set_glass_container_content_view, set_glass_effect_content_view,
+    set_text_field_string, set_text_view_string, ui_colors, ui_tokens, window_close,
+    window_content_view, window_show,
 };
 
 mod handlers;
@@ -41,19 +42,21 @@ mod handlers;
 // Type alias for Objective-C object pointers
 type Id = *mut Object;
 
-const SIDEBAR_WIDTH: f64 = 204.0;
-const SETTINGS_WINDOW_WIDTH: f64 = 760.0;
-const SETTINGS_WINDOW_HEIGHT: f64 = 660.0;
+const SIDEBAR_WIDTH: f64 = 216.0;
+const SETTINGS_WINDOW_WIDTH: f64 = 840.0;
+const SETTINGS_WINDOW_HEIGHT: f64 = 700.0;
 // Keep Settings readable while restoring stronger system glass.
 const SETTINGS_MAX_OPACITY: f64 = ui_tokens::SETTINGS_WINDOW_OPACITY;
-const SETTINGS_CONTENT_INSET_X: f64 = 24.0;
-const SETTINGS_CONTENT_INSET_Y: f64 = 16.0;
-const TAB_BUTTON_HEIGHT: f64 = 38.0;
-const TAB_BUTTON_GAP: f64 = 8.0;
-const SIDEBAR_GROUP_GAP: f64 = 14.0;
+const SETTINGS_CONTENT_INSET_X: f64 = 20.0;
+const SETTINGS_CONTENT_INSET_Y: f64 = 20.0;
+const TAB_BUTTON_HEIGHT: f64 = 34.0;
+const TAB_BUTTON_GAP: f64 = 6.0;
+const SIDEBAR_GROUP_GAP: f64 = 12.0;
 const TAB_ACTIVE_BG_ALPHA: f64 = 0.10;
 const TAB_ACTIVE_BORDER_ALPHA: f64 = 0.22;
-const SIDEBAR_INSET: f64 = 10.0;
+const SIDEBAR_INSET: f64 = 12.0;
+const SETTINGS_TITLEBAR_SAFE_INSET: f64 = 56.0;
+const SETTINGS_TAB_START_OFFSET: f64 = 20.0;
 const PERMISSION_ROW_HEIGHT: f64 = 24.0 + ui_tokens::DENSITY_COMFORTABLE;
 const PERMISSION_BUTTON_WIDTH: f64 = 118.0;
 const STEP_ROW_HEIGHT: f64 = 24.0 + ui_tokens::DENSITY_COMFORTABLE;
@@ -102,6 +105,27 @@ lazy_static! {
 #[inline]
 fn objc_class(name: &'static str) -> &'static Class {
     Class::get(name).unwrap_or_else(|| panic!("Objective-C class not found: {name}"))
+}
+
+/// Compute a safe top inset from Tahoe/AppKit layout guides to keep sidebar controls
+/// below titlebar chrome (traffic lights + unified toolbar), with a stable fallback.
+fn settings_titlebar_safe_inset(view: Id, fallback: f64) -> f64 {
+    if view.is_null() {
+        return fallback;
+    }
+
+    unsafe {
+        let bounds: CGRect = msg_send![view, bounds];
+        if let Some(layout_frame) = layout_region_frame_for_view(view) {
+            let top_inset =
+                (bounds.size.height - (layout_frame.origin.y + layout_frame.size.height)).max(0.0);
+            if top_inset.is_finite() {
+                return (top_inset + ui_tokens::DENSITY_MEDIUM).max(fallback);
+            }
+        }
+    }
+
+    fallback
 }
 
 #[derive(Clone, Copy)]
@@ -1259,10 +1283,11 @@ unsafe fn build_settings_ui(
         // Offset sidebar content below the titlebar+toolbar zone (~52px in unified style).
         // With FullSizeContentView, content extends under the titlebar, so we must
         // manually avoid the traffic lights area.
-        let titlebar_inset = 52.0;
+        let titlebar_inset =
+            settings_titlebar_safe_inset(root_content, SETTINGS_TITLEBAR_SAFE_INSET);
 
         // Sidebar tab buttons (inside sidebar container, no redundant title label)
-        let tab_start_y = body_h - titlebar_inset - 24.0;
+        let tab_start_y = body_h - titlebar_inset - SETTINGS_TAB_START_OFFSET;
         let tab_names = [
             "Setup",
             "Modes & Shortcuts",
@@ -1389,7 +1414,9 @@ unsafe fn build_settings_ui(
         add_subview(setup_view, permissions_header);
         y -= 20.0 + setup_gap;
 
-        let permission_button_w = PERMISSION_BUTTON_WIDTH;
+        // Let action buttons expand with available width to reduce label clipping
+        // and keep localized copy readable across larger settings windows.
+        let permission_button_w = (field_w * 0.30).clamp(PERMISSION_BUTTON_WIDTH, 176.0);
         let permission_label_w = (field_w - permission_button_w - 12.0).max(180.0);
 
         for kind in PERMISSION_ORDER {

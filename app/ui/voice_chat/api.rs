@@ -1687,7 +1687,7 @@ pub(super) fn update_chat_view_with_state(
         if state.messages.is_empty() {
             let empty_label = create_label(LabelConfig {
                 frame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(max_width, 60.0)),
-                text: "Start a conversation\nPress hotkey to record \u{2022} Type to send"
+                text: "Start a conversation\nPress your configured hotkey to record \u{2022} Type to send"
                     .to_string(),
                 font_size: base_font * zoom,
                 text_color: color_secondary_label(),
@@ -3056,6 +3056,11 @@ fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: &str) {
 }
 
 fn create_drawer_empty_state(width: f64, handler: Option<usize>) -> Id {
+    fn overlay_hotkey_shortcuts_tooltip() -> String {
+        let (hold, toggle) = super::shortcuts_lines(crate::os::hotkeys::ModeHotkeyBindings::load());
+        format!("{hold}\n{toggle}")
+    }
+
     unsafe {
         let ns_view = Class::get("NSView").unwrap();
         let frame = CGRect::new(
@@ -3109,7 +3114,7 @@ fn create_drawer_empty_state(width: f64, handler: Option<usize>) -> Id {
                 &CGPoint::new(pad, frame.size.height - 76.0),
                 &CGSize::new(frame.size.width - pad * 2.0, 18.0),
             ),
-            text: "Or show the overlay to begin.".to_string(),
+            text: "Need permissions or hotkeys? Open Settings.".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: false,
             text_color: color_secondary_label(),
@@ -3135,21 +3140,22 @@ fn create_drawer_empty_state(width: f64, handler: Option<usize>) -> Id {
                 &CGPoint::new(row_x + button_w + button_gap, pad),
                 &CGSize::new(button_w, button_h),
             ),
-            "Show overlay",
+            "Open Settings",
             button_style::ROUNDED,
         );
 
         if let Some(handler_ptr) = handler {
             let handler_id = handler_ptr as Id;
             button_set_action(start_button, handler_id, sel!(onStartRecording:));
-            button_set_action(overlay_button, handler_id, sel!(onShowOverlay:));
+            button_set_action(overlay_button, handler_id, sel!(onTabSettings:));
         }
 
+        let shortcuts_tooltip = overlay_hotkey_shortcuts_tooltip();
+        set_tooltip(start_button, &shortcuts_tooltip);
         set_tooltip(
-            start_button,
-            "Hotkey: hold Ctrl (or your configured hold keys)",
+            overlay_button,
+            "Open Settings (permissions, hotkeys, and runtime services)",
         );
-        set_tooltip(overlay_button, "Bring CodeScribe overlay to front");
         add_subview(view, start_button);
         add_subview(view, overlay_button);
 

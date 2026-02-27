@@ -34,7 +34,7 @@ use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -45,6 +45,9 @@ use crate::config::Config;
 use crate::config::models::ModelManager;
 use crate::os::clipboard;
 use crate::os::hotkeys::HoldMode;
+use crate::os::permissions::{
+    PermissionStatus, check_accessibility, check_input_monitoring, check_microphone,
+};
 use crate::os::selection::{
     AssistiveContext, build_assistive_input, capture_assistive_context, capture_frontmost_app_only,
 };
@@ -124,6 +127,8 @@ const QUALITY_GATE_DIFF_RATIO: f32 = 0.62;
 const QUALITY_GATE_CORRECTION_RATIO: f32 = 0.40;
 const RECORDER_RUNTIME_DEGRADED_REASON: &str =
     "Microphone recorder unavailable. Voice capture is disabled.";
+const RECOVERY_UI_COOLDOWN_MS: u64 = 3_000;
+static RUNTIME_RECOVERY_LAST_SHOWN_MS: AtomicU64 = AtomicU64::new(0);
 
 struct AtomicFlagGuard {
     flag: Arc<AtomicBool>,
@@ -412,6 +417,101 @@ impl RecordingController {
         recorder_guard
             .as_ref()
             .ok_or_else(|| Self::recorder_unavailable_error(context))
+    }
+
+    fn should_emit_runtime_recovery_message() -> bool {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default();
+        loop {
+            let last_ms = RUNTIME_RECOVERY_LAST_SHOWN_MS.load(Ordering::SeqCst);
+            if now_ms.saturating_sub(last_ms) < RECOVERY_UI_COOLDOWN_MS {
+                return false;
+            }
+            if RUNTIME_RECOVERY_LAST_SHOWN_MS
+                .compare_exchange(last_ms, now_ms, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+
+    fn recording_recovery_guidance() -> String {
+        let settings = crate::config::UserSettings::load();
+        let dictation_binding = settings
+            .mode_binding_for(crate::config::WorkMode::Dictation)
+            .label();
+        let formatting_binding = settings
+            .mode_binding_for(crate::config::WorkMode::Formatting)
+            .label();
+        let assistive_binding = settings
+            .mode_binding_for(crate::config::WorkMode::Assistive)
+            .label();
+        let mut missing_permissions = Vec::new();
+        if check_accessibility() != PermissionStatus::Granted {
+            missing_permissions.push("Accessibility");
+        }
+        if check_input_monitoring() != PermissionStatus::Granted {
+            missing_permissions.push("Input Monitoring");
+        }
+        if check_microphone() != PermissionStatus::Granted {
+            missing_permissions.push("Microphone");
+        }
+
+        if missing_permissions.is_empty() {
+            format!(
+                "Mic unavailable: recorder failed to initialize. Open Settings > Setup to verify hotkeys, input device, and runtime services, then retry. Configured shortcuts: Dictation={} • Formatting={} • Assistive={}.",
+                dictation_binding, formatting_binding, assistive_binding
+            )
+        } else {
+            format!(
+                "Mic unavailable: recorder failed to initialize. Missing permissions: {}. Open Settings > Setup, grant access, then retry your hotkey. Configured shortcuts: Dictation={} • Formatting={} • Assistive={}.",
+                missing_permissions.join(", "),
+                dictation_binding,
+                formatting_binding,
+                assistive_binding
+            )
+        }
+    }
+
+    fn present_runtime_recovery_ui(status: &str, message: &str) {
+        let emit_recovery_message = Self::should_emit_runtime_recovery_message();
+        let overlay_visible = crate::voice_chat_ui::is_voice_chat_overlay_visible();
+        if emit_recovery_message || !overlay_visible {
+            crate::show_voice_chat_overlay();
+            crate::show_agent_tab();
+        }
+        crate::voice_chat_ui::update_voice_chat_status(status);
+        if emit_recovery_message {
+            crate::voice_chat_ui::add_voice_chat_error_message(message);
+            crate::voice_chat_ui::show_settings_tab();
+        } else {
+            debug!("Runtime recovery UI throttled (cooldown active)");
+        }
+    }
+
+    fn present_recorder_unavailable(context: &str) {
+        warn!("{context}: recorder unavailable; routing to settings recovery");
+        crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+            true,
+            Some(RECORDER_RUNTIME_DEGRADED_REASON),
+        );
+        let message = Self::recording_recovery_guidance();
+        Self::present_runtime_recovery_ui("Recorder unavailable", &message);
+    }
+
+    fn present_backend_unavailable(context: &str, detail: Option<&str>) {
+        warn!("{context}: backend unavailable; routing to settings recovery");
+        let mut message =
+            "Speech backend unavailable. Open Settings > Setup to verify endpoint/runtime service and retry."
+                .to_string();
+        if let Some(detail) = detail.map(str::trim).filter(|text| !text.is_empty()) {
+            message.push_str(" Details: ");
+            message.push_str(detail);
+        }
+        Self::present_runtime_recovery_ui("Backend unavailable", &message);
     }
 
     /// Create a new recording controller with configuration loaded from disk
@@ -1069,10 +1169,7 @@ impl RecordingController {
             let recorder_guard = self.recorder.lock().await;
             if recorder_guard.is_none() {
                 let error = Self::recorder_unavailable_error("Conversation-start");
-                crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
-                crate::voice_chat_ui::add_voice_chat_error_message(
-                    "Mic unavailable: recorder failed to initialize",
-                );
+                Self::present_recorder_unavailable("Conversation-start");
                 return Err(error);
             }
         }
@@ -1213,13 +1310,10 @@ impl RecordingController {
                     Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
                     helpers::set_conversation_session(false);
                     hide_hold_badge();
-                    crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
                     crate::voice_chat_ui::update_conversation_state(
                         ConversationModeState::Inactive,
                     );
-                    crate::voice_chat_ui::add_voice_chat_error_message(
-                        "Mic unavailable: recorder failed to initialize",
-                    );
+                    Self::present_recorder_unavailable("Conversation-loop start");
                     return;
                 }
             };
@@ -1251,13 +1345,10 @@ impl RecordingController {
                     Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
                     helpers::set_conversation_session(false);
                     hide_hold_badge();
-                    crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
                     crate::voice_chat_ui::update_conversation_state(
                         ConversationModeState::Inactive,
                     );
-                    crate::voice_chat_ui::add_voice_chat_error_message(
-                        "Mic unavailable: recorder failed to initialize",
-                    );
+                    Self::present_recorder_unavailable("Conversation-loop sample rate");
                     return;
                 }
             };
@@ -1499,12 +1590,16 @@ impl RecordingController {
                 Ok(true) => {}
                 Ok(false) => {
                     warn!("Whisper engine not ready");
-                    crate::voice_chat_ui::update_voice_chat_status("Backend unavailable");
+                    Self::present_backend_unavailable("Hold-start health check", None);
                     return Ok(());
                 }
                 Err(e) => {
                     error!("Whisper engine unavailable: {}", e);
-                    crate::voice_chat_ui::update_voice_chat_status("Backend unavailable");
+                    let detail = e.to_string();
+                    Self::present_backend_unavailable(
+                        "Hold-start health check",
+                        Some(detail.as_str()),
+                    );
                     return Ok(());
                 }
             }
@@ -1590,7 +1685,7 @@ impl RecordingController {
                     drop(rec_guard);
                     *session_id.write().await = None;
                     set_assistive_session(false);
-                    crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
+                    Self::present_recorder_unavailable("Hold-start");
                     return;
                 }
             };
@@ -1752,12 +1847,16 @@ impl RecordingController {
                 Ok(true) => {}
                 Ok(false) => {
                     warn!("Whisper engine not ready");
-                    crate::voice_chat_ui::update_voice_chat_status("Backend unavailable");
+                    Self::present_backend_unavailable("Toggle-start health check", None);
                     return Ok(());
                 }
                 Err(e) => {
                     error!("Whisper engine unavailable: {}", e);
-                    crate::voice_chat_ui::update_voice_chat_status("Backend unavailable");
+                    let detail = e.to_string();
+                    Self::present_backend_unavailable(
+                        "Toggle-start health check",
+                        Some(detail.as_str()),
+                    );
                     return Ok(());
                 }
             }
@@ -1807,7 +1906,7 @@ impl RecordingController {
             Err(error) => {
                 drop(recorder_guard);
                 self.reset_session_after_start_failure("Toggle-start").await;
-                crate::voice_chat_ui::update_voice_chat_status("Recorder unavailable");
+                Self::present_recorder_unavailable("Toggle-start");
                 return Err(error);
             }
         };
