@@ -365,3 +365,37 @@ extern "C" fn toolbar_item_for_identifier(
         msg_send![item, initWithItemIdentifier: item_identifier]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_selector_registered(class: *const Class, selector: Sel, label: &str) {
+        let responds: bool = unsafe { msg_send![class, instancesRespondToSelector: selector] };
+        assert!(
+            responds,
+            "BootstrapOverlayActionHandler missing selector `{label}`"
+        );
+    }
+
+    #[test]
+    fn action_handler_registers_core_settings_selectors() {
+        let class = action_handler_class();
+        assert!(
+            !class.is_null(),
+            "BootstrapOverlayActionHandler class should be registered"
+        );
+
+        assert_selector_registered(class, sel!(onTabSetup:), "onTabSetup:");
+        assert_selector_registered(class, sel!(onTabModesShortcuts:), "onTabModesShortcuts:");
+        assert_selector_registered(class, sel!(onTabAiPrompts:), "onTabAiPrompts:");
+        assert_selector_registered(class, sel!(onTabAudioInput:), "onTabAudioInput:");
+        assert_selector_registered(class, sel!(onTabQuality:), "onTabQuality:");
+        assert_selector_registered(class, sel!(onTabDiagnostics:), "onTabDiagnostics:");
+        assert_selector_registered(class, sel!(onTabAdvanced:), "onTabAdvanced:");
+        assert_selector_registered(class, sel!(onSaveApiSettings:), "onSaveApiSettings:");
+        assert_selector_registered(class, sel!(onPromptSave:), "onPromptSave:");
+        assert_selector_registered(class, sel!(onQualityRefresh:), "onQualityRefresh:");
+        assert_selector_registered(class, sel!(onPermissionAction:), "onPermissionAction:");
+    }
+}

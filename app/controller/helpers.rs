@@ -643,6 +643,7 @@ async fn run_agent_send_with_fallback(
             "Agent runtime unavailable. Using legacy formatter for this response.",
         );
         let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
+        crate::voice_chat_ui::set_voice_chat_sending(false);
         if let Some(assistant_text) = fallback_assistant_text {
             if let Err(error) = persist_legacy_assistive_thread(&text, &assistant_text) {
                 warn!("Failed to persist legacy assistive fallback thread: {error}");
@@ -1089,6 +1090,28 @@ mod tests {
         assert_eq!(runtime.thread_store_id, "thread_after_boundary");
         assert_eq!(runtime_state.runtime_generation, new_generation);
         assert!(!recovered);
+    }
+
+    #[test]
+    fn test_runtime_recovery_clears_degraded_flag_on_reinit() {
+        let mut runtime_state = AgentRuntimeState {
+            runtime: None,
+            runtime_generation: 7,
+            runtime_degraded: true,
+        };
+        let init_calls = AtomicUsize::new(0);
+
+        let (runtime, recovered) = runtime_state
+            .ensure_runtime_with(7, || {
+                init_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(runtime_with_thread_id("thread_recovered"))
+            })
+            .expect("runtime should reinitialize after degraded state");
+
+        assert_eq!(init_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.thread_store_id, "thread_recovered");
+        assert!(recovered);
+        assert!(!runtime_state.runtime_degraded);
     }
 
     #[test]

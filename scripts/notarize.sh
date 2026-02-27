@@ -68,15 +68,28 @@ echo ""
 echo "▶ Submitting to Apple Notary Service..."
 echo "  This may take 5-15 minutes..."
 
+set +e
 SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG_FILE" \
     --keychain-profile "$NOTARY_PROFILE" \
     --wait \
     --timeout 30m 2>&1)
+SUBMIT_EXIT=$?
+set -e
 
 echo "$SUBMIT_OUTPUT"
 
+if [ $SUBMIT_EXIT -ne 0 ]; then
+    echo ""
+    echo "✗ Notary submission command failed (exit: $SUBMIT_EXIT)"
+    if echo "$SUBMIT_OUTPUT" | grep -qi "Invalid credentials"; then
+        echo "  Hint: refresh profile '${NOTARY_PROFILE}' via:"
+        echo "    xcrun notarytool store-credentials \"${NOTARY_PROFILE}\" --apple-id ... --team-id ... --password ..."
+    fi
+    exit $SUBMIT_EXIT
+fi
+
 # Check if notarization succeeded
-if echo "$SUBMIT_OUTPUT" | grep -q "status: Accepted"; then
+if echo "$SUBMIT_OUTPUT" | grep -Eiq "status[^A-Za-z]*Accepted"; then
     echo ""
     echo "  ✓ Notarization accepted!"
 else
