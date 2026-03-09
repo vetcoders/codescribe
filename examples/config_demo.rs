@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo run --example config_demo
 
-use codescribe::config::{Config, HoldMods, Language};
+use codescribe::config::{Config, Language};
 
 fn main() -> anyhow::Result<()> {
     println!("CodeScribe Config Demo\n");
@@ -10,9 +10,7 @@ fn main() -> anyhow::Result<()> {
     // Load config (from .env or defaults)
     let config = Config::load();
     println!("Loaded config:");
-    println!("  Hold mods: {:?}", config.hold_mods);
     println!("  Language: {:?}", config.whisper_language);
-    println!("  AI provider: {:?}", config.ai_provider);
     println!("  Beep on start: {}", config.beep_on_start);
     println!("  Sound name: {}", config.sound_name);
     println!("  Sound volume: {}", config.sound_volume);
@@ -20,10 +18,6 @@ fn main() -> anyhow::Result<()> {
 
     // Demonstrate enum parsing
     println!("Enum parsing examples:");
-    println!(
-        "  \"ctrl_alt\".parse::<HoldMods>() = {:?}",
-        "ctrl_alt".parse::<HoldMods>()
-    );
     println!(
         "  \"pl\".parse::<Language>() = {:?}",
         "pl".parse::<Language>()

@@ -27,8 +27,8 @@ targets=(
   ".codescribe.lock"
   ".pytest_cache"
   "__pycache__"
-  "packaging/dist"
-  "packaging/build"
+  "bundle"
+  "CodeScribe_*.dmg"
   "dist"
   "build"
 )

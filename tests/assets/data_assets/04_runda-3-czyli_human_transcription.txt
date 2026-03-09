@@ -1,0 +1,26 @@
+Runda 3. Czyli trudne, z prawdziwych mispronouncations.
+Dwadzieścia jeden: Podaje Tramadol i Alfaxolan [(niewyraźnie)] do premedykacji.
+
+22: Projekt używa MLX Embeddings [(niewyraźnie)] z pnpm dlx do instalacji.
+
+23: Rozpoznaję Microsporum canis, klasyczna grzybica skórna.
+
+24: Konfiguracja pnpm tauri dev wymaga TypeScript plus Vite.
+
+25: Pacjent ma pseudociążę. Podają metimazol.
+
+26. Sprawdzam LOC przez jq i filtruję wynik grep.
+
+27. Robenacoxib - na ból przy przemieszczeniu rzepki.
+
+28. Kubernetes skaluje gRPC endpointy z exponential bugów.
+
+29. Amoksycylina z kwasem klawulanowym na zapalenie spojówek [(niewyraźnie)].
+
+30. Uruchamiam retry z cosine similarity dla embeddingów.
+
+Bonus:
+Terminy z nagrania, które już przetestowaliśmy [(niewyraźnie)]. Loctree:  Whisper jako lock tree i log tree
+Rust: Whisper jak roost i rusek
+Codescribe: Whisper jako code cribe
+Toolchain 2024.

@@ -7,10 +7,9 @@ use std::path::PathBuf;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    // Paths provided in the issue
-    let model_path = PathBuf::from(
-        "/Users/maciejgad/hosted/VetCoders/CodeScribe/models/whisper-large-v3-mlx-q8",
-    );
+    // Model path: ~/.codescribe/models/ (unified standard)
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let model_path = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8");
     let audio_medium = PathBuf::from(
         "/Users/maciejgad/hosted/vista/api-test-suite/test-files/audio-real-medium.m4a",
     );

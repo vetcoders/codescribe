@@ -1,6 +1,6 @@
 use std::fs;
 
-use codescribe::{ai_formatting, prompts};
+use codescribe::{ai_formatting, config::prompts};
 
 use serial_test::serial;
 use tempfile::TempDir;
@@ -14,10 +14,7 @@ fn get_required_env(keys: &[&str]) -> String {
             }
         }
     }
-    panic!(
-        "Missing required env var. Set one of: {}",
-        keys.join(", ")
-    );
+    panic!("Missing required env var. Set one of: {}", keys.join(", "));
 }
 
 /// E2E test that verifies Ollama conversation continuity using a real Ollama instance.
@@ -27,8 +24,8 @@ fn get_required_env(keys: &[&str]) -> String {
 ///
 /// To run:
 /// - Ensure Ollama is running locally (e.g., `ollama serve`)
-/// - Export `LLM_HOST=http://localhost:11434` (or `OLLAMA_HOST=...`)
-/// - Export `LLM_MODEL=<your_model>` (or `OLLAMA_MODEL=...`)
+/// - Export `LLM_ENDPOINT=http://localhost:11434/api/chat`
+/// - Export `LLM_MODEL=<your_model>`
 ///
 /// This test uses a dedicated, deterministic system prompt written into the app prompts folder
 /// (under an overridden `CODESCRIBE_DATA_DIR`) so the expected behavior is stable.
@@ -42,18 +39,16 @@ async fn e2e_ollama_memory_real_response_chajnik_query() {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if !enabled {
-        eprintln!(
-            "Skipping real Ollama E2E (set CODESCRIBE_E2E_OLLAMA=1 to enable)."
-        );
+        eprintln!("Skipping real Ollama E2E (set CODESCRIBE_E2E_OLLAMA=1 to enable).");
         return;
     }
 
-    let host = get_required_env(&["LLM_HOST", "OLLAMA_HOST"]);
-    let model = get_required_env(&["LLM_MODEL", "OLLAMA_MODEL"]);
+    let host = get_required_env(&["LLM_ENDPOINT"]);
+    let model = get_required_env(&["LLM_MODEL"]);
 
     if !(host.contains("localhost") || host.contains("127.0.0.1")) {
         panic!(
-            "This E2E test requires a local Ollama host. Got LLM_HOST/OLLAMA_HOST={}",
+            "This E2E test requires a local Ollama host. Got LLM_ENDPOINT={}",
             host
         );
     }
@@ -65,7 +60,7 @@ async fn e2e_ollama_memory_real_response_chajnik_query() {
 
     // Ensure `ai_formatting` uses Ollama native path.
     unsafe {
-        std::env::set_var("LLM_HOST", host);
+        std::env::set_var("LLM_ENDPOINT", host);
         std::env::set_var("LLM_MODEL", model);
         std::env::remove_var("LLM_API_KEY");
     }
@@ -107,23 +102,17 @@ Rules:
     assert_eq!(r3.trim(), "MISSING");
 }
 
-/// Test context management functions (used by tauri-app)
+/// Test context management functions (used by GUI apps)
 ///
-/// These functions are used by tauri-app commands for UI state management.
+/// These functions are used by GUI commands for UI state management.
 /// This test ensures they compile and work correctly.
 #[test]
 fn test_context_management_api() {
-    use codescribe::{ai_formatting, conversation};
+    use codescribe::state::conversation;
 
     // Test conversation API
     let had_conversation = conversation::has_active_conversation();
     conversation::reset_conversation();
     // After reset, should have no active conversation
     assert!(!conversation::has_active_conversation() || !had_conversation);
-
-    // Test ai_formatting context API
-    let had_context = ai_formatting::has_active_context();
-    ai_formatting::reset_context();
-    // After reset, should have no active context
-    assert!(!ai_formatting::has_active_context() || !had_context);
 }

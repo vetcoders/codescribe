@@ -10,8 +10,8 @@
 //!   cargo run --release --example demo_full_pipeline -- --assistive <audio_file>
 //!
 //! Requires:
-//!   - Model at models/whisper-large-v3-mlx-q8 (or set --model)
-//!   - LLM_HOST and LLM_MODEL env vars for formatting
+//!   - Model at ~/.codescribe/models/whisper-large-v3-turbo-mlx-q8 (or set --model)
+//!   - LLM_ENDPOINT + LLM_MODEL (or LLM_FORMATTING_* overrides) for formatting
 
 use anyhow::Result;
 use codescribe::whisper::{DecodingParams, LocalWhisperEngine};
@@ -27,18 +27,23 @@ async fn main() -> Result<()> {
         println!("Usage: cargo run --release --example demo_full_pipeline -- [OPTIONS] <audio>");
         println!();
         println!("Options:");
-        println!("  --model PATH     Model directory (default: models/whisper-large-v3-mlx-q8)");
+        println!(
+            "  --model PATH     Model directory (default: ~/.codescribe/models/whisper-large-v3-turbo-mlx-q8)"
+        );
         println!("  --assistive      Use assistive mode (kurier/enhancer) instead of formatting");
         println!("  --raw            Skip AI formatting, show raw transcription only");
         println!();
         println!("Environment:");
-        println!("  LLM_HOST         LLM endpoint URL (e.g., http://localhost:11434/v1/responses)");
-        println!("  LLM_MODEL        Model name (e.g., qwen3-coder:480b-cloud)");
+        println!("  LLM_ENDPOINT         LLM endpoint URL (e.g., http://localhost:11434/api/chat)");
+        println!("  LLM_MODEL            Model name (e.g., qwen3-coder:480b-cloud)");
+        println!("  LLM_FORMATTING_*     Optional overrides for formatting");
         return Ok(());
     }
 
     // Parse args
-    let mut model = PathBuf::from("models/whisper-large-v3-mlx-q8");
+    // Model path: ~/.codescribe/models/ (unified standard)
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let mut model = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8");
     let mut assistive = false;
     let mut raw_only = false;
     let mut audio_file: Option<PathBuf> = None;
@@ -85,7 +90,7 @@ async fn main() -> Result<()> {
     // 2. Transcribe
     println!("\n[2/3] Transcribing audio...");
     let start = std::time::Instant::now();
-    let (samples, sample_rate) = codescribe::audio_loader::load_audio_file(&audio_file)?;
+    let (samples, sample_rate) = codescribe::audio::load_audio_file(&audio_file)?;
     let duration_sec = samples.len() as f32 / sample_rate as f32;
     println!("      Audio duration: {:.1}s", duration_sec);
 
@@ -132,16 +137,20 @@ async fn main() -> Result<()> {
     );
 
     // Check env vars
-    let llm_host = std::env::var("LLM_HOST").ok();
-    let llm_model = std::env::var("LLM_MODEL").ok();
+    let llm_endpoint = std::env::var("LLM_FORMATTING_ENDPOINT")
+        .ok()
+        .or_else(|| std::env::var("LLM_ENDPOINT").ok());
+    let llm_model = std::env::var("LLM_FORMATTING_MODEL")
+        .ok()
+        .or_else(|| std::env::var("LLM_MODEL").ok());
 
-    if llm_host.is_none() || llm_model.is_none() {
-        println!("      SKIPPED - LLM_HOST and/or LLM_MODEL not set");
+    if llm_endpoint.is_none() || llm_model.is_none() {
+        println!("      SKIPPED - LLM_ENDPOINT and/or LLM_MODEL not set");
         println!("\n═══════════════════════════════════════════════════════════");
         return Ok(());
     }
 
-    println!("      LLM_HOST: {}", llm_host.as_ref().unwrap());
+    println!("      LLM_ENDPOINT: {}", llm_endpoint.as_ref().unwrap());
     println!("      LLM_MODEL: {}", llm_model.as_ref().unwrap());
 
     let start = std::time::Instant::now();

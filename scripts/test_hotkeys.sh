@@ -11,11 +11,11 @@ echo "CodeScribe Dual Hotkey Mode Test"
 echo "================================================"
 echo ""
 echo "Current configuration:"
-echo "- FORMAT_ENABLED: ${FORMAT_ENABLED:-1}"
-echo "- FORMAT_STRATEGY: ${FORMAT_STRATEGY:-ollama}"
-echo "- OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:120b}"
-echo "- AGENT_NAME: ${AGENT_NAME:-El Niño}"
-echo "- MAX_NEW_TOKENS: ${MAX_NEW_TOKENS:-8192}"
+echo "- AI_FORMATTING_ENABLED: ${AI_FORMATTING_ENABLED:-1}"
+echo "- LLM_ENDPOINT: ${LLM_ENDPOINT:-http://localhost:11434/api/chat}"
+echo "- LLM_FORMATTING_MODEL: ${LLM_FORMATTING_MODEL:-<unset>}"
+echo "- LLM_ASSISTIVE_MODEL: ${LLM_ASSISTIVE_MODEL:-<unset>}"
+echo "- USE_LOCAL_STT: ${USE_LOCAL_STT:-1}"
 echo ""
 echo "Testing Instructions:"
 echo "================================================"
@@ -32,8 +32,8 @@ echo "   - Say: 'El Niño, write a bubble sort function in Python'"
 echo "   - Expected: Full AI response with code generation"
 echo "   - Can generate long, detailed responses"
 echo ""
-echo "3. FORMAT_ENABLED=0 (Light Plus Only):"
-echo "   - Set FORMAT_ENABLED=0 in .env"
+echo "3. AI_FORMATTING_ENABLED=0 (Raw only):"
+echo "   - Set AI_FORMATTING_ENABLED=0 in .env"
 echo "   - Both modes should only apply light_plus baseline"
 echo "   - No AI processing, just basic cleanup"
 echo ""
@@ -44,5 +44,5 @@ echo ""
 # Enable debug logging
 export LOG_LEVEL=DEBUG
 
-# Run the application
-uv run python -m codescribe.main
+# Run the application (local Rust app)
+cargo run --bin codescribe

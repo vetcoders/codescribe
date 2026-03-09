@@ -9,7 +9,7 @@
 #       --apple-id "your@email.com" --team-id "TEAMID" --password "app-specific-pwd"
 #
 # Usage:
-#   ./scripts/notarize.sh CodeScribe_0.6.0_20260111.dmg
+#   ./scripts/notarize.sh CodeScribe-<VERSION>.dmg
 #   NOTARY_PROFILE=MyProfile ./scripts/notarize.sh CodeScribe.dmg
 #
 # Created by M&K (c)2026 VetCoders
@@ -22,7 +22,7 @@ cd "$PROJECT_DIR"
 
 # Configuration
 NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
-APP_NAME="CodeScribe"
+APP_NAME="${CODESCRIBE_APP_NAME:-CodeScribe}"
 BUNDLE_DIR="bundle/${APP_NAME}.app"
 
 # Parse arguments
@@ -30,10 +30,10 @@ if [ $# -lt 1 ]; then
     echo "Usage: $0 <dmg_file>"
     echo ""
     echo "Environment variables:"
-    echo "  NOTARY_PROFILE  - Keychain profile name (default: CODESCRIBE_NOTARY)"
+    echo "  NOTARY_PROFILE  - Keychain profile name (default: ${NOTARY_PROFILE})"
     echo ""
     echo "Setup credentials first:"
-    echo "  xcrun notarytool store-credentials \"CODESCRIBE_NOTARY\" \\"
+    echo "  xcrun notarytool store-credentials \"${NOTARY_PROFILE}\" \\"
     echo "      --apple-id \"your@email.com\" \\"
     echo "      --team-id \"TEAMID\" \\"
     echo "      --password \"app-specific-password\""
@@ -68,15 +68,28 @@ echo ""
 echo "▶ Submitting to Apple Notary Service..."
 echo "  This may take 5-15 minutes..."
 
+set +e
 SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG_FILE" \
     --keychain-profile "$NOTARY_PROFILE" \
     --wait \
     --timeout 30m 2>&1)
+SUBMIT_EXIT=$?
+set -e
 
 echo "$SUBMIT_OUTPUT"
 
+if [ $SUBMIT_EXIT -ne 0 ]; then
+    echo ""
+    echo "✗ Notary submission command failed (exit: $SUBMIT_EXIT)"
+    if echo "$SUBMIT_OUTPUT" | grep -qi "Invalid credentials"; then
+        echo "  Hint: refresh profile '${NOTARY_PROFILE}' via:"
+        echo "    xcrun notarytool store-credentials \"${NOTARY_PROFILE}\" --apple-id ... --team-id ... --password ..."
+    fi
+    exit $SUBMIT_EXIT
+fi
+
 # Check if notarization succeeded
-if echo "$SUBMIT_OUTPUT" | grep -q "status: Accepted"; then
+if echo "$SUBMIT_OUTPUT" | grep -Eiq "status[^A-Za-z]*Accepted"; then
     echo ""
     echo "  ✓ Notarization accepted!"
 else

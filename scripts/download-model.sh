@@ -14,14 +14,24 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-cd "$PROJECT_DIR"
-
 # Configuration
-MODEL_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
-MODEL_NAME="whisper-large-v3-turbo-mlx-q8"
-MODEL_DIR="models/${MODEL_NAME}"
+DEFAULT_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
+MODEL_REPO="${CODESCRIBE_EMBED_MODEL:-$DEFAULT_REPO}"
+
+# If CODESCRIBE_EMBED_MODEL points to a local path, skip download.
+if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" ]] && [[ -d "${CODESCRIBE_EMBED_MODEL}" ]]; then
+    if [[ -f "${CODESCRIBE_EMBED_MODEL}/config.json" ]]; then
+        echo "✓ Whisper model found at ${CODESCRIBE_EMBED_MODEL} (local path). Skipping download."
+        exit 0
+    fi
+fi
+
+# If override isn't an HF repo, fall back to default repo.
+if [[ "$MODEL_REPO" != */* ]]; then
+    MODEL_REPO="$DEFAULT_REPO"
+fi
+
+MODEL_NAME="${MODEL_REPO##*/}"
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  CodeScribe Model Download"
@@ -29,17 +39,6 @@ echo "════════════════════════�
 echo "  Model:  ${MODEL_NAME}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
 echo "───────────────────────────────────────────────────────────"
-
-# Check if model already exists
-if [ -d "$MODEL_DIR" ] && [ -f "${MODEL_DIR}/weights.safetensors" ]; then
-    MODEL_SIZE=$(du -sh "$MODEL_DIR" | cut -f1)
-    echo ""
-    echo "  ✓ Model already downloaded: ${MODEL_DIR} (${MODEL_SIZE})"
-    echo ""
-    echo "  To re-download, remove the directory first:"
-    echo "    rm -rf ${MODEL_DIR}"
-    exit 0
-fi
 
 # Check for HuggingFace CLI
 if ! command -v hf &> /dev/null; then
@@ -70,49 +69,19 @@ else
     fi
 fi
 
-# Create models directory
-mkdir -p models
-
 # Download model
 echo ""
-echo "▶ Downloading model (~900MB)..."
+echo "▶ Downloading model (HF cache)..."
 echo "  This may take a few minutes..."
 echo ""
 
-hf download "$MODEL_REPO" --local-dir "$MODEL_DIR"
-
-# Verify download
-echo ""
-echo "▶ Verifying model files..."
-
-REQUIRED_FILES=("config.json" "weights.safetensors" "tokenizer.json" "mel_filters.npz")
-MISSING=()
-
-for file in "${REQUIRED_FILES[@]}"; do
-    if [ ! -f "${MODEL_DIR}/${file}" ]; then
-        MISSING+=("$file")
-    fi
-done
-
-if [ ${#MISSING[@]} -gt 0 ]; then
-    echo "✗ Missing required files: ${MISSING[*]}"
-    exit 1
-fi
-
-MODEL_SIZE=$(du -sh "$MODEL_DIR" | cut -f1)
+hf download "$MODEL_REPO"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
-echo "  Location: ${MODEL_DIR}"
-echo "  Size:     ${MODEL_SIZE}"
-echo ""
-echo "  Files:"
-for file in "${REQUIRED_FILES[@]}"; do
-    SIZE=$(du -h "${MODEL_DIR}/${file}" | cut -f1)
-    echo "    ✓ ${file} (${SIZE})"
-done
+echo "  Location: HF cache (use: hf cache ls)"
 echo ""
 echo "  Model ready for use with CodeScribe."
 echo "───────────────────────────────────────────────────────────"

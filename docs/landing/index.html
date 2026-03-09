@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodeScribe — Native macOS Audio Intelligence | VetCoders</title>
+    <meta
+      name="description"
+      content="CodeScribe is a native macOS audio intelligence platform with embedded Whisper Live, adaptive quality loops, and agent-ready voice workflows."
+    />
+    <meta
+      name="keywords"
+      content="CodeScribe, VetCoders, speech-to-text, Whisper Live, macOS dictation, voice agent"
+    />
+    <meta
+      property="og:title"
+      content="CodeScribe — Native macOS Audio Intelligence"
+    />
+    <meta
+      property="og:description"
+      content="From capture to transcript to agent-ready output, with local-first privacy and production-grade polish."
+    />
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:image"
+      content="https://codescribe.vetcoders.io/og-codescribe.png"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="CodeScribe — Native macOS Audio Intelligence"
+    />
+    <meta
+      name="twitter:description"
+      content="Embedded Whisper Live, quality loop, and assistant workflows for fast production dictation."
+    />
+    <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity canonical metadata link is not an executable subresource -->
+    <link rel="canonical" href="https://codescribe.vetcoders.io/" />
+    <style>
+      :root {
+        --vc-primary: #d97757;
+        --vc-secondary: #6a9bcc;
+        --vc-tertiary: #788c5d;
+        --vc-dark: #141413;
+        --vc-light: #faf9f5;
+        --vc-mid: #b0aea5;
+        --vc-card: #1e1e1d;
+        --vc-border: #2a2a29;
+        --vc-glow: rgba(217, 119, 87, 0.28);
+        --vc-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: radial-gradient(
+            circle at 18% 18%,
+            rgba(106, 155, 204, 0.16),
+            transparent 42%
+          ),
+          radial-gradient(
+            circle at 82% 2%,
+            rgba(120, 140, 93, 0.15),
+            transparent 36%
+          ),
+          linear-gradient(180deg, #161615 0%, #121211 100%);
+        color: var(--vc-light);
+        font-family: "Lora", Georgia, serif;
+        user-select: none;
+        scroll-behavior: smooth;
+      }
+
+      pre,
+      code,
+      .copyable {
+        user-select: text;
+      }
+
+      #scrollProgress {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 0;
+        height: 2px;
+        z-index: 200;
+        pointer-events: none;
+        background: linear-gradient(90deg, var(--vc-primary), #f19b79);
+        box-shadow: 0 0 14px rgba(217, 119, 87, 0.6);
+      }
+
+      .shell {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 22px 18px 80px;
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 8px 0 20px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-family: "Poppins", Arial, sans-serif;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      .brand-mark {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        background: linear-gradient(
+          145deg,
+          #ec9d7f 0%,
+          var(--vc-primary) 60%,
+          #a6553f 100%
+        );
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
+          0 6px 18px rgba(217, 119, 87, 0.28);
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        font-family: "Poppins", Arial, sans-serif;
+        font-size: 0.94rem;
+        color: var(--vc-mid);
+      }
+
+      .nav-links a {
+        color: inherit;
+        text-decoration: none;
+        transition: color 0.2s ease;
+      }
+
+      .nav-links a:hover {
+        color: var(--vc-light);
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 1.08fr 1fr;
+        gap: 28px;
+        align-items: center;
+        margin-bottom: 34px;
+      }
+
+      .hero h1 {
+        margin: 0 0 14px;
+        font-family: "Poppins", Arial, sans-serif;
+        font-size: clamp(2rem, 4.8vw, 3.25rem);
+        line-height: 1.04;
+        letter-spacing: -0.02em;
+        text-wrap: balance;
+      }
+
+      .hero p {
+        margin: 0 0 20px;
+        color: var(--vc-mid);
+        font-size: 1.05rem;
+        line-height: 1.7;
+        max-width: 62ch;
+      }
+
+      .hero-canvas-wrap {
+        border: 1px solid var(--vc-border);
+        background: linear-gradient(
+          180deg,
+          rgba(30, 30, 29, 0.92),
+          rgba(20, 20, 19, 0.96)
+        );
+        border-radius: 20px;
+        box-shadow: var(--vc-shadow);
+        padding: 14px;
+        position: relative;
+        overflow: hidden;
+        min-height: 360px;
+      }
+
+      .hero-canvas-wrap::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(
+          circle at 25% 18%,
+          rgba(250, 249, 245, 0.07),
+          transparent 44%
+        );
+      }
+
+      #marbleCanvas {
+        width: 100%;
+        height: 330px;
+        display: block;
+        border-radius: 14px;
+        background: radial-gradient(
+          circle at 50% 35%,
+          rgba(33, 33, 32, 0.9),
+          #111110 78%
+        );
+      }
+
+      .stats {
+        position: absolute;
+        right: 16px;
+        top: 14px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(250, 249, 245, 0.12);
+        background: rgba(15, 15, 14, 0.72);
+        backdrop-filter: blur(4px);
+        font-family: "Poppins", Arial, sans-serif;
+        font-size: 0.82rem;
+        color: var(--vc-light);
+        line-height: 1.5;
+      }
+
+      .stats .label {
+        color: var(--vc-mid);
+        margin-right: 6px;
+      }
+
+      .cta-row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none;
+        font-family: "Poppins", Arial, sans-serif;
+        font-weight: 600;
+        padding: 10px 16px;
+        border-radius: 8px;
+        border: 1px solid transparent;
+        transition: transform 0.18s ease, background 0.2s ease,
+          border-color 0.2s ease, color 0.2s ease;
+        cursor: pointer;
+      }
+
+      .btn:focus-visible {
+        outline: 2px solid var(--vc-secondary);
+        outline-offset: 2px;
+      }
+
+      .btn-primary {
+        background: var(--vc-primary);
+        color: #121211;
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-1px);
+        background: #c56a4d;
+      }
+
+      .btn-secondary {
+        background: transparent;
+        border-color: var(--vc-primary);
+        color: var(--vc-primary);
+      }
+
+      .btn-secondary:hover {
+        transform: translateY(-1px);
+        border-color: #f08f6f;
+        color: #f08f6f;
+      }
+
+      section {
+        margin-top: 24px;
+      }
+
+      .phase-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 16px;
+        margin-top: 14px;
+      }
+
+      .card {
+        border-radius: 16px;
+        padding: 16px;
+        background: var(--vc-card);
+        border: 1px solid var(--vc-border);
+        transform-style: preserve-3d;
+        transition: transform 0.2s ease, border-color 0.2s ease,
+          box-shadow 0.2s ease;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      }
+
+      .card h3 {
+        margin: 0 0 10px;
+        font-family: "Poppins", Arial, sans-serif;
+        font-size: 1.06rem;
+        letter-spacing: 0.01em;
+      }
+
+      .card p {
+        margin: 0;
+        color: var(--vc-mid);
+        line-height: 1.65;
+        font-size: 0.98rem;
+      }
+
+      .card.phase-build {
+        background: linear-gradient(
+          165deg,
+          rgba(217, 119, 87, 0.95) 0%,
+          rgba(194, 102, 74, 0.92) 100%
+        );
+        color: #141413;
+      }
+
+      .card.phase-build p {
+        color: rgba(20, 20, 19, 0.82);
+      }
+
+      .card.phase-converge {
+        border: 1px solid var(--vc-primary);
+        box-shadow: 0 14px 28px rgba(217, 119, 87, 0.15);
+      }
+
+      .card.phase-ship {
+        background: linear-gradient(
+          165deg,
+          rgba(120, 140, 93, 0.93) 0%,
+          rgba(104, 123, 80, 0.92) 100%
+        );
+        color: #141413;
+      }
+
+      .card.phase-ship p {
+        color: rgba(20, 20, 19, 0.82);
+      }
+
+      .card.phase-internal {
+        opacity: 0.86;
+      }
+
+      .mini-title {
+        margin: 0 0 10px;
+        color: var(--vc-mid);
+        font-family: "Poppins", Arial, sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        font-size: 0.76rem;
+      }
+
+      .orchestrator {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: 1.3fr 1fr;
+        gap: 16px;
+        align-items: center;
+        border: 1px solid rgba(120, 140, 93, 0.4);
+        background: linear-gradient(
+          140deg,
+          rgba(32, 38, 30, 0.88) 0%,
+          rgba(28, 34, 27, 0.82) 55%,
+          rgba(28, 26, 24, 0.75) 100%
+        );
+      }
+
+      .orchestrator code {
+        display: block;
+        margin-top: 10px;
+        padding: 11px 12px;
+        border-radius: 10px;
+        background: rgba(15, 15, 14, 0.64);
+        border: 1px solid rgba(250, 249, 245, 0.1);
+        color: var(--vc-light);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85rem;
+        white-space: pre-wrap;
+      }
+
+      .checklist {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--vc-light);
+      }
+
+      .checklist li {
+        margin-bottom: 7px;
+        line-height: 1.45;
+        color: #e6e3da;
+      }
+
+      .footer {
+        margin-top: 34px;
+        padding-top: 20px;
+        border-top: 1px solid var(--vc-border);
+        color: var(--vc-mid);
+        font-size: 0.92rem;
+      }
+
+      .fade-up {
+        opacity: 0;
+        transform: translateY(20px);
+        transition: opacity 0.5s ease, transform 0.5s ease;
+      }
+
+      .fade-up.visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      @media (max-width: 1024px) {
+        .hero {
+          grid-template-columns: 1fr;
+        }
+
+        .orchestrator {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 768px) {
+        .nav-links {
+          display: none;
+        }
+
+        .phase-grid {
+          grid-template-columns: 1fr;
+        }
+
+        #marbleCanvas {
+          height: 280px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="scrollProgress"></div>
+    <div class="shell">
+      <header class="nav fade-up">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"></div>
+          <span>CodeScribe by VetCoders</span>
+        </div>
+        <nav class="nav-links" aria-label="Primary">
+          <a href="#pipeline">Pipeline</a>
+          <a href="#showcase">Showcase</a>
+          <a href="#ready">Readiness</a>
+        </nav>
+      </header>
+
+      <section class="hero">
+        <div class="fade-up">
+          <h1>Native macOS audio intelligence that converges to production.</h1>
+          <p>
+            CodeScribe turns dictation, formatting, and assistive voice
+            workflows into a single local-first system. The same pipeline that
+            improves transcription quality also drives launch readiness: build,
+            converge, ship.
+          </p>
+          <div class="cta-row">
+            <a
+              class="btn btn-primary"
+              href="https://github.com/VetCoders/CodeScribe"
+              >Open repository</a
+            >
+            <a class="btn btn-secondary" href="../guide/QUICKSTART.md"
+              >Quickstart docs</a
+            >
+          </div>
+        </div>
+        <div class="hero-canvas-wrap fade-up" id="showcase">
+          <canvas id="marbleCanvas" aria-label="Convergence canvas"></canvas>
+          <div class="stats">
+            <div>
+              <span class="label">Loop</span><strong id="loopCounter">0</strong>
+            </div>
+            <div>
+              <span class="label">Coverage</span
+              ><strong id="coverageCounter">0%</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="pipeline" class="fade-up">
+        <p class="mini-title">VetCoders pipeline</p>
+        <div class="phase-grid">
+          <article class="card phase-build tilt-card">
+            <h3>Phase 1 — Build</h3>
+            <p>
+              Bootstrap context, execute workflow, and close technical unknowns
+              across recording, transcription, settings, and agent flow.
+            </p>
+          </article>
+          <article class="card phase-converge tilt-card">
+            <h3>Phase 2 — Converge</h3>
+            <p>
+              Marbles loop denoises known findings iteratively until critical
+              and credibility gaps are fully removed.
+            </p>
+          </article>
+          <article class="card phase-ship tilt-card">
+            <h3>Phase 3 — Ship</h3>
+            <p>
+              Definition of Undone audit plus hydration closes market-facing
+              gaps and turns implementation into adoption-ready surface.
+            </p>
+          </article>
+          <article class="card orchestrator fade-up">
+            <div>
+              <h3>One orchestrator, explicit gates</h3>
+              <p>
+                Each phase yields measurable handover artifacts. That keeps
+                velocity high while preserving launch discipline.
+              </p>
+              <code class="copyable"
+                >init -> workflow -> followup marbles loop (P0=0, P1=0, P2=0)
+                dou -> decorate -> hydrate</code
+              >
+            </div>
+            <ul class="checklist">
+              <li>Local-first transcription path with Whisper Live.</li>
+              <li>
+                Overlay + settings + hotkeys integrated for production usage.
+              </li>
+              <li>
+                Governance, discoverability, and install path tracked as
+                first-class work.
+              </li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="ready" class="fade-up">
+        <p class="mini-title">Readiness contract</p>
+        <div class="phase-grid">
+          <article class="card phase-internal tilt-card">
+            <h3>Discoverability</h3>
+            <p>
+              Search presence, metadata, and social cards are prepared so the
+              project can be found and understood without private context.
+            </p>
+          </article>
+          <article class="card phase-internal tilt-card">
+            <h3>Adoption</h3>
+            <p>
+              Install path and onboarding are documented for strangers, not only
+              for local developer environments.
+            </p>
+          </article>
+          <article class="card phase-internal tilt-card">
+            <h3>Trust</h3>
+            <p>
+              Security disclosure policy, issue intake templates, and release
+              metadata build confidence in maintenance quality.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <footer class="footer fade-up">
+        Visual identity and convergence demo generated in the `dou -> decorate
+        -> hydrate` phase.
+      </footer>
+    </div>
+
+    <script>
+      (function () {
+        var progress = document.getElementById("scrollProgress");
+        var fadeNodes = Array.prototype.slice.call(
+          document.querySelectorAll(".fade-up")
+        );
+        var cards = Array.prototype.slice.call(
+          document.querySelectorAll(".tilt-card")
+        );
+        var canvas = document.getElementById("marbleCanvas");
+        var loopCounter = document.getElementById("loopCounter");
+        var coverageCounter = document.getElementById("coverageCounter");
+        var ctx = canvas.getContext("2d");
+        var dpr = Math.max(1, window.devicePixelRatio || 1);
+        var hover = { x: -9999, y: -9999 };
+        var parallax = { x: 0, y: 0 };
+        var currentCoverage = 0;
+        var displayCoverage = 0;
+        var loop = 0;
+        var targets = [0, 15, 40, 65, 85, 100];
+        var targetIndex = 0;
+        var hold = 0;
+        var lastAt = performance.now();
+
+        function mulberry32(seed) {
+          return function () {
+            var t = (seed += 0x6d2b79f5);
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+          };
+        }
+
+        function clamp(v, a, b) {
+          return Math.max(a, Math.min(b, v));
+        }
+
+        function MarbleFactory(radius) {
+          this.radius = radius;
+          this.cache = new Map();
+          this.palettes = [
+            ["#e0a252", "#a96a2b", "#f5c57a"],
+            ["#63b1e3", "#2e6f95", "#b5e4ff"],
+            ["#6ba26d", "#3b6e3f", "#aed9af"],
+            ["#8a8d97", "#50535a", "#cacbd2"],
+            ["#ca7985", "#8e4351", "#e9b5bf"],
+            ["#9a79d0", "#5d438f", "#cab7ed"],
+            ["#d8aa5a", "#9f6b2d", "#f6d9a8"],
+            ["#4da9a7", "#2b6d73", "#9de2df"],
+          ];
+        }
+
+        MarbleFactory.prototype.make = function (seed, pattern) {
+          var key = seed + ":" + pattern;
+          if (this.cache.has(key)) return this.cache.get(key);
+          var size = this.radius * 2 + 8;
+          var off = document.createElement("canvas");
+          off.width = size * dpr;
+          off.height = size * dpr;
+          var o = off.getContext("2d");
+          o.scale(dpr, dpr);
+          var rr = this.radius;
+          var cx = size / 2;
+          var cy = size / 2;
+          var rng = mulberry32(seed);
+          var p = this.palettes[seed % this.palettes.length];
+
+          var base = o.createRadialGradient(
+            cx - rr * 0.33,
+            cy - rr * 0.36,
+            rr * 0.2,
+            cx,
+            cy,
+            rr
+          );
+          base.addColorStop(0, p[2]);
+          base.addColorStop(0.62, p[0]);
+          base.addColorStop(1, p[1]);
+          o.beginPath();
+          o.arc(cx, cy, rr, 0, Math.PI * 2);
+          o.fillStyle = base;
+          o.fill();
+
+          o.save();
+          o.beginPath();
+          o.arc(cx, cy, rr * 0.95, 0, Math.PI * 2);
+          o.clip();
+
+          if (pattern === 0) {
+            o.strokeStyle = "rgba(255,255,255,0.5)";
+            o.lineWidth = rr * 0.18;
+            o.beginPath();
+            o.moveTo(cx - rr * 0.7, cy + rr * 0.2);
+            o.bezierCurveTo(
+              cx - rr * 0.2,
+              cy - rr * 0.5,
+              cx + rr * 0.15,
+              cy + rr * 0.8,
+              cx + rr * 0.65,
+              cy - rr * 0.2
+            );
+            o.stroke();
+          } else if (pattern === 1) {
+            o.strokeStyle = "rgba(255,255,255,0.35)";
+            o.lineWidth = rr * 0.1;
+            for (var i = 0; i < 3; i += 1) {
+              o.beginPath();
+              o.arc(
+                cx + (i - 1) * rr * 0.15,
+                cy,
+                rr * (0.2 + i * 0.2),
+                0,
+                Math.PI * 2
+              );
+              o.stroke();
+            }
+          } else if (pattern === 2) {
+            for (var s = 0; s < 22; s += 1) {
+              var ang = rng() * Math.PI * 2;
+              var dist = rng() * rr * 0.7;
+              o.fillStyle =
+                "rgba(255,255,255," + (0.15 + rng() * 0.35).toFixed(2) + ")";
+              o.beginPath();
+              o.arc(
+                cx + Math.cos(ang) * dist,
+                cy + Math.sin(ang) * dist,
+                0.8 + rng() * 1.2,
+                0,
+                Math.PI * 2
+              );
+              o.fill();
+            }
+          } else if (pattern === 3) {
+            var core = o.createRadialGradient(
+              cx,
+              cy,
+              rr * 0.05,
+              cx,
+              cy,
+              rr * 0.65
+            );
+            core.addColorStop(0, "rgba(255,255,255,0.7)");
+            core.addColorStop(0.35, "rgba(255,255,255,0.15)");
+            core.addColorStop(1, "rgba(255,255,255,0)");
+            o.fillStyle = core;
+            o.beginPath();
+            o.arc(cx, cy, rr * 0.68, 0, Math.PI * 2);
+            o.fill();
+          }
+
+          o.restore();
+
+          var shine = o.createRadialGradient(
+            cx - rr * 0.35,
+            cy - rr * 0.5,
+            rr * 0.05,
+            cx - rr * 0.35,
+            cy - rr * 0.5,
+            rr * 0.65
+          );
+          shine.addColorStop(0, "rgba(255,255,255,0.65)");
+          shine.addColorStop(1, "rgba(255,255,255,0)");
+          o.fillStyle = shine;
+          o.beginPath();
+          o.arc(cx - rr * 0.18, cy - rr * 0.24, rr * 0.78, 0, Math.PI * 2);
+          o.fill();
+
+          o.strokeStyle = "rgba(0,0,0,0.24)";
+          o.lineWidth = rr * 0.08;
+          o.beginPath();
+          o.arc(cx, cy, rr * 0.95, 0, Math.PI * 2);
+          o.stroke();
+
+          this.cache.set(key, off);
+          return off;
+        };
+
+        function makeHexGrid(cx, cy, circleRadius, marbleRadius) {
+          var spacing = marbleRadius * 2.12;
+          var rowH = spacing * 0.866;
+          var points = [];
+          var y = -circleRadius;
+          while (y <= circleRadius) {
+            var row = Math.round(y / rowH);
+            var offset = row % 2 ? spacing * 0.5 : 0;
+            var x = -circleRadius;
+            while (x <= circleRadius) {
+              var px = x + offset;
+              var dist = Math.sqrt(px * px + y * y);
+              if (dist + marbleRadius <= circleRadius) {
+                points.push({
+                  x: cx + px,
+                  y: cy + y,
+                });
+              }
+              x += spacing;
+            }
+            y += rowH;
+          }
+          return points;
+        }
+
+        var marbles = [];
+        var board = { x: 0, y: 0, radius: 0 };
+        var marbleFactory = new MarbleFactory(9.5);
+
+        function resizeCanvas() {
+          var rect = canvas.getBoundingClientRect();
+          canvas.width = Math.floor(rect.width * dpr);
+          canvas.height = Math.floor(rect.height * dpr);
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          board.x = rect.width * 0.5;
+          board.y = rect.height * 0.54;
+          board.radius = Math.min(rect.width, rect.height) * 0.36;
+
+          var points = makeHexGrid(
+            board.x,
+            board.y,
+            board.radius,
+            marbleFactory.radius
+          );
+          marbles = points.map(function (p, i) {
+            return {
+              baseX: p.x,
+              baseY: p.y,
+              seed: (i + 1) * 97,
+              pattern: i % 5,
+              energy: 0,
+              settle: 0,
+              shake: 0,
+            };
+          });
+        }
+
+        function drawGroove(x, y, r, alpha) {
+          var g = ctx.createRadialGradient(
+            x - r * 0.25,
+            y - r * 0.25,
+            r * 0.1,
+            x,
+            y,
+            r * 1.08
+          );
+          g.addColorStop(
+            0,
+            "rgba(255,255,255," + (0.06 + alpha * 0.1).toFixed(3) + ")"
+          );
+          g.addColorStop(0.62, "rgba(17,17,16,0.75)");
+          g.addColorStop(1, "rgba(5,5,5,0.78)");
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(x, y, r * 1.01, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        function render(now) {
+          var dt = Math.min(32, now - lastAt);
+          lastAt = now;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.save();
+          ctx.fillStyle = "rgba(0,0,0,0.15)";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.restore();
+
+          var loopSpeed = 0.02;
+          if (hold > 0) {
+            hold -= dt;
+          } else {
+            currentCoverage +=
+              (targets[targetIndex] - currentCoverage) * loopSpeed;
+            if (Math.abs(targets[targetIndex] - currentCoverage) < 0.45) {
+              currentCoverage = targets[targetIndex];
+              if (targetIndex === targets.length - 1) {
+                hold = 900;
+                targetIndex = 0;
+                loop += 1;
+              } else {
+                targetIndex += 1;
+              }
+            }
+          }
+
+          displayCoverage += (currentCoverage - displayCoverage) * 0.08;
+          loopCounter.textContent = String(loop);
+          coverageCounter.textContent = Math.round(displayCoverage) + "%";
+
+          var activeCount = Math.floor(
+            marbles.length * (displayCoverage / 100)
+          );
+          var spotlightRadius = marbleFactory.radius * 12;
+          var px = parallax.x * 9;
+          var py = parallax.y * 7;
+
+          for (var i = 0; i < marbles.length; i += 1) {
+            var m = marbles[i];
+            var target = i < activeCount ? 1 : 0;
+            var prev = m.energy;
+            m.energy += (target - m.energy) * 0.1;
+
+            if (target === 1) {
+              m.settle = clamp(m.settle + 0.07, 0, 1);
+            } else {
+              if (prev > 0.2) m.shake = 1;
+              m.settle = clamp(m.settle - 0.06, 0, 1);
+            }
+
+            if (m.shake > 0) m.shake = Math.max(0, m.shake - 0.035);
+
+            var gx = m.baseX + px * 0.35;
+            var gy = m.baseY + py * 0.35;
+            drawGroove(gx, gy, marbleFactory.radius * 1.08, 1 - m.energy);
+          }
+
+          for (var j = 0; j < marbles.length; j += 1) {
+            var marble = marbles[j];
+            var dx = marble.baseX - hover.x;
+            var dy = marble.baseY - hover.y;
+            var dist = Math.sqrt(dx * dx + dy * dy);
+            var spot = dist < spotlightRadius ? 1 - dist / spotlightRadius : 0;
+            var alpha = 0.15 + marble.energy * 0.67 + spot * 0.24;
+            var sprite = marbleFactory.make(marble.seed, marble.pattern);
+            var dropY = (1 - marble.settle) * 24;
+            var wiggle =
+              marble.shake > 0
+                ? Math.sin(now * 0.04 + marble.seed) * marble.shake * 2.3
+                : 0;
+            var mx = marble.baseX + px + wiggle;
+            var my = marble.baseY + py - dropY;
+            var size = marbleFactory.radius * 2 + 8;
+            ctx.globalAlpha = clamp(alpha, 0.08, 1);
+            ctx.drawImage(sprite, mx - size * 0.5, my - size * 0.5, size, size);
+          }
+          ctx.globalAlpha = 1;
+          requestAnimationFrame(render);
+        }
+
+        function updateProgress() {
+          var max = document.documentElement.scrollHeight - window.innerHeight;
+          var pct = max > 0 ? (window.scrollY / max) * 100 : 0;
+          progress.style.width = pct.toFixed(2) + "%";
+        }
+
+        function setParallax(e) {
+          var r = canvas.getBoundingClientRect();
+          var nx = (e.clientX - r.left) / r.width - 0.5;
+          var ny = (e.clientY - r.top) / r.height - 0.5;
+          parallax.x = clamp(nx, -1, 1);
+          parallax.y = clamp(ny, -1, 1);
+          hover.x = e.clientX - r.left;
+          hover.y = e.clientY - r.top;
+        }
+
+        function clearHover() {
+          hover.x = -9999;
+          hover.y = -9999;
+          parallax.x *= 0.8;
+          parallax.y *= 0.8;
+        }
+
+        var io = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (entry) {
+              if (entry.isIntersecting) {
+                entry.target.classList.add("visible");
+              }
+            });
+          },
+          { threshold: 0.12 }
+        );
+
+        fadeNodes.forEach(function (node) {
+          io.observe(node);
+        });
+
+        cards.forEach(function (card) {
+          card.addEventListener("mousemove", function (e) {
+            var r = card.getBoundingClientRect();
+            var x = (e.clientX - r.left) / r.width - 0.5;
+            var y = (e.clientY - r.top) / r.height - 0.5;
+            card.style.transform =
+              "perspective(700px) rotateY(" +
+              (x * 6).toFixed(2) +
+              "deg) rotateX(" +
+              (-y * 6).toFixed(2) +
+              "deg) scale(1.01)";
+          });
+          card.addEventListener("mouseleave", function () {
+            card.style.transform = "";
+          });
+        });
+
+        canvas.addEventListener("mousemove", setParallax);
+        canvas.addEventListener("mouseleave", clearHover);
+        window.addEventListener("scroll", updateProgress, { passive: true });
+        window.addEventListener("resize", resizeCanvas);
+
+        resizeCanvas();
+        updateProgress();
+        requestAnimationFrame(render);
+      })();
+    </script>
+  </body>
+</html>

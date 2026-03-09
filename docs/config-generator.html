@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CodeScribe • Generator .env</title>
+    <style>
+      :root {
+        --bg: #0e131a;
+        --panel: #141b24;
+        --panel-2: #101720;
+        --text: #e7edf5;
+        --muted: #9aa6b2;
+        --accent: #6fd3c7;
+        --accent-2: #7fb6ff;
+        --accent-warn: #f5a623;
+        --border: #223041;
+        --chip: #1a2532;
+        --success: #4ade80;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: radial-gradient(
+          1200px 700px at 10% -10%,
+          #16202b 0%,
+          #0b1016 55%,
+          #070b10 100%
+        );
+        color: var(--text);
+        font: 500 15px/1.6 "Space Grotesk", "IBM Plex Sans", "SF Pro Text",
+          system-ui, sans-serif;
+        padding: 32px;
+        min-height: 100vh;
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 0 auto;
+      }
+      header {
+        display: grid;
+        gap: 12px;
+        margin-bottom: 28px;
+      }
+      h1 {
+        font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+        font-size: 28px;
+        letter-spacing: 0.2px;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      h1::before {
+        content: "🎙️";
+      }
+      .subtitle {
+        color: var(--muted);
+      }
+      .grid {
+        display: grid;
+        gap: 18px;
+      }
+      .card {
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 18px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+      }
+      .card h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+        letter-spacing: 0.3px;
+        color: var(--accent);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .card.optional h2 {
+        color: var(--muted);
+      }
+      .card.required h2::after {
+        content: "REQUIRED";
+        font-size: 10px;
+        background: var(--accent);
+        color: var(--bg);
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-left: auto;
+      }
+      .field {
+        display: grid;
+        gap: 6px;
+        margin-bottom: 12px;
+      }
+      label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      label .default {
+        font-size: 10px;
+        color: var(--accent-2);
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        background: #0b1219;
+        color: var(--text);
+        border: 1px solid #1f2a38;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo,
+          monospace;
+        font-size: 13px;
+      }
+      select {
+        cursor: pointer;
+      }
+      textarea {
+        min-height: 80px;
+        resize: vertical;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 6px;
+      }
+      .chip {
+        background: var(--chip);
+        border: 1px solid #1e2a38;
+        color: var(--muted);
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .chip:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .chip.active {
+        background: var(--accent);
+        color: var(--bg);
+        border-color: var(--accent);
+      }
+      .split {
+        display: grid;
+        gap: 14px;
+      }
+      @media (min-width: 860px) {
+        .split {
+          grid-template-columns: 1fr 1fr;
+        }
+        .split-3 {
+          grid-template-columns: 1fr 1fr 1fr;
+        }
+      }
+      .output-card {
+        background: #0a0f14;
+        border: 2px solid var(--accent);
+      }
+      .output-card h2 {
+        color: var(--success);
+      }
+      #output {
+        background: #050810;
+        border-radius: 8px;
+        padding: 16px;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 400px;
+        overflow-y: auto;
+        color: var(--text);
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        margin-top: 14px;
+        flex-wrap: wrap;
+      }
+      button {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: var(--bg);
+        border: none;
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: 600;
+        font-size: 13px;
+        cursor: pointer;
+        transition: transform 0.1s, box-shadow 0.1s;
+      }
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(111, 211, 199, 0.3);
+      }
+      button:active {
+        transform: translateY(0);
+      }
+      button.secondary {
+        background: var(--chip);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .toast {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        background: var(--success);
+        color: var(--bg);
+        padding: 12px 20px;
+        border-radius: 8px;
+        font-weight: 600;
+        opacity: 0;
+        transform: translateY(20px);
+        transition: all 0.3s;
+        z-index: 1000;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      footer {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 24px;
+        text-align: center;
+      }
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .toggle {
+        position: relative;
+        width: 44px;
+        height: 24px;
+        background: #1f2a38;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .toggle.on {
+        background: var(--accent);
+      }
+      .toggle::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 20px;
+        height: 20px;
+        background: var(--text);
+        border-radius: 50%;
+        transition: transform 0.2s;
+      }
+      .toggle.on::after {
+        transform: translateX(20px);
+      }
+      .toggle-label {
+        font-size: 13px;
+      }
+      .section-divider {
+        border: none;
+        border-top: 1px solid var(--border);
+        margin: 8px 0 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>CodeScribe • Generator .env</h1>
+        <div class="subtitle">
+          Wypełnij pola i skopiuj wygenerowany config do
+          <code>~/.codescribe/.env</code>
+        </div>
+        <div class="chips">
+          <span class="chip active" onclick="applyPreset('local')"
+            >🏠 Local Only</span
+          >
+          <span class="chip" onclick="applyPreset('local-ai')"
+            >🤖 Local + AI</span
+          >
+          <span class="chip" onclick="applyPreset('cloud')">☁️ Cloud STT</span>
+          <span class="chip" onclick="applyPreset('full')">⚡ Full Stack</span>
+        </div>
+      </header>
+
+      <div class="grid">
+        <!-- STT Config -->
+        <section class="card">
+          <h2>🎤 Speech-to-Text</h2>
+          <div class="toggle-row">
+            <div
+              class="toggle on"
+              id="toggle-local-stt"
+              onclick="toggleSwitch(this)"
+            ></div>
+            <span class="toggle-label">Use Local STT (embedded Whisper)</span>
+          </div>
+          <div class="split">
+            <div class="field">
+              <label
+                >WHISPER_LANGUAGE
+                <span class="default">default: pl</span></label
+              >
+              <select id="whisper-language">
+                <option value="pl" selected>pl (Polish)</option>
+                <option value="en">en (English)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>LOCAL_MODEL</label>
+              <input id="local-model" value="whisper-large-v3-turbo-mlx-q8" />
+            </div>
+          </div>
+          <hr class="section-divider" />
+          <div class="hint" style="margin-bottom: 12px">
+            Cloud STT (only if USE_LOCAL_STT=0):
+          </div>
+          <div class="field">
+            <label>STT_ENDPOINT</label>
+            <input
+              id="stt-endpoint"
+              placeholder="https://api.libraxis.cloud/v1/audio/transcriptions"
+            />
+          </div>
+          <div class="field">
+            <label>STT_API_KEY</label>
+            <input
+              id="stt-api-key"
+              type="password"
+              placeholder="your-stt-api-key"
+            />
+          </div>
+        </section>
+
+        <!-- AI Formatting -->
+        <section class="card">
+          <h2>🤖 AI Formatting / Assistive</h2>
+          <div class="toggle-row">
+            <div
+              class="toggle"
+              id="toggle-ai"
+              onclick="toggleSwitch(this)"
+            ></div>
+            <span class="toggle-label">Enable AI Formatting</span>
+          </div>
+          <div class="field">
+            <label>LLM_ENDPOINT</label>
+            <input
+              id="llm-endpoint"
+              placeholder="https://api.openai.com/v1/responses"
+            />
+          </div>
+          <div class="split">
+            <div class="field">
+              <label>LLM_MODEL</label>
+              <input id="llm-model" placeholder="gpt-4.1-mini" />
+            </div>
+            <div class="field">
+              <label>LLM_API_KEY 🔐</label>
+              <input id="llm-api-key" type="password" placeholder="sk-..." />
+              <div class="hint">Stored in macOS Keychain (secure)</div>
+            </div>
+          </div>
+          <hr class="section-divider" />
+          <div class="hint" style="margin-bottom: 12px">
+            Mode-specific overrides (optional):
+          </div>
+          <div class="split">
+            <div class="field">
+              <label>LLM_FORMATTING_MODEL</label>
+              <input id="llm-formatting-model" placeholder="(uses LLM_MODEL)" />
+            </div>
+            <div class="field">
+              <label>LLM_ASSISTIVE_MODEL</label>
+              <input id="llm-assistive-model" placeholder="(uses LLM_MODEL)" />
+            </div>
+          </div>
+        </section>
+
+        <!-- Hotkeys -->
+        <section class="card">
+          <h2>⌨️ Hotkeys</h2>
+          <div class="split">
+            <div class="field">
+              <label
+                >HOLD_MODS <span class="default">default: ctrl</span></label
+              >
+              <select id="hold-mods">
+                <option value="ctrl" selected>Ctrl</option>
+                <option value="ctrl_alt">Ctrl + Option</option>
+                <option value="ctrl_shift">Ctrl + Shift</option>
+                <option value="ctrl_cmd">Ctrl + Command</option>
+              </select>
+            </div>
+            <div class="field">
+              <label
+                >TOGGLE_TRIGGER
+                <span class="default">default: double_option</span></label
+              >
+              <select id="toggle-trigger">
+                <option value="double_option" selected>
+                  Double Option (any)
+                </option>
+                <option value="double_lalt">Double Left Option</option>
+                <option value="double_ralt">Double Right Option</option>
+                <option value="double_ctrl">Double Ctrl</option>
+                <option value="none">Disabled</option>
+              </select>
+            </div>
+          </div>
+          <div class="split">
+            <div class="field">
+              <label
+                >HOLD_START_DELAY_MS
+                <span class="default">default: 800</span></label
+              >
+              <input
+                id="hold-delay"
+                type="number"
+                value="800"
+                min="200"
+                max="2000"
+              />
+            </div>
+            <div class="field">
+              <label
+                >HOLD_EXCLUSIVE <span class="default">default: 1</span></label
+              >
+              <select id="hold-exclusive">
+                <option value="1" selected>Yes (ignore Shift/Cmd)</option>
+                <option value="0">No (Shift/Cmd = assistive)</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <!-- Streaming -->
+        <section class="card optional">
+          <h2>📊 Streaming (Advanced)</h2>
+          <div class="split">
+            <div class="field">
+              <label>CHUNK_SEC <span class="default">15.0</span></label>
+              <input
+                id="chunk-sec"
+                type="number"
+                value="15"
+                step="0.5"
+                min="5"
+                max="30"
+              />
+            </div>
+          </div>
+        </section>
+
+        <!-- UI / Feedback -->
+        <section class="card optional">
+          <h2>🎨 UI & Feedback</h2>
+          <div class="split">
+            <div class="field">
+              <label>OVERLAY_POSITION_MODE</label>
+              <select id="overlay-position">
+                <option value="snapped_top_right" selected>
+                  Snapped Top Right
+                </option>
+                <option value="custom">Custom Position</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>SOUND_VOLUME <span class="default">0.0-1.0</span></label>
+              <input
+                id="sound-volume"
+                type="number"
+                value="1.0"
+                step="0.1"
+                min="0"
+                max="1"
+              />
+            </div>
+          </div>
+          <div class="toggle-row">
+            <div
+              class="toggle on"
+              id="toggle-beep"
+              onclick="toggleSwitch(this)"
+            ></div>
+            <span class="toggle-label">Beep on recording start</span>
+          </div>
+        </section>
+
+        <!-- Output -->
+        <section class="card output-card">
+          <h2>📄 Generated .env</h2>
+          <div id="output"># Loading...</div>
+          <div class="actions">
+            <button onclick="copyToClipboard()">📋 Copy to Clipboard</button>
+            <button class="secondary" onclick="downloadEnv()">
+              💾 Download .env
+            </button>
+            <button class="secondary" onclick="resetToDefaults()">
+              🔄 Reset
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <footer>
+        CodeScribe Config Generator v1.0 • Created by M&K (c)2026 VetCoders<br />
+        <a href="env.md" style="color: var(--accent-2)"
+          >📖 Full documentation</a
+        >
+      </footer>
+    </div>
+
+    <div class="toast" id="toast">Copied to clipboard!</div>
+
+    <script>
+      // Generate .env on any change
+      document.querySelectorAll("input, select").forEach((el) => {
+        el.addEventListener("input", generateEnv);
+        el.addEventListener("change", generateEnv);
+      });
+
+      function toggleSwitch(el) {
+        el.classList.toggle("on");
+        generateEnv();
+      }
+
+      function isOn(id) {
+        return document.getElementById(id).classList.contains("on");
+      }
+
+      function generateEnv() {
+        const lines = [];
+        const now = new Date().toISOString().split("T")[0];
+
+        lines.push(`# CodeScribe .env`);
+        lines.push(`# Generated: ${now}`);
+        lines.push(
+          `# Docs: https://github.com/VetCoders/CodeScribe/blob/main/docs/env.md`
+        );
+        lines.push(``);
+
+        // STT
+        lines.push(
+          `# =============================================================================`
+        );
+        lines.push(`# SPEECH-TO-TEXT`);
+        lines.push(
+          `# =============================================================================`
+        );
+        const useLocal = isOn("toggle-local-stt");
+        lines.push(`USE_LOCAL_STT=${useLocal ? "1" : "0"}`);
+        lines.push(
+          `WHISPER_LANGUAGE=${
+            document.getElementById("whisper-language").value
+          }`
+        );
+        if (useLocal) {
+          lines.push(
+            `LOCAL_MODEL=${document.getElementById("local-model").value}`
+          );
+        }
+
+        const sttEndpoint = document
+          .getElementById("stt-endpoint")
+          .value.trim();
+        const sttKey = document.getElementById("stt-api-key").value.trim();
+        if (!useLocal && sttEndpoint) {
+          lines.push(`STT_ENDPOINT=${sttEndpoint}`);
+          if (sttKey) lines.push(`STT_API_KEY=${sttKey}`);
+        }
+        lines.push(``);
+
+        // AI Formatting
+        lines.push(
+          `# =============================================================================`
+        );
+        lines.push(`# AI FORMATTING / ASSISTIVE`);
+        lines.push(
+          `# =============================================================================`
+        );
+        const aiEnabled = isOn("toggle-ai");
+        lines.push(`AI_FORMATTING_ENABLED=${aiEnabled ? "1" : "0"}`);
+
+        if (aiEnabled) {
+          const llmEndpoint = document
+            .getElementById("llm-endpoint")
+            .value.trim();
+          const llmModel = document.getElementById("llm-model").value.trim();
+          const llmKey = document.getElementById("llm-api-key").value.trim();
+
+          if (llmEndpoint) lines.push(`LLM_ENDPOINT=${llmEndpoint}`);
+          if (llmModel) lines.push(`LLM_MODEL=${llmModel}`);
+          if (llmKey) lines.push(`LLM_API_KEY=${llmKey}`);
+
+          const fmtModel = document
+            .getElementById("llm-formatting-model")
+            .value.trim();
+          const assModel = document
+            .getElementById("llm-assistive-model")
+            .value.trim();
+          if (fmtModel) lines.push(`LLM_FORMATTING_MODEL=${fmtModel}`);
+          if (assModel) lines.push(`LLM_ASSISTIVE_MODEL=${assModel}`);
+        }
+        lines.push(``);
+
+        // Hotkeys
+        lines.push(
+          `# =============================================================================`
+        );
+        lines.push(`# HOTKEYS`);
+        lines.push(
+          `# =============================================================================`
+        );
+        lines.push(`HOLD_MODS=${document.getElementById("hold-mods").value}`);
+        lines.push(
+          `HOLD_EXCLUSIVE=${document.getElementById("hold-exclusive").value}`
+        );
+        lines.push(
+          `TOGGLE_TRIGGER=${document.getElementById("toggle-trigger").value}`
+        );
+        lines.push(
+          `HOLD_START_DELAY_MS=${document.getElementById("hold-delay").value}`
+        );
+        lines.push(``);
+
+        // Streaming
+        lines.push(
+          `# =============================================================================`
+        );
+        lines.push(`# STREAMING`);
+        lines.push(
+          `# =============================================================================`
+        );
+        lines.push(
+          `CODESCRIBE_STREAM_CHUNK_SEC=${
+            document.getElementById("chunk-sec").value
+          }`
+        );
+        lines.push(``);
+
+        // UI
+        lines.push(
+          `# =============================================================================`
+        );
+        lines.push(`# UI / FEEDBACK`);
+        lines.push(
+          `# =============================================================================`
+        );
+        lines.push(
+          `OVERLAY_POSITION_MODE=${
+            document.getElementById("overlay-position").value
+          }`
+        );
+        lines.push(`BEEP_ON_START=${isOn("toggle-beep") ? "1" : "0"}`);
+        lines.push(
+          `SOUND_VOLUME=${document.getElementById("sound-volume").value}`
+        );
+
+        document.getElementById("output").textContent = lines.join("\n");
+      }
+
+      function applyPreset(preset) {
+        // Reset chips
+        document
+          .querySelectorAll(".chips .chip")
+          .forEach((c) => c.classList.remove("active"));
+        event.target.classList.add("active");
+
+        // Apply preset
+        switch (preset) {
+          case "local":
+            document.getElementById("toggle-local-stt").classList.add("on");
+            document.getElementById("toggle-ai").classList.remove("on");
+            break;
+          case "local-ai":
+            document.getElementById("toggle-local-stt").classList.add("on");
+            document.getElementById("toggle-ai").classList.add("on");
+            document.getElementById("llm-endpoint").value =
+              "https://api.openai.com/v1/responses";
+            document.getElementById("llm-model").value = "gpt-4.1-mini";
+            break;
+          case "cloud":
+            document.getElementById("toggle-local-stt").classList.remove("on");
+            document.getElementById("toggle-ai").classList.remove("on");
+            document.getElementById("stt-endpoint").value =
+              "https://api.libraxis.cloud/v1/audio/transcriptions";
+            break;
+          case "full":
+            document.getElementById("toggle-local-stt").classList.add("on");
+            document.getElementById("toggle-ai").classList.add("on");
+            document.getElementById("llm-endpoint").value =
+              "https://api.libraxis.cloud/v1/responses";
+            document.getElementById("llm-model").value = "programmer";
+            document.getElementById("stt-endpoint").value =
+              "https://api.libraxis.cloud/v1/audio/transcriptions";
+            break;
+        }
+        generateEnv();
+      }
+
+      function copyToClipboard() {
+        const text = document.getElementById("output").textContent;
+        navigator.clipboard.writeText(text).then(() => {
+          showToast("Copied to clipboard!");
+        });
+      }
+
+      function downloadEnv() {
+        const text = document.getElementById("output").textContent;
+        const blob = new Blob([text], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = ".env";
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast("Downloaded .env");
+      }
+
+      function resetToDefaults() {
+        document.querySelectorAll("input").forEach((el) => {
+          if (el.type === "number") {
+            el.value = el.defaultValue || "";
+          } else {
+            el.value = "";
+          }
+        });
+        document
+          .querySelectorAll("select")
+          .forEach((el) => (el.selectedIndex = 0));
+        document.getElementById("toggle-local-stt").classList.add("on");
+        document.getElementById("toggle-ai").classList.remove("on");
+        document.getElementById("toggle-beep").classList.add("on");
+        document.getElementById("local-model").value =
+          "whisper-large-v3-turbo-mlx-q8";
+        document.getElementById("hold-delay").value = "800";
+        document.getElementById("chunk-sec").value = "15";
+        document.getElementById("sound-volume").value = "1.0";
+
+        document.querySelectorAll(".chips .chip").forEach((c, i) => {
+          c.classList.toggle("active", i === 0);
+        });
+
+        generateEnv();
+        showToast("Reset to defaults");
+      }
+
+      function showToast(msg) {
+        const toast = document.getElementById("toast");
+        toast.textContent = msg;
+        toast.classList.add("show");
+        setTimeout(() => toast.classList.remove("show"), 2000);
+      }
+
+      // Init
+      generateEnv();
+    </script>
+  </body>
+</html>

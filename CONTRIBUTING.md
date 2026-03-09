@@ -11,7 +11,7 @@ continuous integration.
   release-ready).
 - **English user-facing text.** UI strings, docs, scripts, and comments must be in English.
 - **Security & privacy.** Do not add secrets, personal paths, or machine-specific data to the
-  repo. Shared configuration lives in `.env.example` and `settings_store.py`.
+  repo. Shared configuration lives in `.env.example`.
 - **Stay on macOS.** CodeScribe targets Apple Silicon macOS. The tooling (MLX, pyobjc,
   permissions prompts) assumes that platform.
 
@@ -58,7 +58,7 @@ uv run pytest -q > logs/pytest.log 2>&1 & disown  # keeps pytest alive while log
 
 For quick iterations you can omit the log redirection, but the backgrounded version is
 recommended for longer suites. Add focused tests when touching a subsystem (e.g.,
-`scripts/test_hotkeys.sh` for hotkey regressions, `tests/manual/test_ollama_*.py` when
+`scripts/test_hotkeys.sh` for hotkey regressions, `tests/e2e_ollama_memory_real.rs` when
 changing formatter plumbing).
 
 Git hooks: `./scripts/quickstart_mac.sh …` installs them automatically unless you

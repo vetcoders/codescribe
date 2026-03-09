@@ -13,6 +13,7 @@ cargo run --example record_test
 ```
 
 **Features shown:**
+
 - Creating a Recorder with default config
 - Starting/stopping recording
 - Auto-silence detection (stops after 0.8s of silence)
@@ -28,6 +29,7 @@ cargo run --example record_streaming
 ```
 
 **Features shown:**
+
 - Custom configuration (disabling auto-silence)
 - Taking periodic snapshots while recording
 - Manual control over recording lifecycle
@@ -37,14 +39,9 @@ cargo run --example record_streaming
 
 Both examples respect these environment variables:
 
-- `SILENCE_DB` - Silence threshold in dB (default: -45.0)
-- `SILENCE_HANG_SEC` - Silence duration before auto-stop (default: 0.8)
 - `AUTO_SILENCE` - Enable/disable silence detection (default: true)
 
-Example:
-```bash
-SILENCE_DB=-50 SILENCE_HANG_SEC=1.5 cargo run --example record_test
-```
+VAD internals are hardcoded in `core/vad/config.rs` (Silero defaults).
 
 ## Requirements
 
@@ -53,4 +50,5 @@ SILENCE_DB=-50 SILENCE_HANG_SEC=1.5 cargo run --example record_test
 - Rust 1.70+ with tokio runtime
 
 ---
+
 Created by M&K (c)2025 The LibraxisAI Team

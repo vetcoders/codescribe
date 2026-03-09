@@ -9,11 +9,19 @@
 
 use std::path::PathBuf;
 
-use codescribe::audio_loader;
+use codescribe::audio;
+#[path = "support/e2e_stt_matrix.rs"]
+mod e2e_stt_matrix;
 
-/// Path to synthetic test audio file
-fn test_audio_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/1.fretka-Ziggy.mp3")
+use e2e_stt_matrix::{
+    STT_OPT_IN_ENV, discover_local_whisper_model, model_discovery_hint, skip_unless_opt_in,
+    test_audio_path,
+};
+
+fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Verify test asset exists
@@ -31,7 +39,7 @@ fn test_asset_exists() {
 #[test]
 fn test_audio_loading_mp3() {
     let path = test_audio_path();
-    let result = audio_loader::load_audio_file(&path);
+    let result = audio::load_audio_file(&path);
 
     assert!(result.is_ok(), "Failed to load audio: {:?}", result.err());
 
@@ -69,9 +77,9 @@ fn test_audio_loading_mp3() {
 #[test]
 fn test_resampling_to_16k() {
     let path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&path).expect("load audio");
 
-    let resampled = audio_loader::resample_to_16k(&samples, sample_rate);
+    let resampled = audio::resample_to_16k(&samples, sample_rate);
 
     // Verify resampled length is proportional
     let expected_len = (samples.len() as f32 * 16000.0 / sample_rate as f32).ceil() as usize;
@@ -103,7 +111,7 @@ fn test_resampling_to_16k() {
 fn test_16k_passthrough() {
     let samples: Vec<f32> = (0..16000).map(|i| (i as f32 * 0.001).sin()).collect();
 
-    let resampled = audio_loader::resample_to_16k(&samples, 16000);
+    let resampled = audio::resample_to_16k(&samples, 16000);
 
     assert_eq!(
         samples.len(),
@@ -117,46 +125,36 @@ fn test_16k_passthrough() {
 /// Run with: CODESCRIBE_E2E_STT=1 cargo test --test e2e_audio_pipeline test_full_transcription
 #[test]
 fn test_full_transcription() {
-    let enabled = std::env::var("CODESCRIBE_E2E_STT")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    if !enabled {
-        eprintln!("Skipping STT E2E (set CODESCRIBE_E2E_STT=1 to enable)");
+    if skip_unless_opt_in(
+        STT_OPT_IN_ENV,
+        "audio pipeline transcription E2E",
+        "Audio loading/resampling checks run by default; model-dependent transcription is opt-in.",
+    ) {
         return;
     }
 
     use codescribe::whisper::LocalWhisperEngine;
 
-    // Find model
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let model_candidates = [
-        PathBuf::from(&home).join(".CodeScribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from("models/whisper-large-v3-mlx-q8"),
-    ];
-
-    let model_path = model_candidates
-        .iter()
-        .find(|p| p.join("tokenizer.json").exists());
-
-    let model_path = match model_path {
-        Some(p) => p.clone(),
+    let model = match discover_local_whisper_model() {
+        Some(found) => found,
         None => {
-            eprintln!("No model found, skipping transcription test");
+            let home = home_dir();
+            eprintln!(
+                "Skipping audio pipeline transcription E2E: no complete Whisper model found."
+            );
+            eprintln!("{}", model_discovery_hint(&home));
             return;
         }
     };
 
-    println!("Using model: {}", model_path.display());
+    println!("Using model: {} ({:?})", model.path.display(), model.source);
 
     // Load engine
-    let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
+    let mut engine = LocalWhisperEngine::new(&model.path).expect("load model");
 
     // Load and transcribe
     let audio_path = test_audio_path();
-    let (samples, sample_rate) = audio_loader::load_audio_file(&audio_path).expect("load audio");
+    let (samples, sample_rate) = audio::load_audio_file(&audio_path).expect("load audio");
 
     let start = std::time::Instant::now();
     let text = engine
@@ -165,7 +163,11 @@ fn test_full_transcription() {
     let elapsed = start.elapsed();
 
     println!("Transcription time: {:?}", elapsed);
-    println!("Result ({} chars): {}", text.len(), &text[..text.len().min(200)]);
+    println!(
+        "Result ({} chars): {}",
+        text.len(),
+        &text[..text.len().min(200)]
+    );
 
     // Basic assertions
     assert!(!text.is_empty(), "Transcription should not be empty");

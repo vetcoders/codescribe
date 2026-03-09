@@ -3,34 +3,27 @@
 ## Quick Start
 
 ### 1. Prerequisites
-- macOS 14+ (Apple Silicon recommended)
-- Rust 1.83+ with `wasm32-unknown-unknown` target
-- Trunk (`cargo install trunk`)
-- Tauri CLI (`cargo install tauri-cli`)
 
-### 2. Build & Run
+- macOS 14+ (Apple Silicon ARM64 only)
+- Rust 1.83+
+
+### 2. Build & Run (CLI)
 
 ```bash
 # Clone
 git clone git@github.com:VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Build WASM frontend
-cd tauri-app && trunk build && cd ..
-
-# Build and run app
-cargo tauri build --no-bundle
-open target/release/bundle/macos/CodeScribe.app
+# Build and run CLI
+cargo build --release -p codescribe
+./target/release/codescribe
 ```
 
 ### 3. Development Mode
 
 ```bash
-# Terminal 1: Trunk dev server
-cd tauri-app && trunk serve --port 8080
-
-# Terminal 2: Run debug binary
-./target/debug/codescribe-app
+# Run debug binary
+cargo run
 ```
 
 ## Permissions Required
@@ -43,17 +36,40 @@ Grant in: System Settings > Privacy & Security
 
 ## Hotkeys
 
-| Key | Action |
-|-----|--------|
-| Hold **Ctrl** | Start recording |
-| Release **Ctrl** | Stop & transcribe |
-| **Option** (tap) | Toggle pause |
+| Key                         | Action                         | AI Mode               |
+| --------------------------- | ------------------------------ | --------------------- |
+| Hold **Fn**                 | Record → paste raw transcript  | ALWAYS RAW (no AI)    |
+| Hold **Fn+Shift**           | Record → AI assistant response | ALWAYS Assistive      |
+| Hold **Fn+Cmd**             | Send selection + transcript    | Assistive (selection) |
+| Double-tap **Left Option**  | Hands‑free toggle (normal)     | Respects AI toggle    |
+| Double-tap **Right Option** | Hands‑free toggle (assistive)  | Assistive             |
+
+### Mode Behavior
+
+- **RAW mode (Fn)**: Fast dictation. Transcript is pasted as-is (only local repetition cleanup).
+  Ignores AI_FORMATTING_ENABLED setting.
+- **Toggle mode (Double Option)**: Respects the AI Formatting toggle. If enabled, sends to AI
+  for formatting. If disabled, pastes raw.
+- **Assistive mode (Fn+Shift)**: Full AI assistant. Model can answer questions, expand ideas,
+  or pass through dictation based on detected intent (KURIER/ASYSTENT system).
 
 ## Model
 
-Bundled in app: `whisper-large-v3-turbo-mlx-q8` (874MB)
+**Strictly Embedded (Release Policy)**: `whisper-large-v3-turbo-mlx-q8` (~888MB)
+**Embedded Embedder**: `paraphrase-multilingual-MiniLM-L12-v2` (for semantic gating)
 
-Location (dev): `models/whisper-large-v3-turbo-mlx-q8/`
+- **Zero Exceptions:** Release binaries ALWAYS contain the model.
+- **No external files:** We never bundle `Resources/models/*`.
+- **Zero I/O:** Model loads from memory directly to Metal.
+
+**Developer note (Build Time):**
+You still need the model files locally to _build_ the app (because they are `include_bytes!`-ed into the binary).
+
+```bash
+make download-model  # Required for build
+```
+
+Location (build-time only): `models/whisper-large-v3-turbo-mlx-q8/`
 
 ## CLI Usage
 
@@ -68,31 +84,100 @@ codescribe transcribe audio.wav --format
 codescribe transcribe audio.wav --language pl
 ```
 
+## Quality & Tools
+
+New CLI tools for batch processing and automation:
+
+```bash
+# Batch quality report
+codescribe-quality --help
+
+# Self-improving quality loop
+codescribe-loop --help
+```
+
 ## Configuration
 
 File: `~/.codescribe/.env`
 
 ```env
-USE_LOCAL_STT=true
-LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
-WHISPER_LANGUAGE=auto
-LLM_HOST=http://localhost:11434
+USE_LOCAL_STT=1
+
+# Whisper
+WHISPER_LANGUAGE=pl
+
+# AI formatting (optional) - separate providers for formatting vs assistive
+AI_FORMATTING_ENABLED=1
+
+# Formatting mode (fast, cheap) - used by RAW / formatting paths
+LLM_FORMATTING_ENDPOINT=https://api.libraxis.cloud/v1/responses
+LLM_FORMATTING_MODEL=gpt-5-mini
+LLM_FORMATTING_API_KEY=sk-xxx
+
+# Assistive mode (smart) - for Fn+Shift (chat) and assistive toggle
+LLM_ASSISTIVE_ENDPOINT=https://api.libraxis.cloud/v1/responses
+LLM_ASSISTIVE_MODEL=gpt-5.2
+LLM_ASSISTIVE_API_KEY=sk-xxx
+
+# Shared fallback (if mode-specific not set)
+LLM_ENDPOINT=https://api.openai.com/v1/responses
+LLM_MODEL=gpt-4.1-mini
+LLM_API_KEY=sk-proj-xxx
 ```
+
+### Custom Prompts
+
+Prompts are loaded from `~/.codescribe/prompts/` at each request (no restart needed):
+
+- `formatting.txt` - System prompt for formatting mode (punctuation, structure)
+- `assistive.txt` - System prompt for assistive mode (KURIER/ASYSTENT logic)
+
+Edit these files to customize AI behavior. Changes take effect immediately.
+
+## Quality Assurance
+
+### Local (recommended)
+
+```bash
+# Install pre-commit hooks (runs check/fmt on commit, clippy/semgrep on push)
+make hooks
+
+# Manual quality gate
+make check       # fmt + clippy + unit tests
+
+# E2E tests with real API
+make test-sse    # SSE streaming tests (requires ~/.codescribe/.env)
+```
+
+### CI (GitHub Actions)
+
+**Note:** Full build requires macOS + Swift 6.0 (CoreML, Metal). GitHub runners have Swift 5.10, so CI only runs:
+
+- **Format check** (`cargo fmt --check`) on Linux
+- **Semgrep** security scan on Linux
+
+Clippy and tests run **locally** via pre-commit hooks or `make check`.
+
+For full CI, configure a self-hosted macOS runner (Dragon recommended).
 
 ## Troubleshooting
 
 ### App doesn't start
+
 - Check Console.app for crash logs
-- Ensure model exists in `models/` directory
+- If building locally: ensure the model exists in `models/` (for embedding at build time)
 
 ### Hotkeys don't work
+
 - Grant Accessibility permission
 - Grant Input Monitoring permission
 - Restart app after granting
 
 ### No transcription
-- Check `USE_LOCAL_STT=true` in config
-- Verify model path exists
+
+- Check `USE_LOCAL_STT=1` in config
+- If using local STT: confirm the app is using the embedded engine (default in release builds)
 
 ---
-*Created by M&K (c)2026 VetCoders*
+
+_Created by M&K (c)2026 VetCoders_

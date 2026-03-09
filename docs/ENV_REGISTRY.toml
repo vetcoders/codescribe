@@ -1,0 +1,957 @@
+# ENV_REGISTRY.toml - Central registry of all environment variables
+#
+# SINGLE SOURCE OF TRUTH for CodeScribe environment configuration.
+# This file is validated by pre-commit hooks - any new env var MUST be added here.
+#
+# Schema per variable:
+#   [vars.<NAME>]
+#   default = "value"           # Default value (string)
+#   type = "string|bool|f32|u64"  # Value type
+#   reload = "hot|restart|rebuild"  # When changes take effect
+#   category = "vad|audio|llm|..." # Grouping
+#   description = "..."         # Human-readable description
+#   deprecated = "NEW_VAR"      # If deprecated, points to replacement
+#
+# Created by M&K (c)2026 VetCoders
+
+[meta]
+version = "1.0.0"
+updated = "2026-02-24"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VAD (Voice Activity Detection) - Silero Neural Network
+# ═══════════════════════════════════════════════════════════════════════════════
+# VAD internals are hardcoded in `core/vad/config.rs` based on Silero defaults.
+# No user-configurable VAD env vars.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Audio / Recording
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.AUDIO_INPUT_DEVICE]
+default = ""
+type = "string"
+reload = "restart"
+category = "audio"
+description = "Audio input device name (empty = system default)"
+
+[vars.AUTO_SILENCE]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "audio"
+description = "Enable silence auto-stop in recorder"
+
+[vars.BEEP_ON_START]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "audio"
+description = "Play beep when recording starts"
+
+[vars.SOUND_NAME]
+default = "Tink"
+type = "string"
+reload = "restart"
+category = "audio"
+description = "macOS system sound name for beep"
+
+[vars.SOUND_VOLUME]
+default = "1.0"
+type = "f32"
+reload = "restart"
+category = "audio"
+description = "Sound volume (0.0-1.0)"
+range = "0.0-1.0"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Streaming / Buffering
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_BUFFER_DELAY_MS]
+default = "280"
+type = "u64"
+reload = "hot"
+category = "streaming"
+description = "Buffer delay in milliseconds (skipped for first emission to give instant feedback)"
+
+[vars.CODESCRIBE_TYPING_CPS]
+default = "90"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Typing speed in characters per second"
+
+[vars.CODESCRIBE_EMIT_WORDS_MAX]
+default = "2"
+type = "u64"
+reload = "hot"
+category = "streaming"
+description = "Maximum words emitted per tick (buffered mode)"
+
+[vars.CODESCRIBE_MAX_INFERENCE_CONCURRENCY]
+default = "1"
+type = "u64"
+reload = "hot"
+category = "streaming"
+description = "Maximum number of concurrent inference tasks in streaming pipeline (clamped to 1-4)"
+range = "1-4"
+
+[vars.CODESCRIBE_STREAM_CHUNK_SEC]
+default = "4.0"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Streaming chunk duration in seconds (utterance cadence)"
+range = "0.5-30.0"
+
+[vars.CODESCRIBE_STREAM_OVERLAP_RATIO]
+default = "0.25"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Overlap ratio between chunks"
+range = "0.05-0.8"
+
+[vars.CODESCRIBE_STREAM_SIMILARITY]
+default = "0.93"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Similarity threshold for deduplication"
+
+[vars.CODESCRIBE_STREAM_NOVELTY]
+default = "0.12"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Novelty threshold for deduplication"
+
+[vars.CODESCRIBE_STREAM_DISABLE_EMBEDDINGS]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "streaming"
+description = "Disable embedding-based deduplication"
+
+[vars.CODESCRIBE_STREAM_FORCE_EMBEDDINGS]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "streaming"
+description = "Force embeddings in tests (override test bypass)"
+
+[vars.CODESCRIBE_STREAM_LEXICON]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "streaming"
+description = "Apply lexicon post-processing to streaming output"
+
+[vars.CODESCRIBE_STRIP_TRAILING_SMILEY_D]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "streaming"
+description = "Strip trailing ':D' hallucinations from streaming output"
+
+[vars.CODESCRIBE_BUFFERED_CORRECTION_PREFIX]
+default = "0.50"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Prefix ratio required to accept buffered correction"
+range = "0.4-0.9"
+
+[vars.CODESCRIBE_BUFFERED_INTERIM_SEC]
+default = "1.2"
+type = "f32"
+reload = "hot"
+category = "streaming"
+description = "Interim emission cadence for buffered mode (sec)"
+range = "1.0-30.0"
+
+[vars.CODESCRIBE_BUFFERED_SILENCE_SEC]
+default = ""
+type = "f32"
+reload = "restart"
+category = "streaming"
+description = "Override silence duration before utterance flush in buffered mode (sec)"
+range = "0.1-10.0"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Whisper / STT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.USE_LOCAL_STT]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Use local Whisper model (vs cloud)"
+
+[vars.LOCAL_MODEL]
+default = "whisper-large-v3-turbo-mlx-q8"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Local Whisper model id (HF cache / embedded lookup)"
+
+[vars.WHISPER_MODEL]
+default = "mlx-community/whisper-large-v3-mlx"
+type = "string"
+reload = "hot"
+category = "stt"
+description = "Whisper model id for cloud/multipart STT"
+
+[vars.WHISPER_LANGUAGE]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Whisper transcription language code"
+
+[vars.CODESCRIBE_WHISPER_INITIAL_PROMPT]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Initial prompt hint for Whisper decoding (ignored by ONNX adapter)"
+
+[vars.WHISPER_INITIAL_PROMPT]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Legacy alias for CODESCRIBE_WHISPER_INITIAL_PROMPT"
+deprecated = "CODESCRIBE_WHISPER_INITIAL_PROMPT"
+
+[vars.CODESCRIBE_MODEL_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Override path to Whisper model directory"
+
+[vars.CODESCRIBE_MODELS_DIR]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Directory containing all models"
+
+[vars.CODESCRIBE_STT_ENGINE]
+default = "candle"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "STT engine: candle (default), onnx, or apple (SpeechAnalyzer on macOS 26+)"
+
+[vars.CODESCRIBE_APPLE_STT_BRIDGE]
+default = "codescribe-stt-bridge"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Executable path for SpeechAnalyzer bridge binary"
+
+[vars.CODESCRIBE_APPLE_STT_LOCALE]
+default = "pl-PL"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Locale override for Apple SpeechAnalyzer (e.g. pl-PL, en-US)"
+
+[vars.CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Allow SpeechAnalyzer bridge to auto-install missing Apple speech assets"
+
+[vars.CODESCRIBE_ONNX_CPU_ONLY]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Force ONNX to use CPU only (no GPU/Metal)"
+
+[vars.CODESCRIBE_ONNX_MODEL_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Custom path to ONNX Whisper model"
+
+[vars.CODESCRIBE_ONNX_QUANT]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "ONNX quantization level (e.g. q4, q8)"
+
+[vars.CODESCRIBE_ONNX_REPO]
+default = "onnx-community/whisper-large-v3-turbo"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "HuggingFace repo for ONNX model download"
+
+[vars.STT_ENDPOINT]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Cloud STT API endpoint (when USE_LOCAL_STT=0)"
+
+[vars.STT_API_KEY]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Cloud STT API key"
+
+[vars.CODESCRIBE_LOCAL_STT_FINAL_PASS]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Run final-pass local STT on full audio (overrides streaming output)"
+
+[vars.CODESCRIBE_HF_CACHE]
+default = ""
+type = "string"
+reload = "restart"
+category = "models"
+description = "Override HuggingFace cache root for model lookup"
+
+[vars.HF_HOME]
+default = ""
+type = "string"
+reload = "restart"
+category = "models"
+description = "HuggingFace home directory (affects cache)"
+
+[vars.HF_HUB_CACHE]
+default = ""
+type = "string"
+reload = "restart"
+category = "models"
+description = "HuggingFace hub cache directory"
+
+[vars.HUGGINGFACE_HUB_CACHE]
+default = ""
+type = "string"
+reload = "restart"
+category = "models"
+description = "Alternate HF hub cache directory"
+
+[vars.BACKEND_MAX_UPLOAD_MB]
+default = "20"
+type = "u64"
+reload = "hot"
+category = "stt"
+description = "Max audio upload size (MB) for cloud STT"
+range = "1-200"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Embedder / E5
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_EMBEDDER_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "embedder"
+description = "Override path to E5 embedder model directory"
+
+[vars.CODESCRIBE_EMBEDDER_REPO]
+default = "intfloat/multilingual-e5-large"
+type = "string"
+reload = "rebuild"
+category = "embedder"
+description = "HF repo for E5 embedder (used for embedding at build/runtime)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LLM / AI Formatting
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.AI_FORMATTING_ENABLED]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "llm"
+description = "Enable AI formatting of transcripts"
+
+[vars.AI_MAX_TOKENS]
+default = "0"
+type = "u64"
+reload = "restart"
+category = "llm"
+description = "Max tokens for formatting LLM (0 = no limit)"
+
+[vars.AI_ASSISTIVE_MAX_TOKENS]
+default = "0"
+type = "u64"
+reload = "restart"
+category = "llm"
+description = "Max tokens for assistive LLM (0 = no limit)"
+
+[vars.FORMATTING_LEVEL]
+default = "medium"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "AI formatting level: raw, medium, or creative"
+
+[vars.LLM_ENDPOINT]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Default LLM API endpoint"
+
+[vars.LLM_MODEL]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Default LLM model name"
+
+[vars.LLM_API_KEY]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Default LLM API key"
+
+[vars.LLM_FORMATTING_ENDPOINT]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "LLM endpoint for formatting mode (overrides LLM_ENDPOINT)"
+
+[vars.LLM_FORMATTING_MODEL]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "LLM model for formatting mode"
+
+[vars.LLM_FORMATTING_API_KEY]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "LLM API key for formatting mode"
+
+[vars.LLM_FORMATTING_TEMPERATURE]
+default = "0.1"
+type = "f32"
+reload = "hot"
+category = "llm"
+description = "Temperature for formatting mode"
+
+[vars.LLM_ASSISTIVE_ENDPOINT]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "LLM endpoint for assistive mode (overrides LLM_ENDPOINT)"
+
+[vars.LLM_ASSISTIVE_MODEL]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "LLM model for assistive mode"
+
+[vars.LLM_ASSISTIVE_API_KEY]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "LLM API key for assistive mode"
+
+[vars.LLM_USE_STREAMING]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "llm"
+description = "Use streaming responses from LLM"
+
+[vars.TRANSCRIPT_SEND_MODE]
+default = "streaming"
+type = "string"
+reload = "restart"
+category = "llm"
+description = "How to send transcripts (streaming|end_of_utterance)"
+
+[vars.CODESCRIBE_AI_MAX_RETRIES]
+default = "3"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Max retries for AI formatting attempts (total attempts = retries + 1)"
+
+[vars.CODESCRIBE_AI_RETRY_DELAY_MS]
+default = "2000"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Delay between AI retries (ms)"
+
+[vars.CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS]
+default = "30000"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Per-attempt timeout for non-Ollama AI requests (ms)"
+
+[vars.CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS]
+default = "5000"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Per-attempt timeout override for Ollama /api/chat requests (ms)"
+
+[vars.CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS]
+default = "30000"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Max idle time between SSE chunks before attempt is failed (ms)"
+
+[vars.CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "llm"
+description = "Reuse previous OpenAI Responses API response_id to continue the same thread"
+
+[vars.CODESCRIBE_AI_CLIENT_TIMEOUT_MS]
+default = "90000"
+type = "u64"
+reload = "restart"
+category = "llm"
+description = "Reqwest client total request timeout for AI HTTP calls (ms)"
+
+[vars.CODESCRIBE_AI_CONNECT_TIMEOUT_MS]
+default = "5000"
+type = "u64"
+reload = "restart"
+category = "llm"
+description = "Reqwest connect timeout for AI HTTP calls (ms)"
+
+[vars.CODESCRIBE_AI_POOL_IDLE_TIMEOUT_MS]
+default = "90000"
+type = "u64"
+reload = "restart"
+category = "llm"
+description = "Reqwest idle connection pool timeout for AI HTTP calls (ms)"
+
+[vars.CODESCRIBE_AI_TCP_KEEPALIVE_MS]
+default = "30000"
+type = "u64"
+reload = "restart"
+category = "llm"
+description = "Reqwest TCP keepalive interval for AI HTTP sockets (ms)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TTS / Voice
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_TTS_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "tts"
+description = "Override path to TTS model directory"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Hotkeys
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.HOLD_MODS]
+default = "fn"
+type = "string"
+reload = "restart"
+category = "hotkeys"
+description = "Hold modifier keys (fn|ctrl|ctrl_alt|ctrl_shift|ctrl_cmd)"
+
+[vars.HOLD_EXCLUSIVE]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "hotkeys"
+description = "Exclusive hold mode (no other keys during hold)"
+
+[vars.TOGGLE_TRIGGER]
+default = "double_option"
+type = "string"
+reload = "restart"
+category = "hotkeys"
+description = "Toggle recording trigger"
+
+[vars.HOTKEY_DOUBLE_TAP_LEFT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "hotkeys"
+description = "Legacy left double-tap toggle (superseded by TOGGLE_TRIGGER)"
+
+[vars.HOTKEY_DOUBLE_TAP_RIGHT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "hotkeys"
+description = "Legacy right double-tap toggle (superseded by TOGGLE_TRIGGER)"
+
+[vars.HOLD_START_DELAY_MS]
+default = "800"
+type = "u64"
+reload = "restart"
+category = "hotkeys"
+description = "Delay before hold recording starts (ms)"
+
+[vars.DOUBLE_TAP_INTERVAL_MS]
+default = "200"
+type = "u64"
+reload = "hot"
+category = "hotkeys"
+description = "Double-tap interval for toggle detection (ms)"
+
+[vars.TOGGLE_SILENCE_SEC]
+default = "5.0"
+type = "f32"
+reload = "restart"
+category = "hotkeys"
+description = "Silence duration before sending a toggle utterance (seconds)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UI / Overlay
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.SHOW_TRAY_GLYPH]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "ui"
+description = "Show tray icon glyph"
+
+[vars.SHOW_DOCK_ICON]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "ui"
+description = "Show Dock icon"
+
+[vars.START_AT_LOGIN]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "ui"
+description = "Start CodeScribe at login"
+
+[vars.HOLD_INDICATOR]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "ui"
+description = "Show hold indicator badge"
+
+[vars.HOLD_BADGE_SIZE]
+default = "12"
+type = "u64"
+reload = "restart"
+category = "ui"
+description = "Hold badge size in pixels"
+
+[vars.HOLD_BADGE_OFFSET_X]
+default = "10"
+type = "i64"
+reload = "restart"
+category = "ui"
+description = "Hold badge X offset"
+
+[vars.HOLD_BADGE_OFFSET_Y]
+default = "-10"
+type = "i64"
+reload = "restart"
+category = "ui"
+description = "Hold badge Y offset"
+
+[vars.OVERLAY_POSITION_MODE]
+default = "snapped_top_right"
+type = "string"
+reload = "restart"
+category = "ui"
+description = "Overlay position mode"
+
+[vars.OVERLAY_CUSTOM_X]
+default = "0"
+type = "i64"
+reload = "restart"
+category = "ui"
+description = "Custom overlay X position (when mode=custom)"
+
+[vars.OVERLAY_CUSTOM_Y]
+default = "0"
+type = "i64"
+reload = "restart"
+category = "ui"
+description = "Custom overlay Y position (when mode=custom)"
+
+[vars.CODESCRIBE_OVERLAY_STABLE_PREVIEW]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "ui"
+description = "Use stable-word-only preview for live overlay text (0 = show exact live text)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Clipboard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.RESTORE_CLIPBOARD]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "clipboard"
+description = "Restore clipboard after paste"
+
+[vars.RESTORE_CLIPBOARD_DELAY_MS]
+default = "1000"
+type = "u64"
+reload = "restart"
+category = "clipboard"
+description = "Delay before restoring clipboard (ms)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Storage / History
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.HISTORY_ENABLED]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "storage"
+description = "Enable transcript history"
+
+[vars.DUMP_AUDIO_LOGS]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "storage"
+description = "Save audio files with transcripts"
+
+[vars.QUICK_NOTES_ENABLED]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "storage"
+description = "Enable Quick Notes (dictation saved to daily note)"
+
+[vars.QUICK_NOTES_SAVE_ONLY]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "storage"
+description = "Quick Notes save-only mode (skip auto-paste)"
+
+[vars.CODESCRIBE_NOTES_DIR]
+default = ""
+type = "string"
+reload = "restart"
+category = "storage"
+description = "Override notes directory for Quick Notes"
+
+[vars.CODESCRIBE_DATA_DIR]
+default = ""
+type = "string"
+reload = "restart"
+category = "storage"
+description = "Override data directory (default: ~/.codescribe)"
+
+[vars.CODESCRIBE_ENV_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "storage"
+description = "Override .env file path"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Quality / Daemon
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_AUTOSTART_QUALITY_DAEMON]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "quality"
+description = "Auto-start quality daemon on app launch"
+
+[vars.CODESCRIBE_LOOP_USE_CLOUD_STT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "quality"
+description = "Force cloud STT for quality loop without changing app USE_LOCAL_STT"
+
+[vars.QUALITY_DEBUG_MODE]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "quality"
+description = "Verbose quality loop logging"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# System / Shell
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.EDITOR]
+default = ""
+type = "string"
+reload = "restart"
+category = "system"
+description = "Preferred editor (used by --config)"
+
+[vars.VISUAL]
+default = ""
+type = "string"
+reload = "restart"
+category = "system"
+description = "Preferred visual editor (fallback for EDITOR)"
+
+[vars.HOME]
+default = ""
+type = "string"
+reload = "restart"
+category = "system"
+description = "Home directory (shell-provided)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Build-time
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_EMBED_MODEL]
+default = ""
+type = "string"
+reload = "rebuild"
+category = "build"
+description = "Whisper model to embed (HF repo or local path)"
+
+[vars.CODESCRIBE_NO_EMBED]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "build"
+description = "Skip embedding Whisper model in binary"
+
+[vars.CODESCRIBE_EMBED_TTS]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "build"
+description = "Embed TTS model in binary"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Debug / Test
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_DEBUG_TOKENS]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "debug"
+description = "Debug token output from Whisper"
+
+[vars.CODESCRIBE_STREAM_LOG]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "debug"
+description = "Enable streaming debug log"
+
+[vars.CODESCRIBE_STREAM_LOG_PATH]
+default = ""
+type = "string"
+reload = "hot"
+category = "debug"
+description = "Path for streaming debug log"
+
+[vars.RUST_LOG]
+default = ""
+type = "string"
+reload = "restart"
+category = "debug"
+description = "Rust logging filter"
+
+[vars.LOG_LEVEL]
+default = "info"
+type = "string"
+reload = "restart"
+category = "debug"
+description = "Legacy logging filter (used if RUST_LOG is unset)"
+
+[vars.CODESCRIBE_UI_TESTS]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "debug"
+description = "Enable AppKit/UI tests gated by CODESCRIBE_UI_TESTS"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASSISTIVE CONTEXT CAPTURE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.ASSISTIVE_CONTEXT_MAX_CHARS]
+default = "5000"
+type = "usize"
+reload = "restart"
+category = "assistive"
+description = "Max characters captured from selection for assistive context"
+
+[vars.ASSISTIVE_CONTEXT_COPY_DELAY_MS]
+default = "150"
+type = "u64"
+reload = "restart"
+category = "assistive"
+description = "Delay in ms after Cmd+C before reading clipboard (macOS timing)"
+
+[vars.CODESCRIBE_ATTACH_PDF_PAGES]
+default = "3"
+type = "usize"
+reload = "restart"
+category = "assistive"
+description = "Max PDF pages to extract for attachments"
+
+[vars.CODESCRIBE_ATTACH_PDF_OCR]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "assistive"
+description = "Enable OCR fallback for PDF attachments"
+
+[vars.CODESCRIBE_ATTACH_PDF_OCR_LANG]
+default = "pol+eng"
+type = "string"
+reload = "restart"
+category = "assistive"
+description = "OCR language(s) for PDF attachments (tesseract)"
+
+[vars.CODESCRIBE_DRAWER_INCLUDE_LEGACY]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "assistive"
+description = "Include legacy transcript files in Drawer alongside ThreadStore entries (off by default)."
+
+# Agent / Chat input behavior
+
+[vars.AGENT_ENTER_SENDS]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "assistive"
+description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."

@@ -1,0 +1,692 @@
+// audio.rs
+//
+// purpose: handles audio recording from the default microphone. includes
+//          functionality for starting/stopping recording, detecting periods
+//          of silence to automatically stop recording, and saving the captured
+//          audio to a temporary wav file suitable for transcription.
+//
+// dependencies: cpal (audio i/o)
+//               hound (saving audio to .wav format)
+//               tokio (async runtime for collection loop)
+//
+// key components: Recorder struct
+//                 RecorderConfig (configurable parameters)
+//                 start method (initializes and starts the audio stream)
+//                 collect method (async task to read audio chunks, detect silence)
+//                 stop method (stops stream, saves buffer to temp wav file)
+//                 snapshot_wav method (save current buffer without stopping)
+//
+// design rationale: uses cpal for cross-platform audio input. silence detection
+//                   is based on root mean square (rms) of audio chunks compared
+//                   to a db threshold. tokio is used for async collection to avoid
+//                   blocking. saving to a temp file simplifies passing audio data
+//                   to the transcription api.
+//
+// usage example:
+//   ```rust
+//   use codescribe::Recorder;
+//   use std::time::Duration;
+//
+//   #[tokio::main]
+//   async fn main() -> anyhow::Result<()> {
+//       // Create recorder with default config (16kHz mono, -45dB silence threshold)
+//       let mut recorder = Recorder::new()?;
+//
+//       // Start recording
+//       recorder.start().await?;
+//       println!("Recording... speak now!");
+//
+//       // Record for 3 seconds (or until silence detected)
+//       tokio::time::sleep(Duration::from_secs(3)).await;
+//
+//       // Stop and save to WAV file
+//       if let Some(path) = recorder.stop().await? {
+//           println!("Recorded to: {:?}", path);
+//           println!("Duration: {:.2}s", recorder.last_duration());
+//       } else {
+//           println!("No audio captured");
+//       }
+//
+//       Ok(())
+//   }
+//   ```
+//
+// configuration via constants in `core/vad/config.rs`:
+//   - speech probability threshold (Silero default: 0.5)
+//   - silence duration before auto-stop (Silero default profile)
+//   - AUTO_SILENCE: enable/disable silence detection (default: true)
+
+use crate::vad;
+use anyhow::{Context, Result};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{Device, Stream, StreamConfig};
+use hound::{WavSpec, WavWriter};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
+
+// ═══════════════════════════════════════════════════════════
+// RecorderVad — local VAD for auto-silence detection
+// ═══════════════════════════════════════════════════════════
+
+/// Recorder-local VAD: dedicated thread with AccumulatingVad.
+///
+/// Replaces the broken global VadWorker. Fixes:
+/// - Initial probability 0.0 (not 1.0) → seen_speech gate works
+/// - Proper sample accumulation → Silero actually processes audio
+/// - Locally owned → dies with the Recorder
+struct RecorderVad {
+    tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
+    last_prob: Arc<AtomicU32>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RecorderVad {
+    fn new(sample_rate: u32) -> Option<Self> {
+        let model_path = vad::default_model_path();
+        if !model_path.exists() {
+            warn!(
+                "Silero VAD model not found at {} — auto-silence disabled",
+                model_path.display()
+            );
+            return None;
+        }
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(128);
+        // 0.0 = no speech seen yet (the critical fix)
+        let last_prob = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+        let writer = Arc::clone(&last_prob);
+
+        let config = vad::VadConfig::default();
+        let handle = std::thread::Builder::new()
+            .name("recorder-vad".into())
+            .spawn(move || {
+                let mut acc_vad =
+                    match vad::AccumulatingVad::with_config(&model_path, config, sample_rate) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!("RecorderVad: Silero load failed: {e}");
+                            return;
+                        }
+                    };
+                info!("RecorderVad ready (sample_rate={sample_rate}Hz)");
+                for samples in rx {
+                    let prob = acc_vad.feed(&samples);
+                    writer.store(prob.to_bits(), Ordering::Release);
+                }
+                debug!("RecorderVad thread exiting (channel closed)");
+            })
+            .ok()?;
+
+        Some(Self {
+            tx: Some(tx),
+            last_prob,
+            thread: Some(handle),
+        })
+    }
+}
+
+impl Drop for RecorderVad {
+    fn drop(&mut self) {
+        // Close channel first so the worker loop can exit before join().
+        drop(self.tx.take());
+        if let Some(handle) = self.thread.take()
+            && handle.join().is_err()
+        {
+            warn!("RecorderVad thread panicked during shutdown");
+        }
+    }
+}
+
+// --- constants ---
+
+/// Sample rate (samples per second)
+/// 16kHz is standard for Whisper
+const SAMPLE_RATE: u32 = 16000;
+
+/// Number of channels (1 for mono)
+const CHANNELS: u16 = 1;
+
+/// Speech probability threshold (0.0-1.0) for VAD
+/// Below this is considered silence. Default: 0.5
+/// Silence duration threshold (seconds)
+/// Recording stops automatically after this duration of continuous silence.
+/// Synced with VadConfig::max_silence_duration_sec default (1.2s)
+/// Size of audio chunks to read from stream (samples)
+const BLOCK_SIZE: usize = 1024;
+
+// --- configuration ---
+
+#[derive(Debug, Clone)]
+pub struct RecorderConfig {
+    /// Sample rate (Hz)
+    pub sample_rate: u32,
+    /// Number of audio channels
+    pub channels: u16,
+    /// Speech probability threshold (0.0-1.0) for VAD
+    /// Below this is considered silence
+    pub speech_threshold: f32,
+    /// Hang time - silence duration before auto-stop (seconds)
+    pub hang_sec: f32,
+    /// Enable automatic silence detection
+    pub auto_silence: bool,
+    /// Block size for audio chunks
+    pub block_size: usize,
+}
+
+impl Default for RecorderConfig {
+    fn default() -> Self {
+        // Keep a single source of truth for VAD thresholds/silence durations.
+        // VAD internals are hardcoded in `vad::VadConfig`.
+        let vad_cfg = vad::VadConfig::default();
+        Self {
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+            speech_threshold: vad_cfg.threshold.clamp(0.1, 0.9),
+            hang_sec: vad_cfg.max_silence_duration_sec.clamp(0.1, 10.0),
+            auto_silence: std::env::var("AUTO_SILENCE")
+                .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+                .unwrap_or(true),
+            block_size: BLOCK_SIZE,
+        }
+    }
+}
+
+// --- diagnostics ---
+
+#[derive(Debug, Default, Clone)]
+pub struct RecorderDiagnostics {
+    pub frames: usize,
+    pub bytes: usize,
+    pub duration_sec: f32,
+}
+
+// --- audio buffer ---
+
+type AudioBuffer = Arc<Mutex<Vec<i16>>>;
+
+pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
+
+// --- recorder ---
+
+pub struct Recorder {
+    pub config: RecorderConfig,
+    buffer: AudioBuffer,
+    stream: Option<Stream>,
+    device: Option<Device>,
+    is_recording: Arc<AtomicBool>,
+    stop_tx: Option<mpsc::Sender<()>>,
+    last_duration: f32,
+    diagnostics: RecorderDiagnostics,
+    /// Actual sample rate used for recording (may differ from config)
+    actual_sample_rate: u32,
+    on_data: Option<AudioCallback>,
+    /// Callback invoked when VAD (silence detection) stops recording
+    on_vad_stop: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Local VAD for auto-silence (replaces global VadWorker)
+    recorder_vad: Option<RecorderVad>,
+}
+
+// Safety: Recorder can be sent between threads because:
+// - AudioBuffer (Arc<Mutex<Vec<i16>>>) is Send
+// - Stream operations are thread-safe (internally uses Arc)
+// - All other fields are Send
+unsafe impl Send for Recorder {}
+
+impl Recorder {
+    /// Initializes the recorder with default configuration and no active stream.
+    pub fn new() -> Result<Self> {
+        Self::with_config(RecorderConfig::default())
+    }
+
+    /// Initializes the recorder with custom configuration.
+    pub fn with_config(config: RecorderConfig) -> Result<Self> {
+        info!("Recorder initialized with config: {:?}", config);
+
+        // Query default input device at initialization
+        let host = cpal::default_host();
+        if let Some(device) = host.default_input_device() {
+            if let Ok(desc) = device.description() {
+                info!("Default input device: {}", desc);
+            }
+        } else {
+            warn!("No default input device found");
+        }
+
+        Ok(Self {
+            config: config.clone(),
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            stream: None,
+            device: None,
+            is_recording: Arc::new(AtomicBool::new(false)),
+            stop_tx: None,
+            last_duration: 0.0,
+            diagnostics: RecorderDiagnostics::default(),
+            actual_sample_rate: config.sample_rate, // Will be updated in start()
+            on_data: None,
+            on_vad_stop: None,
+            recorder_vad: None,
+        })
+    }
+
+    /// Set a callback to receive raw audio data (f32 samples)
+    pub fn set_callback(&mut self, callback: AudioCallback) {
+        self.on_data = Some(callback);
+    }
+
+    /// Set a callback invoked when VAD (silence detection) stops recording
+    pub fn set_on_vad_stop<F>(&mut self, callback: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_vad_stop = Some(Arc::new(callback));
+    }
+
+    /// Actual sample rate used by the underlying input stream.
+    ///
+    /// Note: This may differ from `config.sample_rate` because we always open
+    /// the device stream at its native rate for compatibility.
+    pub fn actual_sample_rate(&self) -> u32 {
+        self.actual_sample_rate
+    }
+
+    /// Returns true when the recorder still has an active stream/session.
+    ///
+    /// This is used by higher-level state recovery to detect desyncs where the
+    /// controller thinks it is idle but CoreAudio is still running.
+    pub fn is_active(&self) -> bool {
+        self.is_recording.load(Ordering::SeqCst) || self.stream.is_some()
+    }
+
+    /// Starts the audio recording process.
+    ///
+    /// Clears the buffer, creates and starts a new input stream,
+    /// and launches the asynchronous collection task to read audio data.
+    pub async fn start(&mut self) -> Result<()> {
+        let is_recording = self.is_recording.load(Ordering::SeqCst);
+        let has_stream = self.stream.is_some();
+
+        // Self-heal stale atomic flag observed after abrupt stop races:
+        // if there is no live stream, we can safely clear the flag and continue.
+        if is_recording && !has_stream {
+            warn!(
+                "Recorder start: stale is_recording flag detected without active stream; clearing"
+            );
+            self.is_recording.store(false, Ordering::SeqCst);
+        }
+
+        if self.is_recording.load(Ordering::SeqCst) || self.stream.is_some() {
+            anyhow::bail!("Recording is already in progress");
+        }
+
+        info!("Starting recording...");
+
+        // Clear buffer and reset diagnostics
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.diagnostics = RecorderDiagnostics::default();
+
+        // Select input device
+        let host = cpal::default_host();
+
+        let preferred = std::env::var("AUDIO_INPUT_DEVICE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let device = if let Some(preferred) = preferred {
+            let devices = host
+                .input_devices()
+                .context("Failed to enumerate input devices")?;
+
+            let mut selected: Option<Device> = None;
+            for d in devices {
+                if let Ok(desc) = d.description() {
+                    let name = desc.to_string();
+                    if name == preferred || name.to_lowercase().contains(&preferred.to_lowercase())
+                    {
+                        selected = Some(d);
+                        break;
+                    }
+                }
+            }
+
+            selected
+                .or_else(|| host.default_input_device())
+                .context("No input device available")?
+        } else {
+            host.default_input_device()
+                .context("No input device available")?
+        };
+
+        let device_name = device
+            .description()
+            .map(|d| d.to_string())
+            .unwrap_or_else(|_| "Unknown".to_string());
+        info!("Using input device: {}", device_name);
+
+        // Get supported config
+        let supported_config = device
+            .default_input_config()
+            .context("Failed to get default input config")?;
+
+        // Use the device's native sample rate for compatibility
+        // (backend will handle resampling if needed)
+        let native_sample_rate = supported_config.sample_rate();
+
+        // Build stream config using native sample rate
+        let stream_config = StreamConfig {
+            channels: self.config.channels,
+            sample_rate: native_sample_rate,
+            buffer_size: cpal::BufferSize::Default, // Let system choose buffer size
+        };
+
+        info!(
+            "Audio stream config: {:?} (native rate: {}Hz)",
+            stream_config, native_sample_rate
+        );
+
+        // Store actual sample rate for WAV file and duration calculations
+        self.actual_sample_rate = native_sample_rate;
+
+        // Use actual sample rate for silence detection calculations
+        let sample_rate = native_sample_rate;
+
+        // Create local VAD for auto-silence (replaces global VadWorker)
+        self.recorder_vad = if self.config.auto_silence {
+            RecorderVad::new(native_sample_rate)
+        } else {
+            None
+        };
+
+        // Create channel for stopping
+        let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
+        self.stop_tx = Some(stop_tx);
+
+        // Setup stream callback
+        let buffer = Arc::clone(&self.buffer);
+        let is_recording_data = Arc::clone(&self.is_recording);
+        let is_recording_error = Arc::clone(&self.is_recording);
+        let speech_threshold = self.config.speech_threshold;
+        let hang_sec = self.config.hang_sec;
+        let auto_silence = self.config.auto_silence;
+
+        let silent_frames = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let silent_frames_clone = Arc::clone(&silent_frames);
+        let seen_speech = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen_speech_clone = Arc::clone(&seen_speech);
+        let on_data = self.on_data.take();
+
+        // Share local VAD with audio callback (RecorderVad is Send via channel+atomic)
+        let vad_prob = self
+            .recorder_vad
+            .as_ref()
+            .map(|rv| Arc::clone(&rv.last_prob));
+        let vad_tx: Option<std::sync::mpsc::SyncSender<Vec<f32>>> = self
+            .recorder_vad
+            .as_ref()
+            .and_then(|rv| rv.tx.as_ref().cloned());
+
+        let stream = device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    // Send data to callback if present
+                    if let Some(ref cb) = on_data {
+                        cb(data);
+                    }
+
+                    // Convert f32 samples to i16 and append to buffer
+                    if let Ok(mut buf) = buffer.lock() {
+                        for &sample in data {
+                            // Clamp and convert f32 [-1.0, 1.0] to i16
+                            let clamped = sample.clamp(-1.0, 1.0);
+                            let i16_sample = (clamped * i16::MAX as f32) as i16;
+                            buf.push(i16_sample);
+                        }
+                    }
+
+                    // Feed audio to local VAD (non-blocking)
+                    if let Some(ref tx) = vad_tx {
+                        let _ = tx.try_send(data.to_vec());
+                    }
+
+                    // Read latest speech probability from local VAD
+                    let speech_prob = vad_prob
+                        .as_ref()
+                        .map(|p| f32::from_bits(p.load(Ordering::Acquire)))
+                        .unwrap_or(0.0);
+                    let is_silence = speech_prob < speech_threshold;
+
+                    // Only check silence if still recording (avoid spam after stop)
+                    if auto_silence && is_recording_data.load(Ordering::SeqCst) {
+                        // Gate: don't auto-stop until we've seen *any* speech since start.
+                        //
+                        // Without this, hands-off "toggle" recording can stop before the user
+                        // starts speaking (initial silence > hang_sec).
+                        if !is_silence {
+                            seen_speech_clone.store(true, Ordering::SeqCst);
+                        }
+
+                        // Check for silence using VAD (only after speech has been observed)
+                        if seen_speech_clone.load(Ordering::SeqCst) {
+                            if is_silence {
+                                silent_frames_clone.fetch_add(data.len(), Ordering::SeqCst);
+                            } else {
+                                silent_frames_clone.store(0, Ordering::SeqCst);
+                            }
+                        } else {
+                            silent_frames_clone.store(0, Ordering::SeqCst);
+                        }
+
+                        // Check if silence duration exceeds hang time
+                        let current_silent = silent_frames_clone.load(Ordering::SeqCst);
+                        let silent_duration = current_silent as f32 / sample_rate as f32;
+                        if silent_duration > hang_sec {
+                            info!(
+                                "Silence detected for > {:.2}s. Stopping collection.",
+                                hang_sec
+                            );
+                            is_recording_data.store(false, Ordering::SeqCst);
+                        }
+                    }
+                },
+                move |err| {
+                    error!("Audio stream error: {}", err);
+                    is_recording_error.store(false, Ordering::SeqCst);
+                },
+                None, // timeout
+            )
+            .context("Failed to build input stream")?;
+
+        // Start the stream
+        stream.play().context("Failed to start audio stream")?;
+        self.is_recording.store(true, Ordering::SeqCst);
+        info!("Audio stream started");
+
+        // Store stream and device
+        self.stream = Some(stream);
+        self.device = Some(device);
+
+        // Spawn monitoring task
+        let is_recording_clone = Arc::clone(&self.is_recording);
+        let stop_tx_clone = self.stop_tx.clone();
+        let on_vad_stop_clone = self.on_vad_stop.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = stop_rx.recv() => {
+                        debug!("Stop signal received");
+                        break;
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                        if !is_recording_clone.load(Ordering::SeqCst) {
+                            debug!("Recording stopped by silence detection");
+                            // Invoke VAD callback if set
+                            if let Some(ref callback) = on_vad_stop_clone {
+                                info!("VAD triggered - invoking callback");
+                                callback();
+                            }
+                            if let Some(tx) = stop_tx_clone.as_ref() {
+                                let _ = tx.send(()).await;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Stops the audio recording and saves the buffer to a temp WAV file.
+    ///
+    /// Stops and closes the audio stream, concatenates the buffered audio chunks,
+    /// and writes them to a temporary .wav file.
+    ///
+    /// Returns the absolute path to the saved .wav file, or None if no audio
+    /// was recorded or an error occurred.
+    pub async fn stop(&mut self) -> Result<Option<PathBuf>> {
+        if !self.is_recording.load(Ordering::SeqCst) && self.stream.is_none() {
+            warn!("Stop called but no active stream");
+            self.last_duration = 0.0;
+            return Ok(None);
+        }
+
+        info!("Stopping recording...");
+
+        // Signal stop
+        if let Some(tx) = self.stop_tx.take() {
+            let _ = tx.send(()).await;
+        }
+
+        // Stop stream
+        if let Some(stream) = self.stream.take() {
+            drop(stream); // Dropping the stream stops it
+            info!("Audio stream stopped");
+        }
+
+        // Ensure VAD worker is shut down deterministically on every stop().
+        self.recorder_vad = None;
+        self.device = None;
+        self.is_recording.store(false, Ordering::SeqCst);
+
+        // Get buffer data
+        let wav_data = {
+            let buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            if buf.is_empty() {
+                warn!("No audio data captured");
+                self.last_duration = 0.0;
+                return Ok(None);
+            }
+            buf.clone()
+        };
+
+        let num_frames = wav_data.len();
+        self.last_duration = num_frames as f32 / self.actual_sample_rate as f32;
+        self.diagnostics.frames = num_frames;
+        self.diagnostics.bytes = num_frames * std::mem::size_of::<i16>();
+        self.diagnostics.duration_sec = self.last_duration;
+
+        info!(
+            "Captured audio: {} frames ({:.2}s) at {}Hz",
+            num_frames, self.last_duration, self.actual_sample_rate
+        );
+
+        // Create temp file
+        let temp_path = std::env::temp_dir().join(format!(
+            "codescribe_recording_{}.wav",
+            chrono::Utc::now().timestamp_millis()
+        ));
+
+        info!("Saving audio to: {:?}", temp_path);
+
+        // Write WAV file using actual sample rate
+        write_wav_file(
+            &temp_path,
+            &wav_data,
+            self.actual_sample_rate,
+            self.config.channels,
+        )?;
+
+        info!("Audio successfully saved to WAV file");
+
+        // Clear buffer
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+
+        Ok(Some(temp_path))
+    }
+}
+
+impl Default for Recorder {
+    fn default() -> Self {
+        Self::new().expect("Failed to create default recorder")
+    }
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        // Defensive cleanup: ensure stream is stopped when Recorder is dropped
+        if self.stream.is_some() {
+            self.is_recording.store(false, Ordering::SeqCst);
+            self.stream = None;
+            debug!("Recorder::drop - cleaned up audio stream");
+        }
+    }
+}
+
+// --- helper functions ---
+
+// Note: RMS-based silence detection replaced with Silero VAD (see vad module)
+
+/// Write audio samples to a WAV file.
+fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u16) -> Result<()> {
+    let spec = WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+
+    let mut writer = WavWriter::create(path, spec)
+        .with_context(|| format!("Failed to create WAV file at {:?}", path))?;
+
+    for &sample in samples {
+        writer
+            .write_sample(sample)
+            .context("Failed to write sample to WAV file")?;
+    }
+
+    writer.finalize().context("Failed to finalize WAV file")?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Note: RMS tests removed - now using Silero VAD (see vad module tests)
+
+    #[test]
+    fn test_recorder_config_default() {
+        // Note: This test checks hardcoded defaults, not env-dependent behavior
+        // to avoid race conditions with parallel tests
+        assert_eq!(SAMPLE_RATE, 16000);
+        assert_eq!(CHANNELS, 1);
+    }
+
+    #[tokio::test]
+    async fn test_recorder_new() {
+        let recorder = Recorder::new();
+        assert!(recorder.is_ok());
+    }
+}

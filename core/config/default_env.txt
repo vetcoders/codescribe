@@ -1,0 +1,98 @@
+# CodeScribe Configuration
+# Generated automatically - edit with care
+
+# === Secrets ===
+STT_API_KEY=vista-
+# LLM_API_KEY=sk-proj-
+LLM_ASSISTIVE_API_KEY=
+LLM_FORMATTING_API_KEY=
+
+# === Core mode ===
+USE_LOCAL_STT=1
+LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
+WHISPER_LANGUAGE=pl
+
+# === Hotkeys ===
+HOLD_EXCLUSIVE=1
+HOLD_START_DELAY_MS=800
+DOUBLE_TAP_INTERVAL_MS=200
+TOGGLE_SILENCE_SEC=5.0
+# Mode bindings are canonical and persisted in settings.json:
+# - dictation: hold_fn
+# - formatting: double_left_option
+# - assistive: double_right_option
+
+# === Overlay / UI ===
+OVERLAY_POSITION_MODE=snapped_top_right
+SHOW_TRAY_GLYPH=1
+HOLD_INDICATOR=1
+HOLD_BADGE_SIZE=8
+HOLD_BADGE_OFFSET_X=10
+HOLD_BADGE_OFFSET_Y=-10
+
+# Unified runtime pipeline (event-based) is always active.
+# Golden low-latency / high-fidelity defaults for live preview:
+CODESCRIBE_STREAM_CHUNK_SEC=3.0
+CODESCRIBE_STREAM_OVERLAP_RATIO=0.2
+CODESCRIBE_BUFFER_DELAY_MS=280
+CODESCRIBE_TYPING_CPS=90
+CODESCRIBE_EMIT_WORDS_MAX=2
+CODESCRIBE_BUFFERED_INTERIM_SEC=1.2
+CODESCRIBE_MAX_INFERENCE_CONCURRENCY=1
+CODESCRIBE_BUFFERED_CORRECTION_PREFIX=0.50
+CODESCRIBE_OVERLAY_STABLE_PREVIEW=0
+# VAD config is hardcoded in core/vad/config.rs (Silero defaults, no env knobs).
+CODESCRIBE_STREAM_SIMILARITY=0.90
+CODESCRIBE_STREAM_NOVELTY=0.20
+# Embedder model override (HuggingFace cache repo id)
+# CODESCRIBE_EMBEDDER_REPO=intfloat/multilingual-e5-small
+
+# Runtime note:
+# - App always starts transcription through `start_event_session`.
+# - Use `CODESCRIBE_LOCAL_STT_FINAL_PASS=1` only for explicit diagnostics/final-pass comparison.
+
+# === LLM / Assistive & Formatting ===
+AI_FORMATTING_ENABLED=1
+TRANSCRIPT_SEND_MODE=streaming
+ASSISTIVE_CONTEXT_MAX_CHARS=20000
+#
+# PDF attachments: OCR language hint (used when OCR is needed; prefers offline tools)
+CODESCRIBE_ATTACH_PDF_OCR_LANG=pol+eng
+LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
+LLM_ASSISTIVE_MODEL=gpt-5.2
+# LLM_ASSISTIVE_TEMPERATURE=0.2
+LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
+LLM_FORMATTING_MODEL=gpt-5-mini
+LLM_FORMATTING_TEMPERATURE=0.1
+LLM_USE_STREAMING=1
+
+# === Cloud STT ===
+STT_ENDPOINT=https://api.libraxis.cloud/v1/audio/transcriptions
+
+# === History / logs ===
+HISTORY_ENABLED=1
+DUMP_AUDIO_LOGS=1
+
+# === Quick Notes (voice → text notes) ===
+# When enabled, dictation saves to a daily Markdown note.
+QUICK_NOTES_ENABLED=0
+# If enabled, Quick Notes becomes "save-only" (no auto-paste).
+QUICK_NOTES_SAVE_ONLY=0
+# Optional override for notes directory (Vista-friendly):
+# CODESCRIBE_NOTES_DIR=~/Git/vista/notes
+
+# === Clipboard ===
+RESTORE_CLIPBOARD=1
+RESTORE_CLIPBOARD_DELAY_MS=1000
+
+# === Audio ===
+AUTO_SILENCE=0
+BEEP_ON_START=1
+SOUND_NAME=Tink
+SOUND_VOLUME=0.25
+
+# === Debug (optional) ===
+# CODESCRIBE_STREAM_LOG=1
+# CODESCRIBE_STREAM_LOG_PATH=/tmp/codescribe_stream.log
+# RUST_LOG=full
+# LOG_LEVEL=error

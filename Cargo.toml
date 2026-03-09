@@ -1,28 +1,57 @@
 [workspace]
 resolver = "2"
-members = [".", "tauri-app"]
+members = [".", "core"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.8.0"
 edition = "2024"
 authors = ["VetCoders <hello@vetcoders.io>"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+async-trait = "0.1"
+base64 = "0.22"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.6.0"
+version = "0.8.0"
 edition = "2024"
 description = "Speech-to-text tray app for macOS - Pure Rust"
 authors = ["VetCoders <hello@vetcoders.io>"]
 license = "Apache-2.0"
+repository = "https://github.com/VetCoders/CodeScribe"
+homepage = "https://github.com/VetCoders/CodeScribe"
+documentation = "https://github.com/VetCoders/CodeScribe/tree/main/docs"
+keywords = ["speech-to-text", "whisper", "macos", "dictation", "audio"]
+categories = ["command-line-utilities", "multimedia::audio"]
+
+[[bin]]
+name = "codescribe"
+path = "bin/codescribe.rs"
+
+[[bin]]
+name = "codescribe-quality"
+path = "bin/codescribe_quality.rs"
+
+[[bin]]
+name = "codescribe-loop"
+path = "bin/codescribe_loop.rs"
+
+[lib]
+path = "app/lib.rs"
+
+[features]
+default = ["liquid_glass"]
+liquid_glass = []
 
 [dependencies]
+# Core library
+codescribe_core = { package = "codescribe-core", path = "core" }
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
@@ -37,28 +66,14 @@ tao = "0.34"   # Event loop for tray (required on macOS)
 # Now using CGEventTap via core-graphics for proper modifier-only detection
 
 # Audio recording
-cpal = "0.17"
-hound = "3.5"
-
-# Audio decoding
-symphonia = { version = "0.5", features = ["all", "mp3", "pcm", "isomp4", "alac"] }
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "multipart", "blocking", "stream"] }
 
-# Local STT
-candle-core = { version = "0.9", features = ["metal"] }
-candle-transformers = { version = "0.9", features = ["metal"] }
-candle-nn = "0.9"
-tokenizers = "0.22"
-indicatif = "0.18"
-zip = "0.6"
-ndarray = "0.16"
-ndarray-npy = "0.9"
-
 # WebSocket client for voice chat
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 futures-util = "0.3"
+async-trait = "0.1"
 base64 = "0.22"
 
 # Clipboard
@@ -73,8 +88,6 @@ serde_json = "1"
 
 # Config/paths
 directories = "6"
-shellexpand = "3"
-dotenvy = "0.15"
 
 # Logging
 tracing = "0.1"
@@ -82,10 +95,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow = "1"
-thiserror = "2"
-
-# OpenAI Harmony format for /v1/responses API
-openai-harmony = "0.0.8"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -98,48 +107,40 @@ chrono = "0.4"
 
 # UUID generation
 uuid = { version = "1", features = ["v4"] }
-rand = "0.8"
-flate2 = "1.0"
 
 # Lazy static for global state
 lazy_static = "1.4"
+libc = "0.2"
 
 # Image processing (for tray icon)
 image = { version = "0.25", default-features = false, features = ["png"] }
-walkdir = "2.5.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# candle-coreml = "0.3"
-coreml-rs = "0.5"
 # macOS specific - for better hotkey support if rdev fails
 core-foundation = "0.10"
 core-graphics = "0.25"
 # UI utilities (hold badge, caret tracking) - modern objc2-* crates
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSColor", "NSEvent", "NSBezierPath", "NSGraphics", "NSResponder"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSColor", "NSEvent", "NSBezierPath", "NSGraphics", "NSResponder", "NSVisualEffectView", "NSGlassEffectView", "NSApplication"] }
+objc2-core-foundation = "0.3"
 # Legacy objc for runtime declarations (ClassDecl) and msg_send! macro
 objc = "0.2"
+# ObjC blocks for callback-based permission APIs (e.g. AVCaptureDevice requestAccess)
+block = "0.1"
 # Grand Central Dispatch for main thread operations
 dispatch = "0.2"
 
 [dev-dependencies]
+codescribe_core = { package = "codescribe-core", path = "core", features = ["offline_eval"] }
 tempfile = "3"
 mockito = "1"
 serial_test = "3"
-
-[build-dependencies]
-dirs = "6"
-zstd = "0.13"
-
-[dependencies.zstd]
-version = "0.13"
+hound = "3.5"
 
 [lints.rust]
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
-unexpected_cfgs = "allow"
-
-[lints.clippy]
-# Rust 2024: Allow collapsible_if for now (let-chains are new, can refactor later)
-collapsible_if = "allow"
+# embed_model/embed_tts/embed_e5 are set by build.rs when models are available
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)', 'cfg(embed_e5)'] }
 
 [profile.release]
 opt-level = "z"

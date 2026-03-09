@@ -8,7 +8,7 @@
 // Usage:
 //   cargo run --example test_clipboard_snapshot
 
-use codescribe::clipboard::{
+use codescribe::os::clipboard::{
     copy, get_clipboard, paste_and_restore, paste_text_smart, snapshot_clipboard,
 };
 use std::thread;

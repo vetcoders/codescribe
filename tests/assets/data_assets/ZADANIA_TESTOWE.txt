@@ -1,0 +1,55 @@
+# HUMAN REFERENCE (WHAT HUMAN SAID/READ)
+
+## I. HUMAN SAID:
+
+No to dobra. Teraz generalnie powiem parę słów, korzystając z surowej transkrypcji przez CodeScribe.
+
+Mamy już pierwsze słowo do analizy, wobec czego chcę, żebyś wziął ten plik WAV i puścił go na nasz endpoint, bo muszę mieć pewność, czy leksykon działa, więc po prostu meta mówię z dupy.
+
+loctree to aplikacja stworzona po to, aby duże bazy kodowe przestały być tajemnicą i czarną dziurą dla agentów AI.
+
+Korzystam z Rust, korzystam z Rust w wersji Toolchain 2024. W tym momencie.
+
+## II. HUMAN READ ->
+
+## RUNDA 1 (łatwe)
+1. Kubernetes wymaga konfiguracji PostgreSQL jako bazy danych.
+2. Podajemy amoksycylinę w dawce pięć miligramów na kilogram masy ciała.
+3. Używamy gRPC zamiast REST dla lepszego throughput.
+4. Pacjent wymaga podania deksametazonu dożylnie.
+5. Tokio i Axum to najlepsze frameworki dla async/await w Rust.
+6. Zalecam RTG klatki piersiowej i badanie USG jamy brzusznej.
+7. Implementuję WebSocket z exponential backoff dla reconnect.
+8. Stosujemy metronidazol przy zakażeniach beztlenowcami.
+9. Serde serializuje do JSON i TOML automatycznie.
+10. Podejrzewam otitis externa - przepiszę krople z gentamycyną.
+
+## RUNDA 2 (średnie)
+11. Algorytm ma złożoność O(n) w najgorszym przypadku i O(1) dla cache hit.
+12. Podejrzewam mięsak prążkowanokomórkowy - potrzebna biopsja z oceną marginesu chirurgicznego.
+13. Uruchamiam pnpm tauri:dev i testuję passthrough do backendu.
+14. Wykryto polip pęcherza w badaniu USG - zalecam cystoskopię.
+15. Używam semgrep do statycznej analizy i cargo-tarpaulin do coverage.
+16. Pacjent ma zwężenie kanału kręgowego w odcinku piersiowym - kwalifikuje się do operacji.
+17. Odpalam loctree żeby sprawdzić LOC i znaleźć martwy kod przez grep.
+18. Rozpoznaję Zespół przetrwałego przewodu żylnego - klasyczny shunt wątrobowy.
+19. W Tauri konfiguruję window-vibrancy przez invoke hell w Rust.
+20. Wykonuję sed na pliku JSONL i walidację przez jq przed importem.
+
+## RUNDA 3 (trudne - z prawdziwych mispronunciations)
+21. Podaję Tramadol i Alfaksalon do premedykacji.
+22. Projekt używa mlx_embeddings z pnpm dlx do instalacji.
+23. Rozpoznaję Microsporum canis - klasyczna grzybica skórna.
+24. Konfiguracja pnpm tauri:dev wymaga TypeScript i Vite.
+25. Pacjent ma pseudociążę - podaję Metimazol.
+26. Sprawdzam LOC przez jq i filtruję wyniki grep.
+27. Robenacoxib na ból przy przemieszczeniu rzepki.
+28. Kubernetes skaluje gRPC endpointy z exponential backoff.
+29. Amoksycylina z kwasem klawulanowym na zapalenie spojówek.
+30. Uruchamiam retry z cosine similarity dla embeddingów.
+
+## BONUS - terminy z nagrania które już przetestowaliśmy
+- loctree (Whisper: "Locktree", "Log3")
+- Rust (Whisper: "Roosta", "Ruska")
+- CodeScribe (Whisper: "code scribe")
+- Toolchain 2024

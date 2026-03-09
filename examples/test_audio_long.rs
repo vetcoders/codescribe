@@ -12,16 +12,18 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Model path: ~/.codescribe/models/ (unified standard)
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let default_model =
+        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8");
+
     let (model, files): (PathBuf, Vec<PathBuf>) = if args[0] == "--model" {
         (
             PathBuf::from(&args[1]),
             args[2..].iter().map(PathBuf::from).collect(),
         )
     } else {
-        (
-            PathBuf::from("models/whisper-large-v3-mlx-q8"),
-            args.iter().map(PathBuf::from).collect(),
-        )
+        (default_model, args.iter().map(PathBuf::from).collect())
     };
 
     println!("Loading model: {:?}", model);
@@ -41,7 +43,7 @@ fn main() -> Result<()> {
     for f in files {
         println!("=== {} ===", f.file_name().unwrap().to_string_lossy());
 
-        let (samples, sample_rate) = codescribe::audio_loader::load_audio_file(&f)?;
+        let (samples, sample_rate) = codescribe::audio::load_audio_file(&f)?;
         let duration_sec = samples.len() as f32 / sample_rate as f32;
         println!("Audio duration: {:.1}s", duration_sec);
 
