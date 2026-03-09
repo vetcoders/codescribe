@@ -14,6 +14,8 @@
 
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
 # Configuration
 DEFAULT_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
 MODEL_REPO="${CODESCRIBE_EMBED_MODEL:-$DEFAULT_REPO}"
@@ -40,19 +42,14 @@ echo "  Model:  ${MODEL_NAME}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
 echo "───────────────────────────────────────────────────────────"
 
-# Check for HuggingFace CLI
-if ! command -v hf &> /dev/null; then
-    echo ""
-    echo "▶ Installing hf CLI..."
-    pip install -q huggingface_hub[cli]
-fi
+HF_BIN="$("$ROOT_DIR/scripts/ensure-hf-cli.sh")"
 
 # Check authentication
 echo ""
 if [ -n "${HF_TOKEN:-}" ]; then
     echo "▶ Using HF_TOKEN from environment"
     export HF_TOKEN="$HF_TOKEN"
-elif hf auth whoami &>/dev/null; then
+elif "$HF_BIN" auth whoami &>/dev/null; then
     echo "▶ Using cached HuggingFace credentials"
 else
     echo "⚠ No HuggingFace authentication found"
@@ -75,7 +72,7 @@ echo "▶ Downloading model (HF cache)..."
 echo "  This may take a few minutes..."
 echo ""
 
-hf download "$MODEL_REPO"
+"$HF_BIN" download "$MODEL_REPO"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"

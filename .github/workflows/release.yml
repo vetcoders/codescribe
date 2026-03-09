@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing tag to publish (for example v0.8.0)
+        required: true
 
 permissions:
   contents: write
@@ -12,9 +16,11 @@ permissions:
 jobs:
   dmg:
     name: Build and publish DMG
-    runs-on: self-hosted
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -24,5 +30,6 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
           files: CodeScribe_*.dmg
           generate_release_notes: true
