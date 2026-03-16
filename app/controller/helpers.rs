@@ -52,6 +52,8 @@ pub fn is_conversation_session() -> bool {
 /// Contract:
 /// - Assistive sessions stream into Agent overlay chat bubbles.
 /// - Non-assistive sessions stream into Dictation/Transcription overlay preview.
+/// - `delta` must already follow `TranscriptDelta` backspace semantics.
+///   This function must never receive full preview snapshots.
 pub fn route_transcription_delta(delta: &str) {
     if is_assistive_session() {
         crate::voice_chat_ui::append_voice_chat_user_delta(delta);

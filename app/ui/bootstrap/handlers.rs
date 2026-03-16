@@ -6,18 +6,17 @@ use std::sync::Once;
 use crate::ui_helpers::ns_string;
 
 use super::{
-    TAB_ADVANCED, TAB_AI_PROMPTS, TAB_AUDIO_INPUT, TAB_DIAGNOSTICS, TAB_MODES_SHORTCUTS,
-    TAB_QUALITY, TAB_SETUP, handle_bootstrap_window_closed, handle_hotkey_done,
-    handle_show_overlay, handle_test_mic, on_assistive_endpoint_changed, on_assistive_key_changed,
-    on_assistive_model_changed, on_beep_toggled, on_clear_assistive_key, on_clear_llm_key,
-    on_copy_diagnostics, on_delay_changed, on_diagnostics_refresh, on_double_tap_interval_changed,
+    TAB_AI_PROMPTS, TAB_AUDIO_INPUT, TAB_DIAGNOSTICS, TAB_MODES_SHORTCUTS, TAB_TRANSCRIPTION,
+    handle_bootstrap_window_closed, handle_hotkey_done, handle_show_overlay, handle_test_mic,
+    on_assistive_endpoint_changed, on_assistive_key_changed, on_assistive_model_changed,
+    on_beep_toggled, on_clear_assistive_key, on_clear_llm_key, on_copy_diagnostics,
+    on_delay_changed, on_diagnostics_refresh, on_double_tap_interval_changed,
     on_enter_send_toggled, on_formatting_level_changed, on_formatting_toggled, on_language_changed,
     on_llm_endpoint_changed, on_llm_key_changed, on_llm_model_changed, on_mode_binding_change,
     on_open_quality_report, on_open_system_settings, on_permission_action, on_prompt_load,
     on_prompt_reset, on_prompt_save, on_prompt_type_changed, on_quality_daemon_toggled,
     on_quality_refresh, on_refresh_permissions, on_save_api_settings, on_show_dock_icon_toggled,
-    on_show_hotkey_conflicts, on_ultra_quality_toggled, on_voice_lab_field_changed,
-    on_voice_lab_toggle_changed, on_volume_changed, switch_tab,
+    on_show_hotkey_conflicts, on_ultra_quality_toggled, on_volume_changed, switch_tab,
 };
 
 pub type Id = *mut Object;
@@ -70,18 +69,9 @@ pub fn action_handler_class() -> *const Class {
                 on_tab_audio_input as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabQuality:),
-                on_tab_quality as extern "C" fn(&Object, Sel, Id),
-            );
-            decl.add_method(
                 sel!(onTabDiagnostics:),
                 on_tab_diagnostics as extern "C" fn(&Object, Sel, Id),
             );
-            decl.add_method(
-                sel!(onTabAdvanced:),
-                on_tab_advanced as extern "C" fn(&Object, Sel, Id),
-            );
-
             // Keys tab actions
             decl.add_method(
                 sel!(onModeBindingChange:),
@@ -105,15 +95,6 @@ pub fn action_handler_class() -> *const Class {
                 sel!(onFormattingLevelChanged:),
                 on_formatting_level_changed as extern "C" fn(&Object, Sel, Id),
             );
-            decl.add_method(
-                sel!(onVoiceLabToggleChanged:),
-                on_voice_lab_toggle_changed as extern "C" fn(&Object, Sel, Id),
-            );
-            decl.add_method(
-                sel!(onVoiceLabFieldChanged:),
-                on_voice_lab_field_changed as extern "C" fn(&Object, Sel, Id),
-            );
-
             // Setup tab: LLM configuration
             decl.add_method(
                 sel!(onLlmEndpointChanged:),
@@ -300,7 +281,7 @@ extern "C" fn on_hotkey_done_action(_this: &Object, _sel: Sel, _sender: Id) {
 }
 
 extern "C" fn on_tab_setup(_this: &Object, _sel: Sel, _sender: Id) {
-    switch_tab(TAB_SETUP);
+    switch_tab(TAB_TRANSCRIPTION);
 }
 
 extern "C" fn on_tab_modes_shortcuts(_this: &Object, _sel: Sel, _sender: Id) {
@@ -315,16 +296,8 @@ extern "C" fn on_tab_audio_input(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_AUDIO_INPUT);
 }
 
-extern "C" fn on_tab_quality(_this: &Object, _sel: Sel, _sender: Id) {
-    switch_tab(TAB_QUALITY);
-}
-
 extern "C" fn on_tab_diagnostics(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_DIAGNOSTICS);
-}
-
-extern "C" fn on_tab_advanced(_this: &Object, _sel: Sel, _sender: Id) {
-    switch_tab(TAB_ADVANCED);
 }
 
 extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, _notification: Id) {
@@ -390,9 +363,7 @@ mod tests {
         assert_selector_registered(class, sel!(onTabModesShortcuts:), "onTabModesShortcuts:");
         assert_selector_registered(class, sel!(onTabAiPrompts:), "onTabAiPrompts:");
         assert_selector_registered(class, sel!(onTabAudioInput:), "onTabAudioInput:");
-        assert_selector_registered(class, sel!(onTabQuality:), "onTabQuality:");
         assert_selector_registered(class, sel!(onTabDiagnostics:), "onTabDiagnostics:");
-        assert_selector_registered(class, sel!(onTabAdvanced:), "onTabAdvanced:");
         assert_selector_registered(class, sel!(onSaveApiSettings:), "onSaveApiSettings:");
         assert_selector_registered(class, sel!(onPromptSave:), "onPromptSave:");
         assert_selector_registered(class, sel!(onQualityRefresh:), "onQualityRefresh:");

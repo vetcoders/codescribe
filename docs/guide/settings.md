@@ -17,6 +17,21 @@ Most users should use the **Settings** window. The `.env` file is only for overr
 
 ---
 
+## Get Started
+
+Open **Settings → Get Started**.
+
+This is the first-run path:
+
+- grant the required macOS permissions
+- test the mic
+- show the agent overlay
+- trigger Assistive once to prove the loop works
+
+Diagnostics stay in their own tab.
+
+---
+
 ## Hotkeys (Modes & Shortcuts)
 
 Open **Settings → Modes & Shortcuts**.
@@ -32,6 +47,11 @@ CodeScribe uses a **mode‑first** shortcut model: each mode has one binding you
   - Default: Double‑tap `Right Option`
 
 If macOS already uses a shortcut, the conflict detector will flag it and you can change the binding.
+
+The same tab now also contains:
+
+- **Hold delay**
+- **Double-tap interval**
 
 ---
 
@@ -63,19 +83,21 @@ Open **Settings → Audio & Input**.
 Key options:
 
 - **Whisper language** (explicit; no auto‑detect)
-- **AI Formatting** toggle (affects Dictation mode)
 - **Enter to send** (overlay typing behavior)
 - Beep/volume controls
 
 ---
 
-## Advanced
+## Quality
 
-Open **Settings → Advanced**.
+Open **Settings → Quality**.
 
-- Hold start delay (ms)
-- Double‑tap interval (ms)
-- Voice Lab overrides for pipeline experiments
+This tab now owns the final transcript path:
+
+- **Ultra Quality (slow final pass)**
+- **AI Formatting**
+- **Formatting level**
+- quality daemon/report actions
 
 ---
 

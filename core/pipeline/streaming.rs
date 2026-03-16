@@ -641,6 +641,7 @@ pub struct BufferedEmitter {
     finished: bool,
     has_output: bool,
     emitted_text: String,
+    target_text: String,
     correction_pending: Option<String>,
     last_correction_at: Option<Instant>,
     pub(crate) corrections_applied: u64,
@@ -669,41 +670,54 @@ impl BufferedEmitter {
             finished: false,
             has_output: false,
             emitted_text: String::new(),
+            target_text: String::new(),
             correction_pending: None,
             last_correction_at: None,
             corrections_applied: 0,
         }
     }
 
-    pub fn push_correction(&mut self, corrected: String) {
-        if corrected.trim().is_empty() {
-            return;
+    /// Update the desired full rendered transcript for the session.
+    ///
+    /// The emitter turns prefix growth into incremental queued appends and
+    /// everything else into a correction against the currently emitted text.
+    /// This keeps append semantics clean across utterance boundaries while
+    /// allowing active-tail rewrites from partial/correction passes.
+    pub fn set_target_text(&mut self, target: String) -> Option<String> {
+        let current_target = if self.target_text.is_empty() && !self.emitted_text.is_empty() {
+            self.emitted_text.clone()
+        } else {
+            self.target_text.clone()
+        };
+
+        if target == current_target {
+            self.target_text = target;
+            return None;
         }
-        if self.emitted_text.is_empty() {
-            // If correction arrives before any typed output, bootstrap the queue from
-            // corrected text instead of dropping the update.
-            self.queue.clear();
-            self.current_segment = None;
-            self.current_tokens.clear();
-            self.current_token_index = 0;
-            self.correction_pending = None;
-            self.push_segment(corrected);
-            return;
+
+        if target.starts_with(&current_target) {
+            let suffix = target[current_target.len()..].to_string();
+            if !suffix.is_empty() {
+                self.queue.push_back(suffix);
+                if self.first_output_at.is_none() {
+                    self.first_output_at = Some(Instant::now());
+                }
+            }
+            self.target_text = target.clone();
+            return Some(target);
         }
-        // Observe rewrite size for telemetry/debugging. Large rewrites are allowed:
-        // stale guards already run upstream, and dropping here causes visible
-        // "missing correction" regressions in live overlay.
+
         let prefix_len = self
             .emitted_text
             .chars()
-            .zip(corrected.chars())
+            .zip(target.chars())
             .take_while(|(a, b)| a == b)
             .count();
         let min_len = self
             .emitted_text
             .chars()
             .count()
-            .min(corrected.chars().count());
+            .min(target.chars().count());
         if min_len > 0 && (prefix_len as f64 / min_len as f64) < self.correction_prefix_ratio {
             debug!(
                 "Applying wide correction: common prefix {}/{} ({:.0}%) < {:.0}%",
@@ -713,27 +727,46 @@ impl BufferedEmitter {
                 self.correction_prefix_ratio * 100.0,
             );
         }
-        self.correction_pending = Some(corrected);
+
+        self.queue.clear();
+        self.current_segment = None;
+        self.current_tokens.clear();
+        self.current_token_index = 0;
+        self.target_text = target.clone();
+        self.correction_pending = Some(target.clone());
+        if self.first_output_at.is_none() && !target.is_empty() {
+            self.first_output_at = Some(Instant::now());
+        }
+        Some(target)
+    }
+
+    pub async fn store_transcript_snapshot(&self, snapshot: String) {
+        let mut buffer = self.transcript_buffer.lock().await;
+        *buffer = snapshot;
+    }
+
+    pub fn push_correction(&mut self, corrected: String) {
+        if corrected.trim().is_empty() {
+            return;
+        }
+        let _ = self.set_target_text(corrected);
     }
 
     pub fn push_segment(&mut self, text: String) {
         if text.trim().is_empty() {
             return;
         }
-        let mut segment = text;
-        if !segment.starts_with(char::is_whitespace)
-            && (self.has_output || self.current_segment.is_some() || !self.queue.is_empty())
-        {
-            segment = format!(" {}", segment);
-        }
-        self.queue.push_back(segment);
-        if self.first_output_at.is_none() {
-            self.first_output_at = Some(Instant::now());
-        }
+        let mut target = self.target_text.clone();
+        target.push_str(&text);
+        let _ = self.set_target_text(target);
     }
 
     pub async fn tick(&mut self) -> bool {
-        if self.finished && self.queue.is_empty() && self.current_segment.is_none() {
+        if self.finished
+            && self.queue.is_empty()
+            && self.current_segment.is_none()
+            && self.correction_pending.is_none()
+        {
             return true;
         }
 
@@ -797,7 +830,10 @@ impl BufferedEmitter {
             }
         }
 
-        self.finished && self.queue.is_empty() && self.current_segment.is_none()
+        self.finished
+            && self.queue.is_empty()
+            && self.current_segment.is_none()
+            && self.correction_pending.is_none()
     }
 
     fn is_buffering(&self) -> bool {
@@ -1958,6 +1994,34 @@ impl EventSink for SessionTranscriptCollector {
     }
 }
 
+struct SessionEventCollector {
+    events: std::sync::Mutex<Vec<EngineEvent>>,
+}
+
+impl SessionEventCollector {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn events(&self) -> Vec<EngineEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+impl EventSink for SessionEventCollector {
+    fn on_event(&self, event: &EngineEvent) {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(event.clone());
+    }
+}
+
 /// Public helper: run the event session pipeline on in-memory samples.
 ///
 /// Uses the same runtime path as live recording (`transcription_session`) and
@@ -2000,6 +2064,51 @@ pub async fn transcribe_buffered_samples(
         .map_err(|e| anyhow!("Transcription session join error: {}", e))?;
 
     Ok(collector.transcript())
+}
+
+/// Public helper: run the event session pipeline and return the emitted engine events.
+///
+/// This is the closest non-interactive test hook to the real live flow:
+/// canonical audio samples enter the same `transcription_session` runtime used by
+/// recording, and callers can replay the resulting `EngineEvent`s through
+/// `PresentationEmitter`/overlay code without touching the microphone.
+pub async fn collect_buffered_engine_events(
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<String>,
+) -> Result<Vec<EngineEvent>> {
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let chunk_size = ((sample_rate as f32) * 0.1).round().max(1.0) as usize;
+
+    let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
+    let collector = Arc::new(SessionEventCollector::new());
+    let event_sink: Arc<dyn EventSink> = collector.clone();
+    let session = tokio::spawn(transcription_session(
+        rx,
+        event_sink,
+        SessionConfig {
+            sample_rate,
+            language,
+            stream_log_path: None,
+            utterance_silence_sec: None,
+        },
+    ));
+
+    for chunk in samples.chunks(chunk_size) {
+        if tx.send(chunk.to_vec()).await.is_err() {
+            return Err(anyhow!("Transcription session dropped channel"));
+        }
+    }
+    drop(tx);
+
+    session
+        .await
+        .map_err(|e| anyhow!("Transcription session join error: {}", e))?;
+
+    Ok(collector.events())
 }
 
 // ── Delta helpers ────────────────────────────────────────────────────────────
@@ -3046,12 +3155,13 @@ mod tests {
             emitter.push_segment("draft".to_string());
             emitter.push_correction("draft corrected".to_string());
 
-            assert_eq!(emitter.queue.len(), 1);
+            assert_eq!(emitter.queue.len(), 2);
             assert_eq!(
-                emitter.queue.front().map(String::as_str),
-                Some("draft corrected")
+                emitter.queue.iter().map(String::as_str).collect::<Vec<_>>(),
+                vec!["draft", " corrected"]
             );
             assert!(emitter.correction_pending.is_none());
+            assert_eq!(emitter.target_text, "draft corrected");
         });
     }
 

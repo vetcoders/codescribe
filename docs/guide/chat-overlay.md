@@ -13,7 +13,7 @@ It has three tabs:
 ## Opening the Overlay
 
 - Menu bar icon → **Show Agent**
-- Settings → **Setup** tab → **Show agent overlay**
+- Settings → **Get Started** tab → **Show agent overlay**
 - Automatically opens when you start **Assistive (Agent)** mode
 
 ---

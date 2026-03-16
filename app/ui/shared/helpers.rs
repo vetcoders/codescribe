@@ -21,10 +21,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 #[cfg(feature = "liquid_glass")]
 use objc2_app_kit::{NSAppKitVersionNumber, NSGlassEffectView, NSGlassEffectViewStyle};
-use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
-};
+use objc2_app_kit::{NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState};
 #[cfg(feature = "liquid_glass")]
 use objc2_core_foundation::{
     CGPoint as Objc2CGPoint, CGRect as Objc2CGRect, CGSize as Objc2CGSize,
@@ -1554,68 +1551,6 @@ pub fn create_scrollable_text_view(frame: CGRect, editable: bool) -> (Id, Id) {
 // ============================================================================
 // Window Helpers
 // ============================================================================
-
-/// Create a floating overlay window
-pub fn create_floating_window(
-    frame: CGRect,
-    title: &str,
-    transparent_titlebar: bool,
-    resizable: bool,
-) -> Id {
-    unsafe {
-        let ns_window = Class::get("NSWindow").unwrap();
-
-        let mut style = NSWindowStyleMask::Titled
-            | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Miniaturizable;
-        if transparent_titlebar {
-            style |= NSWindowStyleMask::FullSizeContentView;
-        }
-        if resizable {
-            style |= NSWindowStyleMask::Resizable;
-        }
-
-        let window: Id = msg_send![ns_window, alloc];
-        let window: Id = msg_send![
-            window,
-            initWithContentRect: frame
-            styleMask: style
-            backing: NSBackingStoreType::Buffered
-            defer: false
-        ];
-
-        if transparent_titlebar {
-            // Re-apply FullSizeContentView post-init to avoid AppKit falling back to
-            // separate titlebar/content regions (which visually looks like a duplicate top bar).
-            let current_style: NSWindowStyleMask = msg_send![window, styleMask];
-            let full_style = current_style | NSWindowStyleMask::FullSizeContentView;
-            let _: () = msg_send![window, setStyleMask: full_style];
-            let _: () = msg_send![window, setTitleVisibility: 1_isize]; // NSWindowTitleHidden
-            let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
-            let _: () = msg_send![window, setOpaque: false];
-            let ns_color = Class::get("NSColor").unwrap();
-            let clear: Id = msg_send![ns_color, clearColor];
-            let _: () = msg_send![window, setBackgroundColor: clear];
-        }
-
-        let _: () = msg_send![window, setMovableByWindowBackground: true];
-        let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
-        // Keep the window instance alive even after close; we manage lifecycle explicitly.
-        let _: () = msg_send![window, setReleasedWhenClosed: false];
-
-        // Can join all spaces
-        let collection = NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary;
-        let _: () = msg_send![window, setCollectionBehavior: collection];
-
-        if !title.is_empty() {
-            let title_str = ns_string(title);
-            let _: () = msg_send![window, setTitle: title_str];
-        }
-
-        window
-    }
-}
 
 /// Get window's content view
 /// # Safety

@@ -86,6 +86,7 @@ config:
 
 bundle: ensure-models release
 	@echo "Creating macOS app bundle..."
+	@rm -rf bundle/$(CODESCRIBE_APP_NAME).app
 	@mkdir -p bundle/$(CODESCRIBE_APP_NAME).app/Contents/{MacOS,Resources}
 	@cp target/release/codescribe bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/
 	@cp target/release/codescribe-loop bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/ 2>/dev/null || true

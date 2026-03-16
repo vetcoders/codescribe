@@ -184,8 +184,11 @@ The engine emits **semantic events** — it communicates what happened, not how 
 - `Preview.text` is **utterance-local**: full post-processed text for the current utterance only.
 - On each Whisper decode, `text` replaces the previous Preview (not appended). `rev` increments.
 - After `UtteranceFinal`, the engine resets internal state — next Preview starts fresh.
-- **Sinks must track `last_preview`** and compute diffs themselves (e.g. `TranscriptDelta::from_diff`).
-- On `UtteranceFinal`, sinks must reset their diff state.
+- Presentation must keep **session structure**, not only a flat string:
+  - committed utterances that are already safe to keep
+  - one active preview/correction tail for the current utterance
+- Corrections may rewrite only the active tail. Previously committed utterances must stay append-only.
+- UI sinks still consume only backspace-encoded `TranscriptDelta` payloads; full preview snapshots must be diffed upstream before they reach overlay/chat APIs.
 
 ### Delta generation (backspace magic)
 
@@ -217,8 +220,7 @@ The `\u{0008}` character is ASCII backspace. The UI applies it character-by-char
 App runtime uses a single path:
 
 - `start_event_session` → `transcription_session` (event pipeline only).
-- Preview → computes delta via `TranscriptDelta::from_diff` → `append_*_delta`.
-- Correction → delta diff (keeps `is_streaming = true`).
+- Preview/Correction → update session transcript state (`committed utterances + active preview`) → compute a new full session target → emit only the delta needed to reach that target.
 - UtteranceFinal → utterance callback → AI pipeline (skips user bubble re-write).
 
 Legacy worker path is kept only as deprecated compatibility/diagnostic code and is not used by app runtime.

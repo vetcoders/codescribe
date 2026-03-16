@@ -222,6 +222,20 @@ flowchart TD
     I -.- I1[Responses API • previous_response_id]
 ```
 
+### Transcription Pipeline
+
+Live transcription is now modeled as:
+
+- committed utterances already safe to keep
+- one active preview tail for the current utterance
+- corrections that rewrite only that active tail
+
+That means streaming partials are appended session-wide, but partial-pass fixes
+only backspace inside the current tail instead of overwriting earlier committed
+text. Final utterances keep their timestamp/segment metadata through the event
+pipeline, while overlays/chat bubbles still receive only backspace-encoded
+`TranscriptDelta` payloads.
+
 ### Recording Modes
 
 | Mode                  | Trigger                   | Description                                |

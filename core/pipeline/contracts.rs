@@ -52,7 +52,7 @@ pub struct RawTranscript {
 }
 
 /// A single segment from the STT engine (optional granularity).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptSegment {
     pub text: String,
     pub start_ts: f32,
