@@ -97,13 +97,13 @@ pub struct NotesMenuItems {
 // ============================================================================
 
 /// Menu item IDs for tracking all clickable items
-/// Note: Settings options moved to Settings tab in Chat Overlay
+/// Note: Settings opens the persistent Settings window; onboarding is separate.
 pub struct MenuIds {
     // Top-level
     pub copy_last: MenuId,
     pub show_overlay: MenuId,
     pub open_settings: MenuId,
-    pub complete_setup: Option<MenuId>,
+    pub continue_onboarding: Option<MenuId>,
     pub open_history: MenuId,
     pub copy_diagnostics: MenuId,
     pub help: MenuId,

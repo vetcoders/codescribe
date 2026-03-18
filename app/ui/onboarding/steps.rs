@@ -1,6 +1,13 @@
 //! Step metadata for first-run onboarding wizard.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionRecoveryStrategy {
+    LiveRecheck,
+    LiveReinitialize,
+    AppRestartRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionKind {
     Microphone,
     Accessibility,
@@ -55,6 +62,27 @@ impl PermissionKind {
             Self::InputMonitoring => "KEY",
             Self::ScreenRecording => "SCR",
             Self::FullDiskAccess => "FILE",
+        }
+    }
+
+    pub const fn runtime_subsystem(self) -> &'static str {
+        match self {
+            Self::Microphone => "Microphone capture",
+            Self::Accessibility | Self::InputMonitoring => "Global hotkeys",
+            Self::ScreenRecording => "Screen capture",
+            Self::FullDiskAccess => "Protected file access",
+        }
+    }
+
+    pub const fn recovery_strategy(self) -> PermissionRecoveryStrategy {
+        match self {
+            Self::Microphone => PermissionRecoveryStrategy::LiveRecheck,
+            Self::Accessibility | Self::InputMonitoring => {
+                PermissionRecoveryStrategy::LiveReinitialize
+            }
+            Self::ScreenRecording | Self::FullDiskAccess => {
+                PermissionRecoveryStrategy::AppRestartRequired
+            }
         }
     }
 }

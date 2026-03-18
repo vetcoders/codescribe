@@ -1,130 +1,144 @@
 # Settings & Configuration
 
-CodeScribe has three configuration layers:
+CodeScribe now has one native Settings window with five tabs:
 
-1. **GUI settings** (JSON): `~/Library/Application Support/CodeScribe/settings.json`
-2. **Secrets** (API keys): macOS Keychain (`com.vetcoders.codescribe`)
-3. **Power‑user overrides** (optional): `~/.codescribe/.env`
+1. **Transcription**
+2. **Modes & Shortcuts**
+3. **AI & Prompts**
+4. **Audio & Input**
+5. **Diagnostics**
 
-Most users should use the **Settings** window. The `.env` file is only for overrides and advanced workflows.
+Configuration still lives in three layers:
 
----
+1. **GUI settings**: `~/Library/Application Support/CodeScribe/settings.json`
+2. **Secrets**: macOS Keychain (`com.vetcoders.codescribe`)
+3. **Power-user overrides**: `~/.codescribe/.env`
+
+Most users should stay inside the Settings window. The `.env` file is for overrides and automation-heavy workflows.
 
 ## Open Settings
 
 - Menu bar icon → **Settings**
-- Chat Overlay → **Settings** tab (routes to the Settings window / onboarding)
+- Chat Overlay → **Settings** tab
 
----
+## Transcription
 
-## Get Started
+Open **Settings → Transcription**.
 
-Open **Settings → Get Started**.
+This tab owns the transcript pipeline itself:
 
-This is the first-run path:
+- **Transcription Backend**
+  - `Local Whisper`
+  - `Cloud STT`
+  - optional cloud endpoint + API key
+- **Preview Timing**
+  - `Buffer delay`
+  - `Typing speed`
+  - `Words per tick`
+  - `Interim cadence`
+  - live preview panel showing:
+    - when partial targets are published
+    - how those targets would become visible on the overlay
+- **Final Transcript**
+  - `Local file-based final pass`
+  - `AI Formatting`
+  - `Formatting level`
+- **Quality Automation**
+  - quality daemon toggle
+  - latest report / availability / pending mismatch state
 
-- grant the required macOS permissions
-- test the mic
-- show the agent overlay
-- trigger Assistive once to prove the loop works
+### Current runtime truth
 
-Diagnostics stay in their own tab.
+- When **Transcription overlay** is ON, the app is optimized for low-latency live preview.
+- When **Transcription overlay** is OFF, the floating preview is hidden and runtime uses a more buffered cadence to reduce local load.
+- In the current build, **cloud STT is still post-capture**, not live cloud preview. The Settings UI states this explicitly.
 
----
-
-## Hotkeys (Modes & Shortcuts)
+## Modes & Shortcuts
 
 Open **Settings → Modes & Shortcuts**.
 
-CodeScribe uses a **mode‑first** shortcut model: each mode has one binding you can customize (or disable).
+This tab owns the global shortcut model:
 
-- **Dictation** (auto‑paste ON)
-  - Default: Hold `Fn/Globe`
-  - Can be set to Hold `Ctrl` variants or Double‑tap `Ctrl`
-- **Formatting** (auto‑paste ON, AI required)
-  - Default: Double‑tap `Left Option`
-- **Assistive (Agent)** (auto‑paste OFF, AI required)
-  - Default: Double‑tap `Right Option`
+- **Dictation**
+- **Formatting**
+- **Assistive**
 
-If macOS already uses a shortcut, the conflict detector will flag it and you can change the binding.
+Each mode gets one binding. You can customize or disable it.
 
-The same tab now also contains:
+The same tab also owns:
 
-- **Hold delay**
-- **Double-tap interval**
+- `Hold delay`
+- `Double-tap interval`
+- hotkey conflict detection / details
 
----
-
-## AI Providers & Prompts (AI & Prompts)
+## AI & Prompts
 
 Open **Settings → AI & Prompts**.
 
-- **Formatting AI** powers Formatting mode (and Dictation when AI Formatting is enabled)
-- **Assistive AI** powers the Agent overlay in Assistive mode
-- API keys are stored in **Keychain**
+This tab owns the LLM side of the product:
 
-### Prompt Files
+- Formatting provider
+- Assistive provider
+- model + endpoint fields
+- API keys in Keychain
+- prompt editor for:
+  - `formatting`
+  - `assistive`
 
-Prompt files live in `~/.codescribe/prompts/`:
-
-| File                                   | Used For                                                |
-| -------------------------------------- | ------------------------------------------------------- |
-| `~/.codescribe/prompts/formatting.txt` | Formatting behavior                                     |
-| `~/.codescribe/prompts/assistive.txt`  | Agent behavior (user instruction + selected text rules) |
-
-You can edit prompts in-app (prompt editor) or edit the files directly.
-
----
+Prompt files live in `~/.codescribe/prompts/`.
 
 ## Audio & Input
 
 Open **Settings → Audio & Input**.
 
-Key options:
+This tab owns capture defaults and app-shell behavior:
 
-- **Whisper language** (explicit; no auto‑detect)
-- **Enter to send** (overlay typing behavior)
-- Beep/volume controls
+- `Whisper language`
+- `Beep on recording start`
+- `Enter to send`
+- `Transcription overlay`
+- `Show Dock icon`
+- `Sound volume`
 
----
+This is where you decide whether the floating transcription overlay exists at all.
 
-## Quality
+## Diagnostics
 
-Open **Settings → Quality**.
+Open **Settings → Diagnostics**.
 
-This tab now owns the final transcript path:
+This tab is for environment truth, not onboarding copy:
 
-- **Ultra Quality (slow final pass)**
-- **AI Formatting**
-- **Formatting level**
-- quality daemon/report actions
+- live permission matrix
+- hotkey conflict summary
+- `Refresh matrix`
+- `Open System Settings`
+- `Copy diagnostics`
 
----
+Use this tab when the app lies about permissions, focus, shortcuts, or runtime availability.
 
-## Power‑User `.env` Overrides (Optional)
+## Power-user `.env` Overrides
 
-If you need overrides outside the GUI, use:
+If you need direct overrides outside the GUI:
 
 ```bash
 codescribe --config
 ```
 
-This opens/creates `~/.codescribe/.env`.
+That opens or creates `~/.codescribe/.env`.
 
 Common overrides:
 
-- `WHISPER_LANGUAGE=pl`
-- `AI_FORMATTING_ENABLED=1`
-- `LLM_FORMATTING_ENDPOINT=...` / `LLM_FORMATTING_MODEL=...`
-- `LLM_ASSISTIVE_ENDPOINT=...` / `LLM_ASSISTIVE_MODEL=...`
+- `USE_LOCAL_STT`
+- `STT_ENDPOINT`
+- `AI_FORMATTING_ENABLED`
+- `CODESCRIBE_BUFFER_DELAY_MS`
+- `CODESCRIBE_TYPING_CPS`
+- `CODESCRIBE_EMIT_WORDS_MAX`
+- `CODESCRIBE_BUFFERED_INTERIM_SEC`
 
----
-
-## Reset / “Start Fresh”
+## Reset / Fresh Start
 
 - **New agent context**: Chat Overlay → **New thread**
-- **Reset prompts**: Settings → AI & Prompts → **Reset** (per prompt type)
-
----
+- **Reset prompts**: Settings → **AI & Prompts** → **Reset**
 
 _Created by M&K (c)2026 VetCoders_

@@ -394,19 +394,6 @@ pub fn show_drawer_tab() {
     });
 }
 
-/// Switch to Settings tab programmatically
-pub fn show_settings_tab() {
-    Queue::main().exec_async(|| {
-        update_active_tab_impl(Tab::Settings);
-    });
-}
-
-/// Request Settings tab to be shown the next time the overlay is created.
-/// This is used when routing tray "Settings" to the overlay before it exists.
-pub fn request_settings_tab_on_open() {
-    show_settings_tab();
-}
-
 /// Set the target app name to re-activate for paste actions.
 ///
 /// This is best-effort and primarily used to paste assistant output back into
@@ -448,12 +435,6 @@ pub fn is_conversation_active() -> bool {
 // ═══════════════════════════════════════════════════════════
 
 pub fn update_active_tab_impl(tab: Tab) {
-    if tab == Tab::Settings {
-        // Settings lives in a separate NSWindow; keep chat overlay alive.
-        crate::show_bootstrap_overlay();
-        return;
-    }
-
     // DEADLOCK PREVENTION: extract widget pointers under lock, drop lock before
     // AppKit calls (setCollapsed can animate and spin a nested run-loop).
     let (
@@ -580,9 +561,6 @@ pub fn update_active_tab_impl(tab: Tab) {
 
 fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
     unsafe {
-        if tab == Tab::Settings {
-            return;
-        }
         let prev_tab = state.active_tab;
         state.active_tab = tab;
 
@@ -3453,10 +3431,10 @@ mod tests {
     }
 
     #[test]
-    fn update_active_tab_handles_settings_without_views() {
+    fn update_active_tab_switches_between_drawer_and_agent() {
         let mut state = VoiceChatOverlayState::default();
-        update_active_tab_locked(&mut state, Tab::Settings);
-        assert_eq!(state.active_tab, Tab::Drawer);
+        update_active_tab_locked(&mut state, Tab::Agent);
+        assert_eq!(state.active_tab, Tab::Agent);
 
         update_active_tab_locked(&mut state, Tab::Drawer);
         assert_eq!(state.active_tab, Tab::Drawer);

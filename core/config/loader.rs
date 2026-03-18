@@ -131,6 +131,10 @@ impl Config {
         if let Ok(val) = std::env::var("SHOW_DOCK_ICON") {
             self.show_dock_icon = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
+        if let Ok(val) = std::env::var("TRANSCRIPTION_OVERLAY_ENABLED") {
+            self.transcription_overlay_enabled =
+                matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
         if let Ok(val) = std::env::var("HOLD_INDICATOR") {
             self.hold_indicator = val.parse().unwrap_or(true);
         }
@@ -328,6 +332,14 @@ impl Config {
             && let Some(v) = settings.show_dock_icon
         {
             self.show_dock_icon = v;
+        }
+        if std::env::var("TRANSCRIPTION_OVERLAY_ENABLED").is_err()
+            && let Some(v) = settings.transcription_overlay_enabled
+        {
+            self.transcription_overlay_enabled = v;
+            unsafe {
+                std::env::set_var("TRANSCRIPTION_OVERLAY_ENABLED", if v { "1" } else { "0" })
+            };
         }
         if std::env::var("SOUND_VOLUME").is_err()
             && let Some(v) = settings.sound_volume
@@ -527,6 +539,7 @@ impl Config {
                 "AI_FORMATTING_ENABLED"
                 | "BEEP_ON_START"
                 | "SHOW_DOCK_ICON"
+                | "TRANSCRIPTION_OVERLAY_ENABLED"
                 | "HOLD_EXCLUSIVE"
                 | "USE_LOCAL_STT"
                 | "HISTORY_ENABLED"
@@ -672,6 +685,7 @@ impl Config {
                     "AI_FORMATTING_ENABLED"
                     | "BEEP_ON_START"
                     | "SHOW_DOCK_ICON"
+                    | "TRANSCRIPTION_OVERLAY_ENABLED"
                     | "HOLD_EXCLUSIVE"
                     | "USE_LOCAL_STT"
                     | "HISTORY_ENABLED"
@@ -687,6 +701,9 @@ impl Config {
                             }
                             "BEEP_ON_START" => settings_ref.beep_on_start = Some(bv),
                             "SHOW_DOCK_ICON" => settings_ref.show_dock_icon = Some(bv),
+                            "TRANSCRIPTION_OVERLAY_ENABLED" => {
+                                settings_ref.transcription_overlay_enabled = Some(bv)
+                            }
                             "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),
                             "USE_LOCAL_STT" => settings_ref.use_local_stt = Some(bv),
                             "HISTORY_ENABLED" => settings_ref.history_enabled = Some(bv),
@@ -1017,6 +1034,22 @@ mod tests {
         assert!(
             !config.use_local_stt,
             "settings.json should be able to disable local STT"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_respects_transcription_overlay_enabled_from_settings_json() {
+        let _tmp = setup_isolated_data_dir();
+
+        let mut settings = UserSettings::load();
+        settings.transcription_overlay_enabled = Some(false);
+        settings.save().expect("save settings");
+
+        let config = Config::load();
+        assert!(
+            !config.transcription_overlay_enabled,
+            "settings.json should be able to disable transcription overlay"
         );
     }
 

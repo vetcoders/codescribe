@@ -58,7 +58,6 @@ pub struct ChatMessage {
 pub enum Tab {
     Drawer,
     Agent,
-    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +157,7 @@ pub struct VoiceChatOverlayState {
 
     // Active tab
     pub active_tab: Tab,
-    /// Requested tab to apply after overlay is created (used for routing Settings from tray).
+    /// Requested tab to apply after overlay is created.
     pub pending_tab: Option<Tab>,
 
     // Chat state

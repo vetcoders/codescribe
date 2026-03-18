@@ -512,8 +512,8 @@ async fn run_daemon() -> Result<()> {
     {
         codescribe::os::permissions::check_all_permissions();
 
-        if codescribe::should_show_setup() {
-            codescribe::schedule_settings_window();
+        if codescribe::should_show_onboarding() {
+            codescribe::show_onboarding_wizard();
         }
     }
 
@@ -585,31 +585,25 @@ async fn run_daemon() -> Result<()> {
     });
 
     let (tx, rx) = unbounded::<HotkeyEvent>();
-    let hotkey_manager = match hotkeys::HotkeyManager::new(tx) {
-        Ok(m) => Some(m),
-        Err(e) => {
-            eprintln!(
-                "Hotkeys disabled ({}). If this is macOS, check: System Settings > Privacy & Security > Accessibility.",
-                e
-            );
-            None
+    let hotkey_controller = Arc::clone(&controller);
+    let hotkey_handle = Handle::current();
+    std::thread::spawn(move || {
+        for event in rx {
+            let controller = Arc::clone(&hotkey_controller);
+            let handle = hotkey_handle.clone();
+            handle.spawn(async move {
+                if let Err(e) = dispatch_hotkey_event(event, controller).await {
+                    eprintln!("Hotkey event error: {}", e);
+                }
+            });
         }
-    };
+    });
 
-    if hotkey_manager.is_some() {
-        let hotkey_controller = Arc::clone(&controller);
-        let hotkey_handle = Handle::current();
-        std::thread::spawn(move || {
-            for event in rx {
-                let controller = Arc::clone(&hotkey_controller);
-                let handle = hotkey_handle.clone();
-                handle.spawn(async move {
-                    if let Err(e) = dispatch_hotkey_event(event, controller).await {
-                        eprintln!("Hotkey event error: {}", e);
-                    }
-                });
-            }
-        });
+    if let Err(e) = hotkeys::install_global_hotkey_manager(tx) {
+        eprintln!(
+            "Hotkeys waiting on permissions ({}). Grant Accessibility + Input Monitoring and CodeScribe will reinitialize them live.",
+            e
+        );
     }
 
     // VAD monitor task - auto-finish recording when silence detected
@@ -651,7 +645,7 @@ async fn run_daemon() -> Result<()> {
         None
     };
 
-    tray::run_with_hotkeys(hotkey_manager)?;
+    tray::run_with_hotkeys(None)?;
 
     // Cleanup: kill quality daemon when tray exits
     if let Some(mut handle) = quality_child {

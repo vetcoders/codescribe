@@ -16,7 +16,6 @@ use codescribe_core::attachment::{Attachment, AttachmentSource, AttachmentStore}
 use codescribe_core::config::UserSettings;
 
 use crate::config::Config;
-use crate::ui::bootstrap;
 use crate::ui_helpers::{
     clamp_overlay_position, get_text_field_string, ns_string, set_hidden, set_text_field_string,
 };
@@ -864,9 +863,6 @@ extern "C" fn on_attach_clear(_this: &Object, _cmd: Sel, _sender: Id) {
 
 extern "C" fn on_close(_this: &Object, _cmd: Sel, _sender: Id) {
     super::api::hide_voice_chat_overlay();
-    if bootstrap::should_show_bootstrap() {
-        bootstrap::handle_hotkey_done();
-    }
 }
 
 extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id) {
@@ -1039,7 +1035,7 @@ extern "C" fn on_tab_agent(_this: &Object, _cmd: Sel, _sender: Id) {
 }
 
 extern "C" fn on_tab_settings(_this: &Object, _cmd: Sel, _sender: Id) {
-    update_active_tab_impl(Tab::Settings);
+    crate::show_settings_window();
     info!("Settings window opened from chat overlay");
 }
 

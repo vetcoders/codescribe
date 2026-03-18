@@ -13,7 +13,8 @@ It has three tabs:
 ## Opening the Overlay
 
 - Menu bar icon → **Show Agent**
-- Settings → **Get Started** tab → **Show agent overlay**
+- Settings → **Audio & Input** to keep the transcription overlay on
+- Settings → **Transcription** to tune partial cadence / final-pass behavior
 - Automatically opens when you start **Assistive (Agent)** mode
 
 ---

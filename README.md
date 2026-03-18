@@ -58,9 +58,11 @@ flowchart TB
     class APP,UI,BACKEND,CORE,TOOLS box
 ```
 
-> **Note:** The diagram above shows the **target architecture** with Tauri GUI (Voice Lab / Teacher / Settings). Current release is a **native macOS tray app** (without Tauri), and the Lab UI is **future-only**. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for current implementation details.
+> **Note:** The diagram above is mixed current + target architecture. The shipped product in this repo is a **native macOS tray/settings/overlay app**, not a Tauri desktop shell. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the current implementation.
 
-> **Status:** current release (see `Cargo.toml`) — **Embedded Whisper + MiniLM** + _Whisper Live_ (streaming transcription) + tiered settings (settings.json + Keychain).
+> **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
+
+> **Status:** current release (see `Cargo.toml`) — embedded local STT, event-based live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/BACKLOG.md`](docs/BACKLOG.md) | [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md)
 

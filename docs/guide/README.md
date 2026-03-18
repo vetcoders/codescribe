@@ -1,8 +1,8 @@
 # CodeScribe User Guide
 
-> **Speech-to-text for macOS with embedded Whisper model**
+> **Speech-to-text for macOS with local Whisper plus optional cloud transcript paths**
 
-CodeScribe is a native macOS menu-bar application that transcribes your speech locally using an embedded Whisper model. No internet required for basic transcription. Optional AI formatting available via cloud providers.
+CodeScribe is a native macOS menu-bar application that transcribes your speech locally using Whisper. No internet is required for the local path. Optional cloud STT and AI formatting are available when you want a different final transcript backend.
 
 ---
 

@@ -235,6 +235,98 @@ fn test_action_contract_mode_uses_raw_for_toggle_without_ai() {
     );
 }
 
+#[test]
+fn test_select_recording_transcript_prefers_local_final_pass_for_local_backend() {
+    let (raw_text, cloud_text, source) = select_recording_transcript(
+        true,
+        Some("local final".to_string()),
+        "streaming fallback".to_string(),
+        None,
+    );
+
+    assert_eq!(raw_text.as_deref(), Some("local final"));
+    assert_eq!(cloud_text, None);
+    assert_eq!(source, Some(RecordingTranscriptSource::LocalFinalPass));
+}
+
+#[test]
+fn test_select_recording_transcript_prefers_cloud_for_cloud_backend() {
+    let (raw_text, cloud_text, source) = select_recording_transcript(
+        false,
+        None,
+        "streaming fallback".to_string(),
+        Some("cloud final".to_string()),
+    );
+
+    assert_eq!(raw_text.as_deref(), Some("cloud final"));
+    assert_eq!(cloud_text.as_deref(), Some("cloud final"));
+    assert_eq!(source, Some(RecordingTranscriptSource::CloudPrimary));
+}
+
+#[test]
+fn test_select_recording_transcript_falls_back_to_streaming_when_cloud_missing() {
+    let (raw_text, cloud_text, source) =
+        select_recording_transcript(false, None, "streaming fallback".to_string(), None);
+
+    assert_eq!(raw_text.as_deref(), Some("streaming fallback"));
+    assert_eq!(cloud_text, None);
+    assert_eq!(source, Some(RecordingTranscriptSource::StreamingFallback));
+}
+
+#[test]
+fn test_select_recording_transcript_ignores_empty_candidates() {
+    let (raw_text, cloud_text, source) = select_recording_transcript(
+        false,
+        Some("   ".to_string()),
+        "  ".to_string(),
+        Some("".to_string()),
+    );
+
+    assert_eq!(raw_text, None);
+    assert_eq!(cloud_text, None);
+    assert_eq!(source, None);
+}
+
+#[test]
+fn test_recorder_runtime_recovery_requires_granted_microphone_and_missing_recorder() {
+    assert!(should_attempt_recorder_runtime_recovery(
+        PermissionStatus::Granted,
+        true
+    ));
+    assert!(!should_attempt_recorder_runtime_recovery(
+        PermissionStatus::Denied,
+        true
+    ));
+    assert!(!should_attempt_recorder_runtime_recovery(
+        PermissionStatus::Granted,
+        false
+    ));
+}
+
+#[test]
+fn test_recorder_recovery_message_uses_settings_language() {
+    let message = RecordingController::format_recorder_recovery_message(
+        &["Accessibility", "Microphone"],
+        "DictationHotkey",
+        "FormattingHotkey",
+        "AssistiveHotkey",
+    );
+
+    assert!(message.contains("Open Settings"));
+    assert!(!message.contains("Setup"));
+    assert!(message.contains("Accessibility, Microphone"));
+}
+
+#[test]
+fn test_backend_recovery_message_uses_settings_language() {
+    let message =
+        RecordingController::format_backend_recovery_message(Some("Cloud endpoint timed out"));
+
+    assert!(message.contains("Open Settings"));
+    assert!(!message.contains("Setup"));
+    assert!(message.contains("Cloud endpoint timed out"));
+}
+
 #[tokio::test]
 async fn test_toggle_press_does_not_set_force_raw_mode() {
     let controller = RecordingController::new();

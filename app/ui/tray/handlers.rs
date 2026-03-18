@@ -11,50 +11,84 @@ use crate::os::permissions;
 use crate::tray::state::{NOTES_MENU_ITEMS, send_menu_event};
 use crate::tray::types::{MenuIds, TrayMenuEvent};
 
-/// Handle menu item click and send appropriate event
-/// Note: Settings handlers removed - settings now in Chat Overlay Settings tab
-pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
-    // Top-level items
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuRoute {
+    CopyLast,
+    ShowOverlay,
+    ContinueOnboarding,
+    OpenSettings,
+    OpenHistory,
+    CopyDiagnostics,
+    Help,
+    About,
+    Quit,
+    ToggleQuickNotes,
+    ToggleQuickNotesSaveOnly,
+    OpenNotesFolder,
+    OpenTodayNote,
+    OpenQualityReport,
+    InstallSileroVad,
+}
+
+fn resolve_menu_route(event_id: &MenuId, menu_ids: &MenuIds) -> Option<MenuRoute> {
     if event_id == &menu_ids.copy_last {
-        handle_copy_last();
+        Some(MenuRoute::CopyLast)
     } else if event_id == &menu_ids.show_overlay {
-        crate::show_voice_chat_overlay();
+        Some(MenuRoute::ShowOverlay)
     } else if menu_ids
-        .complete_setup
+        .continue_onboarding
         .as_ref()
         .is_some_and(|id| event_id == id)
     {
-        crate::show_settings_setup_tab();
+        Some(MenuRoute::ContinueOnboarding)
     } else if event_id == &menu_ids.open_settings {
-        crate::show_settings_tab();
+        Some(MenuRoute::OpenSettings)
     } else if event_id == &menu_ids.open_history {
-        handle_open_history_folder();
+        Some(MenuRoute::OpenHistory)
     } else if event_id == &menu_ids.copy_diagnostics {
-        handle_copy_diagnostics();
+        Some(MenuRoute::CopyDiagnostics)
     } else if event_id == &menu_ids.help {
-        handle_open_help();
+        Some(MenuRoute::Help)
     } else if event_id == &menu_ids.about {
-        handle_show_about();
+        Some(MenuRoute::About)
     } else if event_id == &menu_ids.quit {
-        send_menu_event(TrayMenuEvent::Quit);
-    }
-    // Notes
-    else if event_id == &menu_ids.notes_toggle_quick_notes {
-        handle_toggle_quick_notes();
+        Some(MenuRoute::Quit)
+    } else if event_id == &menu_ids.notes_toggle_quick_notes {
+        Some(MenuRoute::ToggleQuickNotes)
     } else if event_id == &menu_ids.notes_toggle_save_only {
-        handle_toggle_quick_notes_save_only();
+        Some(MenuRoute::ToggleQuickNotesSaveOnly)
     } else if event_id == &menu_ids.notes_open_folder {
-        handle_open_notes_folder();
+        Some(MenuRoute::OpenNotesFolder)
     } else if event_id == &menu_ids.notes_open_today {
-        handle_open_today_note();
-    }
-    // Quality - Open Report
-    else if event_id == &menu_ids.quality_open_report {
-        handle_open_quality_report();
+        Some(MenuRoute::OpenTodayNote)
+    } else if event_id == &menu_ids.quality_open_report {
+        Some(MenuRoute::OpenQualityReport)
     } else if event_id == &menu_ids.silero_vad_install {
-        handle_install_silero_vad();
+        Some(MenuRoute::InstallSileroVad)
     } else {
-        debug!("Unknown menu event id: {:?}", event_id);
+        None
+    }
+}
+
+/// Handle menu item click and send appropriate event.
+pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
+    match resolve_menu_route(event_id, menu_ids) {
+        Some(MenuRoute::CopyLast) => handle_copy_last(),
+        Some(MenuRoute::ShowOverlay) => crate::show_voice_chat_overlay(),
+        Some(MenuRoute::ContinueOnboarding) => crate::show_onboarding_wizard(),
+        Some(MenuRoute::OpenSettings) => crate::show_settings_window(),
+        Some(MenuRoute::OpenHistory) => handle_open_history_folder(),
+        Some(MenuRoute::CopyDiagnostics) => handle_copy_diagnostics(),
+        Some(MenuRoute::Help) => handle_open_help(),
+        Some(MenuRoute::About) => handle_show_about(),
+        Some(MenuRoute::Quit) => send_menu_event(TrayMenuEvent::Quit),
+        Some(MenuRoute::ToggleQuickNotes) => handle_toggle_quick_notes(),
+        Some(MenuRoute::ToggleQuickNotesSaveOnly) => handle_toggle_quick_notes_save_only(),
+        Some(MenuRoute::OpenNotesFolder) => handle_open_notes_folder(),
+        Some(MenuRoute::OpenTodayNote) => handle_open_today_note(),
+        Some(MenuRoute::OpenQualityReport) => handle_open_quality_report(),
+        Some(MenuRoute::InstallSileroVad) => handle_install_silero_vad(),
+        None => debug!("Unknown menu event id: {:?}", event_id),
     }
 }
 
@@ -238,5 +272,51 @@ fn handle_open_quality_report() {
             .arg("-e")
             .arg(r#"display notification "No quality report available. Run: codescribe-loop --daemon" with title "CodeScribe Quality""#)
             .spawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use muda::MenuId;
+
+    fn menu_ids_for_test() -> MenuIds {
+        MenuIds {
+            copy_last: MenuId::new("copy-last"),
+            show_overlay: MenuId::new("show-overlay"),
+            open_settings: MenuId::new("open-settings"),
+            continue_onboarding: Some(MenuId::new("continue-onboarding")),
+            open_history: MenuId::new("open-history"),
+            copy_diagnostics: MenuId::new("copy-diagnostics"),
+            help: MenuId::new("help"),
+            about: MenuId::new("about"),
+            quit: MenuId::new("quit"),
+            quality_open_report: MenuId::new("quality-open-report"),
+            silero_vad_install: MenuId::new("silero-vad-install"),
+            notes_toggle_quick_notes: MenuId::new("notes-toggle-quick-notes"),
+            notes_toggle_save_only: MenuId::new("notes-toggle-save-only"),
+            notes_open_folder: MenuId::new("notes-open-folder"),
+            notes_open_today: MenuId::new("notes-open-today"),
+        }
+    }
+
+    #[test]
+    fn resolve_menu_route_separates_onboarding_from_settings() {
+        let menu_ids = menu_ids_for_test();
+
+        assert_eq!(
+            resolve_menu_route(&menu_ids.open_settings, &menu_ids),
+            Some(MenuRoute::OpenSettings)
+        );
+        assert_eq!(
+            resolve_menu_route(
+                menu_ids
+                    .continue_onboarding
+                    .as_ref()
+                    .expect("test menu ids should include onboarding"),
+                &menu_ids
+            ),
+            Some(MenuRoute::ContinueOnboarding)
+        );
     }
 }

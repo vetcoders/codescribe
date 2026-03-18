@@ -57,11 +57,7 @@ pub use ui::{
 };
 
 #[cfg(target_os = "macos")]
-pub use ui::bootstrap::{
-    hide_bootstrap_overlay, hide_settings_window, schedule_bootstrap, schedule_settings_window,
-    should_show_bootstrap, should_show_settings_onboarding, should_show_setup,
-    show_bootstrap_overlay, show_settings_setup_tab, show_settings_window,
-};
+pub use ui::bootstrap::{hide_settings_window, show_settings_window};
 
 #[cfg(target_os = "macos")]
 pub use ui::onboarding::{should_show_onboarding, show_onboarding_wizard};
@@ -76,8 +72,8 @@ pub use voice_chat_ui::{
     filter_drawer, hide_voice_chat_overlay, is_auto_send_enabled, is_voice_chat_overlay_visible,
     refresh_drawer, reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_send_callback,
     set_voice_chat_sending, set_voice_chat_text, set_voice_chat_user_text, show_agent_tab,
-    show_drawer_tab, show_settings_tab, show_voice_chat_overlay,
-    show_voice_chat_overlay_with_config, update_voice_chat_status,
+    show_drawer_tab, show_voice_chat_overlay, show_voice_chat_overlay_with_config,
+    update_voice_chat_status,
 };
 
 #[cfg(target_os = "macos")]

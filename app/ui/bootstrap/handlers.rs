@@ -13,10 +13,13 @@ use super::{
     on_delay_changed, on_diagnostics_refresh, on_double_tap_interval_changed,
     on_enter_send_toggled, on_formatting_level_changed, on_formatting_toggled, on_language_changed,
     on_llm_endpoint_changed, on_llm_key_changed, on_llm_model_changed, on_mode_binding_change,
-    on_open_quality_report, on_open_system_settings, on_permission_action, on_prompt_load,
+    on_open_quality_report, on_open_system_settings, on_permission_action,
+    on_preview_buffer_delay_changed, on_preview_emit_words_max_changed,
+    on_preview_interim_cadence_changed, on_preview_typing_cps_changed, on_prompt_load,
     on_prompt_reset, on_prompt_save, on_prompt_type_changed, on_quality_daemon_toggled,
     on_quality_refresh, on_refresh_permissions, on_save_api_settings, on_show_dock_icon_toggled,
-    on_show_hotkey_conflicts, on_ultra_quality_toggled, on_volume_changed, switch_tab,
+    on_show_hotkey_conflicts, on_stt_endpoint_changed, on_stt_key_changed, on_stt_provider_changed,
+    on_transcription_overlay_toggled, on_ultra_quality_toggled, on_volume_changed, switch_tab,
 };
 
 pub type Id = *mut Object;
@@ -37,7 +40,7 @@ pub fn action_handler_class() -> *const Class {
             let mut decl = ClassDecl::new("BootstrapOverlayActionHandler", superclass)
                 .expect("Failed to declare handler class");
 
-            // Setup tab actions
+            // Transcription tab actions
             decl.add_method(
                 sel!(onTestMic:),
                 on_test_mic as extern "C" fn(&Object, Sel, Id),
@@ -53,8 +56,8 @@ pub fn action_handler_class() -> *const Class {
 
             // Tab switching
             decl.add_method(
-                sel!(onTabSetup:),
-                on_tab_setup as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabTranscription:),
+                on_tab_transcription as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onTabModesShortcuts:),
@@ -95,7 +98,7 @@ pub fn action_handler_class() -> *const Class {
                 sel!(onFormattingLevelChanged:),
                 on_formatting_level_changed as extern "C" fn(&Object, Sel, Id),
             );
-            // Setup tab: LLM configuration
+            // Transcription tab: backend configuration
             decl.add_method(
                 sel!(onLlmEndpointChanged:),
                 on_llm_endpoint_changed as extern "C" fn(&Object, Sel, Id),
@@ -155,6 +158,38 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onShowDockIconToggled:),
                 on_show_dock_icon_toggled as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onTranscriptionOverlayToggled:),
+                on_transcription_overlay_toggled as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPreviewBufferDelayChanged:),
+                on_preview_buffer_delay_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPreviewTypingCpsChanged:),
+                on_preview_typing_cps_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPreviewEmitWordsMaxChanged:),
+                on_preview_emit_words_max_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPreviewInterimCadenceChanged:),
+                on_preview_interim_cadence_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onSttProviderChanged:),
+                on_stt_provider_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onSttEndpointChanged:),
+                on_stt_endpoint_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onSttKeyChanged:),
+                on_stt_key_changed as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onVolumeChanged:),
@@ -280,7 +315,7 @@ extern "C" fn on_hotkey_done_action(_this: &Object, _sel: Sel, _sender: Id) {
     handle_hotkey_done();
 }
 
-extern "C" fn on_tab_setup(_this: &Object, _sel: Sel, _sender: Id) {
+extern "C" fn on_tab_transcription(_this: &Object, _sel: Sel, _sender: Id) {
     switch_tab(TAB_TRANSCRIPTION);
 }
 
@@ -359,7 +394,7 @@ mod tests {
             "BootstrapOverlayActionHandler class should be registered"
         );
 
-        assert_selector_registered(class, sel!(onTabSetup:), "onTabSetup:");
+        assert_selector_registered(class, sel!(onTabTranscription:), "onTabTranscription:");
         assert_selector_registered(class, sel!(onTabModesShortcuts:), "onTabModesShortcuts:");
         assert_selector_registered(class, sel!(onTabAiPrompts:), "onTabAiPrompts:");
         assert_selector_registered(class, sel!(onTabAudioInput:), "onTabAudioInput:");
@@ -368,5 +403,33 @@ mod tests {
         assert_selector_registered(class, sel!(onPromptSave:), "onPromptSave:");
         assert_selector_registered(class, sel!(onQualityRefresh:), "onQualityRefresh:");
         assert_selector_registered(class, sel!(onPermissionAction:), "onPermissionAction:");
+        assert_selector_registered(
+            class,
+            sel!(onTranscriptionOverlayToggled:),
+            "onTranscriptionOverlayToggled:",
+        );
+        assert_selector_registered(
+            class,
+            sel!(onPreviewBufferDelayChanged:),
+            "onPreviewBufferDelayChanged:",
+        );
+        assert_selector_registered(
+            class,
+            sel!(onPreviewTypingCpsChanged:),
+            "onPreviewTypingCpsChanged:",
+        );
+        assert_selector_registered(
+            class,
+            sel!(onPreviewEmitWordsMaxChanged:),
+            "onPreviewEmitWordsMaxChanged:",
+        );
+        assert_selector_registered(
+            class,
+            sel!(onPreviewInterimCadenceChanged:),
+            "onPreviewInterimCadenceChanged:",
+        );
+        assert_selector_registered(class, sel!(onSttProviderChanged:), "onSttProviderChanged:");
+        assert_selector_registered(class, sel!(onSttEndpointChanged:), "onSttEndpointChanged:");
+        assert_selector_registered(class, sel!(onSttKeyChanged:), "onSttKeyChanged:");
     }
 }

@@ -29,6 +29,14 @@ make install-app      # Copies to /Applications/CodeScribe.app (auto-caches mode
 
 **How it runs**: Double-click or launch from Spotlight.
 
+`make install-app` now prefers a stable local signing identity automatically:
+
+- `Apple Development: ...` if present
+- otherwise `Developer ID Application: ...`
+- only falls back to `adhoc` when no usable signing identity exists
+
+This matters because macOS TCC permissions are far more stable with a persistent code-signing identity than with ad-hoc signatures.
+
 ### Method 3: DMG Distribution (For End Users)
 
 ```bash
@@ -127,7 +135,7 @@ CodeScribe.app/
 
 | Key                          | Value                 | Purpose                      |
 | ---------------------------- | --------------------- | ---------------------------- |
-| CFBundleIdentifier           | io.loctree.codescribe | Unique app identifier        |
+| CFBundleIdentifier           | com.codescribe.app    | Unique app identifier        |
 | CFBundleIconFile             | AppIcon               | Points to AppIcon.icns       |
 | CFBundleExecutable           | codescribe            | Main binary name             |
 | LSMinimumSystemVersion       | 14.0                  | Requires macOS Sonoma+       |

@@ -301,6 +301,13 @@ pub struct Config {
     #[serde(default = "default_show_dock_icon")]
     pub show_dock_icon: bool,
 
+    /// Whether non-assistive dictation should render through the floating overlay.
+    ///
+    /// When disabled, the runtime switches to a buffered no-overlay profile
+    /// intended for longer recordings and lower local Whisper pressure.
+    #[serde(default = "default_transcription_overlay_enabled")]
+    pub transcription_overlay_enabled: bool,
+
     /// Whether to show hold indicator badge
     #[serde(default = "default_hold_indicator")]
     pub hold_indicator: bool,
@@ -421,6 +428,7 @@ impl Default for Config {
             ai_assistive_max_tokens: default_ai_assistive_max_tokens(),
             show_tray_glyph: default_show_tray_glyph(),
             show_dock_icon: default_show_dock_icon(),
+            transcription_overlay_enabled: default_transcription_overlay_enabled(),
             hold_indicator: default_hold_indicator(),
             hold_badge_size: default_hold_badge_size(),
             hold_badge_offset_x: default_hold_badge_offset_x(),

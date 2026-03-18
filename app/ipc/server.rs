@@ -426,6 +426,11 @@ fn persist_config(config: &Config) -> Result<()> {
         &mut env_vars,
     );
     put(
+        "TRANSCRIPTION_OVERLAY_ENABLED",
+        bool_to_env(config.transcription_overlay_enabled),
+        &mut env_vars,
+    );
+    put(
         "HOLD_INDICATOR",
         bool_to_env(config.hold_indicator),
         &mut env_vars,
@@ -658,7 +663,8 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
         | "QUICK_NOTES_ENABLED"
         | "QUICK_NOTES_SAVE_ONLY"
         | "AGENT_ENTER_SENDS"
-        | "SHOW_DOCK_ICON" => {
+        | "SHOW_DOCK_ICON"
+        | "TRANSCRIPTION_OVERLAY_ENABLED" => {
             let bool_val = matches!(value, "1" | "true" | "yes" | "on");
             match key {
                 "HOLD_EXCLUSIVE" => settings.hold_exclusive = Some(bool_val),
@@ -671,6 +677,9 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
                 "QUICK_NOTES_SAVE_ONLY" => settings.quick_notes_save_only = Some(bool_val),
                 "AGENT_ENTER_SENDS" => settings.agent_enter_sends = Some(bool_val),
                 "SHOW_DOCK_ICON" => settings.show_dock_icon = Some(bool_val),
+                "TRANSCRIPTION_OVERLAY_ENABLED" => {
+                    settings.transcription_overlay_enabled = Some(bool_val)
+                }
                 _ => unreachable!(),
             }
         }

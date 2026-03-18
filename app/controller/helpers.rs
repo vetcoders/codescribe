@@ -47,6 +47,13 @@ pub fn is_conversation_session() -> bool {
     IS_CONVERSATION_SESSION.load(Ordering::SeqCst)
 }
 
+fn transcription_overlay_enabled() -> bool {
+    std::env::var("TRANSCRIPTION_OVERLAY_ENABLED")
+        .ok()
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(true)
+}
+
 /// Route transcription delta to the active overlay.
 ///
 /// Contract:
@@ -57,7 +64,7 @@ pub fn is_conversation_session() -> bool {
 pub fn route_transcription_delta(delta: &str) {
     if is_assistive_session() {
         crate::voice_chat_ui::append_voice_chat_user_delta(delta);
-    } else {
+    } else if transcription_overlay_enabled() {
         // Non-assistive: live dictation preview in ephemeral overlay
         crate::transcription_overlay::append_transcription_delta(delta);
     }

@@ -41,8 +41,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::audio::streaming_recorder::StreamingRecorder;
-use crate::config::Config;
 use crate::config::models::ModelManager;
+use crate::config::{Config, UserSettings};
 use crate::os::clipboard;
 use crate::os::hotkeys::HoldMode;
 use crate::os::permissions::{
@@ -70,6 +70,12 @@ use helpers::{
 use types::ValidatedAudioPath;
 
 static OVERLAY_CONTROLLER: OnceLock<Arc<RecordingController>> = OnceLock::new();
+
+const LIVE_PROFILE_BUFFER_DELAY_MS: u64 = 280;
+const LIVE_PROFILE_TYPING_CPS: f32 = 90.0;
+const LIVE_PROFILE_EMIT_WORDS_MAX: u64 = 2;
+const LIVE_PROFILE_INTERIM_SEC: f32 = 1.2;
+const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy)]
 struct ActionQualityProbe {
@@ -121,6 +127,100 @@ impl ActionQualityProbe {
     }
 }
 
+fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool {
+    let overlay_enabled = config.transcription_overlay_enabled;
+    let settings = UserSettings::load();
+
+    let buffer_delay_ms = settings
+        .buffer_delay_ms
+        .unwrap_or(LIVE_PROFILE_BUFFER_DELAY_MS);
+    let typing_cps = settings.typing_cps.unwrap_or(LIVE_PROFILE_TYPING_CPS);
+    let emit_words_max = settings
+        .emit_words_max
+        .unwrap_or(LIVE_PROFILE_EMIT_WORDS_MAX);
+    let interim_sec = if !assistive && !overlay_enabled {
+        NO_OVERLAY_PROFILE_INTERIM_SEC
+    } else {
+        settings
+            .buffered_interim_sec
+            .unwrap_or(LIVE_PROFILE_INTERIM_SEC)
+    };
+
+    unsafe {
+        std::env::set_var(
+            "TRANSCRIPTION_OVERLAY_ENABLED",
+            if overlay_enabled { "1" } else { "0" },
+        );
+        std::env::set_var("CODESCRIBE_BUFFER_DELAY_MS", buffer_delay_ms.to_string());
+        std::env::set_var("CODESCRIBE_TYPING_CPS", format!("{typing_cps:.1}"));
+        std::env::set_var("CODESCRIBE_EMIT_WORDS_MAX", emit_words_max.to_string());
+        std::env::set_var(
+            "CODESCRIBE_BUFFERED_INTERIM_SEC",
+            format!("{interim_sec:.1}"),
+        );
+    }
+
+    overlay_enabled
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordingTranscriptSource {
+    LocalFinalPass,
+    CloudPrimary,
+    StreamingFallback,
+}
+
+fn non_empty_transcript(text: Option<String>) -> Option<String> {
+    text.and_then(|text| {
+        if text.trim().is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    })
+}
+
+fn select_recording_transcript(
+    use_local_stt: bool,
+    local_final_pass_text: Option<String>,
+    streaming_text: String,
+    cloud_text: Option<String>,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<RecordingTranscriptSource>,
+) {
+    let local_final_pass_text = non_empty_transcript(local_final_pass_text);
+    let streaming_text = non_empty_transcript(Some(streaming_text));
+    let cloud_text = non_empty_transcript(cloud_text);
+
+    if use_local_stt {
+        if let Some(text) = local_final_pass_text {
+            return (
+                Some(text),
+                cloud_text,
+                Some(RecordingTranscriptSource::LocalFinalPass),
+            );
+        }
+    } else if let Some(text) = cloud_text.clone() {
+        return (
+            Some(text),
+            cloud_text,
+            Some(RecordingTranscriptSource::CloudPrimary),
+        );
+    }
+
+    if let Some(text) = streaming_text {
+        return (
+            Some(text),
+            cloud_text,
+            Some(RecordingTranscriptSource::StreamingFallback),
+        );
+    }
+
+    (None, cloud_text, None)
+}
+
 const QUALITY_GATE_MIN_CHARS: usize = 24;
 const QUALITY_GATE_DROP_RATIO: f32 = 0.35;
 const QUALITY_GATE_DIFF_RATIO: f32 = 0.62;
@@ -129,6 +229,13 @@ const RECORDER_RUNTIME_DEGRADED_REASON: &str =
     "Microphone recorder unavailable. Voice capture is disabled.";
 const RECOVERY_UI_COOLDOWN_MS: u64 = 3_000;
 static RUNTIME_RECOVERY_LAST_SHOWN_MS: AtomicU64 = AtomicU64::new(0);
+
+fn should_attempt_recorder_runtime_recovery(
+    microphone_status: PermissionStatus,
+    recorder_missing: bool,
+) -> bool {
+    microphone_status == PermissionStatus::Granted && recorder_missing
+}
 
 struct AtomicFlagGuard {
     flag: Arc<AtomicBool>,
@@ -229,6 +336,25 @@ pub fn register_overlay_controller(controller: Arc<RecordingController>) {
     if OVERLAY_CONTROLLER.set(controller).is_err() {
         warn!("Overlay controller already registered");
     }
+}
+
+pub fn request_permission_runtime_reconcile() {
+    let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
+        debug!("Overlay controller not registered; skipping permission runtime reconcile");
+        return;
+    };
+
+    std::thread::spawn(move || {
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime.block_on(async move {
+                controller.reconcile_runtime_after_permission_grant().await;
+            }),
+            Err(error) => warn!("Failed to build runtime for permission reconcile: {error}"),
+        }
+    });
 }
 
 /// Stop the current recording and force the finish pipeline without waiting for VAD.
@@ -438,6 +564,39 @@ impl RecordingController {
         }
     }
 
+    fn format_recorder_recovery_message(
+        missing_permissions: &[&str],
+        dictation_binding: &str,
+        formatting_binding: &str,
+        assistive_binding: &str,
+    ) -> String {
+        if missing_permissions.is_empty() {
+            format!(
+                "Mic unavailable: recorder failed to initialize. Open Settings to review hotkeys, input device, and runtime services, then retry. Configured shortcuts: Dictation={} • Formatting={} • Assistive={}.",
+                dictation_binding, formatting_binding, assistive_binding
+            )
+        } else {
+            format!(
+                "Mic unavailable: recorder failed to initialize. Missing permissions: {}. Open Settings to grant access, then retry your hotkey. Configured shortcuts: Dictation={} • Formatting={} • Assistive={}.",
+                missing_permissions.join(", "),
+                dictation_binding,
+                formatting_binding,
+                assistive_binding
+            )
+        }
+    }
+
+    fn format_backend_recovery_message(detail: Option<&str>) -> String {
+        let mut message =
+            "Speech backend unavailable. Open Settings to verify the transcription provider, endpoint, and runtime service, then retry."
+                .to_string();
+        if let Some(detail) = detail.map(str::trim).filter(|text| !text.is_empty()) {
+            message.push_str(" Details: ");
+            message.push_str(detail);
+        }
+        message
+    }
+
     fn recording_recovery_guidance() -> String {
         let settings = crate::config::UserSettings::load();
         let dictation_binding = settings
@@ -460,20 +619,12 @@ impl RecordingController {
             missing_permissions.push("Microphone");
         }
 
-        if missing_permissions.is_empty() {
-            format!(
-                "Mic unavailable: recorder failed to initialize. Open Settings > Setup to verify hotkeys, input device, and runtime services, then retry. Configured shortcuts: Dictation={} • Formatting={} • Assistive={}.",
-                dictation_binding, formatting_binding, assistive_binding
-            )
-        } else {
-            format!(
-                "Mic unavailable: recorder failed to initialize. Missing permissions: {}. Open Settings > Setup, grant access, then retry your hotkey. Configured shortcuts: Dictation={} • Formatting={} • Assistive={}.",
-                missing_permissions.join(", "),
-                dictation_binding,
-                formatting_binding,
-                assistive_binding
-            )
-        }
+        Self::format_recorder_recovery_message(
+            &missing_permissions,
+            dictation_binding,
+            formatting_binding,
+            assistive_binding,
+        )
     }
 
     fn present_runtime_recovery_ui(status: &str, message: &str) {
@@ -486,7 +637,7 @@ impl RecordingController {
         crate::voice_chat_ui::update_voice_chat_status(status);
         if emit_recovery_message {
             crate::voice_chat_ui::add_voice_chat_error_message(message);
-            crate::voice_chat_ui::show_settings_tab();
+            crate::show_settings_window();
         } else {
             debug!("Runtime recovery UI throttled (cooldown active)");
         }
@@ -504,13 +655,7 @@ impl RecordingController {
 
     fn present_backend_unavailable(context: &str, detail: Option<&str>) {
         warn!("{context}: backend unavailable; routing to settings recovery");
-        let mut message =
-            "Speech backend unavailable. Open Settings > Setup to verify endpoint/runtime service and retry."
-                .to_string();
-        if let Some(detail) = detail.map(str::trim).filter(|text| !text.is_empty()) {
-            message.push_str(" Details: ");
-            message.push_str(detail);
-        }
+        let message = Self::format_backend_recovery_message(detail);
         Self::present_runtime_recovery_ui("Backend unavailable", &message);
     }
 
@@ -714,6 +859,19 @@ impl RecordingController {
         self.config.read().await.clone()
     }
 
+    async fn reconcile_runtime_after_permission_grant(&self) {
+        let mut recorder_guard = self.recorder.lock().await;
+        if !should_attempt_recorder_runtime_recovery(check_microphone(), recorder_guard.is_none()) {
+            return;
+        }
+
+        *recorder_guard = Self::init_streaming_recorder("Permission runtime reconcile");
+        if recorder_guard.is_some() {
+            crate::voice_chat_ui::set_voice_chat_runtime_degraded(false, None);
+            info!("Permission runtime reconcile: recorder runtime recovered after grant");
+        }
+    }
+
     /// Check if VAD (silence detection) has triggered auto-stop
     pub fn is_vad_triggered(&self) -> bool {
         self.vad_triggered.load(Ordering::SeqCst)
@@ -842,14 +1000,17 @@ impl RecordingController {
 
     fn configure_hold_event_sink(
         recorder: &mut StreamingRecorder,
+        preview_deltas_enabled: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
     ) {
         let tb = recorder.transcript_buffer_handle();
-        let delta_sink: Arc<dyn codescribe_core::pipeline::contracts::DeltaSink> =
-            Arc::new(helpers::RoutingDeltaSink);
+        let delta_sink = preview_deltas_enabled.then(|| {
+            Arc::new(helpers::RoutingDeltaSink)
+                as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
+        });
         let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
-            Arc::new(PresentationEmitter::new(tb, Some(delta_sink), None));
+            Arc::new(PresentationEmitter::new(tb, delta_sink, None));
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
         let telemetry_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
@@ -865,6 +1026,7 @@ impl RecordingController {
 
     fn configure_toggle_event_sink(
         recorder: &mut StreamingRecorder,
+        preview_deltas_enabled: bool,
         controller: Option<Arc<RecordingController>>,
         expected_session: String,
         is_assistive_session: bool,
@@ -872,9 +1034,11 @@ impl RecordingController {
         session_telemetry: SharedSessionTelemetry,
     ) {
         let tb = recorder.transcript_buffer_handle();
-        let delta_sink: Arc<dyn codescribe_core::pipeline::contracts::DeltaSink> =
-            Arc::new(helpers::RoutingDeltaSink);
-        let mut pe = PresentationEmitter::new(tb, Some(delta_sink), None);
+        let delta_sink = preview_deltas_enabled.then(|| {
+            Arc::new(helpers::RoutingDeltaSink)
+                as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
+        });
+        let mut pe = PresentationEmitter::new(tb, delta_sink, None);
 
         pe.set_utterance_callback(Some(Arc::new(move |text: String| {
             if is_assistive_session {
@@ -973,12 +1137,18 @@ impl RecordingController {
                             *self.force_ai_mode.write().await = event.force_ai;
 
                             if matches!(current_state, State::RecHold | State::RecToggle) {
+                                let overlay_enabled =
+                                    self.config.read().await.transcription_overlay_enabled;
                                 set_assistive_session(false);
                                 self.opened_voice_chat_overlay_for_transcription
                                     .store(false, Ordering::SeqCst);
-                                crate::show_transcription_overlay();
-                                crate::enter_recording_mode();
                                 crate::clear_transcription_text();
+                                if overlay_enabled {
+                                    crate::show_transcription_overlay();
+                                    crate::enter_recording_mode();
+                                } else {
+                                    crate::hide_transcription_overlay();
+                                }
                             }
                         }
                         HoldMode::Chat => {
@@ -1605,12 +1775,11 @@ impl RecordingController {
             }
         }
 
-        let config = self.config.read().await;
+        let config = self.config.read().await.clone();
         let delay_ms = config.hold_start_delay_ms;
         let beep = config.beep_on_start;
         let sound_volume = config.sound_volume;
         let language = config.whisper_language;
-        drop(config); // Release read lock
 
         let hold_mode = Arc::clone(&self.hold_mode);
 
@@ -1674,6 +1843,7 @@ impl RecordingController {
 
             let hold_mode = *hold_mode.read().await;
             let is_assistive = matches!(hold_mode, HoldMode::Chat | HoldMode::Selection);
+            let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is derived from hardcoded VAD defaults (single source of truth).
@@ -1713,6 +1883,7 @@ impl RecordingController {
             // text is finalized on key-up in `finish_recording`.
             Self::configure_hold_event_sink(
                 rec,
+                is_assistive || overlay_enabled,
                 event_broadcast.clone(),
                 Arc::clone(&session_telemetry),
             );
@@ -1729,6 +1900,7 @@ impl RecordingController {
                         Self::clear_recorder_callbacks(rec);
                         Self::configure_hold_event_sink(
                             rec,
+                            is_assistive || overlay_enabled,
                             event_broadcast.clone(),
                             Arc::clone(&session_telemetry),
                         );
@@ -1829,9 +2001,13 @@ impl RecordingController {
                         .frontmost_app,
                 );
                 opened_overlay_for_transcription.store(false, Ordering::SeqCst);
-                crate::show_transcription_overlay();
-                crate::enter_recording_mode();
                 crate::clear_transcription_text();
+                if overlay_enabled {
+                    crate::show_transcription_overlay();
+                    crate::enter_recording_mode();
+                } else {
+                    crate::hide_transcription_overlay();
+                }
             }
         });
 
@@ -1898,6 +2074,7 @@ impl RecordingController {
         let toggle_silence_sec = config.toggle_silence_sec;
         let beep_enabled = config.beep_on_start;
         let sound_volume = config.sound_volume;
+        let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
 
         // Start the recorder
         let mut recorder_guard = self.recorder.lock().await;
@@ -1932,6 +2109,7 @@ impl RecordingController {
         // Runtime pipeline is always event-based.
         Self::configure_toggle_event_sink(
             recorder,
+            is_assistive || overlay_enabled,
             OVERLAY_CONTROLLER.get().cloned(),
             new_session_id.clone(),
             is_assistive,
@@ -1953,6 +2131,7 @@ impl RecordingController {
                 Self::clear_recorder_callbacks(recorder);
                 Self::configure_toggle_event_sink(
                     recorder,
+                    is_assistive || overlay_enabled,
                     OVERLAY_CONTROLLER.get().cloned(),
                     new_session_id.clone(),
                     is_assistive,
@@ -2033,9 +2212,13 @@ impl RecordingController {
             );
             self.opened_voice_chat_overlay_for_transcription
                 .store(false, Ordering::SeqCst);
-            crate::show_transcription_overlay();
-            crate::enter_recording_mode();
             crate::clear_transcription_text();
+            if overlay_enabled {
+                crate::show_transcription_overlay();
+                crate::enter_recording_mode();
+            } else {
+                crate::hide_transcription_overlay();
+            }
         }
 
         Ok(())
@@ -2272,6 +2455,7 @@ impl RecordingController {
                 } else if !assistive {
                     let cfg = self.config.read().await.clone();
                     let show_decision_overlay = outcome.transcript_present
+                        && cfg.transcription_overlay_enabled
                         && !(cfg.quick_notes_enabled && cfg.quick_notes_save_only);
 
                     let opened = self
@@ -2388,7 +2572,7 @@ impl RecordingController {
         let chat_active = assistive;
         let assistive_loop = assistive && self.assistive_loop_active.load(Ordering::SeqCst);
 
-        let mut raw_text_opt = None;
+        let mut local_final_pass_text = None;
         let mut cloud_text_opt = None;
         let mut cloud_handle: Option<JoinHandle<Result<String>>> = None;
 
@@ -2444,7 +2628,7 @@ impl RecordingController {
                 {
                     Ok(Ok(text)) if !text.trim().is_empty() => {
                         info!("Final-pass transcription captured ({} chars)", text.len());
-                        raw_text_opt = Some(text);
+                        local_final_pass_text = Some(text);
                     }
                     Ok(Ok(_)) => warn!("Final-pass transcription returned empty text"),
                     Ok(Err(e)) => warn!("Final-pass transcription failed: {}", e),
@@ -2455,36 +2639,57 @@ impl RecordingController {
             }
         }
 
-        // 1. Try Streaming Result (Local)
-        if raw_text_opt.is_none() {
-            if !streaming_text.trim().is_empty() {
-                if !use_local_stt {
-                    warn!("Using streaming transcript fallback (USE_LOCAL_STT=0)");
-                }
-                info!(
-                    "Using streaming transcription result ({} chars)",
-                    streaming_text.len()
-                );
-                raw_text_opt = Some(streaming_text);
-            } else if use_local_stt {
-                warn!("Streaming returned empty text");
-            }
-        }
-
-        // 2. Fallback to Cloud if needed
-        if raw_text_opt.is_none() {
+        if !use_local_stt {
             if let Some(handle) = cloud_handle.take() {
-                info!("Falling back to cloud STT (LibraxisAI)");
+                info!("Awaiting cloud STT as selected transcript backend");
                 match handle.await {
-                    Ok(Ok(text)) => {
-                        cloud_text_opt = Some(text.clone());
-                        raw_text_opt = Some(text);
-                    }
+                    Ok(Ok(text)) => cloud_text_opt = Some(text),
                     Ok(Err(e)) => error!("Cloud transcription failed: {}", e),
                     Err(e) => error!("Cloud transcription task failed: {}", e),
                 }
-            } else if !use_local_stt {
-                warn!("Cloud fallback unavailable (cloud disabled or missing credentials)");
+            } else {
+                warn!("Cloud backend unavailable (cloud disabled or missing credentials)");
+            }
+        }
+
+        let (raw_text_opt, cloud_text_opt, transcript_source) = select_recording_transcript(
+            use_local_stt,
+            local_final_pass_text,
+            streaming_text,
+            cloud_text_opt,
+        );
+        match transcript_source {
+            Some(RecordingTranscriptSource::LocalFinalPass) => {
+                if let Some(text) = raw_text_opt.as_ref() {
+                    info!(
+                        "Using final-pass local transcription result ({} chars)",
+                        text.len()
+                    );
+                }
+            }
+            Some(RecordingTranscriptSource::CloudPrimary) => {
+                if let Some(text) = raw_text_opt.as_ref() {
+                    info!(
+                        "Using cloud transcription result as selected backend ({} chars)",
+                        text.len()
+                    );
+                }
+            }
+            Some(RecordingTranscriptSource::StreamingFallback) => {
+                if !use_local_stt {
+                    warn!("Cloud backend unavailable; using streaming transcript fallback");
+                }
+                if let Some(text) = raw_text_opt.as_ref() {
+                    info!(
+                        "Using streaming transcription result ({} chars)",
+                        text.len()
+                    );
+                }
+            }
+            None => {
+                if use_local_stt {
+                    warn!("Streaming returned empty text");
+                }
             }
         }
         let session_telemetry = snapshot_session_telemetry(&self.session_telemetry);
@@ -2906,7 +3111,9 @@ impl RecordingController {
             info!("COMMIT decision: not required by quality gate (mode={mode_label})");
         }
 
-        if should_apply_transcription_action_contract(assistive, live_stream_session) {
+        if should_apply_transcription_action_contract(assistive, live_stream_session)
+            && config.transcription_overlay_enabled
+        {
             let action_contract_mode = resolve_transcription_action_contract_mode(
                 force_raw,
                 force_ai,

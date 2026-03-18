@@ -13,10 +13,15 @@ SHELL := /bin/bash
 VERSION_FILE := Cargo.toml
 EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo nano)
 ENV_LOAD := set -a; [ -f $$HOME/.codescribe/.env ] && source $$HOME/.codescribe/.env; set +a
-# macOS: use a stable codesign identity to avoid TCC (Accessibility/Input Monitoring) resets after rebuilds.
+# macOS: TCC tracks a stable code identity, not just bundle path. Prefer a stable
+# Apple-issued signing identity automatically, and only fall back to ad-hoc when
+# there is genuinely nothing usable in the keychain.
+CODESCRIBE_APPLE_DEVELOPMENT_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)"/\1/p' | head -n 1)
+CODESCRIBE_DEVELOPER_ID_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)"/\1/p' | head -n 1)
+CODESCRIBE_AUTO_CODESIGN_IDENTITY := $(if $(strip $(CODESCRIBE_APPLE_DEVELOPMENT_IDENTITY)),$(strip $(CODESCRIBE_APPLE_DEVELOPMENT_IDENTITY)),$(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)))
 # Example:
 #   CODESCRIBE_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" make install-app
-CODESCRIBE_CODESIGN_IDENTITY ?= -
+CODESCRIBE_CODESIGN_IDENTITY ?= $(if $(CODESCRIBE_AUTO_CODESIGN_IDENTITY),$(CODESCRIBE_AUTO_CODESIGN_IDENTITY),-)
 CODESCRIBE_APP_NAME ?= CodeScribe
 CODESCRIBE_DISPLAY_NAME ?= CodeScribe
 CODESCRIBE_BUNDLE_ID ?= com.codescribe.app
@@ -124,12 +129,12 @@ install-app: bundle
 	@mkdir -p /Applications
 	@rsync -a --delete bundle/$(CODESCRIBE_APP_NAME).app/ /Applications/$(CODESCRIBE_APP_NAME).app/
 	@if [ "$(CODESCRIBE_CODESIGN_IDENTITY)" = "-" ]; then \
-		echo "Codesigning ad-hoc (no signing identity found)."; \
+		echo "Codesigning ad-hoc (no stable signing identity found in keychain)."; \
 		echo "NOTE: macOS Accessibility/Input Monitoring may need re-grant after reinstall."; \
-		echo "TIP: create a local codesign cert (e.g. 'CodeScribe Dev') and set CODESCRIBE_CODESIGN_IDENTITY to keep permissions stable."; \
+		echo "TIP: add an Apple Development or Developer ID Application certificate, or set CODESCRIBE_CODESIGN_IDENTITY explicitly."; \
 		codesign --force --deep --sign - --identifier $(CODESCRIBE_BUNDLE_ID) /Applications/$(CODESCRIBE_APP_NAME).app; \
 	else \
-		echo "Codesigning with identity: $(CODESCRIBE_CODESIGN_IDENTITY)"; \
+		echo "Codesigning with stable identity: $(CODESCRIBE_CODESIGN_IDENTITY)"; \
 		codesign --force --deep --options runtime --entitlements "$(CODESCRIBE_ENTITLEMENTS)" --sign "$(CODESCRIBE_CODESIGN_IDENTITY)" --identifier $(CODESCRIBE_BUNDLE_ID) /Applications/$(CODESCRIBE_APP_NAME).app; \
 	fi
 	@echo "Codesign summary:"

@@ -20,7 +20,7 @@
 //! Copy last transcript
 //! Notes ▸
 //! Diagnostics ▸
-//! Complete Setup... (when setup is incomplete)
+//! Continue Onboarding... (when onboarding is incomplete)
 //! Settings
 //! Help
 //! About
@@ -93,6 +93,7 @@ fn shutdown_hotkeys(hotkey_manager: &mut Option<hotkeys::HotkeyManager>) {
     if let Some(hk_manager) = hotkey_manager.as_mut() {
         hk_manager.shutdown();
     }
+    hotkeys::shutdown_global_hotkey_manager();
     *hotkey_manager = None;
 }
 
@@ -146,7 +147,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
     // Get menu event receiver
     let menu_channel = MenuEvent::receiver();
 
-    if hotkey_manager.is_some() {
+    if hotkey_manager.is_some() || hotkeys::is_global_hotkey_manager_active() {
         info!("Global hotkeys enabled");
     }
 
@@ -166,7 +167,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
         // Handle dock icon click (macOS Reopen event)
         if let Event::Reopen { .. } = event {
             debug!("Dock icon clicked → opening Settings window");
-            crate::show_bootstrap_overlay();
+            crate::show_settings_window();
             return;
         }
 
@@ -182,7 +183,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
         if last_menu_refresh.elapsed() >= Duration::from_secs(2) {
             menu::update_quality_label();
             menu::update_silero_vad_label();
-            menu::update_complete_setup_item();
+            menu::update_onboarding_item();
             last_menu_refresh = Instant::now();
         }
 

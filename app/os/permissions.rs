@@ -380,6 +380,11 @@ pub fn check_full_disk_access() -> PermissionStatus {
     PermissionStatus::Granted
 }
 
+pub fn hotkey_permissions_granted() -> bool {
+    check_accessibility() == PermissionStatus::Granted
+        && check_input_monitoring() == PermissionStatus::Granted
+}
+
 /// Request Full Disk Access by opening the relevant System Settings pane.
 #[cfg(target_os = "macos")]
 pub fn request_full_disk_access() -> bool {
@@ -486,7 +491,9 @@ pub fn check_all_permissions() {
         PermissionStatus::Denied => {
             warn!("Microphone permission: DENIED - Recording will not work!");
             warn!("Grant access in: System Settings > Privacy & Security > Microphone");
-            warn!("After enabling access, restart CodeScribe if status does not refresh.");
+            warn!(
+                "After enabling access, retry recording or reopen Setup so CodeScribe can recheck live."
+            );
         }
     }
 }

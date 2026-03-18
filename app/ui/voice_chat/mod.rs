@@ -3,7 +3,7 @@
 //! This module provides a floating overlay window with:
 //! - Drawer tab: clipboard-style transcription cards
 //! - Agent tab: chat bubbles with streaming LLM responses
-//! - Settings: routes to settings window/onboarding
+//! - Settings button: opens the persistent settings window
 
 mod api;
 mod handlers;
@@ -16,11 +16,11 @@ pub use api::{
     dispatch_voice_chat_send, filter_drawer, finalize_voice_chat_assistant_message,
     finalize_voice_chat_user_message, handoff_transcript_to_chat, hide_voice_chat_overlay,
     is_auto_send_enabled, is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,
-    request_settings_tab_on_open, reset_voice_chat_activity, send_voice_chat_draft,
-    set_voice_chat_runtime_degraded, set_voice_chat_send_callback, set_voice_chat_sending,
-    set_voice_chat_target_app, set_voice_chat_text, set_voice_chat_user_text, show_agent_tab,
-    show_drawer_tab, show_settings_tab, update_conversation_state, update_drawer_after_save,
-    update_voice_chat_context_summary, update_voice_chat_status,
+    reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_runtime_degraded,
+    set_voice_chat_send_callback, set_voice_chat_sending, set_voice_chat_target_app,
+    set_voice_chat_text, set_voice_chat_user_text, show_agent_tab, show_drawer_tab,
+    update_conversation_state, update_drawer_after_save, update_voice_chat_context_summary,
+    update_voice_chat_status,
 };
 pub use state::{ConversationModeState, VoiceChatOverlayConfig};
 
@@ -1057,7 +1057,7 @@ fn show_voice_chat_overlay_impl() {
         set_hidden(input_bar, true);
 
         // Phase 3 — store widget pointers into state (short lock scope).
-        let (has_messages, desired_tab, status_base_text, open_settings) = {
+        let (has_messages, desired_tab, status_base_text) = {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.window = Some(window as usize);
             state.window_delegate = Some(window_delegate as usize);
@@ -1097,21 +1097,9 @@ fn show_voice_chat_overlay_impl() {
                 state.zoom_level = zoom.clamp(0.75, 2.0);
             }
             let pending_tab = state.pending_tab.take();
-            state.active_tab = pending_tab.unwrap_or(Tab::Drawer);
-
             let has_messages = !state.messages.is_empty();
-            let mut open_settings = false;
             let desired_tab = if let Some(tab) = pending_tab {
-                if tab == Tab::Settings {
-                    open_settings = true;
-                    if has_messages {
-                        Tab::Agent
-                    } else {
-                        Tab::Drawer
-                    }
-                } else {
-                    tab
-                }
+                tab
             } else if has_messages {
                 Tab::Agent
             } else {
@@ -1119,7 +1107,7 @@ fn show_voice_chat_overlay_impl() {
             };
             state.active_tab = desired_tab;
             let status_base_text = state.status_base_text.clone();
-            (has_messages, desired_tab, status_base_text, open_settings)
+            (has_messages, desired_tab, status_base_text)
         }; // OVERLAY_STATE released — safe to perform AppKit window operations.
 
         // Phase 4 — show window (no lock held; avoids nested-runloop deadlock).
@@ -1160,9 +1148,6 @@ fn show_voice_chat_overlay_impl() {
         api::refresh_drawer();
         api::update_voice_chat_status(&status_base_text);
         update_active_tab_impl(desired_tab);
-        if open_settings {
-            crate::show_bootstrap_overlay();
-        }
         if has_messages || matches!(desired_tab, Tab::Agent) {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             api::update_chat_view_with_state(&mut state, true);

@@ -31,6 +31,10 @@ pub fn default_show_dock_icon() -> bool {
     true
 }
 
+pub fn default_transcription_overlay_enabled() -> bool {
+    true
+}
+
 pub fn default_hold_indicator() -> bool {
     true
 }

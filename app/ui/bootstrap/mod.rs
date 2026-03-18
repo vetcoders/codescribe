@@ -27,7 +27,7 @@ use crate::ui::bootstrap::handlers::{
 };
 use crate::ui::onboarding::{
     PERMISSION_ORDER, PermissionKind, open_permission_settings, permission_status,
-    request_permission,
+    reconcile_permission_runtime_after_grant, request_permission,
 };
 use crate::ui_helpers::{
     LabelConfig, add_subview, button_set_action, button_style, create_button,
@@ -73,6 +73,13 @@ const TOGGLE_ROW_DESC_OFFSET: f64 = 18.0;
 const TOGGLE_ROW_DESC_HEIGHT: f64 = 16.0;
 const SETTINGS_INPUT_HEIGHT: f64 = 22.0;
 const KEY_STATUS_ICON_SIZE: f64 = 14.0;
+const PREVIEW_NO_OVERLAY_MIN_INTERIM_SEC: f32 = 8.0;
+const PREVIEW_SAMPLE_UTTERANCE_SEC: f32 = 12.0;
+const PREVIEW_SAMPLE_TEXT: &str =
+    "Partiale mają być appendowane, poprawiamy tylko aktywny ogon, a nie kasujemy całego tekstu.";
+const PROMPT_EDITOR_DESIRED_HEIGHT: f64 = 220.0;
+const PROMPT_EDITOR_STATUS_HEIGHT: f64 = 16.0;
+const PROMPT_EDITOR_BOTTOM_PADDING: f64 = 24.0;
 
 const STEP_TEST_MIC: usize = 0;
 const STEP_SHOW_OVERLAY: usize = 1;
@@ -130,6 +137,17 @@ struct ToggleRowSpec<'a> {
     gap: f64,
 }
 
+#[derive(Clone, Copy)]
+struct SliderSettingRowSpec<'a> {
+    title: &'a str,
+    value_text: &'a str,
+    min: f64,
+    max: f64,
+    current: f64,
+    action: objc::runtime::Sel,
+    gap: f64,
+}
+
 unsafe fn intensify_settings_glass(view: Id) {
     let supports_emphasized: bool = msg_send![view, respondsToSelector: sel!(setEmphasized:)];
     if supports_emphasized {
@@ -150,6 +168,251 @@ fn toggle_row_step(has_description: bool, gap: f64) -> f64 {
     } else {
         TOGGLE_ROW_HEIGHT + gap
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PreviewTimingModel {
+    overlay_enabled: bool,
+    buffer_delay_ms: u64,
+    typing_cps: f32,
+    emit_words_max: usize,
+    requested_interim_sec: f32,
+    effective_interim_sec: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreviewTimingStep {
+    publish_ms: u64,
+    visible_at_ms: u64,
+    target_text: String,
+    visible_text: String,
+}
+
+fn preview_effective_interim_sec(overlay_enabled: bool, requested_interim_sec: f32) -> f32 {
+    let requested = requested_interim_sec.clamp(1.0, 30.0);
+    if overlay_enabled {
+        requested
+    } else {
+        requested.max(PREVIEW_NO_OVERLAY_MIN_INTERIM_SEC)
+    }
+}
+
+fn current_preview_timing_model() -> PreviewTimingModel {
+    let config = Config::load();
+    let settings = UserSettings::load();
+    let requested_interim_sec = settings.buffered_interim_sec.unwrap_or(1.2);
+
+    PreviewTimingModel {
+        overlay_enabled: config.transcription_overlay_enabled,
+        buffer_delay_ms: settings.buffer_delay_ms.unwrap_or(280),
+        typing_cps: settings.typing_cps.unwrap_or(90.0).max(5.0),
+        emit_words_max: settings.emit_words_max.unwrap_or(2).clamp(1, 10) as usize,
+        requested_interim_sec,
+        effective_interim_sec: preview_effective_interim_sec(
+            config.transcription_overlay_enabled,
+            requested_interim_sec,
+        ),
+    }
+}
+
+fn preview_tokenize_for_emit(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut cursor = 0usize;
+
+    while cursor < chars.len() {
+        let mut token = String::new();
+        if chars[cursor].is_whitespace() {
+            while cursor < chars.len() && chars[cursor].is_whitespace() {
+                token.push(chars[cursor]);
+                cursor += 1;
+            }
+        } else {
+            while cursor < chars.len() && !chars[cursor].is_whitespace() {
+                token.push(chars[cursor]);
+                cursor += 1;
+            }
+            while cursor < chars.len() && chars[cursor].is_whitespace() {
+                token.push(chars[cursor]);
+                cursor += 1;
+            }
+        }
+        tokens.push(token);
+    }
+    if tokens.is_empty() && !text.is_empty() {
+        tokens.push(text.to_string());
+    }
+    tokens
+}
+
+fn preview_emit_chunks(text: &str, emit_words_max: usize) -> Vec<String> {
+    let tokens = preview_tokenize_for_emit(text);
+    let mut chunks = Vec::new();
+    let mut current_index = 0usize;
+
+    while current_index < tokens.len() {
+        let mut chunk = String::new();
+        let mut words = 0usize;
+        while current_index < tokens.len() {
+            let token = &tokens[current_index];
+            chunk.push_str(token);
+            if token.chars().any(|c| !c.is_whitespace()) {
+                words += 1;
+            }
+            current_index += 1;
+
+            if words >= emit_words_max {
+                if current_index < tokens.len() {
+                    let next = &tokens[current_index];
+                    if next.chars().all(|c| c.is_whitespace()) {
+                        chunk.push_str(next);
+                        current_index += 1;
+                    }
+                }
+                break;
+            }
+        }
+
+        if !chunk.is_empty() {
+            chunks.push(chunk);
+        }
+    }
+
+    chunks
+}
+
+fn preview_partial_targets(sample: &str, interim_sec: f32) -> Vec<(u64, String)> {
+    let words: Vec<&str> = sample.split_whitespace().collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let total_duration = PREVIEW_SAMPLE_UTTERANCE_SEC.max(interim_sec);
+    let total_words = words.len();
+    let mut targets = Vec::new();
+    let mut reveal_cursor = 0usize;
+    let mut t = interim_sec;
+
+    while t < total_duration {
+        let progress = (t / total_duration).clamp(0.0, 1.0);
+        let reveal_words = ((total_words as f32 * progress).ceil() as usize)
+            .clamp(1, total_words)
+            .max((reveal_cursor + 1).min(total_words));
+        if reveal_words > reveal_cursor {
+            reveal_cursor = reveal_words;
+            targets.push((
+                (t * 1000.0).round() as u64,
+                words[..reveal_cursor].join(" "),
+            ));
+        }
+        t += interim_sec;
+    }
+
+    if reveal_cursor < total_words {
+        targets.push((
+            (total_duration * 1000.0).round() as u64,
+            words[..total_words].join(" "),
+        ));
+    }
+
+    targets
+}
+
+fn preview_timing_steps(model: PreviewTimingModel) -> Vec<PreviewTimingStep> {
+    let partial_targets = preview_partial_targets(PREVIEW_SAMPLE_TEXT, model.effective_interim_sec);
+    let tick_ms = ((1000.0 / model.typing_cps as f64).round() as u64).max(1);
+    let mut visible_text = String::new();
+    let mut previous_target = String::new();
+    let mut last_emit_done_ms = 0u64;
+    let mut steps = Vec::new();
+
+    for (index, (publish_ms, target_text)) in partial_targets.into_iter().enumerate() {
+        let suffix = if target_text.starts_with(&previous_target) {
+            target_text[previous_target.len()..].to_string()
+        } else {
+            target_text.clone()
+        };
+
+        if suffix.is_empty() {
+            previous_target = target_text;
+            continue;
+        }
+
+        let start_ms = if index == 0 {
+            publish_ms
+        } else {
+            publish_ms
+                .saturating_add(model.buffer_delay_ms)
+                .max(last_emit_done_ms)
+        };
+
+        let mut current_ms = start_ms;
+        for chunk in preview_emit_chunks(&suffix, model.emit_words_max) {
+            visible_text.push_str(&chunk);
+            steps.push(PreviewTimingStep {
+                publish_ms,
+                visible_at_ms: current_ms,
+                target_text: target_text.clone(),
+                visible_text: visible_text.clone(),
+            });
+            current_ms = current_ms.saturating_add(tick_ms);
+        }
+
+        last_emit_done_ms = current_ms;
+        previous_target = target_text;
+    }
+
+    steps
+}
+
+fn preview_timing_summary_text(model: PreviewTimingModel) -> String {
+    let tick_ms = ((1000.0 / model.typing_cps as f64).round() as u64).max(1);
+    if model.overlay_enabled {
+        format!(
+            "Overlay ON • partial target every {:.1}s • first output immediate • later growth +{}ms • {} words/tick • {}ms between ticks",
+            model.effective_interim_sec, model.buffer_delay_ms, model.emit_words_max, tick_ms
+        )
+    } else {
+        format!(
+            "Overlay OFF • runtime hides floating preview • cadence clamped to {:.1}s (requested {:.1}s) • if shown: +{}ms buffer • {} words/tick • {}ms ticks",
+            model.effective_interim_sec,
+            model.requested_interim_sec,
+            model.buffer_delay_ms,
+            model.emit_words_max,
+            tick_ms
+        )
+    }
+}
+
+fn preview_timing_report_text(model: PreviewTimingModel) -> String {
+    let partial_targets = preview_partial_targets(PREVIEW_SAMPLE_TEXT, model.effective_interim_sec);
+    let steps = preview_timing_steps(model);
+    let mut lines = Vec::new();
+    lines.push(format!("Sample: {PREVIEW_SAMPLE_TEXT}"));
+    lines.push(String::new());
+    lines.push("Chunker partial targets".to_string());
+    for (publish_ms, target_text) in partial_targets {
+        lines.push(format!(
+            "[{:.1}s] {}",
+            publish_ms as f32 / 1000.0,
+            target_text
+        ));
+    }
+    lines.push(String::new());
+    lines.push(if model.overlay_enabled {
+        "Overlay-visible text".to_string()
+    } else {
+        "Overlay-visible text (would look like this if overlay was enabled)".to_string()
+    });
+    for step in steps {
+        lines.push(format!(
+            "[publish {:.1}s -> visible {:.2}s] {}",
+            step.publish_ms as f32 / 1000.0,
+            step.visible_at_ms as f32 / 1000.0,
+            step.visible_text
+        ));
+    }
+    lines.join("\n")
 }
 
 unsafe fn style_paper_input(field: Id) {
@@ -175,6 +438,59 @@ unsafe fn add_tafla_header_separator(container: Id, x: f64, y: f64, width: f64) 
         add_subview(container, separator);
     }
     y - 1.0
+}
+
+unsafe fn add_slider_setting_row(
+    container: Id,
+    action_handler: Id,
+    x: f64,
+    y: &mut f64,
+    width: f64,
+    secondary: Id,
+    spec: SliderSettingRowSpec<'_>,
+) -> usize {
+    let label = create_label(LabelConfig {
+        frame: CGRect::new(&CGPoint::new(x, *y), &CGSize::new(136.0, 18.0)),
+        text: spec.title.to_string(),
+        font_size: ui_tokens::SMALL_FONT_SIZE,
+        text_color: secondary,
+        ..Default::default()
+    });
+    unsafe {
+        add_subview(container, label);
+    }
+
+    let value_label = create_label(LabelConfig {
+        frame: CGRect::new(
+            &CGPoint::new(x + width - 110.0, *y),
+            &CGSize::new(110.0, 18.0),
+        ),
+        text: spec.value_text.to_string(),
+        font_size: ui_tokens::SMALL_FONT_SIZE,
+        text_color: secondary,
+        ..Default::default()
+    });
+    unsafe {
+        add_subview(container, value_label);
+    }
+
+    let slider = create_slider(
+        CGRect::new(
+            &CGPoint::new(x + 140.0, *y - 1.0),
+            &CGSize::new((width - 254.0).max(160.0), 20.0),
+        ),
+        spec.min,
+        spec.max,
+        spec.current,
+    );
+    let _: () = msg_send![slider, setContinuous: true];
+    unsafe {
+        button_set_action(slider, action_handler, spec.action);
+        add_subview(container, slider);
+    }
+
+    *y -= 24.0 + spec.gap;
+    value_label as usize
 }
 
 unsafe fn autosize_tab_document_view(document_view: Id, minimum_height: f64) -> f64 {
@@ -339,6 +655,12 @@ struct BootstrapState {
     keys_conflict_details_button: Option<usize>,
     hold_delay_value_label: Option<usize>,
     double_tap_value_label: Option<usize>,
+    preview_buffer_delay_value_label: Option<usize>,
+    preview_typing_cps_value_label: Option<usize>,
+    preview_emit_words_max_value_label: Option<usize>,
+    preview_interim_sec_value_label: Option<usize>,
+    preview_timing_summary_label: Option<usize>,
+    preview_timing_text_view: Option<usize>,
     config_cache: Option<Config>,
     // Onboarding additions
     permission_labels: [Option<usize>; 5],
@@ -387,6 +709,12 @@ fn clear_bootstrap_ui_state(state: &mut BootstrapState) {
     state.keys_conflict_details_button = None;
     state.hold_delay_value_label = None;
     state.double_tap_value_label = None;
+    state.preview_buffer_delay_value_label = None;
+    state.preview_typing_cps_value_label = None;
+    state.preview_emit_words_max_value_label = None;
+    state.preview_interim_sec_value_label = None;
+    state.preview_timing_summary_label = None;
+    state.preview_timing_text_view = None;
     state.permission_labels = [None, None, None, None, None];
     state.permission_action_buttons = [None, None, None, None, None];
     state.permission_requested = [false; 5];
@@ -418,60 +746,6 @@ fn clear_bootstrap_ui_state(state: &mut BootstrapState) {
     state.diagnostics_status_label = None;
 }
 
-fn setup_done_path() -> PathBuf {
-    Config::config_dir().join("setup_done")
-}
-
-fn onboarding_done_path() -> PathBuf {
-    Config::config_dir().join("onboarding_done")
-}
-
-fn bootstrap_done_path() -> PathBuf {
-    Config::config_dir().join("bootstrap_done")
-}
-
-fn migrate_legacy_setup_sentinel() {
-    let setup_done = setup_done_path();
-    if setup_done.exists() {
-        return;
-    }
-
-    if onboarding_done_path().exists() && bootstrap_done_path().exists() {
-        if let Some(parent) = setup_done.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::write(setup_done, "done");
-    }
-}
-
-pub fn should_show_setup() -> bool {
-    migrate_legacy_setup_sentinel();
-    !setup_done_path().exists()
-}
-
-pub fn should_show_bootstrap() -> bool {
-    should_show_setup()
-}
-
-fn mark_setup_done() {
-    let path = setup_done_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::write(path, "done");
-}
-
-pub fn schedule_bootstrap() {
-    if !should_show_setup() {
-        return;
-    }
-
-    thread::spawn(|| {
-        thread::sleep(Duration::from_millis(800));
-        show_settings_setup_tab();
-    });
-}
-
 static SHOW_OVERLAY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 unsafe fn present_settings_window(window: Id) {
@@ -491,7 +765,8 @@ unsafe fn present_settings_window(window: Id) {
     let _: () = msg_send![window, orderFrontRegardless];
 }
 
-pub fn show_bootstrap_overlay() {
+/// Show the persistent Settings window.
+pub fn show_settings_window() {
     // Fast path: if window already exists, just show it on main thread.
     {
         let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -521,11 +796,6 @@ pub fn show_bootstrap_overlay() {
             show_bootstrap_overlay_impl();
         });
     });
-}
-
-/// Alias: Settings window (bootstrap is now a standalone Settings window).
-pub fn show_settings_window() {
-    show_bootstrap_overlay();
 }
 
 fn show_bootstrap_overlay_impl() {
@@ -713,6 +983,14 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
         state.keys_recorder_hint_label = built_state.keys_recorder_hint_label;
         state.keys_conflict_label = built_state.keys_conflict_label;
         state.keys_conflict_details_button = built_state.keys_conflict_details_button;
+        state.hold_delay_value_label = built_state.hold_delay_value_label;
+        state.double_tap_value_label = built_state.double_tap_value_label;
+        state.preview_buffer_delay_value_label = built_state.preview_buffer_delay_value_label;
+        state.preview_typing_cps_value_label = built_state.preview_typing_cps_value_label;
+        state.preview_emit_words_max_value_label = built_state.preview_emit_words_max_value_label;
+        state.preview_interim_sec_value_label = built_state.preview_interim_sec_value_label;
+        state.preview_timing_summary_label = built_state.preview_timing_summary_label;
+        state.preview_timing_text_view = built_state.preview_timing_text_view;
         state.config_cache = built_state.config_cache;
         state.permission_labels = built_state.permission_labels;
         state.permission_action_buttons = built_state.permission_action_buttons;
@@ -750,6 +1028,7 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
         refresh_quality_dashboard();
         refresh_diagnostics_dashboard();
         refresh_prompt_editor_labels();
+        refresh_transcription_preview_panel();
         refresh_permission_indicators();
         start_permission_polling();
         Some(root)
@@ -757,14 +1036,8 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
 }
 
 // ============================================================================
-// Permission checks / setup readiness
+// Permission checks / onboarding readiness
 // ============================================================================
-
-fn permissions_all_granted() -> bool {
-    PERMISSION_ORDER
-        .iter()
-        .all(|kind| permission_status(*kind) == PermissionStatus::Granted)
-}
 
 fn permission_color(granted: bool) -> Id {
     if granted {
@@ -823,6 +1096,7 @@ fn handle_permission_action(kind: PermissionKind) {
     if kind == PermissionKind::Microphone {
         thread::spawn(move || {
             let _ = request_permission(kind);
+            reconcile_permission_runtime_after_grant(kind);
             refresh_permission_indicators();
         });
         refresh_permission_indicators();
@@ -837,6 +1111,10 @@ fn handle_permission_action(kind: PermissionKind) {
         )
     {
         open_permission_settings(kind);
+    }
+
+    if granted {
+        reconcile_permission_runtime_after_grant(kind);
     }
 
     refresh_permission_indicators();
@@ -1012,10 +1290,6 @@ pub(super) fn refresh_permission_indicators() {
             }
         }
 
-        if permissions_all_granted() {
-            mark_setup_done();
-        }
-
         refresh_diagnostics_dashboard();
     });
 }
@@ -1156,7 +1430,7 @@ unsafe fn build_settings_ui(
             "Diagnostics",
         ];
         let tab_sels = [
-            sel!(onTabSetup:),
+            sel!(onTabTranscription:),
             sel!(onTabModesShortcuts:),
             sel!(onTabAiPrompts:),
             sel!(onTabAudioInput:),
@@ -1393,6 +1667,7 @@ pub(super) fn switch_tab(index: usize) {
 
         if index == TAB_TRANSCRIPTION {
             refresh_quality_dashboard();
+            refresh_transcription_preview_panel();
         } else if index == TAB_DIAGNOSTICS {
             refresh_diagnostics_dashboard();
         } else if index == TAB_AI_PROMPTS {
@@ -1467,22 +1742,6 @@ pub fn hide_bootstrap_overlay() {
 /// Alias: Settings window close.
 pub fn hide_settings_window() {
     hide_bootstrap_overlay();
-}
-
-/// Alias: schedule Settings onboarding window.
-pub fn schedule_settings_window() {
-    schedule_bootstrap();
-}
-
-/// Show Settings and force-focus the first onboarding tab.
-pub fn show_settings_setup_tab() {
-    show_bootstrap_overlay();
-    switch_tab(TAB_TRANSCRIPTION);
-}
-
-/// Alias: should show Settings onboarding window.
-pub fn should_show_settings_onboarding() -> bool {
-    should_show_setup()
 }
 
 /// Reset embedded Settings view state when the overlay is destroyed.
@@ -2117,6 +2376,61 @@ fn set_prompt_editor_status(text: &str, is_error: bool) {
     }
 }
 
+fn refresh_transcription_preview_panel() {
+    let model = current_preview_timing_model();
+    let preview_text = preview_timing_report_text(model);
+    let summary_text = preview_timing_summary_text(model);
+    let (
+        buffer_delay_label,
+        typing_cps_label,
+        emit_words_label,
+        interim_label,
+        summary_label,
+        preview_text_view,
+    ) = {
+        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            state.preview_buffer_delay_value_label,
+            state.preview_typing_cps_value_label,
+            state.preview_emit_words_max_value_label,
+            state.preview_interim_sec_value_label,
+            state.preview_timing_summary_label,
+            state.preview_timing_text_view,
+        )
+    };
+
+    unsafe {
+        if let Some(ptr) = buffer_delay_label {
+            set_text_field_string(ptr as Id, &format!("{} ms", model.buffer_delay_ms));
+        }
+        if let Some(ptr) = typing_cps_label {
+            set_text_field_string(ptr as Id, &format!("{:.1} cps", model.typing_cps));
+        }
+        if let Some(ptr) = emit_words_label {
+            set_text_field_string(ptr as Id, &format!("{} words", model.emit_words_max));
+        }
+        if let Some(ptr) = interim_label {
+            let label = if (model.effective_interim_sec - model.requested_interim_sec).abs()
+                > f32::EPSILON
+            {
+                format!(
+                    "{:.1} s -> {:.1} s effective",
+                    model.requested_interim_sec, model.effective_interim_sec
+                )
+            } else {
+                format!("{:.1} s", model.effective_interim_sec)
+            };
+            set_text_field_string(ptr as Id, &label);
+        }
+        if let Some(ptr) = summary_label {
+            set_text_field_string(ptr as Id, &summary_text);
+        }
+        if let Some(ptr) = preview_text_view {
+            set_text_view_string(ptr as Id, &preview_text);
+        }
+    }
+}
+
 fn refresh_prompt_editor_labels() {
     Queue::main().exec_async(move || unsafe {
         let (path_ptr, status_ptr) = {
@@ -2139,6 +2453,29 @@ fn refresh_prompt_editor_labels() {
                 msg_send![ptr as Id, setTextColor: crate::ui_helpers::color_secondary_label()];
         }
     });
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PromptEditorLayout {
+    editor_height: f64,
+    editor_y: f64,
+    status_y: f64,
+}
+
+fn compute_prompt_editor_layout(y: f64, gap: f64) -> PromptEditorLayout {
+    // Keep status text and bottom breathing room below the editor so the editor
+    // never climbs into API/model/key controls on smaller vertical space.
+    let reserved_below_editor = PROMPT_EDITOR_STATUS_HEIGHT + gap + PROMPT_EDITOR_BOTTOM_PADDING;
+    let available_editor_height = (y - reserved_below_editor).max(0.0);
+    let editor_height = available_editor_height.min(PROMPT_EDITOR_DESIRED_HEIGHT);
+    let editor_y = (y - editor_height).max(0.0);
+    let status_y = (editor_y - gap).max(0.0);
+
+    PromptEditorLayout {
+        editor_height,
+        editor_y,
+        status_y,
+    }
 }
 
 fn refresh_quality_dashboard() {
@@ -2944,8 +3281,9 @@ unsafe fn build_ai_prompts_tab(
         state.prompt_path_label = Some(path_label as usize);
         y -= 16.0 + gap;
 
-        let editor_height = 220.0;
-        let editor_y = (y - editor_height).max(28.0);
+        let prompt_editor_layout = compute_prompt_editor_layout(y, gap);
+        let editor_height = prompt_editor_layout.editor_height;
+        let editor_y = prompt_editor_layout.editor_y;
         let (editor_scroll, editor_text_view) = create_scrollable_text_view(
             CGRect::new(
                 &CGPoint::new(pad, editor_y),
@@ -2968,9 +3306,11 @@ unsafe fn build_ai_prompts_tab(
         });
         set_text_view_string(editor_text_view, &initial_prompt);
 
-        y = editor_y - gap;
         let prompt_status = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            frame: CGRect::new(
+                &CGPoint::new(pad, prompt_editor_layout.status_y),
+                &CGSize::new(content_w, PROMPT_EDITOR_STATUS_HEIGHT),
+            ),
             text: "Formatting prompt loaded.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -3093,6 +3433,40 @@ unsafe fn build_audio_input_tab(
                 gap,
             },
         );
+        let _overlay_check = add_toggle_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            ToggleRowSpec {
+                title: "Transcription overlay",
+                checked: config.transcription_overlay_enabled,
+                action: sel!(onTranscriptionOverlayToggled:),
+                description: Some(
+                    "On: live floating preview with fast partials. Off: no overlay and buffered partials for lower local load.",
+                ),
+                tag: None,
+                gap,
+            },
+        );
+        let _dock_check = add_toggle_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            ToggleRowSpec {
+                title: "Show Dock icon",
+                checked: config.show_dock_icon,
+                action: sel!(onShowDockIconToggled:),
+                description: Some("Keep CodeScribe in the Dock after windows close."),
+                tag: None,
+                gap,
+            },
+        );
         // Sound volume slider
         let vol_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 20.0)),
@@ -3171,8 +3545,10 @@ unsafe fn build_quality_tab(
         let field_w = content_w;
         let gap = ui_tokens::DENSITY_COMFORTABLE;
         let mut y = frame.size.height - (24.0 + gap);
+        let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
+        let preview_model = current_preview_timing_model();
 
         let title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
@@ -3190,7 +3566,7 @@ unsafe fn build_quality_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Controls for what happens after you release the hotkey. If live deltas look great but final text is bad, start here."
+            text: "Backend, final-pass, and quality controls for what happens when capture leaves the live overlay."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -3198,6 +3574,223 @@ unsafe fn build_quality_tab(
         });
         add_subview(container, subtitle);
         y -= 16.0 + gap;
+
+        let engine_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "Transcription Backend".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, engine_header);
+        y -= 18.0 + gap;
+
+        let provider_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(92.0, 18.0)),
+            text: "Provider:".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, provider_label);
+
+        let ns_popup = objc_class("NSPopUpButton");
+        let provider_popup: Id = msg_send![ns_popup, alloc];
+        let provider_popup: Id = msg_send![provider_popup, initWithFrame:
+            CGRect::new(&CGPoint::new(pad + 96.0, y - 2.0), &CGSize::new(220.0, 24.0))
+            pullsDown: false
+        ];
+        let _: () = msg_send![provider_popup, addItemWithTitle: ns_string("Local Whisper")];
+        let _: () = msg_send![provider_popup, addItemWithTitle: ns_string("Cloud STT")];
+        let provider_index: isize = if _config.use_local_stt { 0 } else { 1 };
+        let _: () = msg_send![provider_popup, selectItemAtIndex: provider_index];
+        button_set_action(provider_popup, action_handler, sel!(onSttProviderChanged:));
+        add_subview(container, provider_popup);
+        y -= 24.0 + gap;
+
+        let backend_note = if _config.use_local_stt {
+            "Current mode: local live preview plus optional local file-based final pass."
+        } else {
+            "Current mode: cloud transcript after capture. Endpoints ending with :stream use NDJSON and fit long buffered runs better."
+        };
+        let provider_hint = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: format!("{backend_note} Live overlay preview is still local in this build."),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, provider_hint);
+        y -= 16.0 + gap;
+
+        let stt_endpoint_val = std::env::var("STT_ENDPOINT").unwrap_or_default();
+        let stt_endpoint_field = create_text_input(
+            CGRect::new(
+                &CGPoint::new(pad, y),
+                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
+            ),
+            "Cloud endpoint (multipart or ...:stream for NDJSON)",
+            &stt_endpoint_val,
+        );
+        style_paper_input(stt_endpoint_field);
+        let _: () = msg_send![stt_endpoint_field, setFont: mono_font_input];
+        button_set_action(
+            stt_endpoint_field,
+            action_handler,
+            sel!(onSttEndpointChanged:),
+        );
+        add_subview(container, stt_endpoint_field);
+        y -= SETTINGS_INPUT_HEIGHT + gap;
+
+        let stt_key_field = create_secure_text_input(
+            CGRect::new(
+                &CGPoint::new(pad, y),
+                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
+            ),
+            "Cloud STT API key (stored in Keychain; erase field to remove)",
+        );
+        style_paper_input(stt_key_field);
+        let _: () = msg_send![stt_key_field, setFont: mono_font_input];
+        button_set_action(stt_key_field, action_handler, sel!(onSttKeyChanged:));
+        add_subview(container, stt_key_field);
+        y -= SETTINGS_INPUT_HEIGHT + gap;
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= ui_tokens::SECTION_GAP;
+
+        let preview_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "Preview Timing".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, preview_header);
+        y -= 18.0 + gap;
+
+        let preview_hint = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: "These controls shape partial publish cadence and overlay emission. Buffer delay only applies after the first visible partial."
+                .to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, preview_hint);
+        y -= 16.0 + gap;
+
+        state.preview_buffer_delay_value_label = Some(add_slider_setting_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            SliderSettingRowSpec {
+                title: "Buffer delay:",
+                value_text: &format!("{} ms", preview_model.buffer_delay_ms),
+                min: 0.0,
+                max: 1500.0,
+                current: preview_model.buffer_delay_ms as f64,
+                action: sel!(onPreviewBufferDelayChanged:),
+                gap,
+            },
+        ));
+        state.preview_typing_cps_value_label = Some(add_slider_setting_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            SliderSettingRowSpec {
+                title: "Typing speed:",
+                value_text: &format!("{:.1} cps", preview_model.typing_cps),
+                min: 5.0,
+                max: 180.0,
+                current: preview_model.typing_cps as f64,
+                action: sel!(onPreviewTypingCpsChanged:),
+                gap,
+            },
+        ));
+        state.preview_emit_words_max_value_label = Some(add_slider_setting_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            SliderSettingRowSpec {
+                title: "Words per tick:",
+                value_text: &format!("{} words", preview_model.emit_words_max),
+                min: 1.0,
+                max: 10.0,
+                current: preview_model.emit_words_max as f64,
+                action: sel!(onPreviewEmitWordsMaxChanged:),
+                gap,
+            },
+        ));
+        state.preview_interim_sec_value_label = Some(add_slider_setting_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            SliderSettingRowSpec {
+                title: "Interim cadence:",
+                value_text: &if (preview_model.effective_interim_sec
+                    - preview_model.requested_interim_sec)
+                    .abs()
+                    > f32::EPSILON
+                {
+                    format!(
+                        "{:.1} s -> {:.1} s effective",
+                        preview_model.requested_interim_sec, preview_model.effective_interim_sec
+                    )
+                } else {
+                    format!("{:.1} s", preview_model.effective_interim_sec)
+                },
+                min: 1.0,
+                max: 12.0,
+                current: preview_model.requested_interim_sec as f64,
+                action: sel!(onPreviewInterimCadenceChanged:),
+                gap,
+            },
+        ));
+
+        let preview_summary = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
+            text: preview_timing_summary_text(preview_model),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, preview_summary);
+        state.preview_timing_summary_label = Some(preview_summary as usize);
+        y -= 16.0 + gap;
+
+        let preview_box_height = 168.0;
+        let (preview_scroll, preview_text_view) = create_scrollable_text_view(
+            CGRect::new(
+                &CGPoint::new(pad, y - preview_box_height),
+                &CGSize::new(content_w, preview_box_height),
+            ),
+            false,
+        );
+        let _: () = msg_send![preview_text_view, setFont: mono_font_input];
+        set_text_view_string(
+            preview_text_view,
+            &preview_timing_report_text(preview_model),
+        );
+        add_subview(container, preview_scroll);
+        state.preview_timing_text_view = Some(preview_text_view as usize);
+        y -= preview_box_height + gap;
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= ui_tokens::SECTION_GAP;
 
         let final_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
@@ -3221,11 +3814,11 @@ unsafe fn build_quality_tab(
             field_w,
             secondary,
             ToggleRowSpec {
-                title: "Ultra Quality (slow final pass)",
+                title: "Local file-based final pass",
                 checked: ultra_on,
                 action: sel!(onUltraQualityToggled:),
                 description: Some(
-                    "Runs an explicit local final pass when dictation ends. Best lever when the preview looks better than the submitted text.",
+                    "Re-runs local Whisper on the saved audio after capture ends. Best lever when live preview looks right but final submit degrades.",
                 ),
                 tag: None,
                 gap,
@@ -4116,6 +4709,152 @@ pub(super) extern "C" fn on_show_dock_icon_toggled(
     }
 }
 
+pub(super) extern "C" fn on_transcription_overlay_toggled(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let state: isize = msg_send![sender, state];
+        let enabled = state == 1;
+        info!("Settings: transcription overlay -> {}", enabled);
+        let config = Config::load();
+        let _ = config.save_to_env(
+            "TRANSCRIPTION_OVERLAY_ENABLED",
+            if enabled { "1" } else { "0" },
+        );
+        sync_runtime_config_via_ipc();
+        if !enabled {
+            crate::hide_transcription_overlay();
+        }
+        refresh_transcription_preview_panel();
+    }
+}
+
+pub(super) extern "C" fn on_preview_buffer_delay_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let value: f64 = msg_send![sender, doubleValue];
+        let ms = value.round() as u64;
+        info!("Settings: preview buffer delay -> {}ms", ms);
+        let config = Config::load();
+        let _ = config.save_to_env("CODESCRIBE_BUFFER_DELAY_MS", &ms.to_string());
+        sync_runtime_config_via_ipc();
+        refresh_transcription_preview_panel();
+    }
+}
+
+pub(super) extern "C" fn on_preview_typing_cps_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let value: f64 = msg_send![sender, doubleValue];
+        let cps = value.max(5.0) as f32;
+        info!("Settings: preview typing cps -> {:.1}", cps);
+        let config = Config::load();
+        let _ = config.save_to_env("CODESCRIBE_TYPING_CPS", &format!("{cps:.1}"));
+        sync_runtime_config_via_ipc();
+        refresh_transcription_preview_panel();
+    }
+}
+
+pub(super) extern "C" fn on_preview_emit_words_max_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let value: f64 = msg_send![sender, doubleValue];
+        let words = value.round().clamp(1.0, 10.0) as u64;
+        info!("Settings: preview emit words max -> {}", words);
+        let config = Config::load();
+        let _ = config.save_to_env("CODESCRIBE_EMIT_WORDS_MAX", &words.to_string());
+        sync_runtime_config_via_ipc();
+        refresh_transcription_preview_panel();
+    }
+}
+
+pub(super) extern "C" fn on_preview_interim_cadence_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let value: f64 = msg_send![sender, doubleValue];
+        let secs = value.clamp(1.0, 12.0) as f32;
+        info!("Settings: preview interim cadence -> {:.1}s", secs);
+        let config = Config::load();
+        let _ = config.save_to_env("CODESCRIBE_BUFFERED_INTERIM_SEC", &format!("{secs:.1}"));
+        sync_runtime_config_via_ipc();
+        refresh_transcription_preview_panel();
+    }
+}
+
+pub(super) extern "C" fn on_stt_provider_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let selected_idx: isize = msg_send![sender, indexOfSelectedItem];
+        let use_local_stt = selected_idx == 0;
+        info!(
+            "Settings: transcription provider -> {}",
+            if use_local_stt { "local" } else { "cloud" }
+        );
+        let config = Config::load();
+        let _ = config.save_to_env("USE_LOCAL_STT", if use_local_stt { "1" } else { "0" });
+        sync_runtime_config_via_ipc();
+    }
+}
+
+pub(super) extern "C" fn on_stt_endpoint_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    unsafe {
+        let ns_val: Id = msg_send![sender, stringValue];
+        let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
+        let value = std::ffi::CStr::from_ptr(cstr)
+            .to_string_lossy()
+            .trim()
+            .to_string();
+        info!("Settings: STT endpoint -> {}", value);
+        let config = Config::load();
+        let _ = config.save_to_env("STT_ENDPOINT", &value);
+        sync_runtime_config_via_ipc();
+    }
+}
+
+pub(super) extern "C" fn on_stt_key_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    unsafe {
+        let ns_val: Id = msg_send![sender, stringValue];
+        let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
+        let value = std::ffi::CStr::from_ptr(cstr)
+            .to_string_lossy()
+            .trim()
+            .to_string();
+        if value.is_empty() {
+            info!("Settings: clearing cloud STT API key from Keychain");
+            if let Err(e) = keychain::delete_key("STT_API_KEY") {
+                warn!("Failed to delete STT_API_KEY from Keychain: {e}");
+            }
+            std::env::remove_var("STT_API_KEY");
+        } else {
+            info!("Settings: cloud STT API key updated (stored in Keychain)");
+            let config = Config::load();
+            let _ = config.save_to_env("STT_API_KEY", &value);
+        }
+        sync_runtime_config_via_ipc();
+    }
+}
+
 pub(super) extern "C" fn on_volume_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];
@@ -4397,6 +5136,72 @@ mod tests {
         assert_eq!(
             hotkey_conflict_details_text(&[]),
             "No conflicts detected in current mode shortcuts."
+        );
+    }
+
+    #[test]
+    fn preview_effective_interim_sec_clamps_without_overlay() {
+        assert_eq!(preview_effective_interim_sec(true, 1.2), 1.2);
+        assert_eq!(
+            preview_effective_interim_sec(false, 1.2),
+            PREVIEW_NO_OVERLAY_MIN_INTERIM_SEC
+        );
+    }
+
+    #[test]
+    fn preview_emit_chunks_respect_emit_words_cap() {
+        let chunks = preview_emit_chunks("Partiale mają być appendowane teraz", 2);
+        assert_eq!(
+            chunks,
+            vec![
+                "Partiale mają ".to_string(),
+                "być appendowane ".to_string(),
+                "teraz".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn preview_timing_steps_grow_visible_text_monotonically() {
+        let model = PreviewTimingModel {
+            overlay_enabled: true,
+            buffer_delay_ms: 280,
+            typing_cps: 90.0,
+            emit_words_max: 2,
+            requested_interim_sec: 1.2,
+            effective_interim_sec: 1.2,
+        };
+        let steps = preview_timing_steps(model);
+        assert!(!steps.is_empty(), "preview should produce visible steps");
+        for pair in steps.windows(2) {
+            assert!(
+                pair[1].visible_text.starts_with(&pair[0].visible_text),
+                "preview should append forward, not reset"
+            );
+            assert!(
+                pair[1].visible_at_ms >= pair[0].visible_at_ms,
+                "preview timestamps should be monotonic"
+            );
+        }
+        let report = preview_timing_report_text(model);
+        assert!(report.contains("Chunker partial targets"));
+        assert!(report.contains("Overlay-visible text"));
+    }
+
+    #[test]
+    fn prompt_editor_layout_does_not_overlap_fields_above() {
+        let gap = 10.0;
+        let controls_bottom_y = 220.0;
+        let layout = compute_prompt_editor_layout(controls_bottom_y, gap);
+        let editor_top = layout.editor_y + layout.editor_height;
+
+        assert!(
+            editor_top <= controls_bottom_y + f64::EPSILON,
+            "editor overlaps controls above"
+        );
+        assert!(
+            layout.status_y + gap <= layout.editor_y + f64::EPSILON,
+            "status must remain below editor"
         );
     }
 

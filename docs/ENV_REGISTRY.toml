@@ -179,6 +179,13 @@ category = "streaming"
 description = "Override silence duration before utterance flush in buffered mode (sec)"
 range = "0.1-10.0"
 
+[vars.TRANSCRIPTION_OVERLAY_ENABLED]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "ui"
+description = "Enable live non-assistive transcription overlay; when disabled the next capture uses a buffered no-overlay profile"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
 # ═══════════════════════════════════════════════════════════════════════════════

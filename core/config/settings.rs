@@ -46,6 +46,8 @@ pub struct UserSettings {
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_dock_icon: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcription_overlay_enabled: Option<bool>,
 
     // ── Promoted from .env (settings.json is now source of truth) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,6 +233,8 @@ struct UiV2 {
     chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     show_dock_icon: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcription_overlay_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -274,6 +278,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "SOUND_NAME",
     // App visibility
     "SHOW_DOCK_ICON",
+    "TRANSCRIPTION_OVERLAY_ENABLED",
     // LLM endpoints
     "LLM_ENDPOINT",
     "LLM_MODEL",
@@ -362,6 +367,7 @@ impl UserSettings {
             ui: Some(UiV2 {
                 chat_zoom: self.chat_zoom,
                 show_dock_icon: self.show_dock_icon,
+                transcription_overlay_enabled: self.transcription_overlay_enabled,
             }),
             features: Some(FeaturesV2 {
                 history_enabled: self.history_enabled,
@@ -435,6 +441,10 @@ impl UserSettings {
                 .and_then(|a| a.llm_model.clone()),
             chat_zoom: v2.ui.as_ref().and_then(|ui| ui.chat_zoom),
             show_dock_icon: v2.ui.as_ref().and_then(|ui| ui.show_dock_icon),
+            transcription_overlay_enabled: v2
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.transcription_overlay_enabled),
             llm_formatting_endpoint: v2
                 .speech
                 .as_ref()
@@ -751,6 +761,7 @@ impl UserSettings {
             "AI_FORMATTING_ENABLED" => self.ai_formatting_enabled = Some(value),
             "BEEP_ON_START" => self.beep_on_start = Some(value),
             "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
+            "TRANSCRIPTION_OVERLAY_ENABLED" => self.transcription_overlay_enabled = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),
@@ -1010,6 +1021,29 @@ mod tests {
 
         let loaded = UserSettings::load();
         assert_eq!(loaded.show_dock_icon, Some(false));
+    }
+
+    #[test]
+    #[serial]
+    fn test_transcription_overlay_enabled_persists_in_v2_ui_section() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_bool("TRANSCRIPTION_OVERLAY_ENABLED", false);
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.transcription_overlay_enabled, Some(false));
+
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read persisted settings"))
+                .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("ui")
+                .and_then(|v| v.get("transcription_overlay_enabled"))
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
     }
 
     #[test]
