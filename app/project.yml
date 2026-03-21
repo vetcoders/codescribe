@@ -1,0 +1,19 @@
+name: CodeScribe
+options:
+  bundleIdPrefix: com.codescribe.app
+  deploymentTarget:
+    macOS: "14.0"
+targets:
+  CodeScribe:
+    type: application
+    platform: macOS
+    sources: [CodeScribe]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.codescribe.app.CodeScribe
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: 5.0
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/CodeScribe/Bridge/codescribe_ffiFFI.h
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
+        OTHER_LDFLAGS: "-lcodescribe_ffi"

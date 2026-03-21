@@ -56,6 +56,13 @@ endef
 
 all: check
 
+bindings:
+	@echo "Generating Swift bindings..."
+	@mkdir -p app/CodeScribe/Bridge
+	@cargo build -p codescribe-ffi
+	@cargo run -p uniffi-bindgen -- generate --library target/debug/libcodescribe_ffi.dylib --language swift --out-dir app/CodeScribe/Bridge
+
+
 build:
 	@echo "Building (debug)..."
 	@cargo build
@@ -431,3 +438,13 @@ download-embedder:
 
 ensure-models:
 	@./scripts/ensure-models.sh
+
+# ============================================================================
+# Xcode & Swift
+# ============================================================================
+
+xcode:
+	@cd app && xcodegen generate
+
+app: xcode
+	@cd app && xcodebuild -project CodeScribe.xcodeproj -scheme CodeScribe -configuration Debug build

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "core"]
+members = ["core", "ffi", "uniffi-bindgen"]
 
 [workspace.package]
 version = "0.8.0"
@@ -11,140 +11,11 @@ authors = ["VetCoders <hello@vetcoders.io>"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
-base64 = "0.22"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 tracing = "0.1"
-
-[package]
-name = "codescribe"
-version = "0.8.0"
-edition = "2024"
-description = "Speech-to-text tray app for macOS - Pure Rust"
-authors = ["VetCoders <hello@vetcoders.io>"]
-license = "Apache-2.0"
-repository = "https://github.com/VetCoders/CodeScribe"
-homepage = "https://github.com/VetCoders/CodeScribe"
-documentation = "https://github.com/VetCoders/CodeScribe/tree/main/docs"
-keywords = ["speech-to-text", "whisper", "macos", "dictation", "audio"]
-categories = ["command-line-utilities", "multimedia::audio"]
-
-[[bin]]
-name = "codescribe"
-path = "bin/codescribe.rs"
-
-[[bin]]
-name = "codescribe-quality"
-path = "bin/codescribe_quality.rs"
-
-[[bin]]
-name = "codescribe-loop"
-path = "bin/codescribe_loop.rs"
-
-[lib]
-path = "app/lib.rs"
-
-[features]
-default = ["liquid_glass"]
-liquid_glass = []
-
-[dependencies]
-# Core library
-codescribe_core = { package = "codescribe-core", path = "core" }
-
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
-# System tray
-tray-icon = "0.21"
-muda = "0.17"  # Menu for tray
-tao = "0.34"   # Event loop for tray (required on macOS)
-
-# Global hotkeys - using core-graphics CGEventTap directly
-# rdev = "0.5"  # DISABLED - crashes on macOS 26.2 (TSMGetInputSourceProperty from wrong thread)
-# global-hotkey = "0.6"  # DISABLED - requires F-keys, can't detect modifier-only presses
-# Now using CGEventTap via core-graphics for proper modifier-only detection
-
-# Audio recording
-
-# HTTP client
-reqwest = { version = "0.12", features = ["json", "multipart", "blocking", "stream"] }
-
-# WebSocket client for voice chat
-tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
-futures-util = "0.3"
-async-trait = "0.1"
-base64 = "0.22"
-
-# Clipboard
-arboard = "3"
-
-# Key simulation for paste: Using core-graphics CGEvent directly (enigo removed)
-# enigo crashes on macOS 26.2 due to TSMGetInputSourceProperty called from wrong thread
-
-# Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
-# Config/paths
-directories = "6"
-
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Error handling
-anyhow = "1"
-
-# CLI
-clap = { version = "4", features = ["derive"] }
-
-# Async channels
-crossbeam-channel = "0.5"
-
-# Time utilities
-chrono = "0.4"
-
-# UUID generation
-uuid = { version = "1", features = ["v4"] }
-
-# Lazy static for global state
-lazy_static = "1.4"
-libc = "0.2"
-
-# Image processing (for tray icon)
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-# macOS specific - for better hotkey support if rdev fails
-core-foundation = "0.10"
-core-graphics = "0.25"
-# UI utilities (hold badge, caret tracking) - modern objc2-* crates
-objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSColor", "NSEvent", "NSBezierPath", "NSGraphics", "NSResponder", "NSVisualEffectView", "NSGlassEffectView", "NSApplication"] }
-objc2-core-foundation = "0.3"
-# Legacy objc for runtime declarations (ClassDecl) and msg_send! macro
-objc = "0.2"
-# ObjC blocks for callback-based permission APIs (e.g. AVCaptureDevice requestAccess)
-block = "0.1"
-# Grand Central Dispatch for main thread operations
-dispatch = "0.2"
-
-[dev-dependencies]
-codescribe_core = { package = "codescribe-core", path = "core", features = ["offline_eval"] }
-tempfile = "3"
-mockito = "1"
-serial_test = "3"
-hound = "3.5"
-
-[lints.rust]
-# Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)
-# embed_model/embed_tts/embed_e5 are set by build.rs when models are available
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(embed_model)', 'cfg(embed_tts)', 'cfg(embed_e5)'] }
 
 [profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
+opt-level = 3
+lto = "thin"
+strip = "symbols"

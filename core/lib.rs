@@ -41,6 +41,7 @@ pub mod ipc;
 pub mod llm;
 pub mod pipeline;
 pub mod quality;
+pub mod qube;
 pub mod state;
 pub mod stt;
 pub mod tts;
