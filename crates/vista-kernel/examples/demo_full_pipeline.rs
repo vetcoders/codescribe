@@ -14,8 +14,9 @@
 //!   - LLM_ENDPOINT + LLM_MODEL (or LLM_FORMATTING_* overrides) for formatting
 
 use anyhow::Result;
-use codescribe::whisper::{DecodingParams, LocalWhisperEngine};
+use qube_stt::stt::whisper::{DecodingParams, LocalWhisperEngine};
 use std::path::PathBuf;
+use vista_kernel::stream_postprocess::StreamPostProcessor;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -90,14 +91,24 @@ async fn main() -> Result<()> {
     // 2. Transcribe
     println!("\n[2/3] Transcribing audio...");
     let start = std::time::Instant::now();
-    let (samples, sample_rate) = codescribe::audio::load_audio_file(&audio_file)?;
+    let (samples, sample_rate) = vista_kernel::audio::load_audio_file(&audio_file)?;
     let duration_sec = samples.len() as f32 / sample_rate as f32;
     println!("      Audio duration: {:.1}s", duration_sec);
 
-    let lang = engine.detect_language(&samples, sample_rate)?;
+    // By-passing VAD because it aggressively drops the quiet "No to dobra" start and trailing "Toolchain 2024".
+    // For file ingestion, we want 100% audio context to achieve human reference.
+    let speech_samples = samples.clone();
+
+    let lang = engine.detect_language(&speech_samples, sample_rate)?;
     println!("      Detected language: {}", lang);
 
-    let raw_text = engine.transcribe_long_with_language(&samples, sample_rate, Some(&lang))?;
+    let mut raw_text =
+        engine.transcribe_long_with_language(&speech_samples, sample_rate, Some(&lang))?;
+
+    let mut postprocessor = StreamPostProcessor::new();
+    if let Some(processed) = postprocessor.process_utterance(&raw_text) {
+        raw_text = processed;
+    }
     let transcribe_time = start.elapsed();
     let rtf = duration_sec / transcribe_time.as_secs_f32();
     println!(
@@ -154,7 +165,8 @@ async fn main() -> Result<()> {
     println!("      LLM_MODEL: {}", llm_model.as_ref().unwrap());
 
     let start = std::time::Instant::now();
-    let formatted = codescribe::ai_formatting::format_text(&raw_text, Some(&lang), assistive).await;
+    let formatted: String =
+        vista_kernel::ai_formatting::format_text(&raw_text, Some(&lang), assistive).await;
     let format_time = start.elapsed();
     println!("      Format time: {:?}", format_time);
     println!("      Formatted chars: {}", formatted.len());
