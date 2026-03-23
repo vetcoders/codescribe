@@ -238,9 +238,11 @@ pub mod tts {
 pub use audio::recorder::{Recorder, RecorderConfig, RecorderDiagnostics};
 pub use llm::{ai_formatting, client};
 pub use quality::{quality_loop, quality_report};
+pub use server::{LocalTranscriptionBackend, ServerConfig, ServerHandle, TranscribeResponse};
 
 pub mod llm;
 pub mod quality;
+pub mod server;
 pub mod state;
 pub mod status;
 

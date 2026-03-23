@@ -2,7 +2,7 @@
 //!
 //! Usage: cargo run --release --example transcribe_file -- /path/to/audio.wav
 
-use codescribe::whisper::LocalWhisperEngine;
+use qube_stt::stt::whisper::LocalWhisperEngine;
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;

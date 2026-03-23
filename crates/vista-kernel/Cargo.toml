@@ -10,6 +10,7 @@ manual-examples = []
 
 [dependencies]
 anyhow.workspace = true
+axum = { workspace = true, features = ["multipart"] }
 base64.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
@@ -17,9 +18,11 @@ qube-audio = { path = "../qube-audio" }
 qube-stt = { path = "../qube-stt" }
 qube-support = { path = "../qube-support" }
 qube-ws = { path = "../qube-ws", features = ["offline_eval"] }
+regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
@@ -28,7 +31,7 @@ tracing.workspace = true
 hound.workspace = true
 mockito = "1"
 serial_test.workspace = true
-tempfile.workspace = true
+tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid.workspace = true
 
@@ -66,4 +69,8 @@ required-features = ["manual-examples"]
 
 [[example]]
 name = "transcribe_file"
+required-features = ["manual-examples"]
+
+[[example]]
+name = "demo_zero_lane"
 required-features = ["manual-examples"]
