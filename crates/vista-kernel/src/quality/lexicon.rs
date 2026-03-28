@@ -168,10 +168,13 @@ impl Lexicon {
     }
 }
 
+use std::sync::LazyLock;
+
+static GLOBAL_LEXICON: LazyLock<Lexicon> = LazyLock::new(|| Lexicon::from_embedded());
+
 /// Convenience function: load embedded lexicons + apply to transcript in one call.
 pub fn apply_lexicons(transcript: String) -> String {
-    let lexicon = Lexicon::from_embedded();
-    lexicon.apply(&transcript)
+    GLOBAL_LEXICON.apply(&transcript)
 }
 
 // ---------- Internal loading ----------
