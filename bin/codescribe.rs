@@ -16,6 +16,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tracing::info;
 
 /// CodeScribe CLI - Local speech-to-text transcription
 ///
@@ -490,6 +491,23 @@ async fn run_daemon() -> Result<()> {
     use tokio::runtime::Handle;
 
     eprintln!("CodeScribe daemon starting...");
+
+    // ── Build metadata ──
+    info!(
+        "CodeScribe {} | build={} | profile={} | rustc={} | exe={}",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("CODESCRIBE_BUILD_COMMIT").unwrap_or("dev"),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        option_env!("CODESCRIBE_RUSTC_VERSION").unwrap_or("unknown"),
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "unknown".into()),
+    );
+
     let config = Config::load();
     let user_settings = UserSettings::load();
 

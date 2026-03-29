@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::sync::{LazyLock, RwLock};
+use std::time::{Instant, SystemTime};
 
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -10,13 +11,12 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 
-const BUILTIN_LEXICONS: &[(&str, &str)] = &[
-    (
-        "programming",
-        include_str!("../../assets/programming.jsonl"),
-    ),
-    ("veterinary", include_str!("../../assets/veterinary.jsonl")),
-];
+const BUILTIN_LEXICONS: &[(&str, &str)] = &[(
+    "programming",
+    include_str!("../../assets/programming.jsonl"),
+)];
+const SEED_JSONL: &str = include_str!("../../assets/seed.jsonl");
+
 const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.93;
 const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
 const MAX_EMBED_CHARS: usize = 512;
@@ -36,12 +36,42 @@ struct LexiconExtras {
 }
 
 #[derive(Debug, Deserialize)]
-struct LexiconEntry {
+struct LegacyEntry {
     term: String,
     #[serde(default)]
     mispronunciations: Vec<String>,
     #[serde(default)]
     extras: Option<LexiconExtras>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SeedNormalization {
+    #[serde(default)]
+    input_variants: Vec<String>,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    case_sensitive: bool,
+    #[serde(default)]
+    whole_word_only: bool,
+}
+
+impl Default for SeedNormalization {
+    fn default() -> Self {
+        Self {
+            input_variants: Vec::new(),
+            enabled: true,
+            case_sensitive: false,
+            whole_word_only: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SeedEntry {
+    canonical: String,
+    #[serde(default)]
+    normalization: SeedNormalization,
 }
 
 #[derive(Debug)]
@@ -52,43 +82,71 @@ struct LexiconRule {
 
 #[derive(Debug)]
 struct Lexicon {
-    rules: Vec<LexiconRule>,
-    builtin_count: usize,
+    builtin_rules: Vec<LexiconRule>,
+    custom_rules: Vec<LexiconRule>,
     custom_path: PathBuf,
     custom_mtime: Option<SystemTime>,
 }
 
+static GLOBAL_LEXICON: LazyLock<RwLock<Lexicon>> = LazyLock::new(|| {
+    let lex = Lexicon::from_builtin();
+    info!(
+        "Global lexicon singleton initialized: {} rules",
+        lex.rule_count()
+    );
+    RwLock::new(lex)
+});
+
 impl Lexicon {
     fn from_builtin() -> Self {
-        let mut rules = Vec::new();
-        let mut builtin_count = 0usize;
+        let t0 = Instant::now();
+        let mut builtin_rules = Vec::new();
+
+        let t_legacy = Instant::now();
         for (label, source) in BUILTIN_LEXICONS {
-            builtin_count += load_rules_from_jsonl(source, label, &mut rules);
+            load_legacy_jsonl(source, label, &mut builtin_rules);
         }
+        let legacy_ms = t_legacy.elapsed().as_millis();
+        let legacy_count = builtin_rules.len();
+
+        let t_seed = Instant::now();
+        let seed_count = load_seed_jsonl(SEED_JSONL, "seed", &mut builtin_rules);
+        let seed_ms = t_seed.elapsed().as_millis();
 
         let custom_path = Config::config_dir().join("lexicon.custom.jsonl");
         let custom_mtime = fs::metadata(&custom_path)
             .ok()
             .and_then(|m| m.modified().ok());
 
+        let t_custom = Instant::now();
+        let mut custom_rules = Vec::new();
         let custom_count = load_custom_lexicon()
-            .map(|content| load_rules_from_jsonl(&content, "custom", &mut rules))
+            .map(|content| load_legacy_jsonl(&content, "custom", &mut custom_rules))
             .unwrap_or(0);
+        let custom_ms = t_custom.elapsed().as_millis();
 
-        if !rules.is_empty() {
+        let total_ms = t0.elapsed().as_millis();
+        let total = builtin_rules.len() + custom_count;
+
+        if total > 0 {
             info!(
-                "Loaded {} lexicon rules (builtin={}, custom={})",
-                rules.len(),
-                builtin_count,
-                custom_count
+                "Loaded {} lexicon rules in {}ms (legacy={} in {}ms, seed={} in {}ms, custom={} in {}ms)",
+                total,
+                total_ms,
+                legacy_count,
+                legacy_ms,
+                seed_count,
+                seed_ms,
+                custom_count,
+                custom_ms,
             );
         } else {
             warn!("No lexicon rules loaded from lexicon sources");
         }
 
         Self {
-            rules,
-            builtin_count,
+            builtin_rules,
+            custom_rules,
             custom_path,
             custom_mtime,
         }
@@ -101,35 +159,66 @@ impl Lexicon {
         if current_mtime == self.custom_mtime {
             return;
         }
-        self.rules.truncate(self.builtin_count);
+        self.custom_rules.clear();
         let custom_count = fs::read_to_string(&self.custom_path)
             .ok()
             .filter(|c| !c.trim().is_empty())
-            .map(|content| load_rules_from_jsonl(&content, "custom", &mut self.rules))
+            .map(|content| load_legacy_jsonl(&content, "custom", &mut self.custom_rules))
             .unwrap_or(0);
         self.custom_mtime = current_mtime;
         info!(
             "Hot-reloaded {} custom lexicon rules (total={})",
             custom_count,
-            self.rules.len()
+            self.rule_count()
         );
     }
 
     fn apply(&self, text: &str) -> String {
+        let t0 = Instant::now();
         let mut out = text.to_string();
-        for rule in &self.rules {
+        let mut matches = 0u32;
+        for rule in self.builtin_rules.iter().chain(self.custom_rules.iter()) {
             if rule.pattern.is_match(&out) {
                 out = rule
                     .pattern
                     .replace_all(&out, rule.replacement.as_str())
                     .to_string();
+                matches += 1;
             }
+        }
+        let apply_ms = t0.elapsed().as_millis();
+        if apply_ms > 50 {
+            debug!(
+                "Lexicon apply: {}ms ({} rules, {} matches, {} chars)",
+                apply_ms,
+                self.rule_count(),
+                matches,
+                text.len()
+            );
         }
         out
     }
+
+    fn rule_count(&self) -> usize {
+        self.builtin_rules.len() + self.custom_rules.len()
+    }
 }
 
-fn load_rules_from_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) -> usize {
+fn maybe_reload_global_lexicon() {
+    let mut lexicon = GLOBAL_LEXICON
+        .write()
+        .expect("global lexicon write lock poisoned");
+    lexicon.maybe_reload();
+}
+
+fn apply_global_lexicon(text: &str) -> String {
+    let lexicon = GLOBAL_LEXICON
+        .read()
+        .expect("global lexicon read lock poisoned");
+    lexicon.apply(text)
+}
+
+fn load_legacy_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) -> usize {
     let mut added = 0usize;
     for (idx, line) in source.lines().enumerate() {
         let line = line.trim();
@@ -137,7 +226,7 @@ fn load_rules_from_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>
             continue;
         }
 
-        let entry: LexiconEntry = match serde_json::from_str(line) {
+        let entry: LegacyEntry = match serde_json::from_str(line) {
             Ok(entry) => entry,
             Err(e) => {
                 warn!(
@@ -173,6 +262,73 @@ fn load_rules_from_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>
     }
 
     added
+}
+
+fn load_seed_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) -> usize {
+    let mut added = 0usize;
+    for (idx, line) in source.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let entry: SeedEntry = match serde_json::from_str(line) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Lexicon {}: line {} parse error: {}", label, idx + 1, e);
+                continue;
+            }
+        };
+
+        if !entry.normalization.enabled {
+            continue;
+        }
+
+        for variant in &entry.normalization.input_variants {
+            if variant.eq_ignore_ascii_case(&entry.canonical) {
+                continue;
+            }
+            let pattern = if entry.normalization.whole_word_only {
+                build_word_regex(variant)
+            } else {
+                build_plain_regex(variant, entry.normalization.case_sensitive)
+            };
+            if let Some(pattern) = pattern {
+                rules.push(LexiconRule {
+                    pattern,
+                    replacement: entry.canonical.clone(),
+                });
+                added += 1;
+            }
+        }
+    }
+    added
+}
+
+fn build_word_regex(input: &str) -> Option<Regex> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let escaped = regex::escape(trimmed);
+    let flexible = escaped.replace(' ', r"\s+");
+    let pattern = format!(r"(?i)\b{}\b", flexible);
+    Regex::new(&pattern).ok()
+}
+
+fn build_plain_regex(input: &str, case_sensitive: bool) -> Option<Regex> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let escaped = regex::escape(trimmed);
+    let flexible = escaped.replace(' ', r"\s+");
+    let pattern = if case_sensitive {
+        flexible
+    } else {
+        format!("(?i){}", flexible)
+    };
+    Regex::new(&pattern).ok()
 }
 
 fn load_custom_lexicon() -> Option<String> {
@@ -279,7 +435,6 @@ impl SemanticGate {
 
 #[derive(Debug)]
 pub struct StreamPostProcessor {
-    lexicon: Lexicon,
     gate: SemanticGate,
     stats: StreamPostProcessStats,
 }
@@ -298,8 +453,9 @@ pub struct StreamPostProcessStats {
 
 impl StreamPostProcessor {
     pub fn new() -> Self {
+        // Touch the global singleton to trigger lazy init (if not yet initialized)
+        drop(GLOBAL_LEXICON.read());
         Self {
-            lexicon: Lexicon::from_builtin(),
             gate: SemanticGate::new(),
             stats: StreamPostProcessStats {
                 embeddings_enabled: embeddings_enabled(),
@@ -321,14 +477,14 @@ impl StreamPostProcessor {
 
     fn process_internal(&mut self, text: &str, apply_gate: bool) -> Option<String> {
         self.stats.input_chunks += 1;
-        self.lexicon.maybe_reload();
+        maybe_reload_global_lexicon();
 
         if text.trim().is_empty() {
             self.stats.dropped_chunks += 1;
             return None;
         }
 
-        let mut cleaned = self.lexicon.apply(text);
+        let mut cleaned = apply_global_lexicon(text);
         if cleaned != text {
             self.stats.lexicon_rewrites += 1;
         }
@@ -370,13 +526,6 @@ impl Default for StreamPostProcessor {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn build_word_regex(input: &str) -> Option<Regex> {
-    let mut escaped = regex::escape(input);
-    escaped = escaped.replace("\\ ", "\\s+");
-    let pattern = format!(r"(?i)\b{}\b", escaped);
-    Regex::new(&pattern).ok()
 }
 
 fn env_f32(key: &str, default: f32) -> f32 {

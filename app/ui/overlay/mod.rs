@@ -24,8 +24,8 @@ use objc2_app_kit::{
     NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
@@ -65,10 +65,29 @@ const OVERLAY_BUTTON_HEIGHT: f64 = 28.0;
 const OVERLAY_BUTTON_MARGIN: f64 = 8.0;
 const OVERLAY_HEADER_LABEL: &str = "CodeScribe - Dictation Overlay";
 
-// Auto-hide delay after recording completes
-const AUTO_HIDE_DELAY_SECS: u64 = 5;
+// Auto-hide delay after recording completes (configurable via env)
+const DEFAULT_AUTO_HIDE_DELAY_SECS: u64 = 15;
+const MIN_AUTO_HIDE_DELAY_SECS: u64 = 3;
+const MAX_AUTO_HIDE_DELAY_SECS: u64 = 60;
 const OVERLAY_LAYOUT_THROTTLE_MS: u64 = 80;
 const OVERLAY_LAYOUT_HYSTERESIS_PX: f64 = 1.0;
+
+fn parse_auto_hide_delay_secs(raw: Option<&str>) -> u64 {
+    raw.and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(MIN_AUTO_HIDE_DELAY_SECS, MAX_AUTO_HIDE_DELAY_SECS))
+        .unwrap_or(DEFAULT_AUTO_HIDE_DELAY_SECS)
+}
+
+fn auto_hide_delay_secs() -> u64 {
+    static DELAY: OnceLock<u64> = OnceLock::new();
+    *DELAY.get_or_init(|| {
+        parse_auto_hide_delay_secs(
+            std::env::var("TRANSCRIPTION_OVERLAY_AUTO_HIDE_SECS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
 
 /// Configuration for the transcription overlay
 #[derive(Debug, Clone)]
@@ -410,7 +429,7 @@ fn decision_hint_text(mode: TranscriptionActionContractMode, include_auto_hide: 
         action_contract_source_label(mode)
     );
     if include_auto_hide {
-        format!("{base} | Auto-hide {}s", AUTO_HIDE_DELAY_SECS)
+        format!("{base} | Auto-hide {}s", auto_hide_delay_secs())
     } else {
         base
     }
@@ -1513,13 +1532,13 @@ pub fn schedule_auto_hide() {
     });
 
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(AUTO_HIDE_DELAY_SECS));
+        std::thread::sleep(Duration::from_secs(auto_hide_delay_secs()));
 
         if should_auto_hide(generation) {
             hide_transcription_overlay();
             debug!(
                 "Transcription overlay auto-hidden after {}s",
-                AUTO_HIDE_DELAY_SECS
+                auto_hide_delay_secs()
             );
         } else {
             debug!("Auto-hide skipped");
@@ -1846,7 +1865,19 @@ mod tests {
 
     #[test]
     fn test_auto_hide_delay_seconds() {
-        assert_eq!(AUTO_HIDE_DELAY_SECS, 5);
+        assert_eq!(
+            parse_auto_hide_delay_secs(None),
+            DEFAULT_AUTO_HIDE_DELAY_SECS
+        );
+        assert_eq!(
+            parse_auto_hide_delay_secs(Some("2")),
+            MIN_AUTO_HIDE_DELAY_SECS
+        );
+        assert_eq!(
+            parse_auto_hide_delay_secs(Some("999")),
+            MAX_AUTO_HIDE_DELAY_SECS
+        );
+        assert_eq!(parse_auto_hide_delay_secs(Some("18")), 18);
     }
 
     #[test]

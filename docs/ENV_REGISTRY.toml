@@ -962,3 +962,45 @@ type = "bool"
 reload = "restart"
 category = "assistive"
 description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."
+
+[vars.ASSISTIVE_CONTEXT_PROMPT_MAX_CHARS]
+default = "5000"
+type = "usize"
+reload = "restart"
+category = "assistive"
+description = "Max characters captured from selection for assistive context prompt"
+
+[vars.CODESCRIBE_ASSISTIVE_DEADLINE_SECS]
+default = "15"
+type = "u64"
+reload = "hot"
+category = "assistive"
+description = "Timeout in seconds for assistive tasks"
+
+[vars.TRACE_PIPELINE]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "debug"
+description = "Enable verbose pipeline tracing"
+
+[vars.TRANSCRIPTION_OVERLAY_AUTO_HIDE_SECS]
+default = "4"
+type = "u64"
+reload = "hot"
+category = "ui"
+description = "Auto-hide delay for transcription overlay in seconds"
+
+[vars.VOICE_CHAT_RECENT_CONTEXT_TTL_SECS]
+default = "60"
+type = "u64"
+reload = "hot"
+category = "assistive"
+description = "TTL for recent context in voice chat (seconds)"
+
+[vars.VOICE_CHAT_RECENT_SELECTION_MAX_CHARS]
+default = "5000"
+type = "usize"
+reload = "restart"
+category = "assistive"
+description = "Max characters captured from recent selection for voice chat"
