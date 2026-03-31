@@ -204,7 +204,7 @@ fn test_action_contract_mode_prefers_raw_when_forced() {
     let mode = resolve_transcription_action_contract_mode(true, false, true, true);
     assert_eq!(
         mode,
-        crate::transcription_overlay::TranscriptionActionContractMode::Raw
+        crate::ui::overlay::TranscriptionActionContractMode::Raw
     );
 }
 
@@ -213,7 +213,7 @@ fn test_action_contract_mode_uses_ai_format_when_force_ai_enabled() {
     let mode = resolve_transcription_action_contract_mode(false, true, false, false);
     assert_eq!(
         mode,
-        crate::transcription_overlay::TranscriptionActionContractMode::AiFormat
+        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
     );
 }
 
@@ -222,7 +222,7 @@ fn test_action_contract_mode_uses_ai_format_for_toggle_ai_path() {
     let mode = resolve_transcription_action_contract_mode(false, false, true, true);
     assert_eq!(
         mode,
-        crate::transcription_overlay::TranscriptionActionContractMode::AiFormat
+        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
     );
 }
 
@@ -231,7 +231,7 @@ fn test_action_contract_mode_uses_raw_for_toggle_without_ai() {
     let mode = resolve_transcription_action_contract_mode(false, false, true, false);
     assert_eq!(
         mode,
-        crate::transcription_overlay::TranscriptionActionContractMode::Raw
+        crate::ui::overlay::TranscriptionActionContractMode::Raw
     );
 }
 

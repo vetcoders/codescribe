@@ -175,35 +175,6 @@ pub(crate) fn transcribe_long(
     guard.transcribe_long(audio, sample_rate, language)
 }
 
-/// Transcribe a single chunk via the ONNX engine (blocking lock).
-#[allow(dead_code)]
-pub(crate) fn transcribe_chunk(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<String> {
-    init()?;
-    let engine = ENGINE.get().context("ONNX engine not initialized")?;
-    let mut guard = engine
-        .lock()
-        .map_err(|e| anyhow!("ONNX lock error: {}", e))?;
-    guard.transcribe_internal(audio, sample_rate, language)
-}
-
-/// Transcribe long audio via the ONNX engine (try_lock) with segment metadata.
-pub(crate) fn try_transcribe_long_with_segments(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<RawTranscript> {
-    init()?;
-    let engine = ENGINE.get().context("ONNX engine not initialized")?;
-    let mut guard = engine
-        .try_lock()
-        .map_err(|_| anyhow!("ONNX engine busy, skipping correction"))?;
-    guard.transcribe_long_raw(audio, sample_rate, language)
-}
-
 /// Resolve ONNX model path from env or HF cache.
 fn resolve_model_path() -> Result<PathBuf> {
     // 1. Explicit env override
@@ -311,30 +282,6 @@ impl OnnxEngine {
     /// with `use_cache_branch=false`, so no past_key_values management needed.
     /// This is O(n²) in token count but correct — KV cache optimization can
     /// come later after we verify quality.
-    #[allow(dead_code)]
-    fn transcribe_internal(
-        &mut self,
-        samples: &[f32],
-        sample_rate: u32,
-        language: Option<&str>,
-    ) -> Result<String> {
-        Ok(self
-            .transcribe_internal_raw(samples, sample_rate, language)?
-            .text)
-    }
-
-    #[allow(dead_code)]
-    fn transcribe_internal_raw(
-        &mut self,
-        samples: &[f32],
-        sample_rate: u32,
-        language: Option<&str>,
-    ) -> Result<RawTranscript> {
-        ensure!(!samples.is_empty(), "audio is empty");
-        let samples_16k = audio_loader::resample_to_16k(samples, sample_rate);
-        self.transcribe_internal_16k_raw(&samples_16k, language)
-    }
-
     fn transcribe_internal_16k_raw(
         &mut self,
         samples_16k: &[f32],
@@ -538,7 +485,7 @@ impl OnnxEngine {
     /// We use 30s chunks with 5s overlap so each chunk fills the encoder
     /// natively without pad-or-trim distortion. Only the last chunk may
     /// be shorter and gets zero-padded by the mel pad-or-trim in
-    /// `transcribe_internal`.
+    /// `transcribe_internal_16k_raw`.
     fn transcribe_long(
         &mut self,
         samples: &[f32],

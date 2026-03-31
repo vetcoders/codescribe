@@ -28,10 +28,11 @@ use crate::ui::onboarding::{
     request_permission,
 };
 use crate::ui_helpers::{
-    LabelConfig, add_subview, apply_tafla_surface, button, button_set_action, create_checkbox,
-    create_floating_window, create_glass_effect_view_with, create_label, create_secure_text_input,
-    create_slider, create_text_input, ns_string, set_text_field_string, ui_colors, ui_tokens,
-    window_close, window_content_view, window_show,
+    LabelConfig, add_subview, add_tafla_header_separator, button, button_set_action,
+    create_checkbox, create_floating_window, create_label, create_secure_text_input, create_slider,
+    create_tafla_split_shell, create_text_input, ns_string, set_text_field_string,
+    style_tafla_input, style_tafla_section, ui_colors, ui_tokens, window_close,
+    window_content_view, window_show,
 };
 
 mod handlers;
@@ -54,6 +55,7 @@ const SIDEBAR_INSET: f64 = 10.0;
 const PERMISSION_ROW_HEIGHT: f64 = 24.0 + ui_tokens::DENSITY_COMFORTABLE;
 const PERMISSION_BUTTON_WIDTH: f64 = 118.0;
 const STEP_ROW_HEIGHT: f64 = 24.0 + ui_tokens::DENSITY_COMFORTABLE;
+const SETUP_LAUNCH_PAD_BUTTON_HEIGHT: f64 = 28.0;
 const SETUP_TOP_OFFSET: f64 = 20.0;
 const SETUP_POST_STEPS_GAP: f64 = 8.0;
 const SETUP_SAVE_MIN_ANCHOR_Y: f64 = 52.0;
@@ -190,60 +192,13 @@ fn setup_content_height(min_visible_height: f64, gap: f64) -> f64 {
         + (20.0 + gap) // quick start header
         + quick_start_steps * STEP_ROW_HEIGHT
         + SETUP_POST_STEPS_GAP
+        + (20.0 + gap) // launch pads header
+        + (16.0 + gap) // launch pads hint
+        + (SETUP_LAUNCH_PAD_BUTTON_HEIGHT + gap) * 2.0
         + (16.0 + gap) // checklist hint
         + gap // setup divider
         + (16.0 + gap); // tab routing hint
     min_visible_height.max((SETUP_TOP_OFFSET + flow_before_save + SETUP_SAVE_MIN_ANCHOR_Y).ceil())
-}
-
-unsafe fn style_tafla_section(container: Id) {
-    let _: () = msg_send![container, setWantsLayer: true];
-    let layer: Id = msg_send![container, layer];
-    if layer.is_null() {
-        return;
-    }
-    let bg = unsafe { settings_content_paper_bg() };
-    let cg_bg: Id = msg_send![bg, CGColor];
-    let _: () = msg_send![layer, setBackgroundColor: cg_bg];
-    unsafe {
-        apply_tafla_surface(layer, true);
-    }
-    let _: () = msg_send![layer, setMasksToBounds: true];
-}
-
-unsafe fn style_paper_input(field: Id) {
-    let _: () = msg_send![field, setDrawsBackground: true];
-    let input_bg = unsafe { settings_input_paper_bg() };
-    let _: () = msg_send![field, setBackgroundColor: input_bg];
-}
-
-unsafe fn settings_content_paper_bg() -> Id {
-    let base = ui_colors::surface_paper_warm();
-    msg_send![base, colorWithAlphaComponent: 0.68f64]
-}
-
-unsafe fn settings_input_paper_bg() -> Id {
-    let base = ui_colors::surface_paper_warm();
-    msg_send![base, colorWithAlphaComponent: 0.84f64]
-}
-
-unsafe fn settings_sidebar_tint_color() -> Id {
-    let base = ui_colors::control_bg_tint(0.22);
-    msg_send![base, colorWithAlphaComponent: 0.95f64]
-}
-
-unsafe fn add_tafla_header_separator(container: Id, x: f64, y: f64, width: f64) -> f64 {
-    let separator = create_label(LabelConfig {
-        frame: CGRect::new(&CGPoint::new(x, y), &CGSize::new(width, 1.0)),
-        text: String::new(),
-        background_color: Some(ui_colors::header_border()),
-        ..Default::default()
-    });
-    let _: () = msg_send![separator, setAlphaValue: 0.9f64];
-    unsafe {
-        add_subview(container, separator);
-    }
-    y - 1.0
 }
 
 unsafe fn autosize_tab_document_view(document_view: Id, minimum_height: f64) -> f64 {
@@ -536,7 +491,7 @@ pub fn schedule_bootstrap() {
 
     thread::spawn(|| {
         thread::sleep(Duration::from_millis(800));
-        show_settings_setup_tab();
+        show_creator_window();
     });
 }
 
@@ -577,6 +532,11 @@ pub fn show_bootstrap_overlay() {
 /// Alias: Settings window (bootstrap is now a standalone Settings window).
 pub fn show_settings_window() {
     show_bootstrap_overlay();
+}
+
+/// Primary graphical entrypoint for the native macOS Creator window.
+pub fn show_creator_window() {
+    show_settings_setup_tab();
 }
 
 fn show_bootstrap_overlay_impl() {
@@ -625,18 +585,18 @@ fn show_bootstrap_overlay_impl() {
 
         // Settings window should be fixed-size (no resize / fullscreen), to avoid AppKit
         // fullscreen transition crashes with our custom content setup.
-        let window = create_floating_window(frame, "CodeScribe Settings", false, false);
+        let window = create_floating_window(frame, "CodeScribe Creator", false, false);
         // Keep Settings glass/opacity aligned with chat + transcription overlays.
         let _: () = msg_send![window, setAlphaValue: SETTINGS_MAX_OPACITY];
         let _: () = msg_send![window, setLevel: crate::ui_helpers::NS_NORMAL_WINDOW_LEVEL];
         let _: () = msg_send![window, setTitleVisibility: 0_isize]; // NSWindowTitleVisible
         let _: () = msg_send![window, setTitlebarAppearsTransparent: false];
-        let _: () = msg_send![window, setTitle: ns_string("CodeScribe Settings")];
+        let _: () = msg_send![window, setTitle: ns_string("CodeScribe Creator")];
         let supports_subtitle: bool = msg_send![window, respondsToSelector: sel!(setSubtitle:)];
         if supports_subtitle {
             let _: () = msg_send![
                 window,
-                setSubtitle: ns_string("Native macOS speech-to-text setup and runtime tuning")
+                setSubtitle: ns_string("Native macOS creator, setup, and runtime tuning")
             ];
         }
         let toolbar_delegate_class = toolbar_delegate_class();
@@ -726,13 +686,6 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
             root,
             setAutoresizingMask: 2_isize | 16_isize // NSViewWidthSizable | NSViewHeightSizable
         ];
-        let _: () = msg_send![root, setWantsLayer: true];
-        let root_layer: Id = msg_send![root, layer];
-        if !root_layer.is_null() {
-            let _: () = msg_send![root_layer, setCornerRadius: ui_tokens::SURFACE_RADIUS];
-            let _: () = msg_send![root_layer, setMasksToBounds: true];
-            let _: () = msg_send![root_layer, setBorderWidth: 0.0f64];
-        }
         add_subview(parent, root);
 
         let action_handler_class = action_handler_class();
@@ -1001,108 +954,29 @@ unsafe fn build_settings_ui(
 ) -> BootstrapState {
     unsafe {
         use core_graphics::geometry::{CGPoint, CGRect, CGSize};
-        let ns_view = Class::get("NSView").unwrap();
         let mut state = BootstrapState::default();
 
         let settings_width = settings_width.max(SIDEBAR_WIDTH + 240.0);
         let settings_height = settings_height.max(280.0);
         let body_h = settings_height;
 
-        // Single root glass panel to avoid seam artifacts between split sections.
-        // Use the stronger FullScreenUI material to match the previous stable glass state.
-        let root_glass = create_glass_effect_view_with(
+        let shell = create_tafla_split_shell(
+            root_view,
             CGRect::new(
                 &CGPoint::new(0.0, 0.0),
-                &CGSize::new(settings_width, settings_height),
+                &CGSize::new(settings_width, body_h),
             ),
             NSVisualEffectMaterial::FullScreenUI,
-            objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
-            objc2_app_kit::NSVisualEffectState::Active,
+            SETTINGS_MAX_OPACITY,
+            SIDEBAR_WIDTH,
         );
-        let _: () = msg_send![root_glass, setAlphaValue: SETTINGS_MAX_OPACITY];
-        intensify_settings_glass(root_glass);
-        let _: () = msg_send![
-            root_glass,
-            setAutoresizingMask: 2_isize | 16_isize // Width | Height
-        ];
-        let root_glass_layer: Id = msg_send![root_glass, layer];
-        if !root_glass_layer.is_null() {
-            let _: () = msg_send![root_glass_layer, setMasksToBounds: true];
-        }
-        add_subview(root_view, root_glass);
+        intensify_settings_glass(shell.root_glass);
 
-        // ── Section containers on top of root glass ─────────────────
-        let section_layer: Id = msg_send![ns_view, alloc];
-        let section_layer: Id = msg_send![
-            section_layer,
-            initWithFrame: CGRect::new(
-                &CGPoint::new(0.0, 0.0),
-                &CGSize::new(settings_width, body_h),
-            )
-        ];
-        let _: () = msg_send![
-            section_layer,
-            setAutoresizingMask: 2_isize | 16_isize // Width | Height
-        ];
-        add_subview(root_glass, section_layer);
+        let sidebar_container = shell.sidebar_container;
+        let content_container = shell.content_container;
+        let ns_view = Class::get("NSView").unwrap();
 
-        // Left: Sidebar
-        let sidebar_frame =
-            CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(SIDEBAR_WIDTH, body_h));
-        let sidebar_container: Id = msg_send![ns_view, alloc];
-        let sidebar_container: Id = msg_send![sidebar_container, initWithFrame: sidebar_frame];
-        let _: () = msg_send![sidebar_container, setWantsLayer: true];
-        let _: () = msg_send![
-            sidebar_container,
-            setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin (fixed left)
-        ];
-        add_subview(section_layer, sidebar_container);
-
-        let sidebar_tint: Id = msg_send![ns_view, alloc];
-        let sidebar_tint: Id = msg_send![sidebar_tint, initWithFrame: sidebar_frame];
-        let _: () = msg_send![sidebar_tint, setWantsLayer: true];
-        let _: () = msg_send![
-            sidebar_tint,
-            setAutoresizingMask: 2_isize | 16_isize // Width | Height
-        ];
-        let sidebar_tint_layer: Id = msg_send![sidebar_tint, layer];
-        if !sidebar_tint_layer.is_null() {
-            let tint_color = settings_sidebar_tint_color();
-            let tint_cg: Id = msg_send![tint_color, CGColor];
-            let _: () = msg_send![sidebar_tint_layer, setBackgroundColor: tint_cg];
-        }
-        add_subview(sidebar_container, sidebar_tint);
-
-        // Right: Content
-        let content_bg_frame = CGRect::new(
-            &CGPoint::new(SIDEBAR_WIDTH, 0.0),
-            &CGSize::new(settings_width - SIDEBAR_WIDTH, body_h),
-        );
-        let content_container: Id = msg_send![ns_view, alloc];
-        let content_container: Id = msg_send![content_container, initWithFrame: content_bg_frame];
-        style_tafla_section(content_container);
-        let _: () = msg_send![
-            content_container,
-            setAutoresizingMask: 2_isize | 16_isize // Width | Height
-        ];
-        add_subview(section_layer, content_container);
-
-        let split_divider = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(SIDEBAR_WIDTH - 0.5, 0.0),
-                &CGSize::new(1.0, body_h),
-            ),
-            text: String::new(),
-            background_color: Some(ui_colors::header_border()),
-            ..Default::default()
-        });
-        let _: () = msg_send![
-            split_divider,
-            setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin
-        ];
-        add_subview(section_layer, split_divider);
-
-        let content_area_w = content_bg_frame.size.width;
+        let content_area_w = settings_width - SIDEBAR_WIDTH;
         let content_area_h = body_h;
 
         let sidebar_title = create_label(LabelConfig {
@@ -1110,7 +984,7 @@ unsafe fn build_settings_ui(
                 &CGPoint::new(18.0, body_h - 34.0),
                 &CGSize::new(SIDEBAR_WIDTH - 26.0, 20.0),
             ),
-            text: "Settings".to_string(),
+            text: "Creator".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: true,
             text_color: crate::ui_helpers::color_label(),
@@ -1120,7 +994,7 @@ unsafe fn build_settings_ui(
 
         // Sidebar tab buttons (inside sidebar container)
         let tab_start_y = body_h - 86.0;
-        let tab_names = ["Setup", "Keys", "Audio", "Voice Lab", "Engine", "User"];
+        let tab_names = ["Creator", "Keys", "Audio", "Voice Lab", "Engine", "User"];
         let tab_sels = [
             sel!(onTabSetup:),
             sel!(onTabKeys:),
@@ -1187,7 +1061,7 @@ unsafe fn build_settings_ui(
 
         let setup_title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 22.0)),
-            text: "Setup".to_string(),
+            text: "Creator Studio".to_string(),
             font_size: ui_tokens::BODY_FONT_SIZE,
             bold: true,
             text_color: primary,
@@ -1201,7 +1075,8 @@ unsafe fn build_settings_ui(
 
         let setup_hint_top = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: "Checklist is optional. You can switch tabs any time.".to_string(),
+            text: "Native launchpad for first-run setup, testing, and daily runtime tuning."
+                .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1326,9 +1201,75 @@ unsafe fn build_settings_ui(
         }
         y -= SETUP_POST_STEPS_GAP;
 
+        let launch_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 20.0)),
+            text: "Launch Pads".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(setup_view, launch_header);
+        y -= 20.0 + setup_gap;
+
+        let launch_hint = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
+            text: "Jump straight to the native surface you need right now.".to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(setup_view, launch_hint);
+        y -= 16.0 + setup_gap;
+
+        let launch_button_w = ((field_w - setup_gap) / 2.0).max(150.0);
+        let right_button_x = pad + field_w - launch_button_w;
+
+        let open_voice_lab_button = button(
+            CGRect::new(
+                &CGPoint::new(pad, y - 2.0),
+                &CGSize::new(launch_button_w, SETUP_LAUNCH_PAD_BUTTON_HEIGHT),
+            ),
+            "Open Voice Lab",
+        );
+        button_set_action(open_voice_lab_button, action_handler, sel!(onTabVoiceLab:));
+        add_subview(setup_view, open_voice_lab_button);
+
+        let open_keys_button = button(
+            CGRect::new(
+                &CGPoint::new(right_button_x, y - 2.0),
+                &CGSize::new(launch_button_w, SETUP_LAUNCH_PAD_BUTTON_HEIGHT),
+            ),
+            "Open Keys",
+        );
+        button_set_action(open_keys_button, action_handler, sel!(onTabKeys:));
+        add_subview(setup_view, open_keys_button);
+        y -= SETUP_LAUNCH_PAD_BUTTON_HEIGHT + setup_gap;
+
+        let open_audio_button = button(
+            CGRect::new(
+                &CGPoint::new(pad, y - 2.0),
+                &CGSize::new(launch_button_w, SETUP_LAUNCH_PAD_BUTTON_HEIGHT),
+            ),
+            "Open Audio",
+        );
+        button_set_action(open_audio_button, action_handler, sel!(onTabAudio:));
+        add_subview(setup_view, open_audio_button);
+
+        let show_agent_button = button(
+            CGRect::new(
+                &CGPoint::new(right_button_x, y - 2.0),
+                &CGSize::new(launch_button_w, SETUP_LAUNCH_PAD_BUTTON_HEIGHT),
+            ),
+            "Show Agent",
+        );
+        button_set_action(show_agent_button, action_handler, sel!(onShowOverlay:));
+        add_subview(setup_view, show_agent_button);
+        y -= SETUP_LAUNCH_PAD_BUTTON_HEIGHT + setup_gap;
+
         let checklist_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: "Non-blocking onboarding: finish now or continue later.".to_string(),
+            text: "Stay in creator mode, or finish now and come back later.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1352,7 +1293,7 @@ unsafe fn build_settings_ui(
                 &CGSize::new(field_w, 16.0),
             ),
             text:
-                "API keys live in Keys. Audio behavior lives in Audio. Daily toggles live in User."
+                "Keys stores providers, Audio controls capture, Voice Lab tunes the live pipeline."
                     .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -1477,7 +1418,7 @@ unsafe fn create_sidebar_tab_button(
 
         // Add SF Symbol icon based on title
         let symbol_name = match title {
-            "Setup" => "gearshape",
+            "Creator" => "sparkles",
             "Keys" => "keyboard",
             "Audio" => "waveform",
             "Voice Lab" => "waveform.path.ecg",
@@ -1743,6 +1684,11 @@ pub fn schedule_settings_window() {
 pub fn show_settings_setup_tab() {
     show_bootstrap_overlay();
     switch_tab(TAB_SETUP);
+}
+
+/// Show Settings and force-focus the Creator tab.
+pub fn show_settings_creator_tab() {
+    show_settings_setup_tab();
 }
 
 /// Alias: should show Settings onboarding window.
@@ -2137,7 +2083,7 @@ unsafe fn build_keys_tab(
             "Endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
             &llm_endpoint_val,
         );
-        style_paper_input(llm_endpoint_field);
+        style_tafla_input(llm_endpoint_field);
         let _: () = msg_send![llm_endpoint_field, setFont: mono_font_input];
         button_set_action(
             llm_endpoint_field,
@@ -2157,7 +2103,7 @@ unsafe fn build_keys_tab(
             "Model (e.g. programmer)",
             &llm_model_val,
         );
-        style_paper_input(llm_model_field);
+        style_tafla_input(llm_model_field);
         let _: () = msg_send![llm_model_field, setFont: mono_font_input];
         button_set_action(llm_model_field, action_handler, sel!(onLlmModelChanged:));
         add_subview(container, llm_model_field);
@@ -2171,7 +2117,7 @@ unsafe fn build_keys_tab(
             ),
             "API Key (stored in Keychain)",
         );
-        style_paper_input(llm_key_field);
+        style_tafla_input(llm_key_field);
         let _: () = msg_send![llm_key_field, setFont: mono_font_input];
         button_set_action(llm_key_field, action_handler, sel!(onLlmKeyChanged:));
         add_subview(container, llm_key_field);
@@ -2210,7 +2156,7 @@ unsafe fn build_keys_tab(
             "Endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
             &assist_endpoint_val,
         );
-        style_paper_input(assist_endpoint_field);
+        style_tafla_input(assist_endpoint_field);
         let _: () = msg_send![assist_endpoint_field, setFont: mono_font_input];
         button_set_action(
             assist_endpoint_field,
@@ -2230,7 +2176,7 @@ unsafe fn build_keys_tab(
             "Model (e.g. programmer)",
             &assist_model_val,
         );
-        style_paper_input(assist_model_field);
+        style_tafla_input(assist_model_field);
         let _: () = msg_send![assist_model_field, setFont: mono_font_input];
         button_set_action(
             assist_model_field,
@@ -2248,7 +2194,7 @@ unsafe fn build_keys_tab(
             ),
             "API Key (stored in Keychain)",
         );
-        style_paper_input(assist_key_field);
+        style_tafla_input(assist_key_field);
         let _: () = msg_send![assist_key_field, setFont: mono_font_input];
         button_set_action(
             assist_key_field,
@@ -2610,7 +2556,7 @@ unsafe fn build_voice_lab_tab(action_handler: Id, frame: core_graphics::geometry
                         spec.default_value,
                         &current,
                     );
-                    style_paper_input(field);
+                    style_tafla_input(field);
                     let _: () = msg_send![field, setTag: idx as isize];
                     button_set_action(field, action_handler, sel!(onVoiceLabFieldChanged:));
                     add_subview(doc_view, field);

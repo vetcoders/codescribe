@@ -204,13 +204,13 @@ fn resolve_transcription_action_contract_mode(
     force_ai: bool,
     ai_formatting_enabled: bool,
     ai_key_available: bool,
-) -> crate::transcription_overlay::TranscriptionActionContractMode {
+) -> crate::ui::overlay::TranscriptionActionContractMode {
     if force_raw {
-        crate::transcription_overlay::TranscriptionActionContractMode::Raw
+        crate::ui::overlay::TranscriptionActionContractMode::Raw
     } else if force_ai || (ai_formatting_enabled && ai_key_available) {
-        crate::transcription_overlay::TranscriptionActionContractMode::AiFormat
+        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
     } else {
-        crate::transcription_overlay::TranscriptionActionContractMode::Raw
+        crate::ui::overlay::TranscriptionActionContractMode::Raw
     }
 }
 
@@ -292,7 +292,6 @@ pub struct RecordingController {
     ///
     /// Every cancel/reschedule bumps this value. Spawned tasks compare their
     /// captured generation before/after critical awaits to avoid stale-start races.
-    #[allow(dead_code)]
     hold_start_generation: Arc<AtomicU64>,
     /// Guard flag used to prevent idle-recovery from killing a freshly-starting session.
     start_transition_in_flight: Arc<AtomicBool>,
@@ -346,6 +345,17 @@ pub struct RecordingController {
     event_broadcast: broadcast::Sender<IpcEvent>,
     /// Per-session telemetry from engine events (`NoSpeech`, `Stats`).
     session_telemetry: SharedSessionTelemetry,
+}
+
+struct ConversationLoopCtx {
+    engine: Arc<Mutex<Option<ConversationEngine>>>,
+    player: Arc<Mutex<Option<AudioPlayer>>>,
+    recorder: Arc<Mutex<StreamingRecorder>>,
+    stop_flag: Arc<AtomicBool>,
+    generation_counter: Arc<AtomicU64>,
+    my_generation: u64,
+    state: Arc<RwLock<State>>,
+    event_broadcast: broadcast::Sender<IpcEvent>,
 }
 
 impl RecordingController {
@@ -558,7 +568,6 @@ impl RecordingController {
         recorder.set_event_sink(None);
     }
 
-    #[allow(dead_code)]
     async fn ensure_recorder_ready_for_start(
         recorder: &mut StreamingRecorder,
         context: &str,
@@ -576,7 +585,6 @@ impl RecordingController {
         Ok(())
     }
 
-    #[allow(dead_code)]
     async fn reset_session_after_start_failure(&self, context: &str) {
         warn!("{context}: resetting controller flags after failed start");
         self.set_state(State::Idle).await;
@@ -1056,16 +1064,16 @@ impl RecordingController {
         let event_broadcast = self.event_broadcast.clone();
 
         let task = tokio::spawn(async move {
-            Self::conversation_audio_loop(
+            Self::conversation_audio_loop(ConversationLoopCtx {
                 engine,
                 player,
                 recorder,
                 stop_flag,
-                generation_arc,
-                generation,
+                generation_counter: generation_arc,
+                my_generation: generation,
                 state,
                 event_broadcast,
-            )
+            })
             .await;
         });
 
@@ -1077,17 +1085,17 @@ impl RecordingController {
     /// The main conversation audio processing loop
     ///
     /// Runs in a background task: captures audio → ConversationEngine → speaker
-    #[allow(clippy::too_many_arguments)]
-    async fn conversation_audio_loop(
-        engine: Arc<Mutex<Option<ConversationEngine>>>,
-        player: Arc<Mutex<Option<AudioPlayer>>>,
-        recorder: Arc<Mutex<StreamingRecorder>>,
-        stop_flag: Arc<AtomicBool>,
-        generation_counter: Arc<AtomicU64>,
-        my_generation: u64,
-        state: Arc<RwLock<State>>,
-        event_broadcast: broadcast::Sender<IpcEvent>,
-    ) {
+    async fn conversation_audio_loop(ctx: ConversationLoopCtx) {
+        let ConversationLoopCtx {
+            engine,
+            player,
+            recorder,
+            stop_flag,
+            generation_counter,
+            my_generation,
+            state,
+            event_broadcast,
+        } = ctx;
         info!(
             "Conversation audio loop started (generation {})",
             my_generation
@@ -2729,7 +2737,7 @@ impl RecordingController {
             );
             // Keep the ephemeral transcription overlay in sync with what we will paste/save.
             // This makes it easier to understand differences between streaming preview and final-pass output.
-            crate::transcription_overlay::set_transcription_action_contract(
+            crate::ui::overlay::set_transcription_action_contract(
                 &raw_text,
                 &formatted_text,
                 action_contract_mode,

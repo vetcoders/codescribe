@@ -21,8 +21,7 @@ use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSBackingStoreType, NSVisualEffectMaterial, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -31,10 +30,10 @@ use tracing::{debug, info, warn};
 
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
-    add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position, color_rgba,
-    create_button, create_glass_effect_view_with, create_label, create_scrollable_text_view,
-    ns_string, set_hidden, set_text, set_text_view_string, set_tooltip, ui_colors, ui_tokens,
-    window_close, window_set_alpha, window_show,
+    add_subview, animate_fade, attach_tafla_glass_shell, button_set_action, button_style,
+    clamp_overlay_position, color_rgba, create_button, create_label, create_scrollable_text_view,
+    ns_string, set_hidden, set_text, set_text_view_string, set_tooltip, style_tafla_section,
+    ui_colors, ui_tokens, window_close, window_set_alpha, window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -907,7 +906,6 @@ fn show_transcription_overlay_impl() {
         let window_width = OVERLAY_WINDOW_WIDTH;
         let window_height = OVERLAY_WINDOW_MIN_HEIGHT;
         let margin = 20.0;
-        let corner_radius = ui_tokens::CORNER_RADIUS_LG;
         let max_height =
             (visible_frame.size.height * OVERLAY_WINDOW_MAX_HEIGHT_RATIO).max(window_height);
 
@@ -996,25 +994,13 @@ fn show_transcription_overlay_impl() {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
         );
-        let blur_view: Id = create_glass_effect_view_with(
+        let blur_view = attach_tafla_glass_shell(
+            content_view,
             blur_frame,
             NSVisualEffectMaterial::HUDWindow,
-            NSVisualEffectBlendingMode::BehindWindow,
-            NSVisualEffectState::Active,
+            1.0,
+            0_isize,
         );
-        let layer: Id = msg_send![blur_view, layer];
-        if !layer.is_null() {
-            let _: () = msg_send![layer, setCornerRadius: corner_radius];
-            let _: () = msg_send![layer, setMasksToBounds: true];
-            let border = ui_colors::separator();
-            let border: Id = msg_send![border, colorWithAlphaComponent: 0.28f64];
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![layer, setBorderColor: cg_border];
-            let _: () = msg_send![layer, setBorderWidth: 1.0f64];
-        }
-
-        // Add blur view as background
-        add_subview(content_view, blur_view);
 
         let _: () = msg_send![window, setTitle: ns_string(OVERLAY_HEADER_LABEL)];
 
@@ -1102,6 +1088,7 @@ fn show_transcription_overlay_impl() {
             ),
         );
         let (text_scroll_view, text_view) = create_scrollable_text_view(text_frame, false);
+        style_tafla_section(text_scroll_view);
         let ns_font_class = Class::get("NSFont").unwrap();
         let system_font: Id = msg_send![ns_font_class, systemFontOfSize: 14.0f64];
         let _: () = msg_send![text_view, setFont: system_font];

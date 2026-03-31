@@ -4,7 +4,6 @@
 //! - Keep heavy tests explicitly opt-in (`CODESCRIBE_E2E_*`).
 //! - Keep deterministic checks always-on.
 //! - Reuse one model discovery strategy across E2E suites.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -224,4 +223,63 @@ fn find_latest_hf_snapshot(hf_cache_bases: &[PathBuf], repo_dir_names: &[&str]) 
     }
 
     best.map(|(_, path)| path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn helper_contract_smoke() {
+        assert!(parse_opt_in(Some("1")));
+        assert!(parse_opt_in(Some("true")));
+        assert!(!parse_opt_in(Some("0")));
+        assert!(!parse_opt_in(None));
+
+        let _ = env_opt_in(STT_OPT_IN_ENV);
+        let _ = env_opt_in(ROUNDTRIP_OPT_IN_ENV);
+        assert!(skip_unless_opt_in(
+            "__CODESCRIBE_E2E_SUPPORT_SMOKE__",
+            "support-smoke",
+            "expected in unit smoke test",
+        ));
+
+        let fake_home = Path::new("/tmp/codescribe-e2e-support-home");
+        let cache_bases = default_hf_cache_bases(fake_home);
+        assert!(!cache_bases.is_empty());
+
+        let fake_model = fake_home.join("missing-model");
+        assert!(!whisper_model_is_complete(&fake_model));
+        assert!(!whisper_model_missing_parts(&fake_model).is_empty());
+
+        let discovery = ModelDiscovery {
+            source: ModelSource::EnvOverride,
+            path: fake_model.clone(),
+        };
+        assert_eq!(discovery.source, ModelSource::EnvOverride);
+        assert_eq!(discovery.path, fake_model);
+
+        let all_sources = [
+            ModelSource::EnvOverride,
+            ModelSource::UserTurbo,
+            ModelSource::UserLarge,
+            ModelSource::HfTurboSnapshot,
+            ModelSource::HfLargeSnapshot,
+        ];
+        assert_eq!(all_sources.len(), 5);
+
+        assert!(
+            discover_local_whisper_model_for(fake_home, Some(&fake_model), &cache_bases).is_none()
+        );
+        let _ = discover_local_whisper_model();
+
+        let hint = model_discovery_hint(fake_home);
+        assert!(hint.contains(WHISPER_TURBO_MODEL));
+        assert!(hint.contains(WHISPER_LARGE_MODEL));
+
+        let audio_path = test_audio_path();
+        assert!(audio_path.ends_with("tests/assets/1.fretka-Ziggy.mp3"));
+
+        assert_eq!(normalize_transcript(" Ala   ma\n kota "), "Ala ma kota");
+    }
 }

@@ -48,7 +48,7 @@ pub fn route_transcription_delta(delta: &str) {
         crate::voice_chat_ui::append_voice_chat_user_delta(delta);
     } else {
         // Non-assistive: live dictation preview in ephemeral overlay
-        crate::transcription_overlay::append_transcription_delta(delta);
+        crate::ui::overlay::append_transcription_delta(delta);
     }
 }
 

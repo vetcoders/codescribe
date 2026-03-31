@@ -28,6 +28,17 @@ pub struct StreamCallbacks {
     pub reasoning: Option<AiReasoningCallback>,
 }
 
+struct AgentStreamRequest {
+    client: Client,
+    endpoint: String,
+    api_key: String,
+    callbacks: StreamCallbacks,
+    initial_response_timeout: Duration,
+    inter_chunk_timeout: Duration,
+    request_payload: serde_json::Value,
+    tx: mpsc::Sender<AgentEvent>,
+}
+
 pub struct ResponsesStreamingManager<'a> {
     client: &'a Client,
     endpoint: &'a str,
@@ -310,7 +321,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         let inter_chunk_timeout = self.inter_chunk_timeout;
 
         tokio::spawn(async move {
-            if let Err(error) = run_agent_stream(
+            if let Err(error) = run_agent_stream(AgentStreamRequest {
                 client,
                 endpoint,
                 api_key,
@@ -318,8 +329,8 @@ impl<'a> ResponsesStreamingManager<'a> {
                 initial_response_timeout,
                 inter_chunk_timeout,
                 request_payload,
-                tx.clone(),
-            )
+                tx: tx.clone(),
+            })
             .await
             {
                 let _ = tx.send(AgentEvent::Error(error.to_string())).await;
@@ -452,17 +463,17 @@ impl<'a> ResponsesStreamingManager<'a> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_agent_stream(
-    client: Client,
-    endpoint: String,
-    api_key: String,
-    callbacks: StreamCallbacks,
-    initial_response_timeout: Duration,
-    inter_chunk_timeout: Duration,
-    request_payload: serde_json::Value,
-    tx: mpsc::Sender<AgentEvent>,
-) -> Result<()> {
+async fn run_agent_stream(request: AgentStreamRequest) -> Result<()> {
+    let AgentStreamRequest {
+        client,
+        endpoint,
+        api_key,
+        callbacks,
+        initial_response_timeout,
+        inter_chunk_timeout,
+        request_payload,
+        tx,
+    } = request;
     let endpoint_url =
         validated_endpoint_url(&endpoint).context("Invalid agent streaming endpoint URL")?;
     let request_builder = apply_auth_headers(

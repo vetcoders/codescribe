@@ -1098,7 +1098,6 @@ mod macos {
         }
     }
 
-    #[allow(dead_code)]
     fn modifiers_from_flags(flags: CGEventFlags) -> HotkeyModifierSnapshot {
         HotkeyModifierSnapshot {
             ctrl: (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0,
@@ -1109,7 +1108,6 @@ mod macos {
         }
     }
 
-    #[allow(dead_code)]
     fn map_keycode(keycode: i64) -> HotkeyPhysicalKey {
         match keycode {
             K_VK_OPTION => HotkeyPhysicalKey::LeftOption,

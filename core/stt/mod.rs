@@ -61,9 +61,7 @@ pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
 // ── Engine-level router ──────────────────────────────────────────────────────
 //
 // These functions dispatch to candle, ONNX, or Apple SpeechAnalyzer based on
-// `CODESCRIBE_STT_ENGINE`. They match the call semantics of
-// `LocalWhisperEngine::transcribe_with_language` (chunk) and
-// `transcribe_long_with_language` (utterance/correction).
+// `CODESCRIBE_STT_ENGINE`.
 //
 // Used by `pipeline::streaming` to keep backend selection transparent.
 
@@ -97,18 +95,6 @@ fn run_apple_or_whisper<T>(
     }
 }
 
-fn candle_transcribe_chunk(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<String> {
-    let engine = whisper::singleton::engine()?;
-    let mut guard = engine
-        .lock()
-        .map_err(|e| anyhow::anyhow!("Candle lock error: {}", e))?;
-    guard.transcribe_with_language(audio, sample_rate, language)
-}
-
 fn candle_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
@@ -118,18 +104,6 @@ fn candle_transcribe_long_with_segments(
     let mut guard = engine
         .lock()
         .map_err(|e| anyhow::anyhow!("Candle lock error: {}", e))?;
-    guard.transcribe_long_with_language_segments(audio, sample_rate, language)
-}
-
-fn candle_try_transcribe_long_with_segments(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<RawTranscript> {
-    let engine = whisper::singleton::engine()?;
-    let mut guard = engine
-        .try_lock()
-        .map_err(|_| anyhow::anyhow!("Whisper engine busy, skipping correction"))?;
     guard.transcribe_long_with_language_segments(audio, sample_rate, language)
 }
 
@@ -161,24 +135,6 @@ pub(crate) fn transcribe_long(
     }
 }
 
-/// Transcribe a single chunk (blocking lock on whichever engine is active).
-#[allow(dead_code)]
-pub(crate) fn transcribe_chunk(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<String> {
-    match selected_engine() {
-        SttEngine::Onnx => onnx_adapter::transcribe_chunk(audio, sample_rate, language),
-        SttEngine::Apple => run_apple_or_whisper(
-            "transcribe_chunk",
-            || apple_stt::transcribe_chunk(audio, sample_rate, language),
-            || candle_transcribe_chunk(audio, sample_rate, language),
-        ),
-        SttEngine::Candle => candle_transcribe_chunk(audio, sample_rate, language),
-    }
-}
-
 /// Transcribe long audio (blocking lock) with segment-level timestamps.
 pub(crate) fn transcribe_long_with_segments(
     audio: &[f32],
@@ -196,25 +152,5 @@ pub(crate) fn transcribe_long_with_segments(
             || candle_transcribe_long_with_segments(audio, sample_rate, language),
         ),
         SttEngine::Candle => candle_transcribe_long_with_segments(audio, sample_rate, language),
-    }
-}
-
-/// Transcribe long audio (try_lock) with segment-level timestamps.
-#[allow(dead_code)]
-pub(crate) fn try_transcribe_long_with_segments(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<RawTranscript> {
-    match selected_engine() {
-        SttEngine::Onnx => {
-            onnx_adapter::try_transcribe_long_with_segments(audio, sample_rate, language)
-        }
-        SttEngine::Apple => run_apple_or_whisper(
-            "try_transcribe_long_with_segments",
-            || apple_stt::try_transcribe_long_with_segments(audio, sample_rate, language),
-            || candle_try_transcribe_long_with_segments(audio, sample_rate, language),
-        ),
-        SttEngine::Candle => candle_try_transcribe_long_with_segments(audio, sample_rate, language),
     }
 }

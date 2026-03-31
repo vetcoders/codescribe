@@ -43,9 +43,6 @@ pub mod ui_helpers;
 pub mod voice_chat_ui;
 
 #[cfg(target_os = "macos")]
-pub mod transcription_overlay;
-
-#[cfg(target_os = "macos")]
 pub mod dev;
 
 #[cfg(target_os = "macos")]
@@ -59,7 +56,8 @@ pub use ui::{
 pub use ui::bootstrap::{
     hide_bootstrap_overlay, hide_settings_window, schedule_bootstrap, schedule_settings_window,
     should_show_bootstrap, should_show_settings_onboarding, should_show_setup,
-    show_bootstrap_overlay, show_settings_setup_tab, show_settings_window,
+    show_bootstrap_overlay, show_creator_window, show_settings_creator_tab,
+    show_settings_setup_tab, show_settings_window,
 };
 
 #[cfg(target_os = "macos")]
@@ -80,7 +78,7 @@ pub use voice_chat_ui::{
 };
 
 #[cfg(target_os = "macos")]
-pub use transcription_overlay::{
+pub use ui::overlay::{
     TranscriptionOverlayConfig, append_transcription_delta, clear_transcription_text,
     enter_decision_mode, enter_recording_mode, get_transcription_text, hide_transcription_overlay,
     is_transcription_overlay_visible, schedule_auto_hide, set_transcription_text,

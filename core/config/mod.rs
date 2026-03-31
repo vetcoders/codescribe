@@ -105,9 +105,33 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_config_dir() {
+        let prev_data_dir = std::env::var("CODESCRIBE_DATA_DIR").ok();
+        let prev_env_path = std::env::var("CODESCRIBE_ENV_PATH").ok();
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
+            std::env::remove_var("CODESCRIBE_ENV_PATH");
+        }
+
+        let overridden = Config::config_dir();
+        assert_eq!(overridden, tmp.path().canonicalize().unwrap());
+
+        unsafe {
+            std::env::remove_var("CODESCRIBE_DATA_DIR");
+        }
         let dir = Config::config_dir();
         assert!(dir.to_string_lossy().contains(".codescribe"));
+
+        unsafe {
+            if let Some(value) = prev_data_dir {
+                std::env::set_var("CODESCRIBE_DATA_DIR", value);
+            }
+            if let Some(value) = prev_env_path {
+                std::env::set_var("CODESCRIBE_ENV_PATH", value);
+            }
+        }
     }
 
     #[test]

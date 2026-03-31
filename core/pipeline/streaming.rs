@@ -550,24 +550,49 @@ fn classify_partial_trigger(flags: PartialPassTriggerFlags) -> Option<PartialPas
     flags.primary_reason()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn schedule_partial_pass(
-    stt_scheduler: &SttScheduler,
+struct PartialPassRequest<'a> {
     output_sample_rate: u32,
     pipeline_language: Option<String>,
-    correction_audio_buf: &mut Vec<f32>,
-    correction_in_flight: &mut Option<SttTaskHandle>,
-    correction_expected_preview_rev: &mut Option<u64>,
-    correction_expected_text: &mut Option<String>,
-    correction_suffix_snapshot: &mut Option<String>,
-    suffix_snapshot: &str,
+    suffix_snapshot: &'a str,
     preview_rev: u64,
-    accumulated_text: &str,
+    accumulated_text: &'a str,
     speech_ms_since_partial: u64,
     trigger: PartialPassTrigger,
-    partial_telemetry: &mut PartialPassTelemetry,
-    event_sink: &Arc<dyn EventSink>,
+}
+
+struct PartialPassState<'a> {
+    correction_audio_buf: &'a mut Vec<f32>,
+    correction_in_flight: &'a mut Option<SttTaskHandle>,
+    correction_expected_preview_rev: &'a mut Option<u64>,
+    correction_expected_text: &'a mut Option<String>,
+    correction_suffix_snapshot: &'a mut Option<String>,
+    partial_telemetry: &'a mut PartialPassTelemetry,
+    event_sink: &'a Arc<dyn EventSink>,
+}
+
+fn schedule_partial_pass(
+    stt_scheduler: &SttScheduler,
+    request: PartialPassRequest<'_>,
+    state: PartialPassState<'_>,
 ) -> bool {
+    let PartialPassRequest {
+        output_sample_rate,
+        pipeline_language,
+        suffix_snapshot,
+        preview_rev,
+        accumulated_text,
+        speech_ms_since_partial,
+        trigger,
+    } = request;
+    let PartialPassState {
+        correction_audio_buf,
+        correction_in_flight,
+        correction_expected_preview_rev,
+        correction_expected_text,
+        correction_suffix_snapshot,
+        partial_telemetry,
+        event_sink,
+    } = state;
     if correction_audio_buf.is_empty() {
         return false;
     }
@@ -1126,20 +1151,25 @@ pub(crate) async fn transcription_session(
             if let Some(trigger) = classify_partial_trigger(trigger_flags)
                 && schedule_partial_pass(
                     &stt_scheduler,
-                    output_sample_rate,
-                    pipeline.language.clone(),
-                    &mut correction_audio_buf,
-                    &mut correction_in_flight,
-                    &mut correction_expected_preview_rev,
-                    &mut correction_expected_text,
-                    &mut correction_suffix_snapshot,
-                    &suffix_snapshot,
-                    window_rev,
-                    &window_text,
-                    partial_trigger_state.silero_speech_ms_since_partial,
-                    trigger,
-                    &mut partial_telemetry,
-                    &event_sink,
+                    PartialPassRequest {
+                        output_sample_rate,
+                        pipeline_language: pipeline.language.clone(),
+                        suffix_snapshot: &suffix_snapshot,
+                        preview_rev: window_rev,
+                        accumulated_text: &window_text,
+                        speech_ms_since_partial: partial_trigger_state
+                            .silero_speech_ms_since_partial,
+                        trigger,
+                    },
+                    PartialPassState {
+                        correction_audio_buf: &mut correction_audio_buf,
+                        correction_in_flight: &mut correction_in_flight,
+                        correction_expected_preview_rev: &mut correction_expected_preview_rev,
+                        correction_expected_text: &mut correction_expected_text,
+                        correction_suffix_snapshot: &mut correction_suffix_snapshot,
+                        partial_telemetry: &mut partial_telemetry,
+                        event_sink: &event_sink,
+                    },
                 )
             {
                 partial_trigger_state.reset_after_success(now);
@@ -1295,7 +1325,8 @@ pub(crate) async fn transcription_session(
                                         });
                                     }
                                 }
-                                _ => continue,
+                                #[cfg(test)]
+                                SpeechEvent::Chunk(_) => continue,
                             };
                         }
                         emit_vad_warning(&event_sink, &mut session);
@@ -1316,7 +1347,8 @@ pub(crate) async fn transcription_session(
                                     let full = std::mem::take(&mut current_utterance_audio);
                                     (u, full)
                                 }
-                                _ => (Vec::new(), Vec::new()),
+                                #[cfg(test)]
+                                SpeechEvent::Chunk(_) => (Vec::new(), Vec::new()),
                             };
 
                             if !utterance.is_empty() {
@@ -1388,20 +1420,25 @@ pub(crate) async fn transcription_session(
                 if let Some(trigger) = classify_partial_trigger(trigger_flags)
                     && schedule_partial_pass(
                         &stt_scheduler,
-                        output_sample_rate,
-                        pipeline.language.clone(),
-                        &mut correction_audio_buf,
-                        &mut correction_in_flight,
-                        &mut correction_expected_preview_rev,
-                        &mut correction_expected_text,
-                        &mut correction_suffix_snapshot,
-                        &suffix_snapshot,
-                        window_rev,
-                        &window_text,
-                        partial_trigger_state.silero_speech_ms_since_partial,
-                        trigger,
-                        &mut partial_telemetry,
-                        &event_sink,
+                        PartialPassRequest {
+                            output_sample_rate,
+                            pipeline_language: pipeline.language.clone(),
+                            suffix_snapshot: &suffix_snapshot,
+                            preview_rev: window_rev,
+                            accumulated_text: &window_text,
+                            speech_ms_since_partial: partial_trigger_state
+                                .silero_speech_ms_since_partial,
+                            trigger,
+                        },
+                        PartialPassState {
+                            correction_audio_buf: &mut correction_audio_buf,
+                            correction_in_flight: &mut correction_in_flight,
+                            correction_expected_preview_rev: &mut correction_expected_preview_rev,
+                            correction_expected_text: &mut correction_expected_text,
+                            correction_suffix_snapshot: &mut correction_suffix_snapshot,
+                            partial_telemetry: &mut partial_telemetry,
+                            event_sink: &event_sink,
+                        },
                     )
                 {
                     partial_trigger_state.reset_after_success(now);
@@ -1693,20 +1730,25 @@ pub(crate) async fn transcription_session(
                             && let Some(trigger) = classify_partial_trigger(trigger_flags)
                             && schedule_partial_pass(
                                 &stt_scheduler,
-                                output_sample_rate,
-                                pipeline.language.clone(),
-                                &mut correction_audio_buf,
-                                &mut correction_in_flight,
-                                &mut correction_expected_preview_rev,
-                                &mut correction_expected_text,
-                                &mut correction_suffix_snapshot,
-                                &suffix_snapshot,
-                                window_rev,
-                                &window_text,
-                                partial_trigger_state.silero_speech_ms_since_partial,
-                                trigger,
-                                &mut partial_telemetry,
-                                &event_sink,
+                                PartialPassRequest {
+                                    output_sample_rate,
+                                    pipeline_language: pipeline.language.clone(),
+                                    suffix_snapshot: &suffix_snapshot,
+                                    preview_rev: window_rev,
+                                    accumulated_text: &window_text,
+                                    speech_ms_since_partial: partial_trigger_state
+                                        .silero_speech_ms_since_partial,
+                                    trigger,
+                                },
+                                PartialPassState {
+                                    correction_audio_buf: &mut correction_audio_buf,
+                                    correction_in_flight: &mut correction_in_flight,
+                                    correction_expected_preview_rev: &mut correction_expected_preview_rev,
+                                    correction_expected_text: &mut correction_expected_text,
+                                    correction_suffix_snapshot: &mut correction_suffix_snapshot,
+                                    partial_telemetry: &mut partial_telemetry,
+                                    event_sink: &event_sink,
+                                },
                             )
                         {
                             partial_trigger_state.reset_after_success(now);
@@ -3267,20 +3309,24 @@ mod tests {
         let mut first_audio = vec![21.0];
         assert!(schedule_partial_pass(
             &scheduler,
-            16_000,
-            Some("en".to_string()),
-            &mut first_audio,
-            &mut correction_in_flight,
-            &mut correction_expected_preview_rev,
-            &mut correction_expected_text,
-            &mut correction_suffix_snapshot,
-            "suffix-a",
-            7,
-            "draft-a",
-            PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
-            PartialPassTrigger::Watchdog,
-            &mut partial_telemetry,
-            &event_sink,
+            PartialPassRequest {
+                output_sample_rate: 16_000,
+                pipeline_language: Some("en".to_string()),
+                suffix_snapshot: "suffix-a",
+                preview_rev: 7,
+                accumulated_text: "draft-a",
+                speech_ms_since_partial: PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
+                trigger: PartialPassTrigger::Watchdog,
+            },
+            PartialPassState {
+                correction_audio_buf: &mut first_audio,
+                correction_in_flight: &mut correction_in_flight,
+                correction_expected_preview_rev: &mut correction_expected_preview_rev,
+                correction_expected_text: &mut correction_expected_text,
+                correction_suffix_snapshot: &mut correction_suffix_snapshot,
+                partial_telemetry: &mut partial_telemetry,
+                event_sink: &event_sink,
+            },
         ));
         assert!(
             first_audio.is_empty(),
@@ -3309,20 +3355,24 @@ mod tests {
         let mut second_audio = vec![22.0];
         assert!(schedule_partial_pass(
             &scheduler,
-            16_000,
-            Some("en".to_string()),
-            &mut second_audio,
-            &mut correction_in_flight,
-            &mut correction_expected_preview_rev,
-            &mut correction_expected_text,
-            &mut correction_suffix_snapshot,
-            "suffix-b",
-            8,
-            "draft-b",
-            PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
-            PartialPassTrigger::Speech,
-            &mut partial_telemetry,
-            &event_sink,
+            PartialPassRequest {
+                output_sample_rate: 16_000,
+                pipeline_language: Some("en".to_string()),
+                suffix_snapshot: "suffix-b",
+                preview_rev: 8,
+                accumulated_text: "draft-b",
+                speech_ms_since_partial: PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
+                trigger: PartialPassTrigger::Speech,
+            },
+            PartialPassState {
+                correction_audio_buf: &mut second_audio,
+                correction_in_flight: &mut correction_in_flight,
+                correction_expected_preview_rev: &mut correction_expected_preview_rev,
+                correction_expected_text: &mut correction_expected_text,
+                correction_suffix_snapshot: &mut correction_suffix_snapshot,
+                partial_telemetry: &mut partial_telemetry,
+                event_sink: &event_sink,
+            },
         ));
         let second_id = correction_in_flight
             .as_ref()
@@ -3461,20 +3511,24 @@ mod tests {
 
             assert!(schedule_partial_pass(
                 &scheduler,
-                16_000,
-                Some("en".to_string()),
-                &mut audio,
-                &mut correction_in_flight,
-                &mut correction_expected_preview_rev,
-                &mut correction_expected_text,
-                &mut correction_suffix_snapshot,
-                &expected_suffix,
-                expected_rev,
-                &expected_text,
-                PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS + index as u64,
-                trigger,
-                &mut partial_telemetry,
-                &event_sink,
+                PartialPassRequest {
+                    output_sample_rate: 16_000,
+                    pipeline_language: Some("en".to_string()),
+                    suffix_snapshot: &expected_suffix,
+                    preview_rev: expected_rev,
+                    accumulated_text: &expected_text,
+                    speech_ms_since_partial: PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS + index as u64,
+                    trigger,
+                },
+                PartialPassState {
+                    correction_audio_buf: &mut audio,
+                    correction_in_flight: &mut correction_in_flight,
+                    correction_expected_preview_rev: &mut correction_expected_preview_rev,
+                    correction_expected_text: &mut correction_expected_text,
+                    correction_suffix_snapshot: &mut correction_suffix_snapshot,
+                    partial_telemetry: &mut partial_telemetry,
+                    event_sink: &event_sink,
+                },
             ));
             assert!(
                 audio.is_empty(),

@@ -23,7 +23,7 @@ use crate::ui_helpers::{
     get_text_view_string, layout_region_frame_for_view, list_draft_files, ns_string,
     open_file_in_editor, resize_bubble_container_for_text, set_button_symbol,
     set_text_field_string, set_text_view_string, set_tooltip, stack_view_add, stack_view_clear,
-    ui_colors, ui_tokens, update_bubble_text, window_set_alpha, window_show,
+    style_tafla_panel, ui_colors, ui_tokens, update_bubble_text, window_set_alpha, window_show,
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
@@ -693,16 +693,7 @@ fn apply_status_pill(state: &VoiceChatOverlayState) {
         };
         let palette = state.status_kind.palette();
         let pill = pill_ptr as Id;
-        let layer: Id = msg_send![pill, layer];
-        if !layer.is_null() {
-            let bg = ui_colors::panel_bg();
-            let cg: Id = msg_send![bg, CGColor];
-            let _: () = msg_send![layer, setBackgroundColor: cg];
-            let border = ui_colors::header_border();
-            let cg_border: Id = msg_send![border, CGColor];
-            let _: () = msg_send![layer, setBorderColor: cg_border];
-            let _: () = msg_send![layer, setBorderWidth: ui_tokens::SURFACE_BORDER_WIDTH];
-        }
+        style_tafla_panel(pill);
 
         if let Some(label_ptr) = state.status_pill_label {
             let label = label_ptr as Id;

@@ -585,6 +585,115 @@ pub unsafe fn add_tafla_header_separator(container: Id, x: f64, y: f64, width: f
     y - 1.0
 }
 
+pub struct TaflaSplitShell {
+    pub root_glass: Id,
+    pub section_layer: Id,
+    pub sidebar_container: Id,
+    pub content_container: Id,
+    pub split_divider: Id,
+}
+
+/// Attach a styled Tafla glass shell that fills the parent view.
+///
+/// # Safety
+/// `parent` must be a valid `NSView`.
+pub unsafe fn attach_tafla_glass_shell(
+    parent: Id,
+    frame: CGRect,
+    material: NSVisualEffectMaterial,
+    alpha: f64,
+    autoresizing_mask: isize,
+) -> Id {
+    let glass = create_glass_effect_view_with(
+        frame,
+        material,
+        NSVisualEffectBlendingMode::BehindWindow,
+        NSVisualEffectState::Active,
+    );
+    let _: () = msg_send![glass, setAlphaValue: alpha];
+    let _: () = msg_send![glass, setAutoresizingMask: autoresizing_mask];
+    unsafe {
+        style_tafla_glass_shell(glass);
+        add_subview(parent, glass);
+    }
+    glass
+}
+
+/// Build the canonical Tafla split-pane shell used by onboarding and settings.
+///
+/// # Safety
+/// `parent` must be a valid `NSView`.
+pub unsafe fn create_tafla_split_shell(
+    parent: Id,
+    frame: CGRect,
+    material: NSVisualEffectMaterial,
+    alpha: f64,
+    sidebar_width: f64,
+) -> TaflaSplitShell {
+    let ns_view = Class::get("NSView").unwrap();
+    let autoresize_both = 2_isize | 16_isize;
+    let fixed_left = 16_isize | 4_isize;
+
+    let root_glass =
+        unsafe { attach_tafla_glass_shell(parent, frame, material, alpha, autoresize_both) };
+
+    let section_layer: Id = msg_send![ns_view, alloc];
+    let section_layer: Id = msg_send![section_layer, initWithFrame: frame];
+    let _: () = msg_send![section_layer, setAutoresizingMask: autoresize_both];
+    unsafe {
+        add_subview(root_glass, section_layer);
+    }
+
+    let sidebar_frame = CGRect::new(
+        &CGPoint::new(0.0, 0.0),
+        &CGSize::new(sidebar_width, frame.size.height),
+    );
+    let sidebar_container: Id = msg_send![ns_view, alloc];
+    let sidebar_container: Id = msg_send![sidebar_container, initWithFrame: sidebar_frame];
+    let _: () = msg_send![sidebar_container, setAutoresizingMask: fixed_left];
+    unsafe {
+        style_tafla_sidebar_tint(sidebar_container);
+        add_subview(section_layer, sidebar_container);
+    }
+
+    let content_frame = CGRect::new(
+        &CGPoint::new(sidebar_width, 0.0),
+        &CGSize::new(
+            (frame.size.width - sidebar_width).max(0.0),
+            frame.size.height,
+        ),
+    );
+    let content_container: Id = msg_send![ns_view, alloc];
+    let content_container: Id = msg_send![content_container, initWithFrame: content_frame];
+    let _: () = msg_send![content_container, setAutoresizingMask: autoresize_both];
+    unsafe {
+        style_tafla_section(content_container);
+        add_subview(section_layer, content_container);
+    }
+
+    let split_divider = create_label(LabelConfig {
+        frame: CGRect::new(
+            &CGPoint::new(sidebar_width - 0.5, 0.0),
+            &CGSize::new(1.0, frame.size.height),
+        ),
+        text: String::new(),
+        background_color: Some(ui_colors::header_border()),
+        ..Default::default()
+    });
+    let _: () = msg_send![split_divider, setAutoresizingMask: fixed_left];
+    unsafe {
+        add_subview(section_layer, split_divider);
+    }
+
+    TaflaSplitShell {
+        root_glass,
+        section_layer,
+        sidebar_container,
+        content_container,
+        split_divider,
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct NSEdgeInsets {
@@ -805,10 +914,10 @@ fn ensure_layout_region_guides_for_class(class_name: &str) {
     // ObjC runtime internally casts Imp to the correct signature via selector dispatch.
     // Encoding "@@:" means: return `id`, args `(id self, SEL _cmd)`, which
     // matches `extern "C" fn(&Object, Sel) -> Id`.
-    #[allow(clippy::transmute_ptr_to_ptr)]
     unsafe {
-        let imp: objc::runtime::Imp =
-            std::mem::transmute(layout_region_guides as extern "C" fn(&Object, Sel) -> Id);
+        let imp: objc::runtime::Imp = std::mem::transmute::<usize, objc::runtime::Imp>(
+            layout_region_guides as extern "C" fn(&Object, Sel) -> Id as usize,
+        );
         let encoding = CString::new("@@:").unwrap();
         objc::runtime::class_addMethod(
             cls as *const Class as *mut Class,
@@ -3338,6 +3447,7 @@ pub fn create_text_input(frame: CGRect, placeholder: &str, initial_value: &str) 
             let _: () = msg_send![field, setStringValue: val];
         }
 
+        style_tafla_input(field);
         field
     }
 }
@@ -3362,6 +3472,7 @@ pub fn create_secure_text_input(frame: CGRect, placeholder: &str) -> Id {
         let ph = ns_string(placeholder);
         let _: () = msg_send![field, setPlaceholderString: ph];
 
+        style_tafla_input(field);
         field
     }
 }

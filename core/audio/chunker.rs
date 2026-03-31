@@ -36,7 +36,7 @@ const SILERO_GATE_MODE: VadGateMode = VadGateMode::Supervisor;
 // ═══════════════════════════════════════════════════════════
 
 pub(crate) enum SpeechEvent {
-    #[allow(dead_code)]
+    #[cfg(test)]
     Chunk(Vec<f32>),
     /// Interim utterance slice emitted during long continuous speech to keep streaming responsive.
     Utterance(Vec<f32>),
@@ -47,12 +47,13 @@ pub(crate) enum SpeechEvent {
 }
 
 pub(crate) enum SpeechMode {
-    #[allow(dead_code)]
+    #[cfg(test)]
     Stream {
         chunk_limit: usize,
         overlap_size: usize,
     },
     Utterance {
+        #[cfg(test)]
         max_utterance_samples: usize,
         /// Periodic interim emit limit (samples). Continuous speech without VAD
         /// silence triggers an interim Utterance every `interim_limit` samples
@@ -62,11 +63,12 @@ pub(crate) enum SpeechMode {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum VadGateMode {
     /// Gate audio before it reaches Whisper (legacy).
+    #[cfg(test)]
     Simple,
     /// Silero VAD iter logic as a hard gate (legacy).
+    #[cfg(test)]
     Iter,
     /// Silero VAD is a supervisor: audio always flows, VAD only defines boundaries.
     Supervisor,
@@ -94,8 +96,11 @@ pub(crate) struct VadErrorStats {
 pub(crate) struct SpeechSession {
     mode: SpeechMode,
     threshold: f32,
+    #[cfg(test)]
     neg_threshold: f32,
+    #[cfg(test)]
     min_speech_samples: usize,
+    #[cfg(test)]
     min_silence_samples: usize,
     in_speech: bool,
     speech_samples: usize,
@@ -104,7 +109,9 @@ pub(crate) struct SpeechSession {
     pending_silence: Vec<f32>,
     pending_samples: Vec<f32>,
     pre_roll: VecDeque<f32>,
+    #[cfg(test)]
     pre_roll_samples: usize,
+    #[cfg(test)]
     speech_pad_samples: usize,
     last_append_at: Instant,
     vad: Option<vad::SileroVad>,
@@ -152,7 +159,7 @@ pub(crate) struct SpeechSession {
 }
 
 impl SpeechSession {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new_stream(sample_rate: u32, chunk_duration_sec: f32, overlap_sec: f32) -> Self {
         let config = hardcoded_gate_config();
         debug!("SpeechSession::new_stream gate_mode={:?}", config.mode);
@@ -161,12 +168,15 @@ impl SpeechSession {
             VadGateMode::Supervisor => sample_rate,
             _ => vad_sample_rate,
         };
+        #[cfg(test)]
         let min_speech_samples = (config.vad.min_speech_duration_sec * vad_sample_rate as f32)
             .round()
             .max(1.0) as usize;
+        #[cfg(test)]
         let min_silence_samples = (config.vad.max_silence_duration_sec * vad_sample_rate as f32)
             .round()
             .max(1.0) as usize;
+        #[cfg(test)]
         let neg_threshold = (config.vad.threshold - 0.15).max(0.05);
 
         let vad = init_silero_vad(vad_sample_rate, &config.vad);
@@ -274,17 +284,13 @@ impl SpeechSession {
             config.mode, interim_sec
         );
         let vad_sample_rate = vad::VAD_SAMPLE_RATE;
+        #[cfg(test)]
         let output_sample_rate = match config.mode {
             VadGateMode::Supervisor => sample_rate,
-            _ => vad_sample_rate,
+            VadGateMode::Simple | VadGateMode::Iter => vad_sample_rate,
         };
-        let min_speech_samples = (config.vad.min_speech_duration_sec * vad_sample_rate as f32)
-            .round()
-            .max(1.0) as usize;
-        let min_silence_samples = (config.vad.max_silence_duration_sec * vad_sample_rate as f32)
-            .round()
-            .max(1.0) as usize;
-        let neg_threshold = (config.vad.threshold - 0.15).max(0.05);
+        #[cfg(not(test))]
+        let output_sample_rate = sample_rate;
 
         let vad = init_silero_vad(vad_sample_rate, &config.vad);
         let resampler = if sample_rate != vad_sample_rate {
@@ -293,31 +299,35 @@ impl SpeechSession {
             None
         };
 
-        let max_utterance_samples =
-            (config.vad.max_utterance_sec * output_sample_rate as f32) as usize;
         let interim_limit = (interim_sec.clamp(1.0, 30.0) * output_sample_rate as f32) as usize;
-        let pre_roll_samples = (config.pre_roll_sec * output_sample_rate as f32)
-            .round()
-            .max(0.0) as usize;
-        let speech_pad_samples = (config.speech_pad_sec * output_sample_rate as f32)
-            .round()
-            .max(0.0) as usize;
+        #[cfg(test)]
         let iter_state = match config.mode {
             VadGateMode::Iter | VadGateMode::Supervisor => {
                 Some(VadIterState::new(&config, vad::VAD_SAMPLE_RATE))
             }
             VadGateMode::Simple => None,
         };
+        #[cfg(not(test))]
+        let iter_state = Some(VadIterState::new(&config, vad::VAD_SAMPLE_RATE));
 
         Self {
             mode: SpeechMode::Utterance {
-                max_utterance_samples,
+                #[cfg(test)]
+                max_utterance_samples: (config.vad.max_utterance_sec * output_sample_rate as f32)
+                    as usize,
                 interim_limit,
             },
             threshold: config.vad.threshold,
-            neg_threshold,
-            min_speech_samples,
-            min_silence_samples,
+            #[cfg(test)]
+            neg_threshold: (config.vad.threshold - 0.15).max(0.05),
+            #[cfg(test)]
+            min_speech_samples: (config.vad.min_speech_duration_sec * vad_sample_rate as f32)
+                .round()
+                .max(1.0) as usize,
+            #[cfg(test)]
+            min_silence_samples: (config.vad.max_silence_duration_sec * vad_sample_rate as f32)
+                .round()
+                .max(1.0) as usize,
             in_speech: false,
             speech_samples: 0,
             silence_samples: 0,
@@ -325,8 +335,14 @@ impl SpeechSession {
             pending_silence: Vec::new(),
             pending_samples: Vec::new(),
             pre_roll: VecDeque::new(),
-            pre_roll_samples,
-            speech_pad_samples,
+            #[cfg(test)]
+            pre_roll_samples: (config.pre_roll_sec * output_sample_rate as f32)
+                .round()
+                .max(0.0) as usize,
+            #[cfg(test)]
+            speech_pad_samples: (config.speech_pad_sec * output_sample_rate as f32)
+                .round()
+                .max(0.0) as usize,
             last_append_at: Instant::now(),
             vad,
             resampler,
@@ -364,22 +380,36 @@ impl SpeechSession {
     }
 
     pub fn feed(&mut self, audio: &[f32], _sample_rate: u32) -> Vec<SpeechEvent> {
+        #[cfg(not(test))]
+        {
+            if audio.is_empty() {
+                return Vec::new();
+            }
+            self.feed_supervisor(audio)
+        }
+
+        #[cfg(test)]
         let mut events = Vec::new();
+        #[cfg(test)]
         if audio.is_empty() {
             return events;
         }
 
+        #[cfg(test)]
         if self.gate_mode == VadGateMode::Supervisor {
             return self.feed_supervisor(audio);
         }
 
+        #[cfg(test)]
         let resampled = if let Some(resampler) = self.resampler.as_mut() {
             resampler.resample(audio)
         } else {
             audio.to_vec()
         };
+        #[cfg(test)]
         self.vad_resample_buf.extend_from_slice(&resampled);
 
+        #[cfg(test)]
         while self.vad_resample_buf.len() >= vad::CHUNK_SIZE {
             let frame: Vec<f32> = self.vad_resample_buf.drain(..vad::CHUNK_SIZE).collect();
             let speech_prob = self.predict_speech_prob(&frame, "gate");
@@ -402,6 +432,7 @@ impl SpeechSession {
             }
 
             match self.mode {
+                #[cfg(test)]
                 SpeechMode::Stream {
                     chunk_limit,
                     overlap_size: _,
@@ -424,6 +455,7 @@ impl SpeechSession {
                 }
             }
         }
+        #[cfg(test)]
         events
     }
 
@@ -518,6 +550,7 @@ impl SpeechSession {
                 );
             }
 
+            #[cfg(test)]
             if let SpeechMode::Stream {
                 chunk_limit,
                 overlap_size,
@@ -542,7 +575,12 @@ impl SpeechSession {
 
             // Utterance interim: emit every interim_limit samples during continuous
             // speech so the buffered worker gets frequent Whisper passes.
-            if let SpeechMode::Utterance { interim_limit, .. } = self.mode
+            let interim_limit = match self.mode {
+                SpeechMode::Utterance { interim_limit, .. } => Some(interim_limit),
+                #[cfg(test)]
+                SpeechMode::Stream { .. } => None,
+            };
+            if let Some(interim_limit) = interim_limit
                 && self.segment_start.is_some()
                 && self.pending_end.is_none()
                 && self.raw_cursor.saturating_sub(self.last_emit_raw) >= interim_limit
@@ -573,6 +611,7 @@ impl SpeechSession {
                 && let Some(chunk) = self.raw_slice(emit_start, emit_end)
             {
                 match self.mode {
+                    #[cfg(test)]
                     SpeechMode::Stream { .. } => self
                         .push_event_with_speech_vad_samples(&mut events, SpeechEvent::Chunk(chunk)),
                     SpeechMode::Utterance { .. } => self.push_event_with_speech_vad_samples(
@@ -622,6 +661,7 @@ impl SpeechSession {
                     self.segment_peak_prob = 0.0;
                     self.last_emit_raw = emit_end;
                     return Some(match self.mode {
+                        #[cfg(test)]
                         SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
                         SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
                     });
@@ -640,6 +680,7 @@ impl SpeechSession {
         Some(self.emit_final())
     }
 
+    #[cfg(test)]
     fn emit_chunk(&mut self) -> SpeechEvent {
         let chunk = std::mem::take(&mut self.pending_samples);
         if let SpeechMode::Stream { overlap_size, .. } = self.mode
@@ -668,6 +709,7 @@ impl SpeechSession {
         self.segment_peak_prob = 0.0;
         self.last_append_at = Instant::now();
         match self.mode {
+            #[cfg(test)]
             SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
             SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
         }
@@ -740,6 +782,7 @@ impl SpeechSession {
         }
     }
 
+    #[cfg(test)]
     fn gate_with_prob(&mut self, audio: &[f32], speech_prob: f32) -> GateDecision {
         let is_speech = speech_prob >= self.threshold;
 
@@ -834,6 +877,7 @@ impl SpeechSession {
         events.push(event);
     }
 
+    #[cfg(test)]
     fn gate_with_iter(&mut self, audio: &[f32], speech_prob: f32) -> GateDecision {
         let Some(iter_state) = self.iter_state.as_mut() else {
             return self.gate_with_prob(audio, speech_prob);
@@ -890,6 +934,7 @@ impl SpeechSession {
         }
     }
 
+    #[cfg(test)]
     fn push_pre_roll(&mut self, audio: &[f32]) {
         if self.pre_roll_samples == 0 {
             return;
@@ -1094,7 +1139,7 @@ fn utterance_silence_sec_override() -> Option<f32> {
 // Configuration helpers
 // ═══════════════════════════════════════════════════════════
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn hardcoded_gate_config() -> GateConfig {
     let vad_cfg = vad::VadConfig::default();
     let pre_roll = vad_cfg.pre_roll_sec;
@@ -1147,6 +1192,7 @@ pub(crate) fn init_silero_vad(sample_rate: u32, config: &vad::VadConfig) -> Opti
 // VAD iterator state machine
 // ═══════════════════════════════════════════════════════════
 
+#[cfg(test)]
 struct GateDecision {
     audio: Option<Vec<f32>>,
     ended: bool,
@@ -1229,6 +1275,7 @@ impl VadIterState {
         self.triggered
     }
 
+    #[cfg(test)]
     fn current_speech_start(&self) -> usize {
         self.speech_start
     }
@@ -1423,6 +1470,18 @@ mod tests {
     fn gate_mode_default_is_supervisor() {
         let config = hardcoded_gate_config();
         assert_eq!(config.mode, VadGateMode::Supervisor);
+    }
+
+    #[test]
+    fn legacy_gate_modes_remain_constructible() {
+        let modes = [
+            VadGateMode::Simple,
+            VadGateMode::Iter,
+            VadGateMode::Supervisor,
+        ];
+        assert!(matches!(modes[0], VadGateMode::Simple));
+        assert!(matches!(modes[1], VadGateMode::Iter));
+        assert!(matches!(modes[2], VadGateMode::Supervisor));
     }
 
     #[test]

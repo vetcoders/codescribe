@@ -31,6 +31,12 @@ const DEFAULT_MIMI_REPO: &str = "kyutai/mimi";
 const DEFAULT_EMBEDDER_MODEL_NAME: &str = "minilm-l12-v2";
 const DEFAULT_EMBEDDER_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
 
+fn build_note(message: impl AsRef<str>) {
+    if env_flag("CODESCRIBE_BUILD_VERBOSE", false) {
+        eprintln!("{}", message.as_ref());
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
@@ -91,10 +97,10 @@ fn main() {
         };
 
         if embed_tts && tts_model_exists && mimi_weights_path.exists() {
-            println!(
-                "cargo:warning=Embedding TTS model from: {}",
+            build_note(format!(
+                "Embedding TTS model from: {}",
                 tts_model_path.display()
-            );
+            ));
             let tts_content = format!(
                 r#"
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
@@ -112,18 +118,15 @@ fn main() {
             fs::write(&tts_dest_path, tts_content).expect("Failed to write embedded_tts_data.rs");
             println!("cargo:rustc-cfg=embed_tts");
         } else if embed_tts && (!tts_model_exists || !mimi_weights_path.exists()) {
-            println!(
-                "cargo:warning=CODESCRIBE_EMBED_TTS set but TTS model not found at: {}",
+            build_note(format!(
+                "CODESCRIBE_EMBED_TTS set but TTS model not found at: {}",
                 tts_model_path.display()
-            );
-            println!(
-                "cargo:warning=Download with: hf download {}",
-                DEFAULT_TTS_REPO
-            );
-            println!(
-                "cargo:warning=Download Mimi with: hf download {}",
+            ));
+            build_note(format!("Download with: hf download {}", DEFAULT_TTS_REPO));
+            build_note(format!(
+                "Download Mimi with: hf download {}",
                 DEFAULT_MIMI_REPO
-            );
+            ));
         }
 
         // MiniLM embedder — always embedded (like Silero), ~224MB fp16
@@ -141,10 +144,10 @@ fn main() {
             && embedder_model_path.join("model.safetensors").exists();
 
         if !no_embed && embedder_model_exists {
-            println!(
-                "cargo:warning=Embedding MiniLM model from: {}",
+            build_note(format!(
+                "Embedding MiniLM model from: {}",
                 embedder_model_path.display()
-            );
+            ));
             let embedder_content = format!(
                 r#"
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
@@ -159,14 +162,14 @@ fn main() {
                 .expect("Failed to write embedded_embedder_data.rs");
             println!("cargo:rustc-cfg=embed_embedder");
         } else if !no_embed && !embedder_model_exists {
-            println!(
-                "cargo:warning=Embedder model not found at: {}",
+            build_note(format!(
+                "Embedder model not found at: {}",
                 embedder_model_path.display()
-            );
-            println!(
-                "cargo:warning=Download with: huggingface-cli download {}",
+            ));
+            build_note(format!(
+                "Download with: huggingface-cli download {}",
                 embedder_repo
-            );
+            ));
         }
 
         // Silero VAD — always embedded from repo (2.3MB, non-negotiable)
@@ -197,12 +200,10 @@ fn main() {
         // Whisper embedding is intentionally disabled (runtime loading only).
         // We keep model discovery for diagnostics in build logs.
         if is_release {
-            println!(
-                "cargo:warning=Whisper embedding is disabled by policy; using runtime model loading"
-            );
+            build_note("Whisper embedding is disabled by policy; using runtime model loading");
             if !model_exists {
-                println!(
-                    "cargo:warning=Whisper model not found in build context (OK; resolve via CODESCRIBE_MODEL_PATH/HF cache at runtime)"
+                build_note(
+                    "Whisper model not found in build context (OK; resolve via CODESCRIBE_MODEL_PATH/HF cache at runtime)",
                 );
             }
         }
@@ -224,10 +225,10 @@ fn main() {
         } else {
             "disabled"
         };
-        println!(
-            "cargo:warning=Embedding summary: Whisper={}; Silero=embedded; Embedder={}; TTS={}",
+        build_note(format!(
+            "Embedding summary: Whisper={}; Silero=embedded; Embedder={}; TTS={}",
             whisper_summary, embedder_summary, tts_summary
-        );
+        ));
     }
 }
 

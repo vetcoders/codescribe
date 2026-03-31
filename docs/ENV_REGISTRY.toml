@@ -16,7 +16,7 @@
 
 [meta]
 version = "1.0.0"
-updated = "2026-02-24"
+updated = "2026-03-31"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VAD (Voice Activity Detection) - Silero Neural Network
@@ -861,6 +861,13 @@ type = "bool"
 reload = "rebuild"
 category = "build"
 description = "Embed TTS model in binary"
+
+[vars.CODESCRIBE_BUILD_VERBOSE]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "build"
+description = "Emit verbose informational notes from build scripts"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Debug / Test
