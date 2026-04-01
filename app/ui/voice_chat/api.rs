@@ -324,15 +324,14 @@ pub fn show_drawer_tab() {
     });
 }
 
-/// Switch to Settings tab programmatically
+/// Route the overlay gear button to the native Creator window.
 pub fn show_settings_tab() {
     Queue::main().exec_async(|| {
         update_active_tab_impl(Tab::Settings);
     });
 }
 
-/// Request Settings tab to be shown the next time the overlay is created.
-/// This is used when routing tray "Settings" to the overlay before it exists.
+/// Request the native Creator window to be shown the next time the overlay is created.
 pub fn request_settings_tab_on_open() {
     show_settings_tab();
 }
@@ -379,10 +378,10 @@ pub fn is_conversation_active() -> bool {
 
 pub fn update_active_tab_impl(tab: Tab) {
     if tab == Tab::Settings {
-        // Settings lives in the bootstrap/settings window; close chat first to avoid
+        // Creator lives in the bootstrap/settings window; close chat first to avoid
         // stacked windows that look like a duplicate/ghost overlay.
         hide_voice_chat_overlay_impl();
-        crate::show_bootstrap_overlay();
+        crate::show_creator_window();
         return;
     }
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());

@@ -11,14 +11,17 @@ use crate::os::permissions;
 use crate::tray::state::{NOTES_MENU_ITEMS, send_menu_event};
 use crate::tray::types::{MenuIds, TrayMenuEvent};
 
-/// Handle menu item click and send appropriate event
-/// Note: Settings handlers removed - settings now in Chat Overlay Settings tab
+/// Handle menu item click and send appropriate event.
+/// Creator Studio is the primary native configuration surface.
 pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     // Top-level items
     if event_id == &menu_ids.copy_last {
         handle_copy_last();
     } else if event_id == &menu_ids.show_overlay {
         crate::show_voice_chat_overlay();
+    } else if event_id == &menu_ids.open_creator {
+        send_menu_event(TrayMenuEvent::OpenCreator);
+        crate::show_creator_window();
     } else if menu_ids
         .complete_setup
         .as_ref()

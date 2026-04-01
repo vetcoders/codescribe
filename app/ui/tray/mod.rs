@@ -17,20 +17,17 @@
 //! ```text
 //! Status: Done!
 //! ─────────────
-//! [✓] AI Formatting
-//!     Copy Last to Clipboard
+//! Show Agent
+//! Open history...
+//! Copy last transcript
 //! ─────────────
-//! Settings ▸
-//!     ├── Hold Hotkeys ▸
-//!     │   ├── Ctrl only
-//!     │   ├── Ctrl+Option
-//!     │   ├── Ctrl+Shift
-//!     │   └── Ctrl+Command
-//!     ├── Recent Transcripts ▸
-//!     │   ├── [5 entries]
-//!     │   └── Open Folder
-//!     └── Edit Config File
+//! Hotkeys ▸
+//! Prompts ▸
+//! Notes ▸
+//! Diagnostics ▸
 //! ─────────────
+//! Creator Studio...
+//! Settings
 //! Help
 //! About
 //! ─────────────
@@ -175,8 +172,8 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
 
         // Handle dock icon click (macOS Reopen event)
         if let Event::Reopen { .. } = event {
-            debug!("Dock icon clicked → opening Settings window");
-            crate::show_bootstrap_overlay();
+            debug!("Dock icon clicked → opening Creator window");
+            crate::show_creator_window();
             return;
         }
 

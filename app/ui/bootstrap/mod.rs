@@ -29,10 +29,10 @@ use crate::ui::onboarding::{
 };
 use crate::ui_helpers::{
     LabelConfig, add_subview, add_tafla_header_separator, button, button_set_action,
-    create_checkbox, create_floating_window, create_label, create_secure_text_input, create_slider,
-    create_tafla_split_shell, create_text_input, ns_string, set_text_field_string,
-    style_tafla_input, style_tafla_section, ui_colors, ui_tokens, window_close,
-    window_content_view, window_show,
+    create_card_view, create_checkbox, create_floating_window, create_label,
+    create_secure_text_input, create_slider, create_tafla_split_shell, create_text_input,
+    ns_string, set_text_field_string, set_tooltip, style_tafla_input, style_tafla_section,
+    ui_colors, ui_tokens, window_close, window_content_view, window_show,
 };
 
 mod handlers;
@@ -56,11 +56,14 @@ const PERMISSION_ROW_HEIGHT: f64 = 24.0 + ui_tokens::DENSITY_COMFORTABLE;
 const PERMISSION_BUTTON_WIDTH: f64 = 118.0;
 const STEP_ROW_HEIGHT: f64 = 24.0 + ui_tokens::DENSITY_COMFORTABLE;
 const SETUP_LAUNCH_PAD_BUTTON_HEIGHT: f64 = 28.0;
+const CREATOR_CARD_HEIGHT: f64 = 132.0;
+const CREATOR_CARD_GAP: f64 = 10.0;
 const SETUP_TOP_OFFSET: f64 = 20.0;
 const SETUP_POST_STEPS_GAP: f64 = 8.0;
 const SETUP_SAVE_MIN_ANCHOR_Y: f64 = 52.0;
 const SETUP_HINT_MIN_Y: f64 = 52.0;
-const TAB_SETUP: usize = 0;
+const TAB_CREATOR: usize = 0;
+const TAB_SETUP: usize = TAB_CREATOR;
 const TAB_KEYS: usize = 1;
 const TAB_AUDIO: usize = 2;
 const TAB_VOICE_LAB: usize = 3;
@@ -424,6 +427,7 @@ struct BootstrapState {
     permission_action_buttons: [Option<usize>; 5],
     permission_requested: [bool; 5],
     permission_polling: bool,
+    finish_button: Option<usize>,
     quality_daemon_checkbox: Option<usize>,
     ultra_quality_checkbox: Option<usize>,
     completion_view: Option<usize>,
@@ -536,7 +540,7 @@ pub fn show_settings_window() {
 
 /// Primary graphical entrypoint for the native macOS Creator window.
 pub fn show_creator_window() {
-    show_settings_setup_tab();
+    show_settings_creator_tab();
 }
 
 fn show_bootstrap_overlay_impl() {
@@ -744,6 +748,124 @@ fn permissions_all_granted() -> bool {
         .all(|kind| permission_status(*kind) == PermissionStatus::Granted)
 }
 
+fn granted_permission_count() -> usize {
+    PERMISSION_ORDER
+        .iter()
+        .filter(|kind| permission_status(**kind) == PermissionStatus::Granted)
+        .count()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CreatorCardContent {
+    title: String,
+    subtitle: String,
+    preview: String,
+}
+
+fn creator_binding_short_label(binding: crate::config::ShortcutBinding) -> &'static str {
+    match binding {
+        crate::config::ShortcutBinding::Disabled => "Off",
+        crate::config::ShortcutBinding::HoldFn => "Hold Fn",
+        crate::config::ShortcutBinding::HoldCtrl => "Hold Ctrl",
+        crate::config::ShortcutBinding::HoldCtrlAlt => "Ctrl+Option",
+        crate::config::ShortcutBinding::HoldCtrlShift => "Ctrl+Shift",
+        crate::config::ShortcutBinding::HoldCtrlCmd => "Ctrl+Command",
+        crate::config::ShortcutBinding::DoubleCtrl => "2x Ctrl",
+        crate::config::ShortcutBinding::DoubleLeftOption => "2x L-Option",
+        crate::config::ShortcutBinding::DoubleRightOption => "2x R-Option",
+    }
+}
+
+fn creator_setup_card(
+    setup_complete: bool,
+    granted_permissions: usize,
+    total_permissions: usize,
+) -> CreatorCardContent {
+    let subtitle = format!("{granted_permissions}/{total_permissions} permissions ready");
+    if setup_complete && granted_permissions == total_permissions {
+        CreatorCardContent {
+            title: "Setup Complete".to_string(),
+            subtitle,
+            preview: "This Mac is ready. Use the launch pads below for daily tuning and tests."
+                .to_string(),
+        }
+    } else if setup_complete {
+        CreatorCardContent {
+            title: "Permissions Drifted".to_string(),
+            subtitle,
+            preview: "Setup finished earlier, but one or more macOS permissions need attention."
+                .to_string(),
+        }
+    } else if granted_permissions == total_permissions {
+        CreatorCardContent {
+            title: "Ready to Finish".to_string(),
+            subtitle,
+            preview: "Everything is granted. Press Finish Setup once to lock in this native shell."
+                .to_string(),
+        }
+    } else {
+        CreatorCardContent {
+            title: "Setup in Progress".to_string(),
+            subtitle,
+            preview: "Grant the remaining permissions, then finish setup to stabilize the app."
+                .to_string(),
+        }
+    }
+}
+
+fn creator_hotkey_card(settings: &crate::config::UserSettings) -> CreatorCardContent {
+    let dictation = settings.mode_binding_for(crate::config::WorkMode::Dictation);
+    let formatting = settings.mode_binding_for(crate::config::WorkMode::Formatting);
+    let assistive = settings.mode_binding_for(crate::config::WorkMode::Assistive);
+
+    CreatorCardContent {
+        title: "Mode Bindings".to_string(),
+        subtitle: format!("Dictation: {}", creator_binding_short_label(dictation)),
+        preview: format!(
+            "Formatting: {} | Assistive: {}",
+            creator_binding_short_label(formatting),
+            creator_binding_short_label(assistive)
+        ),
+    }
+}
+
+fn creator_runtime_card(
+    config: &Config,
+    quality_state: &crate::quality_loop::QualityDaemonState,
+) -> CreatorCardContent {
+    let live_preview = if config.use_local_stt {
+        "Local Whisper owns live preview"
+    } else {
+        "Cloud STT is configured for capture"
+    };
+    let quality = if !quality_state.available {
+        "offline".to_string()
+    } else if quality_state.pending_mismatches == 0 {
+        "OK".to_string()
+    } else {
+        format!("{} pending", quality_state.pending_mismatches)
+    };
+
+    CreatorCardContent {
+        title: "Runtime Truth".to_string(),
+        subtitle: live_preview.to_string(),
+        preview: format!(
+            "Formatting: {} | Quality: {} | Dock: {}",
+            if config.ai_formatting_enabled {
+                "on"
+            } else {
+                "off"
+            },
+            quality,
+            if config.show_dock_icon {
+                "shown"
+            } else {
+                "hidden"
+            }
+        ),
+    }
+}
+
 fn permission_color(granted: bool) -> Id {
     if granted {
         ui_colors::status_granted()
@@ -909,12 +1031,13 @@ fn start_permission_polling() {
 
 pub(super) fn refresh_permission_indicators() {
     Queue::main().exec_async(move || unsafe {
-        let (labels, action_buttons, requested) = {
+        let (labels, action_buttons, requested, finish_button) = {
             let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
             (
                 state.permission_labels,
                 state.permission_action_buttons,
                 state.permission_requested,
+                state.finish_button,
             )
         };
 
@@ -941,6 +1064,20 @@ pub(super) fn refresh_permission_indicators() {
                     let _: () = msg_send![action_button, setHidden: true];
                 }
             }
+        }
+
+        if let Some(finish_ptr) = finish_button {
+            let finish_button = finish_ptr as Id;
+            let can_finish = !should_show_setup() || permissions_all_granted();
+            let _: () = msg_send![finish_button, setEnabled: can_finish];
+            set_tooltip(
+                finish_button,
+                if can_finish {
+                    "Close Creator or complete setup."
+                } else {
+                    "Grant all required macOS permissions to enable Finish Setup."
+                },
+            );
         }
     });
 }
@@ -1054,6 +1191,12 @@ unsafe fn build_settings_ui(
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
         let mut y = content_h - SETUP_TOP_OFFSET;
+        let setup_complete = !should_show_setup();
+        let granted_permissions = granted_permission_count();
+        let total_permissions = PERMISSION_ORDER.len();
+        let setup_card = creator_setup_card(setup_complete, granted_permissions, total_permissions);
+        let hotkey_card = creator_hotkey_card(&crate::config::UserSettings::load());
+        let runtime_card = creator_runtime_card(config, &crate::quality_loop::read_daemon_state());
 
         // ── Permissions ───────────────────────────────────────────────
         let mut perm_labels: [Option<usize>; 5] = [None; 5];
@@ -1084,9 +1227,28 @@ unsafe fn build_settings_ui(
         add_subview(setup_view, setup_hint_top);
         y -= 16.0 + setup_gap;
 
+        let card_width = ((field_w - CREATOR_CARD_GAP * 2.0) / 3.0).max(150.0);
+        for (index, card) in [setup_card, hotkey_card, runtime_card]
+            .into_iter()
+            .enumerate()
+        {
+            let x = pad + index as f64 * (card_width + CREATOR_CARD_GAP);
+            let card_view = create_card_view(
+                CGRect::new(
+                    &CGPoint::new(x, y - CREATOR_CARD_HEIGHT + 8.0),
+                    &CGSize::new(card_width, CREATOR_CARD_HEIGHT),
+                ),
+                &card.title,
+                &card.subtitle,
+                &card.preview,
+            );
+            add_subview(setup_view, card_view);
+        }
+        y -= CREATOR_CARD_HEIGHT + setup_gap;
+
         let permissions_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 20.0)),
-            text: "Permissions Checklist".to_string(),
+            text: format!("Permissions Checklist ({granted_permissions}/{total_permissions})"),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: true,
             text_color: primary,
@@ -1161,9 +1323,9 @@ unsafe fn build_settings_ui(
 
         // ── Quick-start steps ────────────────────────────────────────
         let step_defs: [(&str, objc::runtime::Sel, &str); 3] = [
-            ("1) Test mic", sel!(onTestMic:), "Test"),
-            ("2) Show agent overlay", sel!(onShowOverlay:), "Show"),
-            ("3) Press hotkey", sel!(onHotkeyDone:), "Done"),
+            ("1. Test microphone", sel!(onTestMic:), "Test"),
+            ("2. Open agent overlay", sel!(onShowOverlay:), "Show"),
+            ("3. Try your hotkey", sel!(onHotkeyDone:), "Done"),
         ];
         let mut step_status_labels: [Option<usize>; 3] = [None; 3];
 
@@ -1256,6 +1418,27 @@ unsafe fn build_settings_ui(
         button_set_action(open_audio_button, action_handler, sel!(onTabAudio:));
         add_subview(setup_view, open_audio_button);
 
+        let open_engine_button = button(
+            CGRect::new(
+                &CGPoint::new(right_button_x, y - 2.0),
+                &CGSize::new(launch_button_w, SETUP_LAUNCH_PAD_BUTTON_HEIGHT),
+            ),
+            "Open Engine",
+        );
+        button_set_action(open_engine_button, action_handler, sel!(onTabEngine:));
+        add_subview(setup_view, open_engine_button);
+        y -= SETUP_LAUNCH_PAD_BUTTON_HEIGHT + setup_gap;
+
+        let open_user_button = button(
+            CGRect::new(
+                &CGPoint::new(pad, y - 2.0),
+                &CGSize::new(launch_button_w, SETUP_LAUNCH_PAD_BUTTON_HEIGHT),
+            ),
+            "Open User",
+        );
+        button_set_action(open_user_button, action_handler, sel!(onTabUser:));
+        add_subview(setup_view, open_user_button);
+
         let show_agent_button = button(
             CGRect::new(
                 &CGPoint::new(right_button_x, y - 2.0),
@@ -1269,7 +1452,8 @@ unsafe fn build_settings_ui(
 
         let checklist_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 16.0)),
-            text: "Stay in creator mode, or finish now and come back later.".to_string(),
+            text: "Use Creator as the native launchpad for setup, diagnostics, and daily tuning."
+                .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -1307,17 +1491,31 @@ unsafe fn build_settings_ui(
                 &CGPoint::new(content_width - 110.0, 16.0),
                 &CGSize::new(90.0, 28.0),
             ),
-            "Finish",
+            if setup_complete {
+                "Close"
+            } else {
+                "Finish Setup"
+            },
         );
         button_set_action(finish_btn, action_handler, sel!(onFinish:));
+        let finish_enabled = setup_complete || granted_permissions == total_permissions;
+        let _: () = msg_send![finish_btn, setEnabled: finish_enabled];
+        set_tooltip(
+            finish_btn,
+            if finish_enabled {
+                "Close Creator or complete setup."
+            } else {
+                "Grant all required macOS permissions to enable Finish Setup."
+            },
+        );
         add_subview(setup_view, finish_btn);
 
-        let skip_btn = button(
+        let helper_btn = button(
             CGRect::new(&CGPoint::new(pad, 16.0), &CGSize::new(90.0, 28.0)),
-            "Skip",
+            "Show Agent",
         );
-        button_set_action(skip_btn, action_handler, sel!(onFinish:));
-        add_subview(setup_view, skip_btn);
+        button_set_action(helper_btn, action_handler, sel!(onShowOverlay:));
+        add_subview(setup_view, helper_btn);
 
         // ── Completion view (hidden, shown on Finish) ────────────────
         let completion: Id = msg_send![ns_view, alloc];
@@ -1386,6 +1584,7 @@ unsafe fn build_settings_ui(
         state.permission_action_buttons = perm_action_buttons;
         state.permission_requested = [false; 5];
         state.permission_polling = false;
+        state.finish_button = Some(finish_btn as usize);
         state.completion_view = Some(completion as usize);
         state.config_cache = Some(config.clone());
 
@@ -1552,6 +1751,17 @@ pub(super) fn handle_hotkey_done() {
 }
 
 pub(super) fn handle_finish() {
+    if !should_show_setup() {
+        hide_bootstrap_overlay();
+        return;
+    }
+
+    if !permissions_all_granted() {
+        refresh_permission_indicators();
+        warn!("Finish Setup requested before all permissions were granted; keeping Creator open.");
+        return;
+    }
+
     // Show "All set!" completion view, then close after a brief delay.
     Queue::main().exec_async(|| unsafe {
         let (setup_ptr, tab_buttons, completion_ptr) = {
@@ -1606,6 +1816,7 @@ pub(super) fn handle_bootstrap_window_closed() {
     state.permission_action_buttons = [None, None, None, None, None];
     state.permission_requested = [false; 5];
     state.permission_polling = false;
+    state.finish_button = None;
     state.quality_daemon_checkbox = None;
     state.ultra_quality_checkbox = None;
     state.completion_view = None;
@@ -1642,6 +1853,7 @@ pub fn hide_bootstrap_overlay() {
                 state.permission_action_buttons = [None, None, None, None, None];
                 state.permission_requested = [false; 5];
                 state.permission_polling = false;
+                state.finish_button = None;
                 state.quality_daemon_checkbox = None;
                 state.ultra_quality_checkbox = None;
                 state.completion_view = None;
@@ -1683,12 +1895,13 @@ pub fn schedule_settings_window() {
 /// Show Settings and force-focus the Setup tab.
 pub fn show_settings_setup_tab() {
     show_bootstrap_overlay();
-    switch_tab(TAB_SETUP);
+    switch_tab(TAB_CREATOR);
 }
 
-/// Show Settings and force-focus the Creator tab.
+/// Show the native Creator tab explicitly.
 pub fn show_settings_creator_tab() {
-    show_settings_setup_tab();
+    show_bootstrap_overlay();
+    switch_tab(TAB_CREATOR);
 }
 
 /// Alias: should show Settings onboarding window.
@@ -1718,6 +1931,7 @@ pub fn reset_embedded_bootstrap_state() {
     state.permission_action_buttons = [None, None, None, None, None];
     state.permission_requested = [false; 5];
     state.permission_polling = false;
+    state.finish_button = None;
     state.quality_daemon_checkbox = None;
     state.ultra_quality_checkbox = None;
     state.completion_view = None;
@@ -3608,6 +3822,69 @@ mod tests {
             validate_voice_lab_value(&allow_empty, " "),
             Some(String::new())
         );
+    }
+
+    #[test]
+    fn creator_setup_card_reflects_setup_progress() {
+        let in_progress = creator_setup_card(false, 2, 5);
+        assert_eq!(in_progress.title, "Setup in Progress");
+        assert!(in_progress.subtitle.contains("2/5"));
+
+        let ready = creator_setup_card(false, 5, 5);
+        assert_eq!(ready.title, "Ready to Finish");
+        assert!(ready.preview.contains("Finish Setup"));
+
+        let drifted = creator_setup_card(true, 4, 5);
+        assert_eq!(drifted.title, "Permissions Drifted");
+    }
+
+    #[test]
+    fn creator_hotkey_card_summarizes_mode_bindings() {
+        let settings = crate::config::UserSettings {
+            mode_bindings: Some(vec![
+                crate::config::ModeBinding {
+                    mode: crate::config::WorkMode::Dictation,
+                    binding: crate::config::ShortcutBinding::HoldCtrl,
+                },
+                crate::config::ModeBinding {
+                    mode: crate::config::WorkMode::Formatting,
+                    binding: crate::config::ShortcutBinding::DoubleLeftOption,
+                },
+                crate::config::ModeBinding {
+                    mode: crate::config::WorkMode::Assistive,
+                    binding: crate::config::ShortcutBinding::DoubleRightOption,
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let card = creator_hotkey_card(&settings);
+        assert_eq!(card.title, "Mode Bindings");
+        assert!(card.subtitle.contains("Hold Ctrl"));
+        assert!(card.preview.contains("2x L-Option"));
+        assert!(card.preview.contains("2x R-Option"));
+    }
+
+    #[test]
+    fn creator_runtime_card_reports_quality_truth() {
+        let config = crate::config::Config {
+            ai_formatting_enabled: true,
+            show_dock_icon: false,
+            use_local_stt: true,
+            ..Default::default()
+        };
+        let quality_state = crate::quality_loop::QualityDaemonState {
+            pending_mismatches: 3,
+            available: true,
+            ..Default::default()
+        };
+
+        let card = creator_runtime_card(&config, &quality_state);
+        assert_eq!(card.title, "Runtime Truth");
+        assert!(card.subtitle.contains("Local Whisper"));
+        assert!(card.preview.contains("Formatting: on"));
+        assert!(card.preview.contains("Quality: 3 pending"));
+        assert!(card.preview.contains("Dock: hidden"));
     }
 
     #[test]

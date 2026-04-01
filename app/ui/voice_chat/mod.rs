@@ -3,7 +3,7 @@
 //! This module provides a floating overlay window with:
 //! - Drawer tab: clipboard-style transcription cards
 //! - Agent tab: chat bubbles with streaming LLM responses
-//! - Settings: routes to settings window/onboarding
+//! - Settings: routes to the native Creator window/onboarding
 
 mod api;
 mod handlers;
@@ -29,9 +29,7 @@ use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
-use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectMaterial, NSWindowCollectionBehavior, NSWindowStyleMask,
-};
+use objc2_app_kit::{NSVisualEffectMaterial, NSWindowCollectionBehavior};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -39,13 +37,14 @@ use tracing::{debug, info, warn};
 use crate::config::{HoldMods, ToggleTrigger};
 
 use crate::ui_helpers::{
-    LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, attach_tafla_glass_shell,
-    button_set_action, button_style, chat_header_layout, color_clear, color_label,
-    color_secondary_label, create_button, create_flipped_vertical_stack_view, create_label,
-    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
-    ns_string, set_button_symbol, set_focus_ring, set_hidden, set_tooltip, style_tafla_panel,
-    style_tafla_section, style_tafla_sidebar_tint, style_toolbar_icon_button, ui_colors, ui_tokens,
-    window_set_alpha, window_show,
+    LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button_set_action, button_style,
+    chat_header_layout, color_clear, color_label, color_secondary_label,
+    create_borderless_tafla_window_with_class, create_button, create_flipped_vertical_stack_view,
+    create_label, create_scrollable_text_view, create_tafla_single_shell,
+    create_vertical_stack_view, layout_region_frame_for_view, ns_string, set_button_symbol,
+    set_focus_ring, set_hidden, set_tooltip, style_tafla_panel, style_tafla_section,
+    style_tafla_sidebar_tint, style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha,
+    window_show,
 };
 
 use api::update_active_tab_impl;
@@ -200,28 +199,13 @@ fn show_voice_chat_overlay_impl() {
             },
         };
 
-        let overlay_window_class = overlay_window_class();
-        let window: Id = msg_send![overlay_window_class, alloc];
-        let style_mask = NSWindowStyleMask::Borderless
-            | NSWindowStyleMask::FullSizeContentView
-            | NSWindowStyleMask::Resizable;
-        let backing = NSBackingStoreType::Buffered;
-        let window: Id = msg_send![
-            window,
-            initWithContentRect: frame
-            styleMask: style_mask
-            backing: backing
-            defer: false
-        ];
-
-        let _: () = msg_send![window, setTitleVisibility: 1];
-        let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
-        let _: () = msg_send![window, setMovableByWindowBackground: true];
-        let _: () = msg_send![window, setOpaque: false];
-        let _: () = msg_send![window, setBackgroundColor: color_clear()];
-        let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
+        let window = create_borderless_tafla_window_with_class(
+            overlay_window_class(),
+            frame,
+            NS_FLOATING_WINDOW_LEVEL,
+            true,
+        );
         // Keep the window instance alive even after close; we manage lifecycle explicitly.
-        let _: () = msg_send![window, setReleasedWhenClosed: false];
         let _: () = msg_send![window, setContentMinSize: CGSize::new(380.0, 360.0)];
         // Cap at sensible max: width 1000px (chat bubbles don't need more),
         // height = screen visible height (scrolling handles overflow).
@@ -233,11 +217,6 @@ fn show_voice_chat_overlay_impl() {
             let _: () =
                 msg_send![window, setContentMaxSize: CGSize::new(max_w, visible.size.height)];
         }
-        // Make sure the overlay shows up even when the user is in a fullscreen Space.
-        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary;
-        let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
-
         let delegate_class = window_delegate_class();
         let window_delegate: Id = msg_send![delegate_class, new];
         let _: () = msg_send![window, setDelegate: window_delegate];
@@ -253,13 +232,13 @@ fn show_voice_chat_overlay_impl() {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
         );
-        let blur_view = attach_tafla_glass_shell(
+        let shell = create_tafla_single_shell(
             content_view,
             blur_frame,
             NSVisualEffectMaterial::HUDWindow,
             1.0,
-            NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE,
         );
+        let blur_view = shell.content_container;
         let bounds: CGRect = msg_send![blur_view, bounds];
         let content_bounds = layout_region_frame_for_view(blur_view).unwrap_or(bounds);
 
@@ -424,7 +403,7 @@ fn show_voice_chat_overlay_impl() {
         let _ = set_button_symbol(tab_settings_button, "gearshape");
         style_toolbar_icon_button(tab_settings_button);
         button_set_action(tab_settings_button, action_handler, sel!(onTabSettings:));
-        set_tooltip(tab_settings_button, "Settings");
+        set_tooltip(tab_settings_button, "Creator");
         let _: () = msg_send![
             tab_settings_button,
             setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN

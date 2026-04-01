@@ -20,9 +20,7 @@ use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
-use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectMaterial, NSWindowCollectionBehavior, NSWindowStyleMask,
-};
+use objc2_app_kit::NSVisualEffectMaterial;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -30,10 +28,10 @@ use tracing::{debug, info, warn};
 
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
-    add_subview, animate_fade, attach_tafla_glass_shell, button_set_action, button_style,
-    clamp_overlay_position, color_rgba, create_button, create_label, create_scrollable_text_view,
-    ns_string, set_hidden, set_text, set_text_view_string, set_tooltip, style_tafla_section,
-    ui_colors, ui_tokens, window_close, window_set_alpha, window_show,
+    add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position, color_rgba,
+    create_borderless_tafla_window, create_button, create_label, create_scrollable_text_view,
+    create_tafla_single_shell, ns_string, set_hidden, set_text, set_text_view_string, set_tooltip,
+    style_tafla_panel, ui_colors, ui_tokens, window_close, window_set_alpha, window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -62,7 +60,7 @@ const OVERLAY_CONTENT_GAP: f64 = 8.0;
 const OVERLAY_TEXT_MIN_HEIGHT: f64 = 44.0;
 const OVERLAY_BUTTON_HEIGHT: f64 = 28.0;
 const OVERLAY_BUTTON_MARGIN: f64 = 8.0;
-const OVERLAY_HEADER_LABEL: &str = "CodeScribe - Dictation Overlay";
+const OVERLAY_HEADER_LABEL: &str = "Dictation";
 
 // Auto-hide delay after recording completes (configurable via env)
 const DEFAULT_AUTO_HIDE_DELAY_SECS: u64 = 15;
@@ -868,16 +866,13 @@ fn show_transcription_overlay_impl() {
         state.action_contract_mode = TranscriptionActionContractMode::Raw;
 
         // Get classes
-        let ns_window_class = Class::get("NSWindow");
         let ns_screen_class = Class::get("NSScreen");
-        let ns_color_class = Class::get("NSColor");
         let ns_progress_class = Class::get("NSProgressIndicator");
         let ns_tracking_area_class = Class::get("NSTrackingArea");
 
         // Defensive checks for Cocoa classes
-        if ns_window_class.is_none()
+        if Class::get("NSWindow").is_none()
             || ns_screen_class.is_none()
-            || ns_color_class.is_none()
             || ns_progress_class.is_none()
             || ns_tracking_area_class.is_none()
         {
@@ -885,9 +880,7 @@ fn show_transcription_overlay_impl() {
             return;
         }
 
-        let ns_window = ns_window_class.unwrap();
         let ns_screen = ns_screen_class.unwrap();
-        let ns_color = ns_color_class.unwrap();
         let ns_progress = ns_progress_class.unwrap();
         let ns_tracking_area = ns_tracking_area_class.unwrap();
 
@@ -946,41 +939,7 @@ fn show_transcription_overlay_impl() {
             },
         };
 
-        // Create borderless window for modern look
-        let window: Id = msg_send![ns_window, alloc];
-        if window.is_null() {
-            warn!("Failed to alloc NSWindow");
-            return;
-        }
-
-        // Borderless + FullSizeContentView for true vibrancy effect
-        let style_mask = NSWindowStyleMask::Borderless | NSWindowStyleMask::FullSizeContentView;
-        let backing = NSBackingStoreType::Buffered;
-        let window: Id = msg_send![
-            window,
-            initWithContentRect: frame
-            styleMask: style_mask
-            backing: backing
-            defer: false
-        ];
-        if window.is_null() {
-            warn!("Failed to init NSWindow");
-            return;
-        }
-
-        // Configure window for floating overlay
-        let _: () = msg_send![window, setOpaque: false];
-        let clear_color: Id = msg_send![ns_color, clearColor];
-        let _: () = msg_send![window, setBackgroundColor: clear_color];
-        let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
-        let _: () = msg_send![window, setMovableByWindowBackground: true];
-        let _: () = msg_send![window, setHasShadow: true];
-
-        // Join all spaces (follow focus)
-        // Make sure the overlay shows up even when the user is in a fullscreen Space.
-        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary;
-        let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
+        let window = create_borderless_tafla_window(frame, NS_FLOATING_WINDOW_LEVEL, false);
 
         // Get content view
         let content_view: Id = msg_send![window, contentView];
@@ -994,15 +953,15 @@ fn show_transcription_overlay_impl() {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
         );
-        let blur_view = attach_tafla_glass_shell(
+        let shell = create_tafla_single_shell(
             content_view,
             blur_frame,
             NSVisualEffectMaterial::HUDWindow,
             1.0,
-            0_isize,
         );
+        let blur_view = shell.content_container;
 
-        let _: () = msg_send![window, setTitle: ns_string(OVERLAY_HEADER_LABEL)];
+        let _: () = msg_send![window, setTitle: ns_string("CodeScribe Dictation")];
 
         let padding = OVERLAY_PADDING;
         let button_height = OVERLAY_BUTTON_HEIGHT;
@@ -1030,7 +989,7 @@ fn show_transcription_overlay_impl() {
             selectable: false,
             editable: false,
         });
-        add_subview(content_view, header_label);
+        add_subview(blur_view, header_label);
 
         let status_field = create_label(crate::ui_helpers::LabelConfig {
             frame: CGRect::new(
@@ -1046,7 +1005,7 @@ fn show_transcription_overlay_impl() {
             editable: false,
         });
         let _: () = msg_send![status_field, setAlignment: 2_isize];
-        add_subview(content_view, status_field);
+        add_subview(blur_view, status_field);
 
         let auto_hide_label = create_label(crate::ui_helpers::LabelConfig {
             frame: CGRect::new(
@@ -1061,7 +1020,7 @@ fn show_transcription_overlay_impl() {
             selectable: false,
             editable: false,
         });
-        add_subview(content_view, auto_hide_label);
+        add_subview(blur_view, auto_hide_label);
         set_hidden(auto_hide_label, true);
 
         let spinner_frame = CGRect::new(
@@ -1076,7 +1035,7 @@ fn show_transcription_overlay_impl() {
         let _: () = msg_send![spinner, setStyle: NS_PROGRESS_INDICATOR_STYLE_SPINNING];
         let _: () = msg_send![spinner, setIndeterminate: true];
         let _: () = msg_send![spinner, setDisplayedWhenStopped: false];
-        add_subview(content_view, spinner);
+        add_subview(blur_view, spinner);
         set_hidden(spinner, true);
 
         // === Scrollable text view for transcription (main area) ===
@@ -1088,7 +1047,7 @@ fn show_transcription_overlay_impl() {
             ),
         );
         let (text_scroll_view, text_view) = create_scrollable_text_view(text_frame, false);
-        style_tafla_section(text_scroll_view);
+        style_tafla_panel(text_scroll_view);
         let ns_font_class = Class::get("NSFont").unwrap();
         let system_font: Id = msg_send![ns_font_class, systemFontOfSize: 14.0f64];
         let _: () = msg_send![text_view, setFont: system_font];
@@ -1106,7 +1065,7 @@ fn show_transcription_overlay_impl() {
             let _: () = msg_send![container, setLineFragmentPadding: 0.0f64];
         }
         set_text_view_string(text_view, "");
-        add_subview(content_view, text_scroll_view);
+        add_subview(blur_view, text_scroll_view);
 
         // Create action handler instance
         let handler_class = action_handler_class();
@@ -1125,7 +1084,7 @@ fn show_transcription_overlay_impl() {
             owner: action_handler
             userInfo: std::ptr::null::<Object>()
         ];
-        let _: () = msg_send![content_view, addTrackingArea: tracking_area];
+        let _: () = msg_send![blur_view, addTrackingArea: tracking_area];
 
         // === Decision buttons (hidden during recording; show on hover) ===
         let button_width = 100.0;
@@ -1198,10 +1157,10 @@ fn show_transcription_overlay_impl() {
         button_set_action(augment_button, action_handler, sel!(onAugmentTranscript:));
         button_set_action(commit_button, action_handler, sel!(onCommitRecording:));
 
-        add_subview(content_view, save_button);
-        add_subview(content_view, copy_button);
-        add_subview(content_view, augment_button);
-        add_subview(content_view, commit_button);
+        add_subview(blur_view, save_button);
+        add_subview(blur_view, copy_button);
+        add_subview(blur_view, augment_button);
+        add_subview(blur_view, commit_button);
 
         set_hidden(save_button, true);
         set_hidden(copy_button, true);

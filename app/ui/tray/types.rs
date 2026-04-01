@@ -63,6 +63,8 @@ impl TrayStatus {
 pub enum TrayMenuEvent {
     /// Copy last transcript to clipboard
     CopyLast,
+    /// Open the native Creator window
+    OpenCreator,
     /// Open settings file in editor
     OpenSettings,
     /// Open help/documentation in browser
@@ -109,12 +111,13 @@ pub struct NotesMenuItems {
 // Menu IDs Structure
 // ============================================================================
 
-/// Menu item IDs for tracking all clickable items
-/// Note: Settings options moved to Settings tab in Chat Overlay
+/// Menu item IDs for tracking all clickable items.
+/// Creator Studio is the primary native configuration surface.
 pub struct MenuIds {
     // Top-level
     pub copy_last: MenuId,
     pub show_overlay: MenuId,
+    pub open_creator: MenuId,
     pub run_onboarding: MenuId,
     pub complete_setup: Option<MenuId>,
     pub open_history: MenuId,

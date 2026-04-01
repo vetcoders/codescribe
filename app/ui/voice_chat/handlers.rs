@@ -1035,7 +1035,7 @@ extern "C" fn on_tab_agent(_this: &Object, _cmd: Sel, _sender: Id) {
 
 extern "C" fn on_tab_settings(_this: &Object, _cmd: Sel, _sender: Id) {
     update_active_tab_impl(Tab::Settings);
-    info!("Settings window opened from chat overlay");
+    info!("Creator window opened from chat overlay");
 }
 
 extern "C" fn on_copy_last_response(_this: &Object, _cmd: Sel, _sender: Id) {

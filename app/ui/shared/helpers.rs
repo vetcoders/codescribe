@@ -593,6 +593,11 @@ pub struct TaflaSplitShell {
     pub split_divider: Id,
 }
 
+pub struct TaflaSingleShell {
+    pub root_glass: Id,
+    pub content_container: Id,
+}
+
 /// Attach a styled Tafla glass shell that fills the parent view.
 ///
 /// # Safety
@@ -691,6 +696,40 @@ pub unsafe fn create_tafla_split_shell(
         sidebar_container,
         content_container,
         split_divider,
+    }
+}
+
+/// Build the canonical Tafla single-pane shell used by floating overlays.
+///
+/// # Safety
+/// `parent` must be a valid `NSView`.
+pub unsafe fn create_tafla_single_shell(
+    parent: Id,
+    frame: CGRect,
+    material: NSVisualEffectMaterial,
+    alpha: f64,
+) -> TaflaSingleShell {
+    let ns_view = Class::get("NSView").unwrap();
+    let autoresize_both = 2_isize | 16_isize;
+
+    let root_glass =
+        unsafe { attach_tafla_glass_shell(parent, frame, material, alpha, autoresize_both) };
+
+    let content_frame = CGRect::new(
+        &CGPoint::new(0.0, 0.0),
+        &CGSize::new(frame.size.width, frame.size.height),
+    );
+    let content_container: Id = msg_send![ns_view, alloc];
+    let content_container: Id = msg_send![content_container, initWithFrame: content_frame];
+    let _: () = msg_send![content_container, setAutoresizingMask: autoresize_both];
+    unsafe {
+        style_tafla_section(content_container);
+        add_subview(root_glass, content_container);
+    }
+
+    TaflaSingleShell {
+        root_glass,
+        content_container,
     }
 }
 
@@ -1615,6 +1654,59 @@ pub fn create_floating_window(
         }
 
         window
+    }
+}
+
+/// Create a borderless Tafla window with the shared floating/windowing defaults.
+///
+/// # Safety
+/// `window_class` must be a valid `NSWindow` subclass.
+pub unsafe fn create_borderless_tafla_window_with_class(
+    window_class: *const Class,
+    frame: CGRect,
+    level: i64,
+    resizable: bool,
+) -> Id {
+    unsafe {
+        let ns_color = Class::get("NSColor").unwrap();
+
+        let mut style = NSWindowStyleMask::Borderless | NSWindowStyleMask::FullSizeContentView;
+        if resizable {
+            style |= NSWindowStyleMask::Resizable;
+        }
+
+        let window: Id = msg_send![window_class, alloc];
+        let window: Id = msg_send![
+            window,
+            initWithContentRect: frame
+            styleMask: style
+            backing: NSBackingStoreType::Buffered
+            defer: false
+        ];
+
+        let _: () = msg_send![window, setTitleVisibility: 1_isize];
+        let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
+        let _: () = msg_send![window, setOpaque: false];
+        let clear: Id = msg_send![ns_color, clearColor];
+        let _: () = msg_send![window, setBackgroundColor: clear];
+        let _: () = msg_send![window, setMovableByWindowBackground: true];
+        let _: () = msg_send![window, setHasShadow: true];
+        let _: () = msg_send![window, setLevel: level];
+        let _: () = msg_send![window, setReleasedWhenClosed: false];
+
+        let collection = NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary;
+        let _: () = msg_send![window, setCollectionBehavior: collection];
+
+        window
+    }
+}
+
+/// Create a borderless Tafla window using the base `NSWindow` class.
+pub fn create_borderless_tafla_window(frame: CGRect, level: i64, resizable: bool) -> Id {
+    unsafe {
+        let ns_window = Class::get("NSWindow").unwrap();
+        create_borderless_tafla_window_with_class(ns_window, frame, level, resizable)
     }
 }
 

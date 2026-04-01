@@ -8,7 +8,7 @@
 //! - Quick Start / Help / About
 //! - Quit
 //!
-//! Note: Settings options moved to Settings tab in Chat Overlay
+//! Note: Creator Studio is the primary native configuration surface.
 
 use std::cell::RefCell;
 
@@ -34,7 +34,7 @@ thread_local! {
 
 /// Build the tray menu
 ///
-/// Note: Settings moved to Settings tab in Chat Overlay
+/// Note: Creator Studio is the primary native configuration surface.
 pub fn build_menu() -> Result<(Menu, MenuIds)> {
     let menu = Menu::new();
     ROOT_MENU.with(|cell| {
@@ -193,25 +193,30 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         None
     };
 
-    // 8. Settings
+    // 8. Creator
+    let creator_item = MenuItem::new("Creator Studio...", true, None);
+    let creator_id = creator_item.id().clone();
+    menu.append(&creator_item)?;
+
+    // 9. Settings
     let onboarding_item = MenuItem::new("Settings", true, None);
     let onboarding_id = onboarding_item.id().clone();
     menu.append(&onboarding_item)?;
 
-    // 9. Help
+    // 10. Help
     let help_item = MenuItem::new("Help", true, None);
     let help_id = help_item.id().clone();
     menu.append(&help_item)?;
 
-    // 9. About
+    // 11. About
     let about_item = MenuItem::new("About", true, None);
     let about_id = about_item.id().clone();
     menu.append(&about_item)?;
 
-    // 10. Separator
+    // 12. Separator
     menu.append(&PredefinedMenuItem::separator())?;
 
-    // 11. Quit (Cmd+Q)
+    // 13. Quit (Cmd+Q)
     let quit_accel = Accelerator::new(Some(Modifiers::SUPER), Code::KeyQ);
     let quit_item = MenuItem::new("Quit", true, Some(quit_accel));
     let quit_id = quit_item.id().clone();
@@ -222,6 +227,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
         MenuIds {
             copy_last: copy_last_id,
             show_overlay: show_overlay_id,
+            open_creator: creator_id,
             run_onboarding: onboarding_id,
             complete_setup: complete_setup_id,
             open_history: open_history_id,
@@ -320,6 +326,7 @@ mod tests {
             "Show Agent".to_string(),
             "Open history...".to_string(),
             "Copy last transcript".to_string(),
+            "Creator Studio...".to_string(),
             "Settings".to_string(),
             "Help".to_string(),
             "About".to_string(),
@@ -333,5 +340,13 @@ mod tests {
         let labels = menu_labels_for_test();
         let found = labels.iter().any(|label| label == "Show Agent");
         assert!(found, "Show Agent menu item missing");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn tray_menu_includes_creator_entrypoint() {
+        let labels = menu_labels_for_test();
+        let found = labels.iter().any(|label| label == "Creator Studio...");
+        assert!(found, "Creator Studio menu item missing");
     }
 }
