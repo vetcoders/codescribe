@@ -89,8 +89,10 @@ impl Config {
         {
             self.toggle_trigger = trigger;
         }
-        if let Ok(val) = std::env::var("HOLD_EXCLUSIVE") {
-            self.hold_exclusive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("HOLD_EXCLUSIVE")
+            && let Some(enabled) = parse_env_bool(&val, "HOLD_EXCLUSIVE")
+        {
+            self.hold_exclusive = enabled;
         }
         if let Ok(val) = std::env::var("HOLD_START_DELAY_MS")
             && let Ok(ms) = val.parse()
@@ -116,9 +118,10 @@ impl Config {
         }
 
         // AI Formatting
-        if let Ok(val) = std::env::var("AI_FORMATTING_ENABLED") {
-            self.ai_formatting_enabled =
-                matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+        if let Ok(val) = std::env::var("AI_FORMATTING_ENABLED")
+            && let Some(enabled) = parse_env_bool(&val, "AI_FORMATTING_ENABLED")
+        {
+            self.ai_formatting_enabled = enabled;
         }
         if let Ok(val) = std::env::var("TRANSCRIPT_SEND_MODE")
             && let Ok(mode) = val.parse::<TranscriptSendMode>()
@@ -137,18 +140,25 @@ impl Config {
         }
 
         // UI
-        if let Ok(val) = std::env::var("SHOW_TRAY_GLYPH") {
-            self.show_tray_glyph = val.parse().unwrap_or(true);
+        if let Ok(val) = std::env::var("SHOW_TRAY_GLYPH")
+            && let Some(enabled) = parse_env_bool(&val, "SHOW_TRAY_GLYPH")
+        {
+            self.show_tray_glyph = enabled;
         }
-        if let Ok(val) = std::env::var("SHOW_DOCK_ICON") {
-            self.show_dock_icon = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("SHOW_DOCK_ICON")
+            && let Some(enabled) = parse_env_bool(&val, "SHOW_DOCK_ICON")
+        {
+            self.show_dock_icon = enabled;
         }
-        if let Ok(val) = std::env::var("TRANSCRIPTION_OVERLAY_ENABLED") {
-            self.transcription_overlay_enabled =
-                matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("TRANSCRIPTION_OVERLAY_ENABLED")
+            && let Some(enabled) = parse_env_bool(&val, "TRANSCRIPTION_OVERLAY_ENABLED")
+        {
+            self.transcription_overlay_enabled = enabled;
         }
-        if let Ok(val) = std::env::var("HOLD_INDICATOR") {
-            self.hold_indicator = val.parse().unwrap_or(true);
+        if let Ok(val) = std::env::var("HOLD_INDICATOR")
+            && let Some(enabled) = parse_env_bool(&val, "HOLD_INDICATOR")
+        {
+            self.hold_indicator = enabled;
         }
         if let Ok(val) = std::env::var("HOLD_BADGE_SIZE")
             && let Ok(size) = val.parse()
@@ -183,11 +193,15 @@ impl Config {
         }
 
         // Sound
-        if let Ok(val) = std::env::var("BEEP_ON_START") {
-            self.beep_on_start = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("BEEP_ON_START")
+            && let Some(enabled) = parse_env_bool(&val, "BEEP_ON_START")
+        {
+            self.beep_on_start = enabled;
         }
-        if let Ok(val) = std::env::var("AGENT_ENTER_SENDS") {
-            self.agent_enter_sends = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("AGENT_ENTER_SENDS")
+            && let Some(enabled) = parse_env_bool(&val, "AGENT_ENTER_SENDS")
+        {
+            self.agent_enter_sends = enabled;
         }
         if let Ok(val) = std::env::var("SOUND_NAME") {
             self.sound_name = val;
@@ -206,16 +220,22 @@ impl Config {
         // No legacy SILENCE_* variables - single source of truth
 
         // History (default: on to avoid data loss)
-        if let Ok(val) = std::env::var("HISTORY_ENABLED") {
-            self.history_enabled = val.parse().unwrap_or(true);
+        if let Ok(val) = std::env::var("HISTORY_ENABLED")
+            && let Some(enabled) = parse_env_bool(&val, "HISTORY_ENABLED")
+        {
+            self.history_enabled = enabled;
         }
 
         // Quick Notes (default: off)
-        if let Ok(val) = std::env::var("QUICK_NOTES_ENABLED") {
-            self.quick_notes_enabled = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("QUICK_NOTES_ENABLED")
+            && let Some(enabled) = parse_env_bool(&val, "QUICK_NOTES_ENABLED")
+        {
+            self.quick_notes_enabled = enabled;
         }
-        if let Ok(val) = std::env::var("QUICK_NOTES_SAVE_ONLY") {
-            self.quick_notes_save_only = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("QUICK_NOTES_SAVE_ONLY")
+            && let Some(enabled) = parse_env_bool(&val, "QUICK_NOTES_SAVE_ONLY")
+        {
+            self.quick_notes_save_only = enabled;
         }
 
         // Backends - LLM
@@ -237,16 +257,20 @@ impl Config {
         }
 
         // Local STT (Pure Rust Whisper)
-        if let Ok(val) = std::env::var("USE_LOCAL_STT") {
-            self.use_local_stt = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("USE_LOCAL_STT")
+            && let Some(enabled) = parse_env_bool(&val, "USE_LOCAL_STT")
+        {
+            self.use_local_stt = enabled;
         }
         if let Ok(val) = std::env::var("LOCAL_MODEL") {
             self.local_model = val;
         }
 
         // Clipboard
-        if let Ok(val) = std::env::var("RESTORE_CLIPBOARD") {
-            self.restore_clipboard = val.parse().unwrap_or(true);
+        if let Ok(val) = std::env::var("RESTORE_CLIPBOARD")
+            && let Some(enabled) = parse_env_bool(&val, "RESTORE_CLIPBOARD")
+        {
+            self.restore_clipboard = enabled;
         }
         if let Ok(val) = std::env::var("RESTORE_CLIPBOARD_DELAY_MS")
             && let Ok(delay) = val.parse()
@@ -255,13 +279,17 @@ impl Config {
         }
 
         // System
-        if let Ok(val) = std::env::var("START_AT_LOGIN") {
-            self.start_at_login = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("START_AT_LOGIN")
+            && let Some(enabled) = parse_env_bool(&val, "START_AT_LOGIN")
+        {
+            self.start_at_login = enabled;
         }
 
         // Debugging (default: on to keep paired .wav with transcripts)
-        if let Ok(val) = std::env::var("DUMP_AUDIO_LOGS") {
-            self.dump_audio_logs = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        if let Ok(val) = std::env::var("DUMP_AUDIO_LOGS")
+            && let Some(enabled) = parse_env_bool(&val, "DUMP_AUDIO_LOGS")
+        {
+            self.dump_audio_logs = enabled;
         }
     }
 
@@ -282,12 +310,12 @@ impl Config {
     /// Apply user settings from JSON (lower priority than .env).
     /// Only applies values that are Some AND not already overridden by env vars.
     fn apply_user_settings(&mut self, settings: &super::settings::UserSettings) {
-        // Helper: only apply if the env var is NOT set
-        macro_rules! apply_parsed_if_no_env {
-            ($env_key:expr, $field:expr, $val:expr) => {
-                if std::env::var($env_key).is_err() {
+        // Helper: only apply if the env var is absent or invalid for the target type.
+        macro_rules! apply_parsed_if_no_valid_env {
+            ($env_key:expr, $ty:ty, $field:expr, $val:expr) => {
+                if !env_var_parses::<$ty>($env_key) {
                     if let Some(ref v) = $val {
-                        if let Ok(parsed) = v.parse() {
+                        if let Ok(parsed) = v.parse::<$ty>() {
                             $field = parsed;
                         }
                     }
@@ -296,40 +324,41 @@ impl Config {
         }
 
         // Language
-        apply_parsed_if_no_env!(
+        apply_parsed_if_no_valid_env!(
             "WHISPER_LANGUAGE",
+            Language,
             self.whisper_language,
             settings.whisper_language
         );
         // Hotkeys
-        if std::env::var("HOLD_MODS").is_err() {
+        if !env_var_parses::<HoldMods>("HOLD_MODS") {
             self.hold_mods = settings.legacy_hold_mods();
         }
-        if std::env::var("TOGGLE_TRIGGER").is_err() {
+        if !env_var_parses::<ToggleTrigger>("TOGGLE_TRIGGER") {
             self.toggle_trigger = settings.legacy_toggle_trigger();
         }
-        if std::env::var("HOLD_START_DELAY_MS").is_err()
+        if !env_var_parses::<u64>("HOLD_START_DELAY_MS")
             && let Some(v) = settings.hold_start_delay_ms
         {
             self.hold_start_delay_ms = v;
         }
-        if std::env::var("DOUBLE_TAP_INTERVAL_MS").is_err()
+        if !env_var_parses::<u64>("DOUBLE_TAP_INTERVAL_MS")
             && let Some(v) = settings.double_tap_interval_ms
         {
             self.double_tap_interval_ms = v;
         }
-        if std::env::var("TOGGLE_SILENCE_SEC").is_err()
+        if !env_var_parses::<f32>("TOGGLE_SILENCE_SEC")
             && let Some(v) = settings.toggle_silence_sec
         {
             self.toggle_silence_sec = v;
         }
-        if std::env::var("HOLD_EXCLUSIVE").is_err()
+        if !env_var_has_valid_bool("HOLD_EXCLUSIVE")
             && let Some(v) = settings.hold_exclusive
         {
             self.hold_exclusive = v;
         }
         // AI
-        if std::env::var("AI_FORMATTING_ENABLED").is_err()
+        if !env_var_has_valid_bool("AI_FORMATTING_ENABLED")
             && let Some(v) = settings.ai_formatting_enabled
         {
             self.ai_formatting_enabled = v;
@@ -341,17 +370,17 @@ impl Config {
             Self::safe_set_env("FORMATTING_LEVEL", v);
         }
         // Sound
-        if std::env::var("BEEP_ON_START").is_err()
+        if !env_var_has_valid_bool("BEEP_ON_START")
             && let Some(v) = settings.beep_on_start
         {
             self.beep_on_start = v;
         }
-        if std::env::var("SHOW_DOCK_ICON").is_err()
+        if !env_var_has_valid_bool("SHOW_DOCK_ICON")
             && let Some(v) = settings.show_dock_icon
         {
             self.show_dock_icon = v;
         }
-        if std::env::var("TRANSCRIPTION_OVERLAY_ENABLED").is_err()
+        if !env_var_has_valid_bool("TRANSCRIPTION_OVERLAY_ENABLED")
             && let Some(v) = settings.transcription_overlay_enabled
         {
             self.transcription_overlay_enabled = v;
@@ -359,7 +388,7 @@ impl Config {
                 std::env::set_var("TRANSCRIPTION_OVERLAY_ENABLED", if v { "1" } else { "0" })
             };
         }
-        if std::env::var("SOUND_VOLUME").is_err()
+        if !env_var_parses::<f32>("SOUND_VOLUME")
             && let Some(v) = settings.sound_volume
         {
             self.sound_volume = v;
@@ -403,7 +432,7 @@ impl Config {
         }
 
         // Local STT
-        if std::env::var("USE_LOCAL_STT").is_err()
+        if !env_var_has_valid_bool("USE_LOCAL_STT")
             && let Some(v) = settings.use_local_stt
         {
             self.use_local_stt = v;
@@ -423,8 +452,9 @@ impl Config {
         }
 
         // Transcript send mode
-        apply_parsed_if_no_env!(
+        apply_parsed_if_no_valid_env!(
             "TRANSCRIPT_SEND_MODE",
+            TranscriptSendMode,
             self.transcript_send_mode,
             settings.transcript_send_mode
         );
@@ -444,31 +474,31 @@ impl Config {
         }
 
         // History
-        if std::env::var("HISTORY_ENABLED").is_err()
+        if !env_var_has_valid_bool("HISTORY_ENABLED")
             && let Some(v) = settings.history_enabled
         {
             self.history_enabled = v;
         }
 
         // Quick Notes
-        if std::env::var("QUICK_NOTES_ENABLED").is_err()
+        if !env_var_has_valid_bool("QUICK_NOTES_ENABLED")
             && let Some(v) = settings.quick_notes_enabled
         {
             self.quick_notes_enabled = v;
         }
-        if std::env::var("QUICK_NOTES_SAVE_ONLY").is_err()
+        if !env_var_has_valid_bool("QUICK_NOTES_SAVE_ONLY")
             && let Some(v) = settings.quick_notes_save_only
         {
             self.quick_notes_save_only = v;
         }
 
         // System
-        if std::env::var("START_AT_LOGIN").is_err()
+        if !env_var_has_valid_bool("START_AT_LOGIN")
             && let Some(v) = settings.start_at_login
         {
             self.start_at_login = v;
         }
-        if std::env::var("CODESCRIBE_AUTOSTART_QUALITY_DAEMON").is_err()
+        if !env_var_has_valid_bool("CODESCRIBE_AUTOSTART_QUALITY_DAEMON")
             && let Some(v) = settings.quality_daemon_autostart
         {
             unsafe {
@@ -478,29 +508,29 @@ impl Config {
                 )
             };
         }
-        if std::env::var("AGENT_ENTER_SENDS").is_err()
+        if !env_var_has_valid_bool("AGENT_ENTER_SENDS")
             && let Some(v) = settings.agent_enter_sends
         {
             self.agent_enter_sends = v;
         }
 
         // ── Voice Lab survivors (runtime env vars, not Config struct fields) ──
-        if std::env::var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
+        if !env_var_parses::<u64>("CODESCRIBE_BUFFER_DELAY_MS")
             && let Some(v) = settings.buffer_delay_ms
         {
             unsafe { std::env::set_var("CODESCRIBE_BUFFER_DELAY_MS", v.to_string()) };
         }
-        if std::env::var("CODESCRIBE_TYPING_CPS").is_err()
+        if !env_var_parses::<f32>("CODESCRIBE_TYPING_CPS")
             && let Some(v) = settings.typing_cps
         {
             unsafe { std::env::set_var("CODESCRIBE_TYPING_CPS", v.to_string()) };
         }
-        if std::env::var("CODESCRIBE_EMIT_WORDS_MAX").is_err()
+        if !env_var_parses::<u64>("CODESCRIBE_EMIT_WORDS_MAX")
             && let Some(v) = settings.emit_words_max
         {
             unsafe { std::env::set_var("CODESCRIBE_EMIT_WORDS_MAX", v.to_string()) };
         }
-        if std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC").is_err()
+        if !env_var_parses::<f32>("CODESCRIBE_BUFFERED_INTERIM_SEC")
             && let Some(v) = settings.buffered_interim_sec
         {
             unsafe { std::env::set_var("CODESCRIBE_BUFFERED_INTERIM_SEC", format!("{v:.1}")) };
@@ -510,7 +540,7 @@ impl Config {
         {
             Self::safe_set_env("WHISPER_MODEL", v);
         }
-        if std::env::var("BACKEND_MAX_UPLOAD_MB").is_err()
+        if !env_var_parses::<u64>("BACKEND_MAX_UPLOAD_MB")
             && let Some(v) = settings.backend_max_upload_mb
         {
             unsafe { std::env::set_var("BACKEND_MAX_UPLOAD_MB", v.to_string()) };
@@ -1001,12 +1031,45 @@ impl Config {
     }
 }
 
-fn parse_use_local_stt(raw: &str, source: &str) -> Option<bool> {
+fn parse_bool_value(raw: &str) -> Option<bool> {
     let normalized = raw.trim().to_lowercase();
     match normalized.as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => {
+        "1" | "true" | "yes" | "on" | "enabled" => Some(true),
+        "0" | "false" | "no" | "off" | "disabled" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_env_bool(raw: &str, key: &str) -> Option<bool> {
+    match parse_bool_value(raw) {
+        Some(value) => Some(value),
+        None => {
+            warn!("Ignoring invalid {key} value in environment: {raw}");
+            None
+        }
+    }
+}
+
+fn env_var_has_valid_bool(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| parse_bool_value(&raw))
+        .is_some()
+}
+
+fn env_var_parses<T>(key: &str) -> bool
+where
+    T: std::str::FromStr,
+{
+    std::env::var(key)
+        .ok()
+        .is_some_and(|raw| raw.parse::<T>().is_ok())
+}
+
+fn parse_use_local_stt(raw: &str, source: &str) -> Option<bool> {
+    match parse_bool_value(raw) {
+        Some(value) => Some(value),
+        None => {
             warn!("Ignoring invalid USE_LOCAL_STT value in {source}: {raw}");
             None
         }
@@ -1082,7 +1145,17 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
-            std::env::remove_var("USE_LOCAL_STT");
+            for key in [
+                "USE_LOCAL_STT",
+                "QUICK_NOTES_ENABLED",
+                "QUICK_NOTES_SAVE_ONLY",
+                "WHISPER_LANGUAGE",
+                "SHOW_TRAY_GLYPH",
+                "AI_FORMATTING_ENABLED",
+                "HOLD_START_DELAY_MS",
+            ] {
+                std::env::remove_var(key);
+            }
         }
         tmp
     }
@@ -1153,6 +1226,60 @@ mod tests {
         let settings = UserSettings::load();
         assert_eq!(settings.use_local_stt, Some(false));
         assert!(UserSettings::settings_path().exists());
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_ignores_invalid_bool_env_and_keeps_settings_value() {
+        let _tmp = setup_isolated_data_dir();
+        unsafe {
+            std::env::set_var("QUICK_NOTES_ENABLED", "definitely");
+        }
+
+        let mut settings = UserSettings::load();
+        settings.quick_notes_enabled = Some(true);
+        settings.save().expect("save settings");
+
+        let config = Config::load();
+        assert!(
+            config.quick_notes_enabled,
+            "invalid bool env should not suppress a valid settings.json value"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_ignores_invalid_enum_env_and_keeps_settings_value() {
+        let _tmp = setup_isolated_data_dir();
+        unsafe {
+            std::env::set_var("WHISPER_LANGUAGE", "de");
+        }
+
+        let mut settings = UserSettings::load();
+        settings.whisper_language = Some("en".to_string());
+        settings.save().expect("save settings");
+
+        let config = Config::load();
+        assert_eq!(
+            config.whisper_language,
+            Language::English,
+            "invalid enum env should not suppress a valid settings.json value"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_ignores_invalid_unbacked_bool_env_and_keeps_default() {
+        let _tmp = setup_isolated_data_dir();
+        unsafe {
+            std::env::set_var("SHOW_TRAY_GLYPH", "mystery");
+        }
+
+        let config = Config::load();
+        assert!(
+            config.show_tray_glyph,
+            "invalid bool env should leave default-true unbacked flags untouched"
+        );
     }
 
     #[test]
