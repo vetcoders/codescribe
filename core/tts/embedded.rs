@@ -31,7 +31,7 @@ pub fn is_embedded_available() -> bool {
         cfg_set,
         weights_size
     );
-    cfg_set && weights_size > 0
+    has_embedded_weights(data::WEIGHTS)
 }
 
 /// Get embedded model data if available
@@ -82,9 +82,19 @@ impl EmbeddedTts {
     }
 }
 
+fn has_embedded_weights(weights: &[u8]) -> bool {
+    !weights.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_weights_presence_is_the_runtime_truth() {
+        assert!(!has_embedded_weights(&[]));
+        assert!(has_embedded_weights(&[1, 2, 3]));
+    }
 
     #[test]
     fn test_embedded_availability() {
