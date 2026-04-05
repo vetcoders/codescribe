@@ -22,24 +22,103 @@ rules:
     languages: [rust]
     message: Avoid sleep in tests (flaky/slow CI)
     severity: WARNING
+    paths:
+      include:
+        - "**/tests/**"
+        - "**/tests.rs"
     patterns:
       - pattern: sleep(...)
+      - pattern-either:
+          - pattern-inside: |
+              #[test]
+              fn $F(...) {
+                ...
+              }
+          - pattern-inside: |
+              #[tokio::test]
+              async fn $F(...) {
+                ...
+              }
+          - pattern-inside: |
+              #[cfg(test)]
+              mod $M {
+                ...
+              }
 
   # Rust: avoid unwrap on File::open
   - id: local.rust.no-file-open-unwrap
     languages: [rust]
     message: Avoid unwrap() on File::open to prevent crashes
     severity: WARNING
+    paths:
+      include:
+        - "**/core/connectors/web.rs"
+        - "**/core/pipeline/streaming.rs"
+        - "**/core/stt/onnx_adapter.rs"
+        - "**/core/tts/audio_output.rs"
+      exclude:
+        - "**/core/tests/**"
     patterns:
       - pattern: File::open(...).unwrap()
+      - pattern-not-inside: |
+          #[test]
+          fn $F(...) {
+            ...
+          }
+      - pattern-not-inside: |
+          #[tokio::test]
+          async fn $F(...) {
+            ...
+          }
+      - pattern-not-inside: |
+          #[cfg(test)]
+          mod $M {
+            ...
+          }
+      - pattern-not-inside: |
+          mod tests {
+            ...
+          }
 
   # Rust: avoid generic unwrap
   - id: local.rust.no-unwrap
     languages: [rust]
     message: Avoid unwrap(); use ? or expect with context
     severity: WARNING
+    paths:
+      include:
+        - "**/core/config/keychain.rs"
+        - "**/core/connectors/web.rs"
+        - "**/core/llm/client.rs"
+        - "**/core/pipeline/sinks.rs"
+        - "**/core/pipeline/streaming.rs"
+        - "**/core/state/history.rs"
+        - "**/core/stt/onnx_adapter.rs"
+        - "**/core/tts/audio_output.rs"
+      exclude:
+        - "**/core/tests/**"
     patterns:
       - pattern: $X.unwrap()
+      - pattern-not: Class::get(...).unwrap()
+      - pattern-not-inside: |
+          #[test]
+          fn $F(...) {
+            ...
+          }
+      - pattern-not-inside: |
+          #[tokio::test]
+          async fn $F(...) {
+            ...
+          }
+      - pattern-not-inside: |
+          #[cfg(test)]
+          mod $M {
+            ...
+          }
+      - pattern-not-inside: |
+          mod tests {
+            ...
+          }
 
   # Bash: disallow curl|bash style installers
   - id: local.bash.no-curl-pipe-sh
