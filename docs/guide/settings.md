@@ -94,6 +94,11 @@ This tab owns slower-moving toggles:
 - quality daemon
 - ultra quality final pass
 
+Current runtime truth:
+
+- quality daemon is opt-in and stays off by default unless you enable autostart
+- ultra quality final pass is the slower, legacy end-of-session pass
+
 ## Power-user Overrides
 
 If you need direct overrides outside the Creator:
