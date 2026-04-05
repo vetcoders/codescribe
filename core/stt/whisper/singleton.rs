@@ -126,15 +126,22 @@ pub fn init() -> Result<()> {
     // 1. Embedded model (release builds) - ZERO DISK I/O
     //    Model bytes → GPU tensors, no temp files
     if let Some(embedded) = super::embedded::get_embedded_data() {
-        let engine = LocalWhisperEngine::from_embedded(&embedded)
-            .context("Failed to initialize from embedded model")?;
+        match LocalWhisperEngine::from_embedded(&embedded) {
+            Ok(engine) => {
+                ENGINE
+                    .set(Mutex::new(engine))
+                    .map_err(|_| anyhow!("Engine already initialized"))?;
 
-        ENGINE
-            .set(Mutex::new(engine))
-            .map_err(|_| anyhow!("Engine already initialized"))?;
-
-        info!("Whisper engine initialized from embedded model (zero I/O)");
-        return Ok(());
+                info!("Whisper engine initialized from embedded model (zero I/O)");
+                return Ok(());
+            }
+            Err(error) => {
+                warn!(
+                    "Embedded Whisper bundle present but failed to initialize: {}. Falling back to path-based loading.",
+                    error
+                );
+            }
+        }
     }
 
     // 2. Fallback to path-based loading (dev mode, bundled .app)

@@ -12,7 +12,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::embedded;
 use crate::{hf_cache, safe_path};
@@ -99,7 +99,15 @@ impl EmbedderEngine {
         if config.use_embedded
             && let Some(embedded) = embedded::get_embedded_data()
         {
-            return Self::from_embedded(&embedded, device, config.max_length);
+            match Self::from_embedded(&embedded, device.clone(), config.max_length) {
+                Ok(engine) => return Ok(engine),
+                Err(error) => {
+                    warn!(
+                        "Embedded embedder bundle present but failed to initialize: {}. Falling back to path-based loading.",
+                        error
+                    );
+                }
+            }
         }
 
         let model_path = resolve_model_path(config.model_path.as_ref(), repo_override.as_deref())?;

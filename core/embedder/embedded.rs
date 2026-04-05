@@ -19,14 +19,18 @@ mod data {
 
 /// Check if embedded model is available
 pub fn is_embedded_available() -> bool {
-    let cfg_set = cfg!(embed_embedder);
+    let config_size = data::CONFIG.len();
+    let tokenizer_size = data::TOKENIZER.len();
     let weights_size = data::WEIGHTS.len();
+    let available = has_complete_embedded_bundle(data::CONFIG, data::TOKENIZER, data::WEIGHTS);
     tracing::debug!(
-        "[Embedder] Embedded check: cfg={}, weights_size={}",
-        cfg_set,
-        weights_size
+        config_size,
+        tokenizer_size,
+        weights_size,
+        available,
+        "[Embedder] Embedded bundle check"
     );
-    has_embedded_weights(data::WEIGHTS)
+    available
 }
 
 /// Get embedded model data if available
@@ -58,8 +62,8 @@ impl EmbeddedModel {
     }
 }
 
-fn has_embedded_weights(weights: &[u8]) -> bool {
-    !weights.is_empty()
+fn has_complete_embedded_bundle(config: &[u8], tokenizer: &[u8], weights: &[u8]) -> bool {
+    !config.is_empty() && !tokenizer.is_empty() && !weights.is_empty()
 }
 
 #[cfg(test)]
@@ -67,9 +71,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_weights_presence_is_the_runtime_truth() {
-        assert!(!has_embedded_weights(&[]));
-        assert!(has_embedded_weights(&[1, 2, 3]));
+    fn embedded_bundle_requires_all_required_files() {
+        assert!(!has_complete_embedded_bundle(&[], &[1], &[1]));
+        assert!(!has_complete_embedded_bundle(&[1], &[], &[1]));
+        assert!(!has_complete_embedded_bundle(&[1], &[1], &[]));
+        assert!(has_complete_embedded_bundle(&[1], &[1], &[1]));
     }
 
     #[test]
