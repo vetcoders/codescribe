@@ -58,12 +58,13 @@ pub async fn run_server(controller: Arc<RecordingController>) -> Result<()> {
         let controller = Arc::clone(&controller);
 
         // Acquire permit before spawning (blocks if at limit)
-        let permit = Arc::clone(&semaphore).acquire_owned().await;
-        if permit.is_err() {
-            warn!("IPC semaphore closed unexpectedly");
-            continue;
-        }
-        let permit = permit.unwrap();
+        let permit = match Arc::clone(&semaphore).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!("IPC semaphore closed unexpectedly");
+                continue;
+            }
+        };
 
         tokio::spawn(async move {
             // Permit is held for the duration of the connection
@@ -123,7 +124,10 @@ async fn handle_client(stream: UnixStream, controller: Arc<RecordingController>)
                 line.clear();
             }
             event = async {
-                event_rx.as_mut().expect("event_rx checked by guard").recv().await
+                match event_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => Err(tokio::sync::broadcast::error::RecvError::Closed),
+                }
             }, if event_rx.is_some() => {
                 match event {
                     Ok(ev) => {

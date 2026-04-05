@@ -21,11 +21,34 @@ type Id = *mut Object;
 static AUTH_ONCE: Once = Once::new();
 
 fn ns_string(s: &str) -> Id {
+    let sanitized = if s.as_bytes().contains(&0) {
+        warn!("Notification text contained NUL bytes; stripping before NSString conversion");
+        s.chars().filter(|&ch| ch != '\0').collect::<String>()
+    } else {
+        s.to_string()
+    };
+
     unsafe {
-        let cls = Class::get("NSString").unwrap();
-        let c_str = CString::new(s).unwrap_or_else(|_| CString::new("").unwrap());
+        let Some(cls) = Class::get("NSString") else {
+            warn!("Notification skipped: NSString class unavailable");
+            return std::ptr::null_mut();
+        };
+        let Ok(c_str) = CString::new(sanitized) else {
+            warn!("Notification skipped: failed to convert text into CString");
+            return std::ptr::null_mut();
+        };
         msg_send![cls, stringWithUTF8String: c_str.as_ptr()]
     }
+}
+
+fn notification_identifier() -> Id {
+    ns_string(&format!(
+        "codescribe-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ))
 }
 
 /// Check if we're running inside a proper app bundle.
@@ -120,13 +143,10 @@ pub fn notify(title: &str, body: &str) {
         };
 
         // Unique ID per notification (timestamp-based)
-        let identifier = ns_string(&format!(
-            "codescribe-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ));
+        let identifier = notification_identifier();
+        if identifier.is_null() {
+            return;
+        }
         let trigger: Id = std::ptr::null_mut();
         let request: Id = msg_send![request_cls, requestWithIdentifier:identifier content:content trigger:trigger];
 
@@ -172,13 +192,10 @@ pub fn notify_with_subtitle(title: &str, subtitle: &str, body: &str) {
             Some(c) => c,
             None => return,
         };
-        let identifier = ns_string(&format!(
-            "codescribe-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ));
+        let identifier = notification_identifier();
+        if identifier.is_null() {
+            return;
+        }
         let trigger: Id = std::ptr::null_mut();
         let request: Id = msg_send![request_cls, requestWithIdentifier:identifier content:content trigger:trigger];
 
