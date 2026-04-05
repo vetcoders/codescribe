@@ -354,6 +354,57 @@ fn test_settings_full_round_trip() {
     );
 }
 
+#[test]
+#[serial]
+fn test_save_to_env_surfaces_settings_write_failures() {
+    let tmp = TempDir::new().expect("tempdir");
+    let blocked_dir = tmp.path().join("blocked-settings-dir");
+    fs::write(&blocked_dir, "not a directory").expect("write blocking file");
+
+    unsafe {
+        std::env::set_var("CODESCRIBE_DATA_DIR", &blocked_dir);
+        std::env::remove_var("WHISPER_LANGUAGE");
+    }
+
+    let config = Config::load();
+    config
+        .save_to_env("WHISPER_LANGUAGE", "en")
+        .expect_err("single-field save should surface settings.json write failure");
+
+    assert!(
+        std::env::var("WHISPER_LANGUAGE").is_err(),
+        "runtime env should stay untouched when single-field persist fails"
+    );
+}
+
+#[test]
+#[serial]
+fn test_save_to_env_many_surfaces_settings_write_failures() {
+    let tmp = TempDir::new().expect("tempdir");
+    let blocked_dir = tmp.path().join("blocked-settings-dir");
+    fs::write(&blocked_dir, "not a directory").expect("write blocking file");
+
+    unsafe {
+        std::env::set_var("CODESCRIBE_DATA_DIR", &blocked_dir);
+        std::env::remove_var("WHISPER_LANGUAGE");
+        std::env::remove_var("AI_FORMATTING_ENABLED");
+    }
+
+    let config = Config::load();
+    config
+        .save_to_env_many(&[("WHISPER_LANGUAGE", "en"), ("AI_FORMATTING_ENABLED", "1")])
+        .expect_err("batch save should surface settings.json write failure");
+
+    assert!(
+        std::env::var("WHISPER_LANGUAGE").is_err(),
+        "runtime env should stay untouched when batch persist fails"
+    );
+    assert!(
+        std::env::var("AI_FORMATTING_ENABLED").is_err(),
+        "batch failure should not leak partial env updates"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════
 // Engine tab: runtime data sources
 // ═══════════════════════════════════════════════════════════

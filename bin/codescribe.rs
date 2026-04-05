@@ -198,7 +198,7 @@ fn handle_app_command(command: AppCommand) -> Result<()> {
 
 fn init_tracing() {
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{EnvFilter, fmt};
+    use tracing_subscriber::{EnvFilter, fmt, fmt::writer::BoxMakeWriter};
 
     // Prefer `RUST_LOG`, fall back to legacy `LOG_LEVEL`.
     let filter = match env::var("RUST_LOG") {
@@ -221,18 +221,29 @@ fn init_tracing() {
 
     let filter_layer = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path);
+    let file = open_append_log_file(&log_path);
 
     if let Ok(file) = file {
         let file = std::sync::Arc::new(file);
+        let log_path = log_path.clone();
+        let writer = BoxMakeWriter::new(move || -> Box<dyn std::io::Write> {
+            match clone_or_reopen_log_file(&file, &log_path, "runtime log sink") {
+                Ok(writer) => Box::new(writer),
+                Err(error) => {
+                    eprintln!(
+                        "[logging] Failed to access {}: {}. Falling back to sink.",
+                        log_path.display(),
+                        error
+                    );
+                    Box::new(std::io::sink())
+                }
+            }
+        });
         let file_layer = fmt::layer()
             .with_ansi(false)
             .with_target(true)
             .with_thread_ids(true)
-            .with_writer(move || (*file).try_clone().expect("Failed to clone log file"));
+            .with_writer(writer);
 
         let _ = tracing_subscriber::registry()
             .with(filter_layer)
@@ -245,6 +256,28 @@ fn init_tracing() {
             .with(stderr_layer)
             .try_init();
     }
+}
+
+fn open_append_log_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+}
+
+fn clone_or_reopen_log_file(
+    file: &std::fs::File,
+    path: &std::path::Path,
+    context: &str,
+) -> std::io::Result<std::fs::File> {
+    file.try_clone().or_else(|clone_error| {
+        open_append_log_file(path).map_err(|open_error| {
+            std::io::Error::new(
+                open_error.kind(),
+                format!("{context}: clone failed ({clone_error}); reopen failed ({open_error})"),
+            )
+        })
+    })
 }
 
 /// Handle --config flag: create default config and open in editor
@@ -853,11 +886,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
         let _ = std::fs::remove_file(&pid_path);
     }
 
-    let log_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
+    let log_file = match open_append_log_file(&log_path) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("[quality-daemon] Failed to open log file: {}", e);
@@ -866,18 +895,22 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
         }
     };
 
-    let stderr_file = log_file.try_clone().unwrap_or_else(|_| {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .expect("log file")
-    });
+    let stderr_stdio = match clone_or_reopen_log_file(&log_file, &log_path, "quality daemon stderr")
+    {
+        Ok(file) => Stdio::from(file),
+        Err(error) => {
+            eprintln!(
+                "[quality-daemon] Failed to prepare stderr log sink: {}. Falling back to null.",
+                error
+            );
+            Stdio::null()
+        }
+    };
 
     match Command::new(&bin_path)
         .args(["--daemon", "--apply", "--daemon-interval", "1800"])
         .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(stderr_file))
+        .stderr(stderr_stdio)
         .spawn()
     {
         Ok(child) => {

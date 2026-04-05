@@ -522,108 +522,7 @@ impl Config {
     /// - Regular-user fields → settings.json
     /// - Everything else → .env
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        if matches!(key, "HOLD_MODS" | "TOGGLE_TRIGGER") {
-            let mut settings = super::settings::UserSettings::load();
-            let hold = if key == "HOLD_MODS" {
-                value.parse::<HoldMods>().map_err(|e| anyhow::anyhow!(e))?
-            } else {
-                settings.legacy_hold_mods()
-            };
-            let toggle = if key == "TOGGLE_TRIGGER" {
-                value
-                    .parse::<ToggleTrigger>()
-                    .map_err(|e| anyhow::anyhow!(e))?
-            } else {
-                settings.legacy_toggle_trigger()
-            };
-            settings.apply_legacy_hotkeys(hold, toggle);
-            settings.save()?;
-
-            let env_path = Self::env_path();
-            if let Some(parent) = env_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let mut env_vars = if env_path.exists() {
-                Self::parse_env_file(&env_path)?
-            } else {
-                HashMap::new()
-            };
-            env_vars.insert(key.to_string(), value.to_string());
-            Self::write_env_file(&env_path, &env_vars)?;
-            unsafe { std::env::set_var(key, value) };
-            return Ok(());
-        }
-
-        // API keys → Keychain
-        if super::keychain::KEYCHAIN_ACCOUNTS.contains(&key) {
-            super::keychain::save_key(key, value)?;
-            // Also update runtime env var
-            unsafe { std::env::set_var(key, value) };
-            return Ok(());
-        }
-
-        // Regular-user fields → settings.json
-        let is_regular = super::settings::is_promoted_key(key);
-
-        if is_regular {
-            let mut settings = super::settings::UserSettings::load();
-            // Route to appropriate setter based on value type
-            match key {
-                "HOLD_START_DELAY_MS"
-                | "DOUBLE_TAP_INTERVAL_MS"
-                | "CODESCRIBE_BUFFER_DELAY_MS"
-                | "CODESCRIBE_EMIT_WORDS_MAX"
-                | "BACKEND_MAX_UPLOAD_MB" => {
-                    if let Ok(v) = value.parse::<u64>() {
-                        settings.set_u64(key, v);
-                    }
-                }
-                "SOUND_VOLUME"
-                | "TOGGLE_SILENCE_SEC"
-                | "CODESCRIBE_TYPING_CPS"
-                | "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
-                    if let Ok(v) = value.parse::<f32>() {
-                        settings.set_f32(key, v);
-                    }
-                }
-                "AI_FORMATTING_ENABLED"
-                | "BEEP_ON_START"
-                | "SHOW_DOCK_ICON"
-                | "TRANSCRIPTION_OVERLAY_ENABLED"
-                | "HOLD_EXCLUSIVE"
-                | "USE_LOCAL_STT"
-                | "HISTORY_ENABLED"
-                | "QUICK_NOTES_ENABLED"
-                | "QUICK_NOTES_SAVE_ONLY"
-                | "START_AT_LOGIN"
-                | "CODESCRIBE_AUTOSTART_QUALITY_DAEMON"
-                | "AGENT_ENTER_SENDS" => {
-                    let bool_val = matches!(value, "1" | "true" | "yes" | "on");
-                    settings.set_bool(key, bool_val);
-                }
-                _ => {
-                    settings.set_string(key, value);
-                }
-            }
-            // Also update runtime env var
-            unsafe { std::env::set_var(key, value) };
-            return Ok(());
-        }
-
-        // Power-user fields → .env file (existing behavior)
-        let env_path = Self::env_path();
-        if let Some(parent) = env_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut env_vars = if env_path.exists() {
-            Self::parse_env_file(&env_path)?
-        } else {
-            HashMap::new()
-        };
-        env_vars.insert(key.to_string(), value.to_string());
-        Self::write_env_file(&env_path, &env_vars)?;
-        unsafe { std::env::set_var(key, value) };
-        Ok(())
+        self.save_to_env_many(&[(key, value)])
     }
 
     /// Save multiple configuration values in a single batch.
@@ -640,12 +539,13 @@ impl Config {
         let mut env_path: Option<PathBuf> = None;
         let mut legacy_hold_override: Option<HoldMods> = None;
         let mut legacy_toggle_override: Option<ToggleTrigger> = None;
+        let mut pending_env_updates: Vec<(String, String)> = Vec::new();
 
         for (key, value) in entries {
             // API keys → Keychain
             if super::keychain::KEYCHAIN_ACCOUNTS.contains(key) {
                 super::keychain::save_key(key, value)?;
-                unsafe { std::env::set_var(key, value) };
+                pending_env_updates.push(((*key).to_string(), (*value).to_string()));
                 continue;
             }
 
@@ -670,7 +570,7 @@ impl Config {
                     }
                 });
                 vars_ref.insert((*key).to_string(), (*value).to_string());
-                unsafe { std::env::set_var(key, value) };
+                pending_env_updates.push(((*key).to_string(), (*value).to_string()));
                 continue;
             }
 
@@ -798,7 +698,7 @@ impl Config {
                     }
                     _ => {}
                 }
-                unsafe { std::env::set_var(key, value) };
+                pending_env_updates.push(((*key).to_string(), (*value).to_string()));
                 continue;
             }
 
@@ -812,7 +712,7 @@ impl Config {
                 }
             });
             vars_ref.insert((*key).to_string(), (*value).to_string());
-            unsafe { std::env::set_var(key, value) };
+            pending_env_updates.push(((*key).to_string(), (*value).to_string()));
         }
 
         if legacy_hold_override.is_some() || legacy_toggle_override.is_some() {
@@ -823,16 +723,18 @@ impl Config {
             settings_ref.apply_legacy_hotkeys(hold, toggle);
         }
 
-        if let Some(settings) = settings
-            && let Err(e) = settings.save()
-        {
-            warn!("Failed to save settings batch: {e}");
+        if let Some(settings) = settings {
+            settings.save()?;
         }
         if let (Some(path), Some(vars)) = (env_path, env_vars) {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
             Self::write_env_file(&path, &vars)?;
+        }
+
+        for (key, value) in pending_env_updates {
+            unsafe { std::env::set_var(&key, &value) };
         }
 
         Ok(())

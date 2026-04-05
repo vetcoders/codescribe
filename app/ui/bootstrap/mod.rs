@@ -1006,6 +1006,25 @@ fn clear_keychain_entry(account: &str, field_ptr: Option<usize>) {
     update_keychain_status_labels();
 }
 
+fn notify_settings_persist_failure(subject: &str, error: &anyhow::Error) {
+    warn!("Settings: failed to persist {subject}: {error}");
+    #[cfg(target_os = "macos")]
+    crate::os::notifications::notify(
+        "CodeScribe Settings",
+        &format!("Couldn't save {subject}. Change was not persisted."),
+    );
+}
+
+fn persist_settings_change(subject: &str, result: anyhow::Result<()>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            notify_settings_persist_failure(subject, &error);
+            false
+        }
+    }
+}
+
 fn start_permission_polling() {
     let should_start = {
         let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -3176,16 +3195,22 @@ pub(super) extern "C" fn on_hold_mod_changed(_this: &Object, _cmd: objc::runtime
 
         // If DoubleCtrl toggle is enabled, Ctrl-only hold is unsafe → disable toggle.
         if mods == HoldMods::Ctrl && config.toggle_trigger == ToggleTrigger::DoubleCtrl {
-            let _ = config.save_to_env_many(&[
-                ("HOLD_MODS", value),
-                ("TOGGLE_TRIGGER", ToggleTrigger::None.as_str()),
-            ]);
+            if !persist_settings_change(
+                "hold modifier",
+                config.save_to_env_many(&[
+                    ("HOLD_MODS", value),
+                    ("TOGGLE_TRIGGER", ToggleTrigger::None.as_str()),
+                ]),
+            ) {
+                return;
+            }
             runtime_config.toggle_trigger = ToggleTrigger::None;
 
             let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
             set_keys_popup_index(state.keys_toggle_popup, 0);
-        } else {
-            let _ = config.save_to_env("HOLD_MODS", value);
+        } else if !persist_settings_change("hold modifier", config.save_to_env("HOLD_MODS", value))
+        {
+            return;
         }
         hotkeys::apply_hotkey_runtime_config(runtime_config);
         mark_keys_preset_custom();
@@ -3201,11 +3226,16 @@ pub(super) extern "C" fn on_preset_changed(_this: &Object, _cmd: objc::runtime::
             0 => {
                 info!("Settings: hotkey preset -> fn_recommended");
                 let config = Config::load();
-                let _ = config.save_to_env_many(&[
-                    ("HOLD_MODS", HoldMods::Fn.as_str()),
-                    ("TOGGLE_TRIGGER", ToggleTrigger::DoubleOption.as_str()),
-                    ("HOLD_EXCLUSIVE", "0"),
-                ]);
+                if !persist_settings_change(
+                    "hotkey preset",
+                    config.save_to_env_many(&[
+                        ("HOLD_MODS", HoldMods::Fn.as_str()),
+                        ("TOGGLE_TRIGGER", ToggleTrigger::DoubleOption.as_str()),
+                        ("HOLD_EXCLUSIVE", "0"),
+                    ]),
+                ) {
+                    return;
+                }
                 let mut runtime_config = hotkeys::HotkeyRuntimeConfig::from(&config);
                 runtime_config.hold_mods = HoldMods::Fn;
                 runtime_config.toggle_trigger = ToggleTrigger::DoubleOption;
@@ -3222,11 +3252,16 @@ pub(super) extern "C" fn on_preset_changed(_this: &Object, _cmd: objc::runtime::
             1 => {
                 info!("Settings: hotkey preset -> safe");
                 let config = Config::load();
-                let _ = config.save_to_env_many(&[
-                    ("HOLD_MODS", HoldMods::Fn.as_str()),
-                    ("TOGGLE_TRIGGER", ToggleTrigger::None.as_str()),
-                    ("HOLD_EXCLUSIVE", "1"),
-                ]);
+                if !persist_settings_change(
+                    "hotkey preset",
+                    config.save_to_env_many(&[
+                        ("HOLD_MODS", HoldMods::Fn.as_str()),
+                        ("TOGGLE_TRIGGER", ToggleTrigger::None.as_str()),
+                        ("HOLD_EXCLUSIVE", "1"),
+                    ]),
+                ) {
+                    return;
+                }
                 let mut runtime_config = hotkeys::HotkeyRuntimeConfig::from(&config);
                 runtime_config.hold_mods = HoldMods::Fn;
                 runtime_config.toggle_trigger = ToggleTrigger::None;
@@ -3257,7 +3292,12 @@ pub(super) extern "C" fn on_hold_exclusive_changed(
         let hold_exclusive = !enabled;
         info!("Settings: hold exclusive -> {}", hold_exclusive);
         let config = Config::load();
-        let _ = config.save_to_env("HOLD_EXCLUSIVE", if hold_exclusive { "1" } else { "0" });
+        if !persist_settings_change(
+            "hold exclusivity",
+            config.save_to_env("HOLD_EXCLUSIVE", if hold_exclusive { "1" } else { "0" }),
+        ) {
+            return;
+        }
         let mut runtime_config = hotkeys::HotkeyRuntimeConfig::from(&config);
         runtime_config.hold_exclusive = hold_exclusive;
         hotkeys::apply_hotkey_runtime_config(runtime_config);
@@ -3283,22 +3323,36 @@ pub(super) extern "C" fn on_toggle_trigger_changed(
         };
         info!("Settings: toggle trigger -> {}", value);
         let config = Config::load();
-        let _ = config.save_to_env("TOGGLE_TRIGGER", value);
         let mut runtime_config = hotkeys::HotkeyRuntimeConfig::from(&config);
-        runtime_config.toggle_trigger = trigger;
 
-        // If enabling DoubleCtrl and hold is Ctrl-only, switch to Ctrl+Option and enable modes.
+        // Persist the whole compatibility fix in one batch so we never land
+        // on an unsafe half-written DoubleCtrl + Ctrl-only combo.
         if trigger == ToggleTrigger::DoubleCtrl && config.hold_mods == HoldMods::Ctrl {
-            let _ = config.save_to_env_many(&[
-                ("HOLD_MODS", HoldMods::CtrlAlt.as_str()),
-                ("HOLD_EXCLUSIVE", "0"),
-            ]);
+            if !persist_settings_change(
+                "toggle trigger",
+                config.save_to_env_many(&[
+                    ("TOGGLE_TRIGGER", value),
+                    ("HOLD_MODS", HoldMods::CtrlAlt.as_str()),
+                    ("HOLD_EXCLUSIVE", "0"),
+                ]),
+            ) {
+                return;
+            }
+            runtime_config.toggle_trigger = trigger;
             runtime_config.hold_mods = HoldMods::CtrlAlt;
             runtime_config.hold_exclusive = false;
 
             let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
             set_keys_popup_index(state.keys_hold_popup, 2);
             set_keys_checkbox_state(state.keys_exclusive_checkbox, true);
+        } else {
+            if !persist_settings_change(
+                "toggle trigger",
+                config.save_to_env("TOGGLE_TRIGGER", value),
+            ) {
+                return;
+            }
+            runtime_config.toggle_trigger = trigger;
         }
         hotkeys::apply_hotkey_runtime_config(runtime_config);
 
@@ -3316,7 +3370,7 @@ pub(super) extern "C" fn on_language_changed(_this: &Object, _cmd: objc::runtime
         };
         info!("Settings: language -> {}", lang);
         let config = Config::load();
-        let _ = config.save_to_env("WHISPER_LANGUAGE", lang);
+        let _ = persist_settings_change("language", config.save_to_env("WHISPER_LANGUAGE", lang));
     }
 }
 
@@ -3330,7 +3384,10 @@ pub(super) extern "C" fn on_formatting_toggled(
         let enabled = state == 1;
         info!("Settings: AI formatting -> {}", enabled);
         let config = Config::load();
-        let _ = config.save_to_env("AI_FORMATTING_ENABLED", if enabled { "1" } else { "0" });
+        let _ = persist_settings_change(
+            "AI formatting",
+            config.save_to_env("AI_FORMATTING_ENABLED", if enabled { "1" } else { "0" }),
+        );
     }
 }
 
@@ -3349,7 +3406,10 @@ pub(super) extern "C" fn on_formatting_level_changed(
         };
         info!("Settings: Formatting level -> {}", level);
         let config = Config::load();
-        let _ = config.save_to_env("FORMATTING_LEVEL", level);
+        let _ = persist_settings_change(
+            "formatting level",
+            config.save_to_env("FORMATTING_LEVEL", level),
+        );
     }
 }
 
@@ -3364,7 +3424,7 @@ pub(super) extern "C" fn on_llm_endpoint_changed(
         let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
         info!("Settings: LLM endpoint -> {}", value);
         let config = Config::load();
-        let _ = config.save_to_env("LLM_ENDPOINT", &value);
+        let _ = persist_settings_change("LLM endpoint", config.save_to_env("LLM_ENDPOINT", &value));
     }
 }
 
@@ -3379,7 +3439,7 @@ pub(super) extern "C" fn on_llm_model_changed(
         let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
         info!("Settings: LLM model -> {}", value);
         let config = Config::load();
-        let _ = config.save_to_env("LLM_MODEL", &value);
+        let _ = persist_settings_change("LLM model", config.save_to_env("LLM_MODEL", &value));
     }
 }
 
@@ -3391,7 +3451,9 @@ pub(super) extern "C" fn on_llm_key_changed(_this: &Object, _cmd: objc::runtime:
         if !value.is_empty() {
             info!("Settings: LLM API key updated (stored in Keychain)");
             let config = Config::load();
-            let _ = config.save_to_env("LLM_API_KEY", &value);
+            if !persist_settings_change("LLM API key", config.save_to_env("LLM_API_KEY", &value)) {
+                return;
+            }
             update_keychain_status_labels();
         }
     }
@@ -3456,7 +3518,9 @@ pub(super) extern "C" fn on_save_api_settings(
     if !entries.is_empty() {
         let config = Config::load();
         let borrowed: Vec<(&str, &str)> = entries.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let _ = config.save_to_env_many(&borrowed);
+        if !persist_settings_change("API settings", config.save_to_env_many(&borrowed)) {
+            return;
+        }
     }
     unsafe {
         if let Some(ptr) = llm_key {
@@ -3476,7 +3540,12 @@ pub(super) extern "C" fn on_delay_changed(_this: &Object, _cmd: objc::runtime::S
         let ms = value.round() as u64;
         info!("Settings: hold delay -> {}ms", ms);
         let config = Config::load();
-        let _ = config.save_to_env("HOLD_START_DELAY_MS", &ms.to_string());
+        if !persist_settings_change(
+            "hold delay",
+            config.save_to_env("HOLD_START_DELAY_MS", &ms.to_string()),
+        ) {
+            return;
+        }
         let mut runtime_config = hotkeys::HotkeyRuntimeConfig::from(&config);
         runtime_config.hold_start_delay_ms = ms;
         hotkeys::apply_hotkey_runtime_config(runtime_config);
@@ -3501,7 +3570,12 @@ pub(super) extern "C" fn on_double_tap_interval_changed(
         let ms = value.round() as u64;
         info!("Settings: double-tap interval -> {}ms", ms);
         let config = Config::load();
-        let _ = config.save_to_env("DOUBLE_TAP_INTERVAL_MS", &ms.to_string());
+        if !persist_settings_change(
+            "double-tap interval",
+            config.save_to_env("DOUBLE_TAP_INTERVAL_MS", &ms.to_string()),
+        ) {
+            return;
+        }
         let mut runtime_config = hotkeys::HotkeyRuntimeConfig::from(&config);
         runtime_config.double_tap_interval_ms = ms;
         hotkeys::apply_hotkey_runtime_config(runtime_config);
@@ -3522,7 +3596,10 @@ pub(super) extern "C" fn on_beep_toggled(_this: &Object, _cmd: objc::runtime::Se
         let enabled = state == 1;
         info!("Settings: beep on start -> {}", enabled);
         let config = Config::load();
-        let _ = config.save_to_env("BEEP_ON_START", if enabled { "1" } else { "0" });
+        let _ = persist_settings_change(
+            "beep on start",
+            config.save_to_env("BEEP_ON_START", if enabled { "1" } else { "0" }),
+        );
     }
 }
 
@@ -3536,7 +3613,10 @@ pub(super) extern "C" fn on_enter_send_toggled(
         let enabled = state == 1;
         info!("Settings: agent enter sends -> {}", enabled);
         let config = Config::load();
-        let _ = config.save_to_env("AGENT_ENTER_SENDS", if enabled { "1" } else { "0" });
+        let _ = persist_settings_change(
+            "agent enter sends",
+            config.save_to_env("AGENT_ENTER_SENDS", if enabled { "1" } else { "0" }),
+        );
     }
 }
 
@@ -3550,7 +3630,12 @@ pub(super) extern "C" fn on_show_dock_icon_toggled(
         let enabled = state == 1;
         info!("Settings: show dock icon -> {}", enabled);
         let config = Config::load();
-        let _ = config.save_to_env("SHOW_DOCK_ICON", if enabled { "1" } else { "0" });
+        if !persist_settings_change(
+            "dock icon visibility",
+            config.save_to_env("SHOW_DOCK_ICON", if enabled { "1" } else { "0" }),
+        ) {
+            return;
+        }
         crate::apply_dock_icon_visibility(enabled);
     }
 }
@@ -3560,7 +3645,10 @@ pub(super) extern "C" fn on_volume_changed(_this: &Object, _cmd: objc::runtime::
         let value: f64 = msg_send![sender, doubleValue];
         info!("Settings: sound volume -> {:.2}", value);
         let config = Config::load();
-        let _ = config.save_to_env("SOUND_VOLUME", &format!("{:.2}", value));
+        let _ = persist_settings_change(
+            "sound volume",
+            config.save_to_env("SOUND_VOLUME", &format!("{:.2}", value)),
+        );
     }
 }
 
@@ -3581,7 +3669,10 @@ pub(super) extern "C" fn on_voice_lab_toggle_changed(
         let enabled = checked_state == 1;
         info!("Settings: {} -> {}", spec.key, enabled);
         let config = Config::load();
-        let _ = config.save_to_env(spec.key, if enabled { "1" } else { "0" });
+        let _ = persist_settings_change(
+            spec.label,
+            config.save_to_env(spec.key, if enabled { "1" } else { "0" }),
+        );
     }
 }
 
@@ -3618,7 +3709,9 @@ pub(super) extern "C" fn on_voice_lab_field_changed(
         };
         info!("Settings: {} -> {}", spec.key, validated);
         let config = Config::load();
-        let _ = config.save_to_env(spec.key, &validated);
+        if !persist_settings_change(spec.label, config.save_to_env(spec.key, &validated)) {
+            return;
+        }
         set_text_field_string(sender, &validated);
     }
 }
@@ -3638,7 +3731,10 @@ pub(super) extern "C" fn on_assistive_endpoint_changed(
         let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
         info!("Settings: assistive endpoint -> {}", value);
         let config = Config::load();
-        let _ = config.save_to_env("LLM_ASSISTIVE_ENDPOINT", &value);
+        let _ = persist_settings_change(
+            "assistive endpoint",
+            config.save_to_env("LLM_ASSISTIVE_ENDPOINT", &value),
+        );
     }
 }
 
@@ -3653,7 +3749,10 @@ pub(super) extern "C" fn on_assistive_model_changed(
         let value = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
         info!("Settings: assistive model -> {}", value);
         let config = Config::load();
-        let _ = config.save_to_env("LLM_ASSISTIVE_MODEL", &value);
+        let _ = persist_settings_change(
+            "assistive model",
+            config.save_to_env("LLM_ASSISTIVE_MODEL", &value),
+        );
     }
 }
 
@@ -3669,7 +3768,12 @@ pub(super) extern "C" fn on_assistive_key_changed(
         if !value.is_empty() {
             info!("Settings: assistive API key updated (stored in Keychain)");
             let config = Config::load();
-            let _ = config.save_to_env("LLM_ASSISTIVE_API_KEY", &value);
+            if !persist_settings_change(
+                "assistive API key",
+                config.save_to_env("LLM_ASSISTIVE_API_KEY", &value),
+            ) {
+                return;
+            }
             update_keychain_status_labels();
         }
     }
@@ -3697,9 +3801,12 @@ pub(super) extern "C" fn on_quality_daemon_toggled(
         let enabled = state == 1;
         info!("Settings: quality daemon autostart -> {}", enabled);
         let config = Config::load();
-        let _ = config.save_to_env(
-            "CODESCRIBE_AUTOSTART_QUALITY_DAEMON",
-            if enabled { "1" } else { "0" },
+        let _ = persist_settings_change(
+            "quality daemon autostart",
+            config.save_to_env(
+                "CODESCRIBE_AUTOSTART_QUALITY_DAEMON",
+                if enabled { "1" } else { "0" },
+            ),
         );
     }
 }
@@ -3714,9 +3821,12 @@ pub(super) extern "C" fn on_ultra_quality_toggled(
         let enabled = state == 1;
         info!("Settings: ultra quality final pass -> {}", enabled);
         let config = Config::load();
-        let _ = config.save_to_env(
-            "CODESCRIBE_LOCAL_STT_FINAL_PASS",
-            if enabled { "1" } else { "0" },
+        let _ = persist_settings_change(
+            "ultra quality final pass",
+            config.save_to_env(
+                "CODESCRIBE_LOCAL_STT_FINAL_PASS",
+                if enabled { "1" } else { "0" },
+            ),
         );
     }
 }
