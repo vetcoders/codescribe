@@ -10,8 +10,9 @@ Common issues and solutions for CodeScribe.
 
 1. ✅ Check Accessibility permission is enabled
 2. ✅ Check Microphone permission is enabled
-3. ✅ Restart CodeScribe
-4. ✅ Check menu bar icon is visible (not hidden by notch)
+3. ✅ Check Input Monitoring permission is enabled
+4. ✅ Restart CodeScribe
+5. ✅ Check menu bar icon is visible (not hidden by notch)
 
 ---
 
@@ -54,7 +55,7 @@ Common issues and solutions for CodeScribe.
 
 ### Hotkeys don't work
 
-**Symptoms**: Pressing Ctrl does nothing.
+**Symptoms**: Pressing your configured hotkey does nothing.
 
 **Solutions**:
 
@@ -206,8 +207,8 @@ Common issues and solutions for CodeScribe.
 
 **Solutions**:
 
-1. Verify provider settings in **Settings → AI & Prompts** (Formatting AI / Assistive AI)
-2. If you're using **Dictation** mode: enable **Settings → Quality → AI Formatting** (optional)
+1. Verify provider settings in **Creator → Keys** (Formatting AI / Assistive AI)
+2. If you're using **Dictation** mode: enable **Creator → Audio → AI Formatting** (optional)
 3. If you want AI every time: use **Formatting** (double‑tap `Left Option`) or **Assistive (Agent)** (double‑tap `Right Option`)
 
 ---

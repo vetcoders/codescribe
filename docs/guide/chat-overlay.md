@@ -6,22 +6,21 @@ It has three tabs:
 
 - **Drawer**: searchable history (threads + transcriptions), favorites filter
 - **Agent**: chat bubbles + streaming responses
-- **Settings**: routes you to the main Settings window / onboarding
+- **Creator**: routes you to the main Creator window / onboarding flow
 
 ---
 
 ## Opening the Overlay
 
 - Menu bar icon → **Show Agent**
-- Settings → **Audio & Input** to keep the transcription overlay on
-- Settings → **Transcription** to tune partial cadence / final-pass behavior
+- Creator → **Voice Lab** to tune partial cadence / final-pass behavior
 - Automatically opens when you start **Assistive (Agent)** mode
 
 ---
 
 ## Core Workflow: Assistive (Agent)
 
-Assistive mode uses the **Assistive AI** provider (Settings → AI & Prompts), shows the response inside the overlay, and speaks streamed `<speak>` segments through the local TTS stack when that model is available (auto‑paste is OFF).
+Assistive mode uses the **Assistive AI** provider from **Creator → Keys**, shows the response inside the overlay, and speaks streamed `<speak>` segments through the local TTS stack when that model is available (auto‑paste is OFF).
 
 1. (Optional) Select text in the frontmost app
 2. Trigger **Assistive** (default: double‑tap `Right Option`)
@@ -43,7 +42,7 @@ Use **New thread** in the overlay to start a fresh conversation. This resets UI 
 
 ## Keyboard Behavior
 
-- Sending typed messages depends on **Settings → Audio & Input → Enter to send**
+- Sending typed messages depends on **Creator → Audio → Enter to send**
   - When enabled: `Enter` sends, `Shift+Enter` inserts a newline
   - When disabled: `Enter` inserts newline, `Cmd+Enter` sends
 

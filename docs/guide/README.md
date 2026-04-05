@@ -10,8 +10,8 @@ CodeScribe is a native macOS menu-bar application that transcribes your speech l
 
 1. **Install**: download a DMG from [Releases](https://github.com/VetCoders/CodeScribe/releases), or build from source if no tagged release is published yet
 2. **Launch**: Open CodeScribe from Applications
-3. **Grant permissions**: Microphone + Accessibility (follow prompts)
-4. **Transcribe**: Use your **Dictation** hotkey (default: hold `Fn/Globe`), speak, release → text appears at cursor (Settings → Modes & Shortcuts)
+3. **Grant permissions**: Microphone + Accessibility + Input Monitoring (follow prompts)
+4. **Transcribe**: Use your **Dictation** hotkey (default: hold `Fn/Globe`), speak, release → text appears at cursor (Creator → Keys)
 
 That's it. You're transcribing.
 
@@ -49,7 +49,7 @@ That's it. You're transcribing.
 **Key Features:**
 
 - **Local-first**: Whisper model runs entirely on your Mac (Metal GPU)
-- **Zero latency**: ~888MB model embedded in binary, no download needed
+- **Embedded-first local path**: current shipped builds center on a local ~888MB Whisper model
 - **Live streaming**: See transcription appear as you speak
 - **Three modes**: Raw (fast), Formatted (clean), Assistive (AI-powered)
 - **Privacy**: Audio never leaves your machine unless you enable cloud AI
@@ -68,22 +68,21 @@ That's it. You're transcribing.
 
 ## Menu Bar Icon
 
-CodeScribe lives in your menu bar. The icon color indicates status:
+CodeScribe lives in your menu bar. The tray logo stays neutral and the status glyph indicates runtime state:
 
-| Color     | Meaning                      |
+| Glyph     | Meaning                      |
 | --------- | ---------------------------- |
-| ⚫ Black  | Idle, ready                  |
-| 🔴 Red    | Recording (hold mode)        |
-| 🟣 Purple | Recording (assistive mode)   |
+| 🟢 Green  | Idle, ready                  |
+| 🔴 Red    | Recording                    |
 | 🟠 Orange | Processing transcription     |
 | 🟢 Green  | Success, text pasted         |
-| ⚪ Gray   | Error or backend unavailable |
+| ❌ Red X  | Error or backend unavailable |
 
 ---
 
 ## System Requirements
 
-- **macOS**: 13.0 (Ventura) or later
+- **macOS**: 14.0 (Sonoma) or later
 - **Chip**: Apple Silicon (M1/M2/M3/M4/M5)
 - **RAM**: 8GB minimum, 16GB recommended
 - **Disk**: ~1GB for app with embedded model

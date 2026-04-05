@@ -2,12 +2,12 @@
 
 ## System Requirements
 
-| Requirement | Minimum                           | Recommended              |
-| ----------- | --------------------------------- | ------------------------ |
-| macOS       | 13.0 (Ventura)                    | 14.0+ (Sonoma)           |
-| Chip        | Apple Silicon or Intel with Metal | Apple Silicon (M1/M2/M3) |
-| RAM         | 8 GB                              | 16 GB                    |
-| Disk        | 1 GB                              | 2 GB                     |
+| Requirement | Minimum                | Recommended                |
+| ----------- | ---------------------- | -------------------------- |
+| macOS       | 14.0+ (Sonoma)         | Latest supported Sonoma+   |
+| Chip        | Apple Silicon          | Apple Silicon (M1/M2/M3+)  |
+| RAM         | 8 GB                   | 16 GB                      |
+| Disk        | 1 GB                   | 2 GB                       |
 
 ---
 
@@ -28,8 +28,8 @@
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
 make download-model   # Download Whisper model (~888MB)
-make release          # Build with embedded model
-make install          # Install to /usr/local/bin
+make install          # Install CLI to ~/.cargo/bin/codescribe
+make install-app      # Optional: build + copy CodeScribe.app to /Applications
 ```
 
 ---
@@ -39,9 +39,10 @@ make install          # Install to /usr/local/bin
 1. **Open CodeScribe** from Applications or Spotlight
 2. **Grant Microphone access** when prompted
 3. **Grant Accessibility access** in System Settings → Privacy & Security → Accessibility
-4. **Wait for initialization** (first launch may take 5-10 seconds to load Whisper model)
+4. **Grant Input Monitoring access** in System Settings → Privacy & Security → Input Monitoring
+5. **Wait for initialization** (first launch may take 5-10 seconds to load Whisper model)
 
-You'll see the CodeScribe icon appear in your menu bar. It starts black (idle).
+You'll see the CodeScribe menu-bar icon appear with a green status glyph when it is ready.
 
 ---
 
@@ -70,7 +71,7 @@ codescribe --version
 Expected output:
 
 ```
-CodeScribe 0.7.x
+codescribe 0.8.x
 ```
 
 Test transcription:
@@ -84,16 +85,21 @@ codescribe transcribe --record 5
 
 ## Configuration Location
 
-CodeScribe stores configuration in:
+CodeScribe stores configuration in two tiers:
 
 ```
+~/Library/Application Support/CodeScribe/
+├── settings.json     # GUI-managed settings
+└── ...               # app data
+
 ~/.codescribe/
-├── .env              # Configuration file
+├── .env              # Power-user overrides
 ├── prompts/
 │   ├── formatting.txt   # AI formatting prompt
 │   └── assistive.txt    # Assistive mode prompt
-├── transcriptions/   # Saved transcripts
-└── logs/             # Debug logs
+├── history/          # Saved transcripts / artifacts
+├── logs/             # Debug logs
+└── reports/          # Quality reports
 ```
 
 Create default config:
@@ -117,7 +123,8 @@ Download new version from Releases and replace the old app.
 ### Manual
 
 1. Delete `/Applications/CodeScribe.app`
-2. Optionally remove config: `rm -rf ~/.codescribe`
+2. Optionally remove GUI settings: `rm -rf ~/Library/Application\\ Support/CodeScribe`
+3. Optionally remove power-user data: `rm -rf ~/.codescribe`
 
 ---
 

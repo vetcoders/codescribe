@@ -49,25 +49,27 @@ On first launch, grant these permissions in **System Settings → Privacy & Secu
 
 ## 3. Configure
 
-Recommended: configure CodeScribe in the **Settings** window.
+Recommended: configure CodeScribe in the native **Creator** window.
 
 ```bash
-# Menu bar icon → Settings
+# Menu bar icon → Creator Studio...
 # or: codescribe --config (power-user overrides)
 ```
 
 ### Essential Settings
 
-- **Audio & Input**
+- **Audio**
   - Set `Whisper language` (no auto-detect; pick the language you speak)
   - Toggle **AI Formatting** for Dictation (optional)
-- **Modes & Shortcuts**
+- **Keys**
   - Dictation: hold a modifier (default: `Fn/Globe`)
   - Formatting: double‑tap `Left Option`
   - Assistive (Agent): double‑tap `Right Option`
-- **AI & Prompts**
+- **Keys**
   - Configure providers for **Formatting** and **Assistive**
   - API keys are stored in macOS Keychain
+- **Voice Lab**
+  - Tune live-pipeline behavior only if you need deeper control
 
 Power-user overrides still exist via `~/.codescribe/.env`, but you should not need it to get started.
 
@@ -85,13 +87,14 @@ Power-user overrides still exist via `~/.codescribe/.env`, but you should not ne
 
 ### Visual Feedback
 
-Look at the menu bar icon:
+Look at the menu bar icon status glyph:
 
 | Icon State | Meaning      |
 | ---------- | ------------ |
 | Green dot  | Ready (idle) |
 | Red dot    | Recording    |
 | Orange dot | Processing   |
+| Green dot  | Done         |
 | Red X      | Error        |
 
 ---

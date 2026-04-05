@@ -138,7 +138,7 @@ CodeScribe.app/
 | CFBundleIdentifier           | com.codescribe.app    | Unique app identifier        |
 | CFBundleIconFile             | AppIcon               | Points to AppIcon.icns       |
 | CFBundleExecutable           | codescribe            | Main binary name             |
-| LSMinimumSystemVersion       | 14.0                  | Requires macOS Sonoma+       |
+| LSMinimumSystemVersion       | Optional (`CODESCRIBE_MIN_MACOS`) | Only added when you set an explicit minimum macOS version |
 | NSMicrophoneUsageDescription | ...                   | Microphone permission prompt |
 
 ## Icons
@@ -146,12 +146,12 @@ CodeScribe.app/
 ### Tray Icon
 
 - **Source**: `assets/icon.png` (embedded via `include_bytes!`)
-- **Location in code**: `src/tray/icons.rs`
+- **Location in code**: `app/ui/tray/icons.rs`
 - **Size**: 44x44 pixels (Retina), 22x22 logical
 
 ### Dock Icon
 
-- **For CLI**: Programmatically set via `set_dock_icon()` in `src/ui.rs`
+- **For CLI**: Programmatically set via `set_dock_icon()` in `app/ui/mod.rs`
 - **For Bundle**: Uses `CFBundleIconFile` from Info.plist pointing to `AppIcon.icns`
 - **Source**: `assets/AppIcon.icns`
 

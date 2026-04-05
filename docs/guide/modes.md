@@ -1,6 +1,6 @@
 # Recording Modes
 
-CodeScribe exposes **three work modes**. Each mode has **one shortcut binding** you can customize (or disable) in **Settings → Modes & Shortcuts**.
+CodeScribe exposes **three work modes**. Each mode has **one shortcut binding** you can customize (or disable) in **Creator → Keys**.
 
 ---
 
@@ -14,8 +14,8 @@ CodeScribe exposes **three work modes**. Each mode has **one shortcut binding** 
 
 Notes:
 
-- **Dictation** runs with or without AI depending on **Settings → Quality → AI Formatting**.
-- **Formatting** and **Assistive** always require AI provider config (see **Settings → AI & Prompts**).
+- **Dictation** runs with or without AI depending on **Creator → Audio → AI Formatting**.
+- **Formatting** and **Assistive** always require provider config (see **Creator → Keys**).
 
 ---
 
@@ -81,7 +81,7 @@ Notes:
 
 ## Customizing Shortcuts
 
-Open **Settings → Modes & Shortcuts**:
+Open **Creator → Keys**:
 
 - **Dictation** supports:
   - Hold `Fn/Globe`
@@ -100,7 +100,7 @@ Use the built‑in conflict detector if macOS already uses the same shortcut.
 
 ## Advanced Tuning
 
-- **Hold delay** and **double‑tap interval** are in **Settings → Modes & Shortcuts**.
+- **Hold delay** and **double‑tap interval** are in **Creator → Keys**.
 
 ---
 
