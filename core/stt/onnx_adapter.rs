@@ -383,7 +383,11 @@ impl OnnxEngine {
                 .context("Decoder missing 'logits'")?;
             let (logits_shape, logits_data) = logits_value.try_extract_tensor::<f32>()?;
 
-            let vocab_size = *logits_shape.last().unwrap() as usize;
+            let vocab_size = logits_shape
+                .last()
+                .copied()
+                .map(|dim| dim as usize)
+                .context("Decoder logits tensor missing vocabulary axis")?;
             let out_seq_len = logits_shape[1] as usize;
             let last_pos_offset = (out_seq_len - 1) * vocab_size;
             let last_logits = &logits_data[last_pos_offset..last_pos_offset + vocab_size];

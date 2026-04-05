@@ -124,6 +124,11 @@ fn check_ipv6_private(host: &str) -> Option<bool> {
     Some(is_private_ipv6(ip))
 }
 
+fn next_char_at(s: &str, byte_idx: usize) -> Option<(char, usize)> {
+    let ch = s.get(byte_idx..)?.chars().next()?;
+    Some((ch, ch.len_utf8()))
+}
+
 /// Build an SSRF-safe HTTP client with redirect policy that revalidates
 /// each hop against `is_private_host`.
 fn ssrf_safe_client() -> reqwest::Client {
@@ -380,8 +385,9 @@ pub fn strip_html(html: &str) -> String {
         }
 
         // Regular character — decode UTF-8 from byte position
-        let c = html[i..].chars().next().unwrap();
-        let char_len = c.len_utf8();
+        let Some((c, char_len)) = next_char_at(html, i) else {
+            break;
+        };
         if c.is_whitespace() {
             if !last_was_space {
                 out.push(' ');
@@ -469,8 +475,11 @@ fn decode_html_entities(s: &str) -> String {
             i += advance;
             continue;
         }
-        out.push(s[i..].chars().next().unwrap());
-        i += s[i..].chars().next().unwrap().len_utf8();
+        let Some((c, char_len)) = next_char_at(s, i) else {
+            break;
+        };
+        out.push(c);
+        i += char_len;
     }
 
     out

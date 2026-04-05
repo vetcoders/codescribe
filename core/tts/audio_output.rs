@@ -22,6 +22,30 @@ pub struct AudioPlayer {
     is_dummy: bool,
 }
 
+fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            warn!("{label} mutex poisoned; continuing with recovered state");
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn wait_or_recover<'a, T>(
+    cvar: &Condvar,
+    guard: std::sync::MutexGuard<'a, T>,
+    label: &str,
+) -> std::sync::MutexGuard<'a, T> {
+    match cvar.wait(guard) {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            warn!("{label} condvar poisoned; continuing with recovered state");
+            poisoned.into_inner()
+        }
+    }
+}
+
 impl AudioPlayer {
     /// Create a new audio player with default output device
     pub fn new() -> Result<Self> {
@@ -114,9 +138,9 @@ impl AudioPlayer {
 
         // Wait for playback to complete
         let (lock, cvar) = &*finished;
-        let mut done = lock.lock().unwrap();
+        let mut done = lock_or_recover(lock, "audio playback completion");
         while !*done {
-            done = cvar.wait(done).unwrap();
+            done = wait_or_recover(cvar, done, "audio playback completion");
         }
 
         debug!("Playback complete");
@@ -139,7 +163,7 @@ impl AudioPlayer {
         let stream = self.device.build_output_stream(
             &config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                let mut pos = position.lock().unwrap();
+                let mut pos = lock_or_recover(&position, "audio playback cursor");
                 let samples_len = samples.len();
 
                 for frame in data.chunks_mut(channels) {
@@ -162,7 +186,7 @@ impl AudioPlayer {
                 // Signal completion when done
                 if *pos >= samples_len {
                     let (lock, cvar) = &*finished;
-                    let mut done = lock.lock().unwrap();
+                    let mut done = lock_or_recover(lock, "audio playback completion");
                     *done = true;
                     cvar.notify_one();
                 }

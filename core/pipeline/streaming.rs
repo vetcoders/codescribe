@@ -1445,7 +1445,12 @@ pub(crate) async fn transcription_session(
                 }
             }
             result = async {
-                correction_in_flight.as_mut().unwrap().recv().await
+                match correction_in_flight.as_mut() {
+                    Some(receiver) => receiver.recv().await,
+                    None => Err(anyhow!(
+                        "partial-pass receiver disappeared before guarded select branch ran"
+                    )),
+                }
             }, if correction_in_flight.is_some() => {
                 // Fix D: Use window_rev as fallback (schedule_partial_pass now stores window_rev).
                 let expected_preview_rev = correction_expected_preview_rev.take().unwrap_or(window_rev);
