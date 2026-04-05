@@ -3,8 +3,9 @@
 //! Strips HTML to plain text with a simple state-machine parser.
 //! No heavy dependencies (no headless browser, no full HTML parser).
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::sync::OnceLock;
 use tracing::{debug, info};
 
 // ═══════════════════════════════════════════════════════════
@@ -13,6 +14,7 @@ use tracing::{debug, info};
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024; // 1MB
 const MAX_REDIRECTS: usize = 3;
+const CONNECTOR_USER_AGENT: &str = "CodeScribe/1.0 (speech-to-text assistant)";
 
 // ═══════════════════════════════════════════════════════════
 // SSRF protection
@@ -131,32 +133,32 @@ fn next_char_at(s: &str, byte_idx: usize) -> Option<(char, usize)> {
 
 /// Build an SSRF-safe HTTP client with redirect policy that revalidates
 /// each hop against `is_private_host`.
-fn ssrf_safe_client() -> reqwest::Client {
-    use std::sync::OnceLock;
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+fn build_ssrf_safe_client(user_agent: &str) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= MAX_REDIRECTS {
+                attempt.error(anyhow!("Too many redirects"))
+            } else if is_private_host(attempt.url()) || resolves_to_private_host(attempt.url()) {
+                attempt.error(anyhow!("Redirect to private/internal address blocked"))
+            } else {
+                attempt.follow()
+            }
+        }))
+        .user_agent(user_agent)
+        .build()
+        .map_err(|err| anyhow!("Failed to build SSRF-safe HTTP client: {err}"))
+}
 
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                    if attempt.previous().len() >= MAX_REDIRECTS {
-                        attempt.error(anyhow::anyhow!("Too many redirects"))
-                    } else if is_private_host(attempt.url())
-                        || resolves_to_private_host(attempt.url())
-                    {
-                        attempt.error(anyhow::anyhow!(
-                            "Redirect to private/internal address blocked"
-                        ))
-                    } else {
-                        attempt.follow()
-                    }
-                }))
-                .user_agent("CodeScribe/1.0 (speech-to-text assistant)")
-                .build()
-                .expect("Failed to build SSRF-safe HTTP client")
-        })
-        .clone()
+fn ssrf_safe_client() -> Result<reqwest::Client> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
+    match CLIENT.get_or_init(|| {
+        build_ssrf_safe_client(CONNECTOR_USER_AGENT).map_err(|err| format!("{err:#}"))
+    }) {
+        Ok(client) => Ok(client.clone()),
+        Err(err) => Err(anyhow!("Failed to build SSRF-safe HTTP client: {err}")),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -187,7 +189,7 @@ pub async fn fetch_url_as_text(url: &str) -> Result<(String, String)> {
     info!("Fetching URL: {}", url);
 
     // Use a client with custom redirect policy that revalidates each hop.
-    let client = ssrf_safe_client();
+    let client = ssrf_safe_client()?;
 
     let mut resp = client
         .get(parsed)
@@ -568,6 +570,17 @@ mod tests {
     fn test_url_to_title() {
         assert_eq!(url_to_title("https://example.com/page"), "example.com");
         assert_eq!(url_to_title("http://docs.rs/crate"), "docs.rs");
+    }
+
+    #[test]
+    fn test_ssrf_safe_client_builder_surfaces_invalid_user_agent() {
+        let err =
+            build_ssrf_safe_client("CodeScribe\ninvalid").expect_err("invalid UA should fail");
+        assert!(
+            err.to_string()
+                .contains("Failed to build SSRF-safe HTTP client"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

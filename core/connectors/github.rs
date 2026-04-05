@@ -178,7 +178,7 @@ pub async fn fetch_github_blob(gh: &GitHubRef, token: Option<&str>) -> Result<(V
 
     info!("Fetching GitHub blob: {}", gh);
 
-    let client = super::shared_client();
+    let client = super::shared_client()?;
 
     let mut req = client
         .get(&url)
