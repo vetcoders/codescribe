@@ -21,7 +21,7 @@ It has three tabs:
 
 ## Core Workflow: Assistive (Agent)
 
-Assistive mode uses the **Assistive AI** provider (Settings → AI & Prompts) and shows the response inside the overlay (auto‑paste is OFF).
+Assistive mode uses the **Assistive AI** provider (Settings → AI & Prompts), shows the response inside the overlay, and speaks streamed `<speak>` segments through the local TTS stack when that model is available (auto‑paste is OFF).
 
 1. (Optional) Select text in the frontmost app
 2. Trigger **Assistive** (default: double‑tap `Right Option`)

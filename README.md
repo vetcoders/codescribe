@@ -193,7 +193,7 @@ codescribe transcribe -f audio.mp3  # with AI formatting
 
 - **Dictation**: hold your configured modifier (default: **Hold Fn/Globe**) → release to send + paste
 - **Formatting**: **Double‑tap Left Option** → hands‑free recording + AI formatting (auto‑paste ON)
-- **Assistive (Agent)**: **Double‑tap Right Option** → voice‑chat overlay + agent response (auto‑paste OFF)
+- **Assistive (Agent)**: **Double‑tap Right Option** → voice‑chat overlay + spoken agent response when local TTS is available (auto‑paste OFF)
 
 Hotkeys are configured in **Creator → Keys**. Double‑tap modes auto‑send an utterance when you pause, and stop on the next double‑tap.
 
@@ -244,7 +244,7 @@ pipeline, while overlays/chat bubbles still receive only backspace-encoded
 | --------------------- | ------------------------- | ------------------------------------------ |
 | **Dictation**         | Hold `Fn/Globe` (default) | Fast transcript (AI optional), auto‑paste  |
 | **Formatting**        | Double‑tap `Left Option`  | AI formatting pass, auto‑paste             |
-| **Assistive (Agent)** | Double‑tap `Right Option` | Agent chat with optional selection context |
+| **Assistive (Agent)** | Double‑tap `Right Option` | Agent chat with optional selection context and local spoken replies |
 
 See [`docs/BACKLOG.md`](docs/BACKLOG.md) for detailed mode descriptions and future enhancements (VAD, Overlay).
 

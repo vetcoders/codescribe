@@ -22,6 +22,7 @@
 | Split panel layout (60/40)    | ✅     | `app/ui/voice_chat/mod.rs`      |
 | Chat bubbles (user/assistant) | ✅     | `app/ui/voice_chat/mod.rs`      |
 | Streaming AI responses        | ✅     | `app/ui/voice_chat/api.rs`      |
+| Assistive response TTS routing | ✅    | `app/controller/`, `core/llm/`, `core/demux/`, `core/tts/` |
 | Transcriptions tab            | ✅     | `app/ui/voice_chat/handlers.rs` |
 | Settings window (Bootstrap)   | ✅     | `app/ui/bootstrap/`             |
 | Auto-send toggle              | ✅     | `app/ui/voice_chat/state.rs`    |
@@ -56,18 +57,7 @@
   - richer guided testing / comparison tools
 - **Priority**: High (this is the product-facing GUI we already ship)
 
-### 2. Assistive Response TTS Routing
-
-- **Status**: 🚧 Partial foundations shipped
-- **Goal**: Reuse the existing local TTS stack for assistive response playback instead of adding a second voice path
-- **Integration**: Via Libraxis Qube Protocol — `<tts>` tags in SSE stream
-- **Current truth**:
-  - local TTS engine + embedding surface already exist in `core/tts/`
-  - conversation mode already plays model audio through speaker
-  - assistive Responses/SSE path still does not route assistant text into the TTS stack
-- **Dependency**: Requires routing work, not a new TTS foundation
-
-### 3. Libraxis Qube Protocol
+### 2. Libraxis Qube Protocol
 
 - **Status**: 📋 Conceptual ([docs/future/ARCHITECTURE_VISION.md](future/ARCHITECTURE_VISION.md))
 - **Goal**: WebSocket-based "Single Stream" architecture
@@ -77,7 +67,7 @@
   - Audio streaming over WebSocket
 - **Priority**: Low (current REST + SSE sufficient)
 
-### 4. Creator Studio Expansion
+### 3. Creator Studio Expansion
 
 - **Status**: 🚧 In progress
 - **Goal**: Keep tightening the native Creator / Voice Lab flow around guided testing and daily tuning

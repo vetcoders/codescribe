@@ -58,7 +58,7 @@ rules:
     severity: ERROR
     paths:
       include:
-        - "server/codescribe/assets/lab/**"
+        - "**/server/codescribe/assets/lab/**"
     pattern: import React from "../lib/react.js";
     fix: import { React } from "../lib/react.js";
 

@@ -73,6 +73,7 @@ Notes:
 
 - Auto‑paste: **OFF** (agent answers in the overlay)
 - AI: **always on** (assistive model)
+- Voice output: streamed reply is spoken locally when the TTS model is available; otherwise the overlay stays text-only
 - Selection: best‑effort capture; if selection is present, the agent is instructed to operate **only** on the selected text
 - Threads: use **New thread** in the overlay to reset context
 
