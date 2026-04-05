@@ -1116,7 +1116,7 @@ fn update_env_var(path: &Path, root: &Path, key: &str, value: &str) -> Result<bo
 // ============================================================================
 
 /// Daemon state stored in quality_daemon.json
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityDaemonState {
     pub pending_mismatches: usize,
     #[serde(default)]
@@ -1128,6 +1128,17 @@ pub struct QualityDaemonState {
 
 fn default_daemon_available() -> bool {
     true
+}
+
+impl Default for QualityDaemonState {
+    fn default() -> Self {
+        Self {
+            pending_mismatches: 0,
+            last_check: String::new(),
+            latest_report: None,
+            available: default_daemon_available(),
+        }
+    }
 }
 
 /// Get path to daemon state file
@@ -1170,6 +1181,13 @@ fn write_daemon_state_file(path: &Path, root: &Path, state: &QualityDaemonState)
         .with_context(|| format!("Failed to write daemon state {}", target_path.display()))
 }
 
+fn read_daemon_state_with_paths(state_path: &Path, config_root: &Path) -> QualityDaemonState {
+    safe_read_to_string_bounded(state_path, config_root)
+        .ok()
+        .and_then(|content| serde_json::from_str::<QualityDaemonState>(&content).ok())
+        .unwrap_or_default()
+}
+
 fn write_daemon_state_with_paths(
     state_path: &Path,
     history_path: &Path,
@@ -1182,6 +1200,25 @@ fn write_daemon_state_with_paths(
         last_check: Local::now().to_rfc3339(),
         latest_report: read_latest_report_from_history(history_path, config_root),
         available,
+    };
+
+    write_daemon_state_file(state_path, config_root, &state)?;
+    Ok(state)
+}
+
+fn touch_daemon_state_with_paths(
+    state_path: &Path,
+    history_path: &Path,
+    config_root: &Path,
+) -> Result<QualityDaemonState> {
+    let current = read_daemon_state_with_paths(state_path, config_root);
+
+    let state = QualityDaemonState {
+        pending_mismatches: current.pending_mismatches,
+        last_check: Local::now().to_rfc3339(),
+        latest_report: read_latest_report_from_history(history_path, config_root)
+            .or(current.latest_report),
+        available: true,
     };
 
     write_daemon_state_file(state_path, config_root, &state)?;
@@ -1202,15 +1239,19 @@ pub fn write_daemon_state(pending_mismatches: usize) -> Result<QualityDaemonStat
     )
 }
 
+/// Refresh daemon heartbeat without changing the pending mismatch count.
+pub fn touch_daemon_state() -> Result<QualityDaemonState> {
+    let config_root = Config::config_dir();
+    let state_path = daemon_state_path();
+    let history_path = daemon_history_path();
+    touch_daemon_state_with_paths(&state_path, &history_path, &config_root)
+}
+
 /// Read daemon state from file
 pub fn read_daemon_state() -> QualityDaemonState {
+    let config_root = Config::config_dir();
     let path = daemon_state_path();
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return QualityDaemonState::default(),
-    };
-
-    serde_json::from_str(&content).unwrap_or_default()
+    read_daemon_state_with_paths(&path, &config_root)
 }
 
 /// Get pending mismatch count from daemon state
@@ -1345,6 +1386,65 @@ mod tests {
     }
 
     #[test]
+    fn test_touch_daemon_state_with_paths_preserves_pending_and_refreshes_latest_report() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let root = tmp.path().canonicalize().expect("canonical root");
+        let history_path = root.join("reports").join("quality_history.jsonl");
+        let state_path = root.join("quality_daemon.json");
+        std::fs::create_dir_all(history_path.parent().expect("history parent"))
+            .expect("create reports dir");
+        std::fs::write(
+            &state_path,
+            serde_json::json!({
+                "pending_mismatches": 5,
+                "last_check": "2026-02-01T10:00:00+01:00",
+                "latest_report": "/tmp/quality_old",
+                "available": false
+            })
+            .to_string(),
+        )
+        .expect("write old daemon state");
+
+        let latest = serde_json::json!({
+            "report_dir": "/tmp/quality_latest",
+            "report_json": "/tmp/quality_latest/report.json"
+        });
+        std::fs::write(&history_path, format!("{latest}\n")).expect("write history");
+
+        let state = touch_daemon_state_with_paths(&state_path, &history_path, &root)
+            .expect("touch daemon state");
+
+        assert_eq!(state.pending_mismatches, 5);
+        assert_eq!(state.latest_report.as_deref(), Some("/tmp/quality_latest"));
+        assert!(state.available);
+        assert!(!state.last_check.is_empty());
+    }
+
+    #[test]
+    fn test_read_daemon_state_with_paths_rejects_paths_outside_root() {
+        let root_tmp = tempfile::TempDir::new().expect("root temp dir");
+        let root = root_tmp.path().canonicalize().expect("canonical root");
+        let outside_tmp = tempfile::TempDir::new().expect("outside temp dir");
+        let outside_path = outside_tmp.path().join("quality_daemon.json");
+        std::fs::write(
+            &outside_path,
+            serde_json::json!({
+                "pending_mismatches": 99,
+                "last_check": "2026-02-01T10:00:00+01:00",
+                "latest_report": "/tmp/outside",
+                "available": false
+            })
+            .to_string(),
+        )
+        .expect("write outside daemon state");
+
+        let state = read_daemon_state_with_paths(&outside_path, &root);
+        assert_eq!(state.pending_mismatches, 0);
+        assert_eq!(state.latest_report, None);
+        assert!(state.available);
+    }
+
+    #[test]
     fn test_quality_daemon_state_backward_compatible_defaults() {
         let raw = r#"{
             "pending_mismatches": 4,
@@ -1355,6 +1455,14 @@ mod tests {
         let state: QualityDaemonState = serde_json::from_str(raw).expect("parse daemon state");
         assert_eq!(state.pending_mismatches, 4);
         assert_eq!(state.latest_report.as_deref(), Some("/tmp/quality_latest"));
+        assert!(state.available);
+    }
+
+    #[test]
+    fn test_quality_daemon_state_default_is_available() {
+        let state = QualityDaemonState::default();
+        assert_eq!(state.pending_mismatches, 0);
+        assert_eq!(state.latest_report, None);
         assert!(state.available);
     }
 

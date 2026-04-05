@@ -20,6 +20,8 @@ use codescribe::quality_report::{MetricsReference, QualityReport, QualityReportC
 /// Global mismatch counter for daemon mode
 static PENDING_MISMATCHES: AtomicUsize = AtomicUsize::new(0);
 
+const NO_INPUT_PAIRS_ERROR_PREFIX: &str = "No WAV+TXT pairs found in ";
+
 #[derive(Parser, Clone)]
 #[command(name = "codescribe-loop")]
 #[command(version)]
@@ -275,6 +277,22 @@ async fn run_daemon(args: Args) -> Result<()> {
                     );
                 }
             }
+            Err(e) if is_no_input_pairs_error(&e) => {
+                match codescribe::quality_loop::touch_daemon_state() {
+                    Ok(state) => {
+                        PENDING_MISMATCHES.store(state.pending_mismatches, Ordering::SeqCst);
+                        println!(
+                            "  No new WAV+TXT pairs yet; heartbeat refreshed (pending mismatches: {})",
+                            state.pending_mismatches
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "  No new WAV+TXT pairs yet; failed to refresh daemon state: {err}"
+                        );
+                    }
+                }
+            }
             Err(e) => {
                 eprintln!("  Error: {}", e);
             }
@@ -355,6 +373,11 @@ fn send_macos_notification(message: &str, subtitle: &str) {
     let _ = Command::new("osascript").args(["-e", &script]).spawn();
 }
 
+fn is_no_input_pairs_error(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().starts_with(NO_INPUT_PAIRS_ERROR_PREFIX))
+}
+
 fn env_bool(key: &str) -> bool {
     std::env::var(key)
         .ok()
@@ -385,6 +408,7 @@ fn build_daemon_check_args(args: &Args, date_filter: String) -> Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _;
 
     fn default_args() -> Args {
         Args {
@@ -484,5 +508,25 @@ mod tests {
         assert_eq!(check_args.lexicon_min_count, 3);
         assert!(check_args.no_lexicon);
         assert!(check_args.apply);
+    }
+
+    #[test]
+    fn test_is_no_input_pairs_error_matches_direct_message() {
+        let err = anyhow::anyhow!("No WAV+TXT pairs found in /tmp/corpus");
+        assert!(is_no_input_pairs_error(&err));
+    }
+
+    #[test]
+    fn test_is_no_input_pairs_error_matches_wrapped_message() {
+        let err = Err::<(), _>(anyhow::anyhow!("No WAV+TXT pairs found in /tmp/corpus"))
+            .context("outer context")
+            .expect_err("wrapped error");
+        assert!(is_no_input_pairs_error(&err));
+    }
+
+    #[test]
+    fn test_is_no_input_pairs_error_rejects_other_failures() {
+        let err = anyhow::anyhow!("network timeout");
+        assert!(!is_no_input_pairs_error(&err));
     }
 }
