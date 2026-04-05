@@ -3,7 +3,7 @@
 
 use muda::MenuId;
 use std::process::Command;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::os::clipboard;
@@ -127,6 +127,25 @@ fn handle_copy_diagnostics() {
     }
 }
 
+fn notify_tray_settings_persist_failure(subject: &str, error: &anyhow::Error) {
+    warn!("Tray settings: failed to persist {subject}: {error}");
+    #[cfg(target_os = "macos")]
+    crate::os::notifications::notify(
+        "CodeScribe Settings",
+        &format!("Couldn't save {subject}. Change was not persisted."),
+    );
+}
+
+fn persist_tray_settings_change(subject: &str, result: anyhow::Result<()>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            notify_tray_settings_persist_failure(subject, &error);
+            false
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn open_privacy_settings(deeplink: &str) {
     let url = format!(
@@ -215,7 +234,12 @@ fn handle_toggle_quick_notes() {
         if new_state { "ON" } else { "OFF" }
     );
 
-    let _ = config.save_to_env("QUICK_NOTES_ENABLED", if new_state { "1" } else { "0" });
+    if !persist_tray_settings_change(
+        "Quick Notes",
+        config.save_to_env("QUICK_NOTES_ENABLED", if new_state { "1" } else { "0" }),
+    ) {
+        return;
+    }
     send_menu_event(TrayMenuEvent::SetQuickNotesEnabled(new_state));
 
     NOTES_MENU_ITEMS.with(|items_cell| {
@@ -245,13 +269,26 @@ fn handle_toggle_quick_notes_save_only() {
     let enabled = config.quick_notes_enabled;
     let new_state = !config.quick_notes_save_only;
 
-    if !enabled && new_state {
-        // UX: turning "save-only" ON implies Quick Notes ON.
-        let _ = config.save_to_env("QUICK_NOTES_ENABLED", "1");
-        send_menu_event(TrayMenuEvent::SetQuickNotesEnabled(true));
+    let persisted = if !enabled && new_state {
+        // UX: turning "save-only" ON implies Quick Notes ON. Persist both atomically.
+        persist_tray_settings_change(
+            "Quick Notes save-only",
+            config
+                .save_to_env_many(&[("QUICK_NOTES_ENABLED", "1"), ("QUICK_NOTES_SAVE_ONLY", "1")]),
+        )
+    } else {
+        persist_tray_settings_change(
+            "Quick Notes save-only",
+            config.save_to_env("QUICK_NOTES_SAVE_ONLY", if new_state { "1" } else { "0" }),
+        )
+    };
+    if !persisted {
+        return;
     }
 
-    let _ = config.save_to_env("QUICK_NOTES_SAVE_ONLY", if new_state { "1" } else { "0" });
+    if !enabled && new_state {
+        send_menu_event(TrayMenuEvent::SetQuickNotesEnabled(true));
+    }
     send_menu_event(TrayMenuEvent::SetQuickNotesSaveOnly(new_state));
 
     NOTES_MENU_ITEMS.with(|items_cell| {
@@ -340,5 +377,36 @@ fn handle_open_quality_report() {
             .arg("-e")
             .arg(r#"display notification "No quality report available. Run: codescribe-loop --daemon" with title "CodeScribe Quality""#)
             .spawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn persist_tray_settings_change_returns_false_when_write_fails() {
+        let tmp = TempDir::new().expect("tempdir");
+        let blocked_dir = tmp.path().join("blocked-settings-dir");
+        fs::write(&blocked_dir, "not a directory").expect("write blocking file");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &blocked_dir);
+            std::env::remove_var("QUICK_NOTES_ENABLED");
+        }
+
+        let config = Config::load();
+        assert!(!persist_tray_settings_change(
+            "Quick Notes",
+            config.save_to_env("QUICK_NOTES_ENABLED", "1"),
+        ));
+        assert!(
+            std::env::var("QUICK_NOTES_ENABLED").is_err(),
+            "failed tray persist must not leak into runtime env"
+        );
     }
 }

@@ -579,84 +579,124 @@ impl Config {
 
             if is_regular {
                 let settings_ref = settings.get_or_insert_with(super::settings::UserSettings::load);
-                match *key {
+                let normalized_value = match *key {
                     // ── Strings ──
                     "WHISPER_LANGUAGE" => {
-                        settings_ref.whisper_language = Some((*value).to_string())
+                        let normalized = normalize_language_value(key, value)?;
+                        settings_ref.whisper_language = Some(normalized.clone());
+                        normalized
                     }
-                    "LLM_ENDPOINT" => settings_ref.llm_endpoint = Some((*value).to_string()),
-                    "LLM_MODEL" => settings_ref.llm_model = Some((*value).to_string()),
+                    "LLM_ENDPOINT" => {
+                        let normalized = value.trim().to_string();
+                        settings_ref.llm_endpoint = Some(normalized.clone());
+                        normalized
+                    }
+                    "LLM_MODEL" => {
+                        let normalized = value.trim().to_string();
+                        settings_ref.llm_model = Some(normalized.clone());
+                        normalized
+                    }
                     "LLM_ASSISTIVE_ENDPOINT" => {
-                        settings_ref.llm_assistive_endpoint = Some((*value).to_string())
+                        let normalized = value.trim().to_string();
+                        settings_ref.llm_assistive_endpoint = Some(normalized.clone());
+                        normalized
                     }
                     "LLM_ASSISTIVE_MODEL" => {
-                        settings_ref.llm_assistive_model = Some((*value).to_string())
+                        let normalized = value.trim().to_string();
+                        settings_ref.llm_assistive_model = Some(normalized.clone());
+                        normalized
                     }
                     "FORMATTING_LEVEL" => {
-                        settings_ref.formatting_level = Some((*value).to_string())
+                        let normalized = normalize_formatting_level_value(key, value)?;
+                        settings_ref.formatting_level = Some(normalized.clone());
+                        normalized
                     }
                     "LLM_FORMATTING_ENDPOINT" => {
-                        settings_ref.llm_formatting_endpoint = Some((*value).to_string())
+                        let normalized = value.trim().to_string();
+                        settings_ref.llm_formatting_endpoint = Some(normalized.clone());
+                        normalized
                     }
                     "LLM_FORMATTING_MODEL" => {
-                        settings_ref.llm_formatting_model = Some((*value).to_string())
+                        let normalized = value.trim().to_string();
+                        settings_ref.llm_formatting_model = Some(normalized.clone());
+                        normalized
                     }
-                    "LOCAL_MODEL" => settings_ref.local_model = Some((*value).to_string()),
-                    "STT_ENDPOINT" => settings_ref.stt_endpoint = Some((*value).to_string()),
+                    "LOCAL_MODEL" => {
+                        let normalized = value.trim().to_string();
+                        settings_ref.local_model = Some(normalized.clone());
+                        normalized
+                    }
+                    "STT_ENDPOINT" => {
+                        let normalized = value.trim().to_string();
+                        settings_ref.stt_endpoint = Some(normalized.clone());
+                        normalized
+                    }
                     "TRANSCRIPT_SEND_MODE" => {
-                        settings_ref.transcript_send_mode = Some((*value).to_string())
+                        let normalized = normalize_transcript_send_mode_value(key, value)?;
+                        settings_ref.transcript_send_mode = Some(normalized.clone());
+                        normalized
                     }
                     "AUDIO_INPUT_DEVICE" => {
-                        settings_ref.audio_input_device = Some((*value).to_string())
+                        let normalized = value.trim().to_string();
+                        settings_ref.audio_input_device = Some(normalized.clone());
+                        normalized
                     }
-                    "SOUND_NAME" => settings_ref.sound_name = Some((*value).to_string()),
-                    "WHISPER_MODEL" => settings_ref.whisper_model = Some((*value).to_string()),
+                    "SOUND_NAME" => {
+                        let normalized = value.trim().to_string();
+                        settings_ref.sound_name = Some(normalized.clone());
+                        normalized
+                    }
+                    "WHISPER_MODEL" => {
+                        let normalized = value.trim().to_string();
+                        settings_ref.whisper_model = Some(normalized.clone());
+                        normalized
+                    }
                     // ── u64 ──
                     "HOLD_START_DELAY_MS" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.hold_start_delay_ms = Some(v);
-                        }
+                        let v = parse_promoted_u64(key, value)?;
+                        settings_ref.hold_start_delay_ms = Some(v);
+                        v.to_string()
                     }
                     "DOUBLE_TAP_INTERVAL_MS" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.double_tap_interval_ms = Some(v);
-                        }
+                        let v = parse_promoted_u64(key, value)?;
+                        settings_ref.double_tap_interval_ms = Some(v);
+                        v.to_string()
                     }
                     "CODESCRIBE_BUFFER_DELAY_MS" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.buffer_delay_ms = Some(v);
-                        }
+                        let v = parse_promoted_u64(key, value)?;
+                        settings_ref.buffer_delay_ms = Some(v);
+                        v.to_string()
                     }
                     "CODESCRIBE_EMIT_WORDS_MAX" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.emit_words_max = Some(v);
-                        }
+                        let v = parse_promoted_u64(key, value)?;
+                        settings_ref.emit_words_max = Some(v);
+                        v.to_string()
                     }
                     "BACKEND_MAX_UPLOAD_MB" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.backend_max_upload_mb = Some(v);
-                        }
+                        let v = parse_promoted_u64(key, value)?;
+                        settings_ref.backend_max_upload_mb = Some(v);
+                        v.to_string()
                     }
                     // ── f32 ──
                     "TOGGLE_SILENCE_SEC" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.toggle_silence_sec = Some(v);
-                        }
+                        let v = parse_promoted_f32(key, value)?;
+                        settings_ref.toggle_silence_sec = Some(v);
+                        v.to_string()
                     }
                     "CODESCRIBE_TYPING_CPS" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.typing_cps = Some(v);
-                        }
+                        let v = parse_promoted_f32(key, value)?;
+                        settings_ref.typing_cps = Some(v);
+                        v.to_string()
                     }
                     "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.buffered_interim_sec = Some(v);
-                        }
+                        let v = parse_promoted_f32(key, value)?;
+                        settings_ref.buffered_interim_sec = Some(v);
+                        v.to_string()
                     }
                     "SOUND_VOLUME" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.sound_volume = Some(v);
-                        }
+                        let v = parse_promoted_f32(key, value)?;
+                        settings_ref.sound_volume = Some(v);
+                        v.to_string()
                     }
                     // ── Bools ──
                     "AI_FORMATTING_ENABLED"
@@ -671,7 +711,7 @@ impl Config {
                     | "START_AT_LOGIN"
                     | "CODESCRIBE_AUTOSTART_QUALITY_DAEMON"
                     | "AGENT_ENTER_SENDS" => {
-                        let bv = matches!(*value, "1" | "true" | "yes" | "on");
+                        let bv = parse_promoted_bool(key, value)?;
                         match *key {
                             "AI_FORMATTING_ENABLED" => {
                                 settings_ref.ai_formatting_enabled = Some(bv)
@@ -695,10 +735,11 @@ impl Config {
                             "AGENT_ENTER_SENDS" => settings_ref.agent_enter_sends = Some(bv),
                             _ => {}
                         }
+                        if bv { "1".to_string() } else { "0".to_string() }
                     }
-                    _ => {}
-                }
-                pending_env_updates.push(((*key).to_string(), (*value).to_string()));
+                    _ => value.trim().to_string(),
+                };
+                pending_env_updates.push(((*key).to_string(), normalized_value));
                 continue;
             }
 
@@ -972,6 +1013,63 @@ fn parse_use_local_stt(raw: &str, source: &str) -> Option<bool> {
     }
 }
 
+fn parse_promoted_bool(key: &str, value: &str) -> anyhow::Result<bool> {
+    let normalized = value.trim().to_lowercase();
+    match normalized.as_str() {
+        "1" | "true" | "yes" | "on" | "enabled" => Ok(true),
+        "0" | "false" | "no" | "off" | "disabled" => Ok(false),
+        _ => Err(anyhow::anyhow!(
+            "Invalid value for {key}: expected boolean-compatible value, got {:?}",
+            value
+        )),
+    }
+}
+
+fn parse_promoted_u64(key: &str, value: &str) -> anyhow::Result<u64> {
+    value.trim().parse::<u64>().map_err(|error| {
+        anyhow::anyhow!(
+            "Invalid value for {key}: expected unsigned integer, got {:?}: {error}",
+            value
+        )
+    })
+}
+
+fn parse_promoted_f32(key: &str, value: &str) -> anyhow::Result<f32> {
+    value.trim().parse::<f32>().map_err(|error| {
+        anyhow::anyhow!(
+            "Invalid value for {key}: expected decimal number, got {:?}: {error}",
+            value
+        )
+    })
+}
+
+fn normalize_language_value(key: &str, value: &str) -> anyhow::Result<String> {
+    value
+        .trim()
+        .parse::<Language>()
+        .map(|language| language.as_str().to_string())
+        .map_err(|error| anyhow::anyhow!("Invalid value for {key}: {error}"))
+}
+
+fn normalize_transcript_send_mode_value(key: &str, value: &str) -> anyhow::Result<String> {
+    value
+        .trim()
+        .parse::<TranscriptSendMode>()
+        .map(|mode| mode.as_str().to_string())
+        .map_err(|error| anyhow::anyhow!("Invalid value for {key}: {error}"))
+}
+
+fn normalize_formatting_level_value(key: &str, value: &str) -> anyhow::Result<String> {
+    let normalized = value.trim().to_lowercase();
+    match normalized.as_str() {
+        "raw" | "medium" | "creative" => Ok(normalized),
+        _ => Err(anyhow::anyhow!(
+            "Invalid value for {key}: expected one of raw|medium|creative, got {:?}",
+            value
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1055,5 +1153,105 @@ mod tests {
         let settings = UserSettings::load();
         assert_eq!(settings.use_local_stt, Some(false));
         assert!(UserSettings::settings_path().exists());
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_to_env_rejects_invalid_promoted_bool_values() {
+        let _tmp = setup_isolated_data_dir();
+        unsafe {
+            std::env::remove_var("AI_FORMATTING_ENABLED");
+        }
+
+        let config = Config::load();
+        let error = config
+            .save_to_env("AI_FORMATTING_ENABLED", "sometimes")
+            .expect_err("invalid bool should fail fast");
+
+        assert!(error.to_string().contains("AI_FORMATTING_ENABLED"));
+        assert!(
+            std::env::var("AI_FORMATTING_ENABLED").is_err(),
+            "invalid bool must not leak into runtime env"
+        );
+
+        let settings = UserSettings::load();
+        assert_eq!(settings.ai_formatting_enabled, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_to_env_rejects_invalid_promoted_numeric_values() {
+        let _tmp = setup_isolated_data_dir();
+        unsafe {
+            std::env::remove_var("HOLD_START_DELAY_MS");
+        }
+
+        let config = Config::load();
+        let error = config
+            .save_to_env("HOLD_START_DELAY_MS", "fast")
+            .expect_err("invalid numeric should fail fast");
+
+        assert!(error.to_string().contains("HOLD_START_DELAY_MS"));
+        assert!(
+            std::env::var("HOLD_START_DELAY_MS").is_err(),
+            "invalid numeric must not leak into runtime env"
+        );
+
+        let settings = UserSettings::load();
+        assert_eq!(settings.hold_start_delay_ms, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_to_env_rejects_invalid_promoted_enum_values() {
+        let _tmp = setup_isolated_data_dir();
+        unsafe {
+            std::env::remove_var("WHISPER_LANGUAGE");
+        }
+
+        let config = Config::load();
+        let error = config
+            .save_to_env("WHISPER_LANGUAGE", "de")
+            .expect_err("invalid enum should fail fast");
+
+        assert!(error.to_string().contains("WHISPER_LANGUAGE"));
+        assert!(
+            std::env::var("WHISPER_LANGUAGE").is_err(),
+            "invalid enum must not leak into runtime env"
+        );
+
+        let settings = UserSettings::load();
+        assert_eq!(settings.whisper_language, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_to_env_many_is_atomic_when_validation_fails() {
+        let _tmp = setup_isolated_data_dir();
+        unsafe {
+            std::env::remove_var("QUICK_NOTES_ENABLED");
+            std::env::remove_var("HOLD_START_DELAY_MS");
+        }
+
+        let config = Config::load();
+        config
+            .save_to_env_many(&[
+                ("QUICK_NOTES_ENABLED", "1"),
+                ("HOLD_START_DELAY_MS", "still not a number"),
+            ])
+            .expect_err("batch save should abort when any promoted value is invalid");
+
+        assert!(
+            std::env::var("QUICK_NOTES_ENABLED").is_err(),
+            "batch failure should not leak earlier valid values into runtime env"
+        );
+        assert!(
+            std::env::var("HOLD_START_DELAY_MS").is_err(),
+            "batch failure should keep the invalid value out of runtime env"
+        );
+
+        let settings = UserSettings::load();
+        assert_eq!(settings.quick_notes_enabled, None);
+        assert_eq!(settings.hold_start_delay_ms, None);
     }
 }
