@@ -33,6 +33,19 @@ Usage: $0 [--fix] [--env-example] [--env-example-path PATH] [--emit-e2e-env PATH
 EOF
 }
 
+emit_registry_stub() {
+    local var="$1"
+    cat <<EOF
+[vars.$var]
+default = ""
+type = "string"
+reload = "restart"
+category = "unknown"
+description = "Document what $var controls, who should change it, and when it takes effect."
+
+EOF
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --fix)
@@ -78,7 +91,7 @@ if [[ ! -f "$REGISTRY" ]]; then
 fi
 
 # Get all registered var names (including deprecated)
-REGISTERED=$(grep -E '^\[vars\.' "$REGISTRY" | sed 's/\[vars\.\(.*\)\]/\1/' | sort -u)
+REGISTERED=$(grep -E '^\[vars\.' "$REGISTRY" | sed 's/\[vars\.\(.*\)\]/\1/' | sort -u || true)
 
 # Find all env vars used in Rust code (env::var patterns)
 echo "Scanning Rust code for env var usage..."
@@ -99,34 +112,26 @@ CODE_VARS3=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'env_flag\("([A-Z_]+)"' core/ 2>/d
 ALL_CODE_VARS=$(echo -e "$CODE_VARS\n$CODE_VARS2\n$CODE_VARS3" | sort -u | grep -v '^$' || true)
 
 # Check each code var against registry
-UNREGISTERED=""
+UNREGISTERED_VARS=()
 for var in $ALL_CODE_VARS; do
     if echo "$IGNORE_VARS" | grep -qw "$var"; then
         continue
     fi
     if ! echo "$REGISTERED" | grep -qx "$var"; then
-        UNREGISTERED="$UNREGISTERED$var\n"
+        UNREGISTERED_VARS+=("$var")
         ERRORS=$((ERRORS + 1))
     fi
 done
 
 if [[ $ERRORS -gt 0 ]]; then
     echo -e "${RED}❌ Found $ERRORS unregistered environment variable(s):${NC}"
-    echo -e "$UNREGISTERED" | while read -r var; do
-        [[ -n "$var" ]] && echo -e "   ${YELLOW}$var${NC}"
+    for var in "${UNREGISTERED_VARS[@]}"; do
+        echo -e "   ${YELLOW}$var${NC}"
     done
     echo ""
     echo -e "${YELLOW}Add these to docs/ENV_REGISTRY.toml:${NC}"
-    echo -e "$UNREGISTERED" | while read -r var; do
-        if [[ -n "$var" ]]; then
-            echo "[vars.$var]"
-            echo 'default = ""'
-            echo 'type = "string"'
-            echo 'reload = "restart"'
-            echo 'category = "unknown"'
-            echo 'description = "TODO: Add description"'
-            echo ""
-        fi
+    for var in "${UNREGISTERED_VARS[@]}"; do
+        emit_registry_stub "$var"
     done
     if [[ $FIX_MODE -eq 1 ]]; then
         exit 1
@@ -145,18 +150,18 @@ if [[ $CHECK_EXAMPLE -eq 1 || -n "$EMIT_ENV_PATH" ]]; then
     fi
 
     EXAMPLE_VARS=$(grep -E '^[A-Z_][A-Z0-9_]*=' "$ENV_EXAMPLE" | sed 's/=.*//' | sort -u)
-    UNREGISTERED_EXAMPLE=""
+    UNREGISTERED_EXAMPLE_VARS=()
     for var in $EXAMPLE_VARS; do
         if ! echo "$REGISTERED" | grep -qx "$var"; then
-            UNREGISTERED_EXAMPLE="$UNREGISTERED_EXAMPLE$var\n"
+            UNREGISTERED_EXAMPLE_VARS+=("$var")
             EXAMPLE_ERRORS=$((EXAMPLE_ERRORS + 1))
         fi
     done
 
     if [[ $EXAMPLE_ERRORS -gt 0 ]]; then
         echo -e "${RED}❌ .env.example contains $EXAMPLE_ERRORS unknown var(s):${NC}"
-        echo -e "$UNREGISTERED_EXAMPLE" | while read -r var; do
-            [[ -n "$var" ]] && echo -e "   ${YELLOW}$var${NC}"
+        for var in "${UNREGISTERED_EXAMPLE_VARS[@]}"; do
+            echo -e "   ${YELLOW}$var${NC}"
         done
     else
         echo -e "${GREEN}✅ .env.example matches registry${NC}"
