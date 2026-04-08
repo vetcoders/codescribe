@@ -64,7 +64,7 @@ release:
 	@echo "Building (release)..."
 	@cargo build --release
 
-install:
+install: hooks
 	@echo "Installing CodeScribe (with embedded model)..."
 	@./scripts/ensure-models.sh
 	@cargo install --path . --force
@@ -334,7 +334,9 @@ hooks:
 	@echo "Installing pre-commit hooks..."
 	@command -v pre-commit >/dev/null 2>&1 || { echo "Install pre-commit: pipx install pre-commit"; exit 1; }
 	@pre-commit install --hook-type pre-commit --hook-type pre-push
-	@echo "Hooks installed: pre-commit (check+fmt) + pre-push (clippy+semgrep)"
+	@cp scripts/hooks/commit-msg .git/hooks/commit-msg
+	@chmod +x .git/hooks/commit-msg
+	@echo "Hooks installed: pre-commit (check+fmt) + pre-push (clippy+semgrep) + commit-msg (agent telemetry)"
 
 # ============================================================================
 # Cleanup

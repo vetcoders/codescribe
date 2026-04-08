@@ -1,0 +1,36 @@
+#!/bin/sh
+# Agent telemetry commit-msg hook for VetCoders repos.
+# Requires a provenance tag in the commit message:
+#
+#   [agent/vc-workflow]  — agent telemetry (preferred)
+#   [ok-commit]          — human/quick commits (backward compat)
+#
+# Examples:
+#   [claude/vc-marbles] harden env parsing
+#   [codex/vc-justdo] wire TTS pipeline
+#   [maciej/vc-manual] fix typo in README
+#   [ok-commit] quick hotfix
+#
+# Install: make hooks
+# Created by M&K (c)2026 VetCoders
+
+MSG_FILE="$1"
+if [ -z "$MSG_FILE" ] || [ ! -f "$MSG_FILE" ]; then
+  echo "commit-msg hook: missing commit message file" >&2
+  exit 1
+fi
+
+# Accept [agent/vc-workflow] or [ok-commit]
+if grep -qE '\[.+/vc-.+\]|\[ok-commit\]' "$MSG_FILE"; then
+  exit 0
+fi
+
+echo "✋ Commit blocked: add provenance tag to the commit message." >&2
+echo "" >&2
+echo "  Agent telemetry:  [claude/vc-marbles] fix: overlay crash" >&2
+echo "  Human commit:     [ok-commit] fix: overlay crash" >&2
+echo "" >&2
+echo "  Format: [<agent>/vc-<workflow>] <description>" >&2
+echo "  Agents: claude, codex, gemini, maciej, monika" >&2
+echo "  Workflows: vc-marbles, vc-justdo, vc-workflow, vc-init, vc-manual" >&2
+exit 1
