@@ -478,6 +478,11 @@ pub fn should_show_bootstrap() -> bool {
     should_show_setup()
 }
 
+pub fn is_bootstrap_overlay_visible() -> bool {
+    let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.window.is_some()
+}
+
 fn mark_setup_done() {
     let path = setup_done_path();
     if let Some(parent) = path.parent() {
@@ -495,11 +500,6 @@ pub fn schedule_bootstrap() {
         thread::sleep(Duration::from_millis(800));
         show_creator_window();
     });
-}
-
-pub fn is_bootstrap_overlay_visible() -> bool {
-    let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.window.is_some()
 }
 
 static SHOW_OVERLAY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);

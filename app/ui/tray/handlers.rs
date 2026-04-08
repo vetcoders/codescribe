@@ -18,18 +18,17 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     if event_id == &menu_ids.copy_last {
         handle_copy_last();
     } else if event_id == &menu_ids.show_overlay {
-        crate::show_voice_chat_overlay();
+        handle_show_agent_action();
     } else if event_id == &menu_ids.open_creator {
-        send_menu_event(TrayMenuEvent::OpenCreator);
-        crate::show_creator_window();
+        handle_open_creator_action();
     } else if menu_ids
         .complete_setup
         .as_ref()
         .is_some_and(|id| event_id == id)
     {
-        crate::show_settings_setup_tab();
+        handle_complete_setup_action();
     } else if event_id == &menu_ids.run_onboarding {
-        crate::show_settings_window();
+        handle_run_onboarding_action();
     } else if event_id == &menu_ids.open_history {
         handle_open_history_folder();
     } else if event_id == &menu_ids.copy_diagnostics {
@@ -78,6 +77,7 @@ pub fn handle_show_agent_action() {
 }
 
 pub fn handle_open_creator_action() {
+    send_menu_event(TrayMenuEvent::OpenCreator);
     crate::show_creator_window();
 }
 

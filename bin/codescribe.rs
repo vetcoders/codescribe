@@ -736,14 +736,18 @@ async fn run_daemon() -> Result<()> {
         }
     });
 
-    let hotkey_manager = match hotkeys::HotkeyManager::new(tx) {
-        Ok(manager) => Some(manager),
-        Err(e) => {
-            eprintln!(
-                "Hotkeys waiting on permissions ({}). Grant Accessibility + Input Monitoring and CodeScribe will reinitialize them live.",
-                e
-            );
-            None
+    let hotkey_manager = if automation_mode {
+        None
+    } else {
+        match hotkeys::HotkeyManager::new(tx) {
+            Ok(manager) => Some(manager),
+            Err(e) => {
+                eprintln!(
+                    "Hotkeys waiting on permissions ({}). Grant Accessibility + Input Monitoring and CodeScribe will reinitialize them live.",
+                    e
+                );
+                None
+            }
         }
     };
 
