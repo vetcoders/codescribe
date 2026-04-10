@@ -59,7 +59,7 @@ use codescribe_core::ipc::{IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
 // UI state for conversation mode
-use crate::voice_chat_ui::ConversationModeState;
+use crate::ui::voice_chat::ConversationModeState;
 
 use helpers::{
     SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
@@ -506,7 +506,7 @@ pub struct RecordingController {
 impl RecordingController {
     fn recorder_unavailable_error(context: &str) -> anyhow::Error {
         warn!("{context}: streaming recorder unavailable; voice capture is disabled");
-        crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+        crate::ui::voice_chat::set_voice_chat_runtime_degraded(
             true,
             Some(RECORDER_RUNTIME_DEGRADED_REASON),
         );
@@ -518,7 +518,7 @@ impl RecordingController {
             Ok(recorder) => Some(recorder),
             Err(error) => {
                 warn!("{context}: failed to initialize streaming recorder: {error}");
-                crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+                crate::ui::voice_chat::set_voice_chat_runtime_degraded(
                     true,
                     Some(RECORDER_RUNTIME_DEGRADED_REASON),
                 );
@@ -629,14 +629,14 @@ impl RecordingController {
 
     fn present_runtime_recovery_ui(status: &str, message: &str) {
         let emit_recovery_message = Self::should_emit_runtime_recovery_message();
-        let overlay_visible = crate::voice_chat_ui::is_voice_chat_overlay_visible();
+        let overlay_visible = crate::ui::voice_chat::is_voice_chat_overlay_visible();
         if emit_recovery_message || !overlay_visible {
-            crate::show_voice_chat_overlay();
-            crate::show_agent_tab();
+            crate::ui::voice_chat::show_voice_chat_overlay();
+            crate::ui::voice_chat::show_agent_tab();
         }
-        crate::voice_chat_ui::update_voice_chat_status(status);
+        crate::ui::voice_chat::update_voice_chat_status(status);
         if emit_recovery_message {
-            crate::voice_chat_ui::add_voice_chat_error_message(message);
+            crate::ui::voice_chat::add_voice_chat_error_message(message);
             crate::show_settings_window();
         } else {
             debug!("Runtime recovery UI throttled (cooldown active)");
@@ -645,7 +645,7 @@ impl RecordingController {
 
     fn present_recorder_unavailable(context: &str) {
         warn!("{context}: recorder unavailable; routing to settings recovery");
-        crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+        crate::ui::voice_chat::set_voice_chat_runtime_degraded(
             true,
             Some(RECORDER_RUNTIME_DEGRADED_REASON),
         );
@@ -693,7 +693,7 @@ impl RecordingController {
         let config = Arc::new(RwLock::new(config));
         setup_voice_chat_send_callback(Arc::clone(&config));
         if recorder.is_none() {
-            crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
                 true,
                 Some(RECORDER_RUNTIME_DEGRADED_REASON),
             );
@@ -767,7 +767,7 @@ impl RecordingController {
 
         setup_voice_chat_send_callback(Arc::clone(&config));
         if recorder.is_none() {
-            crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
                 true,
                 Some(RECORDER_RUNTIME_DEGRADED_REASON),
             );
@@ -867,7 +867,7 @@ impl RecordingController {
 
         *recorder_guard = Self::init_streaming_recorder("Permission runtime reconcile");
         if recorder_guard.is_some() {
-            crate::voice_chat_ui::set_voice_chat_runtime_degraded(false, None);
+            crate::ui::voice_chat::set_voice_chat_runtime_degraded(false, None);
             info!("Permission runtime reconcile: recorder runtime recovered after grant");
         }
     }
@@ -938,7 +938,7 @@ impl RecordingController {
         set_assistive_session(false);
         reset_session_telemetry(&self.session_telemetry);
         hide_hold_badge();
-        crate::voice_chat_ui::update_voice_chat_status("Ready");
+        crate::ui::voice_chat::update_voice_chat_status("Ready");
     }
 
     fn is_already_in_progress_error(error: &anyhow::Error) -> bool {
@@ -994,7 +994,7 @@ impl RecordingController {
         set_assistive_session(false);
         reset_session_telemetry(&self.session_telemetry);
         hide_hold_badge();
-        crate::voice_chat_ui::update_voice_chat_status("Ready");
+        crate::ui::voice_chat::update_voice_chat_status("Ready");
         info!("RECOVERY decision: stale active stream cleared, controller remains IDLE");
     }
 
@@ -1044,7 +1044,7 @@ impl RecordingController {
             if is_assistive_session {
                 // Close current streaming user bubble at utterance boundary
                 // so next preview starts a fresh user message.
-                crate::voice_chat_ui::finalize_voice_chat_user_message();
+                crate::ui::voice_chat::finalize_voice_chat_user_message();
             }
             let controller = controller.clone();
             let expected_session = expected_session.clone();
@@ -1163,7 +1163,7 @@ impl RecordingController {
                                     .await
                                     .unwrap_or_default();
                                 *self.assistive_context.write().await = Some(ctx);
-                                crate::voice_chat_ui::set_voice_chat_target_app(
+                                crate::ui::voice_chat::set_voice_chat_target_app(
                                     self.assistive_context
                                         .read()
                                         .await
@@ -1173,9 +1173,9 @@ impl RecordingController {
                                 );
                                 set_assistive_session(true);
                                 crate::hide_transcription_overlay();
-                                crate::show_voice_chat_overlay();
-                                crate::show_agent_tab();
-                                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                                crate::ui::voice_chat::show_voice_chat_overlay();
+                                crate::ui::voice_chat::show_agent_tab();
+                                crate::ui::voice_chat::update_voice_chat_status("Listening...");
                             }
                         }
                         HoldMode::Selection => {
@@ -1190,7 +1190,7 @@ impl RecordingController {
                                     .await
                                     .unwrap_or_default();
                                 *self.assistive_context.write().await = Some(ctx);
-                                crate::voice_chat_ui::set_voice_chat_target_app(
+                                crate::ui::voice_chat::set_voice_chat_target_app(
                                     self.assistive_context
                                         .read()
                                         .await
@@ -1200,9 +1200,9 @@ impl RecordingController {
                                 );
                                 set_assistive_session(true);
                                 crate::hide_transcription_overlay();
-                                crate::show_voice_chat_overlay();
-                                crate::show_agent_tab();
-                                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                                crate::ui::voice_chat::show_voice_chat_overlay();
+                                crate::ui::voice_chat::show_agent_tab();
+                                crate::ui::voice_chat::update_voice_chat_status("Listening...");
                             }
                         }
                     }
@@ -1355,7 +1355,7 @@ impl RecordingController {
                         // Pre-initialize to load models now (rather than on first audio)
                         if let Err(e) = engine.init() {
                             error!("ConversationEngine init failed: {}", e);
-                            crate::voice_chat_ui::add_voice_chat_error_message(&format!(
+                            crate::ui::voice_chat::add_voice_chat_error_message(&format!(
                                 "Moshi init failed: {}",
                                 e
                             ));
@@ -1366,7 +1366,7 @@ impl RecordingController {
                     }
                     Err(e) => {
                         error!("Failed to create ConversationEngine: {}", e);
-                        crate::voice_chat_ui::add_voice_chat_error_message(&format!(
+                        crate::ui::voice_chat::add_voice_chat_error_message(&format!(
                             "Moshi unavailable: {}",
                             e
                         ));
@@ -1408,10 +1408,10 @@ impl RecordingController {
 
         // 6. Update UI
         show_badge_for_mode(BadgeMode::Assistive);
-        crate::show_voice_chat_overlay();
-        crate::voice_chat_ui::show_agent_tab();
-        crate::voice_chat_ui::update_voice_chat_status("Listening...");
-        crate::voice_chat_ui::update_conversation_state(ConversationModeState::Listening);
+        crate::ui::voice_chat::show_voice_chat_overlay();
+        crate::ui::voice_chat::show_agent_tab();
+        crate::ui::voice_chat::update_voice_chat_status("Listening...");
+        crate::ui::voice_chat::update_conversation_state(ConversationModeState::Listening);
 
         // 7. Start the conversation audio processing task
         let engine = Arc::clone(&self.conversation_engine);
@@ -1480,7 +1480,7 @@ impl RecordingController {
                     Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
                     helpers::set_conversation_session(false);
                     hide_hold_badge();
-                    crate::voice_chat_ui::update_conversation_state(
+                    crate::ui::voice_chat::update_conversation_state(
                         ConversationModeState::Inactive,
                     );
                     Self::present_recorder_unavailable("Conversation-loop start");
@@ -1497,9 +1497,9 @@ impl RecordingController {
                 Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
                 helpers::set_conversation_session(false);
                 hide_hold_badge();
-                crate::voice_chat_ui::update_voice_chat_status("Recorder error");
-                crate::voice_chat_ui::update_conversation_state(ConversationModeState::Inactive);
-                crate::voice_chat_ui::add_voice_chat_error_message(&format!("Mic error: {}", e));
+                crate::ui::voice_chat::update_voice_chat_status("Recorder error");
+                crate::ui::voice_chat::update_conversation_state(ConversationModeState::Inactive);
+                crate::ui::voice_chat::add_voice_chat_error_message(&format!("Mic error: {}", e));
                 return;
             }
         }
@@ -1515,7 +1515,7 @@ impl RecordingController {
                     Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
                     helpers::set_conversation_session(false);
                     hide_hold_badge();
-                    crate::voice_chat_ui::update_conversation_state(
+                    crate::ui::voice_chat::update_conversation_state(
                         ConversationModeState::Inactive,
                     );
                     Self::present_recorder_unavailable("Conversation-loop sample rate");
@@ -1557,8 +1557,8 @@ impl RecordingController {
                                 }
                                 _ => ("Listening...", ConversationModeState::Listening),
                             };
-                            crate::voice_chat_ui::update_voice_chat_status(status);
-                            crate::voice_chat_ui::update_conversation_state(ui_state);
+                            crate::ui::voice_chat::update_voice_chat_status(status);
+                            crate::ui::voice_chat::update_conversation_state(ui_state);
                         }
                     }
                 }
@@ -1596,8 +1596,8 @@ impl RecordingController {
                         continue;
                     }
 
-                    crate::voice_chat_ui::update_voice_chat_status("Moshi speaking...");
-                    crate::voice_chat_ui::update_conversation_state(
+                    crate::ui::voice_chat::update_voice_chat_status("Moshi speaking...");
+                    crate::ui::voice_chat::update_conversation_state(
                         ConversationModeState::AssistantSpeaking,
                     );
 
@@ -1638,8 +1638,8 @@ impl RecordingController {
                                 if !stop_flag_clone.load(Ordering::SeqCst)
                                     && current_gen == my_generation
                                 {
-                                    crate::voice_chat_ui::update_voice_chat_status("Listening...");
-                                    crate::voice_chat_ui::update_conversation_state(
+                                    crate::ui::voice_chat::update_voice_chat_status("Listening...");
+                                    crate::ui::voice_chat::update_conversation_state(
                                         ConversationModeState::Listening,
                                     );
                                 }
@@ -1677,8 +1677,8 @@ impl RecordingController {
             Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
             helpers::set_conversation_session(false);
             hide_hold_badge();
-            crate::voice_chat_ui::update_voice_chat_status("Conversation ended");
-            crate::voice_chat_ui::update_conversation_state(ConversationModeState::Inactive);
+            crate::ui::voice_chat::update_voice_chat_status("Conversation ended");
+            crate::ui::voice_chat::update_conversation_state(ConversationModeState::Inactive);
             info!(
                 "Loop cleanup: conversation ended unexpectedly (gen {})",
                 my_generation
@@ -1744,8 +1744,8 @@ impl RecordingController {
 
         // 8. Update UI
         hide_hold_badge();
-        crate::voice_chat_ui::update_voice_chat_status("Conversation ended");
-        crate::voice_chat_ui::update_conversation_state(ConversationModeState::Inactive);
+        crate::ui::voice_chat::update_voice_chat_status("Conversation ended");
+        crate::ui::voice_chat::update_conversation_state(ConversationModeState::Inactive);
 
         Ok(())
     }
@@ -1973,7 +1973,7 @@ impl RecordingController {
                         .unwrap_or_default(),
                 };
                 *assistive_context.write().await = Some(ctx);
-                crate::voice_chat_ui::set_voice_chat_target_app(
+                crate::ui::voice_chat::set_voice_chat_target_app(
                     assistive_context
                         .read()
                         .await
@@ -1983,16 +1983,16 @@ impl RecordingController {
                 );
 
                 crate::hide_transcription_overlay();
-                crate::show_voice_chat_overlay();
-                crate::show_agent_tab();
-                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                crate::ui::voice_chat::show_voice_chat_overlay();
+                crate::ui::voice_chat::show_agent_tab();
+                crate::ui::voice_chat::update_voice_chat_status("Listening...");
             } else {
                 // Capture frontmost app for paste actions (no selection/clipboard).
                 let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
                     .await
                     .unwrap_or_default();
                 *assistive_context.write().await = Some(ctx);
-                crate::voice_chat_ui::set_voice_chat_target_app(
+                crate::ui::voice_chat::set_voice_chat_target_app(
                     assistive_context
                         .read()
                         .await
@@ -2183,7 +2183,7 @@ impl RecordingController {
                 .await
                 .unwrap_or_default();
             *self.assistive_context.write().await = Some(ctx);
-            crate::voice_chat_ui::set_voice_chat_target_app(
+            crate::ui::voice_chat::set_voice_chat_target_app(
                 self.assistive_context
                     .read()
                     .await
@@ -2193,16 +2193,16 @@ impl RecordingController {
             );
 
             crate::hide_transcription_overlay();
-            crate::show_voice_chat_overlay();
-            crate::show_agent_tab();
-            crate::voice_chat_ui::update_voice_chat_status("Listening...");
+            crate::ui::voice_chat::show_voice_chat_overlay();
+            crate::ui::voice_chat::show_agent_tab();
+            crate::ui::voice_chat::update_voice_chat_status("Listening...");
         } else {
             // Capture frontmost app for paste actions (no selection/clipboard).
             let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
                 .await
                 .unwrap_or_default();
             *self.assistive_context.write().await = Some(ctx);
-            crate::voice_chat_ui::set_voice_chat_target_app(
+            crate::ui::voice_chat::set_voice_chat_target_app(
                 self.assistive_context
                     .read()
                     .await
@@ -2233,8 +2233,8 @@ impl RecordingController {
     ) -> Result<()> {
         if raw_text.trim().is_empty() {
             if is_assistive {
-                crate::voice_chat_ui::set_voice_chat_sending(false);
-                crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                crate::ui::voice_chat::set_voice_chat_sending(false);
+                crate::ui::voice_chat::update_voice_chat_status("Listening...");
             }
             return Ok(());
         }
@@ -2266,7 +2266,7 @@ impl RecordingController {
             *self.assistive_context.write().await = Some(ctx);
         }
 
-        crate::voice_chat_ui::set_voice_chat_target_app(
+        crate::ui::voice_chat::set_voice_chat_target_app(
             self.assistive_context
                 .read()
                 .await
@@ -2304,8 +2304,8 @@ impl RecordingController {
             .map(|_| ());
 
         if *self.state.read().await == State::RecToggle && is_assistive {
-            crate::voice_chat_ui::set_voice_chat_sending(false);
-            crate::voice_chat_ui::update_voice_chat_status("Listening...");
+            crate::ui::voice_chat::set_voice_chat_sending(false);
+            crate::ui::voice_chat::update_voice_chat_status("Listening...");
         }
 
         result
@@ -2348,10 +2348,10 @@ impl RecordingController {
             .store(false, Ordering::SeqCst);
         self.assistive_loop_active.store(false, Ordering::SeqCst);
         if self.toggle_user_has_text.load(Ordering::SeqCst) {
-            crate::voice_chat_ui::finalize_voice_chat_user_message();
+            crate::ui::voice_chat::finalize_voice_chat_user_message();
         }
         if self.toggle_assistant_has_text.load(Ordering::SeqCst) {
-            crate::voice_chat_ui::finalize_voice_chat_assistant_message();
+            crate::ui::voice_chat::finalize_voice_chat_assistant_message();
         }
         self.toggle_user_has_text.store(false, Ordering::SeqCst);
         self.toggle_assistant_has_text
@@ -2359,7 +2359,7 @@ impl RecordingController {
         set_assistive_session(false);
 
         hide_hold_badge();
-        crate::voice_chat_ui::update_voice_chat_status("Ready");
+        crate::ui::voice_chat::update_voice_chat_status("Ready");
 
         if let Some(e) = stop_error {
             return Err(anyhow::anyhow!("Failed to stop recorder: {e}"));
@@ -2438,7 +2438,7 @@ impl RecordingController {
         // Update tray icon based on result
         match &result {
             Ok(outcome) => {
-                crate::voice_chat_ui::update_voice_chat_status("Ready");
+                crate::ui::voice_chat::update_voice_chat_status("Ready");
                 info!("Processing finished successfully. State reset to IDLE.");
 
                 if let Some(reason) = outcome.no_speech_reason.as_deref() {
@@ -2448,7 +2448,7 @@ impl RecordingController {
                             .opened_voice_chat_overlay_for_transcription
                             .swap(false, Ordering::SeqCst);
                         if opened {
-                            crate::voice_chat_ui::hide_voice_chat_overlay();
+                            crate::ui::voice_chat::hide_voice_chat_overlay();
                         }
                         crate::hide_transcription_overlay();
                     }
@@ -2462,7 +2462,7 @@ impl RecordingController {
                         .opened_voice_chat_overlay_for_transcription
                         .swap(false, Ordering::SeqCst);
                     if opened {
-                        crate::voice_chat_ui::hide_voice_chat_overlay();
+                        crate::ui::voice_chat::hide_voice_chat_overlay();
                     }
 
                     if show_decision_overlay {
@@ -2486,14 +2486,14 @@ impl RecordingController {
             }
             Err(e) => {
                 error!("Processing failed: {}", e);
-                crate::voice_chat_ui::update_voice_chat_status("Processing failed");
+                crate::ui::voice_chat::update_voice_chat_status("Processing failed");
 
                 // Hide overlay immediately on error
                 let opened = self
                     .opened_voice_chat_overlay_for_transcription
                     .swap(false, Ordering::SeqCst);
                 if opened {
-                    crate::voice_chat_ui::hide_voice_chat_overlay();
+                    crate::ui::voice_chat::hide_voice_chat_overlay();
                 }
                 crate::hide_transcription_overlay();
             }
@@ -2613,7 +2613,7 @@ impl RecordingController {
                 let lang = language_opt.map(str::to_string);
 
                 if chat_active {
-                    crate::voice_chat_ui::update_voice_chat_status("Finalizing… (20%)");
+                    crate::ui::voice_chat::update_voice_chat_status("Finalizing… (20%)");
                 }
 
                 info!(
@@ -2724,8 +2724,8 @@ impl RecordingController {
                 }
                 if assistive_loop {
                     if chat_active {
-                        crate::voice_chat_ui::set_voice_chat_sending(false);
-                        crate::voice_chat_ui::update_voice_chat_status("Listening...");
+                        crate::ui::voice_chat::set_voice_chat_sending(false);
+                        crate::ui::voice_chat::update_voice_chat_status("Listening...");
                     }
                     warn!("NoSpeech in assistive loop; continuing hands-off listening");
                 }
@@ -2821,7 +2821,7 @@ impl RecordingController {
                 Some(&raw_text),
             );
             info!("Raw transcript saved: {}", raw_entry.path.display());
-            crate::voice_chat_ui::update_drawer_after_save(raw_entry.path.as_path());
+            crate::ui::voice_chat::update_drawer_after_save(raw_entry.path.as_path());
         }
 
         // Check for repetition loops (Whisper hallucination like "Wielki, Wielki, Wielki...")
@@ -2860,12 +2860,12 @@ impl RecordingController {
             );
 
             if chat_active {
-                crate::show_voice_chat_overlay();
+                crate::ui::voice_chat::show_voice_chat_overlay();
                 if skip_user_bubble {
                     // Event pipeline: Preview already streamed text into the bubble.
                     // Just finalize the user message (stop streaming indicator)
                     // without re-writing the text.
-                    crate::voice_chat_ui::finalize_voice_chat_user_message();
+                    crate::ui::voice_chat::finalize_voice_chat_user_message();
                     self.toggle_user_has_text.store(true, Ordering::SeqCst);
                 } else if !should_allow_full_user_bubble_rewrite(
                     skip_user_bubble,
@@ -2874,16 +2874,16 @@ impl RecordingController {
                 ) {
                     // Delta-first path: avoid full rewrites while stream is active.
                     if user_needs_separator {
-                        crate::voice_chat_ui::append_voice_chat_user_delta("\n\n");
+                        crate::ui::voice_chat::append_voice_chat_user_delta("\n\n");
                     }
-                    crate::voice_chat_ui::append_voice_chat_user_delta(&clean_text);
+                    crate::ui::voice_chat::append_voice_chat_user_delta(&clean_text);
                     self.toggle_user_has_text.store(true, Ordering::SeqCst);
                 } else {
-                    crate::voice_chat_ui::set_voice_chat_user_text(&clean_text);
+                    crate::ui::voice_chat::set_voice_chat_user_text(&clean_text);
                 }
-                crate::voice_chat_ui::show_agent_tab();
-                crate::voice_chat_ui::set_voice_chat_sending(true);
-                crate::voice_chat_ui::update_voice_chat_status("Thinking… (35%)");
+                crate::ui::voice_chat::show_agent_tab();
+                crate::ui::voice_chat::set_voice_chat_sending(true);
+                crate::ui::voice_chat::update_voice_chat_status("Thinking… (35%)");
             }
 
             let mut ctx = self
@@ -2909,7 +2909,7 @@ impl RecordingController {
                     .trim()
                     .to_string();
                 let sel_len = ctx.selected_text.as_deref().unwrap_or("").len();
-                crate::voice_chat_ui::update_voice_chat_context_summary(&format!(
+                crate::ui::voice_chat::update_voice_chat_context_summary(&format!(
                     "ctx: {} | sel: {}",
                     app, sel_len
                 ));
@@ -2923,10 +2923,10 @@ impl RecordingController {
                 );
                 effective_hold_mode = HoldMode::Chat;
                 if chat_active {
-                    crate::voice_chat_ui::update_voice_chat_status(
+                    crate::ui::voice_chat::update_voice_chat_status(
                         "Selection unavailable - chat fallback",
                     );
-                    crate::voice_chat_ui::add_voice_chat_system_message(
+                    crate::ui::voice_chat::add_voice_chat_system_message(
                         "Selection was not detected. Continuing without selected-text context.",
                     );
                 }
@@ -2937,8 +2937,8 @@ impl RecordingController {
             // - Selection: if no selection was captured, we already downgraded to Chat mode.
             let assistive_input = build_assistive_input(&clean_text, &ctx);
             if chat_active {
-                crate::voice_chat_ui::finalize_voice_chat_user_message();
-                crate::voice_chat_ui::set_voice_chat_sending(true);
+                crate::ui::voice_chat::finalize_voice_chat_user_message();
+                crate::ui::voice_chat::set_voice_chat_sending(true);
                 send_assistive_with_agent_runtime(
                     assistive_input,
                     config.whisper_language,
@@ -3202,7 +3202,7 @@ impl RecordingController {
                 Some(&raw_text),
             );
             info!("Transcript saved: {}", entry.path.display());
-            crate::voice_chat_ui::refresh_drawer();
+            crate::ui::voice_chat::refresh_drawer();
         } else if assistive {
             info!(
                 "Assistive flow: skipping legacy final transcript save (ThreadStore is source of truth)"
@@ -3265,7 +3265,7 @@ impl RecordingController {
         hide_hold_badge();
 
         // Update shared UI status
-        crate::voice_chat_ui::update_voice_chat_status("Idle");
+        crate::ui::voice_chat::update_voice_chat_status("Idle");
 
         info!("State reset to IDLE complete");
     }

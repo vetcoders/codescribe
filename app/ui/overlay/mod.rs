@@ -7,7 +7,7 @@
 //! - Auto-hides after recording completion
 //!
 //! Use this for: Ctrl hold (raw), Left ⌥⌥ toggle (normal)
-//! For agent chat conversations, use voice_chat_ui overlay.
+//! For agent chat conversations, use the `ui::voice_chat` overlay.
 //!
 //! Design: macOS Tahoe Liquid Glass (NSVisualEffectView, HudWindow material)
 
@@ -328,9 +328,9 @@ extern "C" fn on_augment_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     if text.is_empty() {
         return;
     }
-    crate::show_voice_chat_overlay();
-    crate::show_agent_tab();
-    crate::voice_chat_ui::handoff_transcript_to_chat(&text);
+    crate::ui::voice_chat::show_voice_chat_overlay();
+    crate::ui::voice_chat::show_agent_tab();
+    crate::ui::voice_chat::handoff_transcript_to_chat(&text);
     hide_transcription_overlay();
 }
 

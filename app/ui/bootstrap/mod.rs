@@ -1693,9 +1693,9 @@ pub(super) fn handle_test_mic() {
 }
 
 pub(super) fn handle_show_overlay() {
-    crate::show_voice_chat_overlay();
-    crate::show_agent_tab();
-    crate::voice_chat_ui::update_voice_chat_status("Listening...");
+    crate::ui::voice_chat::show_voice_chat_overlay();
+    crate::ui::voice_chat::show_agent_tab();
+    crate::ui::voice_chat::update_voice_chat_status("Listening...");
     update_step_status(STEP_SHOW_OVERLAY, "done");
 }
 

@@ -63,7 +63,7 @@ fn transcription_overlay_enabled() -> bool {
 ///   This function must never receive full preview snapshots.
 pub fn route_transcription_delta(delta: &str) {
     if is_assistive_session() {
-        crate::voice_chat_ui::append_voice_chat_user_delta(delta);
+        crate::ui::voice_chat::append_voice_chat_user_delta(delta);
     } else if transcription_overlay_enabled() {
         // Non-assistive: live dictation preview in ephemeral overlay
         crate::transcription_overlay::append_transcription_delta(delta);
@@ -237,14 +237,14 @@ pub(crate) async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
         persist_runtime_thread,
     ) {
         Ok(persisted_previous) => {
-            crate::voice_chat_ui::set_voice_chat_runtime_degraded(false, None);
+            crate::ui::voice_chat::set_voice_chat_runtime_degraded(false, None);
             if persisted_previous {
-                crate::voice_chat_ui::refresh_drawer();
+                crate::ui::voice_chat::refresh_drawer();
             }
             Ok(generation)
         }
         Err(error) => {
-            crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
                 true,
                 Some(RUNTIME_DEGRADED_REASON),
             );
@@ -289,14 +289,14 @@ fn apply_agent_ui_event(event: AgentUiEvent, overlay_state: &mut AgentUiOverlayS
                 return;
             }
             if !overlay_state.streamed_any_delta && !delta.trim().is_empty() {
-                crate::voice_chat_ui::update_voice_chat_status("Answering... (80%)");
+                crate::ui::voice_chat::update_voice_chat_status("Answering... (80%)");
             }
             overlay_state.streamed_any_delta = true;
-            crate::voice_chat_ui::append_voice_chat_assistant_delta(&delta);
+            crate::ui::voice_chat::append_voice_chat_assistant_delta(&delta);
         }
         AgentUiEvent::TextDone(text) => {
             if !overlay_state.streamed_any_delta && !text.trim().is_empty() {
-                crate::voice_chat_ui::set_voice_chat_text(&text);
+                crate::ui::voice_chat::set_voice_chat_text(&text);
             }
         }
         AgentUiEvent::ReasoningDelta(delta) => {
@@ -304,26 +304,26 @@ fn apply_agent_ui_event(event: AgentUiEvent, overlay_state: &mut AgentUiOverlayS
                 return;
             }
             if !overlay_state.saw_reasoning_delta {
-                crate::voice_chat_ui::update_voice_chat_status("Reasoning... (60%)");
+                crate::ui::voice_chat::update_voice_chat_status("Reasoning... (60%)");
                 overlay_state.saw_reasoning_delta = true;
             }
         }
         AgentUiEvent::ToolExecuting { name, .. } => {
-            crate::voice_chat_ui::update_voice_chat_status(&format!("Tool running: {name}"));
-            crate::voice_chat_ui::add_voice_chat_system_message(&format!(
+            crate::ui::voice_chat::update_voice_chat_status(&format!("Tool running: {name}"));
+            crate::ui::voice_chat::add_voice_chat_system_message(&format!(
                 "Tool call started: {name}"
             ));
         }
         AgentUiEvent::ToolResult { name, summary, .. } => {
-            crate::voice_chat_ui::update_voice_chat_status("Thinking... (70%)");
-            crate::voice_chat_ui::add_voice_chat_system_message(&format!(
+            crate::ui::voice_chat::update_voice_chat_status("Thinking... (70%)");
+            crate::ui::voice_chat::add_voice_chat_system_message(&format!(
                 "Tool call finished: {name} ({summary})"
             ));
         }
         AgentUiEvent::Done => {}
         AgentUiEvent::Error(message) => {
-            crate::voice_chat_ui::update_voice_chat_status("Agent runtime failed");
-            crate::voice_chat_ui::add_voice_chat_error_message(&message);
+            crate::ui::voice_chat::update_voice_chat_status("Agent runtime failed");
+            crate::ui::voice_chat::add_voice_chat_error_message(&message);
         }
     }
 }
@@ -507,7 +507,7 @@ async fn run_agent_send_path(
         Ok(state) => state,
         Err(error) => {
             runtime_state.mark_runtime_degraded();
-            crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
                 true,
                 Some(RUNTIME_DEGRADED_REASON),
             );
@@ -515,8 +515,8 @@ async fn run_agent_send_path(
         }
     };
     if recovered_from_degraded {
-        crate::voice_chat_ui::set_voice_chat_runtime_degraded(false, None);
-        crate::voice_chat_ui::add_voice_chat_system_message(RUNTIME_RECOVERED_MESSAGE);
+        crate::ui::voice_chat::set_voice_chat_runtime_degraded(false, None);
+        crate::ui::voice_chat::add_voice_chat_system_message(RUNTIME_RECOVERED_MESSAGE);
     }
     let mut overlay_state = AgentUiOverlayState::default();
 
@@ -546,24 +546,24 @@ async fn run_agent_send_path(
 
     match send_result {
         Ok(()) => {
-            crate::voice_chat_ui::update_voice_chat_status("AI Response:");
+            crate::ui::voice_chat::update_voice_chat_status("AI Response:");
             if overlay_state.streamed_any_delta {
-                crate::voice_chat_ui::finalize_voice_chat_assistant_message();
+                crate::ui::voice_chat::finalize_voice_chat_assistant_message();
             }
             if let Err(error) = persist_runtime_thread(runtime) {
                 warn!("Failed to persist agent thread: {}", error);
             } else {
-                crate::voice_chat_ui::refresh_drawer();
+                crate::ui::voice_chat::refresh_drawer();
             }
-            crate::voice_chat_ui::set_voice_chat_sending(false);
+            crate::ui::voice_chat::set_voice_chat_sending(false);
             Ok(())
         }
         Err(error) => {
             if overlay_state.streamed_any_delta {
-                crate::voice_chat_ui::finalize_voice_chat_assistant_message();
+                crate::ui::voice_chat::finalize_voice_chat_assistant_message();
             }
             runtime_state.mark_runtime_degraded();
-            crate::voice_chat_ui::set_voice_chat_runtime_degraded(
+            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
                 true,
                 Some(RUNTIME_DEGRADED_REASON),
             );
@@ -583,7 +583,7 @@ async fn run_legacy_send_path(
         let streamed_any_delta = Arc::clone(&streamed_any_delta);
         Some(Arc::new(move |delta: &str| {
             streamed_any_delta.store(true, Ordering::SeqCst);
-            crate::voice_chat_ui::append_voice_chat_assistant_delta(delta);
+            crate::ui::voice_chat::append_voice_chat_assistant_delta(delta);
         }) as Arc<dyn Fn(&str) + Send + Sync>)
     } else {
         None
@@ -600,14 +600,14 @@ async fn run_legacy_send_path(
 
     match result.status {
         crate::ai_formatting::AiFormatStatus::Applied => {
-            crate::voice_chat_ui::update_voice_chat_status("AI Response:");
+            crate::ui::voice_chat::update_voice_chat_status("AI Response:");
             if use_streaming && streamed_any_delta.load(Ordering::SeqCst) {
-                crate::voice_chat_ui::finalize_voice_chat_assistant_message();
+                crate::ui::voice_chat::finalize_voice_chat_assistant_message();
             } else {
-                crate::voice_chat_ui::set_voice_chat_text(&result.text);
+                crate::ui::voice_chat::set_voice_chat_text(&result.text);
             }
             if let Some(reasoning_text) = result.reasoning_text {
-                crate::voice_chat_ui::add_voice_chat_system_message(&format!(
+                crate::ui::voice_chat::add_voice_chat_system_message(&format!(
                     "Reasoning summary:\n{}",
                     reasoning_text
                 ));
@@ -615,12 +615,12 @@ async fn run_legacy_send_path(
             Some(result.text)
         }
         crate::ai_formatting::AiFormatStatus::Failed => {
-            crate::voice_chat_ui::update_voice_chat_status("AI Failed");
-            crate::voice_chat_ui::add_voice_chat_error_message("AI Failed");
+            crate::ui::voice_chat::update_voice_chat_status("AI Failed");
+            crate::ui::voice_chat::add_voice_chat_error_message("AI Failed");
             Some("AI Failed".to_string())
         }
         crate::ai_formatting::AiFormatStatus::Skipped => {
-            crate::voice_chat_ui::set_voice_chat_sending(false);
+            crate::ui::voice_chat::set_voice_chat_sending(false);
             None
         }
     }
@@ -645,19 +645,19 @@ async fn run_agent_send_with_fallback(
             error
         );
         debug!("Legacy fallback input length: {}", text.len());
-        crate::voice_chat_ui::set_voice_chat_sending(true);
-        crate::voice_chat_ui::set_voice_chat_runtime_degraded(true, Some(RUNTIME_DEGRADED_REASON));
-        crate::voice_chat_ui::update_voice_chat_status("Agent fallback active");
-        crate::voice_chat_ui::add_voice_chat_system_message(
+        crate::ui::voice_chat::set_voice_chat_sending(true);
+        crate::ui::voice_chat::set_voice_chat_runtime_degraded(true, Some(RUNTIME_DEGRADED_REASON));
+        crate::ui::voice_chat::update_voice_chat_status("Agent fallback active");
+        crate::ui::voice_chat::add_voice_chat_system_message(
             "Agent runtime unavailable. Using legacy formatter for this response.",
         );
         let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
-        crate::voice_chat_ui::set_voice_chat_sending(false);
+        crate::ui::voice_chat::set_voice_chat_sending(false);
         if let Some(assistant_text) = fallback_assistant_text {
             if let Err(error) = persist_legacy_assistive_thread(&text, &assistant_text) {
                 warn!("Failed to persist legacy assistive fallback thread: {error}");
             } else {
-                crate::voice_chat_ui::refresh_drawer();
+                crate::ui::voice_chat::refresh_drawer();
             }
         }
     }
@@ -700,24 +700,24 @@ pub fn setup_voice_chat_send_callback(config: Arc<RwLock<Config>>) {
         }
     };
     if initial_runtime_state.runtime_degraded {
-        crate::voice_chat_ui::set_voice_chat_runtime_degraded(true, Some(RUNTIME_DEGRADED_REASON));
-        crate::voice_chat_ui::add_voice_chat_system_message(
+        crate::ui::voice_chat::set_voice_chat_runtime_degraded(true, Some(RUNTIME_DEGRADED_REASON));
+        crate::ui::voice_chat::add_voice_chat_system_message(
             "Agent runtime unavailable. Legacy formatter fallback is active until recovery.",
         );
     } else {
-        crate::voice_chat_ui::set_voice_chat_runtime_degraded(false, None);
+        crate::ui::voice_chat::set_voice_chat_runtime_degraded(false, None);
     }
     let runtime_state = Arc::new(TokioMutex::new(initial_runtime_state));
     set_shared_agent_runtime_state(Arc::clone(&runtime_state));
 
     let callback_config = Arc::clone(&config);
     let callback_runtime_state = Arc::clone(&runtime_state);
-    crate::voice_chat_ui::set_voice_chat_send_callback(Some(Arc::new(move |text: String| {
+    crate::ui::voice_chat::set_voice_chat_send_callback(Some(Arc::new(move |text: String| {
         let config = Arc::clone(&callback_config);
         let runtime_state = Arc::clone(&callback_runtime_state);
         tokio::spawn(async move {
-            crate::voice_chat_ui::update_voice_chat_status("Sending...");
-            crate::voice_chat_ui::set_voice_chat_sending(true);
+            crate::ui::voice_chat::update_voice_chat_status("Sending...");
+            crate::ui::voice_chat::set_voice_chat_sending(true);
 
             let (whisper_language, ai_assistive_max_tokens) = {
                 let cfg = config.read().await;
