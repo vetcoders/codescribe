@@ -3623,7 +3623,7 @@ unsafe fn build_quality_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Backend, final-pass, and quality controls for what happens when capture leaves the live overlay."
+            text: "Choose how the committed transcript is finalized after capture. Live overlay preview stays local in the current build."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -3634,7 +3634,7 @@ unsafe fn build_quality_tab(
 
         let engine_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
-            text: "Transcription Backend".to_string(),
+            text: "Final Transcript Path".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: true,
             text_color: primary,
@@ -3645,7 +3645,7 @@ unsafe fn build_quality_tab(
 
         let provider_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(92.0, 18.0)),
-            text: "Provider:".to_string(),
+            text: "Commit with:".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -3658,8 +3658,9 @@ unsafe fn build_quality_tab(
             CGRect::new(&CGPoint::new(pad + 96.0, y - 2.0), &CGSize::new(220.0, 24.0))
             pullsDown: false
         ];
-        let _: () = msg_send![provider_popup, addItemWithTitle: ns_string("Local Whisper")];
-        let _: () = msg_send![provider_popup, addItemWithTitle: ns_string("Cloud STT")];
+        let _: () = msg_send![provider_popup, addItemWithTitle: ns_string("Local transcript")];
+        let _: () =
+            msg_send![provider_popup, addItemWithTitle: ns_string("Cloud final transcript")];
         let provider_index: isize = if _config.use_local_stt { 0 } else { 1 };
         let _: () = msg_send![provider_popup, selectItemAtIndex: provider_index];
         button_set_action(provider_popup, action_handler, sel!(onSttProviderChanged:));
@@ -3667,13 +3668,15 @@ unsafe fn build_quality_tab(
         y -= 24.0 + gap;
 
         let backend_note = if _config.use_local_stt {
-            "Current mode: local live preview plus optional local file-based final pass."
+            "Current mode: keep the locally produced transcript. Optional file-based rerun stays diagnostic-only."
         } else {
-            "Current mode: cloud transcript after capture. Endpoints ending with :stream use NDJSON and fit long buffered runs better."
+            "Current mode: keep local live preview, then replace the committed transcript with cloud STT after capture."
         };
         let provider_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: format!("{backend_note} Live overlay preview is still local in this build."),
+            text: format!(
+                "{backend_note} Endpoints ending with :stream use NDJSON and fit long buffered runs better."
+            ),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -3687,7 +3690,7 @@ unsafe fn build_quality_tab(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Cloud endpoint (multipart or ...:stream for NDJSON)",
+            "Cloud final-transcript endpoint (multipart or ...:stream for NDJSON)",
             &stt_endpoint_val,
         );
         style_paper_input(stt_endpoint_field);
@@ -3705,7 +3708,7 @@ unsafe fn build_quality_tab(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Cloud STT API key (stored in Keychain; erase field to remove)",
+            "Cloud final-transcript API key (stored in Keychain; erase field to remove)",
         );
         style_paper_input(stt_key_field);
         let _: () = msg_send![stt_key_field, setFont: mono_font_input];
@@ -4871,7 +4874,7 @@ pub(super) extern "C" fn on_stt_provider_changed(
         let selected_idx: isize = msg_send![sender, indexOfSelectedItem];
         let use_local_stt = selected_idx == 0;
         info!(
-            "Settings: transcription provider -> {}",
+            "Settings: final transcript path -> {}",
             if use_local_stt { "local" } else { "cloud" }
         );
         let config = Config::load();

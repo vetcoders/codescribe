@@ -1,34 +1,34 @@
-# WHISPER LIVE (Embedded + Streaming Transcription)
+# WHISPER LIVE (Runtime Model + Streaming Transcription)
 
 > **Status:** DONE ✅ (2026-01-16)
 >
-> **Tagline:** Whisper is welded into the binary, and transcription happens _during recording_.
+> **Tagline:** Whisper stays local, loads at runtime, and transcription happens _during recording_.
 
 ## TL;DR
 
 CodeScribe’s core power-up is:
 
-1. **Embedded Whisper model** (`whisper-large-v3-turbo-mlx-q8`) in the release binary
-   - **Zero disk I/O** for local STT
-   - Model loads once into GPU/Metal and stays in-process
+1. **Runtime-managed Whisper model** (`whisper-large-v3-turbo-mlx-q8` by default)
+   - build policy disables Whisper embedding
+   - runtime resolves the model from `CODESCRIBE_MODEL_PATH`, configured model dirs, bundled app resources, or the Hugging Face cache
 2. **Live (streaming) transcription** while the user is recording
    - Audio is chunked and transcribed in the background
    - On `stop()` we only “close” the last fragment → **near-instant time-to-paste**
 
 ## What we shipped
 
-### 1) Embedded Whisper (Strict Policy)
+### 1) Runtime Whisper (Current Policy)
 
-- **ALWAYS Embedded:** The model (`whisper-large-v3-turbo-mlx-q8`) is welded into the release binary.
-  - **Zero Exceptions:** We never bundle the `models/` folder in the `.app`.
-  - **Zero Disk I/O:** Model loads directly from memory to Metal GPU.
-  - **Native Power:** Minimal abstraction layers (approx. 4) compared to typical 32+ in heavy JS/Python bridges.
+- **Runtime-managed:** `core/build.rs` hard-disables Whisper embedding.
+  - Prefer `CODESCRIBE_MODEL_PATH` when explicitly set.
+  - Otherwise resolve from configured model dirs, app resources, or HF cache.
+  - The local path still stays on-device and uses Metal once loaded.
 - **Global Singleton:** A process-wide engine instance loads once and stays resident.
 
 Key behavior:
 
-- **Release:** Strict embedded mode. If the model isn't found at build time, the build fails.
-- **Development:** Local debug builds can still resolve external paths for rapid iteration, but the release pipeline enforces embedding.
+- **Shipped build:** runtime model lookup is the canonical path.
+- **Experimental builds:** optional embedded helpers still exist, but they are not the product default.
 
 ### 2) Streaming transcription (during recording)
 
@@ -60,6 +60,7 @@ Practical win:
   consumed and extended outside the tray flow.
 - **Quality loop/report** (`src/quality_loop.rs`, `src/quality_report.rs`) — automated scoring and
   batch diagnostics for streaming accuracy and regressions.
+- **Cloud STT** — optional post-capture replacement for the committed transcript; it is not live preview.
 
 ## How it works (high level)
 
@@ -78,37 +79,36 @@ flowchart TD
 
 ## Where in the code
 
-### Embedded + singleton engine
+### Runtime lookup + singleton engine
 
-- `src/whisper/embedded.rs` — embedded model bytes and accessors
-- `src/whisper/singleton.rs` — global engine singleton (loads embedded model and exposes `transcribe*()`)
-- `src/whisper/engine.rs` — Candle/Whisper inference, chunking, overlap dedup (`append_with_overlap_dedup`)
+- `core/stt/whisper/embedded.rs` — optional embedded hooks (normally unavailable in current builds)
+- `core/stt/whisper/singleton.rs` — global engine singleton (resolves runtime model and exposes `transcribe*()`)
+- `core/stt/whisper/engine.rs` — Candle/Whisper inference, chunking, overlap dedup (`append_with_overlap_dedup`)
 
 ### Live streaming recorder
 
-- `src/audio/recorder.rs`
+- `core/audio/recorder.rs`
   - CPAL input stream at **native device rate** (often `48000Hz`)
   - callback hook for raw `f32` samples
   - exposes `Recorder::actual_sample_rate()`
-- `src/audio/streaming_recorder.rs`
+- `core/audio/streaming_recorder.rs`
   - connects recorder callback → `mpsc::channel` (non-blocking)
   - chunking (default: `15s` chunks + `2s` overlap)
   - background transcription via `tokio::spawn_blocking`
   - dedup between chunks via `append_with_overlap_dedup`
-- `src/controller.rs`
+- `app/controller/mod.rs`
   - uses `StreamingRecorder` and prefers the streaming transcript on `stop()`
-  - can still save the WAV for logs and/or cloud fallback
+  - can still save the WAV for logs and/or cloud final transcript replacement
 
 ## Build & distribution
 
-### Install from source (embedded model)
+### Install from source (runtime Whisper)
 
 ```bash
-make download-model   # ensures models/whisper-large-v3-turbo-mlx-q8 exists for embedding
-make install          # builds + installs an ~888MB binary with embedded model
+make install          # ensures runtime model/cache availability and installs the CLI
 ```
 
-### Bundle / DMG (Whisper + Silero only)
+### Bundle / DMG
 
 ```bash
 make bundle
@@ -117,20 +117,18 @@ make dmg-signed
 
 Notes:
 
-- DMG ships the `.app` with **the embedded model only** (no `Resources/models/*` duplication)
-- A “too small” release binary is treated as a build error (guardrail in `scripts/build-release.sh`)
+- DMG / app builds still rely on runtime Whisper lookup.
+- `make install-no-embed` disables optional non-Whisper embedded support assets and requires `CODESCRIBE_MODEL_PATH`.
 
 ## Troubleshooting / FAQ
 
-### “My binary is small — is the model embedded?”
-
-If the release binary is far below ~500MB, embedding likely didn’t happen.
+### “Whisper cannot be found at runtime”
 
 Checklist:
 
-- ensure `models/whisper-large-v3-turbo-mlx-q8/` exists (download step)
-- ensure `CODESCRIBE_NO_EMBED` is not set
-- rebuild with `cargo build --release`
+- set `CODESCRIBE_MODEL_PATH` to a valid Whisper directory, or
+- warm the HF cache with `make install` / `make download-model`
+- verify the resolved path has `config.json`, `tokenizer.json`, `mel_filters.npz`, and safetensors weights
 
 ### “Why does streaming care about actual sample rate?”
 
@@ -142,7 +140,7 @@ get hallucinations and low confidence (classic “gibberish” pattern).
 
 ## Benchmarks (rule of thumb)
 
-- Model load: ~7s (first time after app start, embedded → GPU)
+- Model load: first init depends on local path/cache, then the engine stays resident
 - Live transcription: overlaps with recording
 - After `stop()`: usually just final chunk, typically well below 1s
 

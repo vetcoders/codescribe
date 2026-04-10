@@ -7,14 +7,11 @@ This document describes the installation methods, configuration paths, and how t
 ### Method 1: CLI Install (Recommended for Development)
 
 ```bash
-# If models are not cached yet:
-make download-model   # Download Whisper (for embedding)
-
-# Install CLI (~embedded Whisper + MiniLM)
+# Install CLI (runtime Whisper + embedded support assets for other components)
 make install
 ```
 
-**Result**: Binary `codescribe` installed to `~/.cargo/bin/` (~888MB with embedded model).
+**Result**: Binary `codescribe` installed to `~/.cargo/bin/`, with install-time model/cache checks.
 
 **How it runs**: Direct execution from terminal or as background daemon.
 
@@ -100,7 +97,7 @@ flowchart TD
 ```env
 # Speech-to-Text
 WHISPER_LANGUAGE=pl              # pl | en | de | fr
-USE_LOCAL_STT=1                  # 1 = embedded Whisper
+USE_LOCAL_STT=1                  # 1 = keep local transcript as committed result
 
 # Hotkeys (defaults)
 HOLD_MODS=fn                     # fn | ctrl | ctrl_alt | ctrl_shift | ctrl_cmd
@@ -126,7 +123,7 @@ CodeScribe.app/
 └── Contents/
     ├── Info.plist           # Bundle metadata (icon, identifier, version)
     ├── MacOS/
-    │   └── codescribe       # Main executable (~888MB with embedded model)
+    │   └── codescribe       # Main executable
     └── Resources/
         └── AppIcon.icns     # Application icon
 ```

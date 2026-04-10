@@ -1,9 +1,10 @@
-//! Global Whisper engine singleton - model welded to the process.
+//! Global Whisper engine singleton with runtime-managed model lookup.
 //!
-//! Release builds: Model bytes are embedded in binary, loaded directly to GPU.
-//! Zero disk I/O, zero temp files, zero extraction.
+//! Whisper embedding is currently disabled by build policy. The shipped runtime
+//! resolves the model from `CODESCRIBE_MODEL_PATH`, configured model dirs,
+//! bundled app resources, or the Hugging Face cache.
 //!
-//! Debug builds: Uses CODESCRIBE_MODEL_PATH or bundled .app model.
+//! Optional embedded hooks remain only for experimental/test builds.
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -30,12 +31,10 @@ const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 /// Global singleton engine
 static ENGINE: OnceLock<Mutex<LocalWhisperEngine>> = OnceLock::new();
 
-/// Model path - only used for non-embedded (dev) mode
+/// Model path - used by the current runtime-managed Whisper path.
 static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// Resolve the model path for dev/fallback mode
-///
-/// Only called when embedded model is NOT available.
+/// Resolve the model path for runtime Whisper loading.
 fn resolve_model_path_fallback() -> Result<PathBuf> {
     // 1. Dev override
     if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH") {
@@ -98,14 +97,14 @@ fn resolve_model_path_fallback() -> Result<PathBuf> {
 
     Err(anyhow!(
         "Whisper model not available.\n\
-         Debug builds: Set CODESCRIBE_MODEL_PATH\n\
-         Release builds: Model should be embedded\n\n\
+         Current builds use runtime model loading.\n\
+         Set CODESCRIBE_MODEL_PATH or warm the Hugging Face cache.\n\n\
          Download with: hf download {}",
         DEFAULT_WHISPER_REPO
     ))
 }
 
-/// Get the resolved model path (only for non-embedded mode)
+/// Get the resolved model path used by runtime Whisper loading.
 pub fn get_model_path() -> Result<&'static PathBuf> {
     if let Some(path) = MODEL_PATH.get() {
         return Ok(path);
@@ -119,12 +118,12 @@ pub fn get_model_path() -> Result<&'static PathBuf> {
         .ok_or_else(|| anyhow!("Failed to store model path"))
 }
 
-/// Initialize the global engine (call once at startup)
+/// Initialize the global engine (call once at startup).
 ///
-/// Uses embedded model if available (zero I/O), otherwise falls back to path-based loading.
+/// Experimental embedded bytes still take precedence when compiled in, but the
+/// shipped product path is runtime model resolution.
 pub fn init() -> Result<()> {
-    // 1. Embedded model (release builds) - ZERO DISK I/O
-    //    Model bytes → GPU tensors, no temp files
+    // 1. Optional embedded model path for experimental builds/tests.
     if let Some(embedded) = super::embedded::get_embedded_data() {
         let engine = LocalWhisperEngine::from_embedded(&embedded)
             .context("Failed to initialize from embedded model")?;
@@ -137,7 +136,7 @@ pub fn init() -> Result<()> {
         return Ok(());
     }
 
-    // 2. Fallback to path-based loading (dev mode, bundled .app)
+    // 2. Primary shipped path: runtime model lookup.
     let path = get_model_path()?;
     let engine = LocalWhisperEngine::new_with_params(path, DecodingParams::default())
         .context("Failed to initialize Whisper engine from path")?;

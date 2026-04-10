@@ -1003,7 +1003,20 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hotkey_timing_params_applied_from_settings() {
+        let prev_hold_start_delay = std::env::var("HOLD_START_DELAY_MS").ok();
+        let prev_double_tap = std::env::var("DOUBLE_TAP_INTERVAL_MS").ok();
+        let prev_toggle_silence = std::env::var("TOGGLE_SILENCE_SEC").ok();
+        let prev_hold_exclusive = std::env::var("HOLD_EXCLUSIVE").ok();
+
+        unsafe {
+            std::env::remove_var("HOLD_START_DELAY_MS");
+            std::env::remove_var("DOUBLE_TAP_INTERVAL_MS");
+            std::env::remove_var("TOGGLE_SILENCE_SEC");
+            std::env::remove_var("HOLD_EXCLUSIVE");
+        }
+
         let mut config = Config::default();
         let settings = super::super::settings::UserSettings {
             hold_start_delay_ms: Some(500),
@@ -1019,6 +1032,23 @@ mod tests {
         assert_eq!(config.double_tap_interval_ms, 300);
         assert!((config.toggle_silence_sec - 3.0).abs() < f32::EPSILON);
         assert!(config.hold_exclusive);
+
+        match prev_hold_start_delay {
+            Some(value) => unsafe { std::env::set_var("HOLD_START_DELAY_MS", value) },
+            None => unsafe { std::env::remove_var("HOLD_START_DELAY_MS") },
+        }
+        match prev_double_tap {
+            Some(value) => unsafe { std::env::set_var("DOUBLE_TAP_INTERVAL_MS", value) },
+            None => unsafe { std::env::remove_var("DOUBLE_TAP_INTERVAL_MS") },
+        }
+        match prev_toggle_silence {
+            Some(value) => unsafe { std::env::set_var("TOGGLE_SILENCE_SEC", value) },
+            None => unsafe { std::env::remove_var("TOGGLE_SILENCE_SEC") },
+        }
+        match prev_hold_exclusive {
+            Some(value) => unsafe { std::env::set_var("HOLD_EXCLUSIVE", value) },
+            None => unsafe { std::env::remove_var("HOLD_EXCLUSIVE") },
+        }
     }
 
     #[test]

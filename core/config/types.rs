@@ -369,7 +369,10 @@ pub struct Config {
     pub quick_notes_save_only: bool,
 
     // ===== Backends =====
-    /// Whether to use local STT instead of cloud
+    /// Whether to keep the locally generated transcript as the committed result.
+    ///
+    /// When false, live preview still stays local, but cloud STT replaces the
+    /// final transcript after capture if endpoint credentials are configured.
     #[serde(default)]
     pub use_local_stt: bool,
 
@@ -377,7 +380,7 @@ pub struct Config {
     #[serde(default = "default_local_model")]
     pub local_model: String,
 
-    /// Full STT endpoint URL (e.g., https://api.libraxis.cloud/stt/v1/transcribe)
+    /// Cloud STT endpoint used for post-capture final transcript replacement.
     pub stt_endpoint: Option<String>,
 
     /// Full LLM endpoint URL (e.g., https://api.libraxis.cloud/v1/responses)

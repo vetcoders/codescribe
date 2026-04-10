@@ -1,21 +1,21 @@
-//! CodeScribe Core - Speech-to-text and text-to-speech with embedded models
+//! CodeScribe Core - speech, transcription, and assistive runtime primitives.
 //!
 //! ## Quick Start
 //!
 //! ```ignore
-//! // Transcribe with embedded Whisper model (zero config!)
+//! // Resolve local Whisper at runtime, then transcribe.
 //! codescribe_core::whisper::init()?;
 //! let text = codescribe_core::whisper::transcribe(&samples, 16000, Some("pl"))?;
 //!
-//! // Synthesize speech with embedded CSM model
+//! // Synthesize speech (optional embedded/runtime TTS depending on build).
 //! codescribe_core::tts::init()?;
 //! codescribe_core::tts::play("Hello, world!")?;
 //! ```
 //!
 //! ## Architecture
 //!
-//! - **whisper** - Embedded Whisper model (~900MB in binary), zero I/O
-//! - **tts** - Embedded CSM-1B model (~1GB in binary), text-to-speech
+//! - **whisper** - Runtime-managed local Whisper with optional experimental embedding hooks
+//! - **tts** - Text-to-speech with optional embedded assets depending on build policy
 //! - **vad** - Voice activity detection using Silero VAD neural network
 //! - **embedder** - Text embeddings using MiniLM model (offline)
 //! - **audio** - Recording and audio loading
@@ -52,7 +52,7 @@ pub use stt::whisper;
 // Public API - Whisper (STT main interface)
 // ═══════════════════════════════════════════════════════════
 
-/// Initialize and transcribe with embedded model
+/// Initialize and transcribe with the runtime Whisper path.
 pub mod stt_api {
     pub use crate::stt::whisper::embedded::{
         EmbeddedModel, get_embedded_data, is_embedded_available,
@@ -67,7 +67,7 @@ pub mod stt_api {
 // Public API - TTS (text-to-speech interface)
 // ═══════════════════════════════════════════════════════════
 
-/// Initialize and synthesize speech with embedded CSM model
+/// Initialize and synthesize speech with the configured TTS engine.
 pub mod tts_api {
     pub use crate::tts::embedded::{EmbeddedTts, get_embedded_data, is_embedded_available};
     pub use crate::tts::{

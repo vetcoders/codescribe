@@ -1,4 +1,4 @@
-//! CodeScribe - Speech-to-text with embedded Whisper model
+//! CodeScribe - native macOS tray dictation app with runtime Whisper lookup.
 //!
 //! This crate re-exports the core functionality from `codescribe_core`
 //! and provides the macOS-specific UI, tray, and hotkey layers.

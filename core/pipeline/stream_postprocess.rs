@@ -713,8 +713,8 @@ mod tests {
 
         // Build a Lexicon pointing at our temp file
         let mut lexicon = Lexicon {
-            rules: Vec::new(),
-            builtin_count: 0,
+            builtin_rules: Vec::new(),
+            custom_rules: Vec::new(),
             custom_path: custom_path.clone(),
             custom_mtime: std::fs::metadata(&custom_path)
                 .ok()
@@ -741,7 +741,8 @@ mod tests {
             lexicon.apply("mam foobarski w projekcie"),
             "mam FooBar w projekcie"
         );
-        assert_eq!(lexicon.rules.len(), 1);
+        assert_eq!(lexicon.rule_count(), 1);
+        assert_eq!(lexicon.custom_rules.len(), 1);
     }
 
     #[test]
@@ -755,20 +756,20 @@ mod tests {
         .unwrap();
 
         let mut lexicon = Lexicon {
-            rules: Vec::new(),
-            builtin_count: 0,
+            builtin_rules: Vec::new(),
+            custom_rules: Vec::new(),
             custom_path: custom_path.clone(),
             custom_mtime: None, // Force initial load
         };
 
         // First reload loads the rule
         lexicon.maybe_reload();
-        assert_eq!(lexicon.rules.len(), 1);
+        assert_eq!(lexicon.rule_count(), 1);
         let mtime_after = lexicon.custom_mtime;
 
         // Second reload with same mtime — should be a no-op
         lexicon.maybe_reload();
-        assert_eq!(lexicon.rules.len(), 1);
+        assert_eq!(lexicon.rule_count(), 1);
         assert_eq!(lexicon.custom_mtime, mtime_after);
     }
 
@@ -780,7 +781,7 @@ mod tests {
 
         // Simulate 2 builtin rules
         let mut lexicon = Lexicon {
-            rules: vec![
+            builtin_rules: vec![
                 LexiconRule {
                     pattern: build_word_regex("builtin1").unwrap(),
                     replacement: "BUILTIN1".to_string(),
@@ -790,7 +791,7 @@ mod tests {
                     replacement: "BUILTIN2".to_string(),
                 },
             ],
-            builtin_count: 2,
+            custom_rules: Vec::new(),
             custom_path: custom_path.clone(),
             custom_mtime: std::fs::metadata(&custom_path)
                 .ok()
@@ -808,7 +809,7 @@ mod tests {
         lexicon.maybe_reload();
 
         // Should have 2 builtin + 1 custom = 3 rules
-        assert_eq!(lexicon.rules.len(), 3);
+        assert_eq!(lexicon.rule_count(), 3);
         // Builtin rules preserved
         assert_eq!(lexicon.apply("builtin1 builtin2"), "BUILTIN1 BUILTIN2");
         // Custom rule added
@@ -856,7 +857,7 @@ mod tests {
         let vet_json = r#"{"term":"Acepromazyna","ipa":"/x/","category":"drug","definition":"x","synonyms":[],"extras":{"mispronunciations":["acepromasyna","acepramazyna"]},"mispronunciations":[]}"#;
 
         let mut rules = Vec::new();
-        let count = load_rules_from_jsonl(vet_json, "test-vet", &mut rules);
+        let count = load_legacy_jsonl(vet_json, "test-vet", &mut rules);
         assert_eq!(
             count, 2,
             "Should extract 2 rules from extras.mispronunciations"
@@ -871,7 +872,7 @@ mod tests {
         let json = r#"{"term":"Anemia","mispronunciations":["anemia"],"extras":{"mispronunciations":["abemia","amemia"]}}"#;
 
         let mut rules = Vec::new();
-        let count = load_rules_from_jsonl(json, "test-merge", &mut rules);
+        let count = load_legacy_jsonl(json, "test-merge", &mut rules);
         // "anemia" == "Anemia" case-insensitive → skipped; "abemia" + "amemia" → 2 rules
         assert_eq!(count, 2, "Should skip case-equal + extract 2 from extras");
     }
@@ -881,9 +882,9 @@ mod tests {
         // Integration test: the real builtin lexicon must produce > 798 rules now
         let lexicon = Lexicon::from_builtin();
         assert!(
-            lexicon.rules.len() > 5000,
+            lexicon.rule_count() > 5000,
             "Expected >5000 rules with extras fix, got {}",
-            lexicon.rules.len()
+            lexicon.rule_count()
         );
     }
 }

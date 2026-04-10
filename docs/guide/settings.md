@@ -27,9 +27,9 @@ Open **Settings → Transcription**.
 
 This tab owns the transcript pipeline itself:
 
-- **Transcription Backend**
-  - `Local Whisper`
-  - `Cloud STT`
+- **Final Transcript Path**
+  - `Local transcript`
+  - `Cloud final transcript`
   - optional cloud endpoint + API key
 - **Preview Timing**
   - `Buffer delay`
@@ -51,6 +51,7 @@ This tab owns the transcript pipeline itself:
 
 - When **Transcription overlay** is ON, the app is optimized for low-latency live preview.
 - When **Transcription overlay** is OFF, the floating preview is hidden and runtime uses a more buffered cadence to reduce local load.
+- `USE_LOCAL_STT=0` changes the **committed transcript path after capture**; it does not move live preview to the cloud.
 - In the current build, **cloud STT is still post-capture**, not live cloud preview. The Settings UI states this explicitly.
 
 ## Modes & Shortcuts

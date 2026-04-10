@@ -1,9 +1,7 @@
-//! Embedded Whisper model - direct include via generated code
+//! Optional embedded Whisper model bytes.
 //!
-//! Release builds: Model files included directly in binary (~900MB)
-//! Debug builds: Empty slices, use CODESCRIBE_MODEL_PATH
-//!
-//! Model bytes are loaded DIRECTLY to GPU - zero disk I/O, zero temp files.
+//! The current build policy disables Whisper embedding, so these helpers
+//! usually report unavailable. They remain for experimental builds and tests.
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -20,19 +18,14 @@ mod data {
     pub static WEIGHTS: &[u8] = &[];
 }
 
-/// Check if embedded model is available
-///
-/// Note: We only check weights_size, not cfg!(embed_model).
-/// The cfg!() macro can return false in workspace builds even when
-/// the data was correctly embedded via #[cfg(embed_model)].
-/// If weights exist (len > 0), the model is available.
+/// Check if optional embedded model bytes are available.
 pub fn is_embedded_available() -> bool {
     let weights_size = data::WEIGHTS.len();
     tracing::debug!(weights_size, "Embedded model check");
     weights_size > 0
 }
 
-/// Get embedded model data if available
+/// Get optional embedded model data if available.
 pub fn get_embedded_data() -> Option<EmbeddedModel> {
     if !is_embedded_available() {
         return None;
@@ -45,7 +38,7 @@ pub fn get_embedded_data() -> Option<EmbeddedModel> {
     })
 }
 
-/// Embedded model data - static byte slices from binary
+/// Embedded model data - static byte slices from binary.
 pub struct EmbeddedModel {
     pub config: &'static [u8],
     pub tokenizer: &'static [u8],

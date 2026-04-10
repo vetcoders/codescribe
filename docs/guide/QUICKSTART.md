@@ -13,12 +13,8 @@ Get CodeScribe running in 5 minutes.
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Download required models (~2GB total)
-make download-model    # Whisper STT (~888MB)
-make download-e5       # E5 embedder (~1.2GB, optional)
-
 # Build and install
-make install           # Binary to ~/.cargo/bin/codescribe
+make install           # Binary to ~/.cargo/bin/codescribe; ensures runtime model/cache availability
 make bundle            # Create CodeScribe.app
 make install-app       # Copy to /Applications
 ```

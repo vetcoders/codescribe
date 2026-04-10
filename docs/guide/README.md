@@ -49,7 +49,7 @@ That's it. You're transcribing.
 **Key Features:**
 
 - **Local-first**: Whisper model runs entirely on your Mac (Metal GPU)
-- **Zero latency**: ~888MB model embedded in binary, no download needed
+- **Runtime-managed Whisper**: the local model is resolved from your configured path or cache at startup
 - **Live streaming**: See transcription appear as you speak
 - **Three modes**: Raw (fast), Formatted (clean), Assistive (AI-powered)
 - **Privacy**: Audio never leaves your machine unless you enable cloud AI
@@ -86,7 +86,7 @@ CodeScribe lives in your menu bar. The icon color indicates status:
 - **macOS**: 13.0 (Ventura) or later
 - **Chip**: Apple Silicon (M1/M2/M3/M4/M5)
 - **RAM**: 8GB minimum, 16GB recommended
-- **Disk**: ~1GB for app with embedded model
+- **Disk**: allow room for the app plus a local Whisper model cache (2GB recommended)
 
 ---
 

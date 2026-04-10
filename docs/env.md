@@ -91,7 +91,7 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 Samo **local‑only** uruchomienie nie wymaga żadnych envów.
 Poniżej — kiedy coś staje się wymagane.
 
-**1) Cloud STT (gdy wyłączasz local)**
+**1) Cloud final transcript (gdy nie chcesz commitować local transcriptu)**
 Wymagane **tylko jeśli** `USE_LOCAL_STT=0` (RESTART NEEDED):
 
 - `STT_ENDPOINT` (RESTART NEEDED)
@@ -103,8 +103,8 @@ Wymagane **tylko jeśli** `AI_FORMATTING_ENABLED=1` i chcesz LLM:
 - `LLM_ENDPOINT`, `LLM_MODEL`, `LLM_API_KEY` (HOT RELOADED)
   - albo tryb‑specyficzne: `LLM_FORMATTING_*` i/lub `LLM_ASSISTIVE_*` (HOT RELOADED)
 
-**3) Brak embedded modelu (build dev)**
-Wymagane **tylko jeśli** zbudowałeś bez embedu:
+**3) Brak lokalnego modelu w ścieżkach runtime**
+Wymagane **tylko jeśli** runtime nie może znaleźć Whispera przez cache / config:
 
 - `CODESCRIBE_MODEL_PATH` (RESTART NEEDED)
 
@@ -121,8 +121,8 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 
 **Model lokalny**
 
-- `CODESCRIBE_MODEL_PATH` **nadpisuje embedded** (RESTART NEEDED)
-- `CODESCRIBE_NO_EMBED=1` (build‑time) → **musisz** ustawić `CODESCRIBE_MODEL_PATH` (REBUILD NEEDED)
+- `CODESCRIBE_MODEL_PATH` **nadpisuje runtime lookup** (RESTART NEEDED)
+- `CODESCRIBE_NO_EMBED=1` (build‑time) wyłącza opcjonalne embedy innych komponentów, ale Whisper i tak pozostaje runtime-managed
 
 **STT endpointy**
 

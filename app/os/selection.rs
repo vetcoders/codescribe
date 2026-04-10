@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 
 use crate::os::clipboard::{self, ClipboardSnapshot};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AssistiveContext {
     pub frontmost_app: Option<String>,
     pub selected_text: Option<String>,
@@ -364,4 +364,46 @@ fn selected_text_from_frontmost(
     _frontmost_app: Option<&str>,
 ) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn recent_assistive_context_roundtrips_while_fresh() {
+        clear_recent_assistive_context_for_tests();
+
+        let ctx = AssistiveContext {
+            frontmost_app: Some("Safari".to_string()),
+            selected_text: Some("selected".to_string()),
+        };
+        store_recent_assistive_context(&ctx);
+
+        assert_eq!(
+            get_recent_assistive_context(Duration::from_secs(1)),
+            Some(ctx)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn stale_recent_assistive_context_is_cleared() {
+        clear_recent_assistive_context_for_tests();
+
+        let ctx = AssistiveContext {
+            frontmost_app: Some("CodeScribe".to_string()),
+            selected_text: Some("old".to_string()),
+        };
+        store_recent_assistive_context(&ctx);
+
+        assert_eq!(get_recent_assistive_context(Duration::ZERO), None);
+        assert_eq!(
+            get_recent_assistive_context(Duration::from_secs(1)),
+            None,
+            "stale entry should be cleared from the cache"
+        );
+    }
 }
