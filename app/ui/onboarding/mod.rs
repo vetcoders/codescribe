@@ -173,7 +173,7 @@ fn onboarding_done_path() -> PathBuf {
     Config::config_dir().join("onboarding_done")
 }
 
-fn bootstrap_done_path() -> PathBuf {
+fn legacy_bootstrap_done_path() -> PathBuf {
     Config::config_dir().join("bootstrap_done")
 }
 
@@ -285,13 +285,15 @@ fn release_onboarding_lock() {
     let _ = fs::remove_file(onboarding_lock_path());
 }
 
-fn migrate_legacy_setup_sentinel() {
+fn migrate_legacy_setup_done_marker() {
     let setup_done = setup_done_path();
     if setup_done.exists() {
         return;
     }
 
-    if onboarding_done_path().exists() && bootstrap_done_path().exists() {
+    // Older builds tracked onboarding and settings completion separately.
+    // The current runtime only needs one canonical setup marker.
+    if onboarding_done_path().exists() && legacy_bootstrap_done_path().exists() {
         if let Some(parent) = setup_done.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -300,18 +302,17 @@ fn migrate_legacy_setup_sentinel() {
 }
 
 pub fn should_show_onboarding() -> bool {
-    migrate_legacy_setup_sentinel();
+    migrate_legacy_setup_done_marker();
     !setup_done_path().exists()
 }
 
 fn mark_onboarding_done() {
     clear_onboarding_progress();
-    for path in [onboarding_done_path(), setup_done_path()] {
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::write(path, "done");
+    let setup_done = setup_done_path();
+    if let Some(parent) = setup_done.parent() {
+        let _ = fs::create_dir_all(parent);
     }
+    let _ = fs::write(setup_done, "done");
 }
 
 pub fn show_onboarding_wizard() {
@@ -2112,8 +2113,8 @@ mod tests {
         save_onboarding_progress(4);
         mark_onboarding_done();
 
-        assert!(Config::config_dir().join("onboarding_done").exists());
         assert!(Config::config_dir().join("setup_done").exists());
+        assert!(!Config::config_dir().join("onboarding_done").exists());
         assert!(!Config::config_dir().join("onboarding_progress").exists());
         assert!(!should_show_onboarding());
     }

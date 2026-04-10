@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Tray Menu Cleanup** – Moved hotkey/audio/VAD settings to the new Settings Window. Tray menu is now focused on essential actions (Show Overlay, Quit).
 - **Architecture** – Centralized configuration management in the Settings Window (Overlay), removing legacy tray-based logic.
+- **Settings naming cleanup** – Renamed the internal `ui/bootstrap` surface to `ui/settings` and kept `bootstrap_done` only as a legacy setup migration marker.
 
 ## [v0.7.14] – 2026-02-07
 

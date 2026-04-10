@@ -1,6 +1,6 @@
-pub mod bootstrap;
 pub mod onboarding;
 pub mod overlay;
+pub mod settings;
 pub mod shared;
 pub mod tray;
 pub mod voice_chat;

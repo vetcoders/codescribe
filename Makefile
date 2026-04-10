@@ -65,7 +65,7 @@ release:
 	@cargo build --release
 
 install:
-	@echo "Installing CodeScribe (with embedded model)..."
+	@echo "Installing CodeScribe (runtime Whisper + embedded support assets)..."
 	@./scripts/ensure-models.sh
 	@cargo install --path . --force
 	@mkdir -p ~/.codescribe
@@ -73,7 +73,7 @@ install:
 	@echo "Installed: codescribe $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 
 install-no-embed:
-	@echo "Installing CodeScribe (no embedded model)..."
+	@echo "Installing CodeScribe (runtime Whisper + no optional embedded support assets)..."
 	@./scripts/ensure-models.sh
 	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
@@ -354,9 +354,9 @@ help:
 	@echo ""
 	@echo "Build & Install:"
 	@echo "  make build           Build debug binary"
-	@echo "  make release         Build release binary (with embedded model)"
-	@echo "  make install         Install CLI (~888MB with embedded model)"
-	@echo "  make install-no-embed Install without model (needs CODESCRIBE_MODEL_PATH)"
+	@echo "  make release         Build release binary (runtime Whisper + embedded support assets)"
+	@echo "  make install         Install CLI with runtime Whisper lookup"
+	@echo "  make install-no-embed Install without optional embedded assets (needs CODESCRIBE_MODEL_PATH)"
 	@echo "  make config          Edit ~/.codescribe/.env"
 	@echo "  make bundle          Create CodeScribe.app bundle"
 	@echo "  make install-app     Install to /Applications"

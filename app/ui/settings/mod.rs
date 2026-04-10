@@ -22,12 +22,12 @@ use crate::config::{Config, ShortcutBinding, UserSettings, WorkMode, keychain};
 use crate::ipc::{IpcCommand, IpcResponse};
 use crate::os::permissions::PermissionStatus;
 use crate::os::{hotkeys, shortcut_registry};
-use crate::ui::bootstrap::handlers::{
-    action_handler_class, toolbar_delegate_class, window_delegate_class,
-};
 use crate::ui::onboarding::{
     PERMISSION_ORDER, PermissionKind, open_permission_settings, permission_status,
     reconcile_permission_runtime_after_grant, request_permission,
+};
+use crate::ui::settings::handlers::{
+    action_handler_class, toolbar_delegate_class, window_delegate_class,
 };
 use crate::ui_helpers::{
     LabelConfig, add_subview, button_set_action, button_style, create_button,
@@ -641,7 +641,7 @@ unsafe fn add_toggle_row(
 }
 
 #[derive(Default)]
-struct BootstrapState {
+struct SettingsWindowState {
     window: Option<usize>,
     window_delegate: Option<usize>,
     root_view: Option<usize>,
@@ -695,10 +695,11 @@ struct BootstrapState {
 }
 
 lazy_static! {
-    static ref BOOTSTRAP_STATE: Mutex<BootstrapState> = Mutex::new(BootstrapState::default());
+    static ref SETTINGS_WINDOW_STATE: Mutex<SettingsWindowState> =
+        Mutex::new(SettingsWindowState::default());
 }
 
-fn clear_bootstrap_ui_state(state: &mut BootstrapState) {
+fn clear_settings_ui_state(state: &mut SettingsWindowState) {
     state.step_labels = [None, None, None];
     state.tab_buttons = [None; TAB_COUNT];
     state.content_views = [None; TAB_COUNT];
@@ -746,7 +747,7 @@ fn clear_bootstrap_ui_state(state: &mut BootstrapState) {
     state.diagnostics_status_label = None;
 }
 
-static SHOW_OVERLAY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static SHOW_SETTINGS_WINDOW_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 unsafe fn present_settings_window(window: Id) {
     if let Some(ns_app) = Class::get("NSApplication") {
@@ -769,7 +770,9 @@ unsafe fn present_settings_window(window: Id) {
 pub fn show_settings_window() {
     // Fast path: if window already exists, just show it on main thread.
     {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(ptr) = state.window {
             drop(state);
             Queue::main().exec_async(move || unsafe {
@@ -783,28 +786,32 @@ pub fn show_settings_window() {
     }
 
     // Slow path: need to create window — guard against concurrent thread spawns.
-    if SHOW_OVERLAY_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+    if SHOW_SETTINGS_WINDOW_IN_FLIGHT.swap(true, Ordering::SeqCst) {
         return;
     }
     std::thread::spawn(|| {
         let config = Config::load();
         Queue::main().exec_async(move || {
-            SHOW_OVERLAY_IN_FLIGHT.store(false, Ordering::SeqCst);
-            let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            SHOW_SETTINGS_WINDOW_IN_FLIGHT.store(false, Ordering::SeqCst);
+            let mut state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             state.config_cache = Some(config);
             drop(state);
-            show_bootstrap_overlay_impl();
+            show_settings_window_impl();
         });
     });
 }
 
-fn show_bootstrap_overlay_impl() {
+fn show_settings_window_impl() {
     // Keep Settings as a standalone window.
     // It should not depend on the voice chat overlay being available.
     // (This also avoids deadlocks when the overlay is mid-layout.)
     unsafe {
         let reuse_window = {
-            let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if let Some(window_ptr) = state.window {
                 let ns_window = objc_class("NSWindow");
                 let window = window_ptr as Id;
@@ -905,7 +912,9 @@ fn show_bootstrap_overlay_impl() {
         let _ = attach_settings_view(content_view, bounds);
 
         {
-            let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             state.window = Some(window as usize);
             state.window_delegate = Some(window_delegate as usize);
         } // Release lock before AppKit call to avoid nested-runloop deadlock.
@@ -923,7 +932,9 @@ fn show_bootstrap_overlay_impl() {
 unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRect) -> Option<Id> {
     unsafe {
         let (config, existing_root) = {
-            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             (
                 state.config_cache.clone().unwrap_or_else(Config::load),
                 state.root_view,
@@ -972,7 +983,9 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
             &config,
         );
 
-        let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.root_view = Some(root as usize);
         state.window = None;
         state.step_labels = built_state.step_labels;
@@ -1081,7 +1094,9 @@ fn open_system_settings_security() {
 fn handle_permission_action(kind: PermissionKind) {
     let idx = kind.index();
     let already_requested = {
-        let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let was_requested = state.permission_requested[idx];
         state.permission_requested[idx] = true;
         was_requested
@@ -1179,7 +1194,9 @@ unsafe fn create_key_status_indicator(frame: CGRect, is_set: bool) -> Id {
 
 fn update_keychain_status_labels() {
     let (llm_icon, llm_label, assist_icon, assist_label) = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         (
             state.llm_key_status_icon,
             state.llm_key_status_label,
@@ -1226,7 +1243,9 @@ fn clear_keychain_entry(account: &str, field_ptr: Option<usize>) {
 
 fn start_permission_polling() {
     let should_start = {
-        let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if state.permission_polling {
             false
         } else {
@@ -1243,7 +1262,9 @@ fn start_permission_polling() {
         loop {
             thread::sleep(Duration::from_secs(2));
             let keep_running = {
-                let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                let state = SETTINGS_WINDOW_STATE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 state.permission_polling
             };
             if !keep_running {
@@ -1257,7 +1278,9 @@ fn start_permission_polling() {
 pub(super) fn refresh_permission_indicators() {
     Queue::main().exec_async(move || unsafe {
         let (labels, action_buttons, requested) = {
-            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             (
                 state.permission_labels,
                 state.permission_action_buttons,
@@ -1300,11 +1323,11 @@ unsafe fn build_settings_ui(
     settings_height: f64,
     action_handler: Id,
     config: &Config,
-) -> BootstrapState {
+) -> SettingsWindowState {
     unsafe {
         use core_graphics::geometry::{CGPoint, CGRect, CGSize};
         let ns_view = objc_class("NSView");
-        let mut state = BootstrapState::default();
+        let mut state = SettingsWindowState::default();
 
         let settings_width = settings_width.max(SIDEBAR_WIDTH + 240.0);
         let settings_height = settings_height.max(280.0);
@@ -1613,7 +1636,9 @@ unsafe fn create_sidebar_tab_button(
 pub(super) fn switch_tab(index: usize) {
     Queue::main().exec_async(move || unsafe {
         let (content_views, tab_buttons) = {
-            let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if index >= TAB_COUNT || state.active_tab == index {
                 return;
             }
@@ -1680,7 +1705,7 @@ pub(super) fn handle_test_mic() {
     update_step_status(STEP_TEST_MIC, "recording\u{2026}");
 
     if let Err(e) = send_ipc(IpcCommand::StartRecording { assistive: false }) {
-        warn!("Bootstrap test mic failed to start: {}", e);
+        warn!("Settings test mic failed to start: {}", e);
         update_step_status(STEP_TEST_MIC, "failed");
         return;
     }
@@ -1703,25 +1728,29 @@ pub(super) fn handle_hotkey_done() {
     update_step_status(STEP_PRESS_HOTKEY, "done");
 }
 
-pub(super) fn handle_bootstrap_window_closed() {
-    let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+pub(super) fn handle_settings_window_closed() {
+    let mut state = SETTINGS_WINDOW_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     state.window = None;
     state.window_delegate = None;
     state.root_view = None;
-    clear_bootstrap_ui_state(&mut state);
+    clear_settings_ui_state(&mut state);
     state.config_cache = None;
 }
 
-pub fn hide_bootstrap_overlay() {
+pub fn hide_settings_surface() {
     Queue::main().exec_async(|| unsafe {
         let (window_ptr, root_ptr) = {
-            let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             state.permission_polling = false;
             let window_ptr = state.window.take();
             if window_ptr.is_some() {
                 state.window_delegate = None;
                 state.root_view = None;
-                clear_bootstrap_ui_state(&mut state);
+                clear_settings_ui_state(&mut state);
                 (window_ptr, None)
             } else {
                 (None, state.root_view)
@@ -1741,25 +1770,29 @@ pub fn hide_bootstrap_overlay() {
 
 /// Alias: Settings window close.
 pub fn hide_settings_window() {
-    hide_bootstrap_overlay();
+    hide_settings_surface();
 }
 
 /// Reset embedded Settings view state when the overlay is destroyed.
-pub fn reset_embedded_bootstrap_state() {
-    let mut state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+pub fn reset_embedded_settings_state() {
+    let mut state = SETTINGS_WINDOW_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if state.window.is_some() {
         return;
     }
     state.root_view = None;
     state.window_delegate = None;
     state.config_cache = None;
-    clear_bootstrap_ui_state(&mut state);
+    clear_settings_ui_state(&mut state);
 }
 
 fn update_step_status(index: usize, text: &str) {
     let text = text.to_string();
     Queue::main().exec_async(move || unsafe {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(label) = state.step_labels.get(index).and_then(|v| *v) {
             set_text_field_string(label as Id, &text);
         }
@@ -1793,7 +1826,9 @@ fn mode_label_slot(mode: WorkMode) -> usize {
 
 fn set_mode_recorder_hint(text: &str, is_error: bool) {
     let hint_ptr = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.keys_recorder_hint_label
     };
     let Some(hint_ptr) = hint_ptr else {
@@ -1813,7 +1848,9 @@ fn set_mode_recorder_hint(text: &str, is_error: bool) {
 
 fn refresh_mode_binding_labels() {
     let settings = UserSettings::load();
-    let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let state = SETTINGS_WINDOW_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     for mode in [
         WorkMode::Dictation,
         WorkMode::Formatting,
@@ -2152,7 +2189,9 @@ fn set_hotkey_conflict_details_button_enabled(button_ptr: Option<usize>, enabled
 fn refresh_hotkey_conflict_indicator() {
     let config = Config::load();
     let (label_ptr, button_ptr) = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         (
             state.keys_conflict_label,
             state.keys_conflict_details_button,
@@ -2195,7 +2234,9 @@ fn show_hotkey_conflicts_sheet() {
     };
     let details = hotkey_conflict_details_text(&conflicts);
     let window_ptr = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.window
     };
 
@@ -2239,7 +2280,9 @@ fn prompt_display_name(prompt_type: &str) -> &'static str {
 
 fn selected_prompt_type() -> &'static str {
     let popup_ptr = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.prompt_type_popup
     };
     let Some(popup_ptr) = popup_ptr else {
@@ -2334,7 +2377,9 @@ fn reset_prompt_content(prompt_type: &str) -> Result<(), String> {
 
 fn set_prompt_editor_content(text: &str) {
     let text_view_ptr = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.prompt_editor_text_view
     };
     let Some(text_view_ptr) = text_view_ptr else {
@@ -2347,7 +2392,9 @@ fn set_prompt_editor_content(text: &str) {
 
 fn read_prompt_editor_content() -> String {
     let text_view_ptr = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.prompt_editor_text_view
     };
     let Some(text_view_ptr) = text_view_ptr else {
@@ -2358,7 +2405,9 @@ fn read_prompt_editor_content() -> String {
 
 fn set_prompt_editor_status(text: &str, is_error: bool) {
     let status_ptr = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.prompt_status_label
     };
     let Some(status_ptr) = status_ptr else {
@@ -2388,7 +2437,9 @@ fn refresh_transcription_preview_panel() {
         summary_label,
         preview_text_view,
     ) = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         (
             state.preview_buffer_delay_value_label,
             state.preview_typing_cps_value_label,
@@ -2434,7 +2485,9 @@ fn refresh_transcription_preview_panel() {
 fn refresh_prompt_editor_labels() {
     Queue::main().exec_async(move || unsafe {
         let (path_ptr, status_ptr) = {
-            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             (state.prompt_path_label, state.prompt_status_label)
         };
         let prompt_type = selected_prompt_type();
@@ -2481,7 +2534,9 @@ fn compute_prompt_editor_layout(y: f64, gap: f64) -> PromptEditorLayout {
 fn refresh_quality_dashboard() {
     Queue::main().exec_async(move || unsafe {
         let (available_label, pending_label, last_check_label, report_label, open_report_button) = {
-            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             (
                 state.quality_available_label,
                 state.quality_pending_label,
@@ -2546,7 +2601,9 @@ fn refresh_quality_dashboard() {
 fn refresh_diagnostics_dashboard() {
     Queue::main().exec_async(move || unsafe {
         let (permission_labels, conflict_label, conflict_button, status_label) = {
-            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             (
                 state.diagnostics_permission_labels,
                 state.diagnostics_conflict_label,
@@ -2585,7 +2642,7 @@ unsafe fn build_modes_shortcuts_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
     config: &Config,
-    state: &mut BootstrapState,
+    state: &mut SettingsWindowState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     unsafe {
@@ -2914,7 +2971,7 @@ unsafe fn build_ai_prompts_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
     _config: &Config,
-    state: &mut BootstrapState,
+    state: &mut SettingsWindowState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     unsafe {
@@ -3532,7 +3589,7 @@ unsafe fn build_quality_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
     _config: &Config,
-    state: &mut BootstrapState,
+    state: &mut SettingsWindowState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     unsafe {
@@ -4103,7 +4160,7 @@ unsafe fn build_diagnostics_tab(
     action_handler: Id,
     frame: core_graphics::geometry::CGRect,
     config: &Config,
-    state: &mut BootstrapState,
+    state: &mut SettingsWindowState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     unsafe {
@@ -4420,7 +4477,9 @@ pub(super) extern "C" fn on_llm_key_changed(_this: &Object, _cmd: objc::runtime:
 
 pub(super) extern "C" fn on_clear_llm_key(_this: &Object, _cmd: objc::runtime::Sel, _sender: Id) {
     let field_ptr = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.llm_key_field
     };
     clear_keychain_entry("LLM_FORMATTING_API_KEY", field_ptr);
@@ -4432,7 +4491,9 @@ pub(super) extern "C" fn on_save_api_settings(
     _sender: Id,
 ) {
     let (llm_endpoint, llm_model, llm_key, assist_endpoint, assist_model, assist_key) = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         (
             state.llm_endpoint_field,
             state.llm_model_field,
@@ -4595,7 +4656,9 @@ pub(super) extern "C" fn on_copy_diagnostics(
 ) {
     let report = crate::os::permissions::diagnostics_report();
     let (status_ptr, secondary) = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         (
             state.diagnostics_status_label,
             crate::ui_helpers::color_secondary_label(),
@@ -4634,7 +4697,9 @@ pub(super) extern "C" fn on_delay_changed(_this: &Object, _cmd: objc::runtime::S
         runtime_config.hold_start_delay_ms = ms;
         hotkeys::apply_hotkey_runtime_config(runtime_config);
         let label_ptr = {
-            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             state.hold_delay_value_label
         };
         if let Some(ptr) = label_ptr {
@@ -4659,7 +4724,9 @@ pub(super) extern "C" fn on_double_tap_interval_changed(
         runtime_config.double_tap_interval_ms = ms;
         hotkeys::apply_hotkey_runtime_config(runtime_config);
         let label_ptr = {
-            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             state.double_tap_value_label
         };
         if let Some(ptr) = label_ptr {
@@ -4923,7 +4990,9 @@ pub(super) extern "C" fn on_clear_assistive_key(
     _sender: Id,
 ) {
     let field_ptr = {
-        let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.assistive_key_field
     };
     clear_keychain_entry("LLM_ASSISTIVE_API_KEY", field_ptr);
@@ -5230,8 +5299,10 @@ mod tests {
             let view = attach_settings_view(parent, frame);
             assert!(view.is_some());
 
-            reset_embedded_bootstrap_state();
-            let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            reset_embedded_settings_state();
+            let state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             assert!(state.root_view.is_none());
         }
     }

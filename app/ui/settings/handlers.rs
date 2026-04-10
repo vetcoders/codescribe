@@ -7,7 +7,7 @@ use crate::ui_helpers::ns_string;
 
 use super::{
     TAB_AI_PROMPTS, TAB_AUDIO_INPUT, TAB_DIAGNOSTICS, TAB_MODES_SHORTCUTS, TAB_TRANSCRIPTION,
-    handle_bootstrap_window_closed, handle_hotkey_done, handle_show_overlay, handle_test_mic,
+    handle_hotkey_done, handle_settings_window_closed, handle_show_overlay, handle_test_mic,
     on_assistive_endpoint_changed, on_assistive_key_changed, on_assistive_model_changed,
     on_beep_toggled, on_clear_assistive_key, on_clear_llm_key, on_copy_diagnostics,
     on_delay_changed, on_diagnostics_refresh, on_double_tap_interval_changed,
@@ -37,7 +37,7 @@ pub fn action_handler_class() -> *const Class {
     unsafe {
         ACTION_HANDLER_INIT.call_once(|| {
             let superclass = Class::get("NSObject").expect("NSObject not found");
-            let mut decl = ClassDecl::new("BootstrapOverlayActionHandler", superclass)
+            let mut decl = ClassDecl::new("SettingsWindowActionHandler", superclass)
                 .expect("Failed to declare handler class");
 
             // Transcription tab actions
@@ -265,7 +265,7 @@ pub fn window_delegate_class() -> *const Class {
     unsafe {
         WINDOW_DELEGATE_INIT.call_once(|| {
             let superclass = Class::get("NSObject").expect("NSObject not found");
-            let mut decl = ClassDecl::new("BootstrapWindowDelegate", superclass)
+            let mut decl = ClassDecl::new("SettingsWindowDelegate", superclass)
                 .expect("Failed to declare window delegate class");
             decl.add_method(
                 sel!(windowWillClose:),
@@ -282,7 +282,7 @@ pub fn toolbar_delegate_class() -> *const Class {
     unsafe {
         TOOLBAR_DELEGATE_INIT.call_once(|| {
             let superclass = Class::get("NSObject").expect("NSObject not found");
-            let mut decl = ClassDecl::new("BootstrapToolbarDelegate", superclass)
+            let mut decl = ClassDecl::new("SettingsToolbarDelegate", superclass)
                 .expect("Failed to declare toolbar delegate class");
             decl.add_method(
                 sel!(toolbarAllowedItemIdentifiers:),
@@ -336,7 +336,7 @@ extern "C" fn on_tab_diagnostics(_this: &Object, _sel: Sel, _sender: Id) {
 }
 
 extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, _notification: Id) {
-    handle_bootstrap_window_closed();
+    handle_settings_window_closed();
 }
 
 extern "C" fn toolbar_allowed_item_identifiers(_this: &Object, _sel: Sel, _toolbar: Id) -> Id {
@@ -382,7 +382,7 @@ mod tests {
         let responds: bool = unsafe { msg_send![class, instancesRespondToSelector: selector] };
         assert!(
             responds,
-            "BootstrapOverlayActionHandler missing selector `{label}`"
+            "SettingsWindowActionHandler missing selector `{label}`"
         );
     }
 
@@ -391,7 +391,7 @@ mod tests {
         let class = action_handler_class();
         assert!(
             !class.is_null(),
-            "BootstrapOverlayActionHandler class should be registered"
+            "SettingsWindowActionHandler class should be registered"
         );
 
         assert_selector_registered(class, sel!(onTabTranscription:), "onTabTranscription:");

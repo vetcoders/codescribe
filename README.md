@@ -94,7 +94,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 ## Features
 
 - **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
-- **Embedded-first Whisper** — Default installs ship with an embedded model; `make install-no-embed` is available when you prefer runtime-managed weights.
+- **Runtime-managed Whisper** — The app resolves Whisper weights at runtime from `CODESCRIBE_MODEL_PATH`, `~/.codescribe/models`, repo-local `models/`, or the Hugging Face cache.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
@@ -138,7 +138,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Install CLI (embedded Whisper + MiniLM)
+# Install CLI (runtime Whisper + embedded support assets)
 make install
 
 # Verify installation
@@ -158,11 +158,11 @@ Tagged builds can publish a signed-or-ad-hoc DMG through GitHub Releases:
 ### Build Options
 
 ```bash
-make build              # Debug build (external model)
-make release            # Release build (embedded Whisper + MiniLM)
-make install            # Install CLI with embedded models
+make build              # Debug build (runtime Whisper)
+make release            # Release build (runtime Whisper + embedded support assets)
+make install            # Install CLI with runtime Whisper lookup + embedded support assets
 make install-app        # Build + install macOS .app (auto-downloads models if missing)
-make install-no-embed   # Dev-only: install without embedding (needs CODESCRIBE_MODEL_PATH)
+make install-no-embed   # Install without optional embedded support assets (needs CODESCRIBE_MODEL_PATH)
 ```
 
 ## Quick Start
@@ -215,7 +215,7 @@ flowchart TD
     I --> K[Paste to Active App]
     J --> K
 
-    E -.- E1[Metal GPU • embedded model]
+    E -.- E1[Metal GPU • runtime model]
     I -.- I1[Responses API • previous_response_id]
 ```
 
@@ -257,7 +257,7 @@ make config
 ```env
 # STT (Speech-to-Text)
 WHISPER_LANGUAGE=pl                  # pl | en | de | fr (no auto!)
-# CODESCRIBE_MODEL_PATH=             # Override embedded model
+# CODESCRIBE_MODEL_PATH=             # Override runtime Whisper model lookup
 
 # Hotkeys
 HOLD_MODS=ctrl                       # ctrl | ctrl_alt | ctrl_shift | ctrl_cmd
@@ -334,22 +334,16 @@ CodeScribe uses **whisper-large-v3-turbo-mlx-q8**:
 - ~10x faster than whisper-large-v3
 - Metal GPU acceleration
 
-### Embedded Model (Default)
+### Runtime Whisper (Current)
 
-Release builds include the model via `include_bytes!`:
-
-```bash
-cargo build --release          # ~888MB binary with model
-CODESCRIBE_NO_EMBED=1 cargo build --release  # Dev-only experiment (not supported for distribution)
-```
-
-### External Model (Development)
-
-For development or custom models:
+Whisper is not embedded into the binary in the current build. Runtime resolves the model from:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
 3. `./models/whisper-large-v3-turbo-mlx-q8/`
+4. Hugging Face cache snapshots for `LibraxisAI/whisper-large-v3-turbo-mlx-q8`
+
+Release builds still embed the MiniLM semantic gate and Silero VAD by default.
 
 Model files required:
 
@@ -360,28 +354,21 @@ Model files required:
 
 ## Architecture
 
-```
+```text
 CodeScribe/
-├── codescribe-core/           # Core library (Whisper, audio, config, quality)
-│   ├── src/
-│   │   ├── lib.rs             # Core exports
-│   │   ├── whisper/           # Embedded Whisper engine
-│   │   ├── audio/             # Recorder + streaming
-│   │   ├── config/            # Config + prompts
-│   │   ├── quality_loop.rs    # Self-improvement loop
-│   │   └── ...
-├── src/
-│   ├── lib.rs                 # App exports (macOS tray/hotkeys/UI)
-│   ├── main.rs                # CLI entry point
-│   ├── controller.rs          # Recording/transcription orchestration
-│   ├── tray/                  # Tray menu + handlers
-│   ├── hotkeys.rs             # CGEventTap hotkey handler
-│   └── ...
-├── models/                    # Whisper model files (build-time only)
-├── tests/                     # Unit + E2E tests
-└── docs/
-    ├── WHISPER_LIVE.md        # Embedded + streaming transcription (DONE)
-    └── ARCHITECTURE.md        # Technical documentation
+├── core/                      # Portable pipeline, STT, config, quality
+├── app/                       # macOS app shell
+│   ├── controller/            # Recording/transcription orchestration
+│   ├── os/                    # Hotkeys, permissions, clipboard
+│   └── ui/
+│       ├── settings/          # Persistent settings window
+│       ├── onboarding/        # First-run flow
+│       ├── overlay/           # Dictation overlay
+│       ├── voice_chat/        # Assistive overlay
+│       └── tray/              # Menu bar UI
+├── bin/                       # CLI entry points
+├── tests/                     # Integration + E2E tests
+└── docs/                      # Product + technical docs
 ```
 
 ## Development
@@ -391,7 +378,7 @@ CodeScribe/
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Development build (external model)
+# Development build (runtime Whisper)
 CODESCRIBE_MODEL_PATH=./models/whisper-large-v3-turbo-mlx-q8 cargo run
 
 # Quality checks
@@ -408,9 +395,9 @@ make format         # cargo fmt
 
 ```
 make build            # Debug build
-make release          # Release build (embedded model)
-make install          # Install CLI (~888MB)
-make install-no-embed # Dev-only: install without embedding
+make release          # Release build (runtime Whisper + embedded support assets)
+make install          # Install CLI with runtime Whisper lookup
+make install-no-embed # Install without optional embedded support assets
 make config           # Edit ~/.codescribe/.env
 make start            # Start as daemon
 make stop             # Stop running instance

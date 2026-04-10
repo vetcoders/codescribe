@@ -51,7 +51,7 @@ pub use ui::{
 };
 
 #[cfg(target_os = "macos")]
-pub use ui::bootstrap::{hide_settings_window, show_settings_window};
+pub use ui::settings::{hide_settings_window, show_settings_window};
 
 #[cfg(target_os = "macos")]
 pub use ui::onboarding::{should_show_onboarding, show_onboarding_wizard};
