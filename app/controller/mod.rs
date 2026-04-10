@@ -637,7 +637,7 @@ impl RecordingController {
         crate::ui::voice_chat::update_voice_chat_status(status);
         if emit_recovery_message {
             crate::ui::voice_chat::add_voice_chat_error_message(message);
-            crate::show_settings_window();
+            crate::ui::settings::show_settings_window();
         } else {
             debug!("Runtime recovery UI throttled (cooldown active)");
         }
@@ -1142,12 +1142,12 @@ impl RecordingController {
                                 set_assistive_session(false);
                                 self.opened_voice_chat_overlay_for_transcription
                                     .store(false, Ordering::SeqCst);
-                                crate::clear_transcription_text();
+                                crate::ui::overlay::clear_transcription_text();
                                 if overlay_enabled {
-                                    crate::show_transcription_overlay();
-                                    crate::enter_recording_mode();
+                                    crate::ui::overlay::show_transcription_overlay();
+                                    crate::ui::overlay::enter_recording_mode();
                                 } else {
-                                    crate::hide_transcription_overlay();
+                                    crate::ui::overlay::hide_transcription_overlay();
                                 }
                             }
                         }
@@ -1172,7 +1172,7 @@ impl RecordingController {
                                         .frontmost_app,
                                 );
                                 set_assistive_session(true);
-                                crate::hide_transcription_overlay();
+                                crate::ui::overlay::hide_transcription_overlay();
                                 crate::ui::voice_chat::show_voice_chat_overlay();
                                 crate::ui::voice_chat::show_agent_tab();
                                 crate::ui::voice_chat::update_voice_chat_status("Listening...");
@@ -1199,7 +1199,7 @@ impl RecordingController {
                                         .frontmost_app,
                                 );
                                 set_assistive_session(true);
-                                crate::hide_transcription_overlay();
+                                crate::ui::overlay::hide_transcription_overlay();
                                 crate::ui::voice_chat::show_voice_chat_overlay();
                                 crate::ui::voice_chat::show_agent_tab();
                                 crate::ui::voice_chat::update_voice_chat_status("Listening...");
@@ -1982,7 +1982,7 @@ impl RecordingController {
                         .frontmost_app,
                 );
 
-                crate::hide_transcription_overlay();
+                crate::ui::overlay::hide_transcription_overlay();
                 crate::ui::voice_chat::show_voice_chat_overlay();
                 crate::ui::voice_chat::show_agent_tab();
                 crate::ui::voice_chat::update_voice_chat_status("Listening...");
@@ -2001,12 +2001,12 @@ impl RecordingController {
                         .frontmost_app,
                 );
                 opened_overlay_for_transcription.store(false, Ordering::SeqCst);
-                crate::clear_transcription_text();
+                crate::ui::overlay::clear_transcription_text();
                 if overlay_enabled {
-                    crate::show_transcription_overlay();
-                    crate::enter_recording_mode();
+                    crate::ui::overlay::show_transcription_overlay();
+                    crate::ui::overlay::enter_recording_mode();
                 } else {
-                    crate::hide_transcription_overlay();
+                    crate::ui::overlay::hide_transcription_overlay();
                 }
             }
         });
@@ -2192,7 +2192,7 @@ impl RecordingController {
                     .frontmost_app,
             );
 
-            crate::hide_transcription_overlay();
+            crate::ui::overlay::hide_transcription_overlay();
             crate::ui::voice_chat::show_voice_chat_overlay();
             crate::ui::voice_chat::show_agent_tab();
             crate::ui::voice_chat::update_voice_chat_status("Listening...");
@@ -2212,12 +2212,12 @@ impl RecordingController {
             );
             self.opened_voice_chat_overlay_for_transcription
                 .store(false, Ordering::SeqCst);
-            crate::clear_transcription_text();
+            crate::ui::overlay::clear_transcription_text();
             if overlay_enabled {
-                crate::show_transcription_overlay();
-                crate::enter_recording_mode();
+                crate::ui::overlay::show_transcription_overlay();
+                crate::ui::overlay::enter_recording_mode();
             } else {
-                crate::hide_transcription_overlay();
+                crate::ui::overlay::hide_transcription_overlay();
             }
         }
 
@@ -2450,7 +2450,7 @@ impl RecordingController {
                         if opened {
                             crate::ui::voice_chat::hide_voice_chat_overlay();
                         }
-                        crate::hide_transcription_overlay();
+                        crate::ui::overlay::hide_transcription_overlay();
                     }
                 } else if !assistive {
                     let cfg = self.config.read().await.clone();
@@ -2473,14 +2473,14 @@ impl RecordingController {
                         info!(
                             "COMMIT decision: trigger={reason} force_ai={force_ai} force_raw={force_raw}"
                         );
-                        crate::enter_decision_mode();
-                        crate::schedule_auto_hide();
+                        crate::ui::overlay::enter_decision_mode();
+                        crate::ui::overlay::schedule_auto_hide();
                     } else if cfg.quick_notes_enabled && cfg.quick_notes_save_only {
                         info!("COMMIT decision: skipped (quick_notes_save_only)");
-                        crate::hide_transcription_overlay();
+                        crate::ui::overlay::hide_transcription_overlay();
                     } else {
                         info!("COMMIT decision: skipped (quality gate clean)");
-                        crate::hide_transcription_overlay();
+                        crate::ui::overlay::hide_transcription_overlay();
                     }
                 }
             }
@@ -2495,7 +2495,7 @@ impl RecordingController {
                 if opened {
                     crate::ui::voice_chat::hide_voice_chat_overlay();
                 }
-                crate::hide_transcription_overlay();
+                crate::ui::overlay::hide_transcription_overlay();
             }
         }
 

@@ -4795,7 +4795,7 @@ pub(super) extern "C" fn on_transcription_overlay_toggled(
         );
         sync_runtime_config_via_ipc();
         if !enabled {
-            crate::hide_transcription_overlay();
+            crate::ui::overlay::hide_transcription_overlay();
         }
         refresh_transcription_preview_panel();
     }

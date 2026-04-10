@@ -1035,7 +1035,7 @@ extern "C" fn on_tab_agent(_this: &Object, _cmd: Sel, _sender: Id) {
 }
 
 extern "C" fn on_tab_settings(_this: &Object, _cmd: Sel, _sender: Id) {
-    crate::show_settings_window();
+    crate::ui::settings::show_settings_window();
     info!("Settings window opened from chat overlay");
 }
 
@@ -1205,7 +1205,7 @@ extern "C" fn on_start_recording(_this: &Object, _cmd: Sel, _sender: Id) {
 
 extern "C" fn on_header_record(_this: &Object, _cmd: Sel, _sender: Id) {
     // Header record button is chat-native: keep the session in assistive/chat mode.
-    crate::hide_transcription_overlay();
+    crate::ui::overlay::hide_transcription_overlay();
     crate::controller::request_toggle_recording_start(true);
     info!("Header CTA: toggle assistive recording");
 }

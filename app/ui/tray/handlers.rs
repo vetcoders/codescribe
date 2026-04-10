@@ -75,8 +75,8 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     match resolve_menu_route(event_id, menu_ids) {
         Some(MenuRoute::CopyLast) => handle_copy_last(),
         Some(MenuRoute::ShowOverlay) => crate::ui::voice_chat::show_voice_chat_overlay(),
-        Some(MenuRoute::ContinueOnboarding) => crate::show_onboarding_wizard(),
-        Some(MenuRoute::OpenSettings) => crate::show_settings_window(),
+        Some(MenuRoute::ContinueOnboarding) => crate::ui::onboarding::show_onboarding_wizard(),
+        Some(MenuRoute::OpenSettings) => crate::ui::settings::show_settings_window(),
         Some(MenuRoute::OpenHistory) => handle_open_history_folder(),
         Some(MenuRoute::CopyDiagnostics) => handle_copy_diagnostics(),
         Some(MenuRoute::Help) => handle_open_help(),

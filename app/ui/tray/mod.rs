@@ -167,7 +167,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
         // Handle dock icon click (macOS Reopen event)
         if let Event::Reopen { .. } = event {
             debug!("Dock icon clicked → opening Settings window");
-            crate::show_settings_window();
+            crate::ui::settings::show_settings_window();
             return;
         }
 
