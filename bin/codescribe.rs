@@ -95,7 +95,10 @@ enum MigrateKind {
     Raw,
     Cloud,
     Ai,
+    Formatted,
     AiFailed,
+    FormattingFailed,
+    Interpretation,
     Failed,
 }
 
@@ -230,8 +233,15 @@ fn handle_migrate_history_command(dry_run: bool, assume_kind: MigrateKind) -> Re
     let kind = match assume_kind {
         MigrateKind::Raw => codescribe::state::history::TranscriptKind::Raw,
         MigrateKind::Cloud => codescribe::state::history::TranscriptKind::Cloud,
-        MigrateKind::Ai => codescribe::state::history::TranscriptKind::FormattedTranscript,
-        MigrateKind::AiFailed => codescribe::state::history::TranscriptKind::FormattingFailed,
+        MigrateKind::Ai | MigrateKind::Formatted => {
+            codescribe::state::history::TranscriptKind::FormattedTranscript
+        }
+        MigrateKind::AiFailed | MigrateKind::FormattingFailed => {
+            codescribe::state::history::TranscriptKind::FormattingFailed
+        }
+        MigrateKind::Interpretation => {
+            codescribe::state::history::TranscriptKind::AssistantInterpretation
+        }
         MigrateKind::Failed => codescribe::state::history::TranscriptKind::Failed,
     };
     let report = codescribe::state::history::migrate_transcriptions(kind, dry_run)?;

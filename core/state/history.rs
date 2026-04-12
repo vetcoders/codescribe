@@ -19,6 +19,7 @@ pub struct HistoryEntry {
     pub path: PathBuf,
     pub timestamp: DateTime<Local>,
     pub preview: String,
+    pub kind: TranscriptKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,16 @@ impl TranscriptKind {
             TranscriptKind::FormattingFailed => "formatting-failed",
             TranscriptKind::Failed => "failed",
         }
+    }
+
+    pub fn is_copyable_transcript(self) -> bool {
+        matches!(
+            self,
+            TranscriptKind::Raw
+                | TranscriptKind::Cloud
+                | TranscriptKind::FormattedTranscript
+                | TranscriptKind::FormattingFailed
+        )
     }
 }
 
@@ -286,7 +297,7 @@ pub fn delete_draft(path: &Path) -> bool {
 /// * `text` - The transcript text to save
 /// * `timestamp` - Optional timestamp to use (for pairing with audio files).
 ///   If None, uses current time.
-/// * `kind` - What kind of transcript this is (raw/ai/ai-failed)
+/// * `kind` - What kind of transcript artifact this is
 pub fn save_entry_with_timestamp(
     text: &str,
     timestamp: Option<DateTime<Local>>,
@@ -350,6 +361,7 @@ pub fn save_entry_with_timestamp_and_slug(
         path,
         timestamp: now,
         preview,
+        kind,
     }
 }
 
@@ -398,6 +410,11 @@ pub fn recent_entries(limit: usize) -> Vec<HistoryEntry> {
             .and_then(|m| m.modified())
             .map(DateTime::<Local>::from)
             .unwrap_or_else(|_| Local::now());
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        let (kind, _, _) = split_kind_and_index(stem, TranscriptKind::Raw);
 
         let preview = fs::read_to_string(&path)
             .unwrap_or_default()
@@ -413,6 +430,7 @@ pub fn recent_entries(limit: usize) -> Vec<HistoryEntry> {
             path,
             timestamp,
             preview,
+            kind,
         });
     }
 
@@ -422,6 +440,16 @@ pub fn recent_entries(limit: usize) -> Vec<HistoryEntry> {
 /// Get the latest history entry, if any
 pub fn latest_entry() -> Option<HistoryEntry> {
     recent_entries(1).into_iter().next()
+}
+
+/// Get the latest entry that is still a transcript artifact suitable for copy/paste.
+///
+/// This skips explicit failure markers and non-transcript categories so tray
+/// actions do not present "last transcript" as a failed/no-speech artifact.
+pub fn latest_copyable_entry() -> Option<HistoryEntry> {
+    recent_entries(256)
+        .into_iter()
+        .find(|entry| entry.kind.is_copyable_transcript())
 }
 
 /// Open the transcriptions folder in Finder
@@ -649,7 +677,7 @@ pub fn migrate_transcriptions(
 /// * `src_path` - Path to the source WAV file (typically a temp file)
 /// * `timestamp` - Timestamp to use for the filename (should match the transcript)
 /// * `transcript_text` - Optional transcript text to generate slug from (first 3 words)
-/// * `kind` - What kind of transcript this is (raw/ai/ai-failed)
+/// * `kind` - What kind of transcript artifact this is
 ///
 /// # Returns
 /// * `Some(PathBuf)` - Path to the saved audio file on success
@@ -793,6 +821,7 @@ mod tests {
 
         assert!(entry.path.exists());
         assert_eq!(entry.preview, text);
+        assert_eq!(entry.kind, TranscriptKind::Raw);
         assert!(entry.path.to_string_lossy().ends_with(".txt"));
         assert!(entry.path.starts_with(&tmp_canon));
 
@@ -827,6 +856,7 @@ mod tests {
             path: PathBuf::from("/tmp/test.txt"),
             timestamp: Local::now(),
             preview: "Hello world".to_string(),
+            kind: TranscriptKind::Raw,
         };
 
         let label = entry.label();
@@ -859,5 +889,60 @@ mod tests {
         let ai_base = ai_stem.strip_suffix("_formatted").unwrap_or(&ai_stem);
 
         assert_eq!(raw_base, ai_base, "Slug hint should align base name");
+    }
+
+    #[test]
+    #[serial]
+    fn test_recent_entries_parses_kind_from_filename_suffix() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+
+        let now = Local::now();
+        let _raw = save_entry_with_timestamp_and_slug(
+            "raw content",
+            Some(now),
+            TranscriptKind::Raw,
+            Some("shared slug source"),
+        );
+        let formatted = save_entry_with_timestamp_and_slug(
+            "formatted content",
+            Some(now),
+            TranscriptKind::FormattedTranscript,
+            Some("shared slug source"),
+        );
+
+        let entries = recent_entries(8);
+        assert!(entries.iter().any(|entry| {
+            entry.path == formatted.path && entry.kind == TranscriptKind::FormattedTranscript
+        }));
+    }
+
+    #[test]
+    #[serial]
+    fn test_latest_copyable_entry_skips_failed_artifacts() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+
+        let now = Local::now();
+        let raw = save_entry_with_timestamp_and_slug(
+            "usable transcript",
+            Some(now),
+            TranscriptKind::Raw,
+            Some("usable transcript"),
+        );
+        let failed = save_entry_with_timestamp_and_slug(
+            "No reliable speech detected",
+            Some(now + chrono::Duration::seconds(1)),
+            TranscriptKind::Failed,
+            Some("no-speech"),
+        );
+
+        let latest = latest_entry().expect("latest entry");
+        assert_eq!(latest.path, failed.path);
+        assert_eq!(latest.kind, TranscriptKind::Failed);
+
+        let copyable = latest_copyable_entry().expect("latest copyable entry");
+        assert_eq!(copyable.path, raw.path);
+        assert_eq!(copyable.kind, TranscriptKind::Raw);
     }
 }

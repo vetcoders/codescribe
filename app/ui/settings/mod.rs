@@ -3623,7 +3623,7 @@ unsafe fn build_quality_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Choose how the committed transcript is finalized after capture. Live overlay preview stays local in the current build."
+            text: "Choose which backend is allowed to produce the committed verdict after capture. Live overlay preview stays local and provisional."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -3658,9 +3658,8 @@ unsafe fn build_quality_tab(
             CGRect::new(&CGPoint::new(pad + 96.0, y - 2.0), &CGSize::new(220.0, 24.0))
             pullsDown: false
         ];
-        let _: () = msg_send![provider_popup, addItemWithTitle: ns_string("Local transcript")];
-        let _: () =
-            msg_send![provider_popup, addItemWithTitle: ns_string("Cloud final transcript")];
+        let _: () = msg_send![provider_popup, addItemWithTitle: ns_string("Local final verdict")];
+        let _: () = msg_send![provider_popup, addItemWithTitle: ns_string("Cloud final verdict")];
         let provider_index: isize = if _config.use_local_stt { 0 } else { 1 };
         let _: () = msg_send![provider_popup, selectItemAtIndex: provider_index];
         button_set_action(provider_popup, action_handler, sel!(onSttProviderChanged:));
@@ -3668,9 +3667,9 @@ unsafe fn build_quality_tab(
         y -= 24.0 + gap;
 
         let backend_note = if _config.use_local_stt {
-            "Current mode: keep the locally produced transcript. Optional file-based rerun stays diagnostic-only."
+            "Current mode: preview stays local, then the local verdict becomes the committed transcript. File-based final pass can strengthen that verdict or surface weak-truth warnings before paste/save."
         } else {
-            "Current mode: keep local live preview, then replace the committed transcript with cloud STT after capture."
+            "Current mode: preview stays local, then cloud STT becomes the committed verdict. If cloud does not return a reliable result, the app marks any surviving fallback as degraded and blocks silent auto-paste."
         };
         let provider_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
@@ -3690,7 +3689,7 @@ unsafe fn build_quality_tab(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Cloud final-transcript endpoint (multipart or ...:stream for NDJSON)",
+            "Cloud final-verdict endpoint (multipart or ...:stream for NDJSON)",
             &stt_endpoint_val,
         );
         style_paper_input(stt_endpoint_field);
@@ -3708,7 +3707,7 @@ unsafe fn build_quality_tab(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Cloud final-transcript API key (stored in Keychain; erase field to remove)",
+            "Cloud final-verdict API key (stored in Keychain; erase field to remove)",
         );
         style_paper_input(stt_key_field);
         let _: () = msg_send![stt_key_field, setFont: mono_font_input];
@@ -3878,7 +3877,7 @@ unsafe fn build_quality_tab(
                 checked: ultra_on,
                 action: sel!(onUltraQualityToggled:),
                 description: Some(
-                    "Re-runs local Whisper on the saved audio after capture ends. Best lever when live preview looks right but final submit degrades.",
+                    "Re-runs local Whisper on the saved audio after capture ends. Best lever when preview looks fine but the committed verdict should be upgraded, downgraded, or blocked before paste/save.",
                 ),
                 tag: None,
                 gap,
@@ -3898,7 +3897,7 @@ unsafe fn build_quality_tab(
                 checked: _config.ai_formatting_enabled,
                 action: sel!(onFormattingToggled:),
                 description: Some(
-                    "Uses the formatting model to clean up the final transcript before paste/send.",
+                    "Uses the formatting model to clean up the committed transcript. If formatting fails, the raw transcript is preserved and labeled as a formatting fallback.",
                 ),
                 tag: None,
                 gap,

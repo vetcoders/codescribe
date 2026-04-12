@@ -85,6 +85,12 @@ pub fn status_from_detail(detail: &str) -> UiStatus {
 
     if text.contains("error")
         || text.contains("failed")
+        || text.contains("fallback")
+        || text.contains("hallucination")
+        || text.contains("no reliable speech")
+        || text.contains("very low speech")
+        || text.contains("degraded")
+        || text.contains("unsafe")
         || text.contains("błąd")
         || text.contains("unavailable")
     {
@@ -135,6 +141,15 @@ mod tests {
         assert_eq!(status_from_detail("Processing..."), UiStatus::Processing);
         assert_eq!(status_from_detail("Augmenting..."), UiStatus::Processing);
         assert_eq!(status_from_detail("Formatting Failed"), UiStatus::Error);
+        assert_eq!(status_from_detail("Streaming fallback"), UiStatus::Error);
+        assert_eq!(
+            status_from_detail("Possible hallucination"),
+            UiStatus::Error
+        );
+        assert_eq!(
+            status_from_detail("No reliable speech detected"),
+            UiStatus::Error
+        );
         assert_eq!(status_from_detail("Conversation ended"), UiStatus::Idle);
         assert_eq!(status_from_detail("AI Response:"), UiStatus::Idle);
     }

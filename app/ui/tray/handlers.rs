@@ -97,7 +97,7 @@ fn handle_copy_last() {
     send_menu_event(TrayMenuEvent::CopyLast);
 
     // Get last transcript from history
-    if let Some(last_entry) = crate::state::history::latest_entry() {
+    if let Some(last_entry) = crate::state::history::latest_copyable_entry() {
         if let Ok(text) = std::fs::read_to_string(&last_entry.path) {
             if let Err(e) = clipboard::set_clipboard(&text) {
                 info!("Failed to copy to clipboard: {}", e);
@@ -106,7 +106,7 @@ fn handle_copy_last() {
             }
         }
     } else {
-        info!("No transcript history available");
+        info!("No copyable transcript history available");
     }
 }
 
