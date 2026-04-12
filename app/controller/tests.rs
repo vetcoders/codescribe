@@ -868,7 +868,7 @@ fn test_quality_gate_triggers_commit_when_ai_failed() {
     let trigger = evaluate_quality_commit_trigger(
         false,
         &probe,
-        crate::state::history::TranscriptKind::AiFailed,
+        crate::state::history::TranscriptKind::FormattingFailed,
     );
     assert_eq!(trigger, Some("ai_failed_fallback"));
 }

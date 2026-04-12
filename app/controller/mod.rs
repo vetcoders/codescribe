@@ -444,8 +444,13 @@ fn transcript_output_category(output_kind: crate::state::history::TranscriptKind
     match output_kind {
         crate::state::history::TranscriptKind::Raw => "Transcript",
         crate::state::history::TranscriptKind::Cloud => "Cloud transcript",
-        crate::state::history::TranscriptKind::Ai => "Formatted transcript",
-        crate::state::history::TranscriptKind::AiFailed => "AI failed, raw preserved",
+        crate::state::history::TranscriptKind::FormattedTranscript => "Formatted transcript",
+        crate::state::history::TranscriptKind::AssistantInterpretation => {
+            "Assistant interpretation"
+        }
+        crate::state::history::TranscriptKind::FormattingFailed => {
+            "Formatting failed, raw preserved"
+        }
         crate::state::history::TranscriptKind::Failed => "Failed transcript",
     }
 }
@@ -567,7 +572,7 @@ fn evaluate_quality_commit_trigger(
     if force_raw {
         return None;
     }
-    if output_kind == crate::state::history::TranscriptKind::AiFailed {
+    if output_kind == crate::state::history::TranscriptKind::FormattingFailed {
         return Some("ai_failed_fallback");
     }
     if quality_probe.raw_chars < QUALITY_GATE_MIN_CHARS
@@ -3333,10 +3338,10 @@ impl RecordingController {
                 .await;
                 let kind = match result.status {
                     crate::ai_formatting::AiFormatStatus::Applied => {
-                        crate::state::history::TranscriptKind::Ai
+                        crate::state::history::TranscriptKind::FormattedTranscript
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
-                        crate::state::history::TranscriptKind::AiFailed
+                        crate::state::history::TranscriptKind::FormattingFailed
                     }
                     crate::ai_formatting::AiFormatStatus::Skipped => {
                         crate::state::history::TranscriptKind::Raw
@@ -3379,10 +3384,10 @@ impl RecordingController {
                 .await;
                 let kind = match result.status {
                     crate::ai_formatting::AiFormatStatus::Applied => {
-                        crate::state::history::TranscriptKind::Ai
+                        crate::state::history::TranscriptKind::FormattedTranscript
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
-                        crate::state::history::TranscriptKind::AiFailed
+                        crate::state::history::TranscriptKind::FormattingFailed
                     }
                     crate::ai_formatting::AiFormatStatus::Skipped => {
                         crate::state::history::TranscriptKind::Raw

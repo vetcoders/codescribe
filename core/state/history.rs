@@ -25,8 +25,9 @@ pub struct HistoryEntry {
 pub enum TranscriptKind {
     Raw,
     Cloud,
-    Ai,
-    AiFailed,
+    FormattedTranscript,
+    AssistantInterpretation,
+    FormattingFailed,
     Failed,
 }
 
@@ -35,8 +36,9 @@ impl TranscriptKind {
         match self {
             TranscriptKind::Raw => "raw",
             TranscriptKind::Cloud => "cloud",
-            TranscriptKind::Ai => "ai",
-            TranscriptKind::AiFailed => "ai-failed",
+            TranscriptKind::FormattedTranscript => "formatted",
+            TranscriptKind::AssistantInterpretation => "interpretation",
+            TranscriptKind::FormattingFailed => "formatting-failed",
             TranscriptKind::Failed => "failed",
         }
     }
@@ -96,8 +98,9 @@ fn kind_from_suffix(suffix: &str) -> Option<TranscriptKind> {
     match suffix {
         "raw" => Some(TranscriptKind::Raw),
         "cloud" => Some(TranscriptKind::Cloud),
-        "ai" => Some(TranscriptKind::Ai),
-        "ai-failed" => Some(TranscriptKind::AiFailed),
+        "ai" | "formatted" => Some(TranscriptKind::FormattedTranscript),
+        "ai-failed" | "formatting-failed" => Some(TranscriptKind::FormattingFailed),
+        "interpretation" => Some(TranscriptKind::AssistantInterpretation),
         "failed" => Some(TranscriptKind::Failed),
         _ => None,
     }
@@ -846,14 +849,14 @@ mod tests {
         let ai = save_entry_with_timestamp_and_slug(
             "ai content",
             Some(now),
-            TranscriptKind::Ai,
+            TranscriptKind::FormattedTranscript,
             Some("shared slug source"),
         );
 
         let raw_stem = raw.path.file_stem().unwrap().to_string_lossy();
         let ai_stem = ai.path.file_stem().unwrap().to_string_lossy();
         let raw_base = raw_stem.strip_suffix("_raw").unwrap_or(&raw_stem);
-        let ai_base = ai_stem.strip_suffix("_ai").unwrap_or(&ai_stem);
+        let ai_base = ai_stem.strip_suffix("_formatted").unwrap_or(&ai_stem);
 
         assert_eq!(raw_base, ai_base, "Slug hint should align base name");
     }

@@ -1460,6 +1460,7 @@ pub fn set_transcription_action_contract(
     Queue::main().exec_async(move || {
         let (visible_text, snap, decision_mode) = {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.accumulated_text.clear();
             state.raw_text = raw_text_owned;
             state.last_pass_text = last_pass_owned;
             state.action_contract_mode = mode_copy;
