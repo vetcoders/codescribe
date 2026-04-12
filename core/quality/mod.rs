@@ -1,2 +1,2 @@
-pub mod quality_loop;
-pub mod quality_report;
+pub mod qube_daemon;
+pub mod qube_report;

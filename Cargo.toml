@@ -34,12 +34,12 @@ name = "codescribe"
 path = "bin/codescribe.rs"
 
 [[bin]]
-name = "codescribe-quality"
-path = "bin/codescribe_quality.rs"
+name = "qube-report"
+path = "bin/qube_report.rs"
 
 [[bin]]
-name = "codescribe-loop"
-path = "bin/codescribe_loop.rs"
+name = "qube-daemon"
+path = "bin/qube_daemon.rs"
 
 [lib]
 path = "app/lib.rs"

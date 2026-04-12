@@ -115,7 +115,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     diagnostics_menu.append(&copy_diag_item)?;
 
     // Quality menu item (shows pending mismatches from daemon)
-    let state = crate::quality_loop::read_daemon_state();
+    let state = crate::qube_daemon::read_daemon_state();
     let quality_label = if !state.available {
         "Quality: unavailable".to_string()
     } else if state.pending_mismatches > 0 {
@@ -224,7 +224,7 @@ pub fn update_status_label(label: &str) {
 /// Update the quality label in the menu
 /// Call this periodically to reflect daemon state changes
 pub fn update_quality_label() {
-    let state = crate::quality_loop::read_daemon_state();
+    let state = crate::qube_daemon::read_daemon_state();
     let label = if !state.available {
         "Quality: unavailable".to_string()
     } else if state.pending_mismatches > 0 {

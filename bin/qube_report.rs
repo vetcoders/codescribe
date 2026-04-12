@@ -1,7 +1,7 @@
 //! Batch quality report generator.
 //!
 //! Usage:
-//!   cargo run --bin codescribe-quality -- --date 2026-01-17 --limit 5
+//!   cargo run --bin qube-report -- --date 2026-01-17 --limit 5
 //!
 //! Created by M&K (c)2026 VetCoders
 
@@ -10,10 +10,10 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use codescribe::config::Config;
-use codescribe::quality_report::{MetricsReference, QualityReportConfig, run};
+use codescribe::qube_report::{MetricsReference, QualityReportConfig, run};
 
 #[derive(Parser)]
-#[command(name = "codescribe-quality")]
+#[command(name = "qube-report")]
 #[command(version)]
 #[command(about = "Generate a quality report for CodeScribe transcriptions")]
 struct Args {

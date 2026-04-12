@@ -2546,7 +2546,7 @@ fn refresh_quality_dashboard() {
             )
         };
 
-        let daemon_state = crate::quality_loop::read_daemon_state();
+        let daemon_state = crate::qube_daemon::read_daemon_state();
 
         if let Some(ptr) = available_label {
             let label = ptr as Id;
@@ -3563,7 +3563,7 @@ fn quality_last_check_text(last_check: &str) -> String {
     }
 }
 
-fn quality_report_exists(state: &crate::quality_loop::QualityDaemonState) -> bool {
+fn quality_report_exists(state: &crate::qube_daemon::QualityDaemonState) -> bool {
     state
         .latest_report
         .as_ref()
@@ -3571,7 +3571,7 @@ fn quality_report_exists(state: &crate::quality_loop::QualityDaemonState) -> boo
         .unwrap_or(false)
 }
 
-fn quality_report_text(state: &crate::quality_loop::QualityDaemonState) -> String {
+fn quality_report_text(state: &crate::qube_daemon::QualityDaemonState) -> String {
     match state.latest_report.as_ref() {
         Some(dir) => {
             let html_path = PathBuf::from(dir).join("index.html");
@@ -4024,7 +4024,7 @@ unsafe fn build_quality_tab(
         add_subview(container, dashboard_header);
         y -= 18.0 + gap;
 
-        let daemon_state = crate::quality_loop::read_daemon_state();
+        let daemon_state = crate::qube_daemon::read_daemon_state();
 
         let add_metric_row = |container: Id,
                               y: &mut f64,
@@ -4637,7 +4637,7 @@ pub(super) extern "C" fn on_open_quality_report(
     _cmd: objc::runtime::Sel,
     _sender: Id,
 ) {
-    if !crate::quality_loop::open_latest_report() {
+    if !crate::qube_daemon::open_latest_report() {
         warn!("Settings: no quality report available");
     }
     refresh_quality_dashboard();

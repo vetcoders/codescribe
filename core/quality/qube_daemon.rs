@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::quality_report::{QualityReport, QualityReportConfig, ReportSummary};
+use crate::qube_report::{QualityReport, QualityReportConfig, ReportSummary};
 use crate::safe_path::{
     safe_append_line_bounded, safe_canonicalize_bounded, safe_prepare_path,
     safe_read_to_string_bounded,
@@ -108,7 +108,7 @@ struct LoopHistoryEntry {
 pub async fn run(config: QualityLoopConfig) -> Result<PathBuf> {
     let config_root = Config::config_dir();
     let report_config = normalize_report_config(&config.report_config, &config_root)?;
-    let output_dir = crate::quality_report::run(report_config).await?;
+    let output_dir = crate::qube_report::run(report_config).await?;
     let output_root = safe_canonicalize_bounded(&output_dir, &config_root)?;
     let report_path = output_root.join("report.json");
     let report = load_report(&report_path, &config_root)?;
@@ -1251,7 +1251,7 @@ pub fn open_latest_report() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quality_report::{
+    use crate::qube_report::{
         ReportEntry, ReportEnvironment, ReportMetrics, ReportSummary, ReportTranscripts,
     };
     use crate::stream_postprocess::StreamPostProcessStats;

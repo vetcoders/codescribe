@@ -86,7 +86,7 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         Some(MenuRoute::ToggleQuickNotesSaveOnly) => handle_toggle_quick_notes_save_only(),
         Some(MenuRoute::OpenNotesFolder) => handle_open_notes_folder(),
         Some(MenuRoute::OpenTodayNote) => handle_open_today_note(),
-        Some(MenuRoute::OpenQualityReport) => handle_open_quality_report(),
+        Some(MenuRoute::OpenQualityReport) => handle_open_qube_report(),
         Some(MenuRoute::InstallSileroVad) => handle_install_silero_vad(),
         None => debug!("Unknown menu event id: {:?}", event_id),
     }
@@ -260,10 +260,10 @@ fn handle_show_about() {
 // ============================================================================
 
 /// Open the latest quality report in browser
-fn handle_open_quality_report() {
+fn handle_open_qube_report() {
     info!("Opening quality report...");
 
-    if crate::quality_loop::open_latest_report() {
+    if crate::qube_daemon::open_latest_report() {
         info!("Opened quality report");
     } else {
         // No report available - show notification

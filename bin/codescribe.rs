@@ -659,7 +659,7 @@ async fn run_daemon() -> Result<()> {
         spawn_quality_daemon()
     } else {
         stop_quality_daemon_if_running();
-        codescribe::quality_loop::mark_daemon_unavailable();
+        codescribe::qube_daemon::mark_daemon_unavailable();
         None
     };
 
@@ -702,22 +702,22 @@ fn stop_quality_daemon_if_running() {
         return;
     }
 
-    // Best-effort safety check: only kill if it looks like codescribe-loop.
-    let is_codescribe_loop = std::process::Command::new("ps")
+    // Best-effort safety check: only kill if it looks like qube-daemon.
+    let is_qube_daemon = std::process::Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "command="])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.contains("codescribe-loop"))
+        .map(|s| s.contains("qube-daemon"))
         .unwrap_or(false);
 
-    if is_codescribe_loop {
+    if is_qube_daemon {
         let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
         let _ = std::fs::remove_file(&pid_path);
     }
 }
 
-/// Spawn `codescribe-loop --daemon` as a background child process.
+/// Spawn `qube-daemon --daemon` as a background child process.
 /// Returns the Child handle so we can kill it on app exit.
 struct QualityDaemonHandle {
     child: std::process::Child,
@@ -727,18 +727,18 @@ struct QualityDaemonHandle {
 fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
     use std::process::{Command, Stdio};
 
-    // Strategy: find codescribe-loop binary next to current exe, or in PATH
-    let loop_bin = find_sibling_binary("codescribe-loop");
+    // Strategy: find qube-daemon binary next to current exe, or in PATH
+    let loop_bin = find_sibling_binary("qube-daemon");
 
     let bin_path = match loop_bin {
         Some(path) => path,
         None => {
             // Try PATH fallback
-            if which_exists("codescribe-loop") {
-                PathBuf::from("codescribe-loop")
+            if which_exists("qube-daemon") {
+                PathBuf::from("qube-daemon")
             } else {
-                eprintln!("[quality-daemon] codescribe-loop not found; skipping auto-start");
-                codescribe::quality_loop::mark_daemon_unavailable();
+                eprintln!("[quality-daemon] qube-daemon not found; skipping auto-start");
+                codescribe::qube_daemon::mark_daemon_unavailable();
                 return None;
             }
         }
@@ -770,7 +770,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
         Ok(f) => f,
         Err(e) => {
             eprintln!("[quality-daemon] Failed to open log file: {}", e);
-            codescribe::quality_loop::mark_daemon_unavailable();
+            codescribe::qube_daemon::mark_daemon_unavailable();
             return None;
         }
     };
@@ -801,7 +801,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
         }
         Err(e) => {
             eprintln!("[quality-daemon] Failed to spawn: {}", e);
-            codescribe::quality_loop::mark_daemon_unavailable();
+            codescribe::qube_daemon::mark_daemon_unavailable();
             None
         }
     }
