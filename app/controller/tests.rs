@@ -257,6 +257,7 @@ fn make_final_pass_verdict(
             no_speech,
         }),
         source: codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+        final_pass: None,
     }
 }
 

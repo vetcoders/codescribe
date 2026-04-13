@@ -317,6 +317,9 @@ mod tests {
             start_ts: 0.0,
             end_ts: 1.0,
             segments: Vec::new(),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
         });
 
         // After final, last_text resets — next preview starts fresh
@@ -404,6 +407,9 @@ mod tests {
             start_ts: 0.0,
             end_ts: 2.0,
             segments: Vec::new(),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
         });
 
         assert_eq!(sink.events().len(), 3);

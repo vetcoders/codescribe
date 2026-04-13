@@ -318,6 +318,7 @@ impl EventSink for PresentationEmitter {
                 start_ts,
                 end_ts,
                 segments,
+                ..
             } => {
                 let duplicate = self
                     .last_dispatched_utterance_id
@@ -538,6 +539,9 @@ mod tests {
             start_ts: 0.0,
             end_ts: 1.0,
             segments: Vec::new(),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,
@@ -585,6 +589,9 @@ mod tests {
             start_ts: 0.0,
             end_ts: 1.0,
             segments: Vec::new(),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
         });
         emitter.on_event(&EngineEvent::UtteranceFinal {
             utterance_id: 7,
@@ -593,6 +600,9 @@ mod tests {
             start_ts: 0.0,
             end_ts: 1.0,
             segments: Vec::new(),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
         });
 
         let delivered = delivered.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -615,6 +625,9 @@ mod tests {
             start_ts: 0.0,
             end_ts: 1.0,
             segments: Vec::new(),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,

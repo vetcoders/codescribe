@@ -113,6 +113,9 @@ pub enum EngineEventWire {
         start_ts: f32,
         end_ts: f32,
         segments: Vec<TranscriptSegment>,
+        avg_logprob: Option<f32>,
+        compression_ratio: Option<f32>,
+        quality_gate_dropped: bool,
     },
     Drop {
         kind: String,
@@ -173,6 +176,9 @@ impl From<&EngineEvent> for EngineEventWire {
                 start_ts,
                 end_ts,
                 segments,
+                avg_logprob,
+                compression_ratio,
+                quality_gate_dropped,
                 ..
             } => Self::UtteranceFinal {
                 utterance_id: *utterance_id,
@@ -180,6 +186,9 @@ impl From<&EngineEvent> for EngineEventWire {
                 start_ts: *start_ts,
                 end_ts: *end_ts,
                 segments: segments.clone(),
+                avg_logprob: *avg_logprob,
+                compression_ratio: *compression_ratio,
+                quality_gate_dropped: *quality_gate_dropped,
             },
             EngineEvent::Drop { kind, text, reason } => Self::Drop {
                 kind: drop_kind_to_wire(kind).to_string(),
@@ -254,6 +263,9 @@ mod tests {
                 start_ts: 1.0,
                 end_ts: 2.5,
             }],
+            avg_logprob: Some(-0.3),
+            compression_ratio: Some(1.1),
+            quality_gate_dropped: false,
         };
 
         let wire = EngineEventWire::from(&event);
@@ -270,6 +282,17 @@ mod tests {
         );
         assert_eq!(obj.get("text").and_then(Value::as_str), Some("hello world"));
         assert!(obj.get("segments").is_some(), "segments must be present");
+        assert_eq!(
+            obj.get("avg_logprob")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32),
+            Some(-0.3),
+            "confidence metadata must survive IPC boundary"
+        );
+        assert_eq!(
+            obj.get("quality_gate_dropped").and_then(Value::as_bool),
+            Some(false)
+        );
     }
 
     #[test]

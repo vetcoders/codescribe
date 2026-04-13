@@ -417,12 +417,29 @@ impl LocalWhisperEngine {
         let mut out = String::new();
         let mut all_segments = Vec::new();
         let mut offset = 0usize;
+        let mut logprob_sum = 0.0_f32;
+        let mut logprob_count = 0_u32;
+        let mut worst_compression = 0.0_f32;
+        let mut any_quality_gate_dropped = false;
 
         while offset < samples.len() {
             let end = (offset + chunk_samples).min(samples.len());
             let chunk = &samples[offset..end];
             let transcript = self.transcribe_samples_16k_raw(chunk, language, debug_tokens)?;
             append_with_overlap_dedup(&mut out, &transcript.text);
+
+            if let Some(lp) = transcript.avg_logprob {
+                logprob_sum += lp;
+                logprob_count += 1;
+            }
+            if let Some(cr) = transcript.compression_ratio
+                && cr > worst_compression
+            {
+                worst_compression = cr;
+            }
+            if transcript.quality_gate_dropped {
+                any_quality_gate_dropped = true;
+            }
 
             if !transcript.segments.is_empty() {
                 let offset_sec = offset as f32 / 16_000.0;
@@ -439,7 +456,17 @@ impl LocalWhisperEngine {
         Ok(RawTranscript {
             text: dedup_repetitions(out.trim()),
             segments: all_segments,
-            ..Default::default()
+            avg_logprob: if logprob_count > 0 {
+                Some(logprob_sum / logprob_count as f32)
+            } else {
+                None
+            },
+            compression_ratio: if worst_compression > 0.0 {
+                Some(worst_compression)
+            } else {
+                None
+            },
+            quality_gate_dropped: any_quality_gate_dropped,
         })
     }
 

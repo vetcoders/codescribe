@@ -2936,7 +2936,11 @@ impl RecordingController {
                 );
 
                 match tokio::task::spawn_blocking(move || {
-                    crate::whisper::transcribe_file_verdict(&wav_path, lang.as_deref())
+                    crate::whisper::transcribe_file_verdict(
+                        &wav_path,
+                        lang.as_deref(),
+                        codescribe_core::pipeline::contracts::FileTranscriptionOptions::default(),
+                    )
                 })
                 .await
                 {

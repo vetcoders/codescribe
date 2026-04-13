@@ -956,6 +956,10 @@ pub(crate) async fn transcription_session(
     // Track last raw Whisper output for final flush UtteranceFinal.
     let mut last_raw_text = String::new();
     let mut last_segments: Vec<TranscriptSegment> = Vec::new();
+    // Track per-utterance confidence metadata for UtteranceFinal.
+    let mut utterance_avg_logprob: Option<f32> = None;
+    let mut utterance_compression_ratio: Option<f32> = None;
+    let mut utterance_quality_gate_dropped = false;
     // Accumulate segment timestamps for the current utterance across interim slices.
     let mut utterance_segments: Vec<TranscriptSegment> = Vec::new();
 
@@ -1514,6 +1518,17 @@ pub(crate) async fn transcription_session(
 
                 match result {
                     Ok(raw_transcript) => {
+                        if item.is_final {
+                            utterance_avg_logprob = raw_transcript.avg_logprob;
+                            utterance_compression_ratio = raw_transcript.compression_ratio;
+                            utterance_quality_gate_dropped = raw_transcript.quality_gate_dropped;
+                        } else if utterance_avg_logprob.is_none() {
+                            utterance_avg_logprob = raw_transcript.avg_logprob;
+                            utterance_compression_ratio = raw_transcript.compression_ratio;
+                            if raw_transcript.quality_gate_dropped {
+                                utterance_quality_gate_dropped = true;
+                            }
+                        }
                         let raw_text = raw_transcript.text;
                         let mut raw_segments = raw_transcript.segments;
                         let segment_offset_ts = if item.is_final {
@@ -1665,11 +1680,17 @@ pub(crate) async fn transcription_session(
                                     start_ts: utterance_start_s,
                                     end_ts,
                                     segments: std::mem::take(&mut utterance_segments),
+                                    avg_logprob: utterance_avg_logprob.take(),
+                                    compression_ratio: utterance_compression_ratio.take(),
+                                    quality_gate_dropped: std::mem::take(&mut utterance_quality_gate_dropped),
                                 });
                             } else {
                                 utterance_segments.clear();
                             }
                             accumulated_text.clear();
+                            utterance_avg_logprob = None;
+                            utterance_compression_ratio = None;
+                            utterance_quality_gate_dropped = false;
                             // Fix A: Save current suffix as utterance-boundary snapshot
                             // for the next FINAL to restore from.
                             utterance_boundary_suffix = pipeline.last_suffix.clone();
@@ -1772,6 +1793,9 @@ pub(crate) async fn transcription_session(
             start_ts: utterance_start_s,
             end_ts,
             segments,
+            avg_logprob: utterance_avg_logprob,
+            compression_ratio: utterance_compression_ratio,
+            quality_gate_dropped: utterance_quality_gate_dropped,
         });
     }
 

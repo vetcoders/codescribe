@@ -20,8 +20,10 @@ use crate::config::Config;
 use crate::config::models::ModelManager;
 use crate::hf_cache;
 use crate::pipeline::contracts::{
-    RawTranscript, TranscriptionSource, TranscriptionVerdict, VadVerdict,
+    FileTranscriptionOptions, FinalPassDisposition, FinalPassMode, FinalPassVerdict, RawTranscript,
+    TranscriptionSource, TranscriptionVerdict, VadVerdict,
 };
+use crate::pipeline::stream_postprocess::StreamPostProcessor;
 
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
@@ -200,10 +202,70 @@ pub fn transcribe_streaming<'a>(
     engine.transcribe_long_streaming(samples, sample_rate, language, callback)
 }
 
+fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option<FinalPassVerdict> {
+    match options.final_pass {
+        FinalPassMode::None => None,
+        mode => Some(FinalPassVerdict {
+            mode,
+            disposition: FinalPassDisposition::Skipped,
+            reason: Some(reason.to_string()),
+            lexicon_rewrites: 0,
+            repetition_cleanups: 0,
+        }),
+    }
+}
+
+fn apply_requested_final_pass(
+    raw: &RawTranscript,
+    options: FileTranscriptionOptions,
+) -> (String, Option<FinalPassVerdict>) {
+    match options.final_pass {
+        FinalPassMode::None => (raw.text.clone(), None),
+        FinalPassMode::EmbeddedLexiconCleanup => {
+            let mut processor = StreamPostProcessor::new();
+            match processor.process_utterance(&raw.text) {
+                Some(text) => {
+                    let stats = processor.stats();
+                    let disposition = if text == raw.text {
+                        FinalPassDisposition::Unchanged
+                    } else {
+                        FinalPassDisposition::Changed
+                    };
+
+                    (
+                        text,
+                        Some(FinalPassVerdict {
+                            mode: FinalPassMode::EmbeddedLexiconCleanup,
+                            disposition,
+                            reason: None,
+                            lexicon_rewrites: stats.lexicon_rewrites,
+                            repetition_cleanups: stats.repetition_cleanups,
+                        }),
+                    )
+                }
+                None => {
+                    let stats = processor.stats();
+                    (
+                        String::new(),
+                        Some(FinalPassVerdict {
+                            mode: FinalPassMode::EmbeddedLexiconCleanup,
+                            disposition: FinalPassDisposition::Dropped,
+                            reason: Some("empty_after_cleanup".to_string()),
+                            lexicon_rewrites: stats.lexicon_rewrites,
+                            repetition_cleanups: stats.repetition_cleanups,
+                        }),
+                    )
+                }
+            }
+        }
+    }
+}
+
 /// Transcribe a file with full structured verdict (VAD stats, confidence, provenance).
 pub fn transcribe_file_verdict(
     path: &std::path::Path,
     language: Option<&str>,
+    options: FileTranscriptionOptions,
 ) -> Result<TranscriptionVerdict> {
     let (samples, sample_rate) =
         crate::audio::load_audio_file(path).context("Failed to load audio file")?;
@@ -231,23 +293,25 @@ pub fn transcribe_file_verdict(
             raw: RawTranscript::default(),
             vad: Some(vad),
             source: TranscriptionSource::LocalFinalPass,
+            final_pass: skipped_final_pass(options, "no_speech_detected"),
         });
     }
 
     let raw = transcribe_with_segments(&speech_samples, sample_rate, language)?;
-    let text = raw.text.clone();
+    let (text, final_pass) = apply_requested_final_pass(&raw, options);
 
     Ok(TranscriptionVerdict {
         text,
         raw,
         vad: Some(vad),
         source: TranscriptionSource::LocalFinalPass,
+        final_pass,
     })
 }
 
 /// Transcribe a file — backward-compatible wrapper returning plain text.
 pub fn transcribe_file(path: &std::path::Path, language: Option<&str>) -> Result<String> {
-    Ok(transcribe_file_verdict(path, language)?.text)
+    Ok(transcribe_file_verdict(path, language, FileTranscriptionOptions::default())?.text)
 }
 
 /// Detect language from audio samples
@@ -263,19 +327,64 @@ pub fn detect_language(samples: &[f32], sample_rate: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
-    fn test_model_path_resolution() {
-        // This test verifies the path resolution logic works
-        // It may or may not find a model depending on environment
-        let result = resolve_model_path_fallback();
+    fn requested_final_pass_reports_embedded_lexicon_changes() {
+        let raw = RawTranscript {
+            text: "doker".to_string(),
+            ..Default::default()
+        };
 
-        // In CI without model, this will fail - that's expected
-        if let Ok(path) = result {
-            assert!(path.join("tokenizer.json").exists());
-            println!("Found model at: {}", path.display());
-        } else {
-            println!("No model found (expected in CI): {:?}", result.err());
-        }
+        let (text, final_pass) = apply_requested_final_pass(
+            &raw,
+            FileTranscriptionOptions {
+                final_pass: FinalPassMode::EmbeddedLexiconCleanup,
+            },
+        );
+
+        assert_eq!(text, "Docker");
+        let final_pass = final_pass.expect("expected final-pass provenance");
+        assert_eq!(final_pass.mode, FinalPassMode::EmbeddedLexiconCleanup);
+        assert_eq!(final_pass.disposition, FinalPassDisposition::Changed);
+        assert_eq!(final_pass.lexicon_rewrites, 1);
+    }
+
+    #[test]
+    fn requested_final_pass_skips_when_no_speech_already_known() {
+        let final_pass = skipped_final_pass(
+            FileTranscriptionOptions {
+                final_pass: FinalPassMode::EmbeddedLexiconCleanup,
+            },
+            "no_speech_detected",
+        )
+        .expect("expected skipped final-pass provenance");
+
+        assert_eq!(final_pass.disposition, FinalPassDisposition::Skipped);
+        assert_eq!(final_pass.reason.as_deref(), Some("no_speech_detected"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_model_path_resolution_and_real_whisper_noop_load() {
+        let path = match resolve_model_path_fallback() {
+            Ok(path) => path,
+            Err(err) => {
+                println!("No model found (expected in CI): {err:?}");
+                return;
+            }
+        };
+
+        assert!(path.join("tokenizer.json").exists());
+        println!("Found model at: {}", path.display());
+
+        // This is the real contract we care about in core tests:
+        // if the runtime can resolve a model, Whisper must actually load and
+        // survive a no-op transcription path without mocking the engine.
+        let text = transcribe(&[], 16_000, Some("pl")).expect("Whisper no-op load should work");
+        assert!(
+            text.is_empty(),
+            "empty input should stay empty after no-op load"
+        );
     }
 }

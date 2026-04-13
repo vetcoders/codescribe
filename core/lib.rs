@@ -3,9 +3,18 @@
 //! ## Quick Start
 //!
 //! ```ignore
-//! // Resolve local Whisper at runtime, then transcribe.
+//! // Resolve local Whisper, then transcribe.
 //! codescribe_core::whisper::init()?;
 //! let text = codescribe_core::whisper::transcribe(&samples, 16000, Some("pl"))?;
+//!
+//! // File-level verdicts keep final-pass behavior explicit.
+//! let verdict = codescribe_core::whisper::transcribe_file_verdict(
+//!     std::path::Path::new("clip.wav"),
+//!     Some("pl"),
+//!     codescribe_core::contracts::FileTranscriptionOptions {
+//!         final_pass: codescribe_core::contracts::FinalPassMode::EmbeddedLexiconCleanup,
+//!     },
+//! )?;
 //!
 //! // Synthesize speech (optional embedded/runtime TTS depending on build).
 //! codescribe_core::tts::init()?;
@@ -54,6 +63,7 @@ pub use stt::whisper;
 
 /// Initialize and transcribe with the runtime Whisper path.
 pub mod stt_api {
+    pub use crate::pipeline::contracts::{FileTranscriptionOptions, FinalPassMode};
     pub use crate::stt::whisper::embedded::{
         EmbeddedModel, get_embedded_data, is_embedded_available,
     };

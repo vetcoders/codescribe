@@ -65,6 +65,64 @@ pub struct TranscriptSegment {
     pub end_ts: f32,
 }
 
+/// Explicit options for file-based transcription.
+///
+/// This keeps final-pass behavior requestable instead of hiding cleanup behind
+/// a plain-text helper.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileTranscriptionOptions {
+    pub final_pass: FinalPassMode,
+}
+
+/// Optional final-pass behavior for file-level transcription.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalPassMode {
+    #[default]
+    None,
+    EmbeddedLexiconCleanup,
+}
+
+impl std::fmt::Display for FinalPassMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::EmbeddedLexiconCleanup => write!(f, "embedded_lexicon_cleanup"),
+        }
+    }
+}
+
+/// What the requested final pass actually did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalPassDisposition {
+    Skipped,
+    Unchanged,
+    Changed,
+    Dropped,
+}
+
+impl std::fmt::Display for FinalPassDisposition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Skipped => write!(f, "skipped"),
+            Self::Unchanged => write!(f, "unchanged"),
+            Self::Changed => write!(f, "changed"),
+            Self::Dropped => write!(f, "dropped"),
+        }
+    }
+}
+
+/// Provenance for an explicitly requested file-level final pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalPassVerdict {
+    pub mode: FinalPassMode,
+    pub disposition: FinalPassDisposition,
+    pub reason: Option<String>,
+    pub lexicon_rewrites: u64,
+    pub repetition_cleanups: u64,
+}
+
 // ═══════════════════════════════════════════════════════════
 // File-level transcription verdict
 // ═══════════════════════════════════════════════════════════
@@ -79,6 +137,7 @@ pub struct TranscriptionVerdict {
     pub raw: RawTranscript,
     pub vad: Option<VadVerdict>,
     pub source: TranscriptionSource,
+    pub final_pass: Option<FinalPassVerdict>,
 }
 
 /// VAD analysis results preserved as data.
@@ -334,6 +393,9 @@ pub enum EngineEvent {
         start_ts: f32,
         end_ts: f32,
         segments: Vec<TranscriptSegment>,
+        avg_logprob: Option<f32>,
+        compression_ratio: Option<f32>,
+        quality_gate_dropped: bool,
     },
 
     /// Content dropped by engine intelligence.
@@ -673,6 +735,9 @@ mod tests {
                 start_ts: 1.5,
                 end_ts: 3.2,
             }],
+            avg_logprob: Some(-0.35),
+            compression_ratio: Some(1.2),
+            quality_gate_dropped: false,
         };
         if let EngineEvent::UtteranceFinal {
             utterance_id,
@@ -681,6 +746,9 @@ mod tests {
             start_ts,
             end_ts,
             segments,
+            avg_logprob,
+            compression_ratio,
+            quality_gate_dropped,
         } = event
         {
             assert_eq!(utterance_id, 42);
@@ -689,6 +757,9 @@ mod tests {
             assert!((start_ts - 1.5).abs() < f32::EPSILON);
             assert!((end_ts - 3.2).abs() < f32::EPSILON);
             assert_eq!(segments.len(), 1);
+            assert_eq!(avg_logprob, Some(-0.35));
+            assert_eq!(compression_ratio, Some(1.2));
+            assert!(!quality_gate_dropped);
         } else {
             panic!("Expected UtteranceFinal variant");
         }
@@ -731,6 +802,12 @@ mod tests {
         assert!(rt.avg_logprob.unwrap() < -1.0);
     }
 
+    #[test]
+    fn file_transcription_options_default_disables_final_pass() {
+        let options = FileTranscriptionOptions::default();
+        assert_eq!(options.final_pass, FinalPassMode::None);
+    }
+
     // ── TranscriptionVerdict ──
 
     #[test]
@@ -745,6 +822,7 @@ mod tests {
                 no_speech: true,
             }),
             source: TranscriptionSource::LocalFinalPass,
+            final_pass: None,
         };
         assert!(verdict.text.is_empty());
         assert!(verdict.vad.as_ref().unwrap().no_speech);
@@ -770,11 +848,26 @@ mod tests {
                 no_speech: false,
             }),
             source: TranscriptionSource::LocalFinalPass,
+            final_pass: Some(FinalPassVerdict {
+                mode: FinalPassMode::EmbeddedLexiconCleanup,
+                disposition: FinalPassDisposition::Changed,
+                reason: None,
+                lexicon_rewrites: 1,
+                repetition_cleanups: 0,
+            }),
         };
         assert_eq!(verdict.text, "Cześć");
         assert!(!verdict.vad.as_ref().unwrap().no_speech);
         assert_eq!(verdict.raw.avg_logprob, Some(-0.25));
         assert!(!verdict.raw.quality_gate_dropped);
+        assert_eq!(
+            verdict.final_pass.as_ref().unwrap().mode,
+            FinalPassMode::EmbeddedLexiconCleanup
+        );
+        assert_eq!(
+            verdict.final_pass.as_ref().unwrap().disposition,
+            FinalPassDisposition::Changed
+        );
     }
 
     #[test]
@@ -786,5 +879,73 @@ mod tests {
         assert_eq!(TranscriptionSource::Streaming.to_string(), "streaming");
         assert_eq!(TranscriptionSource::Cloud.to_string(), "cloud");
         assert_eq!(TranscriptionSource::Fallback.to_string(), "fallback");
+    }
+
+    #[test]
+    fn final_pass_display_contract() {
+        assert_eq!(FinalPassMode::None.to_string(), "none");
+        assert_eq!(
+            FinalPassMode::EmbeddedLexiconCleanup.to_string(),
+            "embedded_lexicon_cleanup"
+        );
+        assert_eq!(FinalPassDisposition::Skipped.to_string(), "skipped");
+        assert_eq!(FinalPassDisposition::Unchanged.to_string(), "unchanged");
+        assert_eq!(FinalPassDisposition::Changed.to_string(), "changed");
+        assert_eq!(FinalPassDisposition::Dropped.to_string(), "dropped");
+    }
+
+    // ── Truth QA: UtteranceFinal confidence contract ──
+
+    #[test]
+    fn utterance_final_carries_confidence_metadata() {
+        let event = EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "test".to_string(),
+            raw_text: "test".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            avg_logprob: Some(-0.85),
+            compression_ratio: Some(2.5),
+            quality_gate_dropped: false,
+        };
+        if let EngineEvent::UtteranceFinal {
+            avg_logprob,
+            compression_ratio,
+            quality_gate_dropped,
+            ..
+        } = event
+        {
+            assert!(avg_logprob.unwrap() < -0.5, "low confidence must survive");
+            assert!(
+                compression_ratio.unwrap() > 2.0,
+                "high compression must survive"
+            );
+            assert!(!quality_gate_dropped);
+        }
+    }
+
+    #[test]
+    fn utterance_final_quality_gate_truth() {
+        let event = EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: String::new(),
+            raw_text: String::new(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            avg_logprob: Some(-1.5),
+            compression_ratio: Some(4.0),
+            quality_gate_dropped: true,
+        };
+        if let EngineEvent::UtteranceFinal {
+            quality_gate_dropped,
+            avg_logprob,
+            ..
+        } = event
+        {
+            assert!(quality_gate_dropped, "gate drop must be visible in event");
+            assert!(avg_logprob.unwrap() < -1.0);
+        }
     }
 }
