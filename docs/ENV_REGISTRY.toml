@@ -763,14 +763,14 @@ description = "Override .env file path"
 # Quality / Daemon
 # ═══════════════════════════════════════════════════════════════════════════════
 
-[vars.CODESCRIBE_AUTOSTART_QUALITY_DAEMON]
+[vars.QUBE_DAEMON_AUTOSTART]
 default = "0"
 type = "bool"
 reload = "restart"
 category = "quality"
 description = "Auto-start quality daemon on app launch"
 
-[vars.CODESCRIBE_LOOP_USE_CLOUD_STT]
+[vars.QUBE_DAEMON_USE_CLOUD_STT]
 default = "0"
 type = "bool"
 reload = "restart"

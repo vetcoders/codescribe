@@ -667,12 +667,12 @@ struct SettingsWindowState {
     permission_action_buttons: [Option<usize>; 5],
     permission_requested: [bool; 5],
     permission_polling: bool,
-    quality_daemon_checkbox: Option<usize>,
+    qube_daemon_checkbox: Option<usize>,
     ultra_quality_checkbox: Option<usize>,
     quality_available_label: Option<usize>,
     quality_pending_label: Option<usize>,
     quality_last_check_label: Option<usize>,
-    quality_report_label: Option<usize>,
+    qube_report_label: Option<usize>,
     quality_open_report_button: Option<usize>,
     llm_endpoint_field: Option<usize>,
     llm_model_field: Option<usize>,
@@ -720,12 +720,12 @@ fn clear_settings_ui_state(state: &mut SettingsWindowState) {
     state.permission_action_buttons = [None, None, None, None, None];
     state.permission_requested = [false; 5];
     state.permission_polling = false;
-    state.quality_daemon_checkbox = None;
+    state.qube_daemon_checkbox = None;
     state.ultra_quality_checkbox = None;
     state.quality_available_label = None;
     state.quality_pending_label = None;
     state.quality_last_check_label = None;
-    state.quality_report_label = None;
+    state.qube_report_label = None;
     state.quality_open_report_button = None;
     state.llm_endpoint_field = None;
     state.llm_model_field = None;
@@ -1009,12 +1009,12 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
         state.permission_action_buttons = built_state.permission_action_buttons;
         state.permission_requested = built_state.permission_requested;
         state.permission_polling = built_state.permission_polling;
-        state.quality_daemon_checkbox = built_state.quality_daemon_checkbox;
+        state.qube_daemon_checkbox = built_state.qube_daemon_checkbox;
         state.ultra_quality_checkbox = built_state.ultra_quality_checkbox;
         state.quality_available_label = built_state.quality_available_label;
         state.quality_pending_label = built_state.quality_pending_label;
         state.quality_last_check_label = built_state.quality_last_check_label;
-        state.quality_report_label = built_state.quality_report_label;
+        state.qube_report_label = built_state.qube_report_label;
         state.quality_open_report_button = built_state.quality_open_report_button;
         state.llm_endpoint_field = built_state.llm_endpoint_field;
         state.llm_model_field = built_state.llm_model_field;
@@ -2541,7 +2541,7 @@ fn refresh_quality_dashboard() {
                 state.quality_available_label,
                 state.quality_pending_label,
                 state.quality_last_check_label,
-                state.quality_report_label,
+                state.qube_report_label,
                 state.quality_open_report_button,
             )
         };
@@ -2589,11 +2589,11 @@ fn refresh_quality_dashboard() {
         }
 
         if let Some(ptr) = report_label {
-            set_text_field_string(ptr as Id, &quality_report_text(&daemon_state));
+            set_text_field_string(ptr as Id, &qube_report_text(&daemon_state));
         }
 
         if let Some(ptr) = open_report_button {
-            let _: () = msg_send![ptr as Id, setEnabled: quality_report_exists(&daemon_state)];
+            let _: () = msg_send![ptr as Id, setEnabled: qube_report_exists(&daemon_state)];
         }
     });
 }
@@ -3563,7 +3563,7 @@ fn quality_last_check_text(last_check: &str) -> String {
     }
 }
 
-fn quality_report_exists(state: &crate::qube_daemon::QualityDaemonState) -> bool {
+fn qube_report_exists(state: &crate::qube_daemon::QubeDaemonState) -> bool {
     state
         .latest_report
         .as_ref()
@@ -3571,7 +3571,7 @@ fn quality_report_exists(state: &crate::qube_daemon::QualityDaemonState) -> bool
         .unwrap_or(false)
 }
 
-fn quality_report_text(state: &crate::qube_daemon::QualityDaemonState) -> String {
+fn qube_report_text(state: &crate::qube_daemon::QubeDaemonState) -> String {
     match state.latest_report.as_ref() {
         Some(dir) => {
             let html_path = PathBuf::from(dir).join("index.html");
@@ -3967,9 +3967,9 @@ unsafe fn build_quality_tab(
         y -= 18.0 + gap;
 
         let quality_on = UserSettings::load()
-            .quality_daemon_autostart
+            .qube_daemon_autostart
             .unwrap_or_else(|| {
-                std::env::var("CODESCRIBE_AUTOSTART_QUALITY_DAEMON")
+                std::env::var("QUBE_DAEMON_AUTOSTART")
                     .map(|v| parse_env_bool(&v))
                     .unwrap_or(false)
             });
@@ -3983,13 +3983,13 @@ unsafe fn build_quality_tab(
             ToggleRowSpec {
                 title: "Auto-tune transcription quality (recommended)",
                 checked: quality_on,
-                action: sel!(onQualityDaemonToggled:),
+                action: sel!(onQubeDaemonToggled:),
                 description: Some("Runs quality analysis every 30 minutes in the background."),
                 tag: None,
                 gap,
             },
         );
-        state.quality_daemon_checkbox = Some(quality_check as usize);
+        state.qube_daemon_checkbox = Some(quality_check as usize);
 
         let automation_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
@@ -4102,11 +4102,11 @@ unsafe fn build_quality_tab(
             pad,
             gap,
         ));
-        state.quality_report_label = Some(add_metric_row(
+        state.qube_report_label = Some(add_metric_row(
             container,
             &mut y,
             "Latest report:",
-            &quality_report_text(&daemon_state),
+            &qube_report_text(&daemon_state),
             secondary,
             content_w,
             pad,
@@ -4130,7 +4130,7 @@ unsafe fn build_quality_tab(
             button_style::GLASS,
         );
         button_set_action(open_report_btn, action_handler, sel!(onOpenQualityReport:));
-        let _: () = msg_send![open_report_btn, setEnabled: quality_report_exists(&daemon_state)];
+        let _: () = msg_send![open_report_btn, setEnabled: qube_report_exists(&daemon_state)];
         add_subview(container, open_report_btn);
         state.quality_open_report_button = Some(open_report_btn as usize);
 
@@ -4631,7 +4631,7 @@ pub(super) extern "C" fn on_quality_refresh(_this: &Object, _cmd: objc::runtime:
     refresh_quality_dashboard();
 }
 
-pub(super) extern "C" fn on_open_quality_report(
+pub(super) extern "C" fn on_open_qube_report(
     _this: &Object,
     _cmd: objc::runtime::Sel,
     _sender: Id,
@@ -5000,7 +5000,7 @@ pub(super) extern "C" fn on_clear_assistive_key(
     clear_keychain_entry("LLM_ASSISTIVE_API_KEY", field_ptr);
 }
 
-pub(super) extern "C" fn on_quality_daemon_toggled(
+pub(super) extern "C" fn on_qube_daemon_toggled(
     _this: &Object,
     _cmd: objc::runtime::Sel,
     sender: Id,
@@ -5010,10 +5010,7 @@ pub(super) extern "C" fn on_quality_daemon_toggled(
         let enabled = state == 1;
         info!("Settings: quality daemon autostart -> {}", enabled);
         let config = Config::load();
-        let _ = config.save_to_env(
-            "CODESCRIBE_AUTOSTART_QUALITY_DAEMON",
-            if enabled { "1" } else { "0" },
-        );
+        let _ = config.save_to_env("QUBE_DAEMON_AUTOSTART", if enabled { "1" } else { "0" });
         refresh_quality_dashboard();
     }
 }

@@ -662,20 +662,19 @@ async fn run_daemon() -> Result<()> {
     // The daemon is useful, but if it survives app restarts it can confuse macOS
     // permissions / input monitoring workflows. Turn it on explicitly when needed.
     let quality_autostart = user_settings
-        .quality_daemon_autostart
-        .unwrap_or_else(|| env_bool("CODESCRIBE_AUTOSTART_QUALITY_DAEMON", false));
-    let quality_child = if quality_autostart {
-        spawn_quality_daemon()
+        .qube_daemon_autostart
+        .unwrap_or_else(|| env_bool("QUBE_DAEMON_AUTOSTART", false));
+    let qube_child = if quality_autostart {
+        spawn_qube_daemon()
     } else {
-        stop_quality_daemon_if_running();
-        codescribe::qube_daemon::mark_daemon_unavailable();
+        stop_qube_daemon_if_running();
         None
     };
 
     tray::run_with_hotkeys(None)?;
 
     // Cleanup: kill quality daemon when tray exits
-    if let Some(mut handle) = quality_child {
+    if let Some(mut handle) = qube_child {
         let _ = handle.child.kill();
         let _ = std::fs::remove_file(handle.pid_path);
     }
@@ -693,9 +692,9 @@ fn env_bool(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn stop_quality_daemon_if_running() {
+fn stop_qube_daemon_if_running() {
     let config_dir = codescribe::config::Config::config_dir();
-    let pid_path = config_dir.join("logs").join("quality_daemon.pid");
+    let pid_path = config_dir.join("logs").join("qube_daemon.pid");
 
     let pid = std::fs::read_to_string(&pid_path)
         .ok()
@@ -728,12 +727,12 @@ fn stop_quality_daemon_if_running() {
 
 /// Spawn `qube-daemon --daemon` as a background child process.
 /// Returns the Child handle so we can kill it on app exit.
-struct QualityDaemonHandle {
+struct QubeDaemonHandle {
     child: std::process::Child,
     pid_path: PathBuf,
 }
 
-fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
+fn spawn_qube_daemon() -> Option<QubeDaemonHandle> {
     use std::process::{Command, Stdio};
 
     // Strategy: find qube-daemon binary next to current exe, or in PATH
@@ -746,16 +745,15 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
             if which_exists("qube-daemon") {
                 PathBuf::from("qube-daemon")
             } else {
-                eprintln!("[quality-daemon] qube-daemon not found; skipping auto-start");
-                codescribe::qube_daemon::mark_daemon_unavailable();
+                eprintln!("[qube-daemon] qube-daemon not found; skipping auto-start");
                 return None;
             }
         }
     };
 
     let config_dir = codescribe::config::Config::config_dir();
-    let log_path = config_dir.join("logs").join("quality_daemon.log");
-    let pid_path = config_dir.join("logs").join("quality_daemon.pid");
+    let log_path = config_dir.join("logs").join("qube_daemon.log");
+    let pid_path = config_dir.join("logs").join("qube_daemon.pid");
     std::fs::create_dir_all(config_dir.join("logs")).ok();
 
     if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
@@ -763,7 +761,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
         && is_process_alive(pid)
     {
         eprintln!(
-            "[quality-daemon] Already running (pid={}); skipping auto-start",
+            "[qube-daemon] Already running (pid={}); skipping auto-start",
             pid
         );
         return None;
@@ -778,8 +776,7 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
     {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[quality-daemon] Failed to open log file: {}", e);
-            codescribe::qube_daemon::mark_daemon_unavailable();
+            eprintln!("[qube-daemon] Failed to open log file: {}", e);
             return None;
         }
     };
@@ -801,16 +798,15 @@ fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
         Ok(child) => {
             let _ = std::fs::write(&pid_path, child.id().to_string());
             eprintln!(
-                "[quality-daemon] Started (pid={}, bin={}, log={})",
+                "[qube-daemon] Started (pid={}, bin={}, log={})",
                 child.id(),
                 bin_path.display(),
                 log_path.display()
             );
-            Some(QualityDaemonHandle { child, pid_path })
+            Some(QubeDaemonHandle { child, pid_path })
         }
         Err(e) => {
-            eprintln!("[quality-daemon] Failed to spawn: {}", e);
-            codescribe::qube_daemon::mark_daemon_unavailable();
+            eprintln!("[qube-daemon] Failed to spawn: {}", e);
             None
         }
     }

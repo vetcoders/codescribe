@@ -75,7 +75,7 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub quality_daemon_autostart: Option<bool>,
+    pub qube_daemon_autostart: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_enter_sends: Option<bool>,
 
@@ -252,7 +252,7 @@ struct SystemV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    quality_daemon_autostart: Option<bool>,
+    qube_daemon_autostart: Option<bool>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -296,7 +296,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "QUICK_NOTES_ENABLED",
     "QUICK_NOTES_SAVE_ONLY",
     "START_AT_LOGIN",
-    "CODESCRIBE_AUTOSTART_QUALITY_DAEMON",
+    "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
     // Voice Lab survivors
     "CODESCRIBE_BUFFER_DELAY_MS",
@@ -375,7 +375,7 @@ impl UserSettings {
             }),
             system: Some(SystemV2 {
                 start_at_login: self.start_at_login,
-                quality_daemon_autostart: self.quality_daemon_autostart,
+                qube_daemon_autostart: self.qube_daemon_autostart,
             }),
         }
     }
@@ -482,7 +482,7 @@ impl UserSettings {
             quick_notes_enabled: v2.features.as_ref().and_then(|f| f.quick_notes_enabled),
             quick_notes_save_only: None,
             start_at_login: v2.system.as_ref().and_then(|s| s.start_at_login),
-            quality_daemon_autostart: v2.system.as_ref().and_then(|s| s.quality_daemon_autostart),
+            qube_daemon_autostart: v2.system.as_ref().and_then(|s| s.qube_daemon_autostart),
             agent_enter_sends: None,
             buffer_delay_ms: v2
                 .speech
@@ -766,7 +766,7 @@ impl UserSettings {
             "QUICK_NOTES_ENABLED" => self.quick_notes_enabled = Some(value),
             "QUICK_NOTES_SAVE_ONLY" => self.quick_notes_save_only = Some(value),
             "START_AT_LOGIN" => self.start_at_login = Some(value),
-            "CODESCRIBE_AUTOSTART_QUALITY_DAEMON" => self.quality_daemon_autostart = Some(value),
+            "QUBE_DAEMON_AUTOSTART" => self.qube_daemon_autostart = Some(value),
             "AGENT_ENTER_SENDS" => self.agent_enter_sends = Some(value),
             other => {
                 warn!("Unknown bool setting key: {other}");
@@ -938,13 +938,13 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_quality_daemon_autostart_persists_in_v2_system_section() {
+    fn test_qube_daemon_autostart_persists_in_v2_system_section() {
         let _tmp = setup_isolated_data_dir();
         let mut settings = UserSettings::default();
-        settings.set_bool("CODESCRIBE_AUTOSTART_QUALITY_DAEMON", true);
+        settings.set_bool("QUBE_DAEMON_AUTOSTART", true);
 
         let loaded = UserSettings::load();
-        assert_eq!(loaded.quality_daemon_autostart, Some(true));
+        assert_eq!(loaded.qube_daemon_autostart, Some(true));
 
         let path = UserSettings::settings_path();
         let persisted: serde_json::Value =
@@ -953,7 +953,7 @@ mod tests {
         assert_eq!(
             persisted
                 .get("system")
-                .and_then(|v| v.get("quality_daemon_autostart"))
+                .and_then(|v| v.get("qube_daemon_autostart"))
                 .and_then(|v| v.as_bool()),
             Some(true)
         );

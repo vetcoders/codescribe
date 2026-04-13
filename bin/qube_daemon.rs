@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use codescribe::config::Config;
-use codescribe::qube_daemon::{LexiconSource, QualityLoopConfig, run};
+use codescribe::qube_daemon::{LexiconSource, QubeDaemonConfig, run};
 use codescribe::qube_report::{MetricsReference, QualityReport, QualityReportConfig};
 
 /// Global mismatch counter for daemon mode
@@ -142,7 +142,7 @@ enum ReferenceSourceArg {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    if env_bool("CODESCRIBE_LOOP_USE_CLOUD_STT") {
+    if env_bool("QUBE_DAEMON_USE_CLOUD_STT") {
         // Loop-only override: force cloud STT without changing app defaults.
         unsafe {
             std::env::set_var("USE_LOCAL_STT", "0");
@@ -205,7 +205,7 @@ async fn run_single(args: &Args) -> Result<()> {
 
     let baseline_report = args.baseline.clone().map(|path| resolve_report_path(&path));
 
-    let loop_config = QualityLoopConfig {
+    let loop_config = QubeDaemonConfig {
         report_config,
         baseline_report,
         history_path,

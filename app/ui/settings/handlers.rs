@@ -13,13 +13,14 @@ use super::{
     on_delay_changed, on_diagnostics_refresh, on_double_tap_interval_changed,
     on_enter_send_toggled, on_formatting_level_changed, on_formatting_toggled, on_language_changed,
     on_llm_endpoint_changed, on_llm_key_changed, on_llm_model_changed, on_mode_binding_change,
-    on_open_quality_report, on_open_system_settings, on_permission_action,
+    on_open_qube_report, on_open_system_settings, on_permission_action,
     on_preview_buffer_delay_changed, on_preview_emit_words_max_changed,
     on_preview_interim_cadence_changed, on_preview_typing_cps_changed, on_prompt_load,
-    on_prompt_reset, on_prompt_save, on_prompt_type_changed, on_quality_daemon_toggled,
-    on_quality_refresh, on_refresh_permissions, on_save_api_settings, on_show_dock_icon_toggled,
-    on_show_hotkey_conflicts, on_stt_endpoint_changed, on_stt_key_changed, on_stt_provider_changed,
-    on_transcription_overlay_toggled, on_ultra_quality_toggled, on_volume_changed, switch_tab,
+    on_prompt_reset, on_prompt_save, on_prompt_type_changed, on_quality_refresh,
+    on_qube_daemon_toggled, on_refresh_permissions, on_save_api_settings,
+    on_show_dock_icon_toggled, on_show_hotkey_conflicts, on_stt_endpoint_changed,
+    on_stt_key_changed, on_stt_provider_changed, on_transcription_overlay_toggled,
+    on_ultra_quality_toggled, on_volume_changed, switch_tab,
 };
 
 pub type Id = *mut Object;
@@ -216,8 +217,8 @@ pub fn action_handler_class() -> *const Class {
 
             // Quality daemon toggle
             decl.add_method(
-                sel!(onQualityDaemonToggled:),
-                on_quality_daemon_toggled as extern "C" fn(&Object, Sel, Id),
+                sel!(onQubeDaemonToggled:),
+                on_qube_daemon_toggled as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onUltraQualityToggled:),
@@ -229,7 +230,7 @@ pub fn action_handler_class() -> *const Class {
             );
             decl.add_method(
                 sel!(onOpenQualityReport:),
-                on_open_quality_report as extern "C" fn(&Object, Sel, Id),
+                on_open_qube_report as extern "C" fn(&Object, Sel, Id),
             );
 
             // Permission refresh

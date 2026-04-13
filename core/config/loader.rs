@@ -450,15 +450,10 @@ impl Config {
         {
             self.start_at_login = v;
         }
-        if std::env::var("CODESCRIBE_AUTOSTART_QUALITY_DAEMON").is_err()
-            && let Some(v) = settings.quality_daemon_autostart
+        if std::env::var("QUBE_DAEMON_AUTOSTART").is_err()
+            && let Some(v) = settings.qube_daemon_autostart
         {
-            unsafe {
-                std::env::set_var(
-                    "CODESCRIBE_AUTOSTART_QUALITY_DAEMON",
-                    if v { "1" } else { "0" },
-                )
-            };
+            unsafe { std::env::set_var("QUBE_DAEMON_AUTOSTART", if v { "1" } else { "0" }) };
         }
         if std::env::var("AGENT_ENTER_SENDS").is_err()
             && let Some(v) = settings.agent_enter_sends
@@ -546,7 +541,7 @@ impl Config {
                 | "QUICK_NOTES_ENABLED"
                 | "QUICK_NOTES_SAVE_ONLY"
                 | "START_AT_LOGIN"
-                | "CODESCRIBE_AUTOSTART_QUALITY_DAEMON"
+                | "QUBE_DAEMON_AUTOSTART"
                 | "AGENT_ENTER_SENDS" => {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
@@ -692,7 +687,7 @@ impl Config {
                     | "QUICK_NOTES_ENABLED"
                     | "QUICK_NOTES_SAVE_ONLY"
                     | "START_AT_LOGIN"
-                    | "CODESCRIBE_AUTOSTART_QUALITY_DAEMON"
+                    | "QUBE_DAEMON_AUTOSTART"
                     | "AGENT_ENTER_SENDS" => {
                         let bv = matches!(*value, "1" | "true" | "yes" | "on");
                         match *key {
@@ -712,8 +707,8 @@ impl Config {
                                 settings_ref.quick_notes_save_only = Some(bv)
                             }
                             "START_AT_LOGIN" => settings_ref.start_at_login = Some(bv),
-                            "CODESCRIBE_AUTOSTART_QUALITY_DAEMON" => {
-                                settings_ref.quality_daemon_autostart = Some(bv)
+                            "QUBE_DAEMON_AUTOSTART" => {
+                                settings_ref.qube_daemon_autostart = Some(bv)
                             }
                             "AGENT_ENTER_SENDS" => settings_ref.agent_enter_sends = Some(bv),
                             _ => {}

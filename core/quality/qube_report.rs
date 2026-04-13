@@ -24,7 +24,6 @@ use crate::safe_path::{
 };
 use crate::state::conversation::{AiMode, reset_conversation_for_mode};
 use crate::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
-use crate::stt::whisper::embedded;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
@@ -188,14 +187,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     fs::create_dir_all(&artifacts_dir)?;
     fs::create_dir_all(&audio_dir)?;
 
-    let stt_engine = std::env::var("CODESCRIBE_STT_ENGINE")
-        .unwrap_or_else(|_| "candle".to_string())
-        .to_ascii_lowercase();
-    let uses_candle_assets = stt_engine != "onnx" && stt_engine != "apple";
-    if uses_candle_assets {
-        ensure_model_path()?;
-    }
-    crate::stt::init_active_engine().context("Failed to init active STT engine")?;
+    crate::stt::init_active_engine().context("Failed to init active STT engine via core::stt")?;
 
     // Resume: skip pairs that already have artifacts.
     //
@@ -1307,39 +1299,6 @@ fn snapshot_environment(metrics_reference: MetricsReference) -> ReportEnvironmen
         whisper_language: Some(config.whisper_language.as_str().to_string()),
         metrics_reference: metrics_reference.as_str().to_string(),
     }
-}
-
-fn ensure_model_path() -> Result<()> {
-    // Embedded model has priority - no disk I/O needed
-    if embedded::is_embedded_available() {
-        return Ok(());
-    }
-
-    if std::env::var("CODESCRIBE_MODEL_PATH").is_ok() {
-        return Ok(());
-    }
-
-    let config = Config::load();
-    let candidates = [
-        PathBuf::from("models").join(&config.local_model),
-        Config::config_dir()
-            .join("models")
-            .join(&config.local_model),
-    ];
-
-    for path in candidates {
-        if path.join("tokenizer.json").exists() {
-            // SAFETY: setting env before any model load is safe in this CLI.
-            unsafe {
-                std::env::set_var("CODESCRIBE_MODEL_PATH", &path);
-            }
-            return Ok(());
-        }
-    }
-
-    Err(anyhow!(
-        "Missing local model. Set CODESCRIBE_MODEL_PATH or run: hf download LibraxisAI/whisper-large-v3-turbo-mlx-q8"
-    ))
 }
 
 fn ensure_audio_asset(
