@@ -12,11 +12,10 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result, anyhow};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::Config;
-use crate::config::models::ModelManager;
-use crate::hf_cache;
+use crate::config::models::resolve_runtime_whisper_model_path;
 use crate::pipeline::contracts::{
     FileTranscriptionOptions, FinalPassDisposition, FinalPassMode, FinalPassVerdict, RawTranscript,
     TranscriptionSource, TranscriptionVerdict, VadVerdict,
@@ -27,8 +26,7 @@ use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
 
 /// Default model name (for dev/fallback mode)
-pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
-const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
+pub use crate::config::models::DEFAULT_MODEL;
 
 /// Global singleton engine
 static ENGINE: OnceLock<Mutex<LocalWhisperEngine>> = OnceLock::new();
@@ -38,72 +36,13 @@ static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 /// Resolve the model path for runtime Whisper fallback loading.
 fn resolve_model_path_fallback() -> Result<PathBuf> {
-    // 1. Dev override
-    if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH") {
-        let p = PathBuf::from(&path);
-        if p.join("tokenizer.json").exists() {
-            info!(
-                "DEV: Using model from CODESCRIBE_MODEL_PATH: {}",
-                p.display()
-            );
-            return Ok(p);
-        }
-        warn!("CODESCRIBE_MODEL_PATH set but model incomplete: {}", path);
-    }
-
-    // 2. Configured model (LOCAL_MODEL)
     let config = Config::load();
-    let configured_model = config.local_model;
-    if !configured_model.trim().is_empty() {
-        if configured_model.contains('/') {
-            if let Some(snapshot) = hf_cache::find_snapshot_with_any(
-                configured_model.trim(),
-                &["config.json", "tokenizer.json", "mel_filters.npz"],
-                &["weights.safetensors", "model.safetensors"],
-            ) {
-                info!("Using HF cache model: {}", snapshot.display());
-                return Ok(snapshot);
-            }
-        } else if configured_model == DEFAULT_MODEL
-            && let Some(snapshot) = hf_cache::find_snapshot_with_any(
-                DEFAULT_WHISPER_REPO,
-                &["config.json", "tokenizer.json", "mel_filters.npz"],
-                &["weights.safetensors", "model.safetensors"],
-            )
-        {
-            info!("Using HF cache model: {}", snapshot.display());
-            return Ok(snapshot);
-        }
-    }
-    if !configured_model.trim().is_empty()
-        && let Ok(manager) = ModelManager::new()
-    {
-        let candidate = manager.get_model_path(&configured_model);
-        if candidate.join("tokenizer.json").exists() {
-            info!("Using configured model: {}", candidate.display());
-            return Ok(candidate);
-        }
-    }
-
-    // 3. Bundled .app fallback (Tauri builds without embedding)
-    let exe = std::env::current_exe().context("Failed to get executable path")?;
-    let exe_dir = exe.parent().context("Failed to get executable directory")?;
-
-    let bundled_path = exe_dir.join("../Resources/models").join(DEFAULT_MODEL);
-
-    if bundled_path.join("tokenizer.json").exists() {
-        let canonical = bundled_path.canonicalize().unwrap_or(bundled_path);
-        info!("Using bundled model: {}", canonical.display());
-        return Ok(canonical);
-    }
-
-    Err(anyhow!(
-        "Whisper runtime fallback model not available.\n\
-         Embedded Whisper is preferred, but this build/runtime path still needs a local model.\n\
-         Set CODESCRIBE_MODEL_PATH or warm the Hugging Face cache.\n\n\
-         Download with: hf download {}",
-        DEFAULT_WHISPER_REPO
-    ))
+    let resolved = resolve_runtime_whisper_model_path(Some(config.local_model.as_str()))?;
+    info!(
+        "Using runtime Whisper fallback model: {}",
+        resolved.display()
+    );
+    Ok(resolved)
 }
 
 /// Get the resolved model path used by runtime Whisper fallback loading.

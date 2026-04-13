@@ -55,11 +55,13 @@ Grant in: System Settings > Privacy & Security
 
 ## Model
 
-**Runtime-managed Whisper policy**: `whisper-large-v3-turbo-mlx-q8`
+**Embedded-first Whisper policy**: `whisper-large-v3-turbo-mlx-q8`
 **Embedded Embedder**: `paraphrase-multilingual-MiniLM-L12-v2` (for semantic gating)
 
-- `core/build.rs` hard-disables Whisper embedding.
-- Runtime resolves Whisper from `CODESCRIBE_MODEL_PATH`, configured model dirs, bundled resources, or HF cache.
+- `core/build.rs` embeds Whisper by default when a complete model is available at build time.
+- Runtime fallback resolves Whisper from exactly one shared contract in `core/config/models.rs`:
+  `CODESCRIBE_MODEL_PATH` → configured local model path/alias → configured HF repo snapshot →
+  default local turbo model → default HF cache snapshot.
 - `make install` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
 
 **Developer note:**
