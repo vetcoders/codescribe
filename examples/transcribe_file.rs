@@ -3,6 +3,7 @@
 //! Usage: cargo run --release --example transcribe_file -- /path/to/audio.wav
 
 use codescribe::whisper::LocalWhisperEngine;
+use codescribe_core::pipeline::contracts::FileTranscriptionOptions;
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -62,8 +63,13 @@ fn main() -> anyhow::Result<()> {
     // Transcribe
     eprintln!("  Transcribing...");
     let start = Instant::now();
-    let text = engine.transcribe_file_with_language(&audio_path, Some(&lang))?;
+    let verdict = engine.transcribe_file_with_language(
+        &audio_path,
+        Some(&lang),
+        FileTranscriptionOptions::default(),
+    )?;
     let elapsed = start.elapsed();
+    let text = verdict.text;
 
     eprintln!("───────────────────────────────────────────────────────────");
     eprintln!("  Transcription time: {:?}", elapsed);

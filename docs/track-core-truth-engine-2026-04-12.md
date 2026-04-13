@@ -94,6 +94,9 @@ Recommended `vc-why-matrix` posture:
 - Preserve engine truth as metadata, not just text.
 - Ensure optional final-pass behavior is explicit, requested, and contract-visible.
 
+Live contract note:
+- `TranscriptionVerdict` is expected to carry source truth plus engine provisioning provenance (`engine`, `mode`, `fallback_used`) alongside VAD, confidence flags, and final-pass metadata.
+
 ## Scope
 
 In scope:

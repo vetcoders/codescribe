@@ -38,8 +38,8 @@ pub use params::DecodingParams; // Kept for params config if needed
 // Re-export singleton functions at module level (main API).
 //
 // File-level transcription stays structured on purpose: callers should use
-// `transcribe_file_verdict` so VAD, confidence, and final-pass provenance do
-// not collapse back into plain text.
+// `transcribe_file_verdict` so VAD, confidence, final-pass, and engine
+// provisioning provenance do not collapse back into plain text.
 pub use singleton::{
     detect_language, get_model_path, init, is_initialized, transcribe, transcribe_file_verdict,
     transcribe_streaming, transcribe_with_segments,

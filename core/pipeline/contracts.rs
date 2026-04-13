@@ -164,6 +164,7 @@ pub struct TranscriptionVerdict {
     pub raw: RawTranscript,
     pub vad: Option<VadVerdict>,
     pub source: TranscriptionSource,
+    pub engine: TranscriptionEngineVerdict,
     pub final_pass: Option<FinalPassVerdict>,
     pub confidence_flags: Vec<TranscriptionConfidenceFlag>,
 }
@@ -176,6 +177,7 @@ impl TranscriptionVerdict {
         raw: RawTranscript,
         vad: Option<VadVerdict>,
         source: TranscriptionSource,
+        engine: TranscriptionEngineVerdict,
         final_pass: Option<FinalPassVerdict>,
     ) -> Self {
         let confidence_flags = collect_confidence_flags(
@@ -188,6 +190,7 @@ impl TranscriptionVerdict {
             raw,
             vad,
             source,
+            engine,
             final_pass,
             confidence_flags,
         }
@@ -231,6 +234,56 @@ impl std::fmt::Display for TranscriptionSource {
             Self::Streaming => write!(f, "streaming"),
             Self::Cloud => write!(f, "cloud"),
             Self::Fallback => write!(f, "fallback"),
+        }
+    }
+}
+
+/// Which transcription engine produced the final verdict text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionEngine {
+    Whisper,
+}
+
+impl std::fmt::Display for TranscriptionEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Whisper => write!(f, "whisper"),
+        }
+    }
+}
+
+/// How the active engine was provisioned at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionEngineMode {
+    EmbeddedDefault,
+    RuntimeFallback,
+}
+
+impl std::fmt::Display for TranscriptionEngineMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmbeddedDefault => write!(f, "embedded_default"),
+            Self::RuntimeFallback => write!(f, "runtime_fallback"),
+        }
+    }
+}
+
+/// Engine-level provenance preserved with the file transcription verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptionEngineVerdict {
+    pub engine: TranscriptionEngine,
+    pub mode: TranscriptionEngineMode,
+    pub fallback_used: bool,
+}
+
+impl TranscriptionEngineVerdict {
+    pub const fn whisper(mode: TranscriptionEngineMode) -> Self {
+        Self {
+            engine: TranscriptionEngine::Whisper,
+            mode,
+            fallback_used: matches!(mode, TranscriptionEngineMode::RuntimeFallback),
         }
     }
 }
@@ -917,6 +970,7 @@ mod tests {
                 sparkline: String::new(),
             }),
             TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
             None,
         );
         assert!(verdict.text.is_empty());
@@ -927,6 +981,12 @@ mod tests {
             Some("vad_no_speech_detected")
         );
         assert_eq!(verdict.source, TranscriptionSource::LocalFinalPass);
+        assert_eq!(verdict.engine.engine, TranscriptionEngine::Whisper);
+        assert_eq!(
+            verdict.engine.mode,
+            TranscriptionEngineMode::EmbeddedDefault
+        );
+        assert!(!verdict.engine.fallback_used);
         assert_eq!(
             verdict.confidence_flags,
             vec![TranscriptionConfidenceFlag::VeryLowSpeech]
@@ -953,6 +1013,7 @@ mod tests {
                 sparkline: "▁▃▅▇█▇▅▃▁▁▃▅▇█▇▅▃▁▁".to_string(),
             }),
             TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::RuntimeFallback),
             Some(FinalPassVerdict {
                 mode: FinalPassMode::EmbeddedLexiconCleanup,
                 disposition: FinalPassDisposition::Changed,
@@ -974,6 +1035,12 @@ mod tests {
             verdict.final_pass.as_ref().unwrap().disposition,
             FinalPassDisposition::Changed
         );
+        assert_eq!(verdict.engine.engine, TranscriptionEngine::Whisper);
+        assert_eq!(
+            verdict.engine.mode,
+            TranscriptionEngineMode::RuntimeFallback
+        );
+        assert!(verdict.engine.fallback_used);
     }
 
     #[test]
@@ -985,6 +1052,15 @@ mod tests {
         assert_eq!(TranscriptionSource::Streaming.to_string(), "streaming");
         assert_eq!(TranscriptionSource::Cloud.to_string(), "cloud");
         assert_eq!(TranscriptionSource::Fallback.to_string(), "fallback");
+        assert_eq!(TranscriptionEngine::Whisper.to_string(), "whisper");
+        assert_eq!(
+            TranscriptionEngineMode::EmbeddedDefault.to_string(),
+            "embedded_default"
+        );
+        assert_eq!(
+            TranscriptionEngineMode::RuntimeFallback.to_string(),
+            "runtime_fallback"
+        );
     }
 
     #[test]
@@ -1033,6 +1109,7 @@ mod tests {
                 sparkline: String::new(),
             }),
             TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
             None,
         );
 
@@ -1159,6 +1236,7 @@ mod tests {
                 sparkline: "▁▃▅▇█▇▅▃▁▁▃▅▇█▇▅▃▁▁".to_string(),
             }),
             TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
             Some(FinalPassVerdict {
                 mode: FinalPassMode::EmbeddedLexiconCleanup,
                 disposition: FinalPassDisposition::Changed,
@@ -1174,6 +1252,7 @@ mod tests {
 
         assert_eq!(restored.text, verdict.text);
         assert_eq!(restored.source, verdict.source);
+        assert_eq!(restored.engine, verdict.engine);
         assert_eq!(restored.confidence_flags, verdict.confidence_flags);
 
         let vad = restored.vad.as_ref().unwrap();
@@ -1204,6 +1283,7 @@ mod tests {
                 sparkline: String::new(),
             }),
             TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
             None,
         );
 
@@ -1217,6 +1297,10 @@ mod tests {
             serde_json::from_str(&json).expect("verdict must deserialize without sparkline");
         assert!(restored.vad.as_ref().unwrap().sparkline.is_empty());
         assert!(restored.vad.as_ref().unwrap().no_speech);
+        assert_eq!(
+            restored.engine,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault)
+        );
     }
 
     #[test]
@@ -1237,6 +1321,7 @@ mod tests {
                 sparkline: sparkline.to_string(),
             }),
             TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
             None,
         );
 

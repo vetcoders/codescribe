@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use codescribe::whisper::LocalWhisperEngine;
+use codescribe_core::pipeline::contracts::FileTranscriptionOptions;
 use tempfile::TempDir;
 
 #[path = "support/e2e_stt_matrix.rs"]
@@ -81,9 +82,14 @@ fn e2e_stt_transcribe_test_audio() {
 
     println!("  Transcribing...");
     let start = std::time::Instant::now();
-    let text = engine
-        .transcribe_file_with_language(&audio_path, Some(&language))
+    let verdict = engine
+        .transcribe_file_with_language(
+            &audio_path,
+            Some(&language),
+            FileTranscriptionOptions::default(),
+        )
         .expect("transcribe");
+    let text = verdict.text;
     let elapsed = start.elapsed();
 
     println!("───────────────────────────────────────────────────────────");

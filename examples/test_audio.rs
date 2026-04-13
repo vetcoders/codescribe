@@ -1,5 +1,6 @@
 use anyhow::Result;
 use codescribe::whisper::LocalWhisperEngine;
+use codescribe_core::pipeline::contracts::FileTranscriptionOptions;
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
@@ -24,9 +25,10 @@ fn main() -> Result<()> {
         let lang = engine.detect_language_file(&f)?;
         println!("Detected: {}", lang);
 
-        let text = engine.transcribe_file_with_language(&f, None)?;
+        let verdict =
+            engine.transcribe_file_with_language(&f, None, FileTranscriptionOptions::default())?;
         println!("Time: {:?}", start.elapsed());
-        println!("---\n{}\n---\n", text);
+        println!("---\n{}\n---\n", verdict.text);
     }
 
     Ok(())

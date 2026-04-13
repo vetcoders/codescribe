@@ -17,7 +17,9 @@ use std::path::PathBuf;
 
 use codescribe::whisper::LocalWhisperEngine;
 use codescribe_core::audio::load_audio_file;
-use codescribe_core::pipeline::contracts::{BACKSPACE, DeltaSink, TranscriptDelta};
+use codescribe_core::pipeline::contracts::{
+    BACKSPACE, DeltaSink, FileTranscriptionOptions, TranscriptDelta,
+};
 use codescribe_core::pipeline::sinks::CollectorSink;
 use codescribe_core::pipeline::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
 use codescribe_core::vad_api::{
@@ -238,10 +240,11 @@ fn e2e_stage1_raw_whisper_canonical() {
         let reference = std::fs::read_to_string(dir.join(tc.reference)).unwrap_or_default();
 
         let start = std::time::Instant::now();
-        let raw = engine
-            .transcribe_file_with_language(&audio, Some("pl"))
+        let verdict = engine
+            .transcribe_file_with_language(&audio, Some("pl"), FileTranscriptionOptions::default())
             .expect("transcribe");
         let elapsed = start.elapsed();
+        let raw = verdict.text;
 
         let overlap = word_overlap(&raw, &reference);
         let raw_lower = raw.to_lowercase();
@@ -404,10 +407,11 @@ fn e2e_stage4_full_pipeline() {
 
         // 1. Whisper STT
         let start = std::time::Instant::now();
-        let raw = engine
-            .transcribe_file_with_language(&audio, Some("pl"))
+        let verdict = engine
+            .transcribe_file_with_language(&audio, Some("pl"), FileTranscriptionOptions::default())
             .expect("transcribe");
         let stt_time = start.elapsed();
+        let raw = verdict.text;
 
         // 2. PostProcessor
         let mut pp = StreamPostProcessor::new();
