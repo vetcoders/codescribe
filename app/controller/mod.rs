@@ -3495,20 +3495,7 @@ impl RecordingController {
             should_auto_paste = false;
         }
 
-        let mut final_formatted_text = formatted_text.clone();
-        if !live_stream_session {
-            if let Some(reason) = truth_no_speech_reason.as_deref() {
-                final_formatted_text = format!(
-                    "[CodeScribe Adjudicator: No reliable speech detected (Reason: {})]\n\n{}",
-                    reason, final_formatted_text
-                );
-            } else if let Some(trigger) = commit_trigger.as_deref() {
-                final_formatted_text = format!(
-                    "[CodeScribe Adjudicator: Warning - {}]\n\n{}",
-                    trigger, final_formatted_text
-                );
-            }
-        }
+        let final_formatted_text = formatted_text.clone();
 
         let final_status = compose_final_status(&truth_display_status, output_kind);
         let truth_metadata = RecordingTruthMetadata {
