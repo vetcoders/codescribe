@@ -60,7 +60,7 @@ use codescribe_core::tts::AudioPlayer;
 
 // UI state for conversation mode
 use crate::ui::voice_chat::ConversationModeState;
-use codescribe_core::pipeline::contracts::TranscriptionVerdict;
+use codescribe_core::pipeline::contracts::{TranscriptionConfidenceFlag, TranscriptionVerdict};
 
 use helpers::{
     SessionTelemetrySnapshot, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
@@ -175,9 +175,6 @@ fn non_empty_transcript(text: Option<String>) -> Option<String> {
         }
     })
 }
-
-const VERY_LOW_SPEECH_PCT: f32 = 6.0;
-const POSSIBLE_HALLUCINATION_LOGPROB: f32 = -1.0;
 
 #[derive(Debug, Clone, Default)]
 struct RecordingTruthVerdict {
@@ -312,34 +309,28 @@ fn adjudicate_recording_truth(
         if let Some(verdict) = local_final_pass_verdict {
             let speech_pct = verdict.vad.as_ref().map(|vad| vad.speech_pct);
             let avg_logprob = verdict.raw.avg_logprob;
-            let mut confidence_flags = Vec::new();
-            let mut fallback_class = None;
-
-            if speech_pct.is_some_and(|pct| pct <= VERY_LOW_SPEECH_PCT) {
-                push_truth_flag(&mut confidence_flags, "very_low_speech");
-                fallback_class = Some(RecordingFallbackClass::Unsafe);
-            }
-
-            if avg_logprob.is_some_and(|avg| avg <= POSSIBLE_HALLUCINATION_LOGPROB) {
-                push_truth_flag(&mut confidence_flags, "possible_hallucination_logprob");
-                fallback_class = Some(RecordingFallbackClass::Unsafe);
-            }
-
-            if verdict.raw.quality_gate_dropped {
-                push_truth_flag(&mut confidence_flags, "quality_gate_dropped");
-                fallback_class = Some(RecordingFallbackClass::Unsafe);
-            }
-
-            let no_speech_reason = if verdict.vad.as_ref().is_some_and(|vad| vad.no_speech) {
-                Some(
-                    session_telemetry
-                        .no_speech_reason
-                        .clone()
-                        .unwrap_or_else(|| "vad_no_speech_detected".to_string()),
+            let fallback_class = if verdict.confidence_flags.iter().any(|flag| {
+                matches!(
+                    flag,
+                    TranscriptionConfidenceFlag::VeryLowSpeech
+                        | TranscriptionConfidenceFlag::PossibleHallucinationLogprob
+                        | TranscriptionConfidenceFlag::QualityGateDropped
                 )
+            }) {
+                Some(RecordingFallbackClass::Unsafe)
             } else {
                 None
             };
+
+            let confidence_flags = verdict
+                .confidence_flags
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            let no_speech_reason = verdict
+                .vad
+                .as_ref()
+                .and_then(|vad| vad.no_speech_reason.clone());
 
             let raw_text = if no_speech_reason.is_some() {
                 None

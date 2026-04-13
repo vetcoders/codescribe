@@ -123,14 +123,39 @@ pub struct FinalPassVerdict {
     pub repetition_cleanups: u64,
 }
 
+const VERY_LOW_SPEECH_PCT: f32 = 6.0;
+const POSSIBLE_HALLUCINATION_LOGPROB: f32 = -1.0;
+
+/// Engine-owned confidence flags derived from VAD + Whisper quality metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionConfidenceFlag {
+    VeryLowSpeech,
+    PossibleHallucinationLogprob,
+    QualityGateDropped,
+}
+
+impl std::fmt::Display for TranscriptionConfidenceFlag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VeryLowSpeech => write!(f, "very_low_speech"),
+            Self::PossibleHallucinationLogprob => {
+                write!(f, "possible_hallucination_logprob")
+            }
+            Self::QualityGateDropped => write!(f, "quality_gate_dropped"),
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // File-level transcription verdict
 // ═══════════════════════════════════════════════════════════
 
 /// Structured verdict from file-level transcription.
 ///
-/// Carries the full truth the engine knows: text, VAD stats, confidence,
-/// and provenance. Consumers decide what to expose; nothing is hidden.
+/// Carries the full truth the engine knows: text, VAD stats, explicit
+/// no-speech reason, confidence flags, and provenance. Consumers decide what
+/// to expose; nothing is hidden.
 #[derive(Debug, Clone)]
 pub struct TranscriptionVerdict {
     pub text: String,
@@ -138,6 +163,29 @@ pub struct TranscriptionVerdict {
     pub vad: Option<VadVerdict>,
     pub source: TranscriptionSource,
     pub final_pass: Option<FinalPassVerdict>,
+    pub confidence_flags: Vec<TranscriptionConfidenceFlag>,
+}
+
+impl TranscriptionVerdict {
+    /// Build a verdict and materialize engine-owned confidence flags once at the
+    /// API boundary so downstream consumers do not have to recreate heuristics.
+    pub fn from_parts(
+        text: String,
+        raw: RawTranscript,
+        vad: Option<VadVerdict>,
+        source: TranscriptionSource,
+        final_pass: Option<FinalPassVerdict>,
+    ) -> Self {
+        let confidence_flags = collect_confidence_flags(vad.as_ref(), &raw);
+        Self {
+            text,
+            raw,
+            vad,
+            source,
+            final_pass,
+            confidence_flags,
+        }
+    }
 }
 
 /// VAD analysis results preserved as data.
@@ -149,6 +197,8 @@ pub struct VadVerdict {
     pub total_windows: usize,
     /// True when VAD found no speech at all.
     pub no_speech: bool,
+    /// Structured reason preserved when VAD concluded with no usable speech.
+    pub no_speech_reason: Option<String>,
 }
 
 /// Where the transcription text came from.
@@ -174,6 +224,30 @@ impl std::fmt::Display for TranscriptionSource {
             Self::Fallback => write!(f, "fallback"),
         }
     }
+}
+
+fn collect_confidence_flags(
+    vad: Option<&VadVerdict>,
+    raw: &RawTranscript,
+) -> Vec<TranscriptionConfidenceFlag> {
+    let mut flags = Vec::new();
+
+    if vad.is_some_and(|vad| vad.speech_pct <= VERY_LOW_SPEECH_PCT) {
+        flags.push(TranscriptionConfidenceFlag::VeryLowSpeech);
+    }
+
+    if raw
+        .avg_logprob
+        .is_some_and(|avg| avg <= POSSIBLE_HALLUCINATION_LOGPROB)
+    {
+        flags.push(TranscriptionConfidenceFlag::PossibleHallucinationLogprob);
+    }
+
+    if raw.quality_gate_dropped {
+        flags.push(TranscriptionConfidenceFlag::QualityGateDropped);
+    }
+
+    flags
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -812,54 +886,65 @@ mod tests {
 
     #[test]
     fn verdict_no_speech_carries_vad_truth() {
-        let verdict = TranscriptionVerdict {
-            text: String::new(),
-            raw: RawTranscript::default(),
-            vad: Some(VadVerdict {
+        let verdict = TranscriptionVerdict::from_parts(
+            String::new(),
+            RawTranscript::default(),
+            Some(VadVerdict {
                 speech_pct: 0.0,
                 speech_windows: 0,
                 total_windows: 60,
                 no_speech: true,
+                no_speech_reason: Some("vad_no_speech_detected".to_string()),
             }),
-            source: TranscriptionSource::LocalFinalPass,
-            final_pass: None,
-        };
+            TranscriptionSource::LocalFinalPass,
+            None,
+        );
         assert!(verdict.text.is_empty());
         assert!(verdict.vad.as_ref().unwrap().no_speech);
         assert_eq!(verdict.vad.as_ref().unwrap().total_windows, 60);
+        assert_eq!(
+            verdict.vad.as_ref().unwrap().no_speech_reason.as_deref(),
+            Some("vad_no_speech_detected")
+        );
         assert_eq!(verdict.source, TranscriptionSource::LocalFinalPass);
+        assert_eq!(
+            verdict.confidence_flags,
+            vec![TranscriptionConfidenceFlag::VeryLowSpeech]
+        );
     }
 
     #[test]
     fn verdict_with_speech_carries_full_truth() {
-        let verdict = TranscriptionVerdict {
-            text: "Cześć".to_string(),
-            raw: RawTranscript {
+        let verdict = TranscriptionVerdict::from_parts(
+            "Cześć".to_string(),
+            RawTranscript {
                 text: "Cześć".to_string(),
                 avg_logprob: Some(-0.25),
                 compression_ratio: Some(1.1),
                 quality_gate_dropped: false,
                 ..Default::default()
             },
-            vad: Some(VadVerdict {
+            Some(VadVerdict {
                 speech_pct: 85.0,
                 speech_windows: 17,
                 total_windows: 20,
                 no_speech: false,
+                no_speech_reason: None,
             }),
-            source: TranscriptionSource::LocalFinalPass,
-            final_pass: Some(FinalPassVerdict {
+            TranscriptionSource::LocalFinalPass,
+            Some(FinalPassVerdict {
                 mode: FinalPassMode::EmbeddedLexiconCleanup,
                 disposition: FinalPassDisposition::Changed,
                 reason: None,
                 lexicon_rewrites: 1,
                 repetition_cleanups: 0,
             }),
-        };
+        );
         assert_eq!(verdict.text, "Cześć");
         assert!(!verdict.vad.as_ref().unwrap().no_speech);
         assert_eq!(verdict.raw.avg_logprob, Some(-0.25));
         assert!(!verdict.raw.quality_gate_dropped);
+        assert!(verdict.confidence_flags.is_empty());
         assert_eq!(
             verdict.final_pass.as_ref().unwrap().mode,
             FinalPassMode::EmbeddedLexiconCleanup
@@ -892,6 +977,50 @@ mod tests {
         assert_eq!(FinalPassDisposition::Unchanged.to_string(), "unchanged");
         assert_eq!(FinalPassDisposition::Changed.to_string(), "changed");
         assert_eq!(FinalPassDisposition::Dropped.to_string(), "dropped");
+        assert_eq!(
+            TranscriptionConfidenceFlag::VeryLowSpeech.to_string(),
+            "very_low_speech"
+        );
+        assert_eq!(
+            TranscriptionConfidenceFlag::PossibleHallucinationLogprob.to_string(),
+            "possible_hallucination_logprob"
+        );
+        assert_eq!(
+            TranscriptionConfidenceFlag::QualityGateDropped.to_string(),
+            "quality_gate_dropped"
+        );
+    }
+
+    #[test]
+    fn verdict_derives_engine_confidence_flags() {
+        let verdict = TranscriptionVerdict::from_parts(
+            "podejrzany wynik".to_string(),
+            RawTranscript {
+                text: "podejrzany wynik".to_string(),
+                avg_logprob: Some(-1.2),
+                compression_ratio: Some(4.0),
+                quality_gate_dropped: true,
+                ..Default::default()
+            },
+            Some(VadVerdict {
+                speech_pct: 4.0,
+                speech_windows: 1,
+                total_windows: 20,
+                no_speech: false,
+                no_speech_reason: None,
+            }),
+            TranscriptionSource::LocalFinalPass,
+            None,
+        );
+
+        assert_eq!(
+            verdict.confidence_flags,
+            vec![
+                TranscriptionConfidenceFlag::VeryLowSpeech,
+                TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
+                TranscriptionConfidenceFlag::QualityGateDropped,
+            ]
+        );
     }
 
     // ── Truth QA: UtteranceFinal confidence contract ──

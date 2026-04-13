@@ -241,30 +241,35 @@ fn make_final_pass_verdict(
     avg_logprob: Option<f32>,
     no_speech: bool,
 ) -> codescribe_core::pipeline::contracts::TranscriptionVerdict {
-    codescribe_core::pipeline::contracts::TranscriptionVerdict {
-        text: text.to_string(),
-        raw: codescribe_core::pipeline::contracts::RawTranscript {
+    codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+        text.to_string(),
+        codescribe_core::pipeline::contracts::RawTranscript {
             text: text.to_string(),
             segments: Vec::new(),
             avg_logprob,
             compression_ratio: None,
             quality_gate_dropped: false,
         },
-        vad: Some(codescribe_core::pipeline::contracts::VadVerdict {
+        Some(codescribe_core::pipeline::contracts::VadVerdict {
             speech_pct,
             speech_windows: if no_speech { 0 } else { 4 },
             total_windows: 10,
             no_speech,
+            no_speech_reason: if no_speech {
+                Some("vad_no_speech_detected".to_string())
+            } else {
+                None
+            },
         }),
-        source: codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
-        final_pass: None,
-    }
+        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+        None,
+    )
 }
 
 #[test]
 fn test_adjudicate_recording_truth_blocks_local_no_speech() {
     let session = SessionTelemetrySnapshot {
-        no_speech_reason: Some("vad_no_speech_detected".to_string()),
+        no_speech_reason: Some("telemetry_should_not_override_core".to_string()),
         stats: None,
     };
 

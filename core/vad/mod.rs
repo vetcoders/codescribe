@@ -59,6 +59,8 @@ pub struct VadExtractStats {
     pub speech_windows: usize,
     /// Total windows analysed.
     pub total_windows: usize,
+    /// Reason preserved when extraction concludes with no usable speech.
+    pub no_speech_reason: Option<String>,
     /// Sparkline visualisation (one char per 500ms window).
     pub sparkline: String,
 }
@@ -101,13 +103,26 @@ fn return_extract_vad(sample_rate: u32, vad: AccumulatingVad) {
 ///
 /// Returns an empty vector when no speech is detected or VAD is unavailable.
 pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtractStats) {
-    if samples.is_empty() || sample_rate == 0 {
+    if samples.is_empty() {
         return (
             Vec::new(),
             VadExtractStats {
                 speech_pct: 0.0,
                 speech_windows: 0,
                 total_windows: 0,
+                no_speech_reason: Some("vad_input_empty".to_string()),
+                sparkline: String::new(),
+            },
+        );
+    }
+    if sample_rate == 0 {
+        return (
+            Vec::new(),
+            VadExtractStats {
+                speech_pct: 0.0,
+                speech_windows: 0,
+                total_windows: 0,
+                no_speech_reason: Some("vad_invalid_sample_rate".to_string()),
                 sparkline: String::new(),
             },
         );
@@ -121,6 +136,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                 speech_pct: 0.0,
                 speech_windows: 0,
                 total_windows: 0,
+                no_speech_reason: Some("vad_invalid_window_size".to_string()),
                 sparkline: String::new(),
             },
         );
@@ -139,6 +155,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                     speech_pct: 0.0,
                     speech_windows: 0,
                     total_windows: 0,
+                    no_speech_reason: Some("vad_unavailable".to_string()),
                     sparkline: String::new(),
                 },
             );
@@ -198,6 +215,13 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
     } else {
         0.0
     };
+    let no_speech_reason = if !speech_samples.is_empty() {
+        None
+    } else if total_windows == 0 {
+        Some("vad_audio_too_short".to_string())
+    } else {
+        Some("vad_no_speech_detected".to_string())
+    };
 
     (
         speech_samples,
@@ -205,6 +229,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
             speech_pct,
             speech_windows,
             total_windows,
+            no_speech_reason,
             sparkline,
         },
     )
@@ -249,5 +274,28 @@ mod tests {
         assert_eq!(stats.speech_pct, 0.0);
         assert_eq!(stats.speech_windows, 0);
         assert_eq!(stats.total_windows, 0);
+        assert_eq!(stats.no_speech_reason.as_deref(), Some("vad_input_empty"));
+    }
+
+    #[test]
+    fn invalid_sample_rate_reports_specific_no_speech_reason() {
+        let (samples, stats) = extract_speech(&[0.0; 1024], 0);
+        assert!(samples.is_empty());
+        assert_eq!(
+            stats.no_speech_reason.as_deref(),
+            Some("vad_invalid_sample_rate")
+        );
+    }
+
+    #[test]
+    fn short_audio_reports_vad_audio_too_short() {
+        let samples = vec![0.0; (SAMPLE_RATE as usize / 10).max(1)];
+        let (speech, stats) = extract_speech(&samples, SAMPLE_RATE);
+        assert!(speech.is_empty());
+        assert_eq!(stats.total_windows, 0);
+        assert_eq!(
+            stats.no_speech_reason.as_deref(),
+            Some("vad_audio_too_short")
+        );
     }
 }

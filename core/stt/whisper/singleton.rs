@@ -284,29 +284,36 @@ pub fn transcribe_file_verdict(
         speech_windows: stats.speech_windows,
         total_windows: stats.total_windows,
         no_speech,
+        no_speech_reason: stats.no_speech_reason.clone(),
     };
 
     if no_speech {
         info!("transcribe_file: no speech detected after VAD; returning empty verdict");
-        return Ok(TranscriptionVerdict {
-            text: String::new(),
-            raw: RawTranscript::default(),
-            vad: Some(vad),
-            source: TranscriptionSource::LocalFinalPass,
-            final_pass: skipped_final_pass(options, "no_speech_detected"),
-        });
+        return Ok(TranscriptionVerdict::from_parts(
+            String::new(),
+            RawTranscript::default(),
+            Some(vad),
+            TranscriptionSource::LocalFinalPass,
+            skipped_final_pass(
+                options,
+                stats
+                    .no_speech_reason
+                    .as_deref()
+                    .unwrap_or("vad_no_speech_detected"),
+            ),
+        ));
     }
 
     let raw = transcribe_with_segments(&speech_samples, sample_rate, language)?;
     let (text, final_pass) = apply_requested_final_pass(&raw, options);
 
-    Ok(TranscriptionVerdict {
+    Ok(TranscriptionVerdict::from_parts(
         text,
         raw,
-        vad: Some(vad),
-        source: TranscriptionSource::LocalFinalPass,
+        Some(vad),
+        TranscriptionSource::LocalFinalPass,
         final_pass,
-    })
+    ))
 }
 
 /// Transcribe a file — backward-compatible wrapper returning plain text.
@@ -356,12 +363,12 @@ mod tests {
             FileTranscriptionOptions {
                 final_pass: FinalPassMode::EmbeddedLexiconCleanup,
             },
-            "no_speech_detected",
+            "vad_no_speech_detected",
         )
         .expect("expected skipped final-pass provenance");
 
         assert_eq!(final_pass.disposition, FinalPassDisposition::Skipped);
-        assert_eq!(final_pass.reason.as_deref(), Some("no_speech_detected"));
+        assert_eq!(final_pass.reason.as_deref(), Some("vad_no_speech_detected"));
     }
 
     #[test]
