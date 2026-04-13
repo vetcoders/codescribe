@@ -348,7 +348,21 @@ fn adjudicate_recording_truth(
                 confidence_flags,
             );
         }
+    }
 
+    if let Some(reason) = &session_telemetry.no_speech_reason {
+        return build_truth_verdict(
+            None,
+            None,
+            None,
+            Some(reason.clone()),
+            None,
+            None,
+            Vec::new(),
+        );
+    }
+
+    if use_local_stt {
         let mut confidence_flags = Vec::new();
         if local_final_pass_attempted {
             push_truth_flag(&mut confidence_flags, "local_final_pass_unavailable");
@@ -3178,7 +3192,7 @@ impl RecordingController {
             postprocess_stats.lexicon_rewrites
         );
 
-        let raw_entry_path = if raw_save_enabled {
+        let raw_entry_path = if raw_save_enabled && !live_stream_session {
             let raw_entry = crate::state::history::save_entry_with_timestamp_and_slug(
                 &raw_text,
                 Some(recording_timestamp),
@@ -3477,6 +3491,21 @@ impl RecordingController {
             should_auto_paste = false;
         }
 
+        let mut final_formatted_text = formatted_text.clone();
+        if !live_stream_session {
+            if let Some(reason) = truth_no_speech_reason.as_deref() {
+                final_formatted_text = format!(
+                    "[CodeScribe Adjudicator: No reliable speech detected (Reason: {})]\n\n{}",
+                    reason, final_formatted_text
+                );
+            } else if let Some(trigger) = commit_trigger.as_deref() {
+                final_formatted_text = format!(
+                    "[CodeScribe Adjudicator: Warning - {}]\n\n{}",
+                    trigger, final_formatted_text
+                );
+            }
+        }
+
         let final_status = compose_final_status(&truth_display_status, output_kind);
         let truth_metadata = RecordingTruthMetadata {
             source: transcript_source,
@@ -3517,7 +3546,7 @@ impl RecordingController {
             // This makes it easier to understand differences between streaming preview and final-pass output.
             crate::ui::overlay::set_transcription_action_contract(
                 &raw_text,
-                &formatted_text,
+                &final_formatted_text,
                 action_contract_mode,
                 truth_display_status.clone(),
             );
@@ -3578,7 +3607,7 @@ impl RecordingController {
             info!("Skipping paste in tests (mode={})", mode_label);
         } else if should_auto_paste {
             // Paste the text into the active application
-            clipboard::paste_text(&formatted_text).context("Failed to paste text")?;
+            clipboard::paste_text(&final_formatted_text).context("Failed to paste text")?;
             info!("Text pasted successfully");
         } else {
             info!("Auto-paste skipped (mode={})", mode_label);
@@ -3586,12 +3615,13 @@ impl RecordingController {
 
         // Save final transcript (skip duplicate when RAW already stored and unchanged)
         let needs_final_save = !assistive
+            && !live_stream_session
             && (!raw_save_enabled
                 || output_kind != crate::state::history::TranscriptKind::Raw
-                || formatted_text.trim() != raw_text.trim());
+                || final_formatted_text.trim() != raw_text.trim());
         if needs_final_save {
             let entry = crate::state::history::save_entry_with_timestamp_and_slug(
-                &formatted_text,
+                &final_formatted_text,
                 Some(recording_timestamp),
                 output_kind,
                 Some(&raw_text),

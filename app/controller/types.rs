@@ -162,7 +162,7 @@ impl RecordingTranscriptSource {
             Self::LocalFinalPass => "Final-pass local",
             Self::CloudPrimary => "Cloud primary",
             Self::CloudFallback => "Cloud fallback",
-            Self::Streaming => "Streaming transcript",
+            Self::Streaming => "Streaming preview",
             Self::StreamingFallback => "Streaming fallback",
         }
     }
