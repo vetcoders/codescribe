@@ -223,9 +223,9 @@ pub fn write_truth_sidecar(path: &Path, metadata: &RecordingTruthMetadata) -> Re
 #[cfg(test)]
 pub fn read_truth_sidecar(path: &Path) -> Result<RecordingTruthMetadata> {
     let sidecar_path = truth_sidecar_path(path);
-    let payload = fs::read(&sidecar_path)
+    let payload = codescribe_core::util::safe_path::safe_read_to_string(&sidecar_path)
         .with_context(|| format!("Failed to read truth sidecar {}", sidecar_path.display()))?;
-    serde_json::from_slice(&payload)
+    serde_json::from_str(&payload)
         .with_context(|| format!("Failed to parse truth sidecar {}", sidecar_path.display()))
 }
 

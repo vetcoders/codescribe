@@ -22,6 +22,13 @@ enum EmitterCmd {
     Finish,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeltaRenderMode {
+    #[default]
+    SessionRendered,
+    ActivePreviewOnly,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct TranscriptUtteranceRecord {
     utterance_id: u64,
@@ -154,6 +161,8 @@ pub struct PresentationEmitter {
     session_state: std::sync::Mutex<SessionTranscriptState>,
     /// Last utterance id delivered to callback (guards duplicate boundary commits).
     last_dispatched_utterance_id: std::sync::atomic::AtomicU64,
+    /// Controls what the delta sink sees: full session text or only the live preview.
+    delta_render_mode: DeltaRenderMode,
 }
 
 impl PresentationEmitter {
@@ -220,11 +229,16 @@ impl PresentationEmitter {
             vad_start_emitted: std::sync::atomic::AtomicBool::new(false),
             session_state: std::sync::Mutex::new(SessionTranscriptState::default()),
             last_dispatched_utterance_id: std::sync::atomic::AtomicU64::new(0),
+            delta_render_mode: DeltaRenderMode::SessionRendered,
         }
     }
 
     pub fn set_utterance_callback(&mut self, cb: Option<Arc<dyn Fn(String) + Send + Sync>>) {
         self.utterance_callback = cb;
+    }
+
+    pub fn set_delta_render_mode(&mut self, mode: DeltaRenderMode) {
+        self.delta_render_mode = mode;
     }
 
     pub fn set_vad_start_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
@@ -299,7 +313,10 @@ impl EventSink for PresentationEmitter {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.apply_preview(text);
-                    state.rendered_text()
+                    match self.delta_render_mode {
+                        DeltaRenderMode::SessionRendered => state.rendered_text(),
+                        DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
+                    }
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
@@ -307,7 +324,10 @@ impl EventSink for PresentationEmitter {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.apply_correction(text);
-                    state.rendered_text()
+                    match self.delta_render_mode {
+                        DeltaRenderMode::SessionRendered => state.rendered_text(),
+                        DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
+                    }
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
@@ -331,23 +351,28 @@ impl EventSink for PresentationEmitter {
                     );
                     return;
                 }
-                let (rendered, callback_payload) = {
+                let callback_payload = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    let payload = state.finalize(
+                    state.finalize(
                         *utterance_id,
                         text,
                         raw_text,
                         *start_ts,
                         *end_ts,
                         segments.clone(),
-                    );
-                    (state.rendered_text(), payload)
+                    )
                 };
-                self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 if let Some(cb) = &self.utterance_callback
                     && let Some(payload) = callback_payload
                 {
                     cb(payload);
+                }
+                if matches!(self.delta_render_mode, DeltaRenderMode::SessionRendered) {
+                    let rendered = {
+                        let state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.rendered_text()
+                    };
+                    self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 }
             }
             EngineEvent::NoSpeech { reason } => {
@@ -423,7 +448,7 @@ impl EventSink for PresentationEmitter {
 
 #[cfg(test)]
 mod tests {
-    use super::{PresentationEmitter, SessionTranscriptState};
+    use super::{DeltaRenderMode, PresentationEmitter, SessionTranscriptState};
     use codescribe_core::pipeline::contracts::{EngineEvent, EventSink, TranscriptSegment};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
@@ -616,6 +641,44 @@ mod tests {
             delivered,
             vec!["ostatni sensowny preview".to_string()],
             "empty final should fallback to preview and duplicate utterance must be ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_preview_only_mode_does_not_carry_previous_utterance_into_next_preview() {
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let mut emitter = PresentationEmitter::new(transcript.clone(), None, None);
+        emitter.set_delta_render_mode(DeltaRenderMode::ActivePreviewOnly);
+
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "pierwszy utterance".to_string(),
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "pierwszy utterance".to_string(),
+            raw_text: "pierwszy utterance".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 2,
+            text: "drugi fragment".to_string(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        let snapshot = transcript.lock().await.clone();
+        assert_eq!(
+            snapshot, "drugi fragment",
+            "assistive preview should stream only the live utterance, got: {snapshot:?}"
         );
     }
 

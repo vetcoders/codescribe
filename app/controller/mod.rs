@@ -50,6 +50,7 @@ use crate::os::permissions::{
 };
 use crate::os::selection::{
     AssistiveContext, build_assistive_input, capture_assistive_context, capture_frontmost_app_only,
+    get_recent_assistive_context, store_recent_assistive_context,
 };
 use crate::{BadgeMode, hide_hold_badge, show_badge_for_mode};
 
@@ -1346,6 +1347,11 @@ impl RecordingController {
                 as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
         });
         let mut pe = PresentationEmitter::new(tb, delta_sink, None);
+        if is_assistive_session {
+            pe.set_delta_render_mode(
+                crate::presentation::emitter::DeltaRenderMode::ActivePreviewOnly,
+            );
+        }
 
         pe.set_utterance_callback(Some(Arc::new(move |text: String| {
             if is_assistive_session {
@@ -2490,6 +2496,12 @@ impl RecordingController {
             let ctx = tokio::task::spawn_blocking(capture_assistive_context)
                 .await
                 .unwrap_or_default();
+            tokio::task::spawn_blocking({
+                let ctx = ctx.clone();
+                move || store_recent_assistive_context(&ctx)
+            })
+            .await
+            .ok();
             *self.assistive_context.write().await = Some(ctx);
             crate::ui::voice_chat::set_voice_chat_target_app(
                 self.assistive_context
@@ -2564,9 +2576,24 @@ impl RecordingController {
         let force_ai = *self.force_ai_mode.read().await;
 
         if is_assistive {
-            let ctx = tokio::task::spawn_blocking(capture_assistive_context)
+            let preserved_ctx = self.assistive_context.read().await.clone().filter(|ctx| {
+                ctx.frontmost_app.is_some()
+                    || ctx
+                        .selected_text
+                        .as_deref()
+                        .is_some_and(|text| !text.trim().is_empty())
+            });
+            let fallback_ctx = if preserved_ctx.is_none() {
+                tokio::task::spawn_blocking(|| {
+                    get_recent_assistive_context(Duration::from_secs(90))
+                })
                 .await
-                .unwrap_or_default();
+                .ok()
+                .flatten()
+            } else {
+                None
+            };
+            let ctx = preserved_ctx.or(fallback_ctx).unwrap_or_default();
             *self.assistive_context.write().await = Some(ctx);
         } else {
             let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)

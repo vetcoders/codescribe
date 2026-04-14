@@ -461,8 +461,16 @@ impl LocalWhisperEngine {
             ));
         }
 
-        let raw =
-            self.transcribe_long_with_language_segments(&speech_samples, sample_rate, language)?;
+        tracing::debug!(
+            "transcribe_file: speech detected; preserving full-audio decode path and using VAD as telemetry/no-speech gate only"
+        );
+
+        // Keep file transcription semantically honest: VAD contributes verdict
+        // metadata and an explicit no-speech short-circuit, but the raw STT
+        // result still comes from the full recording. Trimming down to
+        // `speech_samples` changed the behavior of the historical "raw file
+        // transcription" path and regressed canonical transcripts.
+        let raw = self.transcribe_long_with_language_segments(&samples, sample_rate, language)?;
         let (text, final_pass) = apply_requested_final_pass(&raw, options);
 
         Ok(TranscriptionVerdict::from_parts(
