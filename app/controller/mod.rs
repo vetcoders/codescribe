@@ -32,6 +32,7 @@ pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 use crate::presentation::emitter::PresentationEmitter;
 use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -61,7 +62,9 @@ use codescribe_core::tts::AudioPlayer;
 
 // UI state for conversation mode
 use crate::ui::voice_chat::ConversationModeState;
-use codescribe_core::pipeline::contracts::{TranscriptionConfidenceFlag, TranscriptionVerdict};
+use codescribe_core::pipeline::contracts::{
+    FinalPassDisposition, TranscriptionConfidenceFlag, TranscriptionVerdict,
+};
 
 use helpers::{
     SessionTelemetrySnapshot, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
@@ -90,6 +93,16 @@ struct ActionQualityProbe {
     drop_ratio: f32,
 }
 
+fn normalize_for_diff(s: &str) -> String {
+    let trimmed = s.trim_start();
+    // Lowercase first char only (preserving rest of original case)
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        Some(c) => c.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 impl ActionQualityProbe {
     fn from_transcripts(
         raw_text: &str,
@@ -100,17 +113,20 @@ impl ActionQualityProbe {
         let final_chars = final_text.chars().count();
 
         let (backspaces, inserted_chars) =
-            codescribe_core::pipeline::contracts::TranscriptDelta::from_diff(raw_text, final_text)
-                .map(|delta| {
-                    let backspaces = delta
-                        .delta
-                        .chars()
-                        .filter(|c| *c == codescribe_core::pipeline::contracts::BACKSPACE)
-                        .count();
-                    let inserted = delta.delta.chars().count().saturating_sub(backspaces);
-                    (backspaces, inserted)
-                })
-                .unwrap_or((0, 0));
+            codescribe_core::pipeline::contracts::TranscriptDelta::from_diff(
+                &normalize_for_diff(raw_text),
+                &normalize_for_diff(final_text),
+            )
+            .map(|delta| {
+                let backspaces = delta
+                    .delta
+                    .chars()
+                    .filter(|c| *c == codescribe_core::pipeline::contracts::BACKSPACE)
+                    .count();
+                let inserted = delta.delta.chars().count().saturating_sub(backspaces);
+                (backspaces, inserted)
+            })
+            .unwrap_or((0, 0));
 
         let span = raw_chars.max(final_chars).max(1);
         let raw_final_diff_ratio = ((backspaces + inserted_chars) as f32 / span as f32).min(1.0);
@@ -185,52 +201,51 @@ struct RecordingTruthVerdict {
     no_speech_reason: Option<String>,
     speech_pct: Option<f32>,
     avg_logprob: Option<f32>,
-    confidence_flags: Vec<String>,
+    /// Typed confidence flags (engine-owned + app-level provenance).
+    /// Stored as the core enum rather than `Vec<String>` so downstream
+    /// consumers do not need to re-parse tokens and new variants surface
+    /// as compile errors instead of silent misses.
+    confidence_flags: Vec<TranscriptionConfidenceFlag>,
+    /// VAD speech sparkline preserved from the core `VadVerdict` so it
+    /// can survive to `truth.json` on disk (previously dropped at the
+    /// app boundary — tracked as Kłamstwo 7).
+    sparkline: Option<String>,
+    /// Disposition of the explicit file-level final pass, when one ran.
+    /// None means no final pass was attempted for this verdict.
+    final_pass_disposition: Option<FinalPassDisposition>,
     commit_trigger: Option<String>,
     display_status: String,
 }
 
-fn push_truth_flag(flags: &mut Vec<String>, flag: &str) {
-    if !flags.iter().any(|existing| existing == flag) {
-        flags.push(flag.to_string());
+fn push_typed_flag(
+    flags: &mut Vec<TranscriptionConfidenceFlag>,
+    flag: TranscriptionConfidenceFlag,
+) {
+    if !flags.iter().any(|existing| *existing == flag) {
+        flags.push(flag);
     }
 }
 
 fn truth_review_trigger(
     fallback_class: Option<RecordingFallbackClass>,
     no_speech_reason: Option<&str>,
-    confidence_flags: &[String],
+    confidence_flags: &[TranscriptionConfidenceFlag],
 ) -> Option<String> {
     if no_speech_reason.is_some() {
         return Some("no_reliable_speech".to_string());
     }
 
-    if confidence_flags
-        .iter()
-        .any(|flag| flag == "possible_hallucination_logprob")
-    {
-        return Some("possible_hallucination_logprob".to_string());
-    }
-
-    if confidence_flags
-        .iter()
-        .any(|flag| flag == "very_low_speech")
-    {
-        return Some("very_low_speech".to_string());
-    }
-
-    if confidence_flags
-        .iter()
-        .any(|flag| flag == "streaming_preview_used_as_verdict")
-    {
-        return Some("streaming_preview_used_as_verdict".to_string());
-    }
-
-    if confidence_flags
-        .iter()
-        .any(|flag| flag == "cloud_fallback_used")
-    {
-        return Some("cloud_fallback_used".to_string());
+    // Priority order mirrors the original string-based trigger so display
+    // behaviour is unchanged by the type-safety refactor.
+    for priority_flag in [
+        TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
+        TranscriptionConfidenceFlag::VeryLowSpeech,
+        TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
+        TranscriptionConfidenceFlag::CloudFallbackUsed,
+    ] {
+        if confidence_flags.iter().any(|flag| *flag == priority_flag) {
+            return Some(priority_flag.to_string());
+        }
     }
 
     match fallback_class {
@@ -244,7 +259,7 @@ fn truth_display_status(
     source: Option<RecordingTranscriptSource>,
     fallback_class: Option<RecordingFallbackClass>,
     no_speech_reason: Option<&str>,
-    confidence_flags: &[String],
+    confidence_flags: &[TranscriptionConfidenceFlag],
 ) -> String {
     if no_speech_reason.is_some() {
         return "No reliable speech detected".to_string();
@@ -252,14 +267,14 @@ fn truth_display_status(
 
     if confidence_flags
         .iter()
-        .any(|flag| flag == "possible_hallucination_logprob")
+        .any(|flag| *flag == TranscriptionConfidenceFlag::PossibleHallucinationLogprob)
     {
         return "Possible hallucination".to_string();
     }
 
     if confidence_flags
         .iter()
-        .any(|flag| flag == "very_low_speech")
+        .any(|flag| *flag == TranscriptionConfidenceFlag::VeryLowSpeech)
     {
         return "Very low speech".to_string();
     }
@@ -275,6 +290,7 @@ fn truth_display_status(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_truth_verdict(
     raw_text: Option<String>,
     transcript_source: Option<RecordingTranscriptSource>,
@@ -282,7 +298,9 @@ fn build_truth_verdict(
     no_speech_reason: Option<String>,
     speech_pct: Option<f32>,
     avg_logprob: Option<f32>,
-    confidence_flags: Vec<String>,
+    confidence_flags: Vec<TranscriptionConfidenceFlag>,
+    sparkline: Option<String>,
+    final_pass_disposition: Option<FinalPassDisposition>,
 ) -> RecordingTruthVerdict {
     let commit_trigger = truth_review_trigger(
         fallback_class,
@@ -304,6 +322,8 @@ fn build_truth_verdict(
         speech_pct,
         avg_logprob,
         confidence_flags,
+        sparkline,
+        final_pass_disposition,
         commit_trigger,
         display_status,
     }
@@ -336,15 +356,24 @@ fn adjudicate_recording_truth(
             None
         };
 
-        let confidence_flags = verdict
-            .confidence_flags
-            .iter()
-            .map(ToString::to_string)
-            .collect();
+        // Preserve the typed confidence flags as-is (no stringification).
+        let confidence_flags = verdict.confidence_flags.clone();
         let no_speech_reason = verdict
             .vad
             .as_ref()
             .and_then(|vad| vad.no_speech_reason.clone());
+        // Sparkline lives in the VAD sub-verdict. Only surface it when VAD
+        // actually produced one so empty strings don't pollute truth.json.
+        let sparkline = verdict.vad.as_ref().and_then(|vad| {
+            if vad.sparkline.is_empty() {
+                None
+            } else {
+                Some(vad.sparkline.clone())
+            }
+        });
+        // Final-pass disposition is only meaningful when the engine ran
+        // an explicit final pass (hold path). Toggle path leaves this None.
+        let final_pass_disposition = verdict.final_pass.as_ref().map(|fp| fp.disposition);
 
         let raw_text = if no_speech_reason.is_some() {
             None
@@ -360,6 +389,8 @@ fn adjudicate_recording_truth(
             speech_pct,
             avg_logprob,
             confidence_flags,
+            sparkline,
+            final_pass_disposition,
         );
     }
 
@@ -372,18 +403,26 @@ fn adjudicate_recording_truth(
             None,
             None,
             Vec::new(),
+            None,
+            None,
         );
     }
 
     if use_local_stt {
-        let mut confidence_flags = Vec::new();
+        let mut confidence_flags: Vec<TranscriptionConfidenceFlag> = Vec::new();
         if local_final_pass_attempted {
-            push_truth_flag(&mut confidence_flags, "local_final_pass_unavailable");
+            push_typed_flag(
+                &mut confidence_flags,
+                TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
+            );
         }
 
         if let Some(text) = cloud_text {
             let mut fallback_flags = confidence_flags.clone();
-            push_truth_flag(&mut fallback_flags, "cloud_fallback_used");
+            push_typed_flag(
+                &mut fallback_flags,
+                TranscriptionConfidenceFlag::CloudFallbackUsed,
+            );
             return build_truth_verdict(
                 Some(text),
                 Some(RecordingTranscriptSource::CloudFallback),
@@ -392,12 +431,17 @@ fn adjudicate_recording_truth(
                 None,
                 None,
                 fallback_flags,
+                None,
+                None,
             );
         }
 
         if let Some(text) = streaming_text {
             let mut fallback_flags = confidence_flags.clone();
-            push_truth_flag(&mut fallback_flags, "streaming_preview_used_as_verdict");
+            push_typed_flag(
+                &mut fallback_flags,
+                TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
+            );
             return build_truth_verdict(
                 Some(text),
                 Some(RecordingTranscriptSource::StreamingFallback),
@@ -406,6 +450,8 @@ fn adjudicate_recording_truth(
                 None,
                 None,
                 fallback_flags,
+                None,
+                None,
             );
         }
     } else {
@@ -418,12 +464,17 @@ fn adjudicate_recording_truth(
                 None,
                 None,
                 Vec::new(),
+                None,
+                None,
             );
         }
 
         if let Some(text) = streaming_text {
-            let mut confidence_flags = Vec::new();
-            push_truth_flag(&mut confidence_flags, "cloud_primary_missing");
+            let mut confidence_flags: Vec<TranscriptionConfidenceFlag> = Vec::new();
+            push_typed_flag(
+                &mut confidence_flags,
+                TranscriptionConfidenceFlag::CloudPrimaryMissing,
+            );
             return build_truth_verdict(
                 Some(text),
                 Some(RecordingTranscriptSource::StreamingFallback),
@@ -432,6 +483,8 @@ fn adjudicate_recording_truth(
                 None,
                 None,
                 confidence_flags,
+                None,
+                None,
             );
         }
     }
@@ -449,6 +502,8 @@ fn adjudicate_recording_truth(
         None,
         None,
         Vec::new(),
+        None,
+        None,
     )
 }
 
@@ -471,6 +526,13 @@ fn recording_mode_label(
     } else {
         "toggle"
     }
+}
+
+fn toggle_final_pass_enabled() -> bool {
+    std::env::var("CODESCRIBE_TOGGLE_FINAL_PASS")
+        .ok()
+        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true)
 }
 
 fn transcript_output_category(output_kind: crate::state::history::TranscriptKind) -> &'static str {
@@ -509,6 +571,7 @@ fn compose_final_status(
 fn truth_engine_label(source: Option<RecordingTranscriptSource>) -> Option<String> {
     source.map(|source| match source {
         RecordingTranscriptSource::LocalFinalPass => "local_whisper".to_string(),
+        RecordingTranscriptSource::ToggleSessionAdjudicated => "local_whisper".to_string(),
         RecordingTranscriptSource::CloudPrimary => "cloud_stt".to_string(),
         RecordingTranscriptSource::CloudFallback => "cloud_stt".to_string(),
         RecordingTranscriptSource::Streaming => "streaming_whisper".to_string(),
@@ -673,7 +736,15 @@ pub fn request_recording_commit() {
     };
 
     tokio::spawn(async move {
-        if let Err(e) = controller.finish_recording().await {
+        let result = if controller.current_state().await == State::RecToggle
+            && !*controller.assistive_mode.read().await
+            && toggle_final_pass_enabled()
+        {
+            controller.stop_toggle_and_adjudicate().await
+        } else {
+            controller.finish_recording().await
+        };
+        if let Err(e) = result {
             error!("Overlay commit failed: {}", e);
         }
     });
@@ -1217,7 +1288,7 @@ impl RecordingController {
         if recorder.recorder.is_active() {
             warn!("{context}: recorder already active before start; forcing stale-session stop");
             recorder
-                .stop_without_saving()
+                .stop_and_discard_path()
                 .await
                 .with_context(|| format!("{context}: failed stale-session stop"))?;
             info!("{context}: stale recorder stopped before start");
@@ -1247,6 +1318,94 @@ impl RecordingController {
         reset_session_telemetry(&self.session_telemetry);
         hide_hold_badge();
         crate::ui::voice_chat::update_voice_chat_status("Ready");
+    }
+
+    async fn reset_finished_recording_state(&self) {
+        self.set_state(State::Idle).await;
+        *self.assistive_mode.write().await = false;
+        *self.hold_mode.write().await = HoldMode::Raw;
+        *self.force_raw_mode.write().await = false;
+        *self.force_ai_mode.write().await = false;
+        *self.session_id.write().await = None;
+        *self.assistive_context.write().await = None;
+        self.start_transition_in_flight
+            .store(false, Ordering::SeqCst);
+        self.assistive_loop_active.store(false, Ordering::SeqCst);
+        set_assistive_session(false);
+        hide_hold_badge();
+    }
+
+    async fn handle_processed_recording_result(
+        &self,
+        assistive: bool,
+        result: &Result<ProcessRecordingOutcome>,
+    ) {
+        match result {
+            Ok(outcome) => {
+                let final_status = if outcome.final_status.trim().is_empty() {
+                    "Ready"
+                } else {
+                    outcome.final_status.as_str()
+                };
+                crate::ui::voice_chat::update_voice_chat_status(final_status);
+                info!("Processing finished successfully. State reset to IDLE.");
+
+                if let Some(reason) = outcome.no_speech_reason.as_deref() {
+                    info!("NoSpeech outcome in finish_recording: reason={reason}");
+                    if !assistive {
+                        let opened = self
+                            .opened_voice_chat_overlay_for_transcription
+                            .swap(false, Ordering::SeqCst);
+                        if opened {
+                            crate::ui::voice_chat::hide_voice_chat_overlay();
+                        }
+                        crate::ui::overlay::update_transcription_status(final_status);
+                        crate::ui::overlay::schedule_auto_hide();
+                    }
+                } else if !assistive {
+                    let cfg = self.config.read().await.clone();
+                    let show_decision_overlay = outcome.transcript_present
+                        && cfg.transcription_overlay_enabled
+                        && !(cfg.quick_notes_enabled && cfg.quick_notes_save_only);
+
+                    let opened = self
+                        .opened_voice_chat_overlay_for_transcription
+                        .swap(false, Ordering::SeqCst);
+                    if opened {
+                        crate::ui::voice_chat::hide_voice_chat_overlay();
+                    }
+
+                    if show_decision_overlay {
+                        crate::ui::overlay::update_transcription_status(final_status);
+                        let reason = outcome
+                            .commit_trigger
+                            .as_deref()
+                            .unwrap_or("quality_gate_clean");
+                        info!("COMMIT decision: trigger={reason}");
+                        crate::ui::overlay::enter_decision_mode();
+                        crate::ui::overlay::schedule_auto_hide();
+                    } else if cfg.quick_notes_enabled && cfg.quick_notes_save_only {
+                        info!("COMMIT decision: skipped (quick_notes_save_only)");
+                        crate::ui::overlay::hide_transcription_overlay();
+                    } else {
+                        info!("COMMIT decision: skipped (quality gate clean)");
+                        crate::ui::overlay::hide_transcription_overlay();
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Processing failed: {}", e);
+                crate::ui::voice_chat::update_voice_chat_status("Processing failed");
+
+                let opened = self
+                    .opened_voice_chat_overlay_for_transcription
+                    .swap(false, Ordering::SeqCst);
+                if opened {
+                    crate::ui::voice_chat::hide_voice_chat_overlay();
+                }
+                crate::ui::overlay::hide_transcription_overlay();
+            }
+        }
     }
 
     fn is_already_in_progress_error(error: &anyhow::Error) -> bool {
@@ -1283,7 +1442,7 @@ impl RecordingController {
         }
 
         warn!("Recorder recovery: detected active stream while controller is IDLE; forcing stop");
-        if let Err(e) = recorder.stop_without_saving().await {
+        if let Err(e) = recorder.stop_and_discard_path().await {
             warn!("Recorder recovery: forced stop failed: {e}");
         }
         Self::clear_recorder_callbacks(recorder);
@@ -1594,7 +1753,12 @@ impl RecordingController {
             State::RecToggle => {
                 info!("Toggle pressed again; stopping recording");
                 self.assistive_loop_active.store(false, Ordering::SeqCst);
-                self.stop_toggle_recording().await?;
+                let toggle_assistive = *self.assistive_mode.read().await;
+                if !toggle_assistive && toggle_final_pass_enabled() {
+                    self.stop_toggle_and_adjudicate().await?;
+                } else {
+                    self.stop_toggle_recording().await?;
+                }
             }
             State::RecHold => {
                 // Safety/UX: if a hands-off toggle is triggered while in hold recording
@@ -2207,7 +2371,7 @@ impl RecordingController {
                 if let Err(e) = start_result {
                     if Self::is_already_in_progress_error(&e) {
                         warn!("Hold-start hit stale recorder lock; forcing stop and retrying once");
-                        if let Err(stop_err) = rec.stop_without_saving().await {
+                        if let Err(stop_err) = rec.stop_and_discard_path().await {
                             warn!("Hold-start stale-recorder recovery failed: {stop_err}");
                         }
                         Self::clear_recorder_callbacks(rec);
@@ -2240,7 +2404,7 @@ impl RecordingController {
             if hold_start_generation.load(Ordering::SeqCst) != task_generation {
                 warn!("Hold-start superseded after recorder start; stopping stale session");
                 if rec.recorder.is_active()
-                    && let Err(stop_err) = rec.stop_without_saving().await
+                    && let Err(stop_err) = rec.stop_and_discard_path().await
                 {
                     warn!("Hold-start stale-session stop failed: {stop_err}");
                 }
@@ -2439,7 +2603,7 @@ impl RecordingController {
         {
             if Self::is_already_in_progress_error(&e) {
                 warn!("Toggle start hit stale recorder lock; forcing stop and retrying once");
-                if let Err(stop_err) = recorder.stop_without_saving().await {
+                if let Err(stop_err) = recorder.stop_and_discard_path().await {
                     warn!("Toggle stale-recorder recovery failed: {stop_err}");
                 }
                 Self::clear_recorder_callbacks(recorder);
@@ -2636,6 +2800,11 @@ impl RecordingController {
                 truth_speech_pct: None,
                 truth_avg_logprob: None,
                 truth_confidence_flags: Vec::new(),
+                // Toggle utterance callback never runs a VAD adjudicator or
+                // final-pass sweep, so there is no sparkline/disposition to
+                // propagate here. (See Q4 / codex track.)
+                truth_sparkline: None,
+                truth_final_pass_disposition: None,
                 truth_commit_trigger: None,
                 truth_display_status: RecordingTranscriptSource::Streaming.label().to_string(),
                 append_mode: false,
@@ -2668,7 +2837,7 @@ impl RecordingController {
         let mut stop_error: Option<anyhow::Error> = None;
         if let Some(recorder) = recorder_guard.as_mut() {
             if !cfg!(test)
-                && let Err(e) = recorder.stop_without_saving().await
+                && let Err(e) = recorder.stop_and_discard_path().await
             {
                 warn!("Toggle stop: recorder stop failed; continuing cleanup: {e}");
                 stop_error = Some(e);
@@ -2694,22 +2863,80 @@ impl RecordingController {
         if self.toggle_user_has_text.load(Ordering::SeqCst) {
             crate::ui::voice_chat::finalize_voice_chat_user_message();
         }
-        if self.toggle_assistant_has_text.load(Ordering::SeqCst) {
-            crate::ui::voice_chat::finalize_voice_chat_assistant_message();
-        }
         self.toggle_user_has_text.store(false, Ordering::SeqCst);
         self.toggle_assistant_has_text
             .store(false, Ordering::SeqCst);
-        set_assistive_session(false);
 
+        // Reset UI indicators
         hide_hold_badge();
         crate::ui::voice_chat::update_voice_chat_status("Ready");
+
+        // Hide transcription overlay explicitly on toggle stop
+        crate::ui::overlay::hide_transcription_overlay();
 
         if let Some(e) = stop_error {
             return Err(anyhow::anyhow!("Failed to stop recorder: {e}"));
         }
 
         Ok(())
+    }
+
+    async fn stop_toggle_and_adjudicate(&self) -> Result<()> {
+        if cfg!(test) {
+            return self.stop_toggle_recording().await;
+        }
+
+        if *self.state.read().await != State::RecToggle {
+            return Ok(());
+        }
+
+        let _guard = self.serial_lock.lock().await;
+        if *self.state.read().await != State::RecToggle {
+            return Ok(());
+        }
+
+        info!("Stopping toggle recording with final-pass adjudication");
+
+        let assistive = *self.assistive_mode.read().await;
+        let hold_mode = *self.hold_mode.read().await;
+        let force_raw = *self.force_raw_mode.read().await;
+        let force_ai = *self.force_ai_mode.read().await;
+
+        if let Some(session_id) = self.session_id.read().await.clone() {
+            *self.session_id.write().await = Some(format!("{session_id}:stopping"));
+        }
+
+        self.set_state(State::Busy).await;
+        show_badge_for_mode(BadgeMode::Processing);
+
+        let result = {
+            let mut recorder_guard = self.recorder.lock().await;
+            let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Toggle-adjudicate")?;
+            let (streaming_text, raw_audio_path_opt) =
+                recorder.stop().await.context("Failed to stop recorder")?;
+            Self::clear_recorder_callbacks(recorder);
+            drop(recorder_guard);
+
+            self.process_stopped_recording(
+                streaming_text,
+                raw_audio_path_opt,
+                assistive,
+                hold_mode,
+                force_raw,
+                force_ai,
+                Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+            )
+            .await
+        };
+
+        self.toggle_user_has_text.store(false, Ordering::SeqCst);
+        self.toggle_assistant_has_text
+            .store(false, Ordering::SeqCst);
+        self.reset_finished_recording_state().await;
+        self.handle_processed_recording_result(assistive, &result)
+            .await;
+
+        result.map(|_| ())
     }
 
     /// Stop recording, transcribe, format, and paste the result
@@ -2762,128 +2989,23 @@ impl RecordingController {
             .process_recording(session_id, assistive, hold_mode, force_raw, force_ai)
             .await;
 
-        // Always reset to IDLE, even on error
-        self.set_state(State::Idle).await;
-        *self.assistive_mode.write().await = false;
-        *self.hold_mode.write().await = HoldMode::Raw;
-        *self.force_raw_mode.write().await = false;
-        *self.force_ai_mode.write().await = false;
-        *self.session_id.write().await = None;
-        *self.assistive_context.write().await = None;
-        self.start_transition_in_flight
-            .store(false, Ordering::SeqCst);
-        self.assistive_loop_active.store(false, Ordering::SeqCst);
-        // Keep event-router sink selection in sync with controller state after finish.
-        set_assistive_session(false);
-
-        // Hide red dot indicator
-        hide_hold_badge();
-
-        // Update tray icon based on result
-        match &result {
-            Ok(outcome) => {
-                let final_status = if outcome.final_status.trim().is_empty() {
-                    "Ready"
-                } else {
-                    outcome.final_status.as_str()
-                };
-                crate::ui::voice_chat::update_voice_chat_status(final_status);
-                info!("Processing finished successfully. State reset to IDLE.");
-
-                if let Some(reason) = outcome.no_speech_reason.as_deref() {
-                    info!("NoSpeech outcome in finish_recording: reason={reason}");
-                    if !assistive {
-                        let opened = self
-                            .opened_voice_chat_overlay_for_transcription
-                            .swap(false, Ordering::SeqCst);
-                        if opened {
-                            crate::ui::voice_chat::hide_voice_chat_overlay();
-                        }
-                        crate::ui::overlay::update_transcription_status(final_status);
-                        crate::ui::overlay::schedule_auto_hide();
-                    }
-                } else if !assistive {
-                    let cfg = self.config.read().await.clone();
-                    let show_decision_overlay = outcome.transcript_present
-                        && cfg.transcription_overlay_enabled
-                        && !(cfg.quick_notes_enabled && cfg.quick_notes_save_only);
-
-                    let opened = self
-                        .opened_voice_chat_overlay_for_transcription
-                        .swap(false, Ordering::SeqCst);
-                    if opened {
-                        crate::ui::voice_chat::hide_voice_chat_overlay();
-                    }
-
-                    if show_decision_overlay {
-                        crate::ui::overlay::update_transcription_status(final_status);
-                        let reason = outcome
-                            .commit_trigger
-                            .as_deref()
-                            .unwrap_or("quality_gate_clean");
-                        info!(
-                            "COMMIT decision: trigger={reason} force_ai={force_ai} force_raw={force_raw}"
-                        );
-                        crate::ui::overlay::enter_decision_mode();
-                        crate::ui::overlay::schedule_auto_hide();
-                    } else if cfg.quick_notes_enabled && cfg.quick_notes_save_only {
-                        info!("COMMIT decision: skipped (quick_notes_save_only)");
-                        crate::ui::overlay::hide_transcription_overlay();
-                    } else {
-                        info!("COMMIT decision: skipped (quality gate clean)");
-                        crate::ui::overlay::hide_transcription_overlay();
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Processing failed: {}", e);
-                crate::ui::voice_chat::update_voice_chat_status("Processing failed");
-
-                // Hide overlay immediately on error
-                let opened = self
-                    .opened_voice_chat_overlay_for_transcription
-                    .swap(false, Ordering::SeqCst);
-                if opened {
-                    crate::ui::voice_chat::hide_voice_chat_overlay();
-                }
-                crate::ui::overlay::hide_transcription_overlay();
-            }
-        }
+        self.reset_finished_recording_state().await;
+        self.handle_processed_recording_result(assistive, &result)
+            .await;
 
         result.map(|_| ())
     }
 
-    /// Process the recording: stop, transcribe, format, paste
-    ///
-    /// ## Mode Logic:
-    /// - `assistive=true`: ALWAYS AI augmentation (HoldMode::Chat / HoldMode::Selection)
-    /// - `force_raw=true`: ALWAYS raw transcript (HoldMode::Raw)
-    /// - `force_ai=true`: ALWAYS AI formatting (left double Option)
-    /// - Neither: Toggle mode - respects AI_FORMATTING_ENABLED setting
-    async fn process_recording(
+    async fn process_stopped_recording(
         &self,
-        _session_id: Option<String>,
+        streaming_text: String,
+        raw_audio_path_opt: Option<PathBuf>,
         assistive: bool,
         hold_mode: HoldMode,
         force_raw: bool,
         force_ai: bool,
+        transcript_source_override: Option<RecordingTranscriptSource>,
     ) -> Result<ProcessRecordingOutcome> {
-        if cfg!(test) {
-            info!(
-                "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",
-                assistive, hold_mode, force_raw, force_ai
-            );
-            return Ok(ProcessRecordingOutcome::default());
-        }
-
-        // Stop the recorder and get audio file path
-        let mut recorder_guard = self.recorder.lock().await;
-        let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
-        let (streaming_text, raw_audio_path_opt) =
-            recorder.stop().await.context("Failed to stop recorder")?;
-        drop(recorder_guard); // Release lock
-
-        // Check audio path validity (if present)
         let audio_path = if let Some(path) = raw_audio_path_opt {
             match ValidatedAudioPath::new(&path) {
                 Ok(p) => Some(p),
@@ -2896,7 +3018,6 @@ impl RecordingController {
             None
         };
 
-        // Capture timestamp NOW for pairing audio with transcript
         let recording_timestamp = chrono::Local::now();
 
         let config = self.config.read().await.clone();
@@ -2918,8 +3039,6 @@ impl RecordingController {
             }
         };
 
-        // In assistive mode, we want to update overlay state even if the window hasn't been
-        // realized on the main thread yet. This avoids "dead" overlays due to timing.
         let chat_active = assistive;
         let assistive_loop = assistive && self.assistive_loop_active.load(Ordering::SeqCst);
 
@@ -2928,7 +3047,6 @@ impl RecordingController {
         let mut cloud_handle: Option<JoinHandle<Result<String>>> = None;
         let mut local_final_pass_attempted = false;
 
-        // Start cloud transcription in parallel (for early mismatch detection)
         if let Some((cloud_endpoint, cloud_api_key)) = cloud_config {
             if let Some(path) = &audio_path {
                 let cloud_path = path.as_path().to_path_buf();
@@ -2949,8 +3067,6 @@ impl RecordingController {
             warn!("Cloud STT disabled: STT_ENDPOINT/STT_API_KEY missing");
         }
 
-        // Make saved-WAV adjudication the default local truth path. Preview stays live,
-        // but final verdict comes from the artifact when we have one.
         let local_final_pass_enabled = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS")
             .ok()
             .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
@@ -3011,7 +3127,7 @@ impl RecordingController {
         }
 
         let session_telemetry = snapshot_session_telemetry(&self.session_telemetry);
-        let truth_verdict = adjudicate_recording_truth(
+        let mut truth_verdict = adjudicate_recording_truth(
             use_local_stt,
             local_final_pass_attempted,
             local_final_pass_verdict,
@@ -3019,6 +3135,20 @@ impl RecordingController {
             cloud_text_opt.clone(),
             &session_telemetry,
         );
+        if transcript_source_override.is_some()
+            && matches!(
+                truth_verdict.transcript_source,
+                Some(RecordingTranscriptSource::LocalFinalPass)
+            )
+        {
+            truth_verdict.transcript_source = transcript_source_override;
+            truth_verdict.display_status = truth_display_status(
+                truth_verdict.transcript_source,
+                truth_verdict.fallback_class,
+                truth_verdict.no_speech_reason.as_deref(),
+                &truth_verdict.confidence_flags,
+            );
+        }
         if let Some(source) = truth_verdict.transcript_source {
             if let Some(text) = truth_verdict.raw_text.as_ref() {
                 info!(
@@ -3094,6 +3224,8 @@ impl RecordingController {
                     no_speech_reason: Some(reason.clone()),
                     avg_logprob: truth_verdict.avg_logprob,
                     confidence_flags: truth_verdict.confidence_flags.clone(),
+                    sparkline: truth_verdict.sparkline.clone(),
+                    final_pass_disposition: truth_verdict.final_pass_disposition,
                     commit_trigger: truth_verdict.commit_trigger.clone(),
                     display_status: Some(final_status.clone()),
                 };
@@ -3150,6 +3282,8 @@ impl RecordingController {
                 truth_speech_pct: truth_verdict.speech_pct,
                 truth_avg_logprob: truth_verdict.avg_logprob,
                 truth_confidence_flags: truth_verdict.confidence_flags.clone(),
+                truth_sparkline: truth_verdict.sparkline.clone(),
+                truth_final_pass_disposition: truth_verdict.final_pass_disposition,
                 truth_commit_trigger: truth_verdict.commit_trigger.clone(),
                 truth_display_status: truth_verdict.display_status.clone(),
                 append_mode: false,
@@ -3166,6 +3300,49 @@ impl RecordingController {
             transcript_present,
             final_status: pipeline_outcome.final_status,
         })
+    }
+
+    /// Process the recording: stop, transcribe, format, paste
+    ///
+    /// ## Mode Logic:
+    /// - `assistive=true`: ALWAYS AI augmentation (HoldMode::Chat / HoldMode::Selection)
+    /// - `force_raw=true`: ALWAYS raw transcript (HoldMode::Raw)
+    /// - `force_ai=true`: ALWAYS AI formatting (left double Option)
+    /// - Neither: Toggle mode - respects AI_FORMATTING_ENABLED setting
+    async fn process_recording(
+        &self,
+        _session_id: Option<String>,
+        assistive: bool,
+        hold_mode: HoldMode,
+        force_raw: bool,
+        force_ai: bool,
+    ) -> Result<ProcessRecordingOutcome> {
+        if cfg!(test) {
+            info!(
+                "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",
+                assistive, hold_mode, force_raw, force_ai
+            );
+            return Ok(ProcessRecordingOutcome::default());
+        }
+
+        // Stop the recorder and get audio file path
+        let mut recorder_guard = self.recorder.lock().await;
+        let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
+        let (streaming_text, raw_audio_path_opt) =
+            recorder.stop().await.context("Failed to stop recorder")?;
+        Self::clear_recorder_callbacks(recorder);
+        drop(recorder_guard); // Release lock
+
+        self.process_stopped_recording(
+            streaming_text,
+            raw_audio_path_opt,
+            assistive,
+            hold_mode,
+            force_raw,
+            force_ai,
+            None,
+        )
+        .await
     }
 
     async fn process_transcript_text_pipeline(
@@ -3191,6 +3368,8 @@ impl RecordingController {
             truth_speech_pct,
             truth_avg_logprob,
             truth_confidence_flags,
+            truth_sparkline,
+            truth_final_pass_disposition,
             truth_commit_trigger,
             truth_display_status,
             append_mode,
@@ -3266,6 +3445,7 @@ impl RecordingController {
         // - Need formatting? → Double Option (respects setting)
         // - AI chat? → Hold + Shift (Chat)
         // - AI on selection? → Hold + Cmd (Selection)
+        let mut is_ai_noop = false;
         let (formatted_text, output_kind, mut should_auto_paste) = if assistive {
             info!(
                 "Assistive mode ({:?}): augmenting transcript via AI",
@@ -3398,8 +3578,10 @@ impl RecordingController {
                     None,
                 )
                 .await;
+                is_ai_noop = result.status == crate::ai_formatting::AiFormatStatus::AiNoop;
                 let kind = match result.status {
-                    crate::ai_formatting::AiFormatStatus::Applied => {
+                    crate::ai_formatting::AiFormatStatus::Applied
+                    | crate::ai_formatting::AiFormatStatus::AiNoop => {
                         crate::state::history::TranscriptKind::FormattedTranscript
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
@@ -3444,8 +3626,10 @@ impl RecordingController {
                     None,
                 )
                 .await;
+                is_ai_noop = result.status == crate::ai_formatting::AiFormatStatus::AiNoop;
                 let kind = match result.status {
-                    crate::ai_formatting::AiFormatStatus::Applied => {
+                    crate::ai_formatting::AiFormatStatus::Applied
+                    | crate::ai_formatting::AiFormatStatus::AiNoop => {
                         crate::state::history::TranscriptKind::FormattedTranscript
                     }
                     crate::ai_formatting::AiFormatStatus::Failed => {
@@ -3494,17 +3678,22 @@ impl RecordingController {
             quality_probe.correction_ratio,
             quality_probe.drop_ratio
         );
-        let quality_commit_trigger = if !assistive && !live_stream_session {
+        let quality_commit_trigger = if !assistive {
             evaluate_quality_commit_trigger(force_raw, &quality_probe, output_kind)
                 .map(str::to_string)
         } else {
             None
         };
-        let commit_trigger = if !assistive && !live_stream_session {
+        let mut commit_trigger = if !assistive {
             truth_commit_trigger.clone().or(quality_commit_trigger)
         } else {
             None
         };
+
+        if is_ai_noop && !assistive {
+            commit_trigger = Some("ai_noop".to_string());
+        }
+
         if let Some(reason) = commit_trigger.as_deref() {
             info!(
                 "COMMIT decision: trigger={} mode={} diff_raw_final={:.3} correction_ratio={:.3} drop_ratio={:.3}",
@@ -3514,11 +3703,14 @@ impl RecordingController {
                 quality_probe.correction_ratio,
                 quality_probe.drop_ratio
             );
-        } else if !assistive && !live_stream_session {
+        } else if !assistive {
             info!("COMMIT decision: not required by quality gate (mode={mode_label})");
         }
 
         if truth_no_speech_reason.is_some() || commit_trigger.is_some() {
+            should_auto_paste = false;
+        }
+        if live_stream_session {
             should_auto_paste = false;
         }
 
@@ -3539,6 +3731,8 @@ impl RecordingController {
             no_speech_reason: truth_no_speech_reason.clone(),
             avg_logprob: truth_avg_logprob,
             confidence_flags: truth_confidence_flags.clone(),
+            sparkline: truth_sparkline.clone(),
+            final_pass_disposition: truth_final_pass_disposition,
             commit_trigger: commit_trigger.clone(),
             display_status: Some(final_status.clone()),
         };
@@ -3675,6 +3869,8 @@ impl RecordingController {
                     no_speech_reason: None,
                     avg_logprob: None,
                     confidence_flags: Vec::new(),
+                    sparkline: None,
+                    final_pass_disposition: None,
                     commit_trigger: None,
                     display_status: Some(
                         RecordingTranscriptSource::CloudPrimary.label().to_string(),
@@ -3709,6 +3905,8 @@ impl RecordingController {
                                 no_speech_reason: None,
                                 avg_logprob: None,
                                 confidence_flags: Vec::new(),
+                                sparkline: None,
+                                final_pass_disposition: None,
                                 commit_trigger: None,
                                 display_status: Some(
                                     RecordingTranscriptSource::CloudPrimary.label().to_string(),

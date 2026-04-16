@@ -599,7 +599,8 @@ async fn run_legacy_send_path(
     .await;
 
     match result.status {
-        crate::ai_formatting::AiFormatStatus::Applied => {
+        crate::ai_formatting::AiFormatStatus::Applied
+        | crate::ai_formatting::AiFormatStatus::AiNoop => {
             crate::ui::voice_chat::update_voice_chat_status("AI Response:");
             if use_streaming && streamed_any_delta.load(Ordering::SeqCst) {
                 crate::ui::voice_chat::finalize_voice_chat_assistant_message();

@@ -392,6 +392,10 @@ async fn handle_transcribe_file(
                 eprintln!("Formatted in {:?}", start.elapsed());
                 result.text
             }
+            ai_formatting::AiFormatStatus::AiNoop => {
+                eprintln!("AI returned no-op - using raw text");
+                raw_text
+            }
             ai_formatting::AiFormatStatus::Failed => {
                 eprintln!("Formatting failed - using raw text");
                 raw_text

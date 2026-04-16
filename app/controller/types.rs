@@ -3,7 +3,8 @@
 //! Contains type definitions for the recording controller state machine.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use codescribe_core::pipeline::contracts::{FinalPassDisposition, TranscriptionConfidenceFlag};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -150,6 +151,7 @@ pub struct HotkeyInput {
 #[serde(rename_all = "snake_case")]
 pub enum RecordingTranscriptSource {
     LocalFinalPass,
+    ToggleSessionAdjudicated,
     CloudPrimary,
     CloudFallback,
     Streaming,
@@ -160,6 +162,7 @@ impl RecordingTranscriptSource {
     pub fn label(self) -> &'static str {
         match self {
             Self::LocalFinalPass => "Final-pass local",
+            Self::ToggleSessionAdjudicated => "Toggle session adjudicated",
             Self::CloudPrimary => "Cloud primary",
             Self::CloudFallback => "Cloud fallback",
             Self::Streaming => "Streaming preview",
@@ -196,10 +199,59 @@ pub struct RecordingTruthMetadata {
     pub vad_speech_pct: Option<f32>,
     pub no_speech_reason: Option<String>,
     pub avg_logprob: Option<f32>,
-    #[serde(default)]
-    pub confidence_flags: Vec<String>,
+    /// Confidence flags produced by the truth adjudicator.
+    ///
+    /// Deserialization accepts either the new typed tokens (`TranscriptionConfidenceFlag`
+    /// serialized as `snake_case` strings) or — for legacy sidecars written by
+    /// 0.9.2 and earlier — a bare `Vec<String>`. Unknown strings in legacy data
+    /// are skipped rather than failing the whole sidecar, so old `truth.json`
+    /// files on disk remain readable.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_confidence_flags_legacy_compat"
+    )]
+    pub confidence_flags: Vec<TranscriptionConfidenceFlag>,
+    /// VAD speech sparkline preserved from the core `VadVerdict`
+    /// (one char per 500ms window). Optional because some paths
+    /// (cloud-only, no-speech fallback) never produced VAD output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparkline: Option<String>,
+    /// Disposition of the explicit file-level final pass, when one
+    /// ran. Omitted entirely (both serialize and deserialize) when
+    /// no final pass was attempted for this sidecar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_pass_disposition: Option<FinalPassDisposition>,
     pub commit_trigger: Option<String>,
     pub display_status: Option<String>,
+}
+
+/// Accept both the new typed-enum representation (preferred for 0.9.3+)
+/// and the legacy `Vec<String>` representation written by earlier versions.
+///
+/// Unknown legacy strings are dropped rather than rejected so a stray token
+/// from a future variant cannot corrupt an otherwise readable sidecar.
+fn deserialize_confidence_flags_legacy_compat<'de, D>(
+    deserializer: D,
+) -> Result<Vec<TranscriptionConfidenceFlag>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
+    let mut out = Vec::with_capacity(raw.len());
+    for value in raw {
+        match serde_json::from_value::<TranscriptionConfidenceFlag>(value.clone()) {
+            Ok(flag) => out.push(flag),
+            Err(_) => {
+                if let Some(token) = value.as_str() {
+                    tracing::warn!(
+                        legacy_flag = token,
+                        "Dropping unknown legacy confidence flag while reading truth.json"
+                    );
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub fn truth_sidecar_path(path: &Path) -> PathBuf {
@@ -251,7 +303,12 @@ pub struct TranscriptPipelineParams {
     pub truth_no_speech_reason: Option<String>,
     pub truth_speech_pct: Option<f32>,
     pub truth_avg_logprob: Option<f32>,
-    pub truth_confidence_flags: Vec<String>,
+    pub truth_confidence_flags: Vec<TranscriptionConfidenceFlag>,
+    /// VAD sparkline carried forward from adjudication so the persistence
+    /// layer can write it into `truth.json` verbatim.
+    pub truth_sparkline: Option<String>,
+    /// Disposition of the explicit file-level final pass, when one ran.
+    pub truth_final_pass_disposition: Option<FinalPassDisposition>,
     pub truth_commit_trigger: Option<String>,
     pub truth_display_status: String,
     pub append_mode: bool,
@@ -293,7 +350,9 @@ mod tests {
             vad_speech_pct: Some(42.0),
             no_speech_reason: None,
             avg_logprob: Some(-0.25),
-            confidence_flags: vec!["cloud_primary_missing".to_string()],
+            confidence_flags: vec![TranscriptionConfidenceFlag::CloudPrimaryMissing],
+            sparkline: Some("▁▁▃▅▇▅▃▁".to_string()),
+            final_pass_disposition: None,
             commit_trigger: Some("cloud_failed_fallback".to_string()),
             display_status: Some("Streaming fallback".to_string()),
         };
@@ -303,5 +362,88 @@ mod tests {
 
         let restored = read_truth_sidecar(&transcript_path).expect("read sidecar");
         assert_eq!(restored, metadata);
+    }
+
+    #[test]
+    fn truth_sidecar_roundtrip_preserves_final_pass_disposition_and_flags() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let transcript_path = temp_dir.path().join("hold_raw.txt");
+        fs::write(&transcript_path, "hello").expect("write transcript");
+
+        let metadata = RecordingTruthMetadata {
+            source: Some(RecordingTranscriptSource::LocalFinalPass),
+            engine: Some("local_whisper".to_string()),
+            mode: Some("format".to_string()),
+            fallback_class: None,
+            fallback_used: false,
+            vad_speech_pct: Some(78.0),
+            no_speech_reason: None,
+            avg_logprob: Some(-0.35),
+            confidence_flags: vec![
+                TranscriptionConfidenceFlag::VeryLowSpeech,
+                TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
+                TranscriptionConfidenceFlag::AiNoopDetected,
+            ],
+            sparkline: Some("▁▃▅▇█▇▅▃▁".to_string()),
+            final_pass_disposition: Some(FinalPassDisposition::Changed),
+            commit_trigger: None,
+            display_status: Some("Final-pass local".to_string()),
+        };
+
+        write_truth_sidecar(&transcript_path, &metadata).expect("write sidecar");
+        let restored = read_truth_sidecar(&transcript_path).expect("read sidecar");
+        assert_eq!(restored, metadata);
+        // Regression guard: the sparkline string must survive disk roundtrip.
+        assert_eq!(restored.sparkline.as_deref(), Some("▁▃▅▇█▇▅▃▁"));
+        // Regression guard: typed disposition must survive disk roundtrip.
+        assert_eq!(
+            restored.final_pass_disposition,
+            Some(FinalPassDisposition::Changed)
+        );
+    }
+
+    #[test]
+    fn truth_sidecar_legacy_string_flags_still_deserialize() {
+        // Sidecars written before 0.9.3 encoded `confidence_flags` as bare
+        // strings. The deserializer must accept them and map known tokens
+        // to the typed enum so old data remains readable after upgrade.
+        let legacy_json = r#"{
+            "source": "streaming_fallback",
+            "engine": "streaming_whisper",
+            "mode": "toggle",
+            "fallback_class": "degraded",
+            "fallback_used": true,
+            "vad_speech_pct": 42.0,
+            "no_speech_reason": null,
+            "avg_logprob": -0.25,
+            "confidence_flags": [
+                "cloud_primary_missing",
+                "streaming_preview_used_as_verdict",
+                "some_unknown_future_token"
+            ],
+            "commit_trigger": "cloud_failed_fallback",
+            "display_status": "Streaming fallback"
+        }"#;
+
+        let restored: RecordingTruthMetadata =
+            serde_json::from_str(legacy_json).expect("legacy sidecar must still deserialize");
+
+        // Known tokens must round-trip to the matching typed enum variants;
+        // the unknown future token is silently dropped so the rest survives.
+        assert_eq!(
+            restored.confidence_flags,
+            vec![
+                TranscriptionConfidenceFlag::CloudPrimaryMissing,
+                TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
+            ]
+        );
+        // Legacy records never carried sparkline / final_pass_disposition so
+        // they must default to None without failing the whole deserialization.
+        assert_eq!(restored.sparkline, None);
+        assert_eq!(restored.final_pass_disposition, None);
+        assert_eq!(
+            restored.commit_trigger.as_deref(),
+            Some("cloud_failed_fallback")
+        );
     }
 }

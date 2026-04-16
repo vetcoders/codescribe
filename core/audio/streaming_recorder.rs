@@ -187,8 +187,13 @@ impl StreamingRecorder {
         Ok((transcript, audio_path))
     }
 
+    #[deprecated(note = "use stop_and_discard_path instead")]
     pub async fn stop_without_saving(&mut self) -> Result<String> {
-        info!("Stopping streaming recorder (no WAV)...");
+        self.stop_and_discard_path().await
+    }
+
+    pub async fn stop_and_discard_path(&mut self) -> Result<String> {
+        info!("Stopping streaming recorder (discarding audio path)...");
 
         // Report any dropped audio chunks
         let drops = self.dropped_chunks.load(Ordering::Relaxed);

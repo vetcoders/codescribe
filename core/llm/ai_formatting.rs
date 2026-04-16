@@ -37,6 +37,7 @@ pub enum AiFormatStatus {
     Applied,
     Failed,
     Skipped,
+    AiNoop,
 }
 
 pub type AiStreamCallback = Arc<dyn Fn(&str) + Send + Sync>;
@@ -820,7 +821,7 @@ pub async fn format_text_with_status_channels(
     on_reasoning_delta: Option<AiReasoningCallback>,
 ) -> AiFormatResult {
     // Skip very short texts (but not in assistive mode - user might say "help")
-    if text.len() < 10 && !assistive {
+    if text.chars().count() < 10 && !assistive {
         return AiFormatResult {
             text: text.to_string(),
             reasoning_text: None,
@@ -1009,12 +1010,10 @@ pub async fn format_text_with_status_channels(
             }
 
             // Analyze result quality
-            let cleaned_trim = cleaned.trim();
-            let formatted_trim = formatted.trim();
             let content_match = is_effectively_same(&cleaned, &formatted);
 
             let mut should_retry = false;
-            let mut raw_like = content_match;
+            let raw_like = content_match;
 
             if assistive {
                 // Assistive should change/expand content
@@ -1025,17 +1024,14 @@ pub async fn format_text_with_status_channels(
                 }
             } else {
                 // Formatting should preserve content but add structure
-                // If output is identical to input
-                if cleaned_trim == formatted_trim {
-                    // Check if input was arguably already formatted (has punctuation)
-                    let input_has_punct = cleaned_trim.ends_with('.')
-                        || cleaned_trim.ends_with('?')
-                        || cleaned_trim.ends_with('!');
-                    if !input_has_punct {
-                        warn!("Formatting mode returned raw echo");
-                        should_retry = true;
-                        raw_like = true;
-                    }
+                // If output matches input (effectively same), it's a no-op
+                if content_match {
+                    warn!("Formatting mode returned AI No-op (raw echo)");
+                    return AiFormatResult {
+                        text: cleaned,
+                        reasoning_text,
+                        status: AiFormatStatus::AiNoop,
+                    };
                 }
             }
 

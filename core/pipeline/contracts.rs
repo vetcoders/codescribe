@@ -128,13 +128,34 @@ pub struct FinalPassVerdict {
 const VERY_LOW_SPEECH_PCT: f32 = 6.0;
 const POSSIBLE_HALLUCINATION_LOGPROB: f32 = -1.0;
 
-/// Engine-owned confidence flags derived from VAD + Whisper quality metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Engine-owned confidence flags derived from VAD + Whisper quality metadata,
+/// plus app-level provenance flags surfaced through the controller truth
+/// adjudicator. Kept as a single enum so downstream consumers (UI, sidecar
+/// `truth.json`, QA tooling) always receive a typed value instead of a string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptionConfidenceFlag {
+    // ── Engine-owned (derived inside the transcription engine) ──
     VeryLowSpeech,
     PossibleHallucinationLogprob,
     QualityGateDropped,
+
+    // ── App-level provenance (surfaced by controller truth adjudication) ──
+    /// Hold path attempted a final-pass against the saved WAV but the
+    /// local Whisper path declined to run or produced no verdict.
+    LocalFinalPassUnavailable,
+    /// Truth-surface committed a cloud transcript after the local path
+    /// failed to deliver a usable verdict.
+    CloudFallbackUsed,
+    /// Truth-surface committed the streaming preview text as the final
+    /// verdict (no final-pass available).
+    StreamingPreviewUsedAsVerdict,
+    /// Cloud was the primary transcript source but the cloud call did
+    /// not return a usable transcript (empty or error).
+    CloudPrimaryMissing,
+    /// AI formatting pass ran but the emitted text is effectively the
+    /// raw input (no edit applied) — status should not read "Applied".
+    AiNoopDetected,
 }
 
 impl std::fmt::Display for TranscriptionConfidenceFlag {
@@ -145,6 +166,13 @@ impl std::fmt::Display for TranscriptionConfidenceFlag {
                 write!(f, "possible_hallucination_logprob")
             }
             Self::QualityGateDropped => write!(f, "quality_gate_dropped"),
+            Self::LocalFinalPassUnavailable => write!(f, "local_final_pass_unavailable"),
+            Self::CloudFallbackUsed => write!(f, "cloud_fallback_used"),
+            Self::StreamingPreviewUsedAsVerdict => {
+                write!(f, "streaming_preview_used_as_verdict")
+            }
+            Self::CloudPrimaryMissing => write!(f, "cloud_primary_missing"),
+            Self::AiNoopDetected => write!(f, "ai_noop_detected"),
         }
     }
 }
@@ -1429,5 +1457,81 @@ mod tests {
         let restored: VadVerdict = serde_json::from_str(json).unwrap();
         assert!(restored.sparkline.is_empty());
         assert_eq!(restored.speech_pct, 50.0);
+    }
+
+    #[test]
+    fn confidence_flag_serde_roundtrip_covers_all_variants() {
+        let cases = [
+            // Engine-owned
+            TranscriptionConfidenceFlag::VeryLowSpeech,
+            TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
+            TranscriptionConfidenceFlag::QualityGateDropped,
+            // App-level provenance (new in 0.9.3)
+            TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
+            TranscriptionConfidenceFlag::CloudFallbackUsed,
+            TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
+            TranscriptionConfidenceFlag::CloudPrimaryMissing,
+            TranscriptionConfidenceFlag::AiNoopDetected,
+        ];
+        for flag in cases {
+            let json = serde_json::to_string(&flag).expect("serialize flag");
+            let restored: TranscriptionConfidenceFlag =
+                serde_json::from_str(&json).expect("deserialize flag");
+            assert_eq!(restored, flag, "round-trip for {flag}");
+            // Serde rename_all=snake_case must match Display so truth.json
+            // strings stay stable between legacy (string) and typed consumers.
+            assert_eq!(
+                json,
+                format!("\"{flag}\""),
+                "serde snake_case must match Display"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_flag_legacy_strings_still_deserialize() {
+        // Guard-rail: pre-0.9.3 truth.json files stored flags as bare strings
+        // (e.g. "local_final_pass_unavailable"). The typed enum must keep
+        // accepting those exact tokens via rename_all=snake_case so old
+        // sidecars remain readable once we migrate to Vec<typed-enum>.
+        let legacy_tokens = [
+            (
+                "\"very_low_speech\"",
+                TranscriptionConfidenceFlag::VeryLowSpeech,
+            ),
+            (
+                "\"possible_hallucination_logprob\"",
+                TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
+            ),
+            (
+                "\"quality_gate_dropped\"",
+                TranscriptionConfidenceFlag::QualityGateDropped,
+            ),
+            (
+                "\"local_final_pass_unavailable\"",
+                TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
+            ),
+            (
+                "\"cloud_fallback_used\"",
+                TranscriptionConfidenceFlag::CloudFallbackUsed,
+            ),
+            (
+                "\"streaming_preview_used_as_verdict\"",
+                TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
+            ),
+            (
+                "\"cloud_primary_missing\"",
+                TranscriptionConfidenceFlag::CloudPrimaryMissing,
+            ),
+            (
+                "\"ai_noop_detected\"",
+                TranscriptionConfidenceFlag::AiNoopDetected,
+            ),
+        ];
+        for (json, expected) in legacy_tokens {
+            let restored: TranscriptionConfidenceFlag = serde_json::from_str(json)
+                .unwrap_or_else(|e| panic!("legacy token {json} must deserialize: {e}"));
+            assert_eq!(restored, expected, "legacy token {json}");
+        }
     }
 }
