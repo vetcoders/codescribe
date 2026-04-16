@@ -36,8 +36,8 @@ flowchart TB
     end
 
     subgraph TOOLS[CLI Suite]
-        QCLI[codescribe-quality]
-        LCLI[codescribe-loop]
+        QCLI[qube-report]
+        LCLI[qube-daemon]
     end
 
     TRAY --> ONB
@@ -94,13 +94,13 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 ## Features
 
 - **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
-- **Runtime-managed Whisper** — The app resolves Whisper weights at runtime from `CODESCRIBE_MODEL_PATH`, `~/.codescribe/models`, repo-local `models/`, or the Hugging Face cache.
+- **Embedded-first Whisper** — Release builds embed the Whisper payload into the binary (single-binary distribution). Runtime resolution from `CODESCRIBE_MODEL_PATH`, `~/.codescribe/models`, repo-local `models/`, or the Hugging Face cache is used only for no-embed builds or recovery fallback.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
 - **IPC Server** — Stable runtime interface for GUI/clients
 - **Quality Loop + Report** — Automated quality scoring and batch reports
-- **CLI Suite** — `codescribe`, `codescribe-quality`, `codescribe-loop`
+- **CLI Suite** — `codescribe`, `qube-report`, `qube-daemon` (renamed from `codescribe-quality` / `codescribe-loop` in 0.8.1)
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
 - **Global Hotkeys** — Hold Fn (default) or double‑tap Option to record
@@ -138,7 +138,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Install CLI (runtime Whisper + embedded support assets)
+# Install CLI (embedded Whisper + support assets — single-binary distribution)
 make install
 
 # Verify installation

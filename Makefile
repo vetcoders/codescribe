@@ -94,8 +94,8 @@ bundle: ensure-models release
 	@rm -rf bundle/$(CODESCRIBE_APP_NAME).app
 	@mkdir -p bundle/$(CODESCRIBE_APP_NAME).app/Contents/{MacOS,Resources}
 	@cp target/release/codescribe bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/
-	@cp target/release/codescribe-loop bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/ 2>/dev/null || true
-	@cp target/release/codescribe-quality bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/ 2>/dev/null || true
+	@cp target/release/qube-daemon bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/ 2>/dev/null || true
+	@cp target/release/qube-report bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/ 2>/dev/null || true
 	@cp assets/AppIcon.icns bundle/$(CODESCRIBE_APP_NAME).app/Contents/Resources/ 2>/dev/null || true
 	@VERSION=$$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*"\(.*\)"/\1/'); \
 	printf '%s\n' \

@@ -5,6 +5,10 @@ Dokument ten zawiera analizę obecnego stanu kodu (`CodeScribe`) w kontekście w
 Data: 2026-01-19
 Autor: Junie (AI)
 
+> **Historical snapshot.** Module paths reference the pre-refactor tree
+> (`src/voice_chat_ui.rs`, `src/controller.rs`). Current truth:
+> `app/ui/voice_chat/`, `app/controller/`. Use this ADR for intent, not for file paths.
+
 ---
 
 ## 1. Stan Obecny (AS-IS)

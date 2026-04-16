@@ -3981,10 +3981,13 @@ unsafe fn build_quality_tab(
             field_w,
             secondary,
             ToggleRowSpec {
-                title: "Auto-tune transcription quality (recommended)",
+                title: "Auto-tune transcription quality (external daemon)",
                 checked: quality_on,
                 action: sel!(onQubeDaemonToggled:),
-                description: Some("Runs quality analysis every 30 minutes in the background."),
+                description: Some(
+                    "Sets QUBE_DAEMON_AUTOSTART=1 so an external `qube-daemon --daemon` honors the preference. \
+                     The tray app does not spawn the daemon itself — run it via launchd or a shell.",
+                ),
                 tag: None,
                 gap,
             },

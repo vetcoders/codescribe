@@ -270,7 +270,7 @@ fn handle_open_qube_report() {
         info!("No quality report available");
         let _ = Command::new("osascript")
             .arg("-e")
-            .arg(r#"display notification "No quality report available. Run: codescribe-loop --daemon" with title "CodeScribe Quality""#)
+            .arg(r#"display notification "No quality report available. Run: qube-daemon --daemon" with title "CodeScribe Quality""#)
             .spawn();
     }
 }

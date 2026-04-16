@@ -2,6 +2,16 @@
 
 > Created by M&K (c)2026 VetCoders
 
+> **Historical snapshot (2026-01-25).** Paths and CLI names in this document
+> reflect the pre-refactor layout. Current truth:
+> - `src/voice_chat_ui.rs` → `app/ui/voice_chat/mod.rs`
+> - `src/transcription_overlay.rs` → `app/ui/overlay/mod.rs`
+> - `codescribe-quality` → `qube-report` (renamed in 0.8.1)
+> - `codescribe-loop` → `qube-daemon` (renamed in 0.8.1)
+>
+> For the current architecture, see [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
+> and the repo-level [README](../../README.md).
+
 ## System Overview
 
 ```mermaid

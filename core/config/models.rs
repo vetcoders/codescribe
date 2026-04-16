@@ -20,7 +20,16 @@ const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_f
 const REQUIRED_MODEL_WEIGHTS: [&str; 2] = ["weights.safetensors", "model.safetensors"];
 
 fn canonicalize_or_self(path: PathBuf) -> PathBuf {
-    path.canonicalize().unwrap_or(path)
+    match path.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(err) => {
+            tracing::warn!(
+                "canonicalize failed for {} ({err}); using non-canonical path",
+                path.display()
+            );
+            path
+        }
+    }
 }
 
 fn is_complete_whisper_model_dir(path: &Path) -> bool {

@@ -2050,14 +2050,49 @@ mod tests {
         assert_eq!(stable_overlay_preview_text("partial"), "partial");
     }
 
+    /// Scoped env var guard — saves the prior value and restores it on Drop.
+    ///
+    /// Required because `CODESCRIBE_OVERLAY_STABLE_PREVIEW` is read by
+    /// `overlay_live_preview_uses_stable_text()` as process-global state, so
+    /// parallel tests without isolation can observe values left over by siblings.
+    struct OverlayStablePreviewEnvGuard {
+        prev: Option<String>,
+    }
+
+    impl OverlayStablePreviewEnvGuard {
+        fn unset() -> Self {
+            let prev = std::env::var("CODESCRIBE_OVERLAY_STABLE_PREVIEW").ok();
+            // SAFETY: `#[serial]` on every caller enforces single-threaded access to
+            // this env var for the duration of the test, and Drop restores the prior
+            // value before any other test resumes.
+            unsafe { std::env::remove_var("CODESCRIBE_OVERLAY_STABLE_PREVIEW") };
+            Self { prev }
+        }
+    }
+
+    impl Drop for OverlayStablePreviewEnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                // SAFETY: see OverlayStablePreviewEnvGuard::unset — serial test scope.
+                Some(v) => unsafe { std::env::set_var("CODESCRIBE_OVERLAY_STABLE_PREVIEW", v) },
+                // SAFETY: see OverlayStablePreviewEnvGuard::unset — serial test scope.
+                None => unsafe { std::env::remove_var("CODESCRIBE_OVERLAY_STABLE_PREVIEW") },
+            }
+        }
+    }
+
     #[test]
+    #[serial]
     fn test_overlay_visible_text_decision_mode_uses_exact_text() {
+        let _guard = OverlayStablePreviewEnvGuard::unset();
         let text = "pełny tekst kontraktu bez trimowania";
         assert_eq!(overlay_visible_text(text, true), text);
     }
 
     #[test]
+    #[serial]
     fn test_overlay_visible_text_live_mode_defaults_to_exact_text() {
+        let _guard = OverlayStablePreviewEnvGuard::unset();
         let text = "To jest stabilne zda";
         assert_eq!(overlay_visible_text(text, false), text);
     }

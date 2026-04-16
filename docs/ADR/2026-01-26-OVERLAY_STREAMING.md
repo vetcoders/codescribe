@@ -2,6 +2,11 @@
 
 > **Status:** Implemented (2026-01-19)
 >
+> **Historical snapshot.** Paths below use the pre-refactor layout
+> (`src/voice_chat_ui.rs`). The current overlay lives at
+> `app/ui/overlay/mod.rs`; the voice-chat surface was split into
+> `app/ui/voice_chat/`. Read this ADR for intent, not for module paths.
+>
 > Dokument opisuje zintegrowaną implementację: **live transkrypcji**, **streamingu odpowiedzi AI** oraz **VAD (auto‑stop)** w natywnym (Pure Rust) UI overlay.
 
 ## Zakres i cel

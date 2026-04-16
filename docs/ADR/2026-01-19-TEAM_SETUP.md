@@ -1,5 +1,9 @@
 # CodeScribe - Team Setup (Pure Rust Era)
 
+> **Historical snapshot (2026-01-19).** CLI names here (`codescribe-quality`,
+> `codescribe-loop`) were renamed in 0.8.1 to `qube-report` and `qube-daemon`.
+> For the current team setup, see [`docs/TEAM_SETUP.md`](../TEAM_SETUP.md).
+
 ## Quick Start
 
 ### 1. Prerequisites

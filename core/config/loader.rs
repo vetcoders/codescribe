@@ -389,6 +389,7 @@ impl Config {
             && let Some(v) = settings.use_local_stt
         {
             self.use_local_stt = v;
+            // SAFETY: config init runs single-threaded before any worker threads start.
             unsafe { std::env::set_var("USE_LOCAL_STT", if v { "1" } else { "0" }) };
         }
         if std::env::var("LOCAL_MODEL").is_err()
@@ -453,6 +454,7 @@ impl Config {
         if std::env::var("QUBE_DAEMON_AUTOSTART").is_err()
             && let Some(v) = settings.qube_daemon_autostart
         {
+            // SAFETY: config init runs single-threaded before any worker threads start.
             unsafe { std::env::set_var("QUBE_DAEMON_AUTOSTART", if v { "1" } else { "0" }) };
         }
         if std::env::var("AGENT_ENTER_SENDS").is_err()
@@ -465,21 +467,25 @@ impl Config {
         if std::env::var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
             && let Some(v) = settings.buffer_delay_ms
         {
+            // SAFETY: config init runs single-threaded before any worker threads start.
             unsafe { std::env::set_var("CODESCRIBE_BUFFER_DELAY_MS", v.to_string()) };
         }
         if std::env::var("CODESCRIBE_TYPING_CPS").is_err()
             && let Some(v) = settings.typing_cps
         {
+            // SAFETY: config init runs single-threaded before any worker threads start.
             unsafe { std::env::set_var("CODESCRIBE_TYPING_CPS", v.to_string()) };
         }
         if std::env::var("CODESCRIBE_EMIT_WORDS_MAX").is_err()
             && let Some(v) = settings.emit_words_max
         {
+            // SAFETY: config init runs single-threaded before any worker threads start.
             unsafe { std::env::set_var("CODESCRIBE_EMIT_WORDS_MAX", v.to_string()) };
         }
         if std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC").is_err()
             && let Some(v) = settings.buffered_interim_sec
         {
+            // SAFETY: config init runs single-threaded before any worker threads start.
             unsafe { std::env::set_var("CODESCRIBE_BUFFERED_INTERIM_SEC", format!("{v:.1}")) };
         }
         if std::env::var("WHISPER_MODEL").is_err()
@@ -490,6 +496,7 @@ impl Config {
         if std::env::var("BACKEND_MAX_UPLOAD_MB").is_err()
             && let Some(v) = settings.backend_max_upload_mb
         {
+            // SAFETY: config init runs single-threaded before any worker threads start.
             unsafe { std::env::set_var("BACKEND_MAX_UPLOAD_MB", v.to_string()) };
         }
     }
@@ -502,7 +509,9 @@ impl Config {
         // API keys → Keychain
         if super::keychain::KEYCHAIN_ACCOUNTS.contains(&key) {
             super::keychain::save_key(key, value)?;
-            // Also update runtime env var
+            // Also update runtime env var.
+            // SAFETY: settings are written from the main UI thread; other readers re-fetch
+            // from Config on the next poll rather than racing this mutation.
             unsafe { std::env::set_var(key, value) };
             return Ok(());
         }
@@ -550,7 +559,9 @@ impl Config {
                     settings.set_string(key, value);
                 }
             }
-            // Also update runtime env var
+            // Also update runtime env var.
+            // SAFETY: settings writes originate from the UI thread; other readers pull
+            // from Config, not directly from env, so the mutation is not racing.
             unsafe { std::env::set_var(key, value) };
             return Ok(());
         }
@@ -567,6 +578,7 @@ impl Config {
         };
         env_vars.insert(key.to_string(), value.to_string());
         Self::write_env_file(&env_path, &env_vars)?;
+        // SAFETY: same invariant as above — UI-thread write, no concurrent env consumer.
         unsafe { std::env::set_var(key, value) };
         Ok(())
     }
@@ -588,6 +600,7 @@ impl Config {
             // API keys → Keychain
             if super::keychain::KEYCHAIN_ACCOUNTS.contains(key) {
                 super::keychain::save_key(key, value)?;
+                // SAFETY: batch writes run on the UI thread; downstream reads go through Config.
                 unsafe { std::env::set_var(key, value) };
                 continue;
             }
@@ -716,6 +729,7 @@ impl Config {
                     }
                     _ => {}
                 }
+                // SAFETY: batch writes run on the UI thread; downstream reads go through Config.
                 unsafe { std::env::set_var(key, value) };
                 continue;
             }
@@ -730,6 +744,7 @@ impl Config {
                 }
             });
             vars_ref.insert((*key).to_string(), (*value).to_string());
+            // SAFETY: batch writes run on the UI thread; downstream reads go through Config.
             unsafe { std::env::set_var(key, value) };
         }
 

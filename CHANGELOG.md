@@ -18,6 +18,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Architecture** – Centralized configuration management in the Settings Window (Overlay), removing legacy tray-based logic.
 - **Settings naming cleanup** – Renamed the internal `ui/bootstrap` surface to `ui/settings` and kept `bootstrap_done` only as a legacy setup migration marker.
 
+## [v0.8.1] – 2026-04-16 (PR #26 — `feat/the-intents-engine`)
+
+### Breaking
+
+- **CLI binaries renamed** – `codescribe-quality` → `qube-report`, `codescribe-loop` → `qube-daemon`. External launchd plists, cron entries, and shell scripts must be updated. Install targets (`make install`, `make bundle`) now ship the renamed binaries.
+- **Public API removals in `codescribe-core`** – `stt::whisper::singleton::transcribe_file(path, language) -> Result<String>` and `pub const DEFAULT_MODEL` were removed. Callers migrate to `engine::LocalWhisperEngine::transcribe_file_verdict(path)` returning `TranscriptionVerdict`, or to `config::models::DEFAULT_MODEL`.
+- **Quality daemon state type** – `QualityDaemonState` renamed to `QubeDaemonState` across the public surface.
+
+### Added
+
+- **Truth-surface adjudication** – New `RecordingTruthVerdict`, `RecordingTranscriptSource`, `RecordingFallbackClass`, `FinalPassVerdict`, `VadVerdict` structs replace silent degradation with explicit verdicts. Controller and overlay now render truth flags (`truth_review_trigger`, `truth_display_status`, `push_truth_flag`).
+- **File transcription verdict-first** – `transcribe_file_verdict` exposes provenance (embedded vs. runtime, VAD sparkline preservation, final-pass artifact rejection).
+- **Assistive preview mode + context cache** – Double-tap Right Option now engages assistive mode with a preview window and LLM context chaining.
+- **Veterinary seed + lexicon variants** – Expanded Polish veterinary corpus assets in `core/assets/`.
+- **Qube protocol CLI alignment** – `qube-report` / `qube-daemon` binaries and `QUBE_DAEMON_AUTOSTART` settings flag.
+
+### Changed
+
+- **Runtime model resolution hardened** – `resolve_runtime_whisper_model_path` clarifies precedence (`CODESCRIBE_MODEL_PATH` → bundled Resources → `../../models` → `~/.codescribe/models` → HF cache) and `canonicalize_or_self` now logs a warning on canonicalization failure instead of silently swallowing the error.
+- **Embedded-first Whisper remains canonical** – Release builds embed the Whisper payload by default; runtime resolution is the opt-in fallback (`CODESCRIBE_NO_EMBED=1` or missing model). README updated to reflect this truth.
+- **Settings JSON migrations** – `qube_daemon_autostart` promoted to the v2 `system` section; legacy settings continue to load via alias.
+- **Overlay live-preview stability** – New `CODESCRIBE_OVERLAY_STABLE_PREVIEW` env flag gates stable-word-boundary trimming in live mode (default off).
+
+### Fixed
+
+- **Overlay unit tests isolated** – `test_overlay_visible_text_live_mode_defaults_to_exact_text` / `..._decision_mode_uses_exact_text` now use `#[serial]` + a scoped `OverlayStablePreviewEnvGuard` so sibling tests cannot pollute `CODESCRIBE_OVERLAY_STABLE_PREVIEW`.
+- **`rustls-webpki` bumped to 0.103.12** – Addresses RUSTSEC-2026-0098 and RUSTSEC-2026-0099 (name-constraint handling for URI names / wildcard certificates).
+- **Env-mutation `unsafe` blocks in `core/config/loader.rs` / `core/config/models.rs`** now carry `// SAFETY:` justifications documenting the single-threaded init invariant per Rust 2024 norms.
+- **Quality daemon autostart surface** – The settings toggle label/description now tells users truthfully that the tray app does not spawn the daemon; external `qube-daemon --daemon` is required.
+
+### Internal
+
+- **Tray handler** – Notification text now points users to `qube-daemon --daemon` when no quality report is available.
+- **Historical ADRs annotated** – `docs/ADR/2026-01-*` and `docs/future/FEASIBILITY_ANALYSIS.md` now carry historical-snapshot disclaimers explaining path drift after the `ui/` refactor and CLI rename.
+
 ## [v0.7.14] – 2026-02-07
 
 ### Added
