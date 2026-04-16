@@ -86,3 +86,4 @@ docs/runtime-diagnosis.md
 !.ai-context/share/timeline.md
 AGENTS.md
 /.vibecrafted
+/*test*.rs

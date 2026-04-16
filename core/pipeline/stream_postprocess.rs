@@ -131,7 +131,7 @@ impl Lexicon {
 
         if total > 0 {
             info!(
-                "Loaded {} lexicon rules in {}ms (legacy={} in {}ms, seed={} in {}ms, custom={} in {}ms)",
+                "Loaded {} lexicon rules in {}ms (legacy={} in {}ms, seed={} in {}ms, custom={} in {}ms, custom_path={})",
                 total,
                 total_ms,
                 legacy_count,
@@ -140,9 +140,13 @@ impl Lexicon {
                 seed_ms,
                 custom_count,
                 custom_ms,
+                custom_path.display(),
             );
         } else {
-            warn!("No lexicon rules loaded from lexicon sources");
+            warn!(
+                "No lexicon rules loaded from lexicon sources (custom_path={})",
+                custom_path.display()
+            );
         }
 
         Self {
@@ -168,9 +172,10 @@ impl Lexicon {
             .unwrap_or(0);
         self.custom_mtime = current_mtime;
         info!(
-            "Hot-reloaded {} custom lexicon rules (total={})",
+            "Hot-reloaded {} custom lexicon rules (total={}, custom_path={})",
             custom_count,
-            self.rule_count()
+            self.rule_count(),
+            self.custom_path.display(),
         );
     }
 
