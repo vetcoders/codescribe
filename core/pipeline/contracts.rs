@@ -1327,4 +1327,107 @@ mod tests {
 
         assert_eq!(verdict.vad.as_ref().unwrap().sparkline, sparkline);
     }
+
+    // ── Serde roundtrip edge cases for the truth-surface verdict structs ──
+
+    #[test]
+    fn final_pass_verdict_serde_roundtrip_covers_all_dispositions() {
+        let cases = [
+            FinalPassDisposition::Skipped,
+            FinalPassDisposition::Unchanged,
+            FinalPassDisposition::Changed,
+            FinalPassDisposition::Rejected,
+            FinalPassDisposition::Dropped,
+        ];
+        for disposition in cases {
+            let verdict = FinalPassVerdict {
+                mode: FinalPassMode::EmbeddedLexiconCleanup,
+                disposition,
+                reason: Some(format!("case_{disposition}")),
+                lexicon_rewrites: 3,
+                repetition_cleanups: 1,
+            };
+            let json = serde_json::to_string(&verdict).expect("serialize");
+            let restored: FinalPassVerdict = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(restored, verdict, "disposition {disposition} round-trip");
+        }
+    }
+
+    #[test]
+    fn final_pass_verdict_serde_preserves_none_reason() {
+        let verdict = FinalPassVerdict {
+            mode: FinalPassMode::None,
+            disposition: FinalPassDisposition::Skipped,
+            reason: None,
+            lexicon_rewrites: 0,
+            repetition_cleanups: 0,
+        };
+        let json = serde_json::to_string(&verdict).unwrap();
+        assert!(
+            json.contains("\"reason\":null"),
+            "reason=None must serialize as JSON null (got {json})"
+        );
+        let restored: FinalPassVerdict = serde_json::from_str(&json).unwrap();
+        assert!(restored.reason.is_none());
+    }
+
+    #[test]
+    fn vad_verdict_serde_roundtrip_preserves_no_speech_reason() {
+        let verdict = VadVerdict {
+            speech_pct: 0.0,
+            speech_windows: 0,
+            total_windows: 60,
+            no_speech: true,
+            no_speech_reason: Some("vad_no_speech_detected".to_string()),
+            sparkline: String::new(),
+        };
+        let json = serde_json::to_string(&verdict).unwrap();
+        // Empty sparkline must be elided by skip_serializing_if.
+        assert!(
+            !json.contains("\"sparkline\""),
+            "empty sparkline must be skipped in serialized form (got {json})"
+        );
+        let restored: VadVerdict = serde_json::from_str(&json).unwrap();
+        assert!(restored.no_speech);
+        assert_eq!(
+            restored.no_speech_reason.as_deref(),
+            Some("vad_no_speech_detected")
+        );
+        assert!(restored.sparkline.is_empty());
+    }
+
+    #[test]
+    fn vad_verdict_serde_roundtrip_preserves_sparkline_when_present() {
+        let sparkline = "▁▃▇█▇▃▁";
+        let verdict = VadVerdict {
+            speech_pct: 62.5,
+            speech_windows: 5,
+            total_windows: 8,
+            no_speech: false,
+            no_speech_reason: None,
+            sparkline: sparkline.to_string(),
+        };
+        let json = serde_json::to_string(&verdict).unwrap();
+        assert!(json.contains("sparkline"));
+        let restored: VadVerdict = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.sparkline, sparkline);
+        assert!(!restored.no_speech);
+        assert!(restored.no_speech_reason.is_none());
+    }
+
+    #[test]
+    fn vad_verdict_deserialize_accepts_missing_sparkline_via_default() {
+        // Older snapshots may omit the sparkline field entirely; serde(default)
+        // must accept the absence without failing.
+        let json = r#"{
+            "speech_pct": 50.0,
+            "speech_windows": 4,
+            "total_windows": 8,
+            "no_speech": false,
+            "no_speech_reason": null
+        }"#;
+        let restored: VadVerdict = serde_json::from_str(json).unwrap();
+        assert!(restored.sparkline.is_empty());
+        assert_eq!(restored.speech_pct, 50.0);
+    }
 }

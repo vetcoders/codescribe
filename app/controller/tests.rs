@@ -406,6 +406,187 @@ fn test_backend_recovery_message_uses_settings_language() {
     assert!(message.contains("Cloud endpoint timed out"));
 }
 
+// ── Pure-function unit tests for truth helpers (push_truth_flag,
+//    truth_review_trigger, truth_display_status). These guard the
+//    truth-surface adjudicator primitives so regressions in precedence or
+//    dedup logic fail loudly instead of leaking through integration tests.
+
+#[test]
+fn test_push_truth_flag_appends_new_flag() {
+    let mut flags = Vec::new();
+    push_truth_flag(&mut flags, "cloud_fallback_used");
+    assert_eq!(flags, vec!["cloud_fallback_used".to_string()]);
+}
+
+#[test]
+fn test_push_truth_flag_deduplicates_existing_flag() {
+    let mut flags = vec!["cloud_fallback_used".to_string()];
+    push_truth_flag(&mut flags, "cloud_fallback_used");
+    assert_eq!(flags.len(), 1);
+}
+
+#[test]
+fn test_push_truth_flag_preserves_order_when_adding_distinct_flags() {
+    let mut flags = Vec::new();
+    push_truth_flag(&mut flags, "local_final_pass_unavailable");
+    push_truth_flag(&mut flags, "cloud_fallback_used");
+    push_truth_flag(&mut flags, "local_final_pass_unavailable"); // dup
+    assert_eq!(
+        flags,
+        vec![
+            "local_final_pass_unavailable".to_string(),
+            "cloud_fallback_used".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn test_truth_review_trigger_no_speech_short_circuits_all_other_signals() {
+    let flags = vec![
+        "possible_hallucination_logprob".to_string(),
+        "cloud_fallback_used".to_string(),
+    ];
+    let trigger = truth_review_trigger(
+        Some(RecordingFallbackClass::Unsafe),
+        Some("vad_no_speech_detected"),
+        &flags,
+    );
+    assert_eq!(trigger.as_deref(), Some("no_reliable_speech"));
+}
+
+#[test]
+fn test_truth_review_trigger_hallucination_wins_over_degraded_fallback() {
+    let flags = vec!["possible_hallucination_logprob".to_string()];
+    let trigger = truth_review_trigger(Some(RecordingFallbackClass::Degraded), None, &flags);
+    assert_eq!(trigger.as_deref(), Some("possible_hallucination_logprob"));
+}
+
+#[test]
+fn test_truth_review_trigger_very_low_speech_wins_over_streaming_preview() {
+    let flags = vec![
+        "very_low_speech".to_string(),
+        "streaming_preview_used_as_verdict".to_string(),
+    ];
+    let trigger = truth_review_trigger(None, None, &flags);
+    assert_eq!(trigger.as_deref(), Some("very_low_speech"));
+}
+
+#[test]
+fn test_truth_review_trigger_streaming_preview_wins_over_cloud_fallback() {
+    let flags = vec![
+        "streaming_preview_used_as_verdict".to_string(),
+        "cloud_fallback_used".to_string(),
+    ];
+    let trigger = truth_review_trigger(None, None, &flags);
+    assert_eq!(
+        trigger.as_deref(),
+        Some("streaming_preview_used_as_verdict")
+    );
+}
+
+#[test]
+fn test_truth_review_trigger_cloud_fallback_flag_wins_over_acceptable_class() {
+    let flags = vec!["cloud_fallback_used".to_string()];
+    let trigger = truth_review_trigger(Some(RecordingFallbackClass::Acceptable), None, &flags);
+    assert_eq!(trigger.as_deref(), Some("cloud_fallback_used"));
+}
+
+#[test]
+fn test_truth_review_trigger_degraded_fallback_when_no_confidence_flags() {
+    let trigger = truth_review_trigger(Some(RecordingFallbackClass::Degraded), None, &[]);
+    assert_eq!(trigger.as_deref(), Some("degraded_fallback"));
+}
+
+#[test]
+fn test_truth_review_trigger_unsafe_fallback_when_no_confidence_flags() {
+    let trigger = truth_review_trigger(Some(RecordingFallbackClass::Unsafe), None, &[]);
+    assert_eq!(trigger.as_deref(), Some("unsafe_fallback"));
+}
+
+#[test]
+fn test_truth_review_trigger_acceptable_class_returns_none() {
+    assert!(truth_review_trigger(Some(RecordingFallbackClass::Acceptable), None, &[]).is_none());
+    assert!(truth_review_trigger(None, None, &[]).is_none());
+}
+
+#[test]
+fn test_truth_display_status_no_speech_is_user_facing_english() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        Some(RecordingFallbackClass::Unsafe),
+        Some("vad_no_speech_detected"),
+        &["possible_hallucination_logprob".to_string()],
+    );
+    assert_eq!(status, "No reliable speech detected");
+}
+
+#[test]
+fn test_truth_display_status_hallucination_wins_over_source_label() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        None,
+        None,
+        &["possible_hallucination_logprob".to_string()],
+    );
+    assert_eq!(status, "Possible hallucination");
+}
+
+#[test]
+fn test_truth_display_status_very_low_speech_wins_over_fallback_class() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        Some(RecordingFallbackClass::Degraded),
+        None,
+        &["very_low_speech".to_string()],
+    );
+    assert_eq!(status, "Very low speech");
+}
+
+#[test]
+fn test_truth_display_status_streaming_fallback_short_circuits_fallback_label() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::StreamingFallback),
+        Some(RecordingFallbackClass::Degraded),
+        None,
+        &[],
+    );
+    assert_eq!(status, "Streaming fallback");
+}
+
+#[test]
+fn test_truth_display_status_composes_source_and_fallback_labels() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        Some(RecordingFallbackClass::Degraded),
+        None,
+        &[],
+    );
+    assert_eq!(status, "Final-pass local (degraded fallback)");
+}
+
+#[test]
+fn test_truth_display_status_source_only_uses_source_label() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::CloudPrimary),
+        None,
+        None,
+        &[],
+    );
+    assert_eq!(status, "Cloud primary");
+}
+
+#[test]
+fn test_truth_display_status_fallback_only_uses_fallback_label() {
+    let status = truth_display_status(None, Some(RecordingFallbackClass::Unsafe), None, &[]);
+    assert_eq!(status, "unsafe fallback");
+}
+
+#[test]
+fn test_truth_display_status_defaults_to_ready_when_no_signals() {
+    let status = truth_display_status(None, None, None, &[]);
+    assert_eq!(status, "Transcript ready");
+}
+
 #[tokio::test]
 async fn test_toggle_press_does_not_set_force_raw_mode() {
     let controller = RecordingController::new();

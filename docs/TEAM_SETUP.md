@@ -85,10 +85,10 @@ codescribe transcribe audio.wav --language pl
 New CLI tools for batch processing and automation:
 
 ```bash
-# Batch quality report (renamed from codescribe-quality in 0.8.1)
+# Batch quality report (renamed from codescribe-quality in 0.9.0)
 qube-report --help
 
-# Self-improving quality daemon (renamed from codescribe-loop in 0.8.1)
+# Self-improving quality daemon (renamed from codescribe-loop in 0.9.0)
 qube-daemon --help
 ```
 

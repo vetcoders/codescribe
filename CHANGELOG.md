@@ -18,12 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Architecture** – Centralized configuration management in the Settings Window (Overlay), removing legacy tray-based logic.
 - **Settings naming cleanup** – Renamed the internal `ui/bootstrap` surface to `ui/settings` and kept `bootstrap_done` only as a legacy setup migration marker.
 
-## [v0.8.1] – 2026-04-16 (PR #26 — `feat/the-intents-engine`)
+## [v0.9.0] – 2026-04-16 (PR #26 — `feat/the-intents-engine`)
+
+> Version bumped from `0.8.1` → `0.9.0` to truthfully signal the breaking changes below (SemVer pre-1.0 minor bump). Release tag remains on this PR.
 
 ### Breaking
 
 - **CLI binaries renamed** – `codescribe-quality` → `qube-report`, `codescribe-loop` → `qube-daemon`. External launchd plists, cron entries, and shell scripts must be updated. Install targets (`make install`, `make bundle`) now ship the renamed binaries.
-- **Public API removals in `codescribe-core`** – `stt::whisper::singleton::transcribe_file(path, language) -> Result<String>` and `pub const DEFAULT_MODEL` were removed. Callers migrate to `engine::LocalWhisperEngine::transcribe_file_verdict(path)` returning `TranscriptionVerdict`, or to `config::models::DEFAULT_MODEL`.
+- **Public API removals in `codescribe-core`** – `stt::whisper::singleton::transcribe_file(path, language) -> Result<String>` was removed outright. `pub const DEFAULT_MODEL` is preserved as a re-export from `config::models`. Callers migrate to `stt::whisper::singleton::transcribe_file_verdict(path, language, FileTranscriptionOptions)` returning `TranscriptionVerdict`.
 - **Quality daemon state type** – `QualityDaemonState` renamed to `QubeDaemonState` across the public surface.
 
 ### Added

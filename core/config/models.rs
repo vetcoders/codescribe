@@ -384,4 +384,81 @@ mod tests {
             resolve_runtime_whisper_model_path(Some("VetCoders/custom-whisper")).unwrap();
         assert_eq!(resolved, snapshot);
     }
+
+    // ── Negative-path coverage (P2-07): each tier of the fallback chain must
+    //    either accept a complete model or fall through cleanly. The error path
+    //    is user-visible guidance, so we assert against its content.
+    //
+    //    These tests redirect HOME plus every HF cache env var to temp dirs so
+    //    `BaseDirs::new()` does not silently find the developer's real HF cache
+    //    and turn the negative path into a false positive.
+
+    fn isolate_from_real_hf_cache(temp_dir: &Path) -> Vec<EnvGuard> {
+        let empty_hf_cache = temp_dir.join("empty-hf-cache");
+        std::fs::create_dir_all(&empty_hf_cache).unwrap();
+        let fake_home = temp_dir.join("fake-home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+
+        vec![
+            EnvGuard::set("HOME", &fake_home),
+            EnvGuard::set("CODESCRIBE_HF_CACHE", &empty_hf_cache),
+            EnvGuard::unset("HUGGINGFACE_HUB_CACHE"),
+            EnvGuard::unset("HF_HUB_CACHE"),
+            EnvGuard::unset("HF_HOME"),
+        ]
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_runtime_whisper_model_path_skips_incomplete_env_override() {
+        let temp_dir = TempDir::new().unwrap();
+        let incomplete_env = temp_dir.path().join("env-incomplete");
+        std::fs::create_dir_all(&incomplete_env).unwrap();
+        std::fs::write(incomplete_env.join("tokenizer.json"), "{}").unwrap();
+
+        let empty_models_dir = temp_dir.path().join("empty-models");
+        std::fs::create_dir_all(&empty_models_dir).unwrap();
+
+        let _hf_isolation = isolate_from_real_hf_cache(temp_dir.path());
+        let _env_override = EnvGuard::set("CODESCRIBE_MODEL_PATH", &incomplete_env);
+        let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", &empty_models_dir);
+
+        let result = resolve_runtime_whisper_model_path(Some(DEFAULT_MODEL));
+        assert!(
+            result.is_err(),
+            "incomplete env override plus empty downstream tiers must fail loudly, got {result:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_runtime_whisper_model_path_errors_with_guidance_when_all_tiers_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let empty_models_dir = temp_dir.path().join("empty-models");
+        std::fs::create_dir_all(&empty_models_dir).unwrap();
+
+        let _hf_isolation = isolate_from_real_hf_cache(temp_dir.path());
+        let _env_override = EnvGuard::unset("CODESCRIBE_MODEL_PATH");
+        let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", &empty_models_dir);
+
+        let err = resolve_runtime_whisper_model_path(Some(DEFAULT_MODEL))
+            .expect_err("all tiers empty must return Err");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("CODESCRIBE_MODEL_PATH"),
+            "error must mention the env override knob, got: {message}"
+        );
+        assert!(
+            message.contains("hf download"),
+            "error must hint at HF cache warm-up, got: {message}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn canonicalize_or_self_returns_input_when_path_does_not_exist() {
+        let phantom = PathBuf::from("/__codescribe__/nonexistent/phantom/model");
+        let returned = canonicalize_or_self(phantom.clone());
+        assert_eq!(returned, phantom);
+    }
 }

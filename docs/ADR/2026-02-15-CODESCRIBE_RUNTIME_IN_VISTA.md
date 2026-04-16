@@ -18,7 +18,7 @@ This ADR defines:
 
 Contract identity:
 
-- `VistaScribe = codescribe-core + qube-daemon + qube-report` (CLI binaries renamed from `codescribe-loop` / `codescribe-quality` in 0.8.1).
+- `VistaScribe = codescribe-core + qube-daemon + qube-report` (CLI binaries renamed from `codescribe-loop` / `codescribe-quality` in 0.9.0).
 - `VistaScribe` branding applies only to Vista UI/agent surface; runtime modules remain CodeScribe-owned.
 
 ## Decision
