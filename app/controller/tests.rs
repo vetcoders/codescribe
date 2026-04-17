@@ -369,8 +369,7 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
     assert!(
         verdict
             .confidence_flags
-            .iter()
-            .any(|flag| *flag == TranscriptionConfidenceFlag::CloudPrimaryMissing)
+            .contains(&TranscriptionConfidenceFlag::CloudPrimaryMissing)
     );
     assert_eq!(verdict.commit_trigger.as_deref(), Some("degraded_fallback"));
     assert_eq!(verdict.display_status, "Streaming fallback");
@@ -400,8 +399,7 @@ fn test_adjudicate_recording_truth_marks_low_logprob_as_unsafe() {
     assert!(
         verdict
             .confidence_flags
-            .iter()
-            .any(|flag| *flag == TranscriptionConfidenceFlag::PossibleHallucinationLogprob)
+            .contains(&TranscriptionConfidenceFlag::PossibleHallucinationLogprob)
     );
     assert_eq!(
         verdict.commit_trigger.as_deref(),

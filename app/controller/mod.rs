@@ -221,7 +221,7 @@ fn push_typed_flag(
     flags: &mut Vec<TranscriptionConfidenceFlag>,
     flag: TranscriptionConfidenceFlag,
 ) {
-    if !flags.iter().any(|existing| *existing == flag) {
+    if !flags.contains(&flag) {
         flags.push(flag);
     }
 }
@@ -243,7 +243,7 @@ fn truth_review_trigger(
         TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
         TranscriptionConfidenceFlag::CloudFallbackUsed,
     ] {
-        if confidence_flags.iter().any(|flag| *flag == priority_flag) {
+        if confidence_flags.contains(&priority_flag) {
             return Some(priority_flag.to_string());
         }
     }
@@ -265,17 +265,11 @@ fn truth_display_status(
         return "No reliable speech detected".to_string();
     }
 
-    if confidence_flags
-        .iter()
-        .any(|flag| *flag == TranscriptionConfidenceFlag::PossibleHallucinationLogprob)
-    {
+    if confidence_flags.contains(&TranscriptionConfidenceFlag::PossibleHallucinationLogprob) {
         return "Possible hallucination".to_string();
     }
 
-    if confidence_flags
-        .iter()
-        .any(|flag| *flag == TranscriptionConfidenceFlag::VeryLowSpeech)
-    {
+    if confidence_flags.contains(&TranscriptionConfidenceFlag::VeryLowSpeech) {
         return "Very low speech".to_string();
     }
 
@@ -2996,6 +2990,7 @@ impl RecordingController {
         result.map(|_| ())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn process_stopped_recording(
         &self,
         streaming_text: String,

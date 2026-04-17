@@ -324,6 +324,13 @@ reload = "restart"
 category = "stt"
 description = "Run final-pass local STT on full audio (overrides streaming output)"
 
+[vars.CODESCRIBE_TOGGLE_FINAL_PASS]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Use saved-WAV final-pass adjudication when stopping toggle dictation (0 restores preview-only stop path)"
+
 [vars.CODESCRIBE_HF_CACHE]
 default = ""
 type = "string"
