@@ -585,6 +585,7 @@ fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthM
 }
 
 const QUALITY_GATE_MIN_CHARS: usize = 24;
+const SHORT_AI_QUALITY_GATE_MIN_CHARS: usize = 10;
 const QUALITY_GATE_DROP_RATIO: f32 = 0.35;
 const QUALITY_GATE_DIFF_RATIO: f32 = 0.62;
 const QUALITY_GATE_CORRECTION_RATIO: f32 = 0.40;
@@ -658,6 +659,10 @@ fn evaluate_quality_commit_trigger(
     quality_probe: &ActionQualityProbe,
     output_kind: crate::state::history::TranscriptKind,
 ) -> Option<&'static str> {
+    let short_ai_formatted = output_kind
+        == crate::state::history::TranscriptKind::FormattedTranscript
+        && quality_probe.raw_chars.max(quality_probe.final_chars)
+            >= SHORT_AI_QUALITY_GATE_MIN_CHARS;
     if force_raw {
         return None;
     }
@@ -666,6 +671,7 @@ fn evaluate_quality_commit_trigger(
     }
     if quality_probe.raw_chars < QUALITY_GATE_MIN_CHARS
         && quality_probe.final_chars < QUALITY_GATE_MIN_CHARS
+        && !short_ai_formatted
     {
         return None;
     }

@@ -1113,6 +1113,22 @@ fn test_quality_gate_triggers_commit_when_ai_failed() {
 }
 
 #[test]
+fn test_quality_gate_catches_short_ai_rewrites_in_danger_zone() {
+    let stats = crate::stream_postprocess::StreamPostProcessStats {
+        input_chunks: 4,
+        dropped_chunks: 0,
+        ..Default::default()
+    };
+    let probe = ActionQualityProbe::from_transcripts("abcdefghijk", "qrstuvwxyz!", &stats);
+    let trigger = evaluate_quality_commit_trigger(
+        false,
+        &probe,
+        crate::state::history::TranscriptKind::FormattedTranscript,
+    );
+    assert_eq!(trigger, Some("high_rewrite_ratio"));
+}
+
+#[test]
 fn test_delta_first_guards_block_full_rewrite_in_live_stream() {
     assert!(!should_allow_full_user_bubble_rewrite(false, false, true));
     assert!(!should_allow_full_assistant_rewrite(false, true));
