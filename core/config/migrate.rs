@@ -21,6 +21,16 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
         return;
     }
 
+    let Some(file_env) = file_env else {
+        debug!("No .env snapshot present, skipping migration");
+        return;
+    };
+    if file_env.is_empty() {
+        debug!("Empty .env snapshot, skipping migration");
+        return;
+    }
+    let file_env = Some(file_env);
+
     let mut settings = UserSettings::default();
 
     // Migrate string settings from current env/config state
@@ -167,4 +177,59 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
 
 fn migrated_value(file_env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
     file_env.and_then(|vars| vars.get(key).cloned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    fn set_env_for_test<V: AsRef<std::ffi::OsStr>>(key: &str, value: V) {
+        // SAFETY: these tests are marked `serial` and intentionally isolate the
+        // process env so `UserSettings::settings_path()` resolves inside the temp dir.
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    fn remove_env_for_test(key: &str) {
+        // SAFETY: same invariant as `set_env_for_test` above.
+        unsafe { std::env::remove_var(key) };
+    }
+
+    fn setup_isolated_data_dir() -> TempDir {
+        let tmp = TempDir::new().expect("tempdir");
+        set_env_for_test("CODESCRIBE_DATA_DIR", tmp.path());
+        tmp
+    }
+
+    #[test]
+    #[serial]
+    fn migrate_skips_when_env_snapshot_is_absent() {
+        let _tmp = setup_isolated_data_dir();
+
+        migrate_if_needed(None);
+
+        assert!(
+            !UserSettings::settings_path().exists(),
+            "missing .env snapshot must not synthesize settings.json"
+        );
+
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn migrate_skips_when_env_snapshot_is_empty() {
+        let _tmp = setup_isolated_data_dir();
+        let empty = HashMap::new();
+
+        migrate_if_needed(Some(&empty));
+
+        assert!(
+            !UserSettings::settings_path().exists(),
+            "empty .env snapshot must not synthesize settings.json"
+        );
+
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
 }

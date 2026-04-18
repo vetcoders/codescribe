@@ -189,7 +189,7 @@ match (hotkey, flags) {
 - **Singleton pattern**: One global instance, lazy initialized
 - **Metal acceleration**: Uses Apple GPU via candle-core
 - **Streaming**: Chunks processed during recording
-- **Runtime-loaded**: Model resolved from `CODESCRIBE_MODEL_PATH`, repo-local models, or HF cache
+- **Embedded-first**: Builds embed Whisper when the snapshot is present at build time; runtime lookup from `CODESCRIBE_MODEL_PATH`, repo-local models, or HF cache remains the fallback path
 
 ## Implementation Status
 

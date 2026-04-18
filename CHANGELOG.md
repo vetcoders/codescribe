@@ -7,16 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+
+- **Settings Creator (resume-friendly onboarding)** — replace 1× first-run onboarding with always-available, step-by-step Setup Assistant. State machine persisted in `settings.json` under `onboarding.state` (`NotStarted | InProgress { steps, last_activity } | Completed { at, version }`). Each step (Permissions, Microphone, Hotkeys, Language, LLM endpoint, API key → Keychain, Formatting/Assistive model, UI prefs, Qube daemon autostart) is self-contained with skip-friendly + remind-later semantics. Eliminates "first-run lie" pattern.
+- **Sparkle auto-update infrastructure** — replace manual DMG drag-drop with in-place updates via `appcast.xml` hosted on `dragon:8077`. Zero TCC re-grant after first install. Target: 0.9.3 milestone — "last manual install" for all consumers.
+- **Config loader test parity** — close 2 known-broken tests (`test_load_prefers_settings_json_over_promoted_env_file_values`, `test_runtime_env_does_not_persist_into_settings_during_migration`) flagged by L1 marble; finish the loader priority contract (`settings.json > promoted env > defaults`).
+- **0.9.3 truth-gaps research follow-through** — implement remaining research-syntethesis items: Q5 stream_postprocess guardrail integration in app, Q11 `UnverifiedStream` typed flag, Q13 `transcribe_cloud → CloudTranscriptionVerdict` typed verdict, Q17 `qube_report → transcribe_long_with_segments` migration, Q15 overlay sticky `hide_transcription_overlay()` in `stop_toggle_recording`.
+- **Focus Ring Polish** — removed default macOS focus rings from settings buttons for a cleaner UI _(carried over from pre-0.9.0 backlog)_.
+
+## [v0.9.2] – 2026-04-18
+
+> Patch release. Big-ticket items (typed transcription flags, toggle final-pass adjudication, short-text formatting truth guard) hardened from `0.9.1`. L2 config loader rewrite landed but ships with 2 known-failing tests scheduled for closure in `0.9.3`.
+
 ### Added
 
-- **Focus Ring Polish** – Removed default macOS focus rings from settings buttons for a cleaner UI.
-- **Improved Settings Layout** – Adjusted spacing in "Setup" tab to prevent button overlapping.
+- **Typed transcription flags + toggle adjudication** ([091dd67](https://github.com/VetCoders/CodeScribe/commit/091dd67)) — `TranscriptionConfidenceFlag` enum extended; `Vec<String>` confidence flags converted to typed `Vec<TranscriptionConfidenceFlag>` across `RecordingTruthVerdict` boundary. Toggle mode now adjudicates session truth via the same final-pass pipeline as hold mode (no more 80% speech loss in long toggle sessions). Closes Marbles_truth_plan **L9** + research **Q10/LIE A/Q7**.
+- **`final-pass` env toggle for runtime experimentation** ([42a09e7](https://github.com/VetCoders/CodeScribe/commit/42a09e7)) — `CODESCRIBE_LOCAL_STT_FINAL_PASS=0|1` (default `1`) lets ops disable the saved-WAV adjudicator without rebuild. `Vec::contains` cleanup on flag iteration.
+- **Centralized env handling + embedded-Whisper documentation** ([fb30db2](https://github.com/VetCoders/CodeScribe/commit/fb30db2)) — env-var loading consolidated in one path; README + `.env.example` updated to declare embedded-first Whisper as canonical and `CODESCRIBE_NO_EMBED=1` as opt-out.
 
 ### Changed
 
-- **Tray Menu Cleanup** – Moved hotkey/audio/VAD settings to the new Settings Window. Tray menu is now focused on essential actions (Show Overlay, Quit).
-- **Architecture** – Centralized configuration management in the Settings Window (Overlay), removing legacy tray-based logic.
-- **Settings naming cleanup** – Renamed the internal `ui/bootstrap` surface to `ui/settings` and kept `bootstrap_done` only as a legacy setup migration marker.
+- **Config loader rewrite** ([0a9bd99](https://github.com/VetCoders/CodeScribe/commit/0a9bd99)) — `core/config/{loader,migrate,mod}.rs` substantively refactored to enforce priority `settings.json > promoted env > defaults`. Lays infrastructure for upcoming Settings Creator. **Known regressions**: 2 tests still red — `test_load_prefers_settings_json_over_promoted_env_file_values`, `test_runtime_env_does_not_persist_into_settings_during_migration`. Functional impact for end users with clean `~/.codescribe/` and no `.env`: none. Edge case: users with stale `~/.codescribe/.env` may see unexpected env→settings synthesis. Closure scheduled for `0.9.3`.
+- **Sort + collapsible match hygiene** (clippy) — `sort_by(|a,b| b.x.cmp(&a.x))` → `sort_by_key(|b| std::cmp::Reverse(b.x))` across `core/agent/thread_index.rs`, `core/quality/qube_daemon.rs`, `app/ui/shared/helpers.rs`, `app/ui/voice_chat/api.rs`. Collapsible `match` → guard pattern in `core/agent/thread_index.rs`, `app/controller/helpers.rs`, `app/ui/voice_chat/api.rs`. Zero behavior change, idiomatic Rust 2024.
+
+### Fixed
+
+- **Short-text formatting truth guard** ([ab9a9c6](https://github.com/VetCoders/CodeScribe/commit/ab9a9c6) — L1 marble) — non-assistive AI formatting now hard-skips only inputs `<10` chars; `AiNoop` detection narrowed to whitespace-only echoes. Punctuation and capitalization changes are preserved as legitimate formatting work. Short `FormattedTranscript` outputs in the 10–23 char band re-entered the controller quality gate (previously bypassed). Closes regression in `e2e_prompts_and_history`.
+
+### Internal
+
+- **Marbles convergence loops** — L1 codex marble closed `0.9.2` short-text quality gate gap. L2 codex marble in-flight on config loader test parity (carries to `0.9.3`).
+- **Build pipeline parity** — `release-codescribe` (embedded models) + `release-qube` (`CODESCRIBE_NO_EMBED=1`, isolated `target-noembed/`) split preserved from `0.9.1`. DMG slim ~1.3 GB (vs `0.9.0` legacy ~3.7 GB).
+
+## [v0.9.1] – 2026-04-16
+
+> Patch release. **Critical Silero VAD fix for fresh-machine deployments** + DMG size optimization via build-pipeline split.
+
+### Fixed
+
+- **Silero VAD embedded path** ([8b0e278](https://github.com/VetCoders/CodeScribe/commit/8b0e278)) — Silero ONNX model was embedded in the binary via `include_bytes!`, but runtime called `Session::commit_from_file(path)` against `~/.codescribe/models/silero_vad.onnx` which doesn't exist on fresh machines. Result: every recording on freshly-installed `0.9.0` DMG returned `vad_no_speech_detected`, regardless of audio content. Fix: new `SileroVad::new_embedded(config)` and `AccumulatingVad::with_config_embedded` use `Session::builder().commit_from_memory(embedded::MODEL)` (ort 2.0.0-rc.11 API). `core/audio/chunker.rs::init_silero_vad` rewired to embedded path; legacy `SileroVad::new(model_path, ...)` kept as dev/test override only. Verified empirically against Dragon `Sesja 1` recording (53-char Polish transcript with 57% speech detected vs prior 0% speech under `0.9.0`).
+
+### Changed
+
+- **Slim DMG via build-pipeline split** — `Makefile` target `release` split into `release-codescribe` (embedded Whisper + MiniLM + Silero) and `release-qube` (`CODESCRIBE_NO_EMBED=1`, isolated `target-noembed/` directory). `qube-daemon` and `qube-report` binaries shrank from ~1.3 GB each (each had its own `include_bytes!()` baked-in models — Cargo doesn't deduplicate `__DATA` segments across workspace binaries) to **24 MB each**, resolving runtime models from HF cache instead. Bundle dropped from **4.0 GB → 1.4 GB**, signed+notarized DMG from **3.7 GB → 1.2 GB** (~67% reduction). `qube-*` binaries continue to function as VetCoders-internal CLI tools without per-binary model embedding overhead.
+- **`.gitignore`** — added `target-noembed/` (build-pipeline-split workspace artifact directory).
+
+### Internal
+
+- **Notarytool credentials profile** documented — `xcrun notarytool store-credentials VSNotary --apple-id ... --team-id MW223P3NPX --password ...` is the required one-time setup for signed DMG release pipeline.
 
 ## [v0.9.0] – 2026-04-16 (PR #26 — `feat/the-intents-engine`)
 
@@ -275,7 +313,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI & types** – Type checking and CI improvements.
 - **Menu robustness** – Tray menu stability fixes.
 
-[unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.7.14...HEAD
+[unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.9.2...HEAD
+[v0.9.2]: https://github.com/VetCoders/CodeScribe/compare/v0.9.1...v0.9.2
+[v0.9.1]: https://github.com/VetCoders/CodeScribe/compare/v0.9.0...v0.9.1
+[v0.9.0]: https://github.com/VetCoders/CodeScribe/compare/v0.8.0...v0.9.0
 [v0.7.14]: https://github.com/VetCoders/CodeScribe/compare/v0.7.2-dev...v0.7.14
 [v0.7.2-dev]: https://github.com/VetCoders/CodeScribe/compare/v0.7.0...v0.7.2-dev
 [v0.7.0]: https://github.com/VetCoders/CodeScribe/compare/v0.6.3...v0.7.0

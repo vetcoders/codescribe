@@ -91,7 +91,7 @@
 | `core/`               | ~38,000 LOC          |
 | `app/`                | ~37,000 LOC          |
 | `tests/`              | ~6,800 LOC           |
-| Whisper packaging     | Runtime-loaded       |
+| Whisper packaging     | Embedded-first       |
 
 ---
 

@@ -110,7 +110,11 @@ mod tests {
     #[test]
     fn test_config_dir() {
         let dir = Config::config_dir();
-        assert!(dir.to_string_lossy().contains(".codescribe"));
+        if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
+            assert_eq!(dir, std::path::PathBuf::from(custom));
+        } else {
+            assert!(dir.to_string_lossy().contains(".codescribe"));
+        }
     }
 
     #[test]
