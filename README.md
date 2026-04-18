@@ -94,7 +94,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 ## Features
 
 - **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
-- **Embedded-first Whisper** — Release builds embed the Whisper payload into the binary (single-binary distribution). Runtime resolution from `CODESCRIBE_MODEL_PATH`, `~/.codescribe/models`, repo-local `models/`, or the Hugging Face cache is used only for no-embed builds or recovery fallback.
+- **Embedded-first Whisper** — Builds embed the Whisper payload by default whenever the model is available at build time. Runtime resolution from `CODESCRIBE_MODEL_PATH`, `~/.codescribe/models`, repo-local `models/`, or the Hugging Face cache remains available for `CODESCRIBE_NO_EMBED=1` builds and recovery fallback.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
@@ -138,7 +138,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Install CLI (embedded Whisper + support assets — single-binary distribution)
+# Install CLI (embedded-first Whisper + support assets — single-binary distribution)
 make install
 
 # Verify installation
@@ -158,11 +158,11 @@ Tagged builds can publish a signed-or-ad-hoc DMG through GitHub Releases:
 ### Build Options
 
 ```bash
-make build              # Debug build (runtime Whisper)
-make release            # Release build (runtime Whisper + embedded support assets)
-make install            # Install CLI with runtime Whisper lookup + embedded support assets
+make build              # Debug build (embedded-first Whisper with runtime fallback)
+make release            # Release build (embedded-first Whisper + embedded support assets)
+make install            # Install CLI with embedded-first Whisper; runtime fallback stays available
 make install-app        # Build + install macOS .app (auto-downloads models if missing)
-make install-no-embed   # Install without optional embedded support assets (needs CODESCRIBE_MODEL_PATH)
+make install-no-embed   # Install without optional embedding (runtime lookup required)
 ```
 
 ## Quick Start
@@ -338,14 +338,16 @@ CodeScribe uses **whisper-large-v3-turbo-mlx-q8**:
 
 ### Runtime Whisper (Current)
 
-Whisper is not embedded into the binary in the current build. Runtime resolves the model from:
+Whisper is embedded by default when the model snapshot is available at build time.
+Runtime resolves the model from the locations below only when embedding is disabled
+with `CODESCRIBE_NO_EMBED=1` or the build falls back because the snapshot is missing:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
 3. `./models/whisper-large-v3-turbo-mlx-q8/`
 4. Hugging Face cache snapshots for `LibraxisAI/whisper-large-v3-turbo-mlx-q8`
 
-Release builds still embed the MiniLM semantic gate and Silero VAD by default.
+MiniLM semantic gating and Silero VAD still ship as embedded support assets in the default release path.
 
 Model files required:
 
@@ -380,7 +382,7 @@ CodeScribe/
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Development build (runtime Whisper)
+# Development build with explicit runtime Whisper fallback
 CODESCRIBE_MODEL_PATH=./models/whisper-large-v3-turbo-mlx-q8 cargo run
 
 # Quality checks
@@ -397,9 +399,9 @@ make format         # cargo fmt
 
 ```
 make build            # Debug build
-make release          # Release build (runtime Whisper + embedded support assets)
-make install          # Install CLI with runtime Whisper lookup
-make install-no-embed # Install without optional embedded support assets
+make release          # Release build (embedded-first Whisper + embedded support assets)
+make install          # Install CLI with embedded-first Whisper
+make install-no-embed # Install without optional embedding
 make config           # Edit ~/.codescribe/.env
 make start            # Start as daemon
 make stop             # Stop running instance

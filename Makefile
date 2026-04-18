@@ -71,7 +71,7 @@ release-qube:
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing CodeScribe (runtime Whisper + embedded support assets)..."
+	@echo "Installing CodeScribe (embedded-first Whisper + embedded support assets)..."
 	@./scripts/ensure-models.sh
 	@cargo install --path . --force
 	@mkdir -p ~/.codescribe
@@ -79,7 +79,7 @@ install:
 	@echo "Installed: codescribe $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 
 install-no-embed:
-	@echo "Installing CodeScribe (runtime Whisper + no optional embedded support assets)..."
+	@echo "Installing CodeScribe (runtime Whisper fallback + no optional embedded support assets)..."
 	@./scripts/ensure-models.sh
 	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
@@ -360,8 +360,8 @@ help:
 	@echo ""
 	@echo "Build & Install:"
 	@echo "  make build           Build debug binary"
-	@echo "  make release         Build release binary (runtime Whisper + embedded support assets)"
-	@echo "  make install         Install CLI with runtime Whisper lookup"
+	@echo "  make release         Build release binary (embedded-first Whisper + embedded support assets)"
+	@echo "  make install         Install CLI with embedded-first Whisper"
 	@echo "  make install-no-embed Install without optional embedded assets (needs CODESCRIBE_MODEL_PATH)"
 	@echo "  make config          Edit ~/.codescribe/.env"
 	@echo "  make bundle          Create CodeScribe.app bundle"

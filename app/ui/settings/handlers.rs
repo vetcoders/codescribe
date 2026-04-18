@@ -35,6 +35,8 @@ static mut TOOLBAR_DELEGATE_CLASS: *const Class = std::ptr::null();
 const NSTOOLBAR_FLEXIBLE_SPACE_ITEM_IDENTIFIER: &str = "NSToolbarFlexibleSpaceItem";
 
 pub fn action_handler_class() -> *const Class {
+    // SAFETY: `ACTION_HANDLER_INIT` serializes the one-time registration, and the
+    // Objective-C runtime keeps the registered class pointer alive for the process lifetime.
     unsafe {
         ACTION_HANDLER_INIT.call_once(|| {
             let superclass = Class::get("NSObject").expect("NSObject not found");
@@ -263,6 +265,8 @@ pub fn action_handler_class() -> *const Class {
 }
 
 pub fn window_delegate_class() -> *const Class {
+    // SAFETY: `WINDOW_DELEGATE_INIT` guarantees exactly-once registration before we
+    // publish the cached class pointer, which remains valid for the process lifetime.
     unsafe {
         WINDOW_DELEGATE_INIT.call_once(|| {
             let superclass = Class::get("NSObject").expect("NSObject not found");
@@ -280,6 +284,8 @@ pub fn window_delegate_class() -> *const Class {
 }
 
 pub fn toolbar_delegate_class() -> *const Class {
+    // SAFETY: `TOOLBAR_DELEGATE_INIT` serializes registration and the Objective-C
+    // runtime owns the class object after `register`, so later reads are stable.
     unsafe {
         TOOLBAR_DELEGATE_INIT.call_once(|| {
             let superclass = Class::get("NSObject").expect("NSObject not found");
@@ -301,6 +307,19 @@ pub fn toolbar_delegate_class() -> *const Class {
         });
 
         TOOLBAR_DELEGATE_CLASS
+    }
+}
+
+fn toolbar_identifier_array() -> Id {
+    // SAFETY: `NSMutableArray::array` returns an autoreleased mutable array owned by
+    // the current Cocoa autorelease pool, and we only append a known AppKit identifier.
+    unsafe {
+        let ns_mutable_array = Class::get("NSMutableArray").unwrap();
+        let ids: Id = msg_send![ns_mutable_array, array];
+        // AppKit exposes flexible-space as a global identifier constant, not a class selector.
+        let flexible_space: Id = ns_string(NSTOOLBAR_FLEXIBLE_SPACE_ITEM_IDENTIFIER);
+        let _: () = msg_send![ids, addObject: flexible_space];
+        ids
     }
 }
 
@@ -341,24 +360,11 @@ extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, _notification: Id)
 }
 
 extern "C" fn toolbar_allowed_item_identifiers(_this: &Object, _sel: Sel, _toolbar: Id) -> Id {
-    unsafe {
-        let ns_mutable_array = Class::get("NSMutableArray").unwrap();
-        let ids: Id = msg_send![ns_mutable_array, array];
-        // AppKit exposes flexible-space as a global identifier constant, not a class selector.
-        let flexible_space: Id = ns_string(NSTOOLBAR_FLEXIBLE_SPACE_ITEM_IDENTIFIER);
-        let _: () = msg_send![ids, addObject: flexible_space];
-        ids
-    }
+    toolbar_identifier_array()
 }
 
 extern "C" fn toolbar_default_item_identifiers(_this: &Object, _sel: Sel, _toolbar: Id) -> Id {
-    unsafe {
-        let ns_mutable_array = Class::get("NSMutableArray").unwrap();
-        let ids: Id = msg_send![ns_mutable_array, array];
-        let flexible_space: Id = ns_string(NSTOOLBAR_FLEXIBLE_SPACE_ITEM_IDENTIFIER);
-        let _: () = msg_send![ids, addObject: flexible_space];
-        ids
-    }
+    toolbar_identifier_array()
 }
 
 extern "C" fn toolbar_item_for_identifier(
@@ -368,6 +374,8 @@ extern "C" fn toolbar_item_for_identifier(
     item_identifier: Id,
     _will_be_inserted: bool,
 ) -> Id {
+    // SAFETY: `NSToolbarItem` instances are created through the documented alloc/init
+    // pair, and `item_identifier` comes from AppKit's toolbar delegate callback.
     unsafe {
         let ns_toolbar_item = Class::get("NSToolbarItem").unwrap();
         let item: Id = msg_send![ns_toolbar_item, alloc];
@@ -380,6 +388,8 @@ mod tests {
     use super::*;
 
     fn assert_selector_registered(class: *const Class, selector: Sel, label: &str) {
+        // SAFETY: we only query selector presence on classes we registered in this module,
+        // so the Objective-C runtime receives a valid class object and selector.
         let responds: bool = unsafe { msg_send![class, instancesRespondToSelector: selector] };
         assert!(
             responds,

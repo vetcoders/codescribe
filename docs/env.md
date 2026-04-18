@@ -82,9 +82,10 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `CODESCRIBE_STREAM_SIMILARITY` – domyślnie z kodu (HOT RELOADED)
 - `CODESCRIBE_STREAM_NOVELTY` – domyślnie z kodu (HOT RELOADED)
 
-**Model lokalny (embedded)**
+**Model lokalny (embedded-first)**
 
-- brak wymaganych env – model jest w binarce.
+- brak wymaganych envów, jeśli build znalazł kompletny model przy kompilacji
+- jeśli build powstał z `CODESCRIBE_NO_EMBED=1` albo bez modelu, runtime użyje fallbacku przez `CODESCRIBE_MODEL_PATH`, cache lub skonfigurowane ścieżki
 
 ---
 

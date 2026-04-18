@@ -317,7 +317,7 @@
               id="toggle-local-stt"
               onclick="toggleSwitch(this)"
             ></div>
-            <span class="toggle-label">Use Local STT (embedded Whisper)</span>
+            <span class="toggle-label">Use Local STT (embedded-first Whisper)</span>
           </div>
           <div class="split">
             <div class="field">
@@ -404,34 +404,11 @@
         <!-- Hotkeys -->
         <section class="card">
           <h2>⌨️ Hotkeys</h2>
-          <div class="split">
-            <div class="field">
-              <label
-                >HOLD_MODS <span class="default">default: ctrl</span></label
-              >
-              <select id="hold-mods">
-                <option value="ctrl" selected>Ctrl</option>
-                <option value="ctrl_alt">Ctrl + Option</option>
-                <option value="ctrl_shift">Ctrl + Shift</option>
-                <option value="ctrl_cmd">Ctrl + Command</option>
-              </select>
-            </div>
-            <div class="field">
-              <label
-                >TOGGLE_TRIGGER
-                <span class="default">default: double_option</span></label
-              >
-              <select id="toggle-trigger">
-                <option value="double_option" selected>
-                  Double Option (any)
-                </option>
-                <option value="double_lalt">Double Left Option</option>
-                <option value="double_ralt">Double Right Option</option>
-                <option value="double_ctrl">Double Ctrl</option>
-                <option value="none">Disabled</option>
-              </select>
-            </div>
-          </div>
+          <p class="muted">
+            Mode bindings for Dictation, Formatting, and Assistive now live in
+            <code>settings.json</code> via <strong>Settings → Modes &amp; Shortcuts</strong>.
+            This generator only emits the remaining env-backed timing toggles.
+          </p>
           <div class="split">
             <div class="field">
               <label
@@ -454,6 +431,35 @@
                 <option value="1" selected>Yes (ignore Shift/Cmd)</option>
                 <option value="0">No (Shift/Cmd = assistive)</option>
               </select>
+            </div>
+          </div>
+          <div class="split">
+            <div class="field">
+              <label
+                >DOUBLE_TAP_INTERVAL_MS
+                <span class="default">default: 200</span></label
+              >
+              <input
+                id="double-tap-interval"
+                type="number"
+                value="200"
+                min="100"
+                max="450"
+              />
+            </div>
+            <div class="field">
+              <label
+                >TOGGLE_SILENCE_SEC
+                <span class="default">default: 5.0</span></label
+              >
+              <input
+                id="toggle-silence"
+                type="number"
+                value="5.0"
+                step="0.5"
+                min="0.5"
+                max="10"
+              />
             </div>
           </div>
         </section>
@@ -636,15 +642,22 @@
         lines.push(
           `# =============================================================================`
         );
-        lines.push(`HOLD_MODS=${document.getElementById("hold-mods").value}`);
+        lines.push(
+          `# Per-mode bindings live in Settings -> Modes & Shortcuts (settings.json)`
+        );
         lines.push(
           `HOLD_EXCLUSIVE=${document.getElementById("hold-exclusive").value}`
         );
         lines.push(
-          `TOGGLE_TRIGGER=${document.getElementById("toggle-trigger").value}`
+          `HOLD_START_DELAY_MS=${document.getElementById("hold-delay").value}`
         );
         lines.push(
-          `HOLD_START_DELAY_MS=${document.getElementById("hold-delay").value}`
+          `DOUBLE_TAP_INTERVAL_MS=${
+            document.getElementById("double-tap-interval").value
+          }`
+        );
+        lines.push(
+          `TOGGLE_SILENCE_SEC=${document.getElementById("toggle-silence").value}`
         );
         lines.push(``);
 
@@ -759,6 +772,8 @@
         document.getElementById("local-model").value =
           "whisper-large-v3-turbo-mlx-q8";
         document.getElementById("hold-delay").value = "800";
+        document.getElementById("double-tap-interval").value = "200";
+        document.getElementById("toggle-silence").value = "5.0";
         document.getElementById("chunk-sec").value = "15";
         document.getElementById("sound-volume").value = "1.0";
 

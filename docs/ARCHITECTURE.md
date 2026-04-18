@@ -218,7 +218,10 @@ match (hotkey, flags) {
 
 ## Model Location
 
-**Current runtime truth**: Whisper is not embedded into the binary. The app resolves the model from:
+**Current runtime truth**: Whisper is embedded by default when the model snapshot is
+available at build time. Runtime lookup remains available as a fallback when
+embedding is disabled with `CODESCRIBE_NO_EMBED=1` or the build cannot embed the
+model:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`

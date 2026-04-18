@@ -7,7 +7,7 @@ This document describes the installation methods, configuration paths, and how t
 ### Method 1: CLI Install (Recommended for Development)
 
 ```bash
-# Install CLI (runtime Whisper + embedded support assets for other components)
+# Install CLI (embedded-first Whisper + embedded support assets)
 make install
 ```
 

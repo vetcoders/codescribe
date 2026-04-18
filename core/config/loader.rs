@@ -82,10 +82,7 @@ impl Config {
                 continue;
             }
             if std::env::var_os(key).is_none() {
-                // SAFETY: config init happens before background workers consume
-                // configuration; we intentionally seed process env here only for
-                // env-managed keys that remain outside settings.json.
-                unsafe { std::env::set_var(key, value) };
+                Self::config_init_set_env(key, value);
             }
         }
     }
@@ -279,7 +276,18 @@ impl Config {
             );
             return;
         }
-        // SAFETY: single-threaded config init, no other threads reading env yet.
+        Self::config_init_set_env(key, value);
+    }
+
+    fn config_init_set_env(key: &str, value: impl AsRef<str>) {
+        // SAFETY: config init happens before background workers consume configuration,
+        // so process-env mutation is confined to a single writer during bootstrap.
+        unsafe { std::env::set_var(key, value.as_ref()) };
+    }
+
+    fn ui_thread_set_env(key: &str, value: &str) {
+        // SAFETY: settings writes originate from the main UI thread; runtime readers
+        // consume refreshed Config snapshots rather than racing direct env access.
         unsafe { std::env::set_var(key, value) };
     }
 
@@ -353,9 +361,7 @@ impl Config {
             && let Some(v) = settings.transcription_overlay_enabled
         {
             self.transcription_overlay_enabled = v;
-            unsafe {
-                std::env::set_var("TRANSCRIPTION_OVERLAY_ENABLED", if v { "1" } else { "0" })
-            };
+            Self::safe_set_env("TRANSCRIPTION_OVERLAY_ENABLED", if v { "1" } else { "0" });
         }
         if std::env::var("SOUND_VOLUME").is_err()
             && let Some(v) = settings.sound_volume
@@ -405,8 +411,7 @@ impl Config {
             && let Some(v) = settings.use_local_stt
         {
             self.use_local_stt = v;
-            // SAFETY: config init runs single-threaded before any worker threads start.
-            unsafe { std::env::set_var("USE_LOCAL_STT", if v { "1" } else { "0" }) };
+            Self::config_init_set_env("USE_LOCAL_STT", if v { "1" } else { "0" });
         }
         if std::env::var("LOCAL_MODEL").is_err()
             && let Some(ref v) = settings.local_model
@@ -470,8 +475,7 @@ impl Config {
         if std::env::var("QUBE_DAEMON_AUTOSTART").is_err()
             && let Some(v) = settings.qube_daemon_autostart
         {
-            // SAFETY: config init runs single-threaded before any worker threads start.
-            unsafe { std::env::set_var("QUBE_DAEMON_AUTOSTART", if v { "1" } else { "0" }) };
+            Self::config_init_set_env("QUBE_DAEMON_AUTOSTART", if v { "1" } else { "0" });
         }
         if std::env::var("AGENT_ENTER_SENDS").is_err()
             && let Some(v) = settings.agent_enter_sends
@@ -483,26 +487,22 @@ impl Config {
         if std::env::var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
             && let Some(v) = settings.buffer_delay_ms
         {
-            // SAFETY: config init runs single-threaded before any worker threads start.
-            unsafe { std::env::set_var("CODESCRIBE_BUFFER_DELAY_MS", v.to_string()) };
+            Self::config_init_set_env("CODESCRIBE_BUFFER_DELAY_MS", v.to_string());
         }
         if std::env::var("CODESCRIBE_TYPING_CPS").is_err()
             && let Some(v) = settings.typing_cps
         {
-            // SAFETY: config init runs single-threaded before any worker threads start.
-            unsafe { std::env::set_var("CODESCRIBE_TYPING_CPS", v.to_string()) };
+            Self::config_init_set_env("CODESCRIBE_TYPING_CPS", v.to_string());
         }
         if std::env::var("CODESCRIBE_EMIT_WORDS_MAX").is_err()
             && let Some(v) = settings.emit_words_max
         {
-            // SAFETY: config init runs single-threaded before any worker threads start.
-            unsafe { std::env::set_var("CODESCRIBE_EMIT_WORDS_MAX", v.to_string()) };
+            Self::config_init_set_env("CODESCRIBE_EMIT_WORDS_MAX", v.to_string());
         }
         if std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC").is_err()
             && let Some(v) = settings.buffered_interim_sec
         {
-            // SAFETY: config init runs single-threaded before any worker threads start.
-            unsafe { std::env::set_var("CODESCRIBE_BUFFERED_INTERIM_SEC", format!("{v:.1}")) };
+            Self::config_init_set_env("CODESCRIBE_BUFFERED_INTERIM_SEC", format!("{v:.1}"));
         }
         if std::env::var("WHISPER_MODEL").is_err()
             && let Some(ref v) = settings.whisper_model
@@ -512,8 +512,7 @@ impl Config {
         if std::env::var("BACKEND_MAX_UPLOAD_MB").is_err()
             && let Some(v) = settings.backend_max_upload_mb
         {
-            // SAFETY: config init runs single-threaded before any worker threads start.
-            unsafe { std::env::set_var("BACKEND_MAX_UPLOAD_MB", v.to_string()) };
+            Self::config_init_set_env("BACKEND_MAX_UPLOAD_MB", v.to_string());
         }
     }
 
@@ -526,9 +525,7 @@ impl Config {
         if super::keychain::KEYCHAIN_ACCOUNTS.contains(&key) {
             super::keychain::save_key(key, value)?;
             // Also update runtime env var.
-            // SAFETY: settings are written from the main UI thread; other readers re-fetch
-            // from Config on the next poll rather than racing this mutation.
-            unsafe { std::env::set_var(key, value) };
+            Self::ui_thread_set_env(key, value);
             return Ok(());
         }
 
@@ -576,9 +573,7 @@ impl Config {
                 }
             }
             // Also update runtime env var.
-            // SAFETY: settings writes originate from the UI thread; other readers pull
-            // from Config, not directly from env, so the mutation is not racing.
-            unsafe { std::env::set_var(key, value) };
+            Self::ui_thread_set_env(key, value);
             return Ok(());
         }
 
@@ -594,8 +589,7 @@ impl Config {
         };
         env_vars.insert(key.to_string(), value.to_string());
         Self::write_env_file(&env_path, &env_vars)?;
-        // SAFETY: same invariant as above — UI-thread write, no concurrent env consumer.
-        unsafe { std::env::set_var(key, value) };
+        Self::ui_thread_set_env(key, value);
         Ok(())
     }
 
@@ -616,8 +610,7 @@ impl Config {
             // API keys → Keychain
             if super::keychain::KEYCHAIN_ACCOUNTS.contains(key) {
                 super::keychain::save_key(key, value)?;
-                // SAFETY: batch writes run on the UI thread; downstream reads go through Config.
-                unsafe { std::env::set_var(key, value) };
+                Self::ui_thread_set_env(key, value);
                 continue;
             }
 
@@ -745,8 +738,7 @@ impl Config {
                     }
                     _ => {}
                 }
-                // SAFETY: batch writes run on the UI thread; downstream reads go through Config.
-                unsafe { std::env::set_var(key, value) };
+                Self::ui_thread_set_env(key, value);
                 continue;
             }
 
@@ -760,8 +752,7 @@ impl Config {
                 }
             });
             vars_ref.insert((*key).to_string(), (*value).to_string());
-            // SAFETY: batch writes run on the UI thread; downstream reads go through Config.
-            unsafe { std::env::set_var(key, value) };
+            Self::ui_thread_set_env(key, value);
         }
 
         if let Some(settings) = settings
@@ -1007,12 +998,29 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    fn set_env_for_test<V: AsRef<std::ffi::OsStr>>(key: &str, value: V) {
+        // SAFETY: these tests are marked `serial` and do not start background workers,
+        // so process-env mutation stays confined to the active test case.
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    fn remove_env_for_test(key: &str) {
+        // SAFETY: same invariant as `set_env_for_test` above.
+        unsafe { std::env::remove_var(key) };
+    }
+
+    fn restore_env_for_test(key: &str, previous: Option<String>) {
+        if let Some(value) = previous {
+            set_env_for_test(key, value);
+        } else {
+            remove_env_for_test(key);
+        }
+    }
+
     fn setup_isolated_data_dir() -> TempDir {
         let tmp = TempDir::new().expect("tempdir");
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
-            std::env::remove_var("USE_LOCAL_STT");
-        }
+        set_env_for_test("CODESCRIBE_DATA_DIR", tmp.path());
+        remove_env_for_test("USE_LOCAL_STT");
         tmp
     }
 
@@ -1024,12 +1032,10 @@ mod tests {
         let prev_toggle_silence = std::env::var("TOGGLE_SILENCE_SEC").ok();
         let prev_hold_exclusive = std::env::var("HOLD_EXCLUSIVE").ok();
 
-        unsafe {
-            std::env::remove_var("HOLD_START_DELAY_MS");
-            std::env::remove_var("DOUBLE_TAP_INTERVAL_MS");
-            std::env::remove_var("TOGGLE_SILENCE_SEC");
-            std::env::remove_var("HOLD_EXCLUSIVE");
-        }
+        remove_env_for_test("HOLD_START_DELAY_MS");
+        remove_env_for_test("DOUBLE_TAP_INTERVAL_MS");
+        remove_env_for_test("TOGGLE_SILENCE_SEC");
+        remove_env_for_test("HOLD_EXCLUSIVE");
 
         let mut config = Config::default();
         let settings = super::super::settings::UserSettings {
@@ -1047,22 +1053,10 @@ mod tests {
         assert!((config.toggle_silence_sec - 3.0).abs() < f32::EPSILON);
         assert!(config.hold_exclusive);
 
-        match prev_hold_start_delay {
-            Some(value) => unsafe { std::env::set_var("HOLD_START_DELAY_MS", value) },
-            None => unsafe { std::env::remove_var("HOLD_START_DELAY_MS") },
-        }
-        match prev_double_tap {
-            Some(value) => unsafe { std::env::set_var("DOUBLE_TAP_INTERVAL_MS", value) },
-            None => unsafe { std::env::remove_var("DOUBLE_TAP_INTERVAL_MS") },
-        }
-        match prev_toggle_silence {
-            Some(value) => unsafe { std::env::set_var("TOGGLE_SILENCE_SEC", value) },
-            None => unsafe { std::env::remove_var("TOGGLE_SILENCE_SEC") },
-        }
-        match prev_hold_exclusive {
-            Some(value) => unsafe { std::env::set_var("HOLD_EXCLUSIVE", value) },
-            None => unsafe { std::env::remove_var("HOLD_EXCLUSIVE") },
-        }
+        restore_env_for_test("HOLD_START_DELAY_MS", prev_hold_start_delay);
+        restore_env_for_test("DOUBLE_TAP_INTERVAL_MS", prev_double_tap);
+        restore_env_for_test("TOGGLE_SILENCE_SEC", prev_toggle_silence);
+        restore_env_for_test("HOLD_EXCLUSIVE", prev_hold_exclusive);
     }
 
     #[test]
@@ -1152,9 +1146,7 @@ mod tests {
     fn test_runtime_env_does_not_persist_into_settings_during_migration() {
         let _tmp = setup_isolated_data_dir();
 
-        unsafe {
-            std::env::set_var("AI_FORMATTING_ENABLED", "1");
-        }
+        set_env_for_test("AI_FORMATTING_ENABLED", "1");
 
         let config = Config::load();
         assert!(config.ai_formatting_enabled);
@@ -1163,8 +1155,6 @@ mod tests {
             "explicit runtime env should not synthesize settings.json"
         );
 
-        unsafe {
-            std::env::remove_var("AI_FORMATTING_ENABLED");
-        }
+        remove_env_for_test("AI_FORMATTING_ENABLED");
     }
 }
