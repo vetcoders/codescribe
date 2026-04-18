@@ -3114,7 +3114,7 @@ pub fn list_draft_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         .collect();
 
     // Sort by modification time, newest first
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     files.into_iter().map(|(path, _)| path).collect()
 }

@@ -1,7 +1,12 @@
 //! Configuration loading and saving functionality.
 //!
-//! Handles loading from .env file and environment variables.
-//! Single source of truth: ~/.codescribe/.env
+//! Handles loading from defaults, settings.json, optional .env, and runtime environment.
+//!
+//! Contract:
+//! - `Config::default()` defines zero-state runtime truth.
+//! - `settings.json` is the canonical persisted store for promoted/user-facing settings.
+//! - `.env` is optional and only supplies env-managed / power-user overrides.
+//! - explicit process env can still override for tests and developer runs.
 
 use directories::BaseDirs;
 use std::collections::HashMap;
@@ -15,35 +20,38 @@ impl Config {
     /// Load configuration from disk or environment.
     ///
     /// Priority order:
-    /// 1. Environment variables
-    /// 2. .env file in config directory (~/.codescribe/.env)
-    /// 3. Default values
+    /// 1. Explicit process environment variables
+    /// 2. `settings.json` for promoted/user-facing settings
+    /// 3. Optional `.env` file for env-managed / power-user overrides
+    /// 4. Default values
     ///
     /// If the .env file doesn't exist or is malformed, returns default configuration
     /// without raising an error.
     pub fn load() -> Self {
         let env_path = Self::env_path();
-        let pre_env_use_local_stt = std::env::var("USE_LOCAL_STT").ok();
         let mut file_env_vars: Option<HashMap<String, String>> = None;
-        let mut env_use_local_stt: Option<bool> = None;
 
-        // Load .env file if it exists (power-user overrides only)
-        // In production, .env doesn't exist — regular users use settings.json
+        // Load .env file if it exists. It is optional and never required for
+        // normal runtime: we only use it for one-time migration and env-managed
+        // keys that still intentionally live outside settings.json.
         if env_path.exists() {
             // Migrate legacy keys inside existing .env (power users only)
             Self::migrate_env_legacy_keys();
 
             if let Ok(vars) = Self::parse_env_file(&env_path) {
-                env_use_local_stt = vars
-                    .get("USE_LOCAL_STT")
-                    .and_then(|raw| parse_use_local_stt(raw, ".env"));
                 file_env_vars = Some(vars);
             }
-            let _ = dotenvy::from_path(&env_path);
         }
 
-        // One-time migration from .env-only to tiered config
+        // One-time import from legacy .env-only installs into settings.json.
         super::migrate::migrate_if_needed(file_env_vars.as_ref());
+
+        // Optional .env remains available for env-managed / power-user keys, but
+        // promoted settings are intentionally excluded so stale ~/.codescribe/.env
+        // cannot shadow user choices persisted in settings.json.
+        if let Some(vars) = file_env_vars.as_ref() {
+            Self::inject_file_env_for_runtime(vars);
+        }
 
         // Load API keys from Keychain (only if not already set by .env)
         super::keychain::populate_env_from_keychain();
@@ -56,22 +64,30 @@ impl Config {
         // Apply user settings first (lowest priority after defaults)
         config.apply_user_settings(&user_settings);
 
-        // Override with environment variables (.env + runtime; highest priority)
+        // Override with environment variables (explicit runtime env + injected env-managed .env).
         config.load_from_env();
-        if let Some(v) = env_use_local_stt {
-            config.use_local_stt = v;
-        } else if let Some(v) = user_settings.use_local_stt {
-            config.use_local_stt = v;
-        } else {
-            if pre_env_use_local_stt.is_some() {
-                warn!(
-                    "Ignoring USE_LOCAL_STT from runtime environment; only ~/.codescribe/.env can disable local STT"
-                );
-            }
-            config.use_local_stt = true;
-        }
         config.sanitize();
         config
+    }
+
+    /// Inject optional .env values into the process environment without allowing
+    /// legacy file overrides to shadow promoted settings.json-backed keys.
+    fn inject_file_env_for_runtime(file_env: &HashMap<String, String>) {
+        for (key, value) in file_env {
+            if super::settings::is_promoted_key(key) {
+                debug_assert!(
+                    !super::settings::is_promoted_key(key) || !key.is_empty(),
+                    "promoted key bookkeeping should never see empty names"
+                );
+                continue;
+            }
+            if std::env::var_os(key).is_none() {
+                // SAFETY: config init happens before background workers consume
+                // configuration; we intentionally seed process env here only for
+                // env-managed keys that remain outside settings.json.
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
     }
 
     /// Load configuration values from environment variables.
@@ -983,18 +999,6 @@ impl Config {
     }
 }
 
-fn parse_use_local_stt(raw: &str, source: &str) -> Option<bool> {
-    let normalized = raw.trim().to_lowercase();
-    match normalized.as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => {
-            warn!("Ignoring invalid USE_LOCAL_STT value in {source}: {raw}");
-            None
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1108,5 +1112,59 @@ mod tests {
         let settings = UserSettings::load();
         assert_eq!(settings.use_local_stt, Some(false));
         assert!(UserSettings::settings_path().exists());
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_prefers_settings_json_over_promoted_env_file_values() {
+        let _tmp = setup_isolated_data_dir();
+
+        let mut settings = UserSettings::load();
+        settings.ai_formatting_enabled = Some(false);
+        settings.save().expect("save settings");
+
+        let env_path = Config::env_path();
+        fs::create_dir_all(env_path.parent().expect("env dir")).expect("create env dir");
+        fs::write(&env_path, "AI_FORMATTING_ENABLED=1\n").expect("write .env");
+
+        let config = Config::load();
+        assert!(
+            !config.ai_formatting_enabled,
+            ".env should not override promoted settings.json keys"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_still_honors_env_managed_values_from_optional_env_file() {
+        let _tmp = setup_isolated_data_dir();
+
+        let env_path = Config::env_path();
+        fs::create_dir_all(env_path.parent().expect("env dir")).expect("create env dir");
+        fs::write(&env_path, "STT_API_KEY=test-from-env-file\n").expect("write .env");
+
+        let config = Config::load();
+        assert_eq!(config.stt_api_key.as_deref(), Some("test-from-env-file"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_runtime_env_does_not_persist_into_settings_during_migration() {
+        let _tmp = setup_isolated_data_dir();
+
+        unsafe {
+            std::env::set_var("AI_FORMATTING_ENABLED", "1");
+        }
+
+        let config = Config::load();
+        assert!(config.ai_formatting_enabled);
+        assert!(
+            !UserSettings::settings_path().exists(),
+            "explicit runtime env should not synthesize settings.json"
+        );
+
+        unsafe {
+            std::env::remove_var("AI_FORMATTING_ENABLED");
+        }
     }
 }

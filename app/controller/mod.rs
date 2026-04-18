@@ -226,6 +226,23 @@ fn push_typed_flag(
     }
 }
 
+fn apply_ai_noop_signal(
+    assistive: bool,
+    is_ai_noop: bool,
+    confidence_flags: &mut Vec<TranscriptionConfidenceFlag>,
+    commit_trigger: &mut Option<String>,
+) {
+    if !is_ai_noop || assistive {
+        return;
+    }
+
+    push_typed_flag(
+        confidence_flags,
+        TranscriptionConfidenceFlag::AiNoopDetected,
+    );
+    *commit_trigger = Some("ai_noop".to_string());
+}
+
 fn truth_review_trigger(
     fallback_class: Option<RecordingFallbackClass>,
     no_speech_reason: Option<&str>,
@@ -3368,7 +3385,7 @@ impl RecordingController {
             truth_no_speech_reason,
             truth_speech_pct,
             truth_avg_logprob,
-            truth_confidence_flags,
+            mut truth_confidence_flags,
             truth_sparkline,
             truth_final_pass_disposition,
             truth_commit_trigger,
@@ -3691,9 +3708,12 @@ impl RecordingController {
             None
         };
 
-        if is_ai_noop && !assistive {
-            commit_trigger = Some("ai_noop".to_string());
-        }
+        apply_ai_noop_signal(
+            assistive,
+            is_ai_noop,
+            &mut truth_confidence_flags,
+            &mut commit_trigger,
+        );
 
         if let Some(reason) = commit_trigger.as_deref() {
             info!(

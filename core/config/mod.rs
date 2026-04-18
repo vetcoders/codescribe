@@ -1,15 +1,19 @@
 //! Configuration module for CodeScribe Rust app.
 //!
-//! Manages persistent settings with a single source of truth:
-//! 1. .env file for all configuration
+//! Manages persistent settings with a tiered truth model:
+//! 1. Code defaults define zero-state runtime behaviour
+//! 2. `settings.json` is the canonical persisted store for user-facing settings
+//! 3. `.env` is optional and only used for env-managed / developer overrides
 //!
-//! Settings are stored in `$HOME/.codescribe/` directory by default.
+//! Runtime/user settings are stored under:
+//! - `~/Library/Application Support/CodeScribe/settings.json` on macOS
+//! - `~/.codescribe/.env` only when an optional power-user env file exists
 //!
 //! ## Module Structure
 //!
 //! - `types` - Type definitions (enums, Config struct)
 //! - `defaults` - Default value functions for serde
-//! - `loader` - Load/save functionality (.env, JSON)
+//! - `loader` - Load/save functionality (defaults, JSON, optional env)
 //!
 //! Note: Config is loaded via `Config::load()` and accessed via shared state in main.rs.
 

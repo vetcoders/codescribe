@@ -330,10 +330,8 @@ fn apply_agent_ui_event(event: AgentUiEvent, overlay_state: &mut AgentUiOverlayS
 
 fn extract_text_from_block(block: &ContentBlock, out: &mut Vec<String>) {
     match block {
-        ContentBlock::Text(text) => {
-            if !text.trim().is_empty() {
-                out.push(text.to_string());
-            }
+        ContentBlock::Text(text) if !text.trim().is_empty() => {
+            out.push(text.to_string());
         }
         ContentBlock::ToolResult { content, .. } => {
             for nested in content {

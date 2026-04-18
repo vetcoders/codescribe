@@ -874,7 +874,7 @@ fn extract_lexicon_suggestions(
         .map(|((term, mis), count)| LexiconSuggestion { term, mis, count })
         .collect();
 
-    suggestions.sort_by(|a, b| b.count.cmp(&a.count));
+    suggestions.sort_by_key(|b| std::cmp::Reverse(b.count));
     if max_updates > 0 && suggestions.len() > max_updates {
         suggestions.truncate(max_updates);
     }

@@ -198,7 +198,7 @@ impl ThreadIndex {
             .iter()
             .filter(|summary| filter.is_none_or(|f| matches_filter(summary, f)))
             .collect::<Vec<_>>();
-        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         entries
     }
 
@@ -217,7 +217,7 @@ impl ThreadIndex {
                 terms.iter().all(|term| haystack.contains(term))
             })
             .collect::<Vec<_>>();
-        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         entries
     }
 
@@ -233,7 +233,7 @@ impl ThreadIndex {
 }
 
 fn sort_by_updated_desc(entries: &mut [ThreadSummary]) {
-    entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
 }
 
 fn normalize_terms(query: &str) -> Vec<String> {
@@ -330,10 +330,8 @@ fn thread_message_preview_text(message: &ThreadMessage) -> Option<String> {
 
 fn collect_message_text(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
-        serde_json::Value::String(text) => {
-            if !text.trim().is_empty() {
-                out.push(text.to_string());
-            }
+        serde_json::Value::String(text) if !text.trim().is_empty() => {
+            out.push(text.to_string());
         }
         serde_json::Value::Array(items) => {
             // Skip binary-like arrays (e.g., image bytes).

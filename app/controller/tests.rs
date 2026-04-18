@@ -489,6 +489,34 @@ fn test_push_typed_flag_preserves_order_when_adding_distinct_flags() {
 }
 
 #[test]
+fn test_apply_ai_noop_signal_sets_flag_and_commit_trigger() {
+    let mut flags = vec![TranscriptionConfidenceFlag::CloudFallbackUsed];
+    let mut commit_trigger = Some("high_rewrite_ratio".to_string());
+
+    apply_ai_noop_signal(false, true, &mut flags, &mut commit_trigger);
+
+    assert_eq!(
+        flags,
+        vec![
+            TranscriptionConfidenceFlag::CloudFallbackUsed,
+            TranscriptionConfidenceFlag::AiNoopDetected,
+        ]
+    );
+    assert_eq!(commit_trigger.as_deref(), Some("ai_noop"));
+}
+
+#[test]
+fn test_apply_ai_noop_signal_is_noop_for_assistive_sessions() {
+    let mut flags = vec![TranscriptionConfidenceFlag::CloudFallbackUsed];
+    let mut commit_trigger = Some("high_rewrite_ratio".to_string());
+
+    apply_ai_noop_signal(true, true, &mut flags, &mut commit_trigger);
+
+    assert_eq!(flags, vec![TranscriptionConfidenceFlag::CloudFallbackUsed]);
+    assert_eq!(commit_trigger.as_deref(), Some("high_rewrite_ratio"));
+}
+
+#[test]
 fn test_truth_review_trigger_no_speech_short_circuits_all_other_signals() {
     let flags = vec![
         TranscriptionConfidenceFlag::PossibleHallucinationLogprob,

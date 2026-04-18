@@ -1,6 +1,7 @@
-//! One-time migration from .env-only to tiered config.
+//! One-time import from legacy `.env` installs into tiered config.
 //!
-//! Moves non-secret settings into `settings.json` and API keys into macOS Keychain.
+//! Moves promoted non-secret settings into `settings.json` and API keys into
+//! macOS Keychain. This is an import path, not an ongoing precedence rule.
 
 use super::keychain;
 use super::settings::UserSettings;
@@ -10,7 +11,7 @@ use tracing::{debug, info};
 /// Runs the one-time migration if `settings.json` does not yet exist.
 ///
 /// 1. Skips if `settings.json` already exists.
-/// 2. Reads current env vars to build a `UserSettings`.
+/// 2. Reads the existing `.env` contents to build a `UserSettings`.
 /// 3. Saves to `settings.json`.
 /// 4. Migrates API keys from env to Keychain.
 pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
@@ -165,7 +166,5 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
 }
 
 fn migrated_value(file_env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
-    file_env
-        .and_then(|vars| vars.get(key).cloned())
-        .or_else(|| std::env::var(key).ok())
+    file_env.and_then(|vars| vars.get(key).cloned())
 }

@@ -3785,7 +3785,7 @@ pub fn load_drawer_entries() -> Vec<DrawerEntry> {
 fn load_drawer_entries_with_query(query: &str) -> Vec<DrawerEntry> {
     let favorites = load_favorites_from_disk();
     let mut entries = load_thread_drawer_entries(&favorites);
-    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
 
     let query_lower = query.trim().to_ascii_lowercase();
     if !query_lower.is_empty() {
@@ -4022,10 +4022,8 @@ fn thread_message_text_for_copy(message: &codescribe_core::agent::ThreadMessage)
 
 fn collect_copy_text(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
-        serde_json::Value::String(text) => {
-            if !text.trim().is_empty() {
-                out.push(text.to_string());
-            }
+        serde_json::Value::String(text) if !text.trim().is_empty() => {
+            out.push(text.to_string());
         }
         serde_json::Value::Array(items) => {
             if items.iter().all(serde_json::Value::is_number) {
