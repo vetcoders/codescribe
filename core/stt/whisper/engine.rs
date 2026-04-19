@@ -471,15 +471,42 @@ impl LocalWhisperEngine {
         // `speech_samples` changed the behavior of the historical "raw file
         // transcription" path and regressed canonical transcripts.
         let raw = self.transcribe_long_with_language_segments(&samples, sample_rate, language)?;
-        let (text, final_pass) = apply_requested_final_pass(&raw, options);
+        let vad_config = crate::vad::VadConfig::default();
+        let timeline = crate::vad::classify_windows(&stats.probabilities, &vad_config);
 
-        Ok(TranscriptionVerdict::from_parts(
+        let (raw_for_final_pass, tail_drop_count) = if raw.segments.is_empty() {
+            (raw.clone(), 0u32)
+        } else {
+            let outcome = crate::stt::whisper::map_whisper_segments_to_silero(
+                &raw.segments,
+                &timeline,
+                &vad_config,
+            );
+            if outcome.dropped_count > 0 {
+                tracing::info!(
+                    target: "tail_silence_filter",
+                    dropped_count = outcome.dropped_count,
+                    dropped_samples = ?outcome.dropped_text_samples,
+                    "Silero dropped Whisper tail segment(s)"
+                );
+            }
+
+            let mut filtered = raw.clone();
+            filtered.text = outcome.text;
+            filtered.segments = outcome.segments;
+            (filtered, outcome.dropped_count)
+        };
+
+        let (text, final_pass) = apply_requested_final_pass(&raw_for_final_pass, options);
+
+        Ok(TranscriptionVerdict::from_parts_with_silero_drops(
             text,
-            raw,
+            raw_for_final_pass,
             Some(vad),
             TranscriptionSource::LocalFinalPass,
             self.engine_provenance,
             final_pass,
+            tail_drop_count,
         ))
     }
 

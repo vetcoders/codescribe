@@ -139,6 +139,11 @@ pub enum TranscriptionConfidenceFlag {
     VeryLowSpeech,
     PossibleHallucinationLogprob,
     QualityGateDropped,
+    /// Silero-based post-filter dropped one or more Whisper segments
+    /// that fell inside classified trailing silence.
+    SileroDroppedTailHallucinations {
+        count: u32,
+    },
 
     // ── App-level provenance (surfaced by controller truth adjudication) ──
     /// Hold path attempted a final-pass against the saved WAV but the
@@ -166,6 +171,9 @@ impl std::fmt::Display for TranscriptionConfidenceFlag {
                 write!(f, "possible_hallucination_logprob")
             }
             Self::QualityGateDropped => write!(f, "quality_gate_dropped"),
+            Self::SileroDroppedTailHallucinations { count } => {
+                write!(f, "silero_dropped_tail_hallucinations:{count}")
+            }
             Self::LocalFinalPassUnavailable => write!(f, "local_final_pass_unavailable"),
             Self::CloudFallbackUsed => write!(f, "cloud_fallback_used"),
             Self::StreamingPreviewUsedAsVerdict => {
@@ -223,6 +231,28 @@ impl TranscriptionVerdict {
             confidence_flags,
         }
     }
+
+    /// Build a verdict and append typed Silero drop telemetry when the
+    /// file-level post-filter removed tail hallucinations.
+    pub fn from_parts_with_silero_drops(
+        text: String,
+        raw: RawTranscript,
+        vad: Option<VadVerdict>,
+        source: TranscriptionSource,
+        engine: TranscriptionEngineVerdict,
+        final_pass: Option<FinalPassVerdict>,
+        tail_drop_count: u32,
+    ) -> Self {
+        let mut verdict = Self::from_parts(text, raw, vad, source, engine, final_pass);
+        if tail_drop_count > 0 {
+            verdict.confidence_flags.push(
+                TranscriptionConfidenceFlag::SileroDroppedTailHallucinations {
+                    count: tail_drop_count,
+                },
+            );
+        }
+        verdict
+    }
 }
 
 /// VAD analysis results preserved as data.
@@ -239,6 +269,31 @@ pub struct VadVerdict {
     /// Sparkline visualisation of speech distribution (one char per 500ms window).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sparkline: String,
+}
+
+/// Per-window silence semantics derived from Silero probabilities.
+///
+/// Window granularity matches `vad::extract_speech` (500ms buckets) so the
+/// file-level Whisper post-filter can compare transcript timestamps against a
+/// typed VAD timeline without trimming the decoded audio first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VadClass {
+    Speech,
+    UtteranceGap,
+    SentenceBoundary,
+    TrailingSilence,
+}
+
+impl std::fmt::Display for VadClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Speech => write!(f, "speech"),
+            Self::UtteranceGap => write!(f, "utterance_gap"),
+            Self::SentenceBoundary => write!(f, "sentence_boundary"),
+            Self::TrailingSilence => write!(f, "trailing_silence"),
+        }
+    }
 }
 
 /// Where the transcription text came from.
@@ -1151,6 +1206,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn verdict_from_parts_with_silero_drops_adds_typed_flag() {
+        let verdict = TranscriptionVerdict::from_parts_with_silero_drops(
+            "krótki tekst".to_string(),
+            RawTranscript {
+                text: "krótki tekst".to_string(),
+                ..Default::default()
+            },
+            Some(VadVerdict {
+                speech_pct: 64.0,
+                speech_windows: 8,
+                total_windows: 12,
+                no_speech: false,
+                no_speech_reason: None,
+                sparkline: "▁▃▅▇█▇".to_string(),
+            }),
+            TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
+            None,
+            2,
+        );
+
+        assert!(
+            verdict.confidence_flags.contains(
+                &TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 2 }
+            )
+        );
+    }
+
     // ── Truth QA: UtteranceFinal confidence contract ──
 
     #[test]
@@ -1460,6 +1544,35 @@ mod tests {
     }
 
     #[test]
+    fn vad_class_serde_roundtrip_covers_all_variants() {
+        let cases = [
+            VadClass::Speech,
+            VadClass::UtteranceGap,
+            VadClass::SentenceBoundary,
+            VadClass::TrailingSilence,
+        ];
+        for class in cases {
+            let json = serde_json::to_string(&class).expect("serialize vad class");
+            let restored: VadClass = serde_json::from_str(&json).expect("deserialize vad class");
+            assert_eq!(restored, class);
+        }
+    }
+
+    #[test]
+    fn vad_class_display_matches_serde_token() {
+        let cases = [
+            VadClass::Speech,
+            VadClass::UtteranceGap,
+            VadClass::SentenceBoundary,
+            VadClass::TrailingSilence,
+        ];
+        for class in cases {
+            let json = serde_json::to_string(&class).expect("serialize vad class");
+            assert_eq!(json, format!("\"{class}\""));
+        }
+    }
+
+    #[test]
     fn confidence_flag_serde_roundtrip_covers_all_variants() {
         let cases = [
             // Engine-owned
@@ -1486,6 +1599,27 @@ mod tests {
                 "serde snake_case must match Display"
             );
         }
+
+        let structured = TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 3 };
+        let json = serde_json::to_value(structured).expect("serialize structured flag");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "silero_dropped_tail_hallucinations": {
+                    "count": 3
+                }
+            })
+        );
+        let restored: TranscriptionConfidenceFlag =
+            serde_json::from_value(json).expect("deserialize structured flag");
+        assert_eq!(
+            restored,
+            TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 3 }
+        );
+        assert_eq!(
+            structured.to_string(),
+            "silero_dropped_tail_hallucinations:3"
+        );
     }
 
     #[test]

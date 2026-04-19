@@ -446,4 +446,33 @@ mod tests {
             Some("cloud_failed_fallback")
         );
     }
+
+    #[test]
+    fn truth_sidecar_preserves_silero_drop_count() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let transcript_path = temp_dir.path().join("tail_silence_raw.txt");
+        fs::write(&transcript_path, "hello").expect("write transcript");
+
+        let metadata = RecordingTruthMetadata {
+            source: Some(RecordingTranscriptSource::LocalFinalPass),
+            engine: Some("local_whisper".to_string()),
+            mode: Some("tail_filter".to_string()),
+            fallback_class: None,
+            fallback_used: false,
+            vad_speech_pct: Some(71.0),
+            no_speech_reason: None,
+            avg_logprob: Some(-0.18),
+            confidence_flags: vec![
+                TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 2 },
+            ],
+            sparkline: Some("▁▃▅▇".to_string()),
+            final_pass_disposition: Some(FinalPassDisposition::Unchanged),
+            commit_trigger: None,
+            display_status: Some("Local final-pass".to_string()),
+        };
+
+        write_truth_sidecar(&transcript_path, &metadata).expect("write sidecar");
+        let restored = read_truth_sidecar(&transcript_path).expect("read sidecar");
+        assert_eq!(restored, metadata);
+    }
 }

@@ -203,8 +203,10 @@ impl Config {
         if let Ok(val) = std::env::var("AUDIO_INPUT_DEVICE") {
             self.audio_input_device = (!val.trim().is_empty()).then_some(val);
         }
-        // VAD config is managed by core/vad/config.rs (hardcoded Silero defaults)
-        // No legacy SILENCE_* variables - single source of truth
+        // VAD config lives in `core/vad/config.rs` with hardcoded defaults and
+        // opt-in power-user env overrides (`CODESCRIBE_UTTERANCE_GAP_SEC`,
+        // `CODESCRIBE_TAIL_SILENCE_SEC`, `CODESCRIBE_TAIL_DROP_ENABLED`).
+        // No legacy SILENCE_* variables - single source of truth.
 
         // History (default: on to avoid data loss)
         if let Ok(val) = std::env::var("HISTORY_ENABLED") {

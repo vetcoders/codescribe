@@ -813,6 +813,7 @@ mod tests {
                 max_silence_duration_sec: 0.20,
                 max_utterance_sec: 300.0,
                 pre_roll_sec: 0.064,
+                ..vad::VadConfig::default()
             };
             let mut silero = vad::SileroVad::new(&model_path, vad_config).expect("load Silero");
             let mut resampler = vad::Resampler::new(sample_rate);

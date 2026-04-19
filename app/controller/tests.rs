@@ -586,6 +586,12 @@ fn test_truth_review_trigger_acceptable_class_returns_none() {
 }
 
 #[test]
+fn test_truth_review_trigger_ignores_silero_tail_drop_flag() {
+    let flags = vec![TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 5 }];
+    assert!(truth_review_trigger(None, None, &flags).is_none());
+}
+
+#[test]
 fn test_truth_display_status_no_speech_is_user_facing_english() {
     let status = truth_display_status(
         Some(RecordingTranscriptSource::LocalFinalPass),

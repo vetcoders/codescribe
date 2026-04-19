@@ -26,6 +26,7 @@
 //! Created by M&K (c)2026 VetCoders
 
 pub mod config;
+pub mod discriminator;
 pub mod embedded;
 pub mod install;
 pub mod silero_ort;
@@ -35,6 +36,7 @@ use std::cell::RefCell;
 use tracing::warn;
 
 pub use config::VadConfig;
+pub use discriminator::{DISCRIMINATOR_WINDOW_MS, VadTimeline, classify_windows};
 pub use install::{
     SILERO_VAD_FILE, SILERO_VAD_URL, ensure_downloaded_to_user_dir, user_model_path,
     user_models_dir,
@@ -63,6 +65,9 @@ pub struct VadExtractStats {
     pub no_speech_reason: Option<String>,
     /// Sparkline visualisation (one char per 500ms window).
     pub sparkline: String,
+    /// Raw per-window speech probabilities (one entry per processed
+    /// 500ms window). Empty when extraction short-circuited.
+    pub probabilities: Vec<f32>,
 }
 
 /// Window size for VAD analysis: 500ms of audio.
@@ -112,6 +117,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                 total_windows: 0,
                 no_speech_reason: Some("vad_input_empty".to_string()),
                 sparkline: String::new(),
+                probabilities: Vec::new(),
             },
         );
     }
@@ -124,6 +130,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                 total_windows: 0,
                 no_speech_reason: Some("vad_invalid_sample_rate".to_string()),
                 sparkline: String::new(),
+                probabilities: Vec::new(),
             },
         );
     }
@@ -138,6 +145,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                 total_windows: 0,
                 no_speech_reason: Some("vad_invalid_window_size".to_string()),
                 sparkline: String::new(),
+                probabilities: Vec::new(),
             },
         );
     }
@@ -157,6 +165,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                     total_windows: 0,
                     no_speech_reason: Some("vad_unavailable".to_string()),
                     sparkline: String::new(),
+                    probabilities: Vec::new(),
                 },
             );
         }
@@ -167,6 +176,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
     let mut speech_windows = 0usize;
     let mut total_windows = 0usize;
     let mut sparkline = String::new();
+    let mut probabilities = Vec::new();
     let mut last_window_was_speech = false;
 
     for window in samples.chunks(window_size) {
@@ -187,6 +197,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
         vad.reset();
         let prob = vad.feed(window);
         total_windows += 1;
+        probabilities.push(prob);
 
         sparkline.push(if prob >= 0.9 {
             '\u{2588}' // █
@@ -231,6 +242,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
             total_windows,
             no_speech_reason,
             sparkline,
+            probabilities,
         },
     )
 }
@@ -275,6 +287,7 @@ mod tests {
         assert_eq!(stats.speech_windows, 0);
         assert_eq!(stats.total_windows, 0);
         assert_eq!(stats.no_speech_reason.as_deref(), Some("vad_input_empty"));
+        assert!(stats.probabilities.is_empty());
     }
 
     #[test]
@@ -285,6 +298,7 @@ mod tests {
             stats.no_speech_reason.as_deref(),
             Some("vad_invalid_sample_rate")
         );
+        assert!(stats.probabilities.is_empty());
     }
 
     #[test]
@@ -297,5 +311,6 @@ mod tests {
             stats.no_speech_reason.as_deref(),
             Some("vad_audio_too_short")
         );
+        assert!(stats.probabilities.is_empty());
     }
 }
