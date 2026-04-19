@@ -94,6 +94,28 @@ Recommended `vc-why-matrix` posture:
 - Preserve engine truth as metadata, not just text.
 - Ensure optional final-pass behavior is explicit, requested, and contract-visible.
 
+## Audit stanu kodu — 2026-04-15
+
+### Odhaczone w kodzie
+
+- [x] Make embedded Whisper v3 Turbo a clear runtime truth.
+- [x] Keep Silero VAD as hard processing truth.
+- [x] Formalize optional embedded dictionary-driven final pass.
+- [x] Add truth QA fixtures at the `core` contract layer.
+
+### Częściowo dowiezione
+
+- Normalize the engine contract around a structured verdict.
+  File transcription jest już `verdict-first`, ale `core/stt/mod.rs` i `core/stt/whisper/engine.rs` nadal mają `transcribe_long*` ścieżki zwracające `String`.
+
+### Acceptance snapshot
+
+- [x] `core` potrafi emitować structured transcription verdict.
+- [x] Embedded Whisper v3 Turbo jest jawną domyślną prawdą runtime.
+- [x] Silero VAD przeżywa API boundaries jako dane.
+- [x] Final pass jest requestable i provenance-aware.
+- [ ] Nie wszystkie string-only truth paths zostały jeszcze usunięte.
+
 Live contract note:
 - `TranscriptionVerdict` is expected to carry source truth plus engine provisioning provenance (`engine`, `mode`, `fallback_used`) alongside VAD, confidence flags, and final-pass metadata.
 

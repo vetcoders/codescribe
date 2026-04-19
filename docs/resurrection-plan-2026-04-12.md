@@ -20,6 +20,29 @@ Każda faza ma:
 - pytanie o prawdę, które musi zostać domknięte
 - odniesienia do sekcji raportu, z których wynika potrzeba tej fazy
 
+## Audit stanu kodu — 2026-04-15
+
+Audyt wykonany na branchu `feat/the-intents-engine` przeciwko aktualnemu kodowi, nie tylko commit message'om.
+
+### Odhaczone w kodzie
+
+- [x] Faza 2. Rozdzielić Draft od Werdyktu
+- [x] Faza 3. Uczynić Provenance Częścią Artefaktu
+- [x] Faza 4. Zmienić App z "Wybieracza Tekstu" w "Sędziego Prawdy"
+- [x] Faza 5. Ujawnić Prawdę VAD i Braku Mowy
+- [x] Faza 6. Ucywilizować Fallbacki
+- [x] Faza 8. Rozdzielić Kategorię "Transcription" od Kategorii "Interpretation"
+- [x] Faza 9. Zbudować Truth QA zamiast tylko STT QA
+
+### Częściowo dowiezione
+
+- Faza 1. Spisać Konstytucję Prawdy
+  Runtime truth contract żyje już w `core/pipeline/contracts.rs` i `app/controller/*`, ale obiecany artefakt `truth-contract.md` nie istnieje.
+- Faza 7. Zatrzymać Korekty, Które Pogarszają
+  Guardraile dla final pass i commit quality istnieją, ale nie wszystkie długie ścieżki transkrypcji są jeszcze verdict-first.
+- Faza 10. Przepisać Obietnicę Produktu na Język UI i Onboardingu
+  Wording trafił do settings/status/overlay, ale pełny pass onboardingowy i spójny język całego produktu nie są jeszcze domknięte.
+
 ## Faza 1. Spisać Konstytucję Prawdy
 
 Intencja:

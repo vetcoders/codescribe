@@ -92,6 +92,30 @@ Recommended `vc-why-matrix` posture:
 - Ensure the app never silently upgrades a draft into a verdict.
 - Ensure the app never silently downgrades a failure into a fake success.
 
+## Audit stanu kodu — 2026-04-15
+
+### Odhaczone w kodzie
+
+- [x] Separate `draft` from `verdict`.
+- [x] Introduce a truth-adjudicator in the app layer.
+- [x] Reclassify AI outputs.
+- [x] Civilize cloud fallback.
+
+### Częściowo dowiezione
+
+- Make provenance visible.
+  Provenance, fallback class, VAD, no-speech i confidence są zapisywane do truth sidecarów i używane w statusach, ale nie wszystkie UI surfaces eksponują to równie jasno.
+- Rewrite product language.
+  Settings, overlay i status texts mówią już o `Live preview`, `committed verdict` i degraded fallbackach, ale pełny onboardingowy pass językowy nie jest domknięty.
+
+### Acceptance snapshot
+
+- [x] App odróżnia preview od final verdict w logice runtime.
+- [x] Cloud fallback jest explicit i policy-driven.
+- [x] Auto-paste jest blokowany, gdy prawda jest słaba (`no speech` albo `commit_trigger`).
+- [x] Kategorie AI są rozdzielone (`Transcript`, `Formatted transcript`, `Assistant interpretation`, `Formatting failed`).
+- [ ] Provenance i confidence nie są jeszcze równie czytelne na każdej powierzchni UI.
+
 ## Scope
 
 In scope:

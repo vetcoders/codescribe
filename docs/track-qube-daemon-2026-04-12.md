@@ -89,6 +89,28 @@ Recommended `vc-why-matrix` posture:
 - Make `qube daemon` the owner of archive harvesting, mismatch analysis, lexicon updates, and quality-loop lifecycle.
 - Stop leaking daemon identity through accidental app-host coupling and old names.
 
+## Audit stanu kodu — 2026-04-15
+
+### Odhaczone w kodzie
+
+- [x] Name the subsystem honestly.
+- [x] Isolate daemon ownership.
+- [x] Make outputs explicit.
+- [x] Build truth QA around the loop.
+
+### Częściowo dowiezione
+
+- Reduce app-host entanglement.
+  Własność subsystemu siedzi już w `core/quality/qube_daemon.rs` i `bin/qube_daemon.rs`, ale `app` nadal obserwuje i steruje daemonem przez settings/tray, więc coupling jest zredukowany, nie wyzerowany.
+
+### Acceptance snapshot
+
+- [x] `qube daemon` jest nazwanym subsystemem na aktualnym branchu.
+- [x] Wejściem jest archiwum transkrypcji, nie pamięć runtime.
+- [x] Wyjścia są trwałe i inspectable (`report.json`, `analysis.*`, history, daemon state, lexicon updates).
+- [x] Quality-loop logic zachowuje tę samą rodzinę odpowiedzialności, ale z jawnym ownership.
+- App coupling jest już głównie obserwacyjne, ale jeszcze nie całkiem niewidoczne w powierzchniach sterowania.
+
 ## Scope
 
 In scope:
