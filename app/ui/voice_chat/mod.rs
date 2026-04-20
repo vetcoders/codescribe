@@ -43,11 +43,10 @@ use crate::os::hotkeys::ModeHotkeyBindings;
 use crate::ui_helpers::{
     LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, apply_tafla_surface, button_set_action,
     button_style, chat_header_layout, chat_input_row_layout, color_clear, color_label,
-    color_secondary_label, create_button, create_flipped_vertical_stack_view,
-    create_glass_effect_view_with, create_label, create_scrollable_text_view,
-    create_vertical_stack_view, layout_region_frame_for_view, ns_string, set_button_symbol,
-    set_focus_ring, set_glass_effect_content_view, set_hidden, set_tooltip,
-    style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
+    create_button, create_flipped_vertical_stack_view, create_glass_effect_view_with, create_label,
+    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
+    ns_string, set_button_symbol, set_focus_ring, set_glass_effect_content_view, set_hidden,
+    set_tooltip, style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -852,24 +851,9 @@ fn show_voice_chat_overlay_impl() {
         let search_w = content_frame.size.width.max(160.0);
         let footer_base_y = content_bounds.origin.y;
 
-        let search_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(search_x, footer_base_y + footer_height - 20.0),
-                &CGSize::new(search_w, 16.0),
-            ),
-            text: "Filter transcripts".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: false,
-            text_color: color_secondary_label(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        let _: () = msg_send![
-            search_label,
-            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN
-        ];
-        add_subview(glass_content_view, search_label);
+        // Search label removed: NSSearchField.setPlaceholderString("Filter transcripts")
+        // on the field below already renders the same text; the redundant label
+        // produced a visual duplicate/ghosting under Liquid Glass (Image #16/#17).
 
         let ns_search = Class::get("NSSearchField").unwrap();
         let search_field: Id = msg_send![ns_search, alloc];
@@ -1081,7 +1065,6 @@ fn show_voice_chat_overlay_impl() {
             state.drawer_container = Some(drawer_container as usize);
             state.drawer_edge_effect = Some(drawer_edge_effect as usize);
             state.search_field = Some(search_field as usize);
-            state.search_label = Some(search_label as usize);
             state.agent_scroll_view = Some(agent_scroll as usize);
             state.agent_container = Some(agent_container as usize);
             state.agent_input_bar = Some(input_bar as usize);
