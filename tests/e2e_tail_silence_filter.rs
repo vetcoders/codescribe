@@ -180,6 +180,10 @@ fn e2e_tail_silence_filter_smoke() {
         "tail filter should drop outro hallucinations, got: {}",
         verdict.text
     );
+    assert!(verdict.confidence_flags.iter().any(|flag| matches!(
+        flag,
+        TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count } if *count >= 1
+    )));
 }
 
 #[test]
@@ -217,6 +221,11 @@ fn e2e_tail_silence_toggle_smoke_when_disabled() {
     println!("Disabled transcript: {}", verdict.text);
     println!("Disabled flags: {:?}", verdict.confidence_flags);
 
+    assert!(
+        contains_tail_hallucination(&verdict.text),
+        "disabled tail-drop path should keep the outro hallucination for regression coverage, got: {}",
+        verdict.text
+    );
     assert!(!verdict.confidence_flags.iter().any(|flag| matches!(
         flag,
         TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { .. }
