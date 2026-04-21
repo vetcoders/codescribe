@@ -345,11 +345,11 @@ fn adjudicate_recording_truth(
     local_final_pass_attempted: bool,
     local_final_pass_verdict: Option<TranscriptionVerdict>,
     streaming_text: String,
-    cloud_text: Option<String>,
+    cloud_verdict: Option<crate::client::CloudTranscriptionVerdict>,
     session_telemetry: &SessionTelemetrySnapshot,
 ) -> RecordingTruthVerdict {
     let streaming_text = non_empty_transcript(Some(streaming_text));
-    let cloud_text = non_empty_transcript(cloud_text);
+    let cloud_verdict = cloud_verdict.filter(|verdict| !verdict.text.trim().is_empty());
 
     if use_local_stt && let Some(verdict) = local_final_pass_verdict {
         let speech_pct = verdict.vad.as_ref().map(|vad| vad.speech_pct);
@@ -428,14 +428,17 @@ fn adjudicate_recording_truth(
             );
         }
 
-        if let Some(text) = cloud_text {
+        if let Some(cloud_verdict) = cloud_verdict {
             let mut fallback_flags = confidence_flags.clone();
+            for flag in &cloud_verdict.confidence_flags {
+                push_typed_flag(&mut fallback_flags, *flag);
+            }
             push_typed_flag(
                 &mut fallback_flags,
                 TranscriptionConfidenceFlag::CloudFallbackUsed,
             );
             return build_truth_verdict(
-                Some(text),
+                Some(cloud_verdict.text),
                 Some(RecordingTranscriptSource::CloudFallback),
                 Some(RecordingFallbackClass::Degraded), // cloud fallback is no longer "Acceptable" (silent), it must be explicit
                 None,
@@ -449,6 +452,10 @@ fn adjudicate_recording_truth(
 
         if let Some(text) = streaming_text {
             let mut fallback_flags = confidence_flags.clone();
+            push_typed_flag(
+                &mut fallback_flags,
+                TranscriptionConfidenceFlag::UnverifiedStream,
+            );
             push_typed_flag(
                 &mut fallback_flags,
                 TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
@@ -466,15 +473,15 @@ fn adjudicate_recording_truth(
             );
         }
     } else {
-        if let Some(text) = cloud_text {
+        if let Some(cloud_verdict) = cloud_verdict {
             return build_truth_verdict(
-                Some(text),
+                Some(cloud_verdict.text),
                 Some(RecordingTranscriptSource::CloudPrimary),
                 None,
                 None,
                 None,
                 None,
-                Vec::new(),
+                cloud_verdict.confidence_flags,
                 None,
                 None,
             );
@@ -485,6 +492,14 @@ fn adjudicate_recording_truth(
             push_typed_flag(
                 &mut confidence_flags,
                 TranscriptionConfidenceFlag::CloudPrimaryMissing,
+            );
+            push_typed_flag(
+                &mut confidence_flags,
+                TranscriptionConfidenceFlag::UnverifiedStream,
+            );
+            push_typed_flag(
+                &mut confidence_flags,
+                TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
             );
             return build_truth_verdict(
                 Some(text),
@@ -2810,7 +2825,7 @@ impl RecordingController {
                 language_opt,
                 raw_save_enabled: raw_save_enabled(is_assistive),
                 audio_path: None,
-                cloud_text_opt: None,
+                cloud_verdict_opt: None,
                 cloud_handle: None,
                 transcript_source: Some(RecordingTranscriptSource::Streaming),
                 truth_fallback_class: None,
@@ -3073,8 +3088,9 @@ impl RecordingController {
         let assistive_loop = assistive && self.assistive_loop_active.load(Ordering::SeqCst);
 
         let mut local_final_pass_verdict = None;
-        let mut cloud_text_opt = None;
-        let mut cloud_handle: Option<JoinHandle<Result<String>>> = None;
+        let mut cloud_verdict_opt = None;
+        let mut cloud_handle: Option<JoinHandle<Result<crate::client::CloudTranscriptionVerdict>>> =
+            None;
         let mut local_final_pass_attempted = false;
 
         if let Some((cloud_endpoint, cloud_api_key)) = cloud_config {
@@ -3147,7 +3163,7 @@ impl RecordingController {
             if let Some(handle) = cloud_handle.take() {
                 info!("Awaiting cloud STT as selected transcript backend");
                 match handle.await {
-                    Ok(Ok(text)) => cloud_text_opt = Some(text),
+                    Ok(Ok(verdict)) => cloud_verdict_opt = Some(verdict),
                     Ok(Err(e)) => error!("Cloud transcription failed: {}", e),
                     Err(e) => error!("Cloud transcription task failed: {}", e),
                 }
@@ -3162,7 +3178,7 @@ impl RecordingController {
             local_final_pass_attempted,
             local_final_pass_verdict,
             streaming_text,
-            cloud_text_opt.clone(),
+            cloud_verdict_opt.clone(),
             &session_telemetry,
         );
         if transcript_source_override.is_some()
@@ -3304,7 +3320,7 @@ impl RecordingController {
                 language_opt,
                 raw_save_enabled,
                 audio_path,
-                cloud_text_opt,
+                cloud_verdict_opt,
                 cloud_handle,
                 transcript_source: truth_verdict.transcript_source,
                 truth_fallback_class: truth_verdict.fallback_class,
@@ -3390,7 +3406,7 @@ impl RecordingController {
             language_opt,
             raw_save_enabled,
             audio_path,
-            cloud_text_opt,
+            cloud_verdict_opt,
             cloud_handle,
             transcript_source,
             truth_fallback_class,
@@ -3882,9 +3898,9 @@ impl RecordingController {
             info!("Final transcript matches RAW; skipping duplicate save");
         }
 
-        if let Some(cloud_text) = cloud_text_opt {
+        if let Some(cloud_verdict) = cloud_verdict_opt {
             let entry = crate::state::history::save_entry_with_timestamp_and_slug(
-                &cloud_text,
+                &cloud_verdict.text,
                 Some(recording_timestamp),
                 crate::state::history::TranscriptKind::Cloud,
                 Some(&raw_text),
@@ -3901,7 +3917,7 @@ impl RecordingController {
                     vad_speech_pct: None,
                     no_speech_reason: None,
                     avg_logprob: None,
-                    confidence_flags: Vec::new(),
+                    confidence_flags: cloud_verdict.confidence_flags.clone(),
                     sparkline: None,
                     final_pass_disposition: None,
                     commit_trigger: None,
@@ -3916,9 +3932,9 @@ impl RecordingController {
             let mode_label = mode_label.clone();
             tokio::spawn(async move {
                 match handle.await {
-                    Ok(Ok(text)) => {
+                    Ok(Ok(cloud_verdict)) => {
                         let entry = crate::state::history::save_entry_with_timestamp_and_slug(
-                            &text,
+                            &cloud_verdict.text,
                             Some(timestamp),
                             crate::state::history::TranscriptKind::Cloud,
                             Some(&slug_hint),
@@ -3937,7 +3953,7 @@ impl RecordingController {
                                 vad_speech_pct: None,
                                 no_speech_reason: None,
                                 avg_logprob: None,
-                                confidence_flags: Vec::new(),
+                                confidence_flags: cloud_verdict.confidence_flags.clone(),
                                 sparkline: None,
                                 final_pass_disposition: None,
                                 commit_trigger: None,

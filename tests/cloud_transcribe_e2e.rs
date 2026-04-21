@@ -39,13 +39,15 @@ async fn contract_cloud_transcribe_success() {
         .await;
 
     let audio = write_min_valid_audio_file();
-    let text =
+    let verdict =
         codescribe::client::transcribe_cloud(audio.path(), Some("en"), &endpoint, "test-key")
             .await
             .expect("cloud transcription should succeed");
 
     success.assert_async().await;
-    assert_eq!(text, "hello from cloud");
+    assert_eq!(verdict.text, "hello from cloud");
+    assert_eq!(verdict.source.to_string(), "cloud");
+    assert!(verdict.confidence_flags.is_empty());
 }
 
 #[tokio::test]
@@ -157,13 +159,14 @@ async fn test_cloud_transcribe_e2e() {
     let audio = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/1.fretka-Ziggy.mp3");
     assert!(audio.exists(), "Missing test audio at {}", audio.display());
 
-    let text = codescribe::client::transcribe_cloud(&audio, None, &endpoint, &api_key)
+    let verdict = codescribe::client::transcribe_cloud(&audio, None, &endpoint, &api_key)
         .await
         .expect("Cloud transcription failed");
     assert!(
-        !text.trim().is_empty(),
+        !verdict.text.trim().is_empty(),
         "Cloud transcription returned empty text"
     );
+    assert_eq!(verdict.source.to_string(), "cloud");
 }
 
 fn env_bool(key: &str) -> bool {

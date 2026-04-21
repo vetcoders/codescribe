@@ -155,6 +155,9 @@ pub enum TranscriptionConfidenceFlag {
     /// Truth-surface committed the streaming preview text as the final
     /// verdict (no final-pass available).
     StreamingPreviewUsedAsVerdict,
+    /// Streaming text was exposed as a verdict surface before any explicit
+    /// final-pass adjudication ran.
+    UnverifiedStream,
     /// Cloud was the primary transcript source but the cloud call did
     /// not return a usable transcript (empty or error).
     CloudPrimaryMissing,
@@ -179,6 +182,7 @@ impl std::fmt::Display for TranscriptionConfidenceFlag {
             Self::StreamingPreviewUsedAsVerdict => {
                 write!(f, "streaming_preview_used_as_verdict")
             }
+            Self::UnverifiedStream => write!(f, "unverified_stream"),
             Self::CloudPrimaryMissing => write!(f, "cloud_primary_missing"),
             Self::AiNoopDetected => write!(f, "ai_noop_detected"),
         }
@@ -1170,6 +1174,10 @@ mod tests {
             TranscriptionConfidenceFlag::QualityGateDropped.to_string(),
             "quality_gate_dropped"
         );
+        assert_eq!(
+            TranscriptionConfidenceFlag::UnverifiedStream.to_string(),
+            "unverified_stream"
+        );
     }
 
     #[test]
@@ -1583,6 +1591,7 @@ mod tests {
             TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
             TranscriptionConfidenceFlag::CloudFallbackUsed,
             TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
+            TranscriptionConfidenceFlag::UnverifiedStream,
             TranscriptionConfidenceFlag::CloudPrimaryMissing,
             TranscriptionConfidenceFlag::AiNoopDetected,
         ];
@@ -1652,6 +1661,10 @@ mod tests {
             (
                 "\"streaming_preview_used_as_verdict\"",
                 TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
+            ),
+            (
+                "\"unverified_stream\"",
+                TranscriptionConfidenceFlag::UnverifiedStream,
             ),
             (
                 "\"cloud_primary_missing\"",

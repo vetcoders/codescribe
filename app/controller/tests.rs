@@ -343,6 +343,16 @@ fn make_final_pass_verdict(
     )
 }
 
+fn make_cloud_verdict(text: &str) -> crate::client::CloudTranscriptionVerdict {
+    crate::client::CloudTranscriptionVerdict {
+        text: text.to_string(),
+        source: codescribe_core::pipeline::contracts::TranscriptionSource::Cloud,
+        confidence_flags: Vec::new(),
+        latency_ms: Some(120),
+        model_name: Some("mock-cloud".to_string()),
+    }
+}
+
 #[test]
 fn test_adjudicate_recording_truth_blocks_local_no_speech() {
     let session = SessionTelemetrySnapshot {
@@ -400,8 +410,41 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
             .confidence_flags
             .contains(&TranscriptionConfidenceFlag::CloudPrimaryMissing)
     );
-    assert_eq!(verdict.commit_trigger.as_deref(), Some("degraded_fallback"));
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::UnverifiedStream)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict)
+    );
+    assert_eq!(
+        verdict.commit_trigger.as_deref(),
+        Some("streaming_preview_used_as_verdict")
+    );
     assert_eq!(verdict.display_status, "Streaming fallback");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_uses_typed_cloud_primary_verdict() {
+    let verdict = adjudicate_recording_truth(
+        false,
+        false,
+        None,
+        "preview text".to_string(),
+        Some(make_cloud_verdict("cloud primary")),
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("cloud primary"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::CloudPrimary)
+    );
+    assert!(verdict.confidence_flags.is_empty());
+    assert_eq!(verdict.display_status, "Cloud primary");
 }
 
 #[test]

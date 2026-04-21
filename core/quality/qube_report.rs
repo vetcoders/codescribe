@@ -18,6 +18,7 @@ use crate::ai_formatting;
 use crate::audio::load_audio_file;
 use crate::client;
 use crate::config::Config;
+use crate::pipeline::contracts::RawTranscript;
 use crate::safe_path::{
     safe_canonicalize_bounded, safe_copy_bounded, safe_prepare_path, safe_read_to_string_bounded,
     safe_symlink_or_copy_bounded, safe_write_bounded,
@@ -94,6 +95,36 @@ pub struct ReportSummary {
     pub avg_post_cer: Option<f32>,
     pub avg_ai_cer: Option<f32>,
     pub avg_cloud_cer: Option<f32>,
+    pub raw_no_speech_detected: usize,
+    pub raw_quality_gate_dropped: usize,
+    pub raw_text_committed: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportTranscriptState {
+    TextCommitted,
+    QualityGateDropped,
+    NoSpeechDetected,
+    EmptyTranscript,
+}
+
+impl std::fmt::Display for ReportTranscriptState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TextCommitted => write!(f, "text_committed"),
+            Self::QualityGateDropped => write!(f, "quality_gate_dropped"),
+            Self::NoSpeechDetected => write!(f, "no_speech_detected"),
+            Self::EmptyTranscript => write!(f, "empty_transcript"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportTranscriptSemantics {
+    pub state: ReportTranscriptState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,6 +135,8 @@ pub struct ReportEntry {
     pub reference_path: Option<String>,
     pub duration_secs: f32,
     pub transcripts: ReportTranscripts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_semantics: Option<ReportTranscriptSemantics>,
     pub metrics: ReportMetrics,
     pub postprocess_stats: Option<StreamPostProcessStats>,
     pub errors: Vec<String>,
@@ -133,7 +166,7 @@ pub struct ReportMetrics {
 enum CloudJobSet {
     Disabled,
     Skipped(String),
-    Running(HashMap<String, JoinHandle<Result<String>>>),
+    Running(HashMap<String, JoinHandle<Result<crate::client::CloudTranscriptionVerdict>>>),
 }
 
 impl CloudJobSet {
@@ -146,7 +179,7 @@ impl CloudJobSet {
             }
             CloudJobSet::Running(jobs) => match jobs.remove(id) {
                 Some(handle) => match handle.await {
-                    Ok(Ok(text)) => Some(text),
+                    Ok(Ok(verdict)) => Some(verdict.text),
                     Ok(Err(e)) => {
                         errors.push(format!("Cloud transcription failed: {}", e));
                         None
@@ -163,6 +196,40 @@ impl CloudJobSet {
             },
         }
     }
+}
+
+fn classify_raw_semantics(
+    transcript: Option<&RawTranscript>,
+    no_speech_reason: Option<&str>,
+) -> Option<ReportTranscriptSemantics> {
+    let transcript = transcript?;
+    let trimmed = transcript.text.trim();
+
+    if !trimmed.is_empty() {
+        return Some(ReportTranscriptSemantics {
+            state: ReportTranscriptState::TextCommitted,
+            reason: None,
+        });
+    }
+
+    if let Some(reason) = no_speech_reason {
+        return Some(ReportTranscriptSemantics {
+            state: ReportTranscriptState::NoSpeechDetected,
+            reason: Some(reason.to_string()),
+        });
+    }
+
+    if transcript.quality_gate_dropped {
+        return Some(ReportTranscriptSemantics {
+            state: ReportTranscriptState::QualityGateDropped,
+            reason: Some("quality_gate_dropped".to_string()),
+        });
+    }
+
+    Some(ReportTranscriptSemantics {
+        state: ReportTranscriptState::EmptyTranscript,
+        reason: None,
+    })
 }
 
 pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
@@ -237,7 +304,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
             &mut cloud_jobs,
         )
         .await?;
-        totals.accumulate(&entry.metrics);
+        totals.accumulate(&entry);
         entries.push(entry);
     }
 
@@ -382,23 +449,31 @@ async fn process_pair(
     let (samples, sample_rate) = load_audio_file(&audio_canon)
         .with_context(|| format!("Failed to load audio {}", audio_canon.display()))?;
     let duration_secs = samples.len() as f32 / sample_rate as f32;
+    let (_speech_only, vad_stats) = crate::vad::extract_speech(&samples, sample_rate);
 
     // Single-pass transcription: engine handles 25s/5s chunking internally
-    let raw = match crate::stt::transcribe_long_with_segments(
+    let raw_transcript = match crate::stt::transcribe_long_with_segments(
         &samples,
         sample_rate,
         config.language.as_deref(),
     ) {
-        Ok(transcript) => Some(transcript.text),
+        Ok(transcript) => Some(transcript),
         Err(e) => {
             errors.push(format!("Raw transcription failed: {}", e));
             None
         }
     };
-    if raw
-        .as_deref()
-        .map(|text| text.trim().is_empty())
-        .unwrap_or(false)
+    let raw_semantics = classify_raw_semantics(
+        raw_transcript.as_ref(),
+        vad_stats.no_speech_reason.as_deref(),
+    );
+    let raw = raw_transcript
+        .as_ref()
+        .map(|transcript| transcript.text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    if raw_semantics
+        .as_ref()
+        .is_some_and(|semantics| semantics.state == ReportTranscriptState::EmptyTranscript)
     {
         errors.push("Raw transcript is empty".into());
     }
@@ -479,6 +554,7 @@ async fn process_pair(
             .map(|path| path.to_string_lossy().to_string()),
         duration_secs,
         transcripts,
+        raw_semantics,
         metrics,
         postprocess_stats: Some(postprocessor.stats()),
         errors,
@@ -676,6 +752,12 @@ fn render_markdown(report: &QualityReport) -> String {
         fmt_opt(report.summary.avg_ai_cer),
         fmt_opt(report.summary.avg_cloud_cer),
     ));
+    out.push_str(&format!(
+        "- Raw transcript semantics: text_committed={}, quality_gate_dropped={}, no_speech_detected={}\n",
+        report.summary.raw_text_committed,
+        report.summary.raw_quality_gate_dropped,
+        report.summary.raw_no_speech_detected,
+    ));
 
     out
 }
@@ -685,9 +767,12 @@ fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
     let mut body = String::new();
 
     body.push_str(&format!(
-        "<h1>CodeScribe Quality Report</h1><p>Generated: {}</p><p>Metrics reference: {}</p>",
+        "<h1>CodeScribe Quality Report</h1><p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • quality_gate_dropped={} • no_speech_detected={}</p>",
         html_escape(&report.generated_at),
-        html_escape(&report.environment.metrics_reference)
+        html_escape(&report.environment.metrics_reference),
+        report.summary.raw_text_committed,
+        report.summary.raw_quality_gate_dropped,
+        report.summary.raw_no_speech_detected
     ));
 
     body.push_str("<div class=\"toolbar\">");
@@ -743,6 +828,14 @@ fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
             entry.duration_secs,
             html_escape(&entry.audio_path)
         ));
+        if let Some(semantics) = entry.raw_semantics.as_ref() {
+            let reason = semantics.reason.as_deref().unwrap_or("-");
+            body.push_str(&format!(
+                "<p class=\"meta\">Raw semantics: {} ({})</p>",
+                html_escape(&semantics.state.to_string()),
+                html_escape(reason)
+            ));
+        }
         body.push_str(&format!(
             "<audio class=\"entry-audio\" data-entry=\"{}\" controls preload=\"metadata\" src=\"{}\"></audio>",
             html_escape(&entry.id),
@@ -1528,12 +1621,16 @@ struct Totals {
     post_cer: Vec<f32>,
     ai_cer: Vec<f32>,
     cloud_cer: Vec<f32>,
+    raw_no_speech_detected: usize,
+    raw_quality_gate_dropped: usize,
+    raw_text_committed: usize,
     processed: usize,
 }
 
 impl Totals {
-    fn accumulate(&mut self, metrics: &ReportMetrics) {
+    fn accumulate(&mut self, entry: &ReportEntry) {
         self.processed += 1;
+        let metrics = &entry.metrics;
         if let Some(v) = metrics.raw_wer {
             self.raw_wer.push(v);
         }
@@ -1558,6 +1655,15 @@ impl Totals {
         if let Some(v) = metrics.cloud_cer {
             self.cloud_cer.push(v);
         }
+
+        if let Some(semantics) = entry.raw_semantics.as_ref() {
+            match semantics.state {
+                ReportTranscriptState::NoSpeechDetected => self.raw_no_speech_detected += 1,
+                ReportTranscriptState::QualityGateDropped => self.raw_quality_gate_dropped += 1,
+                ReportTranscriptState::TextCommitted => self.raw_text_committed += 1,
+                ReportTranscriptState::EmptyTranscript => {}
+            }
+        }
     }
 
     fn finish(self, total_files: usize) -> ReportSummary {
@@ -1572,6 +1678,9 @@ impl Totals {
             avg_post_cer: avg(&self.post_cer),
             avg_ai_cer: avg(&self.ai_cer),
             avg_cloud_cer: avg(&self.cloud_cer),
+            raw_no_speech_detected: self.raw_no_speech_detected,
+            raw_quality_gate_dropped: self.raw_quality_gate_dropped,
+            raw_text_committed: self.raw_text_committed,
         }
     }
 }
@@ -1587,6 +1696,73 @@ fn avg(values: &[f32]) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_raw_semantics_distinguishes_no_speech_and_gate_drop() {
+        let no_speech = classify_raw_semantics(
+            Some(&RawTranscript::default()),
+            Some("vad_no_speech_detected"),
+        )
+        .expect("semantics");
+        assert_eq!(no_speech.state, ReportTranscriptState::NoSpeechDetected);
+        assert_eq!(no_speech.reason.as_deref(), Some("vad_no_speech_detected"));
+
+        let quality_gate = classify_raw_semantics(
+            Some(&RawTranscript {
+                quality_gate_dropped: true,
+                ..Default::default()
+            }),
+            None,
+        )
+        .expect("semantics");
+        assert_eq!(
+            quality_gate.state,
+            ReportTranscriptState::QualityGateDropped
+        );
+        assert_eq!(quality_gate.reason.as_deref(), Some("quality_gate_dropped"));
+
+        let committed = classify_raw_semantics(
+            Some(&RawTranscript {
+                text: "hello".to_string(),
+                ..Default::default()
+            }),
+            None,
+        )
+        .expect("semantics");
+        assert_eq!(committed.state, ReportTranscriptState::TextCommitted);
+    }
+
+    #[test]
+    fn totals_finish_counts_raw_semantics_separately() {
+        let mut totals = Totals::default();
+        let mk_entry = |state: ReportTranscriptState, reason: Option<&str>| ReportEntry {
+            id: state.to_string(),
+            audio_path: "a.wav".to_string(),
+            audio_rel_path: "audio/a.wav".to_string(),
+            reference_path: None,
+            duration_secs: 1.0,
+            transcripts: ReportTranscripts::default(),
+            raw_semantics: Some(ReportTranscriptSemantics {
+                state,
+                reason: reason.map(str::to_string),
+            }),
+            metrics: ReportMetrics::default(),
+            postprocess_stats: None,
+            errors: Vec::new(),
+        };
+
+        totals.accumulate(&mk_entry(ReportTranscriptState::TextCommitted, None));
+        totals.accumulate(&mk_entry(ReportTranscriptState::QualityGateDropped, None));
+        totals.accumulate(&mk_entry(
+            ReportTranscriptState::NoSpeechDetected,
+            Some("vad_no_speech_detected"),
+        ));
+
+        let summary = totals.finish(3);
+        assert_eq!(summary.raw_text_committed, 1);
+        assert_eq!(summary.raw_quality_gate_dropped, 1);
+        assert_eq!(summary.raw_no_speech_detected, 1);
+    }
 
     #[test]
     fn test_word_error_rate() {

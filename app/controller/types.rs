@@ -296,8 +296,9 @@ pub struct TranscriptPipelineParams {
     pub language_opt: Option<String>,
     pub raw_save_enabled: bool,
     pub audio_path: Option<ValidatedAudioPath>,
-    pub cloud_text_opt: Option<String>,
-    pub cloud_handle: Option<tokio::task::JoinHandle<anyhow::Result<String>>>,
+    pub cloud_verdict_opt: Option<crate::client::CloudTranscriptionVerdict>,
+    pub cloud_handle:
+        Option<tokio::task::JoinHandle<anyhow::Result<crate::client::CloudTranscriptionVerdict>>>,
     pub transcript_source: Option<RecordingTranscriptSource>,
     pub truth_fallback_class: Option<RecordingFallbackClass>,
     pub truth_no_speech_reason: Option<String>,
@@ -418,6 +419,7 @@ mod tests {
             "avg_logprob": -0.25,
             "confidence_flags": [
                 "cloud_primary_missing",
+                "unverified_stream",
                 "streaming_preview_used_as_verdict",
                 "some_unknown_future_token"
             ],
@@ -434,6 +436,7 @@ mod tests {
             restored.confidence_flags,
             vec![
                 TranscriptionConfidenceFlag::CloudPrimaryMissing,
+                TranscriptionConfidenceFlag::UnverifiedStream,
                 TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
             ]
         );

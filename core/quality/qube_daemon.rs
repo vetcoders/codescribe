@@ -1268,6 +1268,7 @@ mod tests {
             reference_path: None,
             duration_secs: 5.0,
             transcripts: ReportTranscripts::default(),
+            raw_semantics: None,
             metrics: ReportMetrics::default(),
             postprocess_stats: None,
             errors: vec![],
