@@ -13,11 +13,10 @@ use codescribe_core::pipeline::contracts::{EngineEvent, EventSink, TranscriptDel
 use codescribe_core::vad;
 use std::borrow::Cow;
 use std::env;
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tracing::{info, warn};
+use tracing::info;
 
 /// CodeScribe CLI - Local speech-to-text transcription
 ///
@@ -494,126 +493,6 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn env_flag_enabled(key: &str) -> bool {
-    std::env::var(key)
-        .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
-        .unwrap_or(false)
-}
-
-fn qube_daemon_candidate_for_exe(current_exe: &Path) -> PathBuf {
-    current_exe.with_file_name("qube-daemon")
-}
-
-fn resolve_qube_daemon_executable_from(
-    current_exe: &Path,
-    path_env: Option<&OsStr>,
-) -> Option<PathBuf> {
-    let sibling = qube_daemon_candidate_for_exe(current_exe);
-    if sibling.exists() {
-        return Some(sibling);
-    }
-
-    let path_env = path_env?;
-    for dir in std::env::split_paths(path_env) {
-        let candidate = dir.join("qube-daemon");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    None
-}
-
-fn resolve_qube_daemon_executable() -> Option<PathBuf> {
-    let current_exe = std::env::current_exe().ok()?;
-    resolve_qube_daemon_executable_from(&current_exe, std::env::var_os("PATH").as_deref())
-}
-
-fn process_list_contains_qube_daemon(ps_output: &str, executable: &Path) -> bool {
-    let executable_name = executable
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("qube-daemon");
-    let executable_path = executable.to_string_lossy();
-
-    ps_output.lines().any(|line| {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || !trimmed.contains("--daemon") || !trimmed.contains(executable_name)
-        {
-            return false;
-        }
-
-        trimmed.contains(executable_path.as_ref()) || trimmed.contains(executable_name)
-    })
-}
-
-fn is_qube_daemon_running(executable: &Path) -> bool {
-    let output = std::process::Command::new("ps")
-        .args(["-ax", "-o", "comm=,args="])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            process_list_contains_qube_daemon(&stdout, executable)
-        }
-        Ok(output) => {
-            warn!(
-                "Qube daemon autostart: failed to inspect process list (ps exit={})",
-                output.status
-            );
-            false
-        }
-        Err(err) => {
-            warn!("Qube daemon autostart: failed to run ps: {err}");
-            false
-        }
-    }
-}
-
-fn maybe_start_quality_daemon() {
-    if !env_flag_enabled("QUBE_DAEMON_AUTOSTART") {
-        return;
-    }
-
-    let Some(executable) = resolve_qube_daemon_executable() else {
-        warn!(
-            "Qube daemon autostart is enabled, but `qube-daemon` was not found next to the app or on PATH"
-        );
-        return;
-    };
-
-    if is_qube_daemon_running(&executable) {
-        info!(
-            "Qube daemon autostart enabled and daemon already running: {}",
-            executable.display()
-        );
-        return;
-    }
-
-    match std::process::Command::new(&executable)
-        .arg("--daemon")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(child) => {
-            info!(
-                "Started qube-daemon via autostart (pid={}, path={})",
-                child.id(),
-                executable.display()
-            );
-        }
-        Err(err) => {
-            warn!(
-                "Failed to start qube-daemon via autostart (path={}): {err}",
-                executable.display()
-            );
-        }
-    }
-}
-
 async fn run_daemon() -> Result<()> {
     use anyhow::Context;
     use codescribe::config::{Config, UserSettings};
@@ -644,7 +523,7 @@ async fn run_daemon() -> Result<()> {
 
     let config = Config::load();
     let _user_settings = UserSettings::load();
-    maybe_start_quality_daemon();
+    let _ = codescribe::qube_lifecycle::start_if_enabled();
 
     #[cfg(target_os = "macos")]
     {
@@ -999,47 +878,4 @@ async fn dispatch_hotkey_event(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn qube_daemon_candidate_uses_sibling_binary() {
-        let current_exe = PathBuf::from("/Applications/CodeScribe.app/Contents/MacOS/codescribe");
-        assert_eq!(
-            qube_daemon_candidate_for_exe(&current_exe),
-            PathBuf::from("/Applications/CodeScribe.app/Contents/MacOS/qube-daemon")
-        );
-    }
-
-    #[test]
-    fn resolve_qube_daemon_executable_prefers_sibling_binary() {
-        let tmp = TempDir::new().expect("tempdir");
-        let macos_dir = tmp.path().join("CodeScribe.app/Contents/MacOS");
-        std::fs::create_dir_all(&macos_dir).expect("create bundle dir");
-        let current_exe = macos_dir.join("codescribe");
-        let sibling = macos_dir.join("qube-daemon");
-        std::fs::write(&current_exe, "").expect("write fake current exe");
-        std::fs::write(&sibling, "").expect("write fake qube daemon");
-
-        let resolved = resolve_qube_daemon_executable_from(&current_exe, None);
-        assert_eq!(resolved, Some(sibling));
-    }
-
-    #[test]
-    fn process_list_contains_running_qube_daemon_with_daemon_flag() {
-        let executable = Path::new("/usr/local/bin/qube-daemon");
-        let ps_output = "qube-daemon /usr/local/bin/qube-daemon --daemon\n";
-        assert!(process_list_contains_qube_daemon(ps_output, executable));
-    }
-
-    #[test]
-    fn process_list_ignores_non_daemon_qube_invocations() {
-        let executable = Path::new("/usr/local/bin/qube-daemon");
-        let ps_output = "qube-daemon /usr/local/bin/qube-daemon --date 2026-04-21\n";
-        assert!(!process_list_contains_qube_daemon(ps_output, executable));
-    }
 }

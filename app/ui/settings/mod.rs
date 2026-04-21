@@ -2546,21 +2546,15 @@ fn refresh_quality_dashboard() {
             )
         };
 
-        let daemon_state = crate::qube_daemon::read_daemon_state();
+        let snapshot = crate::qube_lifecycle::dashboard_snapshot();
+        let daemon_state = &snapshot.daemon_state;
 
         if let Some(ptr) = available_label {
             let label = ptr as Id;
-            set_text_field_string(
-                label,
-                if daemon_state.available {
-                    "Available"
-                } else {
-                    "Unavailable"
-                },
-            );
+            set_text_field_string(label, snapshot.availability_label());
             let _: () = msg_send![
                 label,
-                setTextColor: if daemon_state.available {
+                setTextColor: if snapshot.available {
                     ui_colors::status_granted()
                 } else {
                     ui_colors::status_warning()
@@ -2589,11 +2583,11 @@ fn refresh_quality_dashboard() {
         }
 
         if let Some(ptr) = report_label {
-            set_text_field_string(ptr as Id, &qube_report_text(&daemon_state));
+            set_text_field_string(ptr as Id, &qube_report_text(daemon_state));
         }
 
         if let Some(ptr) = open_report_button {
-            let _: () = msg_send![ptr as Id, setEnabled: qube_report_exists(&daemon_state)];
+            let _: () = msg_send![ptr as Id, setEnabled: qube_report_exists(daemon_state)];
         }
     });
 }
@@ -3981,13 +3975,12 @@ unsafe fn build_quality_tab(
             field_w,
             secondary,
             ToggleRowSpec {
-                title: "Start quality daemon on app launch",
+                title: "Start quality daemon automatically",
                 checked: quality_on,
                 action: sel!(onQubeDaemonToggled:),
                 description: Some(
-                    "Starts bundled `qube-daemon --daemon` on CodeScribe launch when the binary is installed. \
-                     If the daemon binary is missing, the preference still persists as `QUBE_DAEMON_AUTOSTART=1` \
-                     for custom launchd or shell workflows.",
+                    "Starts bundled `qube-daemon --daemon` immediately and on next CodeScribe launch when the binary is installed. \
+                     Turning it off stops the daemon only when CodeScribe owns that process; externally managed launchd or shell runs remain untouched.",
                 ),
                 tag: None,
                 gap,
@@ -4027,7 +4020,8 @@ unsafe fn build_quality_tab(
         add_subview(container, dashboard_header);
         y -= 18.0 + gap;
 
-        let daemon_state = crate::qube_daemon::read_daemon_state();
+        let snapshot = crate::qube_lifecycle::dashboard_snapshot();
+        let daemon_state = &snapshot.daemon_state;
 
         let add_metric_row = |container: Id,
                               y: &mut f64,
@@ -4062,12 +4056,8 @@ unsafe fn build_quality_tab(
             value_view as usize
         };
 
-        let available_text = if daemon_state.available {
-            "Available"
-        } else {
-            "Unavailable"
-        };
-        let available_color = if daemon_state.available {
+        let available_text = snapshot.availability_label();
+        let available_color = if snapshot.available {
             ui_colors::status_granted()
         } else {
             ui_colors::status_warning()
@@ -4110,7 +4100,7 @@ unsafe fn build_quality_tab(
             container,
             &mut y,
             "Latest report:",
-            &qube_report_text(&daemon_state),
+            &qube_report_text(daemon_state),
             secondary,
             content_w,
             pad,
@@ -4134,7 +4124,7 @@ unsafe fn build_quality_tab(
             button_style::GLASS,
         );
         button_set_action(open_report_btn, action_handler, sel!(onOpenQualityReport:));
-        let _: () = msg_send![open_report_btn, setEnabled: qube_report_exists(&daemon_state)];
+        let _: () = msg_send![open_report_btn, setEnabled: qube_report_exists(daemon_state)];
         add_subview(container, open_report_btn);
         state.quality_open_report_button = Some(open_report_btn as usize);
 
@@ -5015,7 +5005,13 @@ pub(super) extern "C" fn on_qube_daemon_toggled(
         info!("Settings: quality daemon autostart -> {}", enabled);
         let config = Config::load();
         let _ = config.save_to_env("QUBE_DAEMON_AUTOSTART", if enabled { "1" } else { "0" });
+        if enabled {
+            let _ = crate::qube_lifecycle::start_managed();
+        } else {
+            let _ = crate::qube_lifecycle::stop_managed();
+        }
         refresh_quality_dashboard();
+        crate::ui::tray::update_quality_label();
     }
 }
 

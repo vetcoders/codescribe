@@ -174,6 +174,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
         // Check for programmatic shutdown request
         if is_shutdown_requested() {
             info!("Shutdown flag detected, performing cleanup...");
+            let _ = crate::qube_lifecycle::stop_managed();
             shutdown_hotkeys(&mut hotkey_manager);
             *control_flow = ControlFlow::Exit;
             return;
@@ -212,6 +213,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 info!("Status channel closed, exiting");
+                let _ = crate::qube_lifecycle::stop_managed();
                 shutdown_hotkeys(&mut hotkey_manager);
                 *control_flow = ControlFlow::Exit;
             }
@@ -226,6 +228,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
             // Handle Quit specially to exit event loop
             if event.id == menu_ids.quit {
                 info!("Quit requested via menu, exiting...");
+                let _ = crate::qube_lifecycle::stop_managed();
                 shutdown_hotkeys(&mut hotkey_manager);
                 *control_flow = ControlFlow::Exit;
             }

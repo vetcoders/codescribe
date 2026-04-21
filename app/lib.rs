@@ -24,6 +24,7 @@ pub use codescribe_core::{
 
 pub mod agent;
 pub mod os;
+pub mod qube_lifecycle;
 
 #[cfg(target_os = "macos")]
 pub mod controller;
