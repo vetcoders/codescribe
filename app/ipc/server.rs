@@ -303,7 +303,7 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
                 return IpcResponse::Error("No recording in progress".to_string());
             }
 
-            match controller.finish_recording().await {
+            match controller.stop_recording_from_external_surface().await {
                 Ok(()) => IpcResponse::Ok,
                 Err(e) => IpcResponse::Error(format!("Failed to stop recording: {}", e)),
             }

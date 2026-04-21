@@ -279,6 +279,35 @@ fn test_toggle_final_pass_enabled_defaults_true_and_honors_falsey_values() {
     }
 }
 
+#[test]
+fn test_should_use_toggle_adjudicated_stop_only_for_raw_toggle_when_enabled() {
+    assert!(should_use_toggle_adjudicated_stop(
+        State::RecToggle,
+        false,
+        true
+    ));
+    assert!(!should_use_toggle_adjudicated_stop(
+        State::RecToggle,
+        true,
+        true
+    ));
+    assert!(!should_use_toggle_adjudicated_stop(
+        State::RecToggle,
+        false,
+        false
+    ));
+    assert!(!should_use_toggle_adjudicated_stop(
+        State::RecHold,
+        false,
+        true
+    ));
+    assert!(!should_use_toggle_adjudicated_stop(
+        State::Busy,
+        false,
+        true
+    ));
+}
+
 fn make_final_pass_verdict(
     text: &str,
     speech_pct: f32,

@@ -546,6 +546,14 @@ fn toggle_final_pass_enabled() -> bool {
         .unwrap_or(true)
 }
 
+fn should_use_toggle_adjudicated_stop(
+    current_state: State,
+    assistive: bool,
+    toggle_final_pass: bool,
+) -> bool {
+    current_state == State::RecToggle && !assistive && toggle_final_pass
+}
+
 fn transcript_output_category(output_kind: crate::state::history::TranscriptKind) -> &'static str {
     match output_kind {
         crate::state::history::TranscriptKind::Raw => "Transcript",
@@ -753,14 +761,7 @@ pub fn request_recording_commit() {
     };
 
     tokio::spawn(async move {
-        let result = if controller.current_state().await == State::RecToggle
-            && !*controller.assistive_mode.read().await
-            && toggle_final_pass_enabled()
-        {
-            controller.stop_toggle_and_adjudicate().await
-        } else {
-            controller.finish_recording().await
-        };
+        let result = controller.stop_recording_from_external_surface().await;
         if let Err(e) = result {
             error!("Overlay commit failed: {}", e);
         }
@@ -2954,6 +2955,17 @@ impl RecordingController {
             .await;
 
         result.map(|_| ())
+    }
+
+    pub async fn stop_recording_from_external_surface(&self) -> Result<()> {
+        let current_state = self.current_state().await;
+        let assistive = *self.assistive_mode.read().await;
+        if should_use_toggle_adjudicated_stop(current_state, assistive, toggle_final_pass_enabled())
+        {
+            self.stop_toggle_and_adjudicate().await
+        } else {
+            self.finish_recording().await
+        }
     }
 
     /// Stop recording, transcribe, format, and paste the result
