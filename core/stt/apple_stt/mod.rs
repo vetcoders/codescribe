@@ -140,15 +140,6 @@ pub(crate) fn is_runtime_available() -> bool {
     }
 }
 
-/// Transcribe long audio using SpeechAnalyzer bridge.
-pub(crate) fn transcribe_long(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<String> {
-    Ok(transcribe_long_with_segments(audio, sample_rate, language)?.text)
-}
-
 /// Transcribe a single chunk (same implementation as long for this backend).
 #[allow(dead_code)]
 pub(crate) fn transcribe_chunk(
@@ -156,7 +147,7 @@ pub(crate) fn transcribe_chunk(
     sample_rate: u32,
     language: Option<&str>,
 ) -> Result<String> {
-    transcribe_long(audio, sample_rate, language)
+    Ok(transcribe_long_with_segments(audio, sample_rate, language)?.text)
 }
 
 /// Transcribe audio with optional segment timestamps.

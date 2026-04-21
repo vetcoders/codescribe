@@ -102,11 +102,11 @@ Recommended `vc-why-matrix` posture:
 - [x] Keep Silero VAD as hard processing truth.
 - [x] Formalize optional embedded dictionary-driven final pass.
 - [x] Add truth QA fixtures at the `core` contract layer.
+- [x] Normalize the live STT router around a structured transcript contract.
 
 ### Częściowo dowiezione
 
-- Normalize the engine contract around a structured verdict.
-  File transcription jest już `verdict-first`, ale `core/stt/mod.rs` i `core/stt/whisper/engine.rs` nadal mają `transcribe_long*` ścieżki zwracające `String`.
+- Some advanced backend helpers still expose string-returning convenience wrappers, but the live router and batch quality path now stay on `RawTranscript`.
 
 ### Acceptance snapshot
 

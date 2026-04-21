@@ -384,8 +384,12 @@ async fn process_pair(
     let duration_secs = samples.len() as f32 / sample_rate as f32;
 
     // Single-pass transcription: engine handles 25s/5s chunking internally
-    let raw = match crate::stt::transcribe_long(&samples, sample_rate, config.language.as_deref()) {
-        Ok(text) => Some(text),
+    let raw = match crate::stt::transcribe_long_with_segments(
+        &samples,
+        sample_rate,
+        config.language.as_deref(),
+    ) {
+        Ok(transcript) => Some(transcript.text),
         Err(e) => {
             errors.push(format!("Raw transcription failed: {}", e));
             None

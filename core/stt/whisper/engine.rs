@@ -569,21 +569,6 @@ impl LocalWhisperEngine {
         self.transcribe_samples_16k_raw(&samples, language, debug_tokens)
     }
 
-    pub fn transcribe_long(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
-        self.transcribe_long_with_language(audio, sample_rate, None)
-    }
-
-    pub fn transcribe_long_with_language(
-        &mut self,
-        audio: &[f32],
-        sample_rate: u32,
-        language: Option<&str>,
-    ) -> Result<String> {
-        Ok(self
-            .transcribe_long_with_language_segments(audio, sample_rate, language)?
-            .text)
-    }
-
     pub fn transcribe_long_with_language_segments(
         &mut self,
         audio: &[f32],
@@ -668,6 +653,18 @@ impl LocalWhisperEngine {
             },
             quality_gate_dropped: any_quality_gate_dropped,
         })
+    }
+
+    /// Legacy convenience wrapper kept for direct engine callers and tests.
+    pub fn transcribe_long_with_language(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<String> {
+        Ok(self
+            .transcribe_long_with_language_segments(audio, sample_rate, language)?
+            .text)
     }
 
     /// Transcribe long audio with streaming callback

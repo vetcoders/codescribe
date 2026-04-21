@@ -26,6 +26,7 @@ Audyt wykonany na branchu `feat/the-intents-engine` przeciwko aktualnemu kodowi,
 
 ### Odhaczone w kodzie
 
+- [x] Faza 1. Spisać Konstytucję Prawdy
 - [x] Faza 2. Rozdzielić Draft od Werdyktu
 - [x] Faza 3. Uczynić Provenance Częścią Artefaktu
 - [x] Faza 4. Zmienić App z "Wybieracza Tekstu" w "Sędziego Prawdy"
@@ -33,15 +34,12 @@ Audyt wykonany na branchu `feat/the-intents-engine` przeciwko aktualnemu kodowi,
 - [x] Faza 6. Ucywilizować Fallbacki
 - [x] Faza 8. Rozdzielić Kategorię "Transcription" od Kategorii "Interpretation"
 - [x] Faza 9. Zbudować Truth QA zamiast tylko STT QA
+- [x] Faza 10. Przepisać Obietnicę Produktu na Język UI i Onboardingu
 
 ### Częściowo dowiezione
 
-- Faza 1. Spisać Konstytucję Prawdy
-  Runtime truth contract żyje już w `core/pipeline/contracts.rs` i `app/controller/*`, ale obiecany artefakt `truth-contract.md` nie istnieje.
 - Faza 7. Zatrzymać Korekty, Które Pogarszają
   Guardraile dla final pass i commit quality istnieją, ale nie wszystkie długie ścieżki transkrypcji są jeszcze verdict-first.
-- Faza 10. Przepisać Obietnicę Produktu na Język UI i Onboardingu
-  Wording trafił do settings/status/overlay, ale pełny pass onboardingowy i spójny język całego produktu nie są jeszcze domknięte.
 
 ## Faza 1. Spisać Konstytucję Prawdy
 

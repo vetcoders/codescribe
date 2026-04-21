@@ -100,13 +100,12 @@ Recommended `vc-why-matrix` posture:
 - [x] Introduce a truth-adjudicator in the app layer.
 - [x] Reclassify AI outputs.
 - [x] Civilize cloud fallback.
+- [x] Rewrite product language across settings, overlay, and onboarding.
 
 ### Częściowo dowiezione
 
 - Make provenance visible.
   Provenance, fallback class, VAD, no-speech i confidence są zapisywane do truth sidecarów i używane w statusach, ale nie wszystkie UI surfaces eksponują to równie jasno.
-- Rewrite product language.
-  Settings, overlay i status texts mówią już o `Live preview`, `committed verdict` i degraded fallbackach, ale pełny onboardingowy pass językowy nie jest domknięty.
 
 ### Acceptance snapshot
 
@@ -114,6 +113,7 @@ Recommended `vc-why-matrix` posture:
 - [x] Cloud fallback jest explicit i policy-driven.
 - [x] Auto-paste jest blokowany, gdy prawda jest słaba (`no speech` albo `commit_trigger`).
 - [x] Kategorie AI są rozdzielone (`Transcript`, `Formatted transcript`, `Assistant interpretation`, `Formatting failed`).
+- [x] Settings, overlay i onboarding używają wspólnego języka `Live preview` / `committed verdict` / degraded fallback.
 - [ ] Provenance i confidence nie są jeszcze równie czytelne na każdej powierzchni UI.
 
 ## Scope

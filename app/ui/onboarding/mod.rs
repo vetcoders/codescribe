@@ -1046,7 +1046,7 @@ fn render_current_step() {
             set_text_if_present(ui.title_label, "Welcome to CodeScribe");
             set_text_if_present(
                 ui.description_label,
-                "We will guide you through permissions and setup so CodeScribe works perfectly from first launch.",
+                "We will wire permissions, choose your transcript defaults, and show how live preview, committed verdict, and AI help stay honest from first launch.",
             );
             set_button_title_if_present(ui.primary_button, "Get Started");
         }
@@ -1108,7 +1108,7 @@ fn render_current_step() {
             set_text_if_present(ui.title_label, "Choose Language");
             set_text_if_present(
                 ui.description_label,
-                "Select the default transcription language. You can change it later in Settings.",
+                "Select the default transcript language. Live preview stays provisional, and the committed verdict will use this language unless you change it later in Settings.",
             );
             set_hidden_if_present(ui.language_view, false);
             set_button_title_if_present(ui.primary_button, "Continue");
@@ -1118,7 +1118,7 @@ fn render_current_step() {
             set_text_if_present(ui.title_label, "Add API Key (Optional)");
             set_text_if_present(
                 ui.description_label,
-                "Use your LLM API key for AI formatting and assistant features.",
+                "Optional. Your LLM API key unlocks formatted transcript and assistant features, while raw transcript truth stays preserved whenever AI is skipped, rejected, or unavailable.",
             );
             set_hidden_if_present(ui.api_view, false);
             set_button_title_if_present(ui.primary_button, "Save & Continue");
@@ -1130,7 +1130,7 @@ fn render_current_step() {
             set_text_if_present(ui.title_label, "Customize Mode Shortcuts");
             set_text_if_present(
                 ui.description_label,
-                "Mode first, keys second. Pick a starter profile now; you can refine each mode shortcut later in Settings.",
+                "Mode first, keys second. Dictation aims for a committed transcript verdict, Formatting upgrades text only when safe, and Assistive stays in the chat overlay instead of silent paste.",
             );
             set_hidden_if_present(ui.hotkey_view, false);
             set_button_title_if_present(ui.primary_button, "Continue");
@@ -1140,7 +1140,7 @@ fn render_current_step() {
             set_text_if_present(ui.title_label, "You're All Set");
             set_text_if_present(
                 ui.description_label,
-                "Review your setup. You can always adjust these settings later.",
+                "Review the truth model below. You can always adjust these settings later, but the runtime should already be telling the same story as the UI.",
             );
             set_hidden_if_present(ui.summary_view, false);
             set_hidden_if_present(ui.skip_button, true);
@@ -1973,7 +1973,7 @@ fn update_summary_view(
     set_text_if_present(
         ui.summary_config_label,
         &format!(
-            "Language: {}\nAPI key: {}\nMode profile: {}",
+            "Language: {}\nAPI key: {}\nMode profile: {}\nTruth model: Live preview stays local and provisional. CodeScribe only commits a final verdict after capture, and degraded fallback blocks silent auto-paste.",
             language.label(),
             api_status,
             hotkey_mode.label()

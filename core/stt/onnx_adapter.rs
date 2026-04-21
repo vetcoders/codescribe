@@ -161,18 +161,18 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
-/// Transcribe long audio via the ONNX engine (blocking lock).
-pub(crate) fn transcribe_long(
+/// Transcribe long audio via the ONNX engine with segment metadata.
+pub(crate) fn transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
     language: Option<&str>,
-) -> Result<String> {
+) -> Result<RawTranscript> {
     init()?;
     let engine = ENGINE.get().context("ONNX engine not initialized")?;
     let mut guard = engine
         .lock()
         .map_err(|e| anyhow!("ONNX lock error: {}", e))?;
-    guard.transcribe_long(audio, sample_rate, language)
+    guard.transcribe_long_raw(audio, sample_rate, language)
 }
 
 /// Transcribe a single chunk via the ONNX engine (blocking lock).
@@ -531,24 +531,6 @@ impl OnnxEngine {
             segments,
             ..Default::default()
         })
-    }
-
-    /// Transcribe long audio by chunking in 30s windows.
-    ///
-    /// ONNX encoder input is fixed at [1, 128, 3000] = exactly 30s.
-    /// We use 30s chunks with 5s overlap so each chunk fills the encoder
-    /// natively without pad-or-trim distortion. Only the last chunk may
-    /// be shorter and gets zero-padded by the mel pad-or-trim in
-    /// `transcribe_internal`.
-    fn transcribe_long(
-        &mut self,
-        samples: &[f32],
-        sample_rate: u32,
-        language: Option<&str>,
-    ) -> Result<String> {
-        Ok(self
-            .transcribe_long_raw(samples, sample_rate, language)?
-            .text)
     }
 
     fn transcribe_long_raw(

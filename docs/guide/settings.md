@@ -16,6 +16,8 @@ Configuration still lives in three layers:
 
 Most users should stay inside the Settings window. The `.env` file is for overrides and automation-heavy workflows.
 
+For the product semantics behind preview, verdict, fallback, and AI categories, see [Truth Contract](./truth-contract.md).
+
 ## Open Settings
 
 - Menu bar icon → **Settings**
