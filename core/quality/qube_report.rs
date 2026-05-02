@@ -331,19 +331,8 @@ fn prepare_cloud_jobs(
     }
 
     let app_config = Config::load();
-    if app_config.use_local_stt {
-        return CloudJobSet::Skipped("Cloud transcription skipped: USE_LOCAL_STT=1".into());
-    }
-
-    let (endpoint, api_key) = match (
-        app_config.stt_endpoint.clone(),
-        app_config.stt_api_key.clone(),
-    ) {
-        (Some(endpoint), Some(api_key))
-            if !endpoint.trim().is_empty() && !api_key.trim().is_empty() =>
-        {
-            (endpoint, api_key)
-        }
+    let (endpoint, api_key) = match cloud_reference_credentials(&app_config) {
+        Some(credentials) => credentials,
         _ => {
             return CloudJobSet::Skipped(
                 "Cloud transcription skipped: STT_ENDPOINT/STT_API_KEY missing".into(),
@@ -385,6 +374,17 @@ fn prepare_cloud_jobs(
     }
 
     CloudJobSet::Running(jobs)
+}
+
+fn cloud_reference_credentials(app_config: &Config) -> Option<(String, String)> {
+    let endpoint = app_config.stt_endpoint.as_deref()?.trim();
+    let api_key = app_config.stt_api_key.as_deref()?.trim();
+
+    if endpoint.is_empty() || api_key.is_empty() {
+        return None;
+    }
+
+    Some((endpoint.to_string(), api_key.to_string()))
 }
 
 async fn process_pair(
@@ -1762,6 +1762,27 @@ mod tests {
         assert_eq!(summary.raw_text_committed, 1);
         assert_eq!(summary.raw_quality_gate_dropped, 1);
         assert_eq!(summary.raw_no_speech_detected, 1);
+    }
+
+    #[test]
+    fn cloud_reference_credentials_ignore_local_committed_transcript_mode() {
+        let mut config = Config {
+            use_local_stt: true,
+            stt_endpoint: Some(" https://api.example.test/v1/audio/transcriptions ".into()),
+            stt_api_key: Some(" test-token ".into()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            cloud_reference_credentials(&config),
+            Some((
+                "https://api.example.test/v1/audio/transcriptions".into(),
+                "test-token".into(),
+            ))
+        );
+
+        config.stt_api_key = Some("   ".into());
+        assert_eq!(cloud_reference_credentials(&config), None);
     }
 
     #[test]
