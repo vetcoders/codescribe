@@ -1691,6 +1691,26 @@ pub fn agent_chat_shell_panel_policy(visible_frame: CGRect) -> SharedShellPanelP
     }
 }
 
+/// Shared policy for the native Settings preferences shell.
+pub fn settings_shell_panel_policy(fixed_size: CGSize) -> SharedShellPanelPolicy {
+    SharedShellPanelPolicy {
+        style_mask: NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Miniaturizable
+            | NSWindowStyleMask::FullSizeContentView,
+        backing_store: NSBackingStoreType::Buffered,
+        collection_behavior: NSWindowCollectionBehavior::FullScreenNone,
+        level: NS_NORMAL_WINDOW_LEVEL,
+        min_content_size: Some(fixed_size),
+        max_content_size: Some(fixed_size),
+        hides_title: false,
+        transparent_titlebar: true,
+        movable_by_window_background: false,
+        opaque: true,
+        released_when_closed: false,
+    }
+}
+
 /// Frame an Agent chat shell from the persisted/raw position and clamp to screen.
 pub fn agent_chat_shell_frame(
     visible_frame: CGRect,
@@ -1728,7 +1748,9 @@ pub unsafe fn apply_shared_shell_panel_policy(window: Id, policy: &SharedShellPa
             setMovableByWindowBackground: policy.movable_by_window_background
         ];
         let _: () = msg_send![window, setOpaque: policy.opaque];
-        let _: () = msg_send![window, setBackgroundColor: color_clear()];
+        if !policy.opaque {
+            let _: () = msg_send![window, setBackgroundColor: color_clear()];
+        }
         let _: () = msg_send![window, setLevel: policy.level];
         let _: () = msg_send![window, setReleasedWhenClosed: policy.released_when_closed];
         if let Some(min_size) = policy.min_content_size {
@@ -1789,6 +1811,33 @@ mod tests {
         assert!(!policy.opaque);
         assert!(policy.style_mask.contains(NSWindowStyleMask::Titled));
         assert!(policy.style_mask.contains(NSWindowStyleMask::Closable));
+    }
+
+    #[test]
+    fn settings_shell_policy_is_fixed_native_panel() {
+        let fixed = CGSize::new(840.0, 700.0);
+        let policy = settings_shell_panel_policy(fixed);
+
+        assert_eq!(policy.level, NS_NORMAL_WINDOW_LEVEL);
+        assert_eq!(
+            policy.collection_behavior,
+            NSWindowCollectionBehavior::FullScreenNone
+        );
+        let min_size = policy.min_content_size.expect("min size");
+        assert_eq!(min_size.width, fixed.width);
+        assert_eq!(min_size.height, fixed.height);
+        let max_size = policy.max_content_size.expect("max size");
+        assert_eq!(max_size.width, fixed.width);
+        assert_eq!(max_size.height, fixed.height);
+        assert!(policy.opaque);
+        assert!(!policy.hides_title);
+        assert!(policy.style_mask.contains(NSWindowStyleMask::Titled));
+        assert!(
+            policy
+                .style_mask
+                .contains(NSWindowStyleMask::FullSizeContentView)
+        );
+        assert!(!policy.style_mask.contains(NSWindowStyleMask::Resizable));
     }
 
     #[test]

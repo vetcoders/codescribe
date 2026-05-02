@@ -591,6 +591,9 @@ pub fn diagnostics_report() -> String {
             );
         }
     }
+    if let Some(note) = crate::os::shortcut_registry::fn_tap_intercept_note(&settings) {
+        let _ = writeln!(&mut out, "mode_binding.note: {note}");
+    }
 
     // Small, safe config hints (do not print secrets).
     let config = crate::config::Config::load();

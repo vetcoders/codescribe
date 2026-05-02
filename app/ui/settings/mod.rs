@@ -12,10 +12,7 @@ use dispatch::Queue;
 use lazy_static::lazy_static;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
-use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectMaterial, NSWindowButton, NSWindowCollectionBehavior,
-    NSWindowStyleMask, NSWindowToolbarStyle,
-};
+use objc2_app_kit::{NSVisualEffectMaterial, NSWindowButton, NSWindowToolbarStyle};
 use tracing::{info, warn};
 
 use crate::config::{Config, ShortcutBinding, UserSettings, WorkMode, keychain};
@@ -30,12 +27,12 @@ use crate::ui::settings::handlers::{
     action_handler_class, toolbar_delegate_class, window_delegate_class,
 };
 use crate::ui_helpers::{
-    LabelConfig, add_subview, button_set_action, button_style, create_button,
-    create_glass_effect_view_with, create_label, create_scrollable_text_view,
+    LabelConfig, add_subview, apply_shared_shell_panel_policy, button_set_action, button_style,
+    create_button, create_glass_effect_view_with, create_label, create_scrollable_text_view,
     create_secure_text_input, create_slider, create_text_input, create_toggle,
     get_text_view_string, layout_region_frame_for_view, ns_string, present_shared_shell_panel,
-    set_glass_effect_content_view, set_text_field_string, set_text_view_string, ui_colors,
-    ui_tokens, window_close, window_content_view,
+    set_glass_effect_content_view, set_text_field_string, set_text_view_string,
+    settings_shell_panel_policy, ui_colors, ui_tokens, window_close, window_content_view,
 };
 
 mod handlers;
@@ -46,8 +43,6 @@ type Id = *mut Object;
 const SIDEBAR_WIDTH: f64 = 216.0;
 const SETTINGS_WINDOW_WIDTH: f64 = 840.0;
 const SETTINGS_WINDOW_HEIGHT: f64 = 700.0;
-// Keep Settings readable while restoring stronger system glass.
-const SETTINGS_MAX_OPACITY: f64 = ui_tokens::SETTINGS_WINDOW_OPACITY;
 const SETTINGS_CONTENT_INSET_X: f64 = 20.0;
 const SETTINGS_CONTENT_INSET_Y: f64 = 20.0;
 const TAB_BUTTON_HEIGHT: f64 = 34.0;
@@ -146,13 +141,6 @@ struct SliderSettingRowSpec<'a> {
     current: f64,
     action: objc::runtime::Sel,
     gap: f64,
-}
-
-unsafe fn intensify_settings_glass(view: Id) {
-    let supports_emphasized: bool = msg_send![view, respondsToSelector: sel!(setEmphasized:)];
-    if supports_emphasized {
-        let _: () = msg_send![view, setEmphasized: true];
-    }
 }
 
 fn parse_env_bool(v: &str) -> bool {
@@ -836,30 +824,22 @@ fn show_settings_window_impl() {
             &CGSize::new(window_width, window_height),
         );
 
+        let fixed_size = CGSize::new(window_width, window_height);
+        let shell_policy = settings_shell_panel_policy(fixed_size);
         let ns_window = objc_class("NSWindow");
         let window: Id = msg_send![ns_window, alloc];
-        let style = NSWindowStyleMask::Titled
-            | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Miniaturizable
-            | NSWindowStyleMask::FullSizeContentView;
         let window: Id = msg_send![
             window,
             initWithContentRect: frame
-            styleMask: style
-            backing: NSBackingStoreType::Buffered
+            styleMask: shell_policy.style_mask
+            backing: shell_policy.backing_store
             defer: false
         ];
 
-        // Keep Settings glass/opacity aligned with chat + transcription overlays while
-        // using a conventional AppKit preferences shell.
+        // Keep Settings on a conventional AppKit preferences shell. The content
+        // panes use semantic NSVisualEffect materials; the window itself stays native.
         let _: () = msg_send![window, setTitle: ns_string("Settings")];
-        let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
-        let _: () = msg_send![window, setOpaque: false];
-        let _: () = msg_send![window, setBackgroundColor: crate::ui_helpers::color_clear()];
-        let _: () = msg_send![window, setReleasedWhenClosed: false];
-        let _: () = msg_send![window, setMovableByWindowBackground: true];
-        let _: () = msg_send![window, setAlphaValue: SETTINGS_MAX_OPACITY];
-        let _: () = msg_send![window, setLevel: crate::ui_helpers::NS_NORMAL_WINDOW_LEVEL];
+        apply_shared_shell_panel_policy(window, &shell_policy);
         let toolbar_delegate_class = toolbar_delegate_class();
         let toolbar_delegate: Id = msg_send![toolbar_delegate_class, new];
         let ns_toolbar = objc_class("NSToolbar");
@@ -880,13 +860,7 @@ fn show_settings_window_impl() {
         if supports_toolbar_button {
             let _: () = msg_send![window, setShowsToolbarButton: false];
         }
-        // Disallow fullscreen/zoom to avoid triggering AppKit fullscreen snapshots that can crash.
-        let _: () =
-            msg_send![window, setCollectionBehavior: NSWindowCollectionBehavior::FullScreenNone];
         // Hard lock the size (no resize handles, no zoom).
-        let fixed_size = CGSize::new(window_width, window_height);
-        let _: () = msg_send![window, setContentMinSize: fixed_size];
-        let _: () = msg_send![window, setContentMaxSize: fixed_size];
         let zoom_btn: Id = msg_send![window, standardWindowButton: NSWindowButton::ZoomButton];
         if !zoom_btn.is_null() {
             let _: () = msg_send![zoom_btn, setEnabled: false];
@@ -951,13 +925,6 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
             root,
             setAutoresizingMask: 2_isize | 16_isize // NSViewWidthSizable | NSViewHeightSizable
         ];
-        let _: () = msg_send![root, setWantsLayer: true];
-        let root_layer: Id = msg_send![root, layer];
-        if !root_layer.is_null() {
-            let _: () = msg_send![root_layer, setCornerRadius: ui_tokens::SURFACE_RADIUS];
-            let _: () = msg_send![root_layer, setMasksToBounds: true];
-            let _: () = msg_send![root_layer, setBorderWidth: 0.0f64];
-        }
         add_subview(parent, root);
 
         let action_handler_class = action_handler_class();
@@ -1340,11 +1307,9 @@ unsafe fn build_settings_ui(
         let sidebar_glass = create_glass_effect_view_with(
             sidebar_frame,
             NSVisualEffectMaterial::Sidebar,
-            objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
-            objc2_app_kit::NSVisualEffectState::Active,
+            objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow,
+            objc2_app_kit::NSVisualEffectState::FollowsWindowActiveState,
         );
-        let _: () = msg_send![sidebar_glass, setAlphaValue: SETTINGS_MAX_OPACITY];
-        intensify_settings_glass(sidebar_glass);
         let _: () = msg_send![
             sidebar_glass,
             setAutoresizingMask: 16_isize | 4_isize // Height | MaxXMargin
@@ -1376,12 +1341,10 @@ unsafe fn build_settings_ui(
         );
         let content_glass = create_glass_effect_view_with(
             content_bg_frame,
-            NSVisualEffectMaterial::FullScreenUI,
-            objc2_app_kit::NSVisualEffectBlendingMode::BehindWindow,
-            objc2_app_kit::NSVisualEffectState::Active,
+            NSVisualEffectMaterial::ContentBackground,
+            objc2_app_kit::NSVisualEffectBlendingMode::WithinWindow,
+            objc2_app_kit::NSVisualEffectState::FollowsWindowActiveState,
         );
-        let _: () = msg_send![content_glass, setAlphaValue: SETTINGS_MAX_OPACITY];
-        intensify_settings_glass(content_glass);
         let _: () = msg_send![
             content_glass,
             setAutoresizingMask: 2_isize | 16_isize // Width | Height
@@ -2111,10 +2074,7 @@ fn hotkey_conflicts(_config: &Config) -> Vec<shortcut_registry::HotkeyConflict> 
 
 fn hotkey_conflict_status_from(conflicts: &[shortcut_registry::HotkeyConflict]) -> (String, bool) {
     if conflicts.is_empty() {
-        return (
-            "Mode shortcuts: no conflicts in macOS Keyboard Shortcuts registry.".to_string(),
-            false,
-        );
+        return ("Mode shortcuts: clear.".to_string(), false);
     }
 
     let first = &conflicts[0];
@@ -2127,7 +2087,7 @@ fn hotkey_conflict_status_from(conflicts: &[shortcut_registry::HotkeyConflict]) 
 
     (
         format!(
-            "Conflict: {} -> {}{}",
+            "Review shortcut: {} -> {}{}",
             first.gesture.label(),
             first.message,
             suffix
@@ -2147,7 +2107,7 @@ fn hotkey_conflict_details_text(conflicts: &[shortcut_registry::HotkeyConflict])
     }
 
     let mut lines = vec![
-        "CodeScribe detected conflicts with macOS/global shortcuts:".to_string(),
+        "CodeScribe detected shortcuts that may overlap current mode bindings:".to_string(),
         String::new(),
     ];
     for (index, conflict) in conflicts.iter().enumerate() {
@@ -2159,7 +2119,7 @@ fn hotkey_conflict_details_text(conflicts: &[shortcut_registry::HotkeyConflict])
         ));
     }
     lines.push(String::new());
-    lines.push("Recommendation: change the conflicting mode binding or disable that mode shortcut in Settings.".to_string());
+    lines.push("Recommendation: change that mode binding only if the gesture does not behave correctly at runtime.".to_string());
     lines.join("\n")
 }
 
@@ -2667,7 +2627,7 @@ unsafe fn build_modes_shortcuts_tab(
 
         let usage_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 28.0)),
-            text: "Usage: hold bindings record while held (release to send). Double-tap bindings are hands-free: pause to auto-send an utterance, double-tap again to stop.".to_string(),
+            text: "Hold records while pressed. Double-tap records hands-free; repeat the gesture to stop.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -2785,6 +2745,18 @@ unsafe fn build_modes_shortcuts_tab(
         });
         add_subview(container, recorder_hint);
         y -= 16.0 + gap;
+
+        if let Some(fn_note) = shortcut_registry::fn_tap_intercept_note(&settings_snapshot) {
+            let fn_note_label = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 28.0)),
+                text: fn_note.to_string(),
+                font_size: ui_tokens::MICRO_FONT_SIZE,
+                text_color: secondary,
+                ..Default::default()
+            });
+            add_subview(container, fn_note_label);
+            y -= 28.0 + gap;
+        }
 
         let (conflict_text, has_conflict) = hotkey_conflict_status(config);
         let conflict_label = create_label(LabelConfig {
@@ -3604,7 +3576,7 @@ unsafe fn build_quality_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Choose which backend is allowed to produce the committed verdict after capture. Live overlay preview stays local and provisional."
+            text: "Choose the backend for the committed transcript. Overlay preview stays local and provisional."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -3712,7 +3684,7 @@ unsafe fn build_quality_tab(
 
         let preview_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "These controls shape partial publish cadence and overlay emission. Buffer delay only applies after the first visible partial."
+            text: "Live preview cadence. Buffer delay applies after the first visible partial."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -4174,8 +4146,7 @@ unsafe fn build_diagnostics_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Permission matrix, hotkey conflict clarity, and one-click diagnostics copy."
-                .to_string(),
+            text: "Permissions, shortcut overlap, and one-click diagnostics copy.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
