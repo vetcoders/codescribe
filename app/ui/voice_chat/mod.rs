@@ -40,7 +40,7 @@ use crate::os::hotkeys::ModeHotkeyBindings;
 use crate::ui_helpers::{
     LabelConfig, add_subview, agent_chat_shell_frame, agent_chat_shell_panel_policy,
     apply_shared_shell_panel_policy, apply_tafla_surface, button_set_action, button_style,
-    chat_header_layout, chat_input_row_layout, color_clear, color_label, create_button,
+    chat_header_layout, chat_input_row_layout, color_clear, color_secondary_label, create_button,
     create_flipped_vertical_stack_view, create_glass_effect_view_with, create_label,
     create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
     main_screen_visible_frame, ns_string, present_shared_shell_panel, set_button_symbol,
@@ -323,30 +323,6 @@ fn show_voice_chat_overlay_impl() {
             header_controls,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
         ];
-        let title_x = if header_frame.size.width >= 620.0 {
-            ui_tokens::TRAFFIC_LIGHTS_SPACER_WIDTH + 6.0
-        } else {
-            ui_tokens::EDGE_PADDING_TIGHT
-        };
-        let title_y = ((header_height - 20.0) / 2.0).max(0.0);
-        // Keep enough width so "CodeScribe" is not clipped at default window sizes.
-        let title_w = ui_tokens::CHAT_TITLE_LABEL_WIDTH;
-        let title_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(title_x, title_y), &CGSize::new(title_w, 20.0)),
-            text: "CodeScribe".to_string(),
-            font_size: ui_tokens::TITLE_FONT_SIZE,
-            bold: true,
-            text_color: color_label(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        let _: () = msg_send![
-            title_label,
-            setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN
-        ];
-        add_subview(header_controls, title_label);
-
         // Header right-side controls (right-aligned, consistent spacing).
         let btn_w = ui_tokens::CHAT_HEADER_BUTTON_SIZE;
         let btn_h = ui_tokens::CHAT_HEADER_BUTTON_SIZE;
@@ -363,9 +339,12 @@ fn show_voice_chat_overlay_impl() {
         x -= gap + btn_w;
         let record_button_x = x;
 
-        // Keep the tab control between the title and the right-side icon cluster.
+        // Keep the tab control outside the native traffic-light zone and before
+        // the right-side icon cluster. The visible brand label lives in the
+        // footer, because the native titlebar owns the top-left corner.
         let right_cluster_start_x = record_button_x;
-        let header_layout = chat_header_layout(title_x, title_w, right_cluster_start_x);
+        let header_safe_x = ui_tokens::TRAFFIC_LIGHTS_SPACER_WIDTH + 6.0;
+        let header_layout = chat_header_layout(header_safe_x, 0.0, right_cluster_start_x);
         let tab_cluster_x = header_layout.tab_cluster_x;
         let tab_btn_w = header_layout.tab_button_width;
         let tab_gap = header_layout.tab_button_gap;
@@ -855,6 +834,31 @@ fn show_voice_chat_overlay_impl() {
         set_focus_ring(search_field);
         add_subview(glass_content_view, search_field);
 
+        let footer_brand_w = ui_tokens::CHAT_TITLE_LABEL_WIDTH;
+        let footer_brand_h = 16.0;
+        let footer_brand_frame = CGRect::new(
+            &CGPoint::new(
+                content_bounds.origin.x + content_bounds.size.width - content_pad - footer_brand_w,
+                content_bounds.origin.y + ((footer_height - footer_brand_h) / 2.0).max(4.0),
+            ),
+            &CGSize::new(footer_brand_w, footer_brand_h),
+        );
+        let title_label = create_label(LabelConfig {
+            frame: footer_brand_frame,
+            text: "CodeScribe".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: color_secondary_label(),
+            background_color: None,
+            selectable: false,
+            editable: false,
+        });
+        let _: () = msg_send![
+            title_label,
+            setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MAX_Y_MARGIN
+        ];
+        add_subview(glass_content_view, title_label);
+
         // Agent input bar
         let drop_target_cls = drop_target_view_class();
         let input_bar: Id = msg_send![drop_target_cls, alloc];
@@ -1007,6 +1011,7 @@ fn show_voice_chat_overlay_impl() {
         // Initial visibility
         set_hidden(agent_scroll, true);
         set_hidden(input_bar, true);
+        set_hidden(title_label, true);
 
         // Phase 3 — store widget pointers into state (short lock scope).
         let (has_messages, desired_tab, status_base_text) = {
