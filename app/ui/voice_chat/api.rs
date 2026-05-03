@@ -2644,32 +2644,88 @@ fn create_commit_action_bar(action_handler: Option<usize>) -> Id {
     }
 }
 
+/// ObjC handles owned by the overlay state via `[cls new]` (+1 retain each).
+/// These must receive a balancing `release` exactly once when the overlay is
+/// permanently torn down. Subviews (`blur_view`, pills, drawer, etc.) are
+/// retained by the window and need no explicit release.
+///
+/// The reuse path in `voice_chat/mod.rs` and the AppKit `windowWillClose`
+/// delegate callback in `voice_chat/handlers.rs` both clear the state without
+/// taking ownership of these pointers — they call the lighter
+/// `clear_overlay_state` directly. Only `hide_voice_chat_overlay_impl` is
+/// authoritative for releasing them, so handle ownership transfer happens
+/// here and nowhere else.
+struct ReleasedOverlayHandles {
+    window_delegate: Option<usize>,
+    action_handler: Option<usize>,
+    window: Option<usize>,
+}
+
+/// Drain the three owned ObjC handles out of the overlay state and clear all
+/// other fields. Returns the handles for the caller to release after dropping
+/// the state lock. Calling code MUST eventually `release` each `Some(ptr)`
+/// exactly once or leak the underlying object.
+fn take_handles_and_clear_overlay_state(
+    state: &mut VoiceChatOverlayState,
+) -> ReleasedOverlayHandles {
+    let handles = ReleasedOverlayHandles {
+        window_delegate: state.window_delegate.take(),
+        action_handler: state.action_handler.take(),
+        window: state.window.take(),
+    };
+    clear_overlay_state(state);
+    handles
+}
+
 fn hide_voice_chat_overlay_impl() {
     // IMPORTANT: do not hold OVERLAY_STATE while calling `window_close`.
     // `window_close` triggers AppKit notifications/delegate callbacks (windowWillClose),
     // and those callbacks also lock OVERLAY_STATE. Holding the lock here can deadlock
     // the main thread (observed as a hard freeze/hang).
-    let window_ptr = {
+    let handles = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let window_ptr = state.window.take();
-        clear_overlay_state(&mut state);
-        window_ptr
+        take_handles_and_clear_overlay_state(&mut state)
     };
 
-    if let Some(window_ptr) = window_ptr {
+    if let Some(window_ptr) = handles.window {
         unsafe {
             let window = window_ptr as Id;
             crate::ui_helpers::animate_fade(window, 0.0, 0.15);
+            // The shared overlay shell sets `releasedWhenClosed = false`
+            // (see `app/ui/shared/helpers.rs`), so `window_close` does NOT
+            // balance the +1 retain from window construction. We must
+            // `release` the window pointer ourselves below.
             crate::ui_helpers::window_close(window);
+        }
+    }
+
+    // Balance the +1 retain count from `[cls new]` on each owned handle.
+    // Subviews are owned by the window and released transitively.
+    unsafe {
+        if let Some(ptr) = handles.window_delegate {
+            let _: () = msg_send![ptr as Id, release];
+        }
+        if let Some(ptr) = handles.action_handler {
+            let _: () = msg_send![ptr as Id, release];
+        }
+        if let Some(ptr) = handles.window {
+            let _: () = msg_send![ptr as Id, release];
         }
     }
 
     clear_search_field();
 }
 
+/// Reset the overlay state to its default shape. Does NOT release ObjC retains
+/// on `window`, `window_delegate`, or `action_handler` — the caller is
+/// responsible for that via `take_handles_and_clear_overlay_state` when the
+/// overlay is being permanently torn down. This entry point is safe for the
+/// reuse path (stale dangling pointers) and the `windowWillClose` callback
+/// (release already in flight from `hide_voice_chat_overlay_impl`).
 pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.window = None;
     state.window_delegate = None;
+    state.action_handler = None;
     state.blur_view = None;
     state.split_view_controller = None;
     state.split_sidebar_item = None;

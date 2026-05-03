@@ -632,6 +632,7 @@ unsafe fn add_toggle_row(
 struct SettingsWindowState {
     window: Option<usize>,
     window_delegate: Option<usize>,
+    action_handler: Option<usize>,
     root_view: Option<usize>,
     step_labels: [Option<usize>; 3],
     tab_buttons: [Option<usize>; TAB_COUNT],
@@ -941,7 +942,7 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         state.root_view = Some(root as usize);
-        state.window = None;
+        state.action_handler = Some(action_handler as usize);
         state.step_labels = built_state.step_labels;
         state.tab_buttons = built_state.tab_buttons;
         state.content_views = built_state.content_views;
@@ -1679,14 +1680,30 @@ pub(super) fn handle_hotkey_done() {
 }
 
 pub(super) fn handle_settings_window_closed() {
-    let mut state = SETTINGS_WINDOW_STATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    state.window = None;
-    state.window_delegate = None;
-    state.root_view = None;
-    clear_settings_ui_state(&mut state);
-    state.config_cache = None;
+    let (delegate_ptr, handler_ptr, window_ptr) = {
+        let mut state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let delegate_ptr = state.window_delegate.take();
+        let handler_ptr = state.action_handler.take();
+        let window_ptr = state.window.take();
+        state.root_view = None;
+        clear_settings_ui_state(&mut state);
+        state.config_cache = None;
+        (delegate_ptr, handler_ptr, window_ptr)
+    };
+
+    unsafe {
+        if let Some(ptr) = delegate_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
+        if let Some(ptr) = handler_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
+        if let Some(ptr) = window_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
+    }
 }
 
 pub fn hide_settings_surface() {
@@ -1696,15 +1713,11 @@ pub fn hide_settings_surface() {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             state.permission_polling = false;
-            let window_ptr = state.window.take();
-            if window_ptr.is_some() {
-                state.window_delegate = None;
-                state.root_view = None;
-                clear_settings_ui_state(&mut state);
-                (window_ptr, None)
-            } else {
-                (None, state.root_view)
-            }
+            // Do NOT take ownership of window/delegate/action_handler here.
+            // The `windowWillClose:` notification fires `handle_settings_window_closed`,
+            // which drains and releases all three. Releasing twice would crash.
+            // For the embedded (root-only, no window) path, the parent owns lifecycle.
+            (state.window, state.root_view)
         };
 
         if let Some(window_ptr) = window_ptr {
@@ -1725,16 +1738,29 @@ pub fn hide_settings_window() {
 
 /// Reset embedded Settings view state when the overlay is destroyed.
 pub fn reset_embedded_settings_state() {
-    let mut state = SETTINGS_WINDOW_STATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if state.window.is_some() {
-        return;
+    let (delegate_ptr, handler_ptr) = {
+        let mut state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if state.window.is_some() {
+            return;
+        }
+        let delegate_ptr = state.window_delegate.take();
+        let handler_ptr = state.action_handler.take();
+        state.root_view = None;
+        state.config_cache = None;
+        clear_settings_ui_state(&mut state);
+        (delegate_ptr, handler_ptr)
+    };
+
+    unsafe {
+        if let Some(ptr) = delegate_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
+        if let Some(ptr) = handler_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
     }
-    state.root_view = None;
-    state.window_delegate = None;
-    state.config_cache = None;
-    clear_settings_ui_state(&mut state);
 }
 
 fn update_step_status(index: usize, text: &str) {
