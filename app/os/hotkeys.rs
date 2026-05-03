@@ -340,10 +340,6 @@ impl HotkeyPhysicalKey {
     fn is_ctrl(self) -> bool {
         matches!(self, Self::LeftControl | Self::RightControl)
     }
-
-    fn is_fn(self) -> bool {
-        matches!(self, Self::Fn)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1125,6 +1121,11 @@ mod macos {
     }
 
     /// CGEventTap callback - thin adapter from CoreGraphics events to HotkeyDetector input.
+    ///
+    /// Note: the tap is created with `K_CG_EVENT_TAP_OPTION_LISTEN_ONLY`
+    /// (see `run_event_tap`), so CoreGraphics ignores our return value and
+    /// we cannot suppress events here. If real Fn-emoji-picker suppression
+    /// is ever needed, the tap shape must change to an active tap first.
     extern "C" fn event_callback(
         _proxy: CGEventTapProxy,
         event_type: CGEventType,
@@ -1147,8 +1148,8 @@ mod macos {
         let now = Instant::now();
         let runtime_config = get_hotkey_runtime_config();
 
-        let (input, swallow_fn_event) = match event_type {
-            K_CG_EVENT_KEY_DOWN => (HotkeyDetectorInput::KeyDown { now, modifiers }, false),
+        let input = match event_type {
+            K_CG_EVENT_KEY_DOWN => HotkeyDetectorInput::KeyDown { now, modifiers },
             K_CG_EVENT_FLAGS_CHANGED => {
                 let keycode =
                     unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
@@ -1165,26 +1166,17 @@ mod macos {
                     modifiers.fn_key
                 );
 
-                (
-                    HotkeyDetectorInput::FlagsChanged {
-                        now,
-                        key,
-                        modifiers,
-                    },
-                    runtime_config.mode_bindings.dictation == ShortcutBinding::HoldFn
-                        && key.is_fn(),
-                )
+                HotkeyDetectorInput::FlagsChanged {
+                    now,
+                    key,
+                    modifiers,
+                }
             }
             _ => return event,
         };
 
         if let Some(hotkey_event) = state.detector.feed(input, runtime_config) {
             let _ = state.tx.send(hotkey_event);
-        }
-
-        if swallow_fn_event {
-            // Swallow Fn events to avoid the system emoji picker.
-            return ptr::null_mut();
         }
 
         event
