@@ -144,6 +144,9 @@ async fn main() -> Result<()> {
 
     if env_bool("QUBE_DAEMON_USE_CLOUD_STT") {
         // Loop-only override: force cloud STT without changing app defaults.
+        // SAFETY: `set_var` is called at startup inside `main` before `tokio` spawns
+        // any worker threads. Single-threaded mutation of the process environment
+        // satisfies the soundness contract introduced in Rust 2024.
         unsafe {
             std::env::set_var("USE_LOCAL_STT", "0");
         }

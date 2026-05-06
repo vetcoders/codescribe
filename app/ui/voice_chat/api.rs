@@ -2688,6 +2688,11 @@ fn hide_voice_chat_overlay_impl() {
     };
 
     if let Some(window_ptr) = handles.window {
+        // SAFETY: `window_ptr` was obtained from `[NSWindow alloc] init...]`
+        // / `[cls new]` on the main thread and stored in `handles.window`
+        // while still retained. We are on the main thread (overlay teardown
+        // runs from the AppKit run loop) and the pointer has not yet been
+        // released.
         unsafe {
             let window = window_ptr as Id;
             crate::ui_helpers::animate_fade(window, 0.0, 0.15);
@@ -2701,6 +2706,10 @@ fn hide_voice_chat_overlay_impl() {
 
     // Balance the +1 retain count from `[cls new]` on each owned handle.
     // Subviews are owned by the window and released transitively.
+    // SAFETY: each pointer below was obtained from `[cls new]` (or equivalent
+    // alloc/init pair) on the main thread, retained at +1, and is still alive
+    // because `take_handles_and_clear_overlay_state` is the unique teardown
+    // site. Caller invariants guarantee single-threaded main-thread access.
     unsafe {
         if let Some(ptr) = handles.window_delegate {
             let _: () = msg_send![ptr as Id, release];

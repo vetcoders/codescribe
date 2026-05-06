@@ -270,6 +270,9 @@ fn acquire_onboarding_lock() -> bool {
 
     // Non-blocking exclusive advisory lock. If another process holds it,
     // `flock` returns -1 with errno EWOULDBLOCK and we bail out cleanly.
+    // SAFETY: `file.as_raw_fd()` is a valid borrowed fd for the lifetime of
+    // `file`, which outlives the `flock(2)` syscall. The flag bitmask is
+    // composed of libc-provided constants. No memory is read or written.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc != 0 {
         let err = std::io::Error::last_os_error();
@@ -319,6 +322,9 @@ fn release_onboarding_lock() {
     if let Some(file) = guard.take() {
         // Explicit unlock first; dropping the File closes the fd which would
         // release the lock anyway, but explicit `LOCK_UN` is cheap insurance.
+        // SAFETY: `file.as_raw_fd()` is a valid borrowed fd for the lifetime
+        // of `file`, which is held until the explicit `drop(file)` below.
+        // `LOCK_UN` is a single libc constant. No memory is read or written.
         let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
         drop(file);
     }

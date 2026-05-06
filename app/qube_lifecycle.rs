@@ -398,4 +398,62 @@ mod tests {
         assert!(!is_last_check_fresh("2026-04-21T02:40:00+00:00", now));
         assert!(!is_last_check_fresh("", now));
     }
+
+    #[test]
+    fn resolve_qube_daemon_executable_from_returns_none_when_nothing_resolves() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // Empty directory: no sibling, no PATH provided.
+        let current_exe = tmp.path().join("codescribe");
+        std::fs::write(&current_exe, "").expect("write fake current exe");
+        assert_eq!(
+            resolve_qube_daemon_executable_from(&current_exe, None),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_qube_daemon_executable_from_walks_path_when_no_sibling() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // No sibling: PATH lookup must find the binary.
+        let current_exe = tmp.path().join("nested/codescribe");
+        std::fs::create_dir_all(current_exe.parent().expect("parent")).expect("mkdir nested");
+        std::fs::write(&current_exe, "").expect("write fake current exe");
+
+        let path_dir = tmp.path().join("path-bin");
+        std::fs::create_dir_all(&path_dir).expect("mkdir path-bin");
+        let qube_in_path = path_dir.join("qube-daemon");
+        std::fs::write(&qube_in_path, "").expect("write fake daemon");
+
+        let path_env = std::ffi::OsString::from(path_dir.as_os_str());
+        let resolved = resolve_qube_daemon_executable_from(&current_exe, Some(&path_env));
+        assert_eq!(resolved, Some(qube_in_path));
+    }
+
+    #[test]
+    fn lifecycle_state_is_running_only_for_running_variant() {
+        assert!(
+            !QubeLifecycleState::Disabled.is_running(),
+            "Disabled state must not advertise running"
+        );
+        assert!(!QubeLifecycleState::Stopped.is_running());
+        assert!(
+            !QubeLifecycleState::MissingBinary {
+                attempted: PathBuf::from("/nope")
+            }
+            .is_running()
+        );
+        assert!(
+            !QubeLifecycleState::StartFailed {
+                message: "boom".into()
+            }
+            .is_running()
+        );
+        assert!(
+            QubeLifecycleState::Running {
+                pid: Some(1234),
+                owned: true
+            }
+            .is_running()
+        );
+    }
 }
