@@ -1628,19 +1628,27 @@ pub fn hide_transcription_overlay() {
     });
 }
 
-/// Closes a window by raw pointer (used for delayed close after animation)
+/// Closes a window by raw pointer (used for delayed close after animation).
+///
+/// Sends `release` after `close` because the shared shell policy sets
+/// `released_when_closed = false`, so AppKit no longer auto-releases the
+/// initial alloc/init retain. Without this the NSWindow itself would leak.
 fn close_window_by_ptr(window_ptr: usize) {
     unsafe {
-        window_close(window_ptr as Id);
+        let window = window_ptr as Id;
+        window_close(window);
+        let _: () = msg_send![window, release];
     }
 }
 
 fn hide_transcription_overlay_impl() {
-    // DEADLOCK PREVENTION: extract window_ptr and clear state under lock,
+    // DEADLOCK PREVENTION: extract handles and clear state under lock,
     // then drop lock before the animate_fade AppKit call.
-    let window_ptr = {
+    let (window_ptr, tracking_area_ptr, action_handler_ptr) = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let wp = state.window.take();
+        let tap = state.tracking_area.take();
+        let ahp = state.action_handler.take();
         state.header_label = None;
         state.text_scroll_view = None;
         state.text_view = None;
@@ -1652,16 +1660,14 @@ fn hide_transcription_overlay_impl() {
         state.save_button = None;
         state.commit_button = None;
         state.progress_indicator = None;
-        state.tracking_area = None;
         state.decision_mode = false;
         state.hover_active = false;
-        state.action_handler = None;
         state.action_contract_mode = TranscriptionActionContractMode::Raw;
         state.last_applied_height = OVERLAY_WINDOW_MIN_HEIGHT;
         state.last_layout_resize_at = Instant::now();
         state.pending_layout_resize = false;
         // Note: accumulated_text is NOT cleared here - it's needed for clipboard copy
-        wp
+        (wp, tap, ahp)
     }; // Lock dropped.
 
     if let Some(window_ptr) = window_ptr {
@@ -1672,7 +1678,28 @@ fn hide_transcription_overlay_impl() {
             animate_fade(window, 0.0, 0.15);
         }
 
-        // Close window after brief delay for animation
+        // Release the tracking area and the action target before the window
+        // tears down. Detach the tracking area from the content view first so
+        // no further mouse events can fire on a freed pointer. The content
+        // view itself is owned by the window and will be released when the
+        // delayed close runs.
+        unsafe {
+            if let Some(ta_ptr) = tracking_area_ptr {
+                let ta = ta_ptr as Id;
+                let content_view: Id = msg_send![window, contentView];
+                if !content_view.is_null() {
+                    let _: () = msg_send![content_view, removeTrackingArea: ta];
+                }
+                let _: () = msg_send![ta, release];
+            }
+            if let Some(ah_ptr) = action_handler_ptr {
+                let _: () = msg_send![ah_ptr as Id, release];
+            }
+        }
+
+        // Close window after brief delay for animation. `close_window_by_ptr`
+        // sends `release` after `close` to balance the alloc/init retain
+        // (released_when_closed = false in the shared shell policy).
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
             Queue::main().exec_async(move || {
@@ -1783,6 +1810,10 @@ mod tests {
     }
 
     fn reset_overlay_state_for_test() {
+        // Test fixture: pointers may be invalid (tests don't always wire a
+        // real AppKit window), so we intentionally do NOT send `release` for
+        // window / tracking_area / action_handler here. Production teardown
+        // lives in `hide_transcription_overlay_impl` + `close_window_by_ptr`.
         AUTO_HIDE_PENDING.store(false, Ordering::SeqCst);
         AUTO_HIDE_GENERATION.store(0, Ordering::SeqCst);
 

@@ -166,7 +166,11 @@ fn show_voice_chat_overlay_impl() {
             return;
         };
 
-        let (raw_x, raw_y) = match Config::load().overlay_position_mode {
+        // Single Config::load(): both arms need it, and `Config::load` walks
+        // the filesystem (env + settings.json). Hoisting trims a redundant
+        // disk read per overlay open.
+        let config = Config::load();
+        let (raw_x, raw_y) = match config.overlay_position_mode {
             OverlayPositionMode::SnappedTopRight => {
                 let right_x = visible_frame.origin.x + visible_frame.size.width;
                 let top_y = visible_frame.origin.y + visible_frame.size.height;
@@ -180,7 +184,6 @@ fn show_voice_chat_overlay_impl() {
                 let top_y = visible_frame.origin.y + visible_frame.size.height;
                 let def_x = right_x - window_width - margin;
                 let def_y = top_y - window_height - margin;
-                let config = Config::load();
                 (
                     config.overlay_custom_x.unwrap_or(def_x),
                     config.overlay_custom_y.unwrap_or(def_y),

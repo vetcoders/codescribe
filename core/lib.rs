@@ -44,6 +44,7 @@ pub mod config;
 pub mod connectors;
 pub mod conversation;
 pub mod demux;
+pub mod embedded;
 pub mod embedder;
 mod hf_cache;
 pub mod ipc;

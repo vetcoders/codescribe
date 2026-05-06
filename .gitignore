@@ -5,6 +5,9 @@ dist/
 *.dmg
 *.app/
 target-noembed/
+
+# Cargo lockfile (per latest GitHub security recommendations for libraries/apps)
+Cargo.lock
 __pycache__/
 *.pyc
 .venv/

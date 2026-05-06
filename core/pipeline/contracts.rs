@@ -1681,4 +1681,35 @@ mod tests {
             assert_eq!(restored, expected, "legacy token {json}");
         }
     }
+
+    #[test]
+    fn transcription_verdict_from_parts_roundtrip() {
+        let verdict = TranscriptionVerdict::from_parts(
+            "smoke text".to_string(),
+            RawTranscript {
+                text: "smoke text".to_string(),
+                segments: vec![TranscriptSegment {
+                    text: "smoke text".to_string(),
+                    start_ts: 0.0,
+                    end_ts: 1.5,
+                }],
+                avg_logprob: Some(-0.4),
+                compression_ratio: Some(1.1),
+                quality_gate_dropped: false,
+            },
+            None,
+            TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
+            None,
+        );
+        let json = serde_json::to_string(&verdict).expect("serialize");
+        let restored: TranscriptionVerdict = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.text, verdict.text);
+        assert_eq!(restored.raw.text, verdict.raw.text);
+        assert_eq!(restored.source, verdict.source);
+        assert_eq!(restored.engine, verdict.engine);
+        assert_eq!(restored.confidence_flags, verdict.confidence_flags);
+        assert!(restored.vad.is_none());
+        assert!(restored.final_pass.is_none());
+    }
 }

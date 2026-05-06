@@ -807,7 +807,10 @@ fn create_typed_glass_effect_view(frame: CGRect, material: NSVisualEffectMateria
     );
     let view = NSGlassEffectView::initWithFrame(mtm.alloc(), frame);
     view.setStyle(glass_effect_style_for_material(material));
-    let view: Id = Retained::into_raw(view).cast::<Object>();
+    // Hand the +1 retain to the autorelease pool so the parent's `addSubview:`
+    // (which adds its own retain) becomes the sole owner. Without this, the
+    // initial alloc/init retain leaked one NSGlassEffectView per call.
+    let view: Id = Retained::autorelease_return(view).cast::<Object>();
     unsafe {
         let _: () = msg_send![view, setWantsLayer: true];
         let supports_corner_radius: bool =
@@ -1589,6 +1592,10 @@ pub unsafe fn window_show(window: Id) {
 /// # Safety
 /// `window` must be a valid `NSWindow` instance.
 pub unsafe fn present_shared_shell_panel(window: Id) {
+    // SAFETY: per the function contract, `window` is a valid `NSWindow`
+    // instance. `NSApplication.sharedApplication` returns a singleton retained
+    // by the runtime. Caller MUST be on the main thread; `msg_send!` is only
+    // valid for AppKit objects from the main thread.
     unsafe {
         if let Some(ns_app) = Class::get("NSApplication") {
             let shared_app: Id = msg_send![ns_app, sharedApplication];
@@ -1656,6 +1663,11 @@ pub struct SharedShellPanelPolicy {
 
 /// Visible frame for the main screen, if AppKit can provide one.
 pub fn main_screen_visible_frame() -> Option<CGRect> {
+    // SAFETY: `Class::get("NSScreen")` returns `None` if the runtime class is
+    // not registered (e.g. headless test). When present, `+[NSScreen mainScreen]`
+    // is a documented Foundation API returning either nil or a singleton owned
+    // by AppKit. Must be called from the main thread; this helper is invoked
+    // exclusively by AppKit-side code paths that already hold the main thread.
     unsafe {
         let ns_screen = Class::get("NSScreen")?;
         let screen: Id = msg_send![ns_screen, mainScreen];
@@ -1739,6 +1751,10 @@ pub fn agent_chat_shell_frame(
 /// # Safety
 /// `window` must be a valid initialized `NSWindow` instance.
 pub unsafe fn apply_shared_shell_panel_policy(window: Id, policy: &SharedShellPanelPolicy) {
+    // SAFETY: per the function contract, `window` is a valid initialized
+    // `NSWindow`. `policy` is a Rust borrow held for the entire call. Each
+    // `msg_send!` setter mutates AppKit-internal state; this MUST run on the
+    // main thread (AppKit affinity).
     unsafe {
         let title_visibility = if policy.hides_title { 1_isize } else { 0_isize };
         let _: () = msg_send![window, setTitleVisibility: title_visibility];

@@ -82,9 +82,6 @@ deunicode = "1.6"
 cap-std = "3"
 security-framework = "3"
 
-# OpenAI Harmony format for /v1/responses API
-openai-harmony = "0.0.8"
-
 [dev-dependencies]
 tempfile = "3"
 mockito = "1"

@@ -876,4 +876,40 @@ mod tests {
         let error = anyhow::anyhow!("status 413: Payload Too Large");
         assert!(!is_retryable_error(&error));
     }
+
+    #[test]
+    fn cloud_transcription_verdict_serde_roundtrip() {
+        let verdict = CloudTranscriptionVerdict::new(
+            "Hello cloud".to_string(),
+            Some(187),
+            Some("whisper-large-v3".to_string()),
+        );
+        let json = serde_json::to_string(&verdict).expect("serialize verdict");
+        let restored: CloudTranscriptionVerdict =
+            serde_json::from_str(&json).expect("deserialize verdict");
+        assert_eq!(restored, verdict);
+        assert_eq!(restored.text, "Hello cloud");
+        assert_eq!(restored.source, TranscriptionSource::Cloud);
+        assert_eq!(restored.latency_ms, Some(187));
+        assert_eq!(restored.model_name, Some("whisper-large-v3".to_string()));
+        assert!(restored.confidence_flags.is_empty());
+    }
+
+    #[test]
+    fn cloud_transcription_verdict_omits_empty_optional_fields_in_json() {
+        let verdict = CloudTranscriptionVerdict::new("Just text".to_string(), None, None);
+        let json = serde_json::to_string(&verdict).expect("serialize");
+        assert!(
+            !json.contains("latency_ms"),
+            "None latency_ms must be omitted (got {json})"
+        );
+        assert!(
+            !json.contains("model_name"),
+            "None model_name must be omitted (got {json})"
+        );
+        assert!(
+            !json.contains("confidence_flags"),
+            "empty confidence_flags must be omitted (got {json})"
+        );
+    }
 }

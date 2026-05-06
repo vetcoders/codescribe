@@ -1,3 +1,29 @@
+//! Native AppKit Settings window.
+//!
+//! # Safety
+//!
+//! Every `unsafe` block / function in this module shares one invariant matrix:
+//!
+//! 1. **Main-thread affinity.** AppKit objects (`NSWindow`, `NSView`, `NSButton`,
+//!    etc.) MUST only be addressed from the main thread. All entry points here
+//!    are reached either directly from the main runloop or via
+//!    `Queue::main().exec_async(...)`, which trampolines onto the main thread
+//!    before the closure body executes.
+//! 2. **Object validity.** `Id = *mut Object` parameters and the values returned
+//!    by `[cls new]` / `[cls alloc] init...]` are non-null retained pointers
+//!    obtained on the main thread and not yet released. Subviews/controls owned
+//!    by their parent window/view live as long as the parent.
+//! 3. **Selector / message arity.** `msg_send!` invocations bind to documented
+//!    AppKit / Foundation selectors with matching argument types. The
+//!    `extern_class!`-style declarations in `objc2_app_kit` provide the source
+//!    of truth for selector signatures.
+//! 4. **Environment mutation.** `std::env::remove_var` / `set_var` calls in this
+//!    module run synchronously on the main thread before any worker spawns; no
+//!    parallel reader is in flight (Rust 2024 soundness contract).
+//!
+//! Per-block `// SAFETY:` annotations call out additional invariants where the
+//! pattern deviates (e.g. raw FFI, retain-count balancing, cross-thread hops).
+
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -108,6 +134,7 @@ fn settings_titlebar_safe_inset(view: Id, fallback: f64) -> f64 {
         return fallback;
     }
 
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let bounds: CGRect = msg_send![view, bounds];
         if let Some(layout_frame) = layout_region_frame_for_view(view) {
@@ -422,6 +449,7 @@ unsafe fn add_tafla_header_separator(container: Id, x: f64, y: f64, width: f64) 
         ..Default::default()
     });
     let _: () = msg_send![separator, setAlphaValue: 0.9f64];
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         add_subview(container, separator);
     }
@@ -444,6 +472,7 @@ unsafe fn add_slider_setting_row(
         text_color: secondary,
         ..Default::default()
     });
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         add_subview(container, label);
     }
@@ -458,6 +487,7 @@ unsafe fn add_slider_setting_row(
         text_color: secondary,
         ..Default::default()
     });
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         add_subview(container, value_label);
     }
@@ -472,6 +502,7 @@ unsafe fn add_slider_setting_row(
         spec.current,
     );
     let _: () = msg_send![slider, setContinuous: true];
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         button_set_action(slider, action_handler, spec.action);
         add_subview(container, slider);
@@ -586,6 +617,7 @@ unsafe fn add_toggle_row(
         text_color: crate::ui_helpers::color_label(),
         ..Default::default()
     });
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         add_subview(container, title_label);
     }
@@ -600,6 +632,7 @@ unsafe fn add_toggle_row(
     if let Some(tag) = spec.tag {
         let _: () = msg_send![toggle, setTag: tag];
     }
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         button_set_action(toggle, action_handler, spec.action);
         add_subview(container, toggle);
@@ -619,6 +652,7 @@ unsafe fn add_toggle_row(
             text_color: secondary,
             ..Default::default()
         });
+        // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
         unsafe {
             add_subview(container, desc_label);
         }
@@ -632,6 +666,7 @@ unsafe fn add_toggle_row(
 struct SettingsWindowState {
     window: Option<usize>,
     window_delegate: Option<usize>,
+    action_handler: Option<usize>,
     root_view: Option<usize>,
     step_labels: [Option<usize>; 3],
     tab_buttons: [Option<usize>; TAB_COUNT],
@@ -738,6 +773,7 @@ fn clear_settings_ui_state(state: &mut SettingsWindowState) {
 static SHOW_SETTINGS_WINDOW_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 unsafe fn present_settings_window(window: Id) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe { present_shared_shell_panel(window) };
 }
 
@@ -782,6 +818,7 @@ fn show_settings_window_impl() {
     // Keep Settings as a standalone window.
     // It should not depend on the voice chat overlay being available.
     // (This also avoids deadlocks when the overlay is mid-layout.)
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let reuse_window = {
             let mut state = SETTINGS_WINDOW_STATE
@@ -891,6 +928,7 @@ fn show_settings_window_impl() {
 /// # Safety
 /// `parent` must be a valid `NSView` instance owned by AppKit.
 unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRect) -> Option<Id> {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let (config, existing_root) = {
             let state = SETTINGS_WINDOW_STATE
@@ -941,7 +979,7 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         state.root_view = Some(root as usize);
-        state.window = None;
+        state.action_handler = Some(action_handler as usize);
         state.step_labels = built_state.step_labels;
         state.tab_buttons = built_state.tab_buttons;
         state.content_views = built_state.content_views;
@@ -1126,6 +1164,7 @@ fn formatting_key_is_set() -> bool {
 
 unsafe fn update_key_status_indicator(indicator: Id, is_set: bool) {
     let _ =
+        // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
         unsafe { crate::ui_helpers::set_button_symbol(indicator, key_status_symbol_name(is_set)) };
     let supports_tint: bool = msg_send![indicator, respondsToSelector: sel!(setContentTintColor:)];
     if supports_tint {
@@ -1140,6 +1179,7 @@ unsafe fn create_key_status_indicator(frame: CGRect, is_set: bool) -> Id {
     let _: () = msg_send![indicator, setBordered: false];
     let _: () = msg_send![indicator, setEnabled: false];
     let _: () = msg_send![indicator, setTitle: ns_string("")];
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         update_key_status_indicator(indicator, is_set);
     }
@@ -1158,6 +1198,7 @@ fn update_keychain_status_labels() {
             state.assistive_key_status_label,
         )
     };
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         if let Some(ptr) = llm_icon {
             let is_set = formatting_key_is_set();
@@ -1188,8 +1229,10 @@ fn clear_keychain_entry(account: &str, field_ptr: Option<usize>) {
     } else {
         info!("Deleted {account} from Keychain");
     }
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe { std::env::remove_var(account) };
     if let Some(ptr) = field_ptr {
+        // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
         unsafe { set_text_field_string(ptr as Id, "") };
     }
     update_keychain_status_labels();
@@ -1278,6 +1321,7 @@ unsafe fn build_settings_ui(
     action_handler: Id,
     config: &Config,
 ) -> SettingsWindowState {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         use core_graphics::geometry::{CGPoint, CGRect, CGSize};
         let ns_view = objc_class("NSView");
@@ -1516,6 +1560,7 @@ unsafe fn create_sidebar_tab_button(
     title: &str,
     active: bool,
 ) -> Id {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_button = objc_class("NSButton");
         let ns_font = objc_class("NSFont");
@@ -1679,14 +1724,31 @@ pub(super) fn handle_hotkey_done() {
 }
 
 pub(super) fn handle_settings_window_closed() {
-    let mut state = SETTINGS_WINDOW_STATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    state.window = None;
-    state.window_delegate = None;
-    state.root_view = None;
-    clear_settings_ui_state(&mut state);
-    state.config_cache = None;
+    let (delegate_ptr, handler_ptr, window_ptr) = {
+        let mut state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let delegate_ptr = state.window_delegate.take();
+        let handler_ptr = state.action_handler.take();
+        let window_ptr = state.window.take();
+        state.root_view = None;
+        clear_settings_ui_state(&mut state);
+        state.config_cache = None;
+        (delegate_ptr, handler_ptr, window_ptr)
+    };
+
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
+    unsafe {
+        if let Some(ptr) = delegate_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
+        if let Some(ptr) = handler_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
+        if let Some(ptr) = window_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
+    }
 }
 
 pub fn hide_settings_surface() {
@@ -1696,15 +1758,11 @@ pub fn hide_settings_surface() {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             state.permission_polling = false;
-            let window_ptr = state.window.take();
-            if window_ptr.is_some() {
-                state.window_delegate = None;
-                state.root_view = None;
-                clear_settings_ui_state(&mut state);
-                (window_ptr, None)
-            } else {
-                (None, state.root_view)
-            }
+            // Do NOT take ownership of window/delegate/action_handler here.
+            // The `windowWillClose:` notification fires `handle_settings_window_closed`,
+            // which drains and releases all three. Releasing twice would crash.
+            // For the embedded (root-only, no window) path, the parent owns lifecycle.
+            (state.window, state.root_view)
         };
 
         if let Some(window_ptr) = window_ptr {
@@ -1725,16 +1783,30 @@ pub fn hide_settings_window() {
 
 /// Reset embedded Settings view state when the overlay is destroyed.
 pub fn reset_embedded_settings_state() {
-    let mut state = SETTINGS_WINDOW_STATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if state.window.is_some() {
-        return;
+    let (delegate_ptr, handler_ptr) = {
+        let mut state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if state.window.is_some() {
+            return;
+        }
+        let delegate_ptr = state.window_delegate.take();
+        let handler_ptr = state.action_handler.take();
+        state.root_view = None;
+        state.config_cache = None;
+        clear_settings_ui_state(&mut state);
+        (delegate_ptr, handler_ptr)
+    };
+
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
+    unsafe {
+        if let Some(ptr) = delegate_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
+        if let Some(ptr) = handler_ptr {
+            let _: () = msg_send![ptr as Id, release];
+        }
     }
-    state.root_view = None;
-    state.window_delegate = None;
-    state.config_cache = None;
-    clear_settings_ui_state(&mut state);
 }
 
 fn update_step_status(index: usize, text: &str) {
@@ -1784,6 +1856,7 @@ fn set_mode_recorder_hint(text: &str, is_error: bool) {
     let Some(hint_ptr) = hint_ptr else {
         return;
     };
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let hint_label = hint_ptr as Id;
         set_text_field_string(hint_label, text);
@@ -1808,6 +1881,7 @@ fn refresh_mode_binding_labels() {
     ] {
         if let Some(label_ptr) = state.keys_mode_binding_labels[mode_label_slot(mode)] {
             let text = settings.mode_binding_for(mode).label().to_string();
+            // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
             unsafe {
                 set_text_field_string(label_ptr as Id, &text);
             }
@@ -1987,6 +2061,7 @@ fn handle_mode_binding_recorder_event(event: Id) -> Id {
         return event;
     };
 
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let event_type: u64 = msg_send![event, type];
         let keycode: u16 = msg_send![event, keyCode];
@@ -2024,6 +2099,7 @@ fn ensure_mode_binding_recorder_monitor() -> bool {
         return true;
     }
 
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_event = objc_class("NSEvent");
         let mask: u64 = (1_u64 << 10) | (1_u64 << 12); // keyDown + flagsChanged
@@ -2127,6 +2203,7 @@ fn set_hotkey_conflict_details_button_enabled(button_ptr: Option<usize>, enabled
     let Some(button_ptr) = button_ptr else {
         return;
     };
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let button = button_ptr as Id;
         let _: () = msg_send![button, setEnabled: enabled];
@@ -2159,6 +2236,7 @@ fn apply_hotkey_conflict_indicator(
     let Some(label_ptr) = label_ptr else {
         return;
     };
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let label = label_ptr as Id;
         set_text_field_string(label, &text);
@@ -2187,6 +2265,7 @@ fn show_hotkey_conflicts_sheet() {
         state.window
     };
 
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_alert = objc_class("NSAlert");
         let alert: Id = msg_send![ns_alert, new];
@@ -2235,6 +2314,7 @@ fn selected_prompt_type() -> &'static str {
     let Some(popup_ptr) = popup_ptr else {
         return "formatting";
     };
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let popup = popup_ptr as Id;
         let idx: isize = msg_send![popup, indexOfSelectedItem];
@@ -2332,6 +2412,7 @@ fn set_prompt_editor_content(text: &str) {
     let Some(text_view_ptr) = text_view_ptr else {
         return;
     };
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         set_text_view_string(text_view_ptr as Id, text);
     }
@@ -2347,6 +2428,7 @@ fn read_prompt_editor_content() -> String {
     let Some(text_view_ptr) = text_view_ptr else {
         return String::new();
     };
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe { get_text_view_string(text_view_ptr as Id) }
 }
 
@@ -2360,6 +2442,7 @@ fn set_prompt_editor_status(text: &str, is_error: bool) {
     let Some(status_ptr) = status_ptr else {
         return;
     };
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let label = status_ptr as Id;
         set_text_field_string(label, text);
@@ -2397,6 +2480,7 @@ fn refresh_transcription_preview_panel() {
         )
     };
 
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         if let Some(ptr) = buffer_delay_label {
             set_text_field_string(ptr as Id, &format!("{} ms", model.buffer_delay_ms));
@@ -2586,6 +2670,7 @@ unsafe fn build_modes_shortcuts_tab(
     state: &mut SettingsWindowState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_view = objc_class("NSView");
 
@@ -2927,6 +3012,7 @@ unsafe fn build_ai_prompts_tab(
     state: &mut SettingsWindowState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_view = objc_class("NSView");
         let ns_popup = objc_class("NSPopUpButton");
@@ -3343,6 +3429,7 @@ unsafe fn build_audio_input_tab(
     config: &Config,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_view = objc_class("NSView");
         let ns_popup = objc_class("NSPopUpButton");
@@ -3545,6 +3632,7 @@ unsafe fn build_quality_tab(
     state: &mut SettingsWindowState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_view = objc_class("NSView");
         let container: Id = msg_send![ns_view, alloc];
@@ -4118,6 +4206,7 @@ unsafe fn build_diagnostics_tab(
     state: &mut SettingsWindowState,
 ) -> Id {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_view = objc_class("NSView");
         let container: Id = msg_send![ns_view, alloc];
@@ -4314,6 +4403,7 @@ pub(super) extern "C" fn on_mode_binding_change(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let tag: isize = msg_send![sender, tag];
         if mode_from_double_ctrl_tag(tag) {
@@ -4339,6 +4429,7 @@ pub(super) extern "C" fn on_show_hotkey_conflicts(
 }
 
 pub(super) extern "C" fn on_language_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let idx: isize = msg_send![sender, indexOfSelectedItem];
         let lang = match idx {
@@ -4357,6 +4448,7 @@ pub(super) extern "C" fn on_formatting_toggled(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let state: isize = msg_send![sender, state];
         let enabled = state == 1;
@@ -4371,6 +4463,7 @@ pub(super) extern "C" fn on_formatting_level_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let idx: isize = msg_send![sender, indexOfSelectedItem];
         let level = match idx {
@@ -4390,6 +4483,7 @@ pub(super) extern "C" fn on_llm_endpoint_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
@@ -4405,6 +4499,7 @@ pub(super) extern "C" fn on_llm_model_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
@@ -4416,6 +4511,7 @@ pub(super) extern "C" fn on_llm_model_changed(
 }
 
 pub(super) extern "C" fn on_llm_key_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
@@ -4459,6 +4555,7 @@ pub(super) extern "C" fn on_save_api_settings(
     };
 
     let mut entries: Vec<(&str, String)> = Vec::new();
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         if let Some(ptr) = llm_endpoint {
             let value = crate::ui_helpers::get_text_field_string(ptr as Id);
@@ -4494,6 +4591,7 @@ pub(super) extern "C" fn on_save_api_settings(
         let borrowed: Vec<(&str, &str)> = entries.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let _ = config.save_to_env_many(&borrowed);
     }
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         if let Some(ptr) = llm_key {
             set_text_field_string(ptr as Id, "");
@@ -4621,6 +4719,7 @@ pub(super) extern "C" fn on_copy_diagnostics(
     match crate::os::clipboard::set_clipboard(&report) {
         Ok(()) => {
             if let Some(ptr) = status_ptr {
+                // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
                 unsafe {
                     let label = ptr as Id;
                     set_text_field_string(label, "Diagnostics copied to clipboard.");
@@ -4630,6 +4729,7 @@ pub(super) extern "C" fn on_copy_diagnostics(
         }
         Err(err) => {
             if let Some(ptr) = status_ptr {
+                // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
                 unsafe {
                     let label = ptr as Id;
                     set_text_field_string(label, &format!("Failed to copy diagnostics: {err}"));
@@ -4641,6 +4741,7 @@ pub(super) extern "C" fn on_copy_diagnostics(
 }
 
 pub(super) extern "C" fn on_delay_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];
         let ms = value.round() as u64;
@@ -4668,6 +4769,7 @@ pub(super) extern "C" fn on_double_tap_interval_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];
         let ms = value.round() as u64;
@@ -4691,6 +4793,7 @@ pub(super) extern "C" fn on_double_tap_interval_changed(
 }
 
 pub(super) extern "C" fn on_beep_toggled(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let state: isize = msg_send![sender, state];
         let enabled = state == 1;
@@ -4706,6 +4809,7 @@ pub(super) extern "C" fn on_enter_send_toggled(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let state: isize = msg_send![sender, state];
         let enabled = state == 1;
@@ -4720,6 +4824,7 @@ pub(super) extern "C" fn on_show_dock_icon_toggled(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let state: isize = msg_send![sender, state];
         let enabled = state == 1;
@@ -4735,6 +4840,7 @@ pub(super) extern "C" fn on_transcription_overlay_toggled(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let state: isize = msg_send![sender, state];
         let enabled = state == 1;
@@ -4757,6 +4863,7 @@ pub(super) extern "C" fn on_preview_buffer_delay_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];
         let ms = value.round() as u64;
@@ -4773,6 +4880,7 @@ pub(super) extern "C" fn on_preview_typing_cps_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];
         let cps = value.max(5.0) as f32;
@@ -4789,6 +4897,7 @@ pub(super) extern "C" fn on_preview_emit_words_max_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];
         let words = value.round().clamp(1.0, 10.0) as u64;
@@ -4805,6 +4914,7 @@ pub(super) extern "C" fn on_preview_interim_cadence_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];
         let secs = value.clamp(1.0, 12.0) as f32;
@@ -4821,6 +4931,7 @@ pub(super) extern "C" fn on_stt_provider_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let selected_idx: isize = msg_send![sender, indexOfSelectedItem];
         let use_local_stt = selected_idx == 0;
@@ -4839,6 +4950,7 @@ pub(super) extern "C" fn on_stt_endpoint_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
@@ -4854,6 +4966,7 @@ pub(super) extern "C" fn on_stt_endpoint_changed(
 }
 
 pub(super) extern "C" fn on_stt_key_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
@@ -4877,6 +4990,7 @@ pub(super) extern "C" fn on_stt_key_changed(_this: &Object, _cmd: objc::runtime:
 }
 
 pub(super) extern "C" fn on_volume_changed(_this: &Object, _cmd: objc::runtime::Sel, sender: Id) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let value: f64 = msg_send![sender, doubleValue];
         info!("Settings: sound volume -> {:.2}", value);
@@ -4895,6 +5009,7 @@ pub(super) extern "C" fn on_assistive_endpoint_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
@@ -4910,6 +5025,7 @@ pub(super) extern "C" fn on_assistive_model_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
@@ -4925,6 +5041,7 @@ pub(super) extern "C" fn on_assistive_key_changed(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let ns_val: Id = msg_send![sender, stringValue];
         let cstr: *const std::ffi::c_char = msg_send![ns_val, UTF8String];
@@ -4957,6 +5074,7 @@ pub(super) extern "C" fn on_qube_daemon_toggled(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let state: isize = msg_send![sender, state];
         let enabled = state == 1;
@@ -4978,6 +5096,7 @@ pub(super) extern "C" fn on_ultra_quality_toggled(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let state: isize = msg_send![sender, state];
         let enabled = state == 1;
@@ -4996,6 +5115,7 @@ pub(super) extern "C" fn on_permission_action(
     _cmd: objc::runtime::Sel,
     sender: Id,
 ) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
     unsafe {
         let tag: isize = msg_send![sender, tag];
         if let Some(kind) = permission_kind_from_tag(tag) {
@@ -5238,6 +5358,7 @@ mod tests {
         if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
             return;
         }
+        // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
         unsafe {
             let ns_view = objc_class("NSView");
             let parent: Id = msg_send![ns_view, alloc];

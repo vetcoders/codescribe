@@ -246,31 +246,51 @@ fn main() {
         }
         println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
 
-        // Summary (single line for build logs)
-        let whisper_summary = if whisper_embedded {
-            "embedded_default"
+        // Build-context detection: qube-* binaries are built into target-noembed/
+        // (see Makefile `release-qube`) and never use Whisper/Embedder at runtime.
+        // CODESCRIBE_NO_EMBED=1 has two distinct meanings:
+        //   (a) operator install via `make install-no-embed` (codescribe binary, runtime load from HF cache)
+        //   (b) build infra signal that this binary doesn't need STT models (qube-daemon, qube-report)
+        // OUT_DIR is the only signal that disambiguates them.
+        let qube_context = out_dir.contains("target-noembed");
+        let context_label = if qube_context {
+            "qube-tools"
         } else if no_embed {
-            "runtime_fallback_no_embed"
+            "codescribe (no-embed dev install)"
         } else {
-            "runtime_fallback_missing_model"
+            "codescribe"
         };
-        let embedder_summary = if !no_embed && embedder_model_exists {
+
+        let whisper_summary = if whisper_embedded {
+            "embedded"
+        } else if qube_context {
+            "not_used"
+        } else if no_embed {
+            "runtime_load_from_cache"
+        } else {
+            "missing_at_build_time"
+        };
+        let embedder_summary = if qube_context {
+            "not_used"
+        } else if !no_embed && embedder_model_exists {
             "embedded"
         } else if no_embed {
-            "disabled"
+            "runtime_load_from_cache"
         } else {
-            "missing"
+            "missing_at_build_time"
         };
-        let tts_summary = if embed_tts && tts_model_exists && mimi_weights_path.exists() {
+        let tts_summary = if qube_context {
+            "not_used"
+        } else if embed_tts && tts_model_exists && mimi_weights_path.exists() {
             "embedded"
         } else if embed_tts {
-            "missing"
+            "missing_at_build_time"
         } else {
             "disabled"
         };
         println!(
-            "cargo:warning=Embedding summary: Whisper={}; Silero=embedded; Embedder={}; TTS={}",
-            whisper_summary, embedder_summary, tts_summary
+            "cargo:warning=Embedded models for {}: Whisper={}; Silero=embedded; Embedder={}; TTS={}",
+            context_label, whisper_summary, embedder_summary, tts_summary
         );
     }
 }

@@ -85,33 +85,23 @@ struct RecorderVad {
 
 impl RecorderVad {
     fn new(sample_rate: u32) -> Option<Self> {
-        let model_path = vad::default_model_path();
-        if !model_path.exists() {
-            warn!(
-                "Silero VAD model not found at {} — auto-silence disabled",
-                model_path.display()
-            );
-            return None;
-        }
-
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(128);
         // 0.0 = no speech seen yet (the critical fix)
         let last_prob = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
         let writer = Arc::clone(&last_prob);
 
-        let config = vad::VadConfig::default();
         let handle = std::thread::Builder::new()
             .name("recorder-vad".into())
             .spawn(move || {
-                let mut acc_vad =
-                    match vad::AccumulatingVad::with_config(&model_path, config, sample_rate) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!("RecorderVad: Silero load failed: {e}");
-                            return;
-                        }
-                    };
-                info!("RecorderVad ready (sample_rate={sample_rate}Hz)");
+                // Embedded Silero VAD — zero I/O, never fails on fresh machines.
+                let mut acc_vad = match vad::AccumulatingVad::new(sample_rate) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("RecorderVad: Silero embedded load failed: {e}");
+                        return;
+                    }
+                };
+                info!("RecorderVad ready (sample_rate={sample_rate}Hz, embedded)");
                 for samples in rx {
                     let prob = acc_vad.feed(&samples);
                     writer.store(prob.to_bits(), Ordering::Release);
