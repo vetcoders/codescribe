@@ -96,7 +96,9 @@ pub struct SileroVad {
 }
 
 impl SileroVad {
-    /// Load Silero VAD model from path (legacy: dev/test override only).
+    /// Legacy path-based loader. Embedded path is canonical via [`Self::new_embedded`].
+    /// Kept for dev/test overrides where a custom model file is required.
+    #[doc(hidden)]
     pub fn new(model_path: &Path, config: VadConfig) -> Result<Self> {
         info!("Loading Silero VAD model from: {}", model_path.display());
         let session = Session::builder()?
@@ -116,7 +118,7 @@ impl SileroVad {
     }
 
     /// Load Silero VAD model from embedded bytes (production path, zero I/O).
-    pub fn new_embedded(config: VadConfig) -> Result<Self> {
+    pub(crate) fn new_embedded(config: VadConfig) -> Result<Self> {
         info!(
             "Loading Silero VAD model from embedded bytes ({} bytes)",
             embedded::MODEL.len()
@@ -258,7 +260,9 @@ pub struct AccumulatingVad {
 }
 
 impl AccumulatingVad {
-    /// Create with explicit model path and config (legacy: dev/test override only).
+    /// Legacy path-based loader. Embedded path is canonical via [`Self::new`].
+    /// Kept for dev/test overrides where a custom model file is required.
+    #[doc(hidden)]
     pub fn with_config(model_path: &Path, config: VadConfig, sample_rate: u32) -> Result<Self> {
         let vad = SileroVad::new(model_path, config)?;
         let resampler = if sample_rate != VAD_SAMPLE_RATE {
@@ -275,7 +279,7 @@ impl AccumulatingVad {
     }
 
     /// Create using embedded model bytes and given config (production path).
-    pub fn with_config_embedded(config: VadConfig, sample_rate: u32) -> Result<Self> {
+    pub(crate) fn with_config_embedded(config: VadConfig, sample_rate: u32) -> Result<Self> {
         let vad = SileroVad::new_embedded(config)?;
         let resampler = if sample_rate != VAD_SAMPLE_RATE {
             Some(Resampler::new(sample_rate))
@@ -395,5 +399,23 @@ mod tests {
 
         // Should be same length
         assert_eq!(output.len(), input.len());
+    }
+
+    /// P0-02 regression guard: embedded VAD must load without any disk file present.
+    /// Production hot path is `AccumulatingVad::new(sample_rate)` — it MUST succeed
+    /// even when `~/.codescribe/models/silero_vad.onnx` does not exist on the system.
+    #[test]
+    fn embedded_vad_loads_without_disk_file() {
+        // Verify embedded blob is non-trivial (Silero VAD ONNX is ~2.3MB).
+        assert!(
+            embedded::MODEL.len() > 1_000_000,
+            "Silero VAD embedded blob must be >1MB, got {} bytes",
+            embedded::MODEL.len()
+        );
+
+        // Confirm AccumulatingVad::new succeeds via the embedded path,
+        // independent of any disk file at default_model_path().
+        let vad = AccumulatingVad::new(16000);
+        assert!(vad.is_ok(), "embedded VAD must load: {:?}", vad.err());
     }
 }

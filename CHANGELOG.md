@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-05-06
+
+> Minor release. Embedded VAD contract hardened (zero-IO production path), legacy path-based VAD API hidden, several deprecated transcription/quality surfaces removed. Includes onboarding TOCTOU fix and AppKit overlay teardown contract completion.
+
+### Breaking changes
+
+- **Removed deprecated transcription helpers** — `transcribe_long`, `transcribe_long_with_language`, and the `transcribe_file(&Path, Option<&str>) -> Result<String>` shape are gone. Callers must migrate to the typed `TranscriptionVerdict` surface.
+- **Removed `pub const DEFAULT_MODEL` from `core/stt/whisper/singleton.rs`** — re-exported from `core::config::models` instead. Update imports accordingly.
+- **Removed `QualityLoopConfig`, `QualityDaemonState`, and `mark_daemon_unavailable`** from the quality public surface. Replaced by the `qube_lifecycle` subsystem.
+- **Renamed quality daemon state type** — `read_daemon_state` and `write_daemon_state` now return `QubeDaemonState` instead of `QualityDaemonState`.
+- **Hidden legacy path-based VAD loaders** — `SileroVad::new(&Path, ...)` and `AccumulatingVad::with_config(&Path, ...)` are now `#[doc(hidden)]`. Embedded path is canonical via `AccumulatingVad::new(sample_rate)`. The path-based shape is retained only for dev/test overrides.
+
+### Added
+
+- **Embedded Silero VAD as production default** — `RecorderVad` now goes through `AccumulatingVad::new(sample_rate)` (embedded blob via `commit_from_memory`), eliminating the disk-path fallthrough that disabled auto-silence on fresh machines. Regression-locked by new unit test `embedded_vad_loads_without_disk_file`.
+- **`TranscriptionVerdict` typed truth surface** — replaces ad-hoc `Result<String>` shape across the transcription boundary; carries confidence flags and adjudication state explicitly.
+- **`qube_lifecycle` subsystem** — supersedes the removed `QualityLoopConfig`/`QualityDaemonState` surface with a coherent state machine for daemon lifecycle (start/stop/health probes).
+
+### Fixed
+
+- **TOCTOU lock in onboarding** — replaced check-then-create file lock with `flock(2)` to prevent racing first-run setups across simultaneously launched CodeScribe instances.
+- **NSGlassEffectView retain balance** — UI overlay now autoreleases the glass effect view to balance its explicit retain on construction; prevents a steady leak of glass overlays under heavy use on macOS 26+.
+- **ObjC release contract on overlay teardown** — completed the `release` pairing for all overlay subviews so teardown does not leak under ARC-incompatible call paths.
+
 ## [Unreleased]
 
 ### Fixed
