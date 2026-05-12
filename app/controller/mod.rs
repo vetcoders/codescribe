@@ -1804,7 +1804,7 @@ impl RecordingController {
                 self.start_toggle_recording(event.assistive).await?;
             }
             State::RecToggle => {
-                info!("Toggle pressed again; stopping recording");
+                info!("Toggle pressed; entering stop flow (state=REC_TOGGLE)");
                 self.assistive_loop_active.store(false, Ordering::SeqCst);
                 let toggle_assistive = *self.assistive_mode.read().await;
                 if !toggle_assistive && toggle_final_pass_enabled() {
@@ -1824,6 +1824,12 @@ impl RecordingController {
                 } else {
                     debug!("Toggle event ignored in REC_HOLD (force_raw=false)");
                 }
+            }
+            State::Busy => {
+                warn!(
+                    "Toggle pressed while previous stop is still processing (state=BUSY). \
+                     If recording badge persists, stop watchdog will force recovery within 45s."
+                );
             }
             _ => {
                 debug!("Toggle event ignored in state {}", current_state);
@@ -2943,6 +2949,30 @@ impl RecordingController {
             return Ok(());
         }
 
+        // Watchdog: full stop+adjudicate (recorder.stop + final-pass STT + post-process
+        // + paste) must complete within STOP_TIMEOUT. If it stalls — final-pass deadlock
+        // on Metal device, RwLock contention, recorder.stop blocked on cpal callback —
+        // force recovery to Idle so subsequent toggle presses register, badge clears,
+        // and tray reflects truth instead of showing Idle while recording is hung.
+        const STOP_TIMEOUT: Duration = Duration::from_secs(45);
+        match tokio::time::timeout(STOP_TIMEOUT, self.stop_toggle_and_adjudicate_inner()).await {
+            Ok(result) => result,
+            Err(_) => {
+                error!(
+                    "Toggle stop+adjudicate stalled >{}s — forcing recovery to Idle. \
+                     Recording session abandoned; future toggle presses will start fresh.",
+                    STOP_TIMEOUT.as_secs()
+                );
+                self.recover_from_stuck_stop().await;
+                Err(anyhow::anyhow!(
+                    "Toggle stop timeout after {}s; state forced to Idle",
+                    STOP_TIMEOUT.as_secs()
+                ))
+            }
+        }
+    }
+
+    async fn stop_toggle_and_adjudicate_inner(&self) -> Result<()> {
         let _guard = self.serial_lock.lock().await;
         if *self.state.read().await != State::RecToggle {
             return Ok(());
@@ -2990,6 +3020,33 @@ impl RecordingController {
             .await;
 
         result.map(|_| ())
+    }
+
+    /// Recovery path when stop_toggle_and_adjudicate exceeds STOP_TIMEOUT.
+    ///
+    /// Forces state to Idle and clears all toggle-related flags so subsequent
+    /// toggle presses register cleanly. Does NOT attempt to recover the recorder —
+    /// it may be in arbitrary state; a fresh `start_toggle_recording` reinitializes
+    /// through the normal path. UI surfaces (badge, voice-chat status, overlay)
+    /// are restored to Idle visuals so the user gets honest feedback that recording
+    /// is no longer alive.
+    async fn recover_from_stuck_stop(&self) {
+        warn!("Recovery: forcing controller to Idle after stuck stop");
+        self.set_state(State::Idle).await;
+        *self.assistive_mode.write().await = false;
+        *self.hold_mode.write().await = HoldMode::Raw;
+        *self.force_raw_mode.write().await = false;
+        *self.force_ai_mode.write().await = false;
+        *self.session_id.write().await = None;
+        self.assistive_loop_active.store(false, Ordering::SeqCst);
+        self.toggle_user_has_text.store(false, Ordering::SeqCst);
+        self.toggle_assistant_has_text
+            .store(false, Ordering::SeqCst);
+        self.start_transition_in_flight
+            .store(false, Ordering::SeqCst);
+        hide_hold_badge();
+        crate::ui::voice_chat::update_voice_chat_status("Ready");
+        crate::ui::overlay::hide_transcription_overlay();
     }
 
     pub async fn stop_recording_from_external_surface(&self) -> Result<()> {
