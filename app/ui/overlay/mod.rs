@@ -292,6 +292,15 @@ fn action_text_for_contract(state: &TranscriptionOverlayState) -> String {
     }
 }
 
+/// Returns the current action-contract text (Raw or AiFormat depending on
+/// `state.action_contract_mode`). Used by controller's `commit_segment` to
+/// read segment text for save without coupling button handlers to controller
+/// state. Returns empty string if overlay state lock is poisoned (recoverable).
+pub fn current_segment_text() -> String {
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    action_text_for_contract(&state)
+}
+
 fn display_text_for_state(state: &TranscriptionOverlayState) -> String {
     let text = if state.accumulated_text.trim().is_empty() {
         action_text_for_contract(state)
@@ -323,18 +332,16 @@ extern "C" fn on_copy_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     hide_transcription_overlay();
 }
 
-/// Handler: Augment transcript via explicit chat handoff.
+/// Handler: Augment transcript = save segment (implicit Commit) + open voice
+/// chat with handoff. Recording continues; the segment is clipped from the
+/// recorder buffer and routed through controller for save + LLM handoff
+/// (off-main-thread to avoid AppKit deadlock).
 extern "C" fn on_augment_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
-    let text = {
-        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        action_text_for_contract(&state)
-    };
+    let text = current_segment_text();
     if text.is_empty() {
         return;
     }
-    crate::ui::voice_chat::show_voice_chat_overlay();
-    crate::ui::voice_chat::show_agent_tab();
-    crate::ui::voice_chat::handoff_transcript_to_chat(&text);
+    crate::controller::request_segment_commit_and_augment();
     hide_transcription_overlay();
 }
 
@@ -343,9 +350,12 @@ extern "C" fn on_save_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     hide_transcription_overlay();
 }
 
-/// Handler: Commit recording (stop stream + enter decision mode)
+/// Handler: Commit segment = save WAV + transcript + Quick Notes WITHOUT
+/// stopping the recorder. Recording continues; buffer offset advances so the
+/// next segment starts from here. Overlay fades out.
 extern "C" fn on_commit_recording(_this: &Object, _cmd: Sel, _sender: Id) {
-    crate::controller::request_recording_commit();
+    crate::controller::request_segment_commit();
+    hide_transcription_overlay();
 }
 
 extern "C" fn on_mouse_entered(_this: &Object, _cmd: Sel, _sender: Id) {
