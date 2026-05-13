@@ -2701,22 +2701,38 @@ fn hide_voice_chat_overlay_impl() {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(200));
             dispatch::Queue::main().exec_async(move || {
-                unsafe {
+                debug!(
+                    "voice_chat teardown: closing NSWindow (ptr={:#x}) + delegates",
+                    window_ptr
+                );
+                // SAFETY: each pointer was obtained from `[cls new]` (or
+                // equivalent alloc/init pair) on the main thread, retained at
+                // +1, and is still alive because `take_handles_and_clear_overlay_state`
+                // is the unique teardown site. We are on the main thread (dispatch
+                // queue is main). The explicit autoreleasepool scope ensures
+                // autoreleased temporaries from AppKit's `windowWillClose` /
+                // CoreAnimation fade cleanup drain in-scope, before this closure
+                // exits — without it, pendingowe autoreleases survive into the
+                // next runloop tick's pool pop and can hit pointers freed by
+                // these same release calls, producing EXC_BAD_ACCESS in
+                // `objc_release` during `_CFAutoreleasePoolPop` (observed as
+                // SIGSEGV on macOS Tahoe beta, 2026-05-10 and 2026-05-13).
+                objc2::rc::autoreleasepool(|_pool| unsafe {
                     let window = window_ptr as Id;
+                    // Close window FIRST so AppKit dispatches `windowWillClose`
+                    // delegate callbacks while delegate + action handler are
+                    // still alive. Then release deps. The shared shell policy
+                    // sets `released_when_closed = false`, so `window_close`
+                    // does NOT balance the +1 retain — caller releases below.
                     crate::ui_helpers::window_close(window);
-
                     if let Some(ptr) = handles.window_delegate {
-                        let _: () = msg_send![ptr as Id, release];
+                        crate::ui_helpers::release_object(ptr as Id);
                     }
                     if let Some(ptr) = handles.action_handler {
-                        let _: () = msg_send![ptr as Id, release];
+                        crate::ui_helpers::release_object(ptr as Id);
                     }
-                    // The shared overlay shell sets `releasedWhenClosed = false`
-                    // (see `app/ui/shared/helpers.rs`), so `window_close` does NOT
-                    // balance the +1 retain from window construction. We must
-                    // `release` the window pointer ourselves below.
-                    let _: () = msg_send![window, release];
-                }
+                    crate::ui_helpers::release_object(window);
+                });
             });
         });
     } else {

@@ -1633,12 +1633,23 @@ pub fn hide_transcription_overlay() {
 /// Sends `release` after `close` because the shared shell policy sets
 /// `released_when_closed = false`, so AppKit no longer auto-releases the
 /// initial alloc/init retain. Without this the NSWindow itself would leak.
+///
+/// The teardown sequence is wrapped in an explicit `objc2::rc::autoreleasepool`
+/// scope so that autoreleased temporaries spawned during AppKit's
+/// `windowWillClose` / `removeFromSuperview` / CoreAnimation cleanup chain
+/// drain in-scope, before this function returns. Without the scope,
+/// pendingowe autoreleases survive into the next runloop tick's pool pop
+/// and can hit pointers freed by this same teardown, producing
+/// `EXC_BAD_ACCESS` in `objc_release` during `_CFAutoreleasePoolPop`
+/// (observed as SIGSEGV on macOS Tahoe beta, 2026-05-10 and 2026-05-13).
 fn close_window_by_ptr(window_ptr: usize) {
-    unsafe {
-        let window = window_ptr as Id;
-        window_close(window);
-        let _: () = msg_send![window, release];
-    }
+    debug!(
+        "close_window_by_ptr: tearing down NSWindow (ptr={:#x})",
+        window_ptr
+    );
+    objc2::rc::autoreleasepool(|_pool| unsafe {
+        crate::ui_helpers::window_discard(window_ptr as Id);
+    });
 }
 
 fn hide_transcription_overlay_impl() {

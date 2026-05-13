@@ -1634,6 +1634,50 @@ pub unsafe fn window_close(window: Id) {
     }
 }
 
+/// Release an Objective-C object retained via `alloc`/`new`/`copy`/explicit
+/// `retain`. Null-safe: no-op if `object` is null.
+///
+/// # Safety
+/// `object` must be a valid Objective-C object pointer or null. Caller must
+/// hold a +1 retain that this call balances. After this call, `object`
+/// becomes a dangling pointer; do not reuse.
+pub unsafe fn release_object(object: Id) {
+    if object.is_null() {
+        return;
+    }
+    unsafe {
+        let _: () = msg_send![object, release];
+    }
+}
+
+/// Close and release a window that should not remain alive after closing.
+/// Null-safe: no-op if `window` is null.
+///
+/// Used for windows created with shared shell policy
+/// (`released_when_closed = false`), where `[window close]` does NOT balance
+/// the initial `alloc`/`init` retain — manual `release` is required to
+/// prevent leaking the `NSWindow` instance.
+///
+/// IMPORTANT: this helper closes the window FIRST, then releases. AppKit
+/// dispatches `windowWillClose` delegate callbacks during `close`, so any
+/// delegate or action handler retain that participates in those callbacks
+/// MUST be released after this call returns, not before — otherwise the
+/// callback chain runs on freed pointers.
+///
+/// # Safety
+/// `window` must be a valid `NSWindow` instance or null. Caller must hold
+/// the +1 retain from window construction. After this call, `window`
+/// becomes a dangling pointer; do not reuse.
+pub unsafe fn window_discard(window: Id) {
+    if window.is_null() {
+        return;
+    }
+    unsafe {
+        window_close(window);
+        release_object(window);
+    }
+}
+
 /// Set window alpha (for fade animations)
 /// # Safety
 /// `window` must be a valid `NSWindow` instance.
