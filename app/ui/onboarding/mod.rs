@@ -1295,6 +1295,19 @@ pub(crate) fn reconcile_permission_runtime_after_grant(kind: PermissionKind) {
                     input_monitoring_status,
                 )
             {
+                // Dedup: if the global hotkey manager is already running (= a
+                // prior permission grant in this same onboarding flow already
+                // created it), skip the full teardown + restart cycle. CGEventTap
+                // is process-global and remains attached across TCC re-checks —
+                // the only case where we MUST refresh is the cold-start grant
+                // when the manager was never created.
+                if hotkeys::is_global_hotkey_manager_active() {
+                    info!(
+                        "Onboarding: {} granted; hotkey manager already running, skipping refresh (dedup)",
+                        kind.runtime_subsystem()
+                    );
+                    return;
+                }
                 match hotkeys::refresh_global_hotkey_manager() {
                     Ok(()) => info!(
                         "Onboarding: reinitialized {} after permission grant",
