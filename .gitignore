@@ -12,6 +12,10 @@ __pycache__/
 *.pyc
 .venv/
 .env
+.env.*
+!.env.example
+!.env.debug.example
+!.env*.example
 .pids/
 .ruff_cache/
 .mypy_cache/
