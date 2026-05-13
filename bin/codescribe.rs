@@ -102,7 +102,15 @@ enum MigrateKind {
     Failed,
 }
 
-#[tokio::main]
+// Cap the multi-thread tokio runtime worker count. Default is one worker per
+// CPU core — on M3 Pro (11 cores) that spawns ~11 workers, each idle in
+// `__psynch_cvwait` consuming kernel resources + scheduler overhead. CodeScribe
+// is not compute-parallel (whisper runs on Metal device, audio on cpal thread,
+// LLM is single SSE stream); 4 workers cover IPC server + HTTP client + LLM
+// stream + occasional background tasks with headroom. Confirmed empirically:
+// crash dump from PID 52228 (2026-05-13 12:11:17) showed ~24 tokio workers
+// alive simultaneously despite low task load.
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     init_tracing();
 
