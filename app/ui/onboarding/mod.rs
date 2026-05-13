@@ -1185,9 +1185,12 @@ fn render_current_step() {
         WizardStep::Done => {
             set_text_if_present(ui.icon_label, "DONE");
             set_text_if_present(ui.title_label, "You're All Set");
+            // Short copy here on purpose: the summary_view below renders 4 lines
+            // of permission status + config. With a longer description the two
+            // overlap (description y=268..372 vs summary first-row y≈332).
             set_text_if_present(
                 ui.description_label,
-                "Review the truth model below. You can always adjust these settings later, but the runtime should already be telling the same story as the UI.",
+                "Truth model below — adjust later in Settings.",
             );
             set_hidden_if_present(ui.summary_view, false);
             set_hidden_if_present(ui.skip_button, true);
