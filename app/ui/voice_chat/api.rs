@@ -2696,29 +2696,38 @@ fn hide_voice_chat_overlay_impl() {
         unsafe {
             let window = window_ptr as Id;
             crate::ui_helpers::animate_fade(window, 0.0, 0.15);
-            // The shared overlay shell sets `releasedWhenClosed = false`
-            // (see `app/ui/shared/helpers.rs`), so `window_close` does NOT
-            // balance the +1 retain from window construction. We must
-            // `release` the window pointer ourselves below.
-            crate::ui_helpers::window_close(window);
         }
-    }
 
-    // Balance the +1 retain count from `[cls new]` on each owned handle.
-    // Subviews are owned by the window and released transitively.
-    // SAFETY: each pointer below was obtained from `[cls new]` (or equivalent
-    // alloc/init pair) on the main thread, retained at +1, and is still alive
-    // because `take_handles_and_clear_overlay_state` is the unique teardown
-    // site. Caller invariants guarantee single-threaded main-thread access.
-    unsafe {
-        if let Some(ptr) = handles.window_delegate {
-            let _: () = msg_send![ptr as Id, release];
-        }
-        if let Some(ptr) = handles.action_handler {
-            let _: () = msg_send![ptr as Id, release];
-        }
-        if let Some(ptr) = handles.window {
-            let _: () = msg_send![ptr as Id, release];
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            dispatch::Queue::main().exec_async(move || {
+                unsafe {
+                    let window = window_ptr as Id;
+                    crate::ui_helpers::window_close(window);
+
+                    if let Some(ptr) = handles.window_delegate {
+                        let _: () = msg_send![ptr as Id, release];
+                    }
+                    if let Some(ptr) = handles.action_handler {
+                        let _: () = msg_send![ptr as Id, release];
+                    }
+                    // The shared overlay shell sets `releasedWhenClosed = false`
+                    // (see `app/ui/shared/helpers.rs`), so `window_close` does NOT
+                    // balance the +1 retain from window construction. We must
+                    // `release` the window pointer ourselves below.
+                    let _: () = msg_send![window, release];
+                }
+            });
+        });
+    } else {
+        // If there was no window, we still need to release the delegate and action handler
+        unsafe {
+            if let Some(ptr) = handles.window_delegate {
+                let _: () = msg_send![ptr as Id, release];
+            }
+            if let Some(ptr) = handles.action_handler {
+                let _: () = msg_send![ptr as Id, release];
+            }
         }
     }
 
