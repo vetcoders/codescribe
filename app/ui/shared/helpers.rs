@@ -1724,6 +1724,19 @@ pub fn main_screen_visible_frame() -> Option<CGRect> {
 }
 
 /// Shared policy for the Agent chat shell.
+///
+/// **Always-on-top + multi-Space visibility.** Operator's directive 2026-05-13:
+/// chat overlay is the fundament that ties dictation, assistive handoff and
+/// drawer history together — it MUST be reachable from any Space, on top of
+/// any app window, including fullscreen apps. Prior `NS_NORMAL_WINDOW_LEVEL` +
+/// `FullScreenNone` made it slip behind every other window AND pin itself to
+/// the Space where it was last shown, so users would lose track of it on a
+/// different desktop or behind their editor.
+///
+/// `NS_FLOATING_WINDOW_LEVEL` puts the window above standard NSNormalWindow
+/// level (used by editors, browsers, file pickers). `CanJoinAllSpaces` makes
+/// the window follow Space switches; `FullScreenAuxiliary` allows it to draw
+/// over a fullscreen application instead of being shoved to the desktop.
 pub fn agent_chat_shell_panel_policy(visible_frame: CGRect) -> SharedShellPanelPolicy {
     SharedShellPanelPolicy {
         style_mask: NSWindowStyleMask::Titled
@@ -1732,8 +1745,9 @@ pub fn agent_chat_shell_panel_policy(visible_frame: CGRect) -> SharedShellPanelP
             | NSWindowStyleMask::FullSizeContentView
             | NSWindowStyleMask::Resizable,
         backing_store: NSBackingStoreType::Buffered,
-        collection_behavior: NSWindowCollectionBehavior::FullScreenNone,
-        level: NS_NORMAL_WINDOW_LEVEL,
+        collection_behavior: NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        level: NS_FLOATING_WINDOW_LEVEL,
         min_content_size: Some(CGSize::new(380.0, 360.0)),
         max_content_size: Some(CGSize::new(
             visible_frame.size.width.min(1000.0),
