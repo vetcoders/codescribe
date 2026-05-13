@@ -1911,6 +1911,22 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn test_current_segment_text_smoke() {
+        // current_segment_text() is the pub accessor used by controller's
+        // commit_segment to read overlay action-contract text. This smoke test
+        // verifies the lock-acquire + Raw/AiFormat branch path doesn't panic
+        // on default state, and that the returned String matches whatever the
+        // private action_text_for_contract reads under the same lock.
+        let direct = {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            action_text_for_contract(&state)
+        };
+        let via_pub = current_segment_text();
+        assert_eq!(direct, via_pub);
+    }
+
+    #[test]
     fn test_overlay_config_default() {
         let config = TranscriptionOverlayConfig::default();
         assert_eq!(config.width, 420.0);
