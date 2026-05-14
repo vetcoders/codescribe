@@ -83,9 +83,19 @@ const MAX_OLLAMA_MEMORY_CHARS: usize = 4000;
 
 const DEFAULT_AI_MAX_RETRIES: u32 = 3;
 const DEFAULT_AI_RETRY_DELAY_MS: u64 = 2000;
-const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 30_000;
+// Bumped from 30s → 90s (2026-05-13). Operator observed
+// "Agent SSE inter-chunk timeout after 30s" mid-stream from chat overlay
+// during longer responses (multi-paragraph PL text with code blocks).
+// LLM backends ('programmer' model on api.libraxis.cloud) emit tokens
+// in bursts with 5-15s pauses for reasoning/tool-call hops; 30s budget
+// was too tight and triggered "Agent runtime unavailable. Using legacy
+// formatter" fallback mid-response, breaking the assistant UX. 90s
+// keeps streams alive across realistic backend hiccups without making
+// stalled requests linger forever. Env override `CODESCRIBE_AI_*_MS`
+// still wins for power users (operator can lower for fast models).
+const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_AI_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
