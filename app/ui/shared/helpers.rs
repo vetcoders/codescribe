@@ -1725,18 +1725,27 @@ pub fn main_screen_visible_frame() -> Option<CGRect> {
 
 /// Shared policy for the Agent chat shell.
 ///
-/// **Always-on-top + multi-Space visibility.** Operator's directive 2026-05-13:
-/// chat overlay is the fundament that ties dictation, assistive handoff and
-/// drawer history together — it MUST be reachable from any Space, on top of
-/// any app window, including fullscreen apps. Prior `NS_NORMAL_WINDOW_LEVEL` +
-/// `FullScreenNone` made it slip behind every other window AND pin itself to
-/// the Space where it was last shown, so users would lose track of it on a
-/// different desktop or behind their editor.
+/// **Multi-Space visibility, NORMAL window level.** Operator's directive
+/// 2026-05-13: chat overlay must be reachable from any Space and not pin
+/// itself to the Space where it was last shown. Prior `FullScreenNone`
+/// caused that pinning bug.
 ///
-/// `NS_FLOATING_WINDOW_LEVEL` puts the window above standard NSNormalWindow
-/// level (used by editors, browsers, file pickers). `CanJoinAllSpaces` makes
-/// the window follow Space switches; `FullScreenAuxiliary` allows it to draw
-/// over a fullscreen application instead of being shoved to the desktop.
+/// IMPORTANT — level is kept at `NS_NORMAL_WINDOW_LEVEL`. The first attempt
+/// (commit `dc0f9ee`) used `NS_FLOATING_WINDOW_LEVEL` to put the chat above
+/// editor windows, but at that level + `FullScreenAuxiliary` collection
+/// behavior, macOS treats the window as a palette/inspector and refuses to
+/// give it `canBecomeKeyWindow: true` — chat showed on top but input field
+/// silently dropped every keystroke (operator observed 2026-05-13 19:11
+/// "w tej chwili czat nie przyjmuje inputu" with screenshot proof).
+///
+/// Real always-on-top with working input requires overriding
+/// `canBecomeKeyWindow` on an NSWindow subclass via ClassDecl, which is a
+/// separate cut. For now: multi-Space ✓, above-editor ✗ — we trade level
+/// for input.
+///
+/// `CanJoinAllSpaces` — window follows Space switches.
+/// `FullScreenAuxiliary` — window draws over fullscreen apps instead of
+///   being banished to the desktop (this behavior is independent of level).
 pub fn agent_chat_shell_panel_policy(visible_frame: CGRect) -> SharedShellPanelPolicy {
     SharedShellPanelPolicy {
         style_mask: NSWindowStyleMask::Titled
@@ -1747,7 +1756,7 @@ pub fn agent_chat_shell_panel_policy(visible_frame: CGRect) -> SharedShellPanelP
         backing_store: NSBackingStoreType::Buffered,
         collection_behavior: NSWindowCollectionBehavior::CanJoinAllSpaces
             | NSWindowCollectionBehavior::FullScreenAuxiliary,
-        level: NS_FLOATING_WINDOW_LEVEL,
+        level: NS_NORMAL_WINDOW_LEVEL,
         min_content_size: Some(CGSize::new(380.0, 360.0)),
         max_content_size: Some(CGSize::new(
             visible_frame.size.width.min(1000.0),
