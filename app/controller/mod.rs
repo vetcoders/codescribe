@@ -2872,7 +2872,11 @@ impl RecordingController {
         }
 
         // Skip if another session is active. If session_id is None, allow final flush.
-        if let Some(current) = self.session_id.read().await.clone()
+        // Snapshot first so the read guard drops at the semicolon — keeps the
+        // same defensive shape as the stop-flow fix and matches the Rust 2024
+        // if-let temporary-scope rules.
+        let current_session_id = self.session_id.read().await.clone();
+        if let Some(current) = current_session_id
             && current != expected_session
         {
             debug!("Ignoring stale toggle utterance (session changed)");
@@ -3090,7 +3094,15 @@ impl RecordingController {
         let force_raw = *self.force_raw_mode.read().await;
         let force_ai = *self.force_ai_mode.read().await;
 
-        if let Some(session_id) = self.session_id.read().await.clone() {
+        // Self-deadlock guard (Rust 2024): the read guard temporary from an
+        // if-let chain scrutinee outlives the chain body. Inlining the read
+        // would keep the guard alive across `.write().await`, blocking the
+        // write on this same task's read guard → 45s hang reproduced in
+        // ~/.codescribe/logs/codescribe.log 2026-05-14T00:16:23 (PHASE 1
+        // never reached; watchdog forced recovery). Materialize the snapshot
+        // first so the read guard drops at the semicolon.
+        let session_id_snapshot = self.session_id.read().await.clone();
+        if let Some(session_id) = session_id_snapshot {
             *self.session_id.write().await = Some(format!("{session_id}:stopping"));
         }
 

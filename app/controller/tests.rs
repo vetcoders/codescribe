@@ -1542,3 +1542,46 @@ async fn test_reset_session_after_start_failure_clears_transient_state() {
     );
     assert!(!is_assistive_session());
 }
+
+/// Regression guard for the toggle-stop self-deadlock (root cause behind
+/// commit 91b2346's watchdog).
+///
+/// Reproduces the exact lock pattern that hung `stop_toggle_and_adjudicate_inner`
+/// on operator's daily-driver: in Rust 2024 edition, the temporary
+/// `RwLockReadGuard` produced by an `if let Some(x) = lock.read().await.clone()`
+/// scrutinee lives until the end of the if-let block, so the task awaiting
+/// `lock.write()` inside the body deadlocks on its own read guard. The fix is to
+/// materialize the snapshot into a `let` binding first; the guard then drops at
+/// the semicolon and the subsequent `.write().await` resolves immediately.
+///
+/// If anyone reverts the snapshot pattern back to an inline `read().await.clone()`
+/// scrutinee, this test times out in 2s and fails — well under the 45s watchdog
+/// so the regression surfaces in CI/local test runs, not after a stuck recording.
+#[tokio::test]
+async fn rwlock_session_id_read_then_write_does_not_self_deadlock() {
+    use tokio::sync::RwLock;
+
+    let lock = RwLock::new(Some("session-xyz".to_string()));
+
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        let snapshot = lock.read().await.clone();
+        if let Some(current) = snapshot {
+            *lock.write().await = Some(format!("{current}:stopping"));
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "session_id read-snapshot + write pattern self-deadlocked — if the inline \
+         `if let Some(x) = lock.read().await.clone() {{ ... lock.write().await ... }}` \
+         pattern returned, the Rust 2024 if-let temporary scope extension is back. \
+         See commit fixing fix/toggle-stuck-watchdog."
+    );
+
+    assert_eq!(
+        *lock.read().await,
+        Some("session-xyz:stopping".to_string()),
+        "expected the write to land after the read guard dropped"
+    );
+}
