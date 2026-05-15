@@ -18,8 +18,9 @@
 //! ## Hold-to-Talk Delay
 //!
 //! Users frequently tap Ctrl accidentally, so we require a configurable dwell time
-//! (default 800ms) before the recorder actually starts. This prevents accidental
-//! recordings while preserving quick toggle-mode for power users.
+//! (default 800ms) before the recorder actually starts. Assistive hold bindings
+//! keep a 400ms floor even if settings lower the generic hold delay. This prevents
+//! accidental Emil sessions while preserving quick toggle-mode for power users.
 
 mod helpers;
 mod types;
@@ -83,6 +84,15 @@ const LIVE_PROFILE_TYPING_CPS: f32 = 90.0;
 const LIVE_PROFILE_EMIT_WORDS_MAX: u64 = 2;
 const LIVE_PROFILE_INTERIM_SEC: f32 = 1.2;
 const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
+const ASSISTIVE_HOLD_START_DELAY_FLOOR_MS: u64 = 400;
+
+fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
+    if assistive {
+        configured_ms.max(ASSISTIVE_HOLD_START_DELAY_FLOOR_MS)
+    } else {
+        configured_ms
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct ActionQualityProbe {
@@ -1824,7 +1834,7 @@ impl RecordingController {
             HotkeyAction::Down => {
                 let current_state = self.current_state().await;
                 if current_state == State::Idle {
-                    self.schedule_hold_start().await?;
+                    self.schedule_hold_start(event.assistive).await?;
                 }
             }
             HotkeyAction::Up => {
@@ -2340,32 +2350,12 @@ impl RecordingController {
     }
 
     /// Schedule delayed recording start for hold mode
-    async fn schedule_hold_start(&self) -> Result<()> {
+    async fn schedule_hold_start(&self, assistive: bool) -> Result<()> {
         // Hold mode never runs the assistive loop
         self.assistive_loop_active.store(false, Ordering::SeqCst);
-        // Check backend health before starting (skip in tests: no backend available)
-        if !cfg!(test) {
-            match crate::client::check_health().await {
-                Ok(true) => {}
-                Ok(false) => {
-                    warn!("Whisper engine not ready");
-                    Self::present_backend_unavailable("Hold-start health check", None);
-                    return Ok(());
-                }
-                Err(e) => {
-                    error!("Whisper engine unavailable: {}", e);
-                    let detail = e.to_string();
-                    Self::present_backend_unavailable(
-                        "Hold-start health check",
-                        Some(detail.as_str()),
-                    );
-                    return Ok(());
-                }
-            }
-        }
-
         let config = self.config.read().await.clone();
-        let delay_ms = config.hold_start_delay_ms;
+        let configured_delay_ms = config.hold_start_delay_ms;
+        let delay_ms = effective_hold_start_delay_ms(configured_delay_ms, assistive);
         let beep = config.beep_on_start;
         let sound_volume = config.sound_volume;
         let language = config.whisper_language;
@@ -2373,8 +2363,10 @@ impl RecordingController {
         let hold_mode = Arc::clone(&self.hold_mode);
 
         debug!(
-            "Scheduling hold-start after {}ms delay (hold_mode={:?})",
+            "Scheduling hold-start after {}ms delay (configured={}ms, assistive={}, hold_mode={:?})",
             delay_ms,
+            configured_delay_ms,
+            assistive,
             *hold_mode.read().await
         );
 
@@ -2422,6 +2414,44 @@ impl RecordingController {
                 debug!("Hold-start cancelled: state changed to {}", current_state);
                 return;
             }
+
+            // Check backend health only after the dwell time has actually elapsed.
+            // A tap or transient Ctrl bump should be a full no-op, including no
+            // backend-unavailable UI.
+            if !cfg!(test) {
+                match crate::client::check_health().await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        warn!("Whisper engine not ready");
+                        Self::present_backend_unavailable("Hold-start health check", None);
+                        return;
+                    }
+                    Err(e) => {
+                        error!("Whisper engine unavailable: {}", e);
+                        let detail = e.to_string();
+                        Self::present_backend_unavailable(
+                            "Hold-start health check",
+                            Some(detail.as_str()),
+                        );
+                        return;
+                    }
+                }
+            }
+
+            if hold_start_generation.load(Ordering::SeqCst) != task_generation {
+                debug!("Hold-start cancelled: superseded generation after health check");
+                return;
+            }
+
+            let current_state = *state.read().await;
+            if current_state != State::Idle {
+                debug!(
+                    "Hold-start cancelled after health check: state changed to {}",
+                    current_state
+                );
+                return;
+            }
+
             let _start_guard = AtomicFlagGuard::new(Arc::clone(&start_transition_in_flight));
 
             // Generate session ID

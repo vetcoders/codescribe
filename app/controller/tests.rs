@@ -64,6 +64,13 @@ fn test_renamed_request_recording_stop_is_callable() {
     let _: fn() = request_segment_commit_and_augment;
 }
 
+#[test]
+fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
+    assert_eq!(effective_hold_start_delay_ms(200, false), 200);
+    assert_eq!(effective_hold_start_delay_ms(200, true), 400);
+    assert_eq!(effective_hold_start_delay_ms(800, true), 800);
+}
+
 #[tokio::test]
 #[serial]
 async fn test_hold_down_schedules_delayed_start() {
@@ -89,6 +96,30 @@ async fn test_hold_down_schedules_delayed_start() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Should now be REC_HOLD
+    assert_eq!(controller.current_state().await, State::RecHold);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
+    let controller = RecordingController::new();
+    controller.config.write().await.hold_start_delay_ms = 200;
+
+    let event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+
+    controller.handle_hotkey_event(event).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(controller.current_state().await, State::Idle);
+
+    tokio::time::sleep(Duration::from_millis(220)).await;
     assert_eq!(controller.current_state().await, State::RecHold);
 }
 
@@ -126,6 +157,37 @@ async fn test_hold_up_before_delay_cancels() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Should still be IDLE (start was cancelled)
+    assert_eq!(controller.current_state().await, State::Idle);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
+    let controller = RecordingController::new();
+    controller.config.write().await.hold_start_delay_ms = 200;
+
+    let down_event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+    controller.handle_hotkey_event(down_event).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let up_event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Up,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+    controller.handle_hotkey_event(up_event).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(350)).await;
     assert_eq!(controller.current_state().await, State::Idle);
 }
 
