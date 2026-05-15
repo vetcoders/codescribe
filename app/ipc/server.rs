@@ -279,6 +279,9 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
             };
             IpcResponse::Status(status)
         }
+        IpcCommand::GetAppAutomationState => {
+            IpcResponse::AppAutomationState(crate::ui::automation::app_automation_state())
+        }
         IpcCommand::StartRecording { assistive } => {
             if controller.is_recording().await || controller.is_busy().await {
                 return IpcResponse::Error("Recording already in progress".to_string());
@@ -306,6 +309,12 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
             match controller.finish_recording().await {
                 Ok(()) => IpcResponse::Ok,
                 Err(e) => IpcResponse::Error(format!("Failed to stop recording: {}", e)),
+            }
+        }
+        IpcCommand::RunAppAutomation { action } => {
+            match crate::ui::automation::run_app_automation(action).await {
+                Ok(state) => IpcResponse::AppAutomationState(state),
+                Err(e) => IpcResponse::Error(format!("App automation failed: {}", e)),
             }
         }
         IpcCommand::Subscribe | IpcCommand::Unsubscribe => {
@@ -802,6 +811,8 @@ fn peer_uid(_stream: &UnixStream) -> Option<libc::uid_t> {
 mod tests {
     use super::*;
     use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
+    use serial_test::serial;
+    use tempfile::TempDir;
     use tokio::time::{Duration, timeout};
 
     async fn write_command(
@@ -914,5 +925,51 @@ mod tests {
             .expect("server task timeout")
             .expect("server task panicked");
         assert!(join.is_ok(), "server task failed: {join:?}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn get_app_automation_state_reports_current_native_surface() {
+        let tmp = TempDir::new().expect("tempdir");
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
+            std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        }
+
+        let controller = Arc::new(RecordingController::new());
+        let (client, server) = UnixStream::pair().expect("unix pair");
+
+        let server_controller = Arc::clone(&controller);
+        let server_task =
+            tokio::spawn(async move { handle_client(server, server_controller).await });
+
+        let (reader_half, mut writer_half) = client.into_split();
+        let mut reader = BufReader::new(reader_half);
+
+        write_command(&mut writer_half, &IpcCommand::GetAppAutomationState)
+            .await
+            .expect("state command");
+
+        match read_response(&mut reader).await.expect("state response") {
+            IpcResponse::AppAutomationState(state) => {
+                assert!(!state.creator_visible);
+                assert!(!state.voice_chat_visible);
+                assert!(!state.transcription_overlay_visible);
+                assert!(state.setup_required);
+            }
+            other => panic!("expected AppAutomationState, got {:?}", other),
+        }
+
+        drop(writer_half);
+        let join = timeout(Duration::from_secs(1), server_task)
+            .await
+            .expect("server task timeout")
+            .expect("server task panicked");
+        assert!(join.is_ok(), "server task failed: {join:?}");
+
+        unsafe {
+            std::env::remove_var("CODESCRIBE_DATA_DIR");
+            std::env::remove_var("CODESCRIBE_DISABLE_KEYCHAIN");
+        }
     }
 }

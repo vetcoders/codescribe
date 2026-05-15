@@ -1,6 +1,4 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -744,6 +742,70 @@ fn clear_bootstrap_ui_state(state: &mut BootstrapState) {
     state.diagnostics_conflict_label = None;
     state.diagnostics_conflict_details_button = None;
     state.diagnostics_status_label = None;
+}
+
+fn setup_done_path() -> PathBuf {
+    Config::config_dir().join("setup_done")
+}
+
+fn onboarding_done_path() -> PathBuf {
+    Config::config_dir().join("onboarding_done")
+}
+
+fn bootstrap_done_path() -> PathBuf {
+    Config::config_dir().join("bootstrap_done")
+}
+
+fn migrate_legacy_setup_sentinel() {
+    let setup_done = setup_done_path();
+    if setup_done.exists() {
+        return;
+    }
+
+    if onboarding_done_path().exists() && bootstrap_done_path().exists() {
+        if let Some(parent) = setup_done.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(setup_done, "done");
+    }
+}
+
+pub fn should_show_setup() -> bool {
+    migrate_legacy_setup_sentinel();
+    !setup_done_path().exists()
+}
+
+pub fn should_show_bootstrap() -> bool {
+    should_show_setup()
+}
+
+pub fn is_bootstrap_overlay_visible() -> bool {
+    let state = BOOTSTRAP_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.window.is_some()
+}
+
+pub fn schedule_bootstrap() {
+    if !should_show_setup() {
+        return;
+    }
+
+    thread::spawn(|| {
+        thread::sleep(Duration::from_millis(800));
+        show_creator_window();
+    });
+}
+
+/// Show the setup-first Creator surface.
+///
+/// Today this is the Settings shell focused on the primary transcription/setup tab.
+pub fn show_creator_window() {
+    show_settings_setup_tab();
+}
+
+/// Show Settings and focus the first-run setup tab.
+pub fn show_settings_setup_tab() {
+    show_settings_window();
+    switch_tab(TAB_TRANSCRIPTION);
 }
 
 static SHOW_OVERLAY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
@@ -4998,20 +5060,7 @@ pub(super) extern "C" fn on_refresh_permissions(
 }
 
 fn send_ipc(cmd: IpcCommand) -> Result<IpcResponse, String> {
-    let socket_path = crate::ipc::socket_path();
-    let mut stream =
-        UnixStream::connect(socket_path).map_err(|e| format!("IPC connect failed: {e}"))?;
-    let payload = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
-    stream
-        .write_all(payload.as_bytes())
-        .map_err(|e| e.to_string())?;
-    stream.write_all(b"\n").map_err(|e| e.to_string())?;
-
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).map_err(|e| e.to_string())?;
-
-    serde_json::from_str::<IpcResponse>(&line).map_err(|e| e.to_string())
+    crate::ipc::send_command_blocking(&cmd)
 }
 
 fn sync_runtime_config_via_ipc() {

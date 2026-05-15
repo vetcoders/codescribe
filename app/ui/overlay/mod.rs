@@ -20,21 +20,19 @@ use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
-use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
-};
-use std::sync::Mutex;
+use objc2_app_kit::NSWindowStyleMask;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
     add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position,
-    create_button, create_glass_effect_view_with, create_label, create_scrollable_text_view,
-    ns_string, set_glass_effect_content_view, set_hidden, set_text, set_text_view_string,
-    set_tooltip, ui_colors, ui_tokens, window_close, window_set_alpha, window_show,
+    create_borderless_tafla_window, create_button, create_label, create_scrollable_text_view,
+    create_tafla_single_shell, ns_string, release_object, set_hidden, set_text,
+    set_text_view_string, set_tooltip, ui_colors, ui_tokens, window_discard, window_set_alpha,
+    window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -65,10 +63,29 @@ const OVERLAY_BUTTON_HEIGHT: f64 = 28.0;
 const OVERLAY_BUTTON_MARGIN: f64 = 8.0;
 const OVERLAY_HEADER_LABEL: &str = "CodeScribe - Dictation Overlay";
 
-// Auto-hide delay after recording completes
-const AUTO_HIDE_DELAY_SECS: u64 = 5;
+// Auto-hide delay after recording completes (configurable via env)
+const DEFAULT_AUTO_HIDE_DELAY_SECS: u64 = 15;
+const MIN_AUTO_HIDE_DELAY_SECS: u64 = 3;
+const MAX_AUTO_HIDE_DELAY_SECS: u64 = 60;
 const OVERLAY_LAYOUT_THROTTLE_MS: u64 = 80;
 const OVERLAY_LAYOUT_HYSTERESIS_PX: f64 = 1.0;
+
+fn parse_auto_hide_delay_secs(raw: Option<&str>) -> u64 {
+    raw.and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(MIN_AUTO_HIDE_DELAY_SECS, MAX_AUTO_HIDE_DELAY_SECS))
+        .unwrap_or(DEFAULT_AUTO_HIDE_DELAY_SECS)
+}
+
+fn auto_hide_delay_secs() -> u64 {
+    static DELAY: OnceLock<u64> = OnceLock::new();
+    *DELAY.get_or_init(|| {
+        parse_auto_hide_delay_secs(
+            std::env::var("TRANSCRIPTION_OVERLAY_AUTO_HIDE_SECS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
 
 /// Configuration for the transcription overlay
 #[derive(Debug, Clone)]
@@ -410,7 +427,7 @@ fn decision_hint_text(mode: TranscriptionActionContractMode, include_auto_hide: 
         action_contract_source_label(mode)
     );
     if include_auto_hide {
-        format!("{base} | Auto-hide {}s", AUTO_HIDE_DELAY_SECS)
+        format!("{base} | Auto-hide {}s", auto_hide_delay_secs())
     } else {
         base
     }
@@ -930,9 +947,7 @@ fn show_transcription_overlay_impl() {
             return;
         }
 
-        let ns_window = ns_window_class.unwrap();
         let ns_screen = ns_screen_class.unwrap();
-        let ns_color = ns_color_class.unwrap();
         let ns_progress = ns_progress_class.unwrap();
         let ns_tracking_area = ns_tracking_area_class.unwrap();
 
@@ -992,46 +1007,17 @@ fn show_transcription_overlay_impl() {
             },
         };
 
-        // Create borderless window for modern look
-        let window: Id = msg_send![ns_window, alloc];
-        if window.is_null() {
-            warn!("Failed to alloc NSWindow");
-            return;
-        }
-
-        // Borderless + FullSizeContentView for true vibrancy effect
         let style_mask = NSWindowStyleMask::Borderless | NSWindowStyleMask::FullSizeContentView;
-        let backing = NSBackingStoreType::Buffered;
-        let window: Id = msg_send![
-            window,
-            initWithContentRect: frame
-            styleMask: style_mask
-            backing: backing
-            defer: false
-        ];
-        if window.is_null() {
+        let Some(window) = create_borderless_tafla_window(frame, style_mask, true) else {
             warn!("Failed to init NSWindow");
             return;
-        }
-
-        // Configure window for floating overlay
-        let _: () = msg_send![window, setOpaque: false];
-        let clear_color: Id = msg_send![ns_color, clearColor];
-        let _: () = msg_send![window, setBackgroundColor: clear_color];
-        let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
-        let _: () = msg_send![window, setMovableByWindowBackground: true];
-        let _: () = msg_send![window, setHasShadow: true];
-
-        // Join all spaces (follow focus)
-        // Make sure the overlay shows up even when the user is in a fullscreen Space.
-        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary;
-        let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
+        };
 
         // Get content view
         let window_content_view: Id = msg_send![window, contentView];
         if window_content_view.is_null() {
             warn!("Failed to get content view");
+            discard_overlay_window(window, None);
             return;
         }
 
@@ -1040,12 +1026,13 @@ fn show_transcription_overlay_impl() {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
         );
-        let blur_view: Id = create_glass_effect_view_with(
-            blur_frame,
-            NSVisualEffectMaterial::HUDWindow,
-            NSVisualEffectBlendingMode::BehindWindow,
-            NSVisualEffectState::Active,
-        );
+        let Some((blur_view, content_view)) =
+            create_tafla_single_shell(window_content_view, blur_frame)
+        else {
+            warn!("Failed to attach transcription overlay shell");
+            discard_overlay_window(window, None);
+            return;
+        };
         let layer: Id = msg_send![blur_view, layer];
         if !layer.is_null() {
             let _: () = msg_send![layer, setCornerRadius: corner_radius];
@@ -1057,12 +1044,6 @@ fn show_transcription_overlay_impl() {
         }
 
         // Add blur view as background, then mount overlay controls via glass `contentView`.
-        add_subview(window_content_view, blur_view);
-        let content_view: Id = msg_send![Class::get("NSView").unwrap(), alloc];
-        let content_view: Id = msg_send![content_view, initWithFrame: blur_frame];
-        let _: () = msg_send![content_view, setAutoresizingMask: 2_isize | 16_isize]; // Width | Height
-        let _: bool = set_glass_effect_content_view(blur_view, content_view);
-
         let _: () = msg_send![window, setTitle: ns_string(OVERLAY_HEADER_LABEL)];
 
         let padding = OVERLAY_PADDING;
@@ -1279,7 +1260,7 @@ fn show_transcription_overlay_impl() {
         if state.window.is_some() {
             drop(state);
             warn!("Overlay window created concurrently; discarding duplicate");
-            window_close(window);
+            discard_overlay_window(window, Some(action_handler as usize));
             return;
         }
         state.window = Some(window as usize);
@@ -1513,13 +1494,13 @@ pub fn schedule_auto_hide() {
     });
 
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(AUTO_HIDE_DELAY_SECS));
+        std::thread::sleep(Duration::from_secs(auto_hide_delay_secs()));
 
         if should_auto_hide(generation) {
             hide_transcription_overlay();
             debug!(
                 "Transcription overlay auto-hidden after {}s",
-                AUTO_HIDE_DELAY_SECS
+                auto_hide_delay_secs()
             );
         } else {
             debug!("Auto-hide skipped");
@@ -1593,16 +1574,26 @@ pub fn hide_transcription_overlay() {
 /// Closes a window by raw pointer (used for delayed close after animation)
 fn close_window_by_ptr(window_ptr: usize) {
     unsafe {
-        window_close(window_ptr as Id);
+        window_discard(window_ptr as Id);
+    }
+}
+
+fn discard_overlay_window(window: Id, action_handler_ptr: Option<usize>) {
+    unsafe {
+        window_discard(window);
+        if let Some(ptr) = action_handler_ptr {
+            release_object(ptr as Id);
+        }
     }
 }
 
 fn hide_transcription_overlay_impl() {
     // DEADLOCK PREVENTION: extract window_ptr and clear state under lock,
     // then drop lock before the animate_fade AppKit call.
-    let window_ptr = {
+    let (window_ptr, action_handler_ptr) = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let wp = state.window.take();
+        let action_handler = state.action_handler.take();
         state.header_label = None;
         state.text_scroll_view = None;
         state.text_view = None;
@@ -1623,7 +1614,7 @@ fn hide_transcription_overlay_impl() {
         state.last_layout_resize_at = Instant::now();
         state.pending_layout_resize = false;
         // Note: accumulated_text is NOT cleared here - it's needed for clipboard copy
-        wp
+        (wp, action_handler)
     }; // Lock dropped.
 
     if let Some(window_ptr) = window_ptr {
@@ -1639,6 +1630,11 @@ fn hide_transcription_overlay_impl() {
             std::thread::sleep(Duration::from_millis(200));
             Queue::main().exec_async(move || {
                 close_window_by_ptr(window_ptr);
+                if let Some(ptr) = action_handler_ptr {
+                    unsafe {
+                        release_object(ptr as Id);
+                    }
+                }
             });
         });
 
@@ -1846,7 +1842,19 @@ mod tests {
 
     #[test]
     fn test_auto_hide_delay_seconds() {
-        assert_eq!(AUTO_HIDE_DELAY_SECS, 5);
+        assert_eq!(
+            parse_auto_hide_delay_secs(None),
+            DEFAULT_AUTO_HIDE_DELAY_SECS
+        );
+        assert_eq!(
+            parse_auto_hide_delay_secs(Some("2")),
+            MIN_AUTO_HIDE_DELAY_SECS
+        );
+        assert_eq!(
+            parse_auto_hide_delay_secs(Some("999")),
+            MAX_AUTO_HIDE_DELAY_SECS
+        );
+        assert_eq!(parse_auto_hide_delay_secs(Some("18")), 18);
     }
 
     #[test]
@@ -2010,6 +2018,22 @@ mod tests {
     fn test_overlay_visible_text_live_mode_defaults_to_exact_text() {
         let text = "To jest stabilne zda";
         assert_eq!(overlay_visible_text(text, false), text);
+    }
+
+    #[test]
+    fn transcription_overlay_source_uses_shared_tafla_window_contract() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/app/ui/overlay/mod.rs"
+        ));
+        let overlay_impl = source
+            .split("fn show_transcription_overlay_impl()")
+            .nth(1)
+            .expect("transcription overlay impl present");
+        assert!(overlay_impl.contains("create_borderless_tafla_window("));
+        assert!(overlay_impl.contains("create_tafla_single_shell("));
+        assert!(!overlay_impl.contains("create_glass_effect_view_with("));
+        assert!(!overlay_impl.contains("set_glass_effect_content_view("));
     }
 
     #[tokio::test]

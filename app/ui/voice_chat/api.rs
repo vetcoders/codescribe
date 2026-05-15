@@ -23,9 +23,9 @@ use crate::ui_helpers::{
     button_style, chat_header_layout, color_label, color_rgba, color_secondary_label,
     create_bubble_view, create_button, create_card_view, create_label, get_text_field_string,
     get_text_view_string, layout_region_frame_for_view, ns_string, open_file_in_editor,
-    resize_bubble_container_for_text, set_button_symbol, set_text_field_string,
+    release_object, resize_bubble_container_for_text, set_button_symbol, set_text_field_string,
     set_text_view_string, set_tooltip, stack_view_add, stack_view_clear, ui_colors, ui_tokens,
-    update_bubble_text, window_set_alpha, window_show,
+    update_bubble_text, window_discard, window_set_alpha, window_show,
 };
 
 use super::handlers::{clear_search_field, copy_to_clipboard};
@@ -2660,18 +2660,29 @@ fn hide_voice_chat_overlay_impl() {
     // `window_close` triggers AppKit notifications/delegate callbacks (windowWillClose),
     // and those callbacks also lock OVERLAY_STATE. Holding the lock here can deadlock
     // the main thread (observed as a hard freeze/hang).
-    let window_ptr = {
+    let (window_ptr, window_delegate_ptr, action_handler_ptr) = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let window_ptr = state.window.take();
+        let window_delegate_ptr = state.window_delegate.take();
+        let action_handler_ptr = state.action_handler.take();
         clear_overlay_state(&mut state);
-        window_ptr
+        (window_ptr, window_delegate_ptr, action_handler_ptr)
     };
 
     if let Some(window_ptr) = window_ptr {
         unsafe {
             let window = window_ptr as Id;
             crate::ui_helpers::animate_fade(window, 0.0, 0.15);
-            crate::ui_helpers::window_close(window);
+            window_discard(window);
+        }
+    }
+
+    unsafe {
+        if let Some(delegate_ptr) = window_delegate_ptr {
+            release_object(delegate_ptr as Id);
+        }
+        if let Some(handler_ptr) = action_handler_ptr {
+            release_object(handler_ptr as Id);
         }
     }
 

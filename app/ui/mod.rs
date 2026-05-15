@@ -1,3 +1,4 @@
+pub mod automation;
 pub mod bootstrap;
 pub mod onboarding;
 pub mod overlay;

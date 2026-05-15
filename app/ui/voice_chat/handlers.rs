@@ -17,7 +17,8 @@ use codescribe_core::config::UserSettings;
 
 use crate::config::Config;
 use crate::ui_helpers::{
-    clamp_overlay_position, get_text_field_string, ns_string, set_hidden, set_text_field_string,
+    clamp_overlay_position, get_text_field_string, ns_string, release_object, set_hidden,
+    set_text_field_string,
 };
 
 use super::api::{
@@ -867,7 +868,18 @@ extern "C" fn on_close(_this: &Object, _cmd: Sel, _sender: Id) {
 
 extern "C" fn on_window_will_close(_this: &Object, _cmd: Sel, _notification: Id) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let delegate_ptr = state.window_delegate.take();
+    let action_handler_ptr = state.action_handler.take();
     clear_overlay_state(&mut state);
+    drop(state);
+    unsafe {
+        if let Some(ptr) = delegate_ptr {
+            release_object(ptr as Id);
+        }
+        if let Some(ptr) = action_handler_ptr {
+            release_object(ptr as Id);
+        }
+    }
     debug!("Voice chat overlay closed by user");
 }
 

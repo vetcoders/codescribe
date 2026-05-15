@@ -104,9 +104,17 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_config_dir() {
+        let previous = std::env::var("CODESCRIBE_DATA_DIR").ok();
+        unsafe { std::env::remove_var("CODESCRIBE_DATA_DIR") };
+
         let dir = Config::config_dir();
-        assert!(dir.to_string_lossy().contains(".codescribe"));
+        assert!(dir.to_string_lossy().ends_with(".codescribe"));
+
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", value) };
+        }
     }
 
     #[test]

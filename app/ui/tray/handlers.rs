@@ -92,6 +92,22 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     }
 }
 
+pub fn handle_show_agent_action() {
+    crate::show_voice_chat_overlay();
+}
+
+pub fn handle_open_creator_action() {
+    crate::show_creator_window();
+}
+
+pub fn handle_complete_setup_action() {
+    crate::show_settings_setup_tab();
+}
+
+pub fn handle_run_onboarding_action() {
+    crate::show_creator_window();
+}
+
 /// Copy last transcript to clipboard
 fn handle_copy_last() {
     send_menu_event(TrayMenuEvent::CopyLast);

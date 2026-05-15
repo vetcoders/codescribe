@@ -1,12 +1,13 @@
-# Settings & Configuration
+# Creator & Settings
 
-CodeScribe now has one native Settings window with five tabs:
+CodeScribe ships one native macOS Creator window with six tabs:
 
-1. **Transcription**
-2. **Modes & Shortcuts**
-3. **AI & Prompts**
-4. **Audio & Input**
-5. **Diagnostics**
+1. **Creator**
+2. **Keys**
+3. **Audio**
+4. **Voice Lab**
+5. **Engine**
+6. **User**
 
 Configuration still lives in three layers:
 
@@ -14,111 +15,88 @@ Configuration still lives in three layers:
 2. **Secrets**: macOS Keychain (`com.vetcoders.codescribe`)
 3. **Power-user overrides**: `~/.codescribe/.env`
 
-Most users should stay inside the Settings window. The `.env` file is for overrides and automation-heavy workflows.
+Most users should stay inside the Creator window. The `.env` file is for overrides and automation-heavy workflows.
 
-## Open Settings
+## Open Creator
 
-- Menu bar icon → **Settings**
-- Chat Overlay → **Settings** tab
+- Menu bar icon → **Creator Studio...**
+- Dock icon click
+- Chat Overlay → gear button (opens Creator)
 
-## Transcription
+## Creator
 
-Open **Settings → Transcription**.
+Open **Creator**.
 
-This tab owns the transcript pipeline itself:
+This is the graphical launchpad:
 
-- **Transcription Backend**
-  - `Local Whisper`
-  - `Cloud STT`
-  - optional cloud endpoint + API key
-- **Preview Timing**
-  - `Buffer delay`
-  - `Typing speed`
-  - `Words per tick`
-  - `Interim cadence`
-  - live preview panel showing:
-    - when partial targets are published
-    - how those targets would become visible on the overlay
-- **Final Transcript**
-  - `Local file-based final pass`
-  - `AI Formatting`
-  - `Formatting level`
-- **Quality Automation**
-  - quality daemon toggle
-  - latest report / availability / pending mismatch state
+- permission checklist
+- first-run quick start
+- one-click launch pads into Keys, Audio, Voice Lab, and Agent overlay
 
-### Current runtime truth
+## Keys
 
-- When **Transcription overlay** is ON, the app is optimized for low-latency live preview.
-- When **Transcription overlay** is OFF, the floating preview is hidden and runtime uses a more buffered cadence to reduce local load.
-- In the current build, **cloud STT is still post-capture**, not live cloud preview. The Settings UI states this explicitly.
+Open **Keys**.
 
-## Modes & Shortcuts
+This tab owns:
 
-Open **Settings → Modes & Shortcuts**.
+- hotkey presets and per-mode bindings
+- hold / toggle timing
+- formatting provider endpoint, model, and key
+- assistive provider endpoint, model, and key
 
-This tab owns the global shortcut model:
+## Audio
 
-- **Dictation**
-- **Formatting**
-- **Assistive**
+Open **Audio**.
 
-Each mode gets one binding. You can customize or disable it.
-
-The same tab also owns:
-
-- `Hold delay`
-- `Double-tap interval`
-- hotkey conflict detection / details
-
-## AI & Prompts
-
-Open **Settings → AI & Prompts**.
-
-This tab owns the LLM side of the product:
-
-- Formatting provider
-- Assistive provider
-- model + endpoint fields
-- API keys in Keychain
-- prompt editor for:
-  - `formatting`
-  - `assistive`
-
-Prompt files live in `~/.codescribe/prompts/`.
-
-## Audio & Input
-
-Open **Settings → Audio & Input**.
-
-This tab owns capture defaults and app-shell behavior:
+This tab owns:
 
 - `Whisper language`
 - `Beep on recording start`
 - `Enter to send`
-- `Transcription overlay`
 - `Show Dock icon`
 - `Sound volume`
 
-This is where you decide whether the floating transcription overlay exists at all.
+## Voice Lab
 
-## Diagnostics
+Open **Voice Lab**.
 
-Open **Settings → Diagnostics**.
+This tab owns live pipeline tuning:
 
-This tab is for environment truth, not onboarding copy:
+- `CODESCRIBE_BUFFER_DELAY_MS`
+- `CODESCRIBE_TYPING_CPS`
+- `CODESCRIBE_EMIT_WORDS_MAX`
+- `CODESCRIBE_BUFFERED_INTERIM_SEC`
+- cloud multipart model / upload caps
 
-- live permission matrix
-- hotkey conflict summary
-- `Refresh matrix`
-- `Open System Settings`
-- `Copy diagnostics`
+Current runtime truth:
 
-Use this tab when the app lies about permissions, focus, shortcuts, or runtime availability.
+- local Whisper remains the live preview path
+- cloud STT is still post-capture, not live cloud preview
+- the UI exposes only the knobs that materially improve UX
 
-## Power-user `.env` Overrides
+## Engine
 
-If you need direct overrides outside the GUI:
+Open **Engine**.
+
+This is the read-only runtime truth panel:
+
+- active STT engine
+- Whisper / VAD / TTS / embedder availability
+- model embedding state
+
+## User
+
+Open **User**.
+
+This tab owns slower-moving toggles:
+
+- dock icon visibility
+- quality daemon
+- ultra quality final pass
+
+## Power-user Overrides
+
+If you need direct overrides outside the Creator:
 
 ```bash
 codescribe --config
@@ -139,6 +117,6 @@ Common overrides:
 ## Reset / Fresh Start
 
 - **New agent context**: Chat Overlay → **New thread**
-- **Reset prompts**: Settings → **AI & Prompts** → **Reset**
+- **Reset prompts**: menu bar icon → **Edit prompts…**
 
 _Created by M&K (c)2026 VetCoders_

@@ -17,16 +17,16 @@ flowchart TB
     subgraph APP[CodeScribe Application]
         direction TB
 
-        subgraph UI[Leptos WASM Frontend]
+        subgraph UI[Native AppKit Shell]
             direction LR
-            VL[Voice Lab] --- TE[Teacher] --- SET[Settings]
+            CR[Creator Studio] --- VL[Voice Lab] --- AG[Agent Overlay]
         end
 
-        subgraph BACKEND[Tauri Rust Backend]
-            CMD[Command Handlers]
+        subgraph BACKEND[Rust App Layer]
+            CMD[Tray + Window Controllers]
         end
 
-        UI -->|IPC invoke| BACKEND
+        UI --> BACKEND
 
         subgraph CORE[Core Library]
             direction TB
@@ -58,9 +58,9 @@ flowchart TB
     class APP,UI,BACKEND,CORE,TOOLS box
 ```
 
-> **Note:** The diagram above is mixed current + target architecture. The shipped product in this repo is a **native macOS tray/settings/overlay app**, not a Tauri desktop shell. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the current implementation.
+> **Note:** The diagram above is now centered on the shipped shape: a **native macOS tray/Creator/overlay app**. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the deeper module-level truth.
 
-> **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
+> **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Creator, but in the current build it is still a **post-capture** path rather than live cloud preview.
 
 > **Status:** current release (see `Cargo.toml`) — embedded local STT, event-based live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
 
@@ -195,9 +195,9 @@ codescribe transcribe -f audio.mp3  # with AI formatting
 - **Formatting**: **Double‑tap Left Option** → hands‑free recording + AI formatting (auto‑paste ON)
 - **Assistive (Agent)**: **Double‑tap Right Option** → voice‑chat overlay + agent response (auto‑paste OFF)
 
-Hotkeys are configured in **Settings → Modes & Shortcuts**. Double‑tap modes auto‑send an utterance when you pause, and stop on the next double‑tap.
+Hotkeys are configured in **Creator → Keys**. Double‑tap modes auto‑send an utterance when you pause, and stop on the next double‑tap.
 
-## Settings & Secrets
+## Creator & Secrets
 
 - GUI settings: `~/Library/Application Support/CodeScribe/settings.json`
 - API keys: macOS Keychain (`com.vetcoders.codescribe`)
@@ -469,10 +469,9 @@ Grant permissions in System Settings > Privacy & Security when prompted.
 ### Planned
 
 - [ ] Hands-off mode with VAD + Overlay integration
-- [ ] Tauri GUI (Voice Lab, Teacher, Settings)
 - [ ] TTS integration for assistive mode
 - [ ] Libraxis Qube Protocol (WebSocket streaming architecture)
-- [ ] Custom prompt editing in GUI
+- [ ] Deepen native Creator Studio with richer workflow surfaces
 - [ ] More languages for prompts
 - [ ] DMG distribution with notarization
 

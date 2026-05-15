@@ -16,6 +16,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tracing::info;
 
 /// CodeScribe CLI - Local speech-to-text transcription
 ///
@@ -41,6 +42,12 @@ enum Commands {
 
     /// Run as daemon with tray icon (default when no args)
     Daemon,
+
+    /// Query or drive the native app automation surface over IPC
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
+    },
 
     /// Migrate transcript/audio filenames to ASCII + suffix naming
     MigrateHistory {
@@ -89,6 +96,52 @@ enum TranscribeMode {
     Live,
 }
 
+#[derive(Subcommand)]
+enum AppCommand {
+    /// Print the current native app automation state as JSON
+    State,
+    /// Run one native app automation action and print the resulting state as JSON
+    Action {
+        #[arg(value_enum)]
+        action: AppAutomationCliAction,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum AppAutomationCliAction {
+    ResetUi,
+    ShowCreator,
+    HideCreator,
+    ShowVoiceChat,
+    HideVoiceChat,
+    ShowTranscriptionOverlay,
+    HideTranscriptionOverlay,
+    TriggerTrayShowAgent,
+    TriggerTrayOpenCreator,
+    TriggerTrayCompleteSetup,
+    TriggerTrayRunOnboarding,
+    TriggerDockReopen,
+}
+
+impl From<AppAutomationCliAction> for codescribe::ipc::AppAutomationAction {
+    fn from(value: AppAutomationCliAction) -> Self {
+        match value {
+            AppAutomationCliAction::ResetUi => Self::ResetUi,
+            AppAutomationCliAction::ShowCreator => Self::ShowCreator,
+            AppAutomationCliAction::HideCreator => Self::HideCreator,
+            AppAutomationCliAction::ShowVoiceChat => Self::ShowVoiceChat,
+            AppAutomationCliAction::HideVoiceChat => Self::HideVoiceChat,
+            AppAutomationCliAction::ShowTranscriptionOverlay => Self::ShowTranscriptionOverlay,
+            AppAutomationCliAction::HideTranscriptionOverlay => Self::HideTranscriptionOverlay,
+            AppAutomationCliAction::TriggerTrayShowAgent => Self::TriggerTrayShowAgent,
+            AppAutomationCliAction::TriggerTrayOpenCreator => Self::TriggerTrayOpenCreator,
+            AppAutomationCliAction::TriggerTrayCompleteSetup => Self::TriggerTrayCompleteSetup,
+            AppAutomationCliAction::TriggerTrayRunOnboarding => Self::TriggerTrayRunOnboarding,
+            AppAutomationCliAction::TriggerDockReopen => Self::TriggerDockReopen,
+        }
+    }
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum MigrateKind {
     Raw,
@@ -112,11 +165,34 @@ async fn main() -> Result<()> {
     // Handle subcommands
     match cli.command {
         Some(Commands::Transcribe(args)) => handle_transcribe_command(args).await,
+        Some(Commands::App { command }) => handle_app_command(command),
         Some(Commands::MigrateHistory {
             dry_run,
             assume_kind,
         }) => handle_migrate_history_command(dry_run, assume_kind),
         Some(Commands::Daemon) | None => run_daemon().await,
+    }
+}
+
+fn handle_app_command(command: AppCommand) -> Result<()> {
+    use anyhow::bail;
+    use codescribe::ipc::{IpcCommand, IpcResponse, send_command_blocking};
+
+    let response = match command {
+        AppCommand::State => send_command_blocking(&IpcCommand::GetAppAutomationState),
+        AppCommand::Action { action } => send_command_blocking(&IpcCommand::RunAppAutomation {
+            action: action.into(),
+        }),
+    }
+    .map_err(anyhow::Error::msg)?;
+
+    match response {
+        IpcResponse::AppAutomationState(state) => {
+            println!("{}", serde_json::to_string_pretty(&state)?);
+            Ok(())
+        }
+        IpcResponse::Error(message) => bail!(message),
+        other => bail!("Unexpected IPC response for app command: {:?}", other),
     }
 }
 
@@ -490,8 +566,32 @@ async fn run_daemon() -> Result<()> {
     use tokio::runtime::Handle;
 
     eprintln!("CodeScribe daemon starting...");
+
+    // ── Build metadata ──
+    info!(
+        "CodeScribe {} | build={} | profile={} | rustc={} | exe={}",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("CODESCRIBE_BUILD_COMMIT").unwrap_or("dev"),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        option_env!("CODESCRIBE_RUSTC_VERSION").unwrap_or("unknown"),
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "unknown".into()),
+    );
+
     let config = Config::load();
     let user_settings = UserSettings::load();
+    let automation_mode = codescribe::app_automation_mode_enabled();
+
+    if automation_mode {
+        info!(
+            "App automation mode enabled: skipping Whisper preload, permissions bootstrap, and hotkey registration"
+        );
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -504,12 +604,14 @@ async fn run_daemon() -> Result<()> {
         codescribe_core::attachment::AttachmentStore::cleanup_old(7);
     });
 
-    codescribe::whisper::init().context("Failed to initialize Whisper")?;
+    if !automation_mode {
+        codescribe::whisper::init().context("Failed to initialize Whisper")?;
+    }
     let controller = Arc::new(RecordingController::new());
     #[cfg(target_os = "macos")]
     codescribe::controller::register_overlay_controller(Arc::clone(&controller));
     #[cfg(target_os = "macos")]
-    {
+    if !automation_mode {
         codescribe::os::permissions::check_all_permissions();
 
         if codescribe::should_show_onboarding() {
@@ -517,7 +619,9 @@ async fn run_daemon() -> Result<()> {
         }
     }
 
-    sync_hotkey_config(&config);
+    if !automation_mode {
+        sync_hotkey_config(&config);
+    }
 
     let ipc_controller = Arc::clone(&controller);
     tokio::spawn(async move {
@@ -634,9 +738,10 @@ async fn run_daemon() -> Result<()> {
     //
     // The daemon is useful, but if it survives app restarts it can confuse macOS
     // permissions / input monitoring workflows. Turn it on explicitly when needed.
-    let quality_autostart = user_settings
-        .quality_daemon_autostart
-        .unwrap_or_else(|| env_bool("CODESCRIBE_AUTOSTART_QUALITY_DAEMON", false));
+    let quality_autostart = !automation_mode
+        && user_settings
+            .quality_daemon_autostart
+            .unwrap_or_else(|| env_bool("CODESCRIBE_AUTOSTART_QUALITY_DAEMON", false));
     let quality_child = if quality_autostart {
         spawn_quality_daemon()
     } else {

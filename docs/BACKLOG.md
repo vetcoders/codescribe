@@ -43,16 +43,16 @@
 
 ## 📋 Planned Features
 
-### 1. Tauri GUI (Voice Lab)
+### 1. Native Creator Studio
 
-- **Status**: 📋 Not started
-- **Goal**: Standalone GUI app for voice training and settings
-- **Architecture**: Tauri + Leptos WASM, imports `codescribe-core`
+- **Status**: 🚧 In progress
+- **Goal**: Keep growing the existing native AppKit Creator / Settings surface instead of adding a second desktop shell
+- **Architecture**: Pure Rust + AppKit, reusing `app/ui/bootstrap/` and overlay entrypoints
 - **Features**:
-  - Voice Lab (record/playback/compare)
-  - Teacher mode (side-by-side correction)
-  - Visual settings editor
-- **Priority**: Low (current overlay covers most needs)
+  - Creator launchpad for setup + daily tuning
+  - Voice Lab workflow surface
+  - richer guided testing / comparison tools
+- **Priority**: High (this is the product-facing GUI we already ship)
 
 ### 2. TTS Integration
 

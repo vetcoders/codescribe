@@ -682,8 +682,9 @@ impl RecordingController {
                 Err(error) => warn!("Model manager unavailable during startup: {error}"),
             }
 
-            // Initialize Whisper engine if not already done (daemon pre-inits)
-            if !crate::whisper::is_initialized()
+            if crate::app_automation_mode_enabled() {
+                info!("Skipping Whisper initialization in app automation mode");
+            } else if !crate::whisper::is_initialized()
                 && let Err(e) = crate::whisper::init()
             {
                 warn!("Failed to initialize Whisper engine: {}", e);
@@ -758,11 +759,14 @@ impl RecordingController {
         }
 
         // Initialize Whisper engine if not already done (daemon pre-inits)
-        if !cfg!(test)
-            && !crate::whisper::is_initialized()
-            && let Err(e) = crate::whisper::init()
-        {
-            warn!("Failed to initialize Whisper engine: {}", e);
+        if !cfg!(test) {
+            if crate::app_automation_mode_enabled() {
+                info!("Skipping Whisper initialization in app automation mode");
+            } else if !crate::whisper::is_initialized()
+                && let Err(e) = crate::whisper::init()
+            {
+                warn!("Failed to initialize Whisper engine: {}", e);
+            }
         }
 
         setup_voice_chat_send_callback(Arc::clone(&config));

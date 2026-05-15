@@ -29,10 +29,7 @@ use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
 use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
-use objc2_app_kit::{
-    NSBackingStoreType, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
-};
+use objc2_app_kit::NSWindowStyleMask;
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -41,13 +38,13 @@ use crate::config::ShortcutBinding;
 use crate::os::hotkeys::ModeHotkeyBindings;
 
 use crate::ui_helpers::{
-    LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, apply_tafla_surface, button_set_action,
-    button_style, chat_header_layout, chat_input_row_layout, color_clear, color_label,
-    color_secondary_label, create_button, create_flipped_vertical_stack_view,
-    create_glass_effect_view_with, create_label, create_scrollable_text_view,
-    create_vertical_stack_view, layout_region_frame_for_view, ns_string, set_button_symbol,
-    set_focus_ring, set_glass_effect_content_view, set_hidden, set_tooltip,
-    style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha, window_show,
+    LabelConfig, add_subview, apply_tafla_surface, button_set_action, button_style,
+    chat_header_layout, chat_input_row_layout, color_clear, color_label, color_secondary_label,
+    create_borderless_tafla_window_with_class, create_button, create_flipped_vertical_stack_view,
+    create_label, create_scrollable_text_view, create_tafla_single_shell,
+    create_vertical_stack_view, floating_tafla_collection_behavior, layout_region_frame_for_view,
+    ns_string, release_object, set_button_symbol, set_focus_ring, set_hidden, set_tooltip,
+    style_toolbar_icon_button, ui_colors, ui_tokens, window_discard, window_set_alpha, window_show,
 };
 
 use api::update_active_tab_impl;
@@ -134,8 +131,7 @@ fn show_voice_chat_overlay_impl() {
 
                     let _: () = msg_send![window, orderFrontRegardless];
                     let _: () = msg_send![window, setAlphaValue: 1.0f64];
-                    let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
-                        | NSWindowCollectionBehavior::FullScreenAuxiliary;
+                    let collection_behavior = floating_tafla_collection_behavior();
                     let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
 
                     if let Some(blur_ptr) = blur_ptr {
@@ -211,27 +207,18 @@ fn show_voice_chat_overlay_impl() {
         };
 
         let overlay_window_class = overlay_window_class();
-        let window: Id = msg_send![overlay_window_class, alloc];
         let style_mask = NSWindowStyleMask::Borderless
             | NSWindowStyleMask::FullSizeContentView
             | NSWindowStyleMask::Resizable;
-        let backing = NSBackingStoreType::Buffered;
-        let window: Id = msg_send![
-            window,
-            initWithContentRect: frame
-            styleMask: style_mask
-            backing: backing
-            defer: false
-        ];
-
-        let _: () = msg_send![window, setTitleVisibility: 1];
-        let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
-        let _: () = msg_send![window, setMovableByWindowBackground: true];
-        let _: () = msg_send![window, setOpaque: false];
-        let _: () = msg_send![window, setBackgroundColor: color_clear()];
-        let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
-        // Keep the window instance alive even after close; we manage lifecycle explicitly.
-        let _: () = msg_send![window, setReleasedWhenClosed: false];
+        let Some(window) = create_borderless_tafla_window_with_class(
+            overlay_window_class,
+            frame,
+            style_mask,
+            true,
+        ) else {
+            warn!("Failed to init voice chat overlay window");
+            return;
+        };
         let _: () = msg_send![window, setContentMinSize: CGSize::new(380.0, 360.0)];
         // Cap at sensible max: width 1000px (chat bubbles don't need more),
         // height = screen visible height (scrolling handles overflow).
@@ -244,8 +231,7 @@ fn show_voice_chat_overlay_impl() {
                 msg_send![window, setContentMaxSize: CGSize::new(max_w, visible.size.height)];
         }
         // Make sure the overlay shows up even when the user is in a fullscreen Space.
-        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary;
+        let collection_behavior = floating_tafla_collection_behavior();
         let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
 
         let delegate_class = window_delegate_class();
@@ -253,6 +239,12 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![window, setDelegate: window_delegate];
 
         let window_content_view: Id = msg_send![window, contentView];
+        if window_content_view.is_null() {
+            warn!("Failed to get voice chat content view");
+            window_discard(window);
+            release_object(window_delegate);
+            return;
+        }
         let ns_mut_array = Class::get("NSMutableArray").unwrap();
         let window_drag_types: Id = msg_send![ns_mut_array, array];
         let _: () = msg_send![window_drag_types, addObject: ns_string("public.file-url")];
@@ -263,16 +255,14 @@ fn show_voice_chat_overlay_impl() {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(window_width, window_height),
         );
-        let blur_view: Id = create_glass_effect_view_with(
-            blur_frame,
-            NSVisualEffectMaterial::HUDWindow,
-            NSVisualEffectBlendingMode::BehindWindow,
-            NSVisualEffectState::Active,
-        );
-        let _: () = msg_send![
-            blur_view,
-            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
-        ];
+        let Some((blur_view, glass_content_view)) =
+            create_tafla_single_shell(window_content_view, blur_frame)
+        else {
+            warn!("Failed to attach voice chat Tafla shell");
+            window_discard(window);
+            release_object(window_delegate);
+            return;
+        };
         let layer: Id = msg_send![blur_view, layer];
         if !layer.is_null() {
             let bg = ui_colors::surface_glass();
@@ -281,14 +271,6 @@ fn show_voice_chat_overlay_impl() {
             apply_tafla_surface(layer, true);
             let _: () = msg_send![layer, setMasksToBounds: true];
         }
-        add_subview(window_content_view, blur_view);
-        let glass_content_view: Id = msg_send![Class::get("NSView").unwrap(), alloc];
-        let glass_content_view: Id = msg_send![glass_content_view, initWithFrame: blur_frame];
-        let _: () = msg_send![
-            glass_content_view,
-            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
-        ];
-        let _: bool = set_glass_effect_content_view(blur_view, glass_content_view);
         let bounds: CGRect = msg_send![blur_view, bounds];
         let content_bounds = layout_region_frame_for_view(blur_view).unwrap_or(bounds);
 
@@ -1057,58 +1039,76 @@ fn show_voice_chat_overlay_impl() {
         set_hidden(input_bar, true);
 
         // Phase 3 — store widget pointers into state (short lock scope).
+        let mut discard_duplicate = false;
         let (has_messages, desired_tab, status_base_text) = {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            state.window = Some(window as usize);
-            state.window_delegate = Some(window_delegate as usize);
-            state.blur_view = Some(blur_view as usize);
-            state.split_view_controller = Some(split_controller as usize);
-            state.split_sidebar_item = Some(sidebar_item as usize);
-            state.split_content_item = Some(content_item as usize);
-            state.split_sidebar_container = Some(sidebar_view as usize);
-            state.split_content_container = Some(content_view as usize);
-            state.title_label = Some(title_label as usize);
-            state.status_pill = Some(status_pill as usize);
-            state.status_pill_label = Some(status_label as usize);
-            state.status_pill_dot = Some(dot as usize);
-            state.tab_drawer_button = Some(tab_drawer_button as usize);
-            state.tab_agent_button = Some(tab_agent_button as usize);
-            state.tab_settings_button = Some(tab_settings_button as usize);
-            state.favorites_button = Some(favorites_button as usize);
-            state.help_button = Some(help_button as usize);
-            state.close_button = Some(close_button as usize);
-            state.drawer_scroll_view = Some(drawer_scroll as usize);
-            state.drawer_container = Some(drawer_container as usize);
-            state.drawer_edge_effect = Some(drawer_edge_effect as usize);
-            state.search_field = Some(search_field as usize);
-            state.search_label = Some(search_label as usize);
-            state.agent_scroll_view = Some(agent_scroll as usize);
-            state.agent_container = Some(agent_container as usize);
-            state.agent_input_bar = Some(input_bar as usize);
-            state.agent_input_scroll_view = Some(agent_input_scroll as usize);
-            state.agent_input_text_view = Some(agent_input_text_view as usize);
-            state.agent_input_field = None;
-            state.agent_attach_button = Some(agent_attach_button as usize);
-            state.agent_send_button = Some(agent_send_button as usize);
-            state.attachment_chip_strip = Some(chip_scroll as usize);
-            state.action_handler = Some(action_handler as usize);
-            // Restore persisted zoom level from settings.json.
-            if let Some(zoom) = codescribe_core::config::UserSettings::load().chat_zoom {
-                state.zoom_level = zoom.clamp(0.75, 2.0);
-            }
-            let pending_tab = state.pending_tab.take();
-            let has_messages = !state.messages.is_empty();
-            let desired_tab = if let Some(tab) = pending_tab {
-                tab
-            } else if has_messages {
-                Tab::Agent
+            if state.window.is_some() {
+                discard_duplicate = true;
+                (
+                    false,
+                    state.pending_tab.unwrap_or(state.active_tab),
+                    state.status_base_text.clone(),
+                )
             } else {
-                state.active_tab
-            };
-            state.active_tab = desired_tab;
-            let status_base_text = state.status_base_text.clone();
-            (has_messages, desired_tab, status_base_text)
+                state.window = Some(window as usize);
+                state.window_delegate = Some(window_delegate as usize);
+                state.blur_view = Some(blur_view as usize);
+                state.split_view_controller = Some(split_controller as usize);
+                state.split_sidebar_item = Some(sidebar_item as usize);
+                state.split_content_item = Some(content_item as usize);
+                state.split_sidebar_container = Some(sidebar_view as usize);
+                state.split_content_container = Some(content_view as usize);
+                state.title_label = Some(title_label as usize);
+                state.status_pill = Some(status_pill as usize);
+                state.status_pill_label = Some(status_label as usize);
+                state.status_pill_dot = Some(dot as usize);
+                state.tab_drawer_button = Some(tab_drawer_button as usize);
+                state.tab_agent_button = Some(tab_agent_button as usize);
+                state.tab_settings_button = Some(tab_settings_button as usize);
+                state.favorites_button = Some(favorites_button as usize);
+                state.help_button = Some(help_button as usize);
+                state.close_button = Some(close_button as usize);
+                state.drawer_scroll_view = Some(drawer_scroll as usize);
+                state.drawer_container = Some(drawer_container as usize);
+                state.drawer_edge_effect = Some(drawer_edge_effect as usize);
+                state.search_field = Some(search_field as usize);
+                state.search_label = Some(search_label as usize);
+                state.agent_scroll_view = Some(agent_scroll as usize);
+                state.agent_container = Some(agent_container as usize);
+                state.agent_input_bar = Some(input_bar as usize);
+                state.agent_input_scroll_view = Some(agent_input_scroll as usize);
+                state.agent_input_text_view = Some(agent_input_text_view as usize);
+                state.agent_input_field = None;
+                state.agent_attach_button = Some(agent_attach_button as usize);
+                state.agent_send_button = Some(agent_send_button as usize);
+                state.attachment_chip_strip = Some(chip_scroll as usize);
+                state.action_handler = Some(action_handler as usize);
+                // Restore persisted zoom level from settings.json.
+                if let Some(zoom) = codescribe_core::config::UserSettings::load().chat_zoom {
+                    state.zoom_level = zoom.clamp(0.75, 2.0);
+                }
+                let pending_tab = state.pending_tab.take();
+                let has_messages = !state.messages.is_empty();
+                let desired_tab = if let Some(tab) = pending_tab {
+                    tab
+                } else if has_messages {
+                    Tab::Agent
+                } else {
+                    state.active_tab
+                };
+                state.active_tab = desired_tab;
+                let status_base_text = state.status_base_text.clone();
+                (has_messages, desired_tab, status_base_text)
+            }
         }; // OVERLAY_STATE released — safe to perform AppKit window operations.
+
+        if discard_duplicate {
+            warn!("Voice chat overlay created concurrently; discarding duplicate");
+            window_discard(window);
+            release_object(window_delegate);
+            release_object(action_handler);
+            return;
+        }
 
         // Phase 4 — show window (no lock held; avoids nested-runloop deadlock).
         window_set_alpha(window, 0.0);
@@ -1216,5 +1216,21 @@ mod tests {
         });
         assert!(hold.contains("Ctrl+Option"));
         assert!(toggle.contains("Right"));
+    }
+
+    #[test]
+    fn voice_chat_overlay_source_uses_shared_tafla_window_contract() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/app/ui/voice_chat/mod.rs"
+        ));
+        let overlay_impl = source
+            .split("fn show_voice_chat_overlay_impl()")
+            .nth(1)
+            .expect("voice chat overlay impl present");
+        assert!(overlay_impl.contains("create_borderless_tafla_window_with_class("));
+        assert!(overlay_impl.contains("create_tafla_single_shell("));
+        assert!(!overlay_impl.contains("create_glass_effect_view_with("));
+        assert!(!overlay_impl.contains("set_glass_effect_content_view("));
     }
 }

@@ -73,7 +73,7 @@
 {"term": "idempotent", "mispronunciations": ["ajdempotent", "idem potent", "idem potent"], "category": "net"}
 {"term": "jq", "mispronunciations": ["dżej ku", "jot ku", "dżej kiu"], "category": "cmd"}
 {"term": "latency", "mispronunciations": ["lejten si", "lejten sji", "lej ten si"], "category": "net"}
-{"term": "loctree", "mispronunciations": ["log tree", "log three", "log 3", "log3", "loc tree", "lock tree", "lock three", "logTree", "logtri", "eloksy", "e loksy", "eloksji"], "category": "tools"}
+{"term": "loctree", "mispronunciations": ["log tree", "log three", "log 3", "log3", "loc tree", "lock tree", "lock three", "logTree", "logtri", "eloksy", "e loksy", "eloksji", "lock3", "LOCK3", "lok 3"], "category": "tools"}
 {"term": "merge", "mispronunciations": ["merdż", "merdżu"], "category": "git"}
 {"term": "mlx_embeddings", "mispronunciations": ["em el eks embeddings", "mlx embeddings", "emeliks embeddings"], "category": "ai"}
 {"term": "multipart/form-data", "mispronunciations": ["multi part form data", "multi part formdejta", "multipart form data"], "category": "net"}
@@ -149,3 +149,5 @@
 {"term": "firewall", "mispronunciations": ["father", "fajerłol", "fire wall"], "category": "networking"}
 {"term": "load balancer", "mispronunciations": ["lot balancer", "load balanser"], "category": "networking"}
 {"term": "sticky sessions", "mispronunciations": ["stiki sessions", "sticky seszns"], "category": "networking"}
+{"term": "plik WAV", "mispronunciations": ["blik Wave", "plik wave", "blik wave", "plik łejf"], "category": "media"}
+{"term": "Toolchain", "mispronunciations": ["Tooltrain", "tool train", "tooltrain", "tulczejn"], "category": "tooling"}
