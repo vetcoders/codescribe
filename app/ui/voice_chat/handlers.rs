@@ -21,11 +21,12 @@ use crate::ui_helpers::{
 };
 
 use super::api::{
-    clear_overlay_state, commit_last_user_message_impl, discard_last_message_impl, filter_drawer,
-    handle_card_copy, handle_card_delete, handle_card_edit, handle_card_favorite,
-    reflow_agent_after_resize_impl, reflow_overlay_after_resize_impl, render_attachment_chips,
-    send_draft_message_impl, start_new_thread_impl, toggle_drawer_favorites_only_impl,
-    update_active_tab_impl, update_attach_button_ui,
+    clear_overlay_state, commit_last_user_message_impl, copy_assistant_bubble_from_recognizer,
+    discard_last_message_impl, filter_drawer, handle_card_copy, handle_card_delete,
+    handle_card_edit, handle_card_favorite, reflow_agent_after_resize_impl,
+    reflow_overlay_after_resize_impl, render_attachment_chips, send_draft_message_impl,
+    start_new_thread_impl, toggle_drawer_favorites_only_impl, update_active_tab_impl,
+    update_attach_button_ui,
 };
 use super::state::{ChatRole, OVERLAY_STATE, Tab, VoiceChatOverlayState};
 
@@ -171,6 +172,10 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onCopyMessage:),
                 on_copy_message as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onAssistantBubbleClick:),
+                on_assistant_bubble_click as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onCardCopy:),
@@ -1138,6 +1143,10 @@ extern "C" fn on_copy_message(_this: &Object, _cmd: Sel, sender: Id) {
     if let Some(message) = state.messages.get(index) {
         copy_to_clipboard(&message.text);
     }
+}
+
+extern "C" fn on_assistant_bubble_click(_this: &Object, _cmd: Sel, sender: Id) {
+    copy_assistant_bubble_from_recognizer(sender);
 }
 
 extern "C" fn on_card_copy(_this: &Object, _cmd: Sel, sender: Id) {

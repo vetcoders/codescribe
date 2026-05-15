@@ -322,6 +322,30 @@ pub fn export_chat_markdown(assistant_only: bool) -> String {
     chat_markdown_from_messages(&state.messages, assistant_only)
 }
 
+pub(super) fn copy_assistant_bubble_from_recognizer(sender: Id) {
+    if sender.is_null() {
+        return;
+    }
+    let recognizer_ptr = sender as usize;
+    let text = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .agent_bubble_click_recognizers
+            .iter()
+            .find(|(ptr, _)| *ptr == recognizer_ptr)
+            .and_then(|(_, index)| state.messages.get(*index))
+            .filter(|message| message.role == ChatRole::Assistant && !message.text.is_empty())
+            .map(|message| message.text.clone())
+    };
+
+    if let Some(text) = text {
+        copy_to_clipboard(&text);
+        info!("Copied assistant bubble to clipboard");
+    } else {
+        debug!("Assistant bubble click did not resolve to copyable message text");
+    }
+}
+
 /// Save the current Agent chat thread as a `.md` file in `~/.codescribe/transcriptions/YYYY-MM-DD/`.
 ///
 /// Returns the created path on success.
@@ -1238,6 +1262,47 @@ fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index: us
     }
 }
 
+fn release_agent_bubble_click_recognizers(state: &mut VoiceChatOverlayState) {
+    let recognizers = std::mem::take(&mut state.agent_bubble_click_recognizers);
+    for (recognizer_ptr, _) in recognizers {
+        unsafe {
+            crate::ui_helpers::release_object(recognizer_ptr as Id);
+        }
+    }
+}
+
+unsafe fn attach_assistant_bubble_click_recognizer(
+    state: &mut VoiceChatOverlayState,
+    bubble: Id,
+    message_index: usize,
+) {
+    unsafe {
+        let Some(target_ptr) = state.action_handler else {
+            return;
+        };
+        let Some(ns_click_gesture) = Class::get("NSClickGestureRecognizer") else {
+            return;
+        };
+        let recognizer: Id = msg_send![ns_click_gesture, alloc];
+        if recognizer.is_null() {
+            return;
+        }
+        let recognizer: Id = msg_send![
+            recognizer,
+            initWithTarget: target_ptr as Id
+            action: sel!(onAssistantBubbleClick:)
+        ];
+        if recognizer.is_null() {
+            return;
+        }
+        let _: () = msg_send![recognizer, setNumberOfClicksRequired: 1_isize];
+        let _: () = msg_send![bubble, addGestureRecognizer: recognizer];
+        state
+            .agent_bubble_click_recognizers
+            .push((recognizer as usize, message_index));
+    }
+}
+
 fn finalize_user_message_impl(text: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
@@ -1642,6 +1707,7 @@ pub(super) fn update_chat_view_with_state(
             return;
         };
         let container = container_ptr as Id;
+        release_agent_bubble_click_recognizers(state);
         stack_view_clear(container);
         state.agent_bubble_views.clear();
 
@@ -1665,23 +1731,33 @@ pub(super) fn update_chat_view_with_state(
         }
 
         let mut last_bubble: Option<Id> = None;
-        for (index, message) in state.messages.iter().enumerate() {
-            let role = match message.role {
+        let message_count = state.messages.len();
+        for index in 0..message_count {
+            let message = &state.messages[index];
+            let message_role = message.role;
+            let message_text = message.text.clone();
+            let message_is_streaming = message.is_streaming;
+            let message_is_error = message.is_error;
+            let message_metadata = message_metadata(message);
+            let role = match message_role {
                 ChatRole::User => BubbleRole::User,
                 ChatRole::Assistant => BubbleRole::Assistant,
                 ChatRole::System => BubbleRole::System,
             };
             let (bubble, text_label) = create_bubble_view(BubbleConfig {
-                text: message.text.clone(),
+                text: message_text,
                 role,
                 max_width,
                 font_size: base_font * zoom,
-                is_streaming: message.is_streaming,
-                is_error: message.is_error,
-                metadata: Some(message_metadata(message)),
+                is_streaming: message_is_streaming,
+                is_error: message_is_error,
+                metadata: Some(message_metadata),
                 message_index: Some(index),
                 copy_action_target: state.action_handler.map(|p| p as Id),
             });
+            if message_role == ChatRole::Assistant {
+                attach_assistant_bubble_click_recognizer(state, bubble, index);
+            }
             stack_view_add(container, bubble);
             last_bubble = Some(bubble);
             state
@@ -1689,8 +1765,8 @@ pub(super) fn update_chat_view_with_state(
                 .push((bubble as usize, text_label as usize));
 
             // Add commit/discard action bar for draft user messages
-            if message.role == ChatRole::User
-                && index == state.messages.len() - 1
+            if message_role == ChatRole::User
+                && index == message_count - 1
                 && !state.auto_send_enabled
                 && !state.is_sending
             {
@@ -2783,6 +2859,7 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.agent_scroll_view = None;
     state.agent_container = None;
     state.agent_bubble_views.clear();
+    release_agent_bubble_click_recognizers(state);
     state.agent_input_bar = None;
     state.agent_input_scroll_view = None;
     state.agent_input_text_view = None;
