@@ -3111,17 +3111,27 @@ fn drawer_entry_matches_query(entry: &DrawerEntry, query_lower: &str) -> bool {
     if query_lower.is_empty() {
         return true;
     }
-    let path = entry.path.to_string_lossy();
-    let mut haystack =
-        String::with_capacity(path.len() + entry.preview.len() + entry.search_corpus.len() + 96);
+    // Path pollution guard: do NOT push entry.path (absolute) into the haystack.
+    // Every ThreadStore entry lives under `~/.codescribe/` or `~/Library/Application
+    // Support/CodeScribe/`, so any query overlapping the app data dir name (e.g.
+    // "codescribe", "thread", "users") would match all entries via leaked path
+    // components. Operator flagged 2026-05-24 ("threadstore, wyszukiwanie codescribe
+    // nie odfiltrowuje nic"). Keep file_name (local, useful for legacy file dates)
+    // and thread id (specific to the entry), drop absolute path.
+    let file_name_str = entry
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let mut haystack = String::with_capacity(
+        file_name_str.len() + entry.preview.len() + entry.search_corpus.len() + 64,
+    );
     haystack.push_str(entry_type_label(entry));
     haystack.push(' ');
     haystack.push_str(mode_label(entry.mode));
     haystack.push(' ');
-    haystack.push_str(&path);
-    haystack.push(' ');
-    if let Some(file_name) = entry.path.file_name().and_then(|name| name.to_str()) {
-        haystack.push_str(file_name);
+    if !file_name_str.is_empty() {
+        haystack.push_str(file_name_str);
         haystack.push(' ');
     }
     if let DrawerEntrySource::Thread { id } = &entry.source {
@@ -3498,6 +3508,49 @@ mod tests {
         assert!(is_drawer_unavailable_placeholder(&entry));
         assert!(drawer_entry_matches_query(&entry, "unavailable"));
         assert!(drawer_entry_matches_query(&entry, "error"));
+    }
+
+    #[test]
+    fn drawer_entry_matches_query_does_not_leak_absolute_path() {
+        // Operator regression 2026-05-24: search field "codescribe" should NOT
+        // match a ThreadStore entry whose preview/corpus do not contain
+        // "codescribe", even though the entry's absolute path lives under
+        // `~/.codescribe/threads/...`. Path pollution must not bypass the filter.
+        let entry = DrawerEntry {
+            source: DrawerEntrySource::Thread {
+                id: "t_2026-04-21_h15b5t".to_string(),
+            },
+            path: PathBuf::from(
+                "/Users/maciejgad/Library/Application Support/CodeScribe/threads/thread_t_2026-04-21_h15b5t.json",
+            ),
+            timestamp: SystemTime::now(),
+            mode: TranscriptionMode::Assistive,
+            preview: "ai failed output_text".to_string(),
+            search_corpus: "threadstore source:thread assistive thread:t_2026-04-21_h15b5t ai failed output_text"
+                .to_string(),
+            is_ai_formatted: false,
+            is_favorite: false,
+        };
+        // Negative cases — these strings exist ONLY in the leaked absolute path,
+        // not in any legitimate search vector.
+        assert!(
+            !drawer_entry_matches_query(&entry, "codescribe"),
+            "absolute path component leaked into haystack — filter would match all threads",
+        );
+        assert!(
+            !drawer_entry_matches_query(&entry, "library"),
+            "absolute path component leaked into haystack",
+        );
+        assert!(
+            !drawer_entry_matches_query(&entry, "application support"),
+            "absolute path component leaked into haystack",
+        );
+        // Positive cases — legitimate vectors still match.
+        assert!(drawer_entry_matches_query(&entry, "ai failed"));
+        assert!(drawer_entry_matches_query(&entry, "t_2026-04-21"));
+        assert!(drawer_entry_matches_query(&entry, "thread"));
+        assert!(drawer_entry_matches_query(&entry, "assistive"));
+        assert!(drawer_entry_matches_query(&entry, "threadstore"));
     }
 
     #[test]
