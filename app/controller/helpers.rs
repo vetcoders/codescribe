@@ -683,6 +683,7 @@ async fn run_agent_send_with_fallback(
     };
 
     if let Err(error) = agent_result {
+        warn!("Agent fallback triggered: reason={}", error);
         warn!(
             "Agent runtime failed, switching this response to legacy fallback: {}",
             error

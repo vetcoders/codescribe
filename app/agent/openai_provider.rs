@@ -9,6 +9,7 @@ use reqwest::Client;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
+use tracing::info;
 
 use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions, ToolDefinition,
@@ -17,8 +18,8 @@ use codescribe_core::llm::responses_streaming_manager::{
     ResponsesStreamingManager, StreamCallbacks,
 };
 
-const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 30_000;
-const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
+const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 
 #[derive(Clone)]
 pub struct OpenAiProvider {
@@ -54,6 +55,14 @@ impl OpenAiProvider {
             .build()
             .context("Failed to create OpenAI agent HTTP client")?;
 
+        info!(
+            "OpenAI agent provider configured (model={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
+            default_model,
+            initial_response_timeout.as_secs(),
+            inter_chunk_timeout.as_secs(),
+            use_previous_response_id
+        );
+
         Ok(Self {
             client,
             endpoint,
@@ -86,6 +95,26 @@ impl AgentProvider for OpenAiProvider {
         } else {
             None
         };
+        let previous_response_state = if previous_response_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            "present"
+        } else {
+            "absent"
+        };
+
+        info!(
+            "Agent provider request (model={}, messages={}, tools={}, previous_response_id={}, timeout={}s, inter_chunk_timeout={}s)",
+            model,
+            messages.len(),
+            tools.len(),
+            previous_response_state,
+            self.initial_response_timeout.as_secs(),
+            self.inter_chunk_timeout.as_secs()
+        );
 
         let request = OpenAiResponsesRequest {
             model,
@@ -159,6 +188,10 @@ impl AgentProvider for OpenAiProvider {
             data: data.to_vec(),
             media_type: media_type.to_string(),
         }
+    }
+
+    fn stream_timeouts(&self) -> Option<(Duration, Duration)> {
+        Some((self.initial_response_timeout, self.inter_chunk_timeout))
     }
 
     fn name(&self) -> &str {
@@ -383,9 +416,16 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_request_input_items, request_messages};
-    use codescribe_core::agent::{ContentBlock, Message, Role};
+    use super::{OpenAiProvider, build_request_input_items, request_messages};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use codescribe_core::agent::{
+        AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions,
+    };
+    use reqwest::Client;
     use serde_json::json;
+    use tokio::sync::Mutex;
 
     #[test]
     fn request_messages_replays_full_history_without_previous_response_id() {
@@ -466,5 +506,58 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["type"], "function_call_output");
         assert_eq!(items[0]["call_id"], "call_1");
+    }
+
+    #[tokio::test]
+    async fn stream_surfaces_sse_error_event_as_specific_agent_error() {
+        let mut server = mockito::Server::new_async().await;
+        let body = [
+            "event: error",
+            r#"data: {"error":{"message":"'list' object has no attribute 'uid'","code":"internal_error"}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: format!("{}/v1/responses", server.url()),
+            api_key: "test-key".to_string(),
+            default_model: "programmer".to_string(),
+            use_previous_response_id: false,
+            previous_response_id: Arc::new(Mutex::new(None)),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+        };
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("hello".to_string())],
+        )];
+
+        let mut rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("agent provider stream should start");
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("agent provider should emit an error event before timeout")
+            .expect("agent provider should emit one event");
+
+        match event {
+            AgentEvent::Error(message) => {
+                assert!(message.contains("Agent SSE error internal_error"));
+                assert!(message.contains("'list' object has no attribute 'uid'"));
+                assert!(!message.contains("AgentSession send failed"));
+            }
+            other => panic!("expected AgentEvent::Error, got {other:?}"),
+        }
+        mock.assert_async().await;
     }
 }

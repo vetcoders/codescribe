@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::{
     AgentEvent, AgentProvider, AgentUiEvent, ContentBlock, Message, Role, StreamOptions,
@@ -75,6 +75,24 @@ impl AgentSession {
     ) -> Result<Receiver<AgentEvent>> {
         let mut attempt = 1usize;
         loop {
+            if let Some((initial_timeout, inter_chunk_timeout)) = self.provider.stream_timeouts() {
+                info!(
+                    "Agent send attempt {}/{} (provider={}, timeout={}s, inter_chunk_timeout={}s)",
+                    attempt,
+                    AGENT_STREAM_START_RETRY_MAX_ATTEMPTS,
+                    self.provider.name(),
+                    initial_timeout.as_secs(),
+                    inter_chunk_timeout.as_secs()
+                );
+            } else {
+                info!(
+                    "Agent send attempt {}/{} (provider={}, timeout=unknown)",
+                    attempt,
+                    AGENT_STREAM_START_RETRY_MAX_ATTEMPTS,
+                    self.provider.name()
+                );
+            }
+
             match self
                 .provider
                 .stream(&self.messages, tool_definitions, options)
@@ -200,6 +218,11 @@ impl AgentSession {
                         self.thread_id = response_id;
                     }
                     AgentEvent::Error(message) => {
+                        warn!(
+                            "Agent provider stream error (provider={}): {}",
+                            self.provider.name(),
+                            message
+                        );
                         send_ui_event(&self.ui_tx, AgentUiEvent::Error(message.clone())).await;
                         return Err(anyhow::anyhow!("Provider stream error: {message}"));
                     }
