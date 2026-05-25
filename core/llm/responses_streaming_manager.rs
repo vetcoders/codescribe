@@ -97,6 +97,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         let mut response_id: Option<String> = None;
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut current_event: Option<String> = None;
         let mut saw_done = false;
         let mut last_sequence_number: Option<u64> = None;
         let stream_deadline = tokio::time::Instant::now() + STREAM_DEADLINE;
@@ -206,14 +207,28 @@ impl<'a> ResponsesStreamingManager<'a> {
                     continue;
                 }
 
+                if let Some(event) = line
+                    .strip_prefix("event: ")
+                    .or_else(|| line.strip_prefix("event:"))
+                {
+                    current_event = Some(event.trim().to_string());
+                    continue;
+                }
+
                 if let Some(data) = line
                     .strip_prefix("data: ")
                     .or_else(|| line.strip_prefix("data:"))
                 {
                     let data = data.trim_start();
+                    let data_event = current_event.take();
                     if data == "[DONE]" {
                         saw_done = true;
                         break;
+                    }
+
+                    if data_event.as_deref() == Some("error") {
+                        let error = parse_sse_error_event(data);
+                        anyhow::bail!("{}", format_sse_error("SSE", &error));
                     }
 
                     if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
@@ -267,6 +282,12 @@ impl<'a> ResponsesStreamingManager<'a> {
                                         reasoning_done = Some(text);
                                     }
                                 }
+                            }
+                            "response.output_item.added" | "response.output_item.done" => {
+                                log_sse_lifecycle_event("SSE", &chunk);
+                            }
+                            "response.content_part.added" | "response.content_part.done" => {
+                                log_sse_lifecycle_event("SSE", &chunk);
                             }
                             "response.completed" | "response.done" => {
                                 saw_completed = true;
@@ -408,6 +429,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         let mut reasoning_text = String::new();
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut current_event: Option<String> = None;
 
         loop {
             let next_chunk = match tokio::time::timeout(self.inter_chunk_timeout, stream.next())
@@ -438,11 +460,20 @@ impl<'a> ResponsesStreamingManager<'a> {
                     continue;
                 }
 
+                if let Some(event) = line
+                    .strip_prefix("event: ")
+                    .or_else(|| line.strip_prefix("event:"))
+                {
+                    current_event = Some(event.trim().to_string());
+                    continue;
+                }
+
                 if let Some(data) = line
                     .strip_prefix("data: ")
                     .or_else(|| line.strip_prefix("data:"))
                 {
                     let data = data.trim_start();
+                    let data_event = current_event.take();
                     if data == "[DONE]" {
                         return Ok(ResponsesStreamOutput {
                             assistant_text,
@@ -453,6 +484,11 @@ impl<'a> ResponsesStreamingManager<'a> {
                             },
                             response_id: Some(response_id.to_string()),
                         });
+                    }
+
+                    if data_event.as_deref() == Some("error") {
+                        let error = parse_sse_error_event(data);
+                        anyhow::bail!("{}", format_sse_error("Resume SSE", &error));
                     }
 
                     if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
@@ -472,6 +508,12 @@ impl<'a> ResponsesStreamingManager<'a> {
                                     }
                                     reasoning_text.push_str(&delta);
                                 }
+                            }
+                            "response.output_item.added" | "response.output_item.done" => {
+                                log_sse_lifecycle_event("Resume SSE", &chunk);
+                            }
+                            "response.content_part.added" | "response.content_part.done" => {
+                                log_sse_lifecycle_event("Resume SSE", &chunk);
                             }
                             "response.completed" | "response.done" => {
                                 debug!(
@@ -544,6 +586,7 @@ async fn run_agent_stream(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut current_event: Option<String> = None;
     let mut saw_done = false;
     let stream_deadline = tokio::time::Instant::now() + STREAM_DEADLINE;
 
@@ -579,6 +622,14 @@ async fn run_agent_stream(
                 continue;
             }
 
+            if let Some(event) = line
+                .strip_prefix("event: ")
+                .or_else(|| line.strip_prefix("event:"))
+            {
+                current_event = Some(event.trim().to_string());
+                continue;
+            }
+
             let Some(data) = line
                 .strip_prefix("data: ")
                 .or_else(|| line.strip_prefix("data:"))
@@ -586,9 +637,15 @@ async fn run_agent_stream(
                 continue;
             };
             let data = data.trim_start();
+            let data_event = current_event.take();
             if data == "[DONE]" {
                 saw_done = true;
                 break;
+            }
+
+            if data_event.as_deref() == Some("error") {
+                let error = parse_sse_error_event(data);
+                anyhow::bail!("{}", format_sse_error("Agent SSE", &error));
             }
 
             let chunk = match serde_json::from_str::<StreamChunk>(data) {
@@ -606,6 +663,7 @@ async fn run_agent_stream(
             }
 
             debug!("Agent SSE received event type={}", chunk.chunk_type);
+            log_sse_lifecycle_event("Agent SSE", &chunk);
 
             if let Some(event) =
                 parse_agent_event(&chunk, &mut tool_tracker, response_id.as_deref())
@@ -1010,6 +1068,109 @@ fn reasoning_content_available(reasoning_done: &Option<String>, reasoning_text: 
         || !reasoning_text.trim().is_empty()
 }
 
+#[derive(Debug, Clone)]
+struct SseErrorEvent {
+    code: Option<String>,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SseErrorEnvelope {
+    #[serde(default)]
+    error: Option<SseErrorDetail>,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SseErrorDetail {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default, rename = "type")]
+    error_type: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+fn parse_sse_error_event(data: &str) -> SseErrorEvent {
+    let parsed = serde_json::from_str::<SseErrorEnvelope>(data).ok();
+    let code = parsed.as_ref().and_then(|envelope| {
+        envelope
+            .error
+            .as_ref()
+            .and_then(|error| {
+                error
+                    .code
+                    .as_deref()
+                    .or(error.error_type.as_deref())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+            })
+            .or_else(|| {
+                envelope
+                    .code
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+            })
+    });
+    let message = parsed
+        .as_ref()
+        .and_then(|envelope| {
+            envelope
+                .error
+                .as_ref()
+                .and_then(|error| error.message.as_deref())
+                .or(envelope.message.as_deref())
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| data.trim().to_string());
+
+    SseErrorEvent { code, message }
+}
+
+fn format_sse_error(prefix: &str, error: &SseErrorEvent) -> String {
+    if let Some(code) = error.code.as_deref() {
+        format!("{prefix} error {code}: {}", error.message)
+    } else {
+        format!("{prefix} error: {}", error.message)
+    }
+}
+
+fn log_sse_lifecycle_event(prefix: &str, chunk: &StreamChunk) {
+    match chunk.chunk_type.as_str() {
+        "response.output_item.added" | "response.output_item.done" => {
+            let item_type = chunk
+                .item
+                .as_ref()
+                .map(|item| item.item_type.as_str())
+                .unwrap_or("unknown");
+            debug!(
+                "{} lifecycle event type={} item_type={}",
+                prefix, chunk.chunk_type, item_type
+            );
+        }
+        "response.content_part.added" | "response.content_part.done" => {
+            let part_type = chunk
+                .part
+                .as_ref()
+                .map(|part| part.part_type.as_str())
+                .unwrap_or("unknown");
+            debug!(
+                "{} lifecycle event type={} part_type={}",
+                prefix, chunk.chunk_type, part_type
+            );
+        }
+        _ => {}
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct StreamChunk {
     #[serde(rename = "type")]
@@ -1028,6 +1189,8 @@ struct StreamChunk {
     name: Option<String>,
     #[serde(default)]
     item: Option<StreamItem>,
+    #[serde(default)]
+    part: Option<StreamContentPart>,
     #[serde(default)]
     response: Option<StreamResponse>,
     #[serde(default)]
@@ -1199,6 +1362,118 @@ mod tests {
         assert_eq!(output.assistant_text, "Reasoned fallback");
         assert_eq!(output.reasoning_text.as_deref(), Some("Reasoned fallback"));
         assert_eq!(output.response_id.as_deref(), Some("resp_reasoning"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn stream_bails_with_specific_sse_error_event() {
+        let mut server = mockito::Server::new_async().await;
+        let body = [
+            "event: error",
+            r#"data: {"error":{"message":"'list' object has no attribute 'uid'","code":"internal_error"}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+        let endpoint = format!("{}/v1/responses", server.url());
+        let client = Client::new();
+        let manager = ResponsesStreamingManager::new(
+            &client,
+            &endpoint,
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+
+        let error = manager
+            .stream(&json!({"model": "programmer", "stream": true}))
+            .await
+            .expect_err("SSE error events should bail before empty-content fallback");
+        let message = error.to_string();
+
+        assert!(message.contains("SSE error internal_error"));
+        assert!(message.contains("'list' object has no attribute 'uid'"));
+        assert!(!message.contains("No text content in SSE stream"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn stream_handles_output_item_and_content_part_lifecycle_events() {
+        let mut server = mockito::Server::new_async().await;
+        let body = [
+            r#"data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_full"}}"#,
+            "",
+            r#"data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_full"}}"#,
+            "",
+            r#"data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"id":"rs_1","type":"reasoning"}}"#,
+            "",
+            r#"data: {"type":"response.reasoning_summary_text.delta","sequence_number":3,"item_id":"rs_1","delta":"Thinking"}"#,
+            "",
+            r#"data: {"type":"response.reasoning_summary_text.done","sequence_number":4,"item_id":"rs_1","text":"Thinking"}"#,
+            "",
+            r#"data: {"type":"response.output_item.done","sequence_number":5,"output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[{"type":"reasoning_summary_text","text":"Thinking"}]}}"#,
+            "",
+            r#"data: {"type":"response.output_item.added","sequence_number":6,"output_index":1,"item":{"id":"msg_1","type":"message"}}"#,
+            "",
+            r#"data: {"type":"response.content_part.added","sequence_number":7,"output_index":1,"content_index":0,"part":{"type":"output_text"}}"#,
+            "",
+            r#"data: {"type":"response.output_text.delta","sequence_number":8,"output_index":1,"content_index":0,"delta":"Hello"}"#,
+            "",
+            r#"data: {"type":"response.output_text.delta","sequence_number":9,"output_index":1,"content_index":0,"delta":" world"}"#,
+            "",
+            r#"data: {"type":"response.output_text.done","sequence_number":10,"output_index":1,"content_index":0,"text":"Hello world"}"#,
+            "",
+            r#"data: {"type":"response.content_part.done","sequence_number":11,"output_index":1,"content_index":0,"part":{"type":"output_text","text":"Hello world"}}"#,
+            "",
+            r#"data: {"type":"response.output_item.done","sequence_number":12,"output_index":1,"item":{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"Hello world"}]}}"#,
+            "",
+            r#"data: {"type":"response.completed","sequence_number":13,"response":{"id":"resp_full","output":[{"type":"reasoning","content":[{"type":"reasoning_summary_text","text":"Thinking"}]},{"type":"message","content":[{"type":"output_text","text":"Hello world"}]}]}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+        let endpoint = format!("{}/v1/responses", server.url());
+        let client = Client::new();
+        let manager = ResponsesStreamingManager::new(
+            &client,
+            &endpoint,
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+
+        let output = manager
+            .stream(&json!({"model": "working-model", "stream": true}))
+            .await
+            .expect("full Responses SSE lifecycle should parse output_text");
+
+        assert_eq!(output.assistant_text, "Hello world");
+        assert_eq!(output.reasoning_text.as_deref(), Some("Thinking"));
+        assert_eq!(output.response_id.as_deref(), Some("resp_full"));
         mock.assert_async().await;
     }
 

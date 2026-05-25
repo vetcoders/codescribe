@@ -158,7 +158,9 @@ fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
 fn should_retry_provider_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     !(message.contains("No text content in SSE stream")
-        || message.contains("No text content in response"))
+        || message.contains("No text content in response")
+        || message.contains("SSE error internal_error")
+        || message.contains("SSE error bad_request"))
 }
 
 fn ollama_memory() -> &'static RwLock<Vec<MemoryMessage>> {
@@ -1560,6 +1562,12 @@ mod tests {
         )));
         assert!(!should_retry_provider_error(&anyhow::anyhow!(
             "No text content in response (id: resp_1)"
+        )));
+        assert!(!should_retry_provider_error(&anyhow::anyhow!(
+            "SSE error internal_error: backend failed"
+        )));
+        assert!(!should_retry_provider_error(&anyhow::anyhow!(
+            "SSE error bad_request: invalid input"
         )));
         assert!(should_retry_provider_error(&anyhow::anyhow!(
             "SSE stream inter-chunk timeout"
