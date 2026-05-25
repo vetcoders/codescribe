@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use codescribe::config::Config;
 use codescribe::qube_daemon::{LexiconSource, QubeDaemonConfig, run};
-use codescribe::qube_report::{MetricsReference, QualityReport, QualityReportConfig};
+use codescribe::qube_report::{
+    LocalTranscriptionMode, MetricsReference, QualityReport, QualityReportConfig,
+};
 
 /// Global mismatch counter for daemon mode
 static PENDING_MISMATCHES: AtomicUsize = AtomicUsize::new(0);
@@ -170,6 +172,13 @@ async fn main() -> Result<()> {
 
 /// Run a single quality loop iteration
 async fn run_single(args: &Args) -> Result<()> {
+    run_single_with_transcription(args, LocalTranscriptionMode::LocalWhisper).await
+}
+
+async fn run_single_with_transcription(
+    args: &Args,
+    local_transcription: LocalTranscriptionMode,
+) -> Result<()> {
     let config_dir = Config::config_dir();
     let input_dir = args
         .input
@@ -204,6 +213,7 @@ async fn run_single(args: &Args) -> Result<()> {
             ReferenceSourceArg::Cloud => MetricsReference::Cloud,
             ReferenceSourceArg::Ai => MetricsReference::AiFormatted,
         },
+        local_transcription,
     };
 
     let baseline_report = args.baseline.clone().map(|path| resolve_report_path(&path));
@@ -257,7 +267,9 @@ async fn run_daemon(args: Args) -> Result<()> {
         // Run with today's date filter, comparing local vs cloud
         let check_args = build_daemon_check_args(&args, date_filter);
 
-        match run_single(&check_args).await {
+        match run_single_with_transcription(&check_args, LocalTranscriptionMode::CodeScribeIpc)
+            .await
+        {
             Ok(()) => {
                 // Load the latest report to count mismatches
                 let mismatches = count_mismatches_from_latest_report(&config_dir);

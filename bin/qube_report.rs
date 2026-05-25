@@ -10,7 +10,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use codescribe::config::Config;
-use codescribe::qube_report::{MetricsReference, QualityReportConfig, run};
+use codescribe::qube_report::{LocalTranscriptionMode, MetricsReference, QualityReportConfig, run};
 
 #[derive(Parser)]
 #[command(name = "qube-report")]
@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
             ReferenceSourceArg::Corpus => MetricsReference::Corpus,
             ReferenceSourceArg::Cloud => MetricsReference::Cloud,
         },
+        local_transcription: LocalTranscriptionMode::LocalWhisper,
     };
 
     let out = run(report_config).await?;

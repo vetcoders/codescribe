@@ -1257,6 +1257,7 @@ mod tests {
             local_model: None,
             whisper_language: None,
             metrics_reference: "corpus".into(),
+            local_transcription: "local_whisper".into(),
         }
     }
 
