@@ -14,6 +14,7 @@ use super::ai_formatting::{AiReasoningCallback, AiStreamCallback};
 
 const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(3600);
 const STREAM_DEADLINE: Duration = Duration::from_secs(10 * 60);
+const REASONING_INTER_CHUNK_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone)]
 pub struct ResponsesStreamOutput {
@@ -108,12 +109,21 @@ impl<'a> ResponsesStreamingManager<'a> {
                 );
                 break;
             }
-            let next_chunk = match tokio::time::timeout(self.inter_chunk_timeout, stream.next())
-                .await
+            let chunk_timeout = if reasoning_content_available(&reasoning_done, &reasoning_text)
+                && assistant_text.is_empty()
+                && assistant_done.is_none()
             {
+                self.inter_chunk_timeout.max(REASONING_INTER_CHUNK_TIMEOUT)
+            } else {
+                self.inter_chunk_timeout
+            };
+            let next_chunk = match tokio::time::timeout(chunk_timeout, stream.next()).await {
                 Ok(chunk) => chunk,
                 Err(_) => {
-                    if !assistant_text.is_empty() || assistant_done.is_some() {
+                    if !assistant_text.is_empty()
+                        || assistant_done.is_some()
+                        || reasoning_content_available(&reasoning_done, &reasoning_text)
+                    {
                         let partial_len = assistant_text.len();
                         if let (Some(resp_id), Some(seq)) =
                             (response_id.as_deref(), last_sequence_number)
@@ -133,26 +143,49 @@ impl<'a> ResponsesStreamingManager<'a> {
                                     break;
                                 }
                                 Err(e) => {
+                                    if reasoning_content_available(&reasoning_done, &reasoning_text)
+                                        && assistant_text.is_empty()
+                                        && assistant_done.is_none()
+                                    {
+                                        warn!(
+                                            "SSE inter-chunk timeout after {:?} with reasoning but \
+                                             no output_text; resume failed: {}; falling back to \
+                                             reasoning summary",
+                                            chunk_timeout, e
+                                        );
+                                        break;
+                                    }
                                     anyhow::bail!(
                                         "SSE inter-chunk timeout after {:?} with {}B partial text; \
                                          resume failed: {}",
-                                        self.inter_chunk_timeout,
+                                        chunk_timeout,
                                         partial_len,
                                         e
                                     );
                                 }
                             }
                         }
+                        if reasoning_content_available(&reasoning_done, &reasoning_text)
+                            && assistant_text.is_empty()
+                            && assistant_done.is_none()
+                        {
+                            warn!(
+                                "SSE inter-chunk timeout after {:?} with reasoning but no \
+                                 output_text; resume unavailable; falling back to reasoning summary",
+                                chunk_timeout
+                            );
+                            break;
+                        }
                         anyhow::bail!(
                             "SSE inter-chunk timeout after {:?} with {}B partial text \
                              (resume unavailable)",
-                            self.inter_chunk_timeout,
+                            chunk_timeout,
                             partial_len
                         );
                     } else {
                         anyhow::bail!(
                             "SSE stream inter-chunk timeout after {:?} (no data received)",
-                            self.inter_chunk_timeout
+                            chunk_timeout
                         );
                     }
                 }
@@ -281,6 +314,20 @@ impl<'a> ResponsesStreamingManager<'a> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
+
+        let assistant_text = if assistant_text.is_empty() {
+            if let Some(reasoning_fallback) = reasoning_text.as_ref() {
+                warn!(
+                    "SSE stream ended without output_text after reasoning; returning reasoning \
+                     summary as fallback content"
+                );
+                reasoning_fallback.clone()
+            } else {
+                anyhow::bail!("No text content in SSE stream");
+            }
+        } else {
+            assistant_text
+        };
 
         if assistant_text.is_empty() {
             anyhow::bail!("No text content in SSE stream");
@@ -955,6 +1002,14 @@ fn fallback_reasoning(reasoning_done: Option<String>, reasoning_text: String) ->
     })
 }
 
+fn reasoning_content_available(reasoning_done: &Option<String>, reasoning_text: &str) -> bool {
+    reasoning_done
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|text| !text.is_empty())
+        || !reasoning_text.trim().is_empty()
+}
+
 #[derive(Debug, Deserialize)]
 struct StreamChunk {
     #[serde(rename = "type")]
@@ -1021,10 +1076,12 @@ fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<Strin
     let mut assistant_parts = Vec::new();
     let mut reasoning_parts = Vec::new();
 
-    for item in output.iter().filter(|o| o.item_type == "message") {
+    for item in output {
         let Some(parts) = item.content.as_ref() else {
             continue;
         };
+        let is_message = item.item_type == "message";
+        let is_reasoning = item.item_type == "reasoning";
 
         for part in parts {
             let text = part
@@ -1034,12 +1091,12 @@ fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<Strin
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
             match part.part_type.as_str() {
-                "output_text" | "text" => {
+                "output_text" | "text" if is_message => {
                     if let Some(text) = text {
                         assistant_parts.push(text.to_string());
                     }
                 }
-                "reasoning_summary_text" => {
+                "reasoning_summary_text" if is_message || is_reasoning => {
                     if let Some(text) = text {
                         reasoning_parts.push(text.to_string());
                     }
@@ -1062,11 +1119,13 @@ fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<Strin
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentEvent, StreamChunk, StreamOutputItem, ToolCallTracker, apply_auth_headers,
-        extract_output_channels, fallback_reasoning, parse_agent_event, validated_endpoint_url,
+        AgentEvent, ResponsesStreamingManager, StreamCallbacks, StreamChunk, StreamOutputItem,
+        ToolCallTracker, apply_auth_headers, extract_output_channels, fallback_reasoning,
+        parse_agent_event, reasoning_content_available, validated_endpoint_url,
     };
     use reqwest::Client;
     use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn fallback_reasoning_prefers_done_text() {
@@ -1088,6 +1147,62 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_content_available_tracks_delta_or_done_text() {
+        assert!(reasoning_content_available(&None, "thinking"));
+        assert!(reasoning_content_available(
+            &Some("done thinking".to_string()),
+            ""
+        ));
+        assert!(!reasoning_content_available(&Some("   ".to_string()), ""));
+    }
+
+    #[tokio::test]
+    async fn stream_returns_reasoning_summary_when_reasoning_only_stream_completes() {
+        let mut server = mockito::Server::new_async().await;
+        let body = [
+            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"Reasoned ","sequence_number":1,"response":{"id":"resp_reasoning"}}"#,
+            "",
+            r#"data: {"type":"response.reasoning_summary_text.done","text":"Reasoned fallback","sequence_number":2,"response":{"id":"resp_reasoning"}}"#,
+            "",
+            r#"data: {"type":"response.completed","sequence_number":3,"response":{"id":"resp_reasoning","output":[{"type":"message","content":[{"type":"reasoning_summary_text","text":"Reasoned fallback"}]}]}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+        let endpoint = format!("{}/v1/responses", server.url());
+        let client = Client::new();
+        let manager = ResponsesStreamingManager::new(
+            &client,
+            &endpoint,
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+
+        let output = manager
+            .stream(&json!({"model": "programmer", "stream": true}))
+            .await
+            .expect("reasoning-only completed streams should not bail");
+
+        assert_eq!(output.assistant_text, "Reasoned fallback");
+        assert_eq!(output.reasoning_text.as_deref(), Some("Reasoned fallback"));
+        assert_eq!(output.response_id.as_deref(), Some("resp_reasoning"));
+        mock.assert_async().await;
+    }
+
+    #[test]
     fn extract_output_channels_collects_assistant_and_reasoning() {
         let output: Vec<StreamOutputItem> = serde_json::from_value(json!([
             {
@@ -1102,7 +1217,8 @@ mod tests {
             {
                 "type": "reasoning",
                 "content": [
-                    {"type": "output_text", "text": "ignored"}
+                    {"type": "output_text", "text": "ignored"},
+                    {"type": "reasoning_summary_text", "text": "r3"}
                 ]
             }
         ]))
@@ -1110,7 +1226,7 @@ mod tests {
 
         let (assistant, reasoning) = extract_output_channels(&output);
         assert_eq!(assistant, "foobar");
-        assert_eq!(reasoning.as_deref(), Some("r1r2"));
+        assert_eq!(reasoning.as_deref(), Some("r1r2r3"));
     }
 
     #[test]

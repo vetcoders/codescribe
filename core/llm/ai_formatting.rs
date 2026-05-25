@@ -81,8 +81,11 @@ struct MemoryMessage {
 static OLLAMA_MEMORY: OnceLock<RwLock<Vec<MemoryMessage>>> = OnceLock::new();
 const MAX_OLLAMA_MEMORY_CHARS: usize = 4000;
 
-const DEFAULT_AI_MAX_RETRIES: u32 = 3;
-const DEFAULT_AI_RETRY_DELAY_MS: u64 = 2000;
+// Retry count is "extra attempts after the first request". Default 0 keeps
+// daily-driver formatting fail-fast instead of multiplying deterministic
+// provider/parser failures into long cascades.
+const DEFAULT_AI_MAX_RETRIES: u32 = 0;
+const DEFAULT_AI_RETRY_DELAY_MS: u64 = 500;
 // Bumped from 30s → 90s (2026-05-13). Operator observed
 // "Agent SSE inter-chunk timeout after 30s" mid-stream from chat overlay
 // during longer responses (multi-paragraph PL text with code blocks).
@@ -150,6 +153,12 @@ fn env_u64(key: &str, default: u64) -> u64 {
 
 fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
     Duration::from_millis(env_u64(key, default_ms))
+}
+
+fn should_retry_provider_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    !(message.contains("No text content in SSE stream")
+        || message.contains("No text content in response"))
 }
 
 fn ollama_memory() -> &'static RwLock<Vec<MemoryMessage>> {
@@ -598,19 +607,21 @@ fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
     let mut assistant_parts = Vec::new();
     let mut reasoning_parts = Vec::new();
 
-    for item in output.iter().filter(|o| o.item_type == "message") {
+    for item in output {
         let Some(parts) = item.content.as_ref() else {
             continue;
         };
+        let is_message = item.item_type == "message";
+        let is_reasoning = item.item_type == "reasoning";
 
         for part in parts {
             match part.part_type.as_str() {
-                "output_text" | "text" => {
+                "output_text" | "text" if is_message => {
                     if let Some(text) = part_text(part) {
                         assistant_parts.push(text.to_string());
                     }
                 }
-                "reasoning_summary_text" => {
+                "reasoning_summary_text" if is_message || is_reasoning => {
                     if let Some(text) = part_text(part) {
                         reasoning_parts.push(text.to_string());
                     }
@@ -937,6 +948,7 @@ pub async fn format_text_with_status_channels(
             initial_response_timeout: retry_policy.attempt_timeout,
             inter_chunk_timeout: retry_policy.inter_chunk_timeout,
         };
+        let mut retryable_error = true;
         let result_opt = if streaming_enabled && endpoint_format != EndpointFormat::OllamaChat {
             match call_provider_once(
                 endpoint_format,
@@ -950,6 +962,7 @@ pub async fn format_text_with_status_channels(
             {
                 Ok(output) => Some(output),
                 Err(e) => {
+                    retryable_error = should_retry_provider_error(&e);
                     warn!(
                         "LLM {} attempt {}/{} failed: {}",
                         route,
@@ -981,6 +994,7 @@ pub async fn format_text_with_status_channels(
             {
                 Ok(Ok(output)) => Some(output),
                 Ok(Err(e)) => {
+                    retryable_error = should_retry_provider_error(&e);
                     warn!(
                         "LLM {} attempt {}/{} failed: {}",
                         route,
@@ -1083,6 +1097,9 @@ pub async fn format_text_with_status_channels(
                 reasoning_text,
                 status: AiFormatStatus::Applied,
             };
+        } else if !retryable_error {
+            warn!("Provider returned deterministic empty-content error; skipping retries");
+            break;
         }
     }
 
@@ -1528,5 +1545,24 @@ mod tests {
     fn test_effectively_same_preserves_formatting_changes() {
         assert!(!is_effectively_same("raw one two", "RAW ONE TWO."));
         assert!(!is_effectively_same("to jest test", "To jest test"));
+    }
+
+    #[test]
+    fn default_retry_policy_is_single_attempt() {
+        assert_eq!(DEFAULT_AI_MAX_RETRIES, 0);
+        assert_eq!(DEFAULT_AI_RETRY_DELAY_MS, 500);
+    }
+
+    #[test]
+    fn empty_content_provider_errors_are_not_retryable() {
+        assert!(!should_retry_provider_error(&anyhow::anyhow!(
+            "No text content in SSE stream"
+        )));
+        assert!(!should_retry_provider_error(&anyhow::anyhow!(
+            "No text content in response (id: resp_1)"
+        )));
+        assert!(should_retry_provider_error(&anyhow::anyhow!(
+            "SSE stream inter-chunk timeout"
+        )));
     }
 }
