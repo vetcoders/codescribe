@@ -1715,6 +1715,12 @@ fn close_window_by_ptr(window_ptr: usize) {
 }
 
 fn hide_transcription_overlay_impl() {
+    // Operator's screencast 2026-05-26 (75-89s): "skończyłem dyktować ale i tak czerwono".
+    // Overlay teardown is the last surface that touches tray status — no subscriber maps
+    // controller State::Idle → TrayStatus::Idle automatically. Reset here so the menu bar
+    // indicator returns to green whenever the overlay disappears.
+    let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Idle);
+
     // DEADLOCK PREVENTION: extract handles and clear state under lock,
     // then drop lock before the animate_fade AppKit call.
     let (
