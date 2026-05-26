@@ -90,6 +90,10 @@ impl AgentProvider for OpenAiProvider {
             options.model.clone()
         };
 
+        // Operator's spec 2026-05-26 (4th iteration): retry must NOT resend prior
+        // chain. Caller (session retry path) signals via `options.reset_chain`.
+        self.apply_chain_reset(options).await;
+
         let previous_response_id = if self.use_previous_response_id {
             self.previous_response_id.lock().await.clone()
         } else {
@@ -196,6 +200,28 @@ impl AgentProvider for OpenAiProvider {
 
     fn name(&self) -> &str {
         "openai-responses"
+    }
+}
+
+impl OpenAiProvider {
+    /// Operator's spec 2026-05-26 (4th iteration): when caller requests chain
+    /// reset (typically session retry path after a failed attempt), clear the
+    /// stored `previous_response_id` BEFORE building the next request — fresh
+    /// start, no context bloat from the prior failed attempt's chain.
+    ///
+    /// Extracted as a standalone helper so the behavior is unit-testable
+    /// without needing a full mock SSE round-trip.
+    pub async fn apply_chain_reset(&self, options: &StreamOptions) {
+        if !options.reset_chain {
+            return;
+        }
+        let mut lock = self.previous_response_id.lock().await;
+        if lock.is_some() {
+            info!(
+                "Agent provider chain reset requested (provider=openai-responses); clearing stored previous_response_id before request"
+            );
+            *lock = None;
+        }
     }
 }
 
@@ -559,5 +585,68 @@ mod tests {
             other => panic!("expected AgentEvent::Error, got {other:?}"),
         }
         mock.assert_async().await;
+    }
+
+    /// Operator's spec 2026-05-26 (4th iteration): retry attempts must NOT
+    /// resend prior chain via stored previous_response_id. `apply_chain_reset`
+    /// is the focused helper — when `options.reset_chain == true`, it clears
+    /// any stored chain BEFORE the request is built.
+    #[tokio::test]
+    async fn apply_chain_reset_clears_stored_previous_response_id_when_requested() {
+        let stored_chain = Arc::new(Mutex::new(Some("resp_prev_failed".to_string())));
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "programmer".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::clone(&stored_chain),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+        };
+
+        // Pre-condition: stored chain holds prior failed attempt's response id.
+        assert_eq!(
+            stored_chain.lock().await.as_deref(),
+            Some("resp_prev_failed")
+        );
+
+        let options = StreamOptions {
+            reset_chain: true,
+            ..StreamOptions::default()
+        };
+        provider.apply_chain_reset(&options).await;
+
+        // Post-condition: stored chain is cleared.
+        assert!(
+            stored_chain.lock().await.is_none(),
+            "reset_chain=true must clear stored previous_response_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_chain_reset_preserves_stored_chain_when_not_requested() {
+        let stored_chain = Arc::new(Mutex::new(Some("resp_keep_me".to_string())));
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "programmer".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::clone(&stored_chain),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+        };
+
+        let options = StreamOptions::default();
+        assert!(!options.reset_chain, "default must NOT reset chain");
+
+        provider.apply_chain_reset(&options).await;
+
+        assert_eq!(
+            stored_chain.lock().await.as_deref(),
+            Some("resp_keep_me"),
+            "default options must preserve conversational chain"
+        );
     }
 }

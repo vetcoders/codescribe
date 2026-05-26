@@ -93,9 +93,22 @@ impl AgentSession {
                 );
             }
 
+            // Operator's spec 2026-05-26 (4th iteration of same architectural
+            // insight): retry attempts must NOT resend prior context. Each retry
+            // pass after the first signals provider to clear any stored chain
+            // (previous_response_id) BEFORE building the request — fresh start,
+            // no context bloat from the failed prior attempt.
+            let attempt_options: StreamOptions = if attempt > 1 {
+                let mut opts = options.clone();
+                opts.reset_chain = true;
+                opts
+            } else {
+                options.clone()
+            };
+
             match self
                 .provider
-                .stream(&self.messages, tool_definitions, options)
+                .stream(&self.messages, tool_definitions, &attempt_options)
                 .await
             {
                 Ok(rx) => return Ok(rx),
@@ -103,7 +116,7 @@ impl AgentSession {
                     let is_transient = is_transient_stream_start_error(&error);
                     if is_transient && attempt < AGENT_STREAM_START_RETRY_MAX_ATTEMPTS {
                         warn!(
-                            "Agent stream start failed (provider={}, attempt={}/{}): {}. Retrying in {:?}",
+                            "Agent stream start failed (provider={}, attempt={}/{}): {}. Retrying in {:?} (next attempt will reset chain)",
                             self.provider.name(),
                             attempt,
                             AGENT_STREAM_START_RETRY_MAX_ATTEMPTS,
@@ -716,6 +729,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await;
@@ -750,6 +764,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await
@@ -798,6 +813,7 @@ mod tests {
             system_prompt: None,
             max_tokens: None,
             temperature: None,
+            reset_chain: false,
         };
         let send_future = session.send("buffered stream".to_string(), Vec::new(), &options);
         tokio::pin!(send_future);
@@ -855,6 +871,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await
@@ -955,6 +972,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await
@@ -998,6 +1016,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await

@@ -292,6 +292,9 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
         system_prompt: Some(crate::config::get_assistive_prompt()),
         max_tokens,
         temperature: None,
+        // First-attempt default: preserve conversational chain. Session retry
+        // path will clone+override this to true for retry attempts only.
+        reset_chain: false,
     }
 }
 
@@ -1000,6 +1003,7 @@ mod tests {
             system_prompt: None,
             max_tokens: None,
             temperature: None,
+            reset_chain: false,
         };
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
