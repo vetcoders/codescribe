@@ -54,11 +54,11 @@ const OVERLAY_WINDOW_WIDTH: f64 = 420.0;
 const OVERLAY_WINDOW_MIN_HEIGHT: f64 = 180.0;
 const OVERLAY_WINDOW_MAX_HEIGHT_RATIO: f64 = 0.5;
 const OVERLAY_PADDING: f64 = 16.0;
-const OVERLAY_HEADER_HEIGHT: f64 = 20.0;
+const OVERLAY_HEADER_HEIGHT: f64 = 0.0;
 const OVERLAY_STATUS_HEIGHT: f64 = 20.0;
 const OVERLAY_INFO_HEIGHT: f64 = 12.0;
 const OVERLAY_STATUS_WIDTH: f64 = 100.0;
-const OVERLAY_HEADER_GAP: f64 = 4.0;
+const OVERLAY_HEADER_GAP: f64 = 0.0;
 const OVERLAY_CONTENT_GAP: f64 = 8.0;
 const OVERLAY_TEXT_MIN_HEIGHT: f64 = 44.0;
 const OVERLAY_BUTTON_HEIGHT: f64 = 28.0;
@@ -775,10 +775,12 @@ fn resize_overlay_unlocked(snap: &OverlaySnapshot) -> f64 {
         }
 
         if let Some(spinner_ptr) = snap.progress_indicator {
+            // Spinner sits in the top-right padding area (after operator decluttering
+            // the header/status strip, 2026-05-26).
             let spinner_frame = CGRect {
                 origin: CGPoint {
                     x: spinner_x,
-                    y: header_y + ((OVERLAY_HEADER_HEIGHT - spinner_size) / 2.0).max(0.0),
+                    y: applied_height - OVERLAY_PADDING - spinner_size,
                 },
                 size: CGSize {
                     width: spinner_size,
@@ -1155,36 +1157,10 @@ fn show_transcription_overlay_impl() {
         let status_x = (status_max_x - status_width).max(OVERLAY_PADDING);
         let header_width = (status_x - OVERLAY_CONTENT_GAP - OVERLAY_PADDING).max(120.0);
 
-        let header_label = create_label(crate::ui_helpers::LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(OVERLAY_PADDING, header_y),
-                &CGSize::new(header_width, OVERLAY_HEADER_HEIGHT),
-            ),
-            text: OVERLAY_HEADER_LABEL.to_string(),
-            font_size: ui_tokens::BODY_FONT_SIZE,
-            bold: true,
-            text_color: ui_colors::overlay_text(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        add_subview(content_view, header_label);
-
-        let status_field = create_label(crate::ui_helpers::LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(status_x, header_y),
-                &CGSize::new(status_width, OVERLAY_STATUS_HEIGHT),
-            ),
-            text: "Idle".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: ui_colors::overlay_hint_text(),
-            background_color: None,
-            selectable: false,
-            editable: false,
-        });
-        let _: () = msg_send![status_field, setAlignment: 2_isize];
-        add_subview(content_view, status_field);
+        // Operator decluttering (2026-05-26 screencast): "wielki napis" header,
+        // "czerwony napis po prawej" status pill — removed. Tray + spinner carry the
+        // status signal; overlay stays an ephemeral glass surface for transcript only.
+        let _ = (header_width, status_x, status_width); // suppress unused for layout calc kept for spinner
 
         let auto_hide_label = create_label(crate::ui_helpers::LabelConfig {
             frame: CGRect::new(
@@ -1205,7 +1181,7 @@ fn show_transcription_overlay_impl() {
         let spinner_frame = CGRect::new(
             &CGPoint::new(
                 spinner_x,
-                header_y + ((OVERLAY_HEADER_HEIGHT - spinner_size) / 2.0).max(0.0),
+                initial_layout.target_height - OVERLAY_PADDING - spinner_size,
             ),
             &CGSize::new(spinner_size, spinner_size),
         );
@@ -1269,8 +1245,6 @@ fn show_transcription_overlay_impl() {
         let button_gap = 10.0;
         let row_width = button_width * 3.0 + button_gap * 2.0;
         let row_x = (window_width - row_width) / 2.0;
-        let commit_x = (window_width - button_width) / 2.0;
-
         let save_frame = CGRect {
             origin: CGPoint {
                 x: row_x,
@@ -1301,21 +1275,12 @@ fn show_transcription_overlay_impl() {
                 height: button_height,
             },
         };
-        let commit_frame = CGRect {
-            origin: CGPoint {
-                x: commit_x,
-                y: padding,
-            },
-            size: CGSize {
-                width: button_width,
-                height: button_height,
-            },
-        };
-
         let save_button = create_button(save_frame, "Save", button_style::GLASS);
         let copy_button = create_button(copy_frame, "Copy", button_style::ROUNDED);
         let augment_button = create_button(augment_frame, "Augment", button_style::ROUNDED);
-        let commit_button = create_button(commit_frame, "Finish", button_style::GLASS);
+        // Finish button removed per operator 2026-05-26 screencast: it never stopped
+        // recording early (hotkey release / VAD is the source of truth), so it was
+        // purely visual noise on the ephemeral overlay.
         set_tooltip(
             copy_button,
             copy_action_tooltip(TranscriptionActionContractMode::Raw),
@@ -1328,22 +1293,18 @@ fn show_transcription_overlay_impl() {
             save_button,
             "Close dictation overlay (transcript already saved)",
         );
-        set_tooltip(commit_button, "Stop recording and enter decision mode");
 
         button_set_action(save_button, action_handler, sel!(onSaveTranscript:));
         button_set_action(copy_button, action_handler, sel!(onCopyTranscript:));
         button_set_action(augment_button, action_handler, sel!(onAugmentTranscript:));
-        button_set_action(commit_button, action_handler, sel!(onCommitRecording:));
 
         add_subview(content_view, save_button);
         add_subview(content_view, copy_button);
         add_subview(content_view, augment_button);
-        add_subview(content_view, commit_button);
 
         set_hidden(save_button, true);
         set_hidden(copy_button, true);
         set_hidden(augment_button, true);
-        set_hidden(commit_button, true);
 
         // Show the window with fade-in animation
         window_set_alpha(window, 0.0);
@@ -1360,16 +1321,15 @@ fn show_transcription_overlay_impl() {
             return;
         }
         state.window = Some(window as usize);
-        state.header_label = Some(header_label as usize);
+        // header_label / status_field / commit_button intentionally stay None —
+        // operator decluttering 2026-05-26. Lifecycle paths already Option-guard.
         state.text_scroll_view = Some(text_scroll_view as usize);
         state.text_view = Some(text_view as usize);
-        state.status_field = Some(status_field as usize);
         state.auto_hide_label = Some(auto_hide_label as usize);
         state.blur_view = Some(blur_view as usize);
         state.copy_button = Some(copy_button as usize);
         state.augment_button = Some(augment_button as usize);
         state.save_button = Some(save_button as usize);
-        state.commit_button = Some(commit_button as usize);
         state.progress_indicator = Some(spinner as usize);
         state.tracking_area = Some(tracking_area as usize);
         state.decision_mode = false;
