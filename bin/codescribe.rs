@@ -114,6 +114,15 @@ enum MigrateKind {
 async fn main() -> Result<()> {
     init_tracing();
 
+    // Build identity — first line in ~/.codescribe/logs/codescribe.log so every session
+    // is unambiguously tied to a build. The 8-char commit matches the About dialog.
+    tracing::info!(
+        "CodeScribe v{} build {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        env!("CODESCRIBE_BUILD_COMMIT"),
+        env!("CODESCRIBE_RUSTC_VERSION"),
+    );
+
     let cli = Cli::parse();
 
     // Handle --config flag
