@@ -22,8 +22,6 @@
 //!
 //! `extract_speech()` uses a per-thread cache to avoid reloading the ONNX
 //! model on every call. The cache is invalidated when sample rate changes.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 pub mod config;
 pub mod discriminator;

@@ -2,8 +2,6 @@
 //!
 //! Release builds: Model file included directly in binary (~2.3MB).
 //! Debug builds: Empty slice, use runtime file path instead.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 #[cfg(embed_vad)]
 mod data {

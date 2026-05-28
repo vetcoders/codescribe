@@ -1,8 +1,6 @@
 //! Self-improving quality loop for batch transcription evaluation.
 //!
 //! Flow: batch -> report -> regression analysis -> tuning updates -> re-run later.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};

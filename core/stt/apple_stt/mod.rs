@@ -5,8 +5,6 @@
 //! Runtime fallback is handled in `core/stt/mod.rs`.
 //!
 //! Bridge protocol: JSON request on stdin, JSON response on stdout.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::fs;
 use std::io::{Read as _, Write};

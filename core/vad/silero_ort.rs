@@ -2,8 +2,6 @@
 //!
 //! Custom implementation using ort runtime directly.
 //! Model: silero_vad.onnx v6 from https://github.com/snakers4/silero-vad
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::{Path, PathBuf};
 
@@ -250,8 +248,6 @@ impl SileroVad {
 /// - Properly accumulates resampled samples across calls (no lost sub-chunks)
 /// - Starts with last_prob = 0.0 (no phantom speech on first frame)
 /// - Is locally owned, not a global singleton
-///
-/// Created by M&K (c)2026 VetCoders
 pub struct AccumulatingVad {
     vad: SileroVad,
     resampler: Option<Resampler>,

@@ -10,8 +10,6 @@
 //!
 //! Implements the same `TranscriptionAdapter` trait as the candle-based
 //! `WhisperSingletonAdapter`, making it a drop-in replacement.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};

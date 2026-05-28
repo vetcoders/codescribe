@@ -30,8 +30,6 @@
 //! - **audio** - Recording and audio loading
 //! - **config** - User configuration
 //! - **ai_formatting** - Post-processing with LLMs
-//!
-//! Created by M&K (c)2026 VetCoders
 
 // ═══════════════════════════════════════════════════════════
 // Core modules (namespaced)

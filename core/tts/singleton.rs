@@ -4,8 +4,6 @@
 //! Zero disk I/O, zero temp files, zero extraction.
 //!
 //! Debug builds: Uses CODESCRIBE_TTS_PATH or bundled .app model.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};

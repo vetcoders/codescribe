@@ -14,8 +14,6 @@
 //! - [`SpeechSession`] — stateful VAD gate + chunker (Silero neural VAD)
 //! - [`SpeechEvent`] — emitted events: `Chunk` (streaming) or `Utterance` (complete)
 //! - [`VadIterState`] — Silero VAD iterator state machine (start/end boundary detection)
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::collections::VecDeque;
 use std::time::Duration;

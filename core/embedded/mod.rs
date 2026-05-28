@@ -21,8 +21,6 @@
 //! information about TTS / Whisper (which carry more). The trait below
 //! preserves naming, availability, and total size — the metadata that actually
 //! is shared — while leaving payload access to type-specific APIs.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 /// Metadata + availability for one embedded model asset.
 ///

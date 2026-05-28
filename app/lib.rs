@@ -2,8 +2,6 @@
 //!
 //! This crate re-exports the core functionality from `codescribe_core`
 //! and provides the macOS-specific UI, tray, and hotkey layers.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 // ═══════════════════════════════════════════════════════════
 // Core re-exports

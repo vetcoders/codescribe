@@ -24,8 +24,6 @@
 //! - `engine` - The TtsEngine implementation with CSM + Mimi
 //! - `audio_output` - Audio playback and WAV export
 //! - `embedded` - Compile-time model embedding (release builds)
-//!
-//! Created by M&K (c)2026 VetCoders
 
 pub mod audio_output;
 pub mod embedded;

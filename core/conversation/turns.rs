@@ -1,8 +1,6 @@
 //! Turn-taking management for conversational AI.
 //!
 //! Handles turn detection, interruption, and timing for natural conversation flow.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::time::{Duration, Instant};
 

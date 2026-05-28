@@ -2,8 +2,6 @@
 //!
 //! Release builds: Model files included directly in binary (~224MB fp16)
 //! Debug builds: Empty slices, use CODESCRIBE_EMBEDDER_PATH
-//!
-//! Created by M&K (c)2026 VetCoders
 
 #[cfg(embed_embedder)]
 mod data {

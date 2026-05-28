@@ -6,8 +6,6 @@
 //! # Safety
 //! All functions in this module operate on raw Objective-C pointers (`Id = *mut Object`).
 //! Callers must ensure pointers are valid. This is standard for Rust-ObjC FFI.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use crate::os::clipboard;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};

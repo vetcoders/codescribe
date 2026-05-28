@@ -3,8 +3,6 @@
 //! This module owns the runtime Whisper fallback truth for the `develop`
 //! branch. If embedded Whisper is unavailable, every caller should resolve a
 //! model from here instead of re-implementing its own precedence rules.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::{Context, Result, anyhow};
 use std::fs;

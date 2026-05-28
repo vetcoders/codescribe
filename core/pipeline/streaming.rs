@@ -3,8 +3,6 @@
 //! Extracted from `audio::streaming_recorder` to decouple pipeline logic
 //! (hallucination filtering, overlap dedup, re-transcription, buffered "typing"
 //! emission) from the audio capture layer.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 #[cfg(any(test, feature = "offline_eval"))]

@@ -1,8 +1,6 @@
 //! Conversation context management.
 //!
 //! Tracks conversation history, embeddings, and state for context-aware responses.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};

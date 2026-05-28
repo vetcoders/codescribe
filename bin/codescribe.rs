@@ -2,8 +2,6 @@
 //!
 //! Lightweight CLI for direct audio file transcription.
 //! For the tray app + overlay, use CodeScribe.app.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

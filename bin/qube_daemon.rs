@@ -3,8 +3,6 @@
 //! Usage:
 //!   cargo run --bin qube-daemon -- --date 2026-01-17 --apply
 //!   cargo run --bin qube-daemon -- --daemon   # Run as background daemon (1h interval)
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::Result;
 use clap::Parser;

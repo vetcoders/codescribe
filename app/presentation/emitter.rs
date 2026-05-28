@@ -6,8 +6,6 @@
 //! Uses an ordered mpsc channel to guarantee that target updates and finish
 //! arrive in the exact order they were emitted,
 //! eliminating the fire-and-forget tokio::spawn ordering race.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::sync::Arc;
 

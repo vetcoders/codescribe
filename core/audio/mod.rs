@@ -5,8 +5,6 @@
 //! - `recorder` - Audio recording from microphone
 //! - `loader` - Load audio files (WAV, MP3, etc.)
 //! - `playback` - System sound playback
-//!
-//! Created by M&K (c)2026 VetCoders
 
 pub mod chunker;
 pub mod loader;

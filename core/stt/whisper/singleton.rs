@@ -3,8 +3,6 @@
 //! The canonical product path is an embedded Whisper payload built into the
 //! binary. Runtime lookup remains as a fallback for explicit no-embed builds,
 //! developer overrides, and recovery when the payload is unavailable.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 // This entire module is a public API for library consumers
 

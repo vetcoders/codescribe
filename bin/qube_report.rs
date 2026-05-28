@@ -2,8 +2,6 @@
 //!
 //! Usage:
 //!   cargo run --bin qube-report -- --date 2026-01-17 --limit 5
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::Result;
 use clap::Parser;

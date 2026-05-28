@@ -2,8 +2,6 @@
 //!
 //! Provides audio playback via cpal and WAV file export via hound.
 //! Used by TTS module to output synthesized speech.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};

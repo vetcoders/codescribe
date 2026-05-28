@@ -6,8 +6,6 @@
 //! Supports two loading modes:
 //! - `new(path)` - load from filesystem (development, external models)
 //! - `from_embedded()` - load from binary-embedded bytes (production, zero I/O)
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::{Context, Result, anyhow, ensure};
 use std::collections::HashMap;

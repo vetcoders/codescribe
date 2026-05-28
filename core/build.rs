@@ -10,8 +10,6 @@
 //!
 //! ⚠ Embedded Whisper materially increases artifact size.
 //!   TTS can still increase artifact size significantly — test before shipping!
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::env;
 use std::fs;

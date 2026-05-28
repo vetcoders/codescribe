@@ -2,8 +2,6 @@
 //!
 //! Flow: batch WAV -> single-pass transcription (raw + postprocess) -> AI formatting + cloud ref
 //! -> metrics -> artifacts + HTML/JSON/MD reports.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
