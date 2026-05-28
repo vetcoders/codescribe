@@ -1,6 +1,30 @@
 # CodeScribe Architecture
 
 > Created by M&K (c)2026 VetCoders
+>
+> **2026-05-26:** transcription pipeline is now layered. See
+> [ADR — Layered Incremental Transcription Pipeline](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md)
+> for the authoritative model. Sections below describe the packaging and module layout that hosts it.
+
+## Layered Incremental Transcription (since 2026-05-26)
+
+Live transcription is no longer a single Whisper stream. Five concurrent layers cooperate, with
+Apple Speech as the live primary and Whisper / lexicon / small LLM / Silero paralingual
+classifier filling in behind it. The overlay (`app/ui/overlay/`) renders the union of layer
+events, never wipes and retypes — _NEVER REWRITE FROM ZERO_ is the operator-mandated invariant.
+
+| Layer | Engine | Module |
+| --- | --- | --- |
+| 0 — Live | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `core/stt/apple_stt/` + `core/stt/whisper/` |
+| 1 — Tail Patch | Whisper background diff | `core/stt/tail_patcher/` (new, Phase 1) |
+| 2 — Polish | Lexicon + small LLM | `core/lexicon/` + `core/llm/inline_polish.rs` (new, Phase 2) |
+| 3 — Paralingual | Silero classifier head | `core/vad/paralingual_classifier.rs` (new, Phase 3) |
+| 4 — Final BAM | Session-end contextual pass | `core/pipeline/final_bam.rs` (new, Phase 4) |
+| Orchestrator | — | `app/controller/layered_orchestrator.rs` (new, Phase 1) |
+
+Existing files (`core/stt/whisper/`, `core/audio/streaming_recorder.rs`, `core/vad/silero_ort.rs`,
+`app/ui/overlay/mod.rs`) keep their public APIs — the layered orchestrator reuses them as Layer 1
+and Layer 3 backends. See ADR §"What is shipped today" for the gap analysis.
 
 ## System Overview
 

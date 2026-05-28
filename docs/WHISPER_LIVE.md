@@ -1,19 +1,40 @@
 # WHISPER LIVE (Embedded Whisper + Streaming Transcription)
 
-> **Status:** DONE ✅ (2026-01-16)
+> **Status:** DONE ✅ (2026-01-16) · **Re-framed:** 2026-05-26 as Layer 1 + Layer 2 supplement.
 >
-> **Tagline:** Whisper stays local, ships embedded by default, and transcription happens _during recording_.
+> **Tagline:** Whisper stays local, ships embedded by default, and patches the live overlay in the background — it is no longer the first thing the user sees.
+
+## Role in the layered pipeline (ADR 2026-05-26)
+
+Whisper is now **Layer 1 — Tail Patch** and feeds **Layer 2 — Lexicon + LLM Polish** inside the
+[Layered Incremental Transcription Pipeline](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md).
+Live first-pass text in the overlay comes from **Layer 0 — Apple Speech Recognizer**
+(`CODESCRIBE_STT_ENGINE=apple`); Whisper runs on the same audio tail in the background, diffs
+against Layer 0's committed buffer, and emits `EngineEvent::ReplaceRange { source: TailPatch }`
+events that visibly patch tokens Apple missed — mixed-language inserts, rare terminology, proper
+nouns. The legacy "Whisper-as-primary" path stays as automatic fallback when Apple Speech
+is unavailable (no permission, no macOS Speech framework).
+
+**Hard invariant that gates every Whisper write:** _NEVER REWRITE FROM ZERO._ Tail Patch may
+only `ReplaceRange` inside the utterance window Layer 0 already committed. If the diff distance
+exceeds the safety threshold, the patch is dropped (annotation emitted) and Layer 0 output stands.
+See the ADR for the full contract.
 
 ## TL;DR
 
-CodeScribe’s core power-up is:
+CodeScribe’s Whisper layer power-ups:
 
 1. **Embedded-first Whisper model** (`whisper-large-v3-turbo-mlx-q8` by default)
    - build policy embeds Whisper whenever the model is available at build time
    - runtime lookup from `CODESCRIBE_MODEL_PATH`, configured model dirs, bundled app resources, or the Hugging Face cache is a fallback path for `CODESCRIBE_NO_EMBED=1` builds or recovery
 2. **Live (streaming) transcription** while the user is recording
    - Audio is chunked and transcribed in the background
-   - On `stop()` we only “close” the last fragment → **near-instant time-to-paste**
+   - In the layered model: Whisper events arrive as `ReplaceRange` patches **after** Apple's live
+     deltas — the user sees Layer 0 first, then watches Whisper magically correct mixed-language /
+     terminology tokens within ~1 s of utterance end
+   - In fallback (no Apple): Whisper takes over the live preview path, behaving like pre-ADR builds
+3. **Full WAV is always teed to disk** — Layer 1 reads from this persistent tail (no extra mic load),
+   Layer 4 (Final BAM) reuses the same WAV at session end
 
 ## What we shipped
 
@@ -54,13 +75,31 @@ Practical win:
 
 ## What’s new around Whisper Live
 
-- **Stream postprocess** (`src/stream_postprocess.rs`) — semantic gating and cleanup of chunk output
-  before final paste/LLM, reducing low‑quality fragments in live mode.
-- **IPC server** (`src/ipc/`) — stable runtime interface for GUI/clients; Whisper Live can be
-  consumed and extended outside the tray flow.
-- **Quality loop/report** (`src/quality_loop.rs`, `src/quality_report.rs`) — automated scoring and
-  batch diagnostics for streaming accuracy and regressions.
-- **Cloud STT** — optional post-capture replacement for the committed transcript; it is not live preview.
+- **Stream postprocess** (`core/pipeline/stream_postprocess.rs`) — semantic gating and cleanup of
+  chunk output. In the layered model this feeds Layer 1's diff input — patches are made against
+  the post-processed text, not the raw decoder output.
+- **IPC server** (`app/ipc/`) — stable runtime interface for GUI/clients; Whisper Live can be
+  consumed and extended outside the tray flow. After the ADR, the IPC contract also carries
+  `ReplaceRange` and `InsertAnnotation` events for clients that render the layered view.
+- **Quality loop/report** (`bin/codescribe_quality`, `bin/codescribe_loop`) — automated scoring and
+  batch diagnostics. The layered telemetry adds per-layer counters (utterances patched, LLM calls,
+  annotations inserted) so regression hunts can target the right layer.
+- **Cloud STT** — optional Layer 1 backend (libraxis cluster / OpenAI whisper-1 / `mlx-audio` +
+  `openai/whisper-large-v3`). Latency vs. privacy trade-off lives in Settings; not live preview.
+
+## Layer mapping for this file
+
+| Section below | Layer it lights up |
+| --- | --- |
+| Embedded Whisper (build + runtime lookup) | Layer 1 (Tail Patch) backend resolution |
+| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail |
+| Stream postprocess, semantic gate | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision |
+| Cloud STT alternatives | Pluggable Layer 1 backend |
+| (NEW, Phase 2) Lexicon + small LLM passes | Layer 2 (Polish) — see ADR §Layer specifications |
+
+Everything below this point is the same Whisper-Live tech that existed before the ADR — it is
+**not removed**, just relocated in the architecture: Whisper became the silent partner that makes
+Apple's first pass true.
 
 ## How it works (high level)
 

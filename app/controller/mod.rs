@@ -855,6 +855,27 @@ pub fn request_segment_commit_and_augment() {
     });
 }
 
+/// Format the decision-mode transcript with AI, then paste it into the active app.
+///
+/// ADR 2026-05-28 Faza 1: the overlay `[Format]` action. Formatting is an explicit
+/// post-recording choice — it runs on demand here, not on every stop. Runs
+/// off-main-thread to avoid AppKit deadlock; falls back to the raw transcript if AI
+/// formatting is unavailable or fails.
+pub fn request_format_and_paste() {
+    let text = crate::ui::overlay::current_segment_text();
+    if text.trim().is_empty() {
+        return;
+    }
+    let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
+        warn!("Overlay controller not registered; cannot format+paste");
+        return;
+    };
+
+    tokio::spawn(async move {
+        controller.format_decision_text_and_paste(text).await;
+    });
+}
+
 /// Start a toggle recording session from the UI (CTA).
 pub fn request_toggle_recording_start(assistive: bool) {
     let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
@@ -1617,47 +1638,25 @@ impl RecordingController {
     fn configure_toggle_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
-        controller: Option<Arc<RecordingController>>,
-        expected_session: String,
-        is_assistive_session: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
     ) {
+        // Hands-off is ONE continuous session (ADR 2026-05-28 Faza 1). Deltas append
+        // cumulatively to the active surface via `RoutingDeltaSink`:
+        //   - normal hands-off  → transcription overlay (SessionRendered cumulative text)
+        //   - assistive hands-off → Emil chat bubble (also cumulative — no per-utterance
+        //     finalize, so Emil receives the WHOLE session as one message on stop)
+        //
+        // There is intentionally NO per-utterance callback: previously every utterance
+        // boundary fired a full `process_transcript_text_pipeline` pass (wasteful, and the
+        // source of the "tnie per zdanie" fragmentation). The session transcript is built
+        // once in `transcript_buffer` and consumed on stop.
         let tb = recorder.transcript_buffer_handle();
         let delta_sink = preview_deltas_enabled.then(|| {
             Arc::new(helpers::RoutingDeltaSink)
                 as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
         });
-        let mut pe = PresentationEmitter::new(tb, delta_sink, None);
-        if is_assistive_session {
-            pe.set_delta_render_mode(
-                crate::presentation::emitter::DeltaRenderMode::ActivePreviewOnly,
-            );
-        }
-
-        pe.set_utterance_callback(Some(Arc::new(move |text: String| {
-            if is_assistive_session {
-                // Close current streaming user bubble at utterance boundary
-                // so next preview starts a fresh user message.
-                crate::ui::voice_chat::finalize_voice_chat_user_message();
-            }
-            let controller = controller.clone();
-            let expected_session = expected_session.clone();
-            tokio::spawn(async move {
-                if let Some(controller) = controller
-                    && let Err(e) = controller
-                        .handle_toggle_utterance(
-                            text,
-                            expected_session,
-                            is_assistive_session,
-                            true, // skip_user_bubble: Preview already streams into bubble
-                        )
-                        .await
-                {
-                    warn!("Toggle utterance processing failed: {}", e);
-                }
-            });
-        })));
+        let pe = PresentationEmitter::new(tb, delta_sink, None);
 
         let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> = Arc::new(pe);
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
@@ -1899,10 +1898,14 @@ impl RecordingController {
                 info!("Toggle pressed; entering stop flow (state=REC_TOGGLE)");
                 self.assistive_loop_active.store(false, Ordering::SeqCst);
                 let toggle_assistive = *self.assistive_mode.read().await;
-                if !toggle_assistive && toggle_final_pass_enabled() {
-                    self.stop_toggle_and_adjudicate().await?;
-                } else {
+                if toggle_assistive {
+                    // Assistive hands-off: finalize the cumulative Emil bubble and invoke
+                    // the agent ONCE with the complete session. (ADR 2026-05-28 Faza 1.)
                     self.stop_toggle_recording().await?;
+                } else {
+                    // Normal hands-off: ALWAYS save WAV + run the final pass and enter
+                    // decision mode. Never discard the session audio. (ADR 2026-05-28 Faza 1.)
+                    self.stop_toggle_and_adjudicate().await?;
                 }
             }
             State::RecHold => {
@@ -2768,9 +2771,6 @@ impl RecordingController {
         Self::configure_toggle_event_sink(
             recorder,
             is_assistive || overlay_enabled,
-            OVERLAY_CONTROLLER.get().cloned(),
-            new_session_id.clone(),
-            is_assistive,
             self.event_broadcast.clone(),
             Arc::clone(&self.session_telemetry),
         );
@@ -2790,9 +2790,6 @@ impl RecordingController {
                 Self::configure_toggle_event_sink(
                     recorder,
                     is_assistive || overlay_enabled,
-                    OVERLAY_CONTROLLER.get().cloned(),
-                    new_session_id.clone(),
-                    is_assistive,
                     self.event_broadcast.clone(),
                     Arc::clone(&self.session_telemetry),
                 );
@@ -2894,142 +2891,46 @@ impl RecordingController {
         Ok(())
     }
 
-    async fn handle_toggle_utterance(
-        &self,
-        raw_text: String,
-        expected_session: String,
-        is_assistive: bool,
-        skip_user_bubble: bool,
-    ) -> Result<()> {
-        if raw_text.trim().is_empty() {
-            if is_assistive {
-                crate::ui::voice_chat::set_voice_chat_sending(false);
-                crate::ui::voice_chat::update_voice_chat_status("Listening...");
-            }
-            return Ok(());
-        }
-
-        // Skip if another session is active. If session_id is None, allow final flush.
-        // Snapshot first so the read guard drops at the semicolon — keeps the
-        // same defensive shape as the stop-flow fix and matches the Rust 2024
-        // if-let temporary-scope rules.
-        let current_session_id = self.session_id.read().await.clone();
-        if let Some(current) = current_session_id
-            && current != expected_session
-        {
-            debug!("Ignoring stale toggle utterance (session changed)");
-            return Ok(());
-        }
-
-        let _guard = self.serial_lock.lock().await;
-
-        // Snapshot mode flags
-        let hold_mode = *self.hold_mode.read().await;
-        let force_raw = *self.force_raw_mode.read().await;
-        let force_ai = *self.force_ai_mode.read().await;
-
-        if is_assistive {
-            let preserved_ctx = self.assistive_context.read().await.clone().filter(|ctx| {
-                ctx.frontmost_app.is_some()
-                    || ctx
-                        .selected_text
-                        .as_deref()
-                        .is_some_and(|text| !text.trim().is_empty())
-            });
-            let fallback_ctx = if preserved_ctx.is_none() {
-                tokio::task::spawn_blocking(|| {
-                    get_recent_assistive_context(Duration::from_secs(90))
-                })
-                .await
-                .ok()
-                .flatten()
-            } else {
-                None
-            };
-            let ctx = preserved_ctx.or(fallback_ctx).unwrap_or_default();
-            *self.assistive_context.write().await = Some(ctx);
-        } else {
-            let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
-                .await
-                .unwrap_or_default();
-            *self.assistive_context.write().await = Some(ctx);
-        }
-
-        crate::ui::voice_chat::set_voice_chat_target_app(
-            self.assistive_context
-                .read()
-                .await
-                .clone()
-                .unwrap_or_default()
-                .frontmost_app,
-        );
-
-        let config = self.config.read().await.clone();
-        let language_opt = Some(config.whisper_language.as_str().to_string());
-        let user_needs_separator = false;
-        let assistant_needs_separator = false;
-
-        let result = self
-            .process_transcript_text_pipeline(types::TranscriptPipelineParams {
-                raw_text,
-                recording_timestamp: chrono::Local::now(),
-                assistive: is_assistive,
-                hold_mode,
-                force_raw,
-                force_ai,
-                config,
-                language_opt,
-                raw_save_enabled: raw_save_enabled(is_assistive),
-                audio_path: None,
-                cloud_verdict_opt: None,
-                cloud_handle: None,
-                transcript_source: Some(RecordingTranscriptSource::Streaming),
-                truth_fallback_class: None,
-                truth_no_speech_reason: None,
-                truth_speech_pct: None,
-                truth_avg_logprob: None,
-                truth_confidence_flags: Vec::new(),
-                // Toggle utterance callback never runs a VAD adjudicator or
-                // final-pass sweep, so there is no sparkline/disposition to
-                // propagate here. (See Q4 / codex track.)
-                truth_sparkline: None,
-                truth_final_pass_disposition: None,
-                truth_commit_trigger: None,
-                truth_display_status: RecordingTranscriptSource::Streaming.label().to_string(),
-                append_mode: false,
-                live_stream_session: true,
-                user_needs_separator,
-                assistant_needs_separator,
-                skip_user_bubble,
-            })
-            .await
-            .map(|_| ());
-
-        if *self.state.read().await == State::RecToggle && is_assistive {
-            crate::ui::voice_chat::set_voice_chat_sending(false);
-            crate::ui::voice_chat::update_voice_chat_status("Listening...");
-        }
-
-        result
-    }
-
+    /// Stop the assistive (Emil) hands-off session.
+    ///
+    /// ADR 2026-05-28 Faza 1 contract: the assistive hands-off session is ONE
+    /// continuous dictation. Deltas have already streamed cumulatively into the Emil
+    /// bubble during recording (no per-utterance finalize). On stop we:
+    ///   1. stop the recorder and capture the WHOLE session transcript + WAV,
+    ///   2. retain the full audio (no discard),
+    ///   3. finalize the bubble and invoke the agent ONCE with the complete message.
+    ///
+    /// Emil therefore answers the entire dictation as a single user message — never
+    /// a stream of fragmented per-sentence shots.
     async fn stop_toggle_recording(&self) -> Result<()> {
         // Ignore if not recording
         if *self.state.read().await != State::RecToggle {
             return Ok(());
         }
 
-        info!("Stopping toggle recording");
+        info!("Stopping toggle recording (assistive hands-off — single agent message)");
 
-        // Stop recording and flush buffered worker
+        let assistive = *self.assistive_mode.read().await;
+        let config = self.config.read().await.clone();
+
+        // Stop recording, capture full-session transcript + WAV path. We use `stop()`
+        // (not `stop_and_discard_path()`) so the full audio is retained for the session.
         let mut recorder_guard = self.recorder.lock().await;
         let mut stop_error: Option<anyhow::Error> = None;
+        let mut session_transcript = String::new();
+        let mut session_audio_path: Option<std::path::PathBuf> = None;
         if let Some(recorder) = recorder_guard.as_mut() {
-            if !cfg!(test)
-                && let Err(e) = recorder.stop_and_discard_path().await
-            {
-                warn!("Toggle stop: recorder stop failed; continuing cleanup: {e}");
-                stop_error = Some(e);
+            if !cfg!(test) {
+                match recorder.stop().await {
+                    Ok((transcript, audio_path)) => {
+                        session_transcript = transcript;
+                        session_audio_path = audio_path;
+                    }
+                    Err(e) => {
+                        warn!("Toggle stop: recorder stop failed; continuing cleanup: {e}");
+                        stop_error = Some(e);
+                    }
+                }
             }
             Self::clear_recorder_callbacks(recorder);
         } else {
@@ -3038,6 +2939,41 @@ impl RecordingController {
             stop_error = Some(error);
         }
         drop(recorder_guard);
+
+        // Persist the full session audio (operator contract: hands-off never drops audio).
+        if config.dump_audio_logs
+            && let Some(path) = &session_audio_path
+        {
+            let _ = crate::state::history::save_audio(
+                path.as_path(),
+                chrono::Local::now(),
+                Some(session_transcript.as_str()),
+                crate::state::history::TranscriptKind::Raw,
+            );
+        }
+
+        // Snapshot assistive context BEFORE clearing session state.
+        let assistive_ctx = if assistive {
+            let preserved = self.assistive_context.read().await.clone().filter(|ctx| {
+                ctx.frontmost_app.is_some()
+                    || ctx
+                        .selected_text
+                        .as_deref()
+                        .is_some_and(|text| !text.trim().is_empty())
+            });
+            if preserved.is_some() {
+                preserved
+            } else {
+                tokio::task::spawn_blocking(|| {
+                    get_recent_assistive_context(Duration::from_secs(90))
+                })
+                .await
+                .ok()
+                .flatten()
+            }
+        } else {
+            None
+        };
 
         // Reset state
         self.set_state(State::Idle).await;
@@ -3049,25 +2985,71 @@ impl RecordingController {
         self.start_transition_in_flight
             .store(false, Ordering::SeqCst);
         self.assistive_loop_active.store(false, Ordering::SeqCst);
-        if self.toggle_user_has_text.load(Ordering::SeqCst) {
-            crate::ui::voice_chat::finalize_voice_chat_user_message();
-        }
         self.toggle_user_has_text.store(false, Ordering::SeqCst);
         self.toggle_assistant_has_text
             .store(false, Ordering::SeqCst);
 
         // Reset UI indicators
         hide_hold_badge();
-        crate::ui::voice_chat::update_voice_chat_status("Ready");
 
         // Hide transcription overlay explicitly on toggle stop
         crate::ui::overlay::hide_transcription_overlay();
+
+        // Assistive: finalize the cumulative bubble and invoke the agent ONCE with the
+        // complete session message.
+        if assistive && !session_transcript.trim().is_empty() {
+            let ctx = assistive_ctx.unwrap_or_default();
+            let assistive_input = build_assistive_input(&session_transcript, &ctx);
+            crate::ui::voice_chat::show_voice_chat_overlay();
+            crate::ui::voice_chat::show_agent_tab();
+            crate::ui::voice_chat::finalize_voice_chat_user_message();
+            crate::ui::voice_chat::set_voice_chat_sending(true);
+            crate::ui::voice_chat::update_voice_chat_status("Thinking…");
+            helpers::send_assistive_with_agent_runtime(
+                assistive_input,
+                config.whisper_language,
+                config.ai_assistive_max_tokens,
+            )
+            .await;
+        } else {
+            crate::ui::voice_chat::update_voice_chat_status("Ready");
+        }
 
         if let Some(e) = stop_error {
             return Err(anyhow::anyhow!("Failed to stop recorder: {e}"));
         }
 
         Ok(())
+    }
+
+    /// Format the given transcript with AI and paste it (overlay `[Format]` action).
+    ///
+    /// On-demand formatting for the decision-mode transcript. Falls back to the raw
+    /// text if AI formatting is unavailable or returns empty. (ADR 2026-05-28 Faza 1.)
+    async fn format_decision_text_and_paste(&self, text: String) {
+        let language = self.config.read().await.whisper_language;
+        let lang_str = language.as_str().to_string();
+        let formatted = crate::ai_formatting::format_text_with_status(
+            &text,
+            Some(lang_str.as_str()),
+            false,
+            None,
+        )
+        .await;
+        let out = if formatted.text.trim().is_empty() {
+            text
+        } else {
+            formatted.text
+        };
+        if cfg!(test) {
+            info!("Skipping format+paste in tests ({} chars)", out.len());
+            return;
+        }
+        if let Err(e) = clipboard::paste_text(&out) {
+            warn!("Format+paste failed: {e}");
+        } else {
+            info!("Formatted transcript pasted ({} chars)", out.len());
+        }
     }
 
     async fn stop_toggle_and_adjudicate(&self) -> Result<()> {
@@ -3801,6 +3783,20 @@ impl RecordingController {
         } = p;
         let language_opt = language_opt.as_deref();
 
+        // Hands-off (non-assistive) is a single RAW capture; formatting is the explicit
+        // post-recording [Format] action, never an auto-format on stop. Force the raw
+        // branch for the adjudicated hands-off stop so the session lands fast + raw in
+        // the decision overlay — no AI round-trip on the stop path (this branch is the
+        // toggle-stuck-watchdog hot path; an extra format call here re-introduces stop
+        // latency). (ADR 2026-05-28 Faza 1: differentiation by action, not by mode.)
+        let toggle_handsoff = !assistive
+            && matches!(
+                transcript_source,
+                Some(RecordingTranscriptSource::ToggleSessionAdjudicated)
+            );
+        let force_raw = force_raw || toggle_handsoff;
+        let force_ai = force_ai && !toggle_handsoff;
+
         // ALWAYS-ON: Final post-processing pass (lexicon + cleanup + semantic gate)
         // This ensures ALL output paths receive clean text regardless of mode.
         // Contract: every chunk/transcript passes through StreamPostProcessor before
@@ -4135,6 +4131,16 @@ impl RecordingController {
             should_auto_paste = false;
         }
         if live_stream_session {
+            should_auto_paste = false;
+        }
+        // Hands-off (non-assistive) is action-driven: the full transcript lands in the
+        // decision overlay and the user picks [Format] / [Copy] / [Agent]. No silent
+        // auto-paste — differentiation happens AFTER recording, not during. (ADR
+        // 2026-05-28 Faza 1: "Różnicowanie przez akcje, nie przez tryby nagrywania".)
+        if matches!(
+            transcript_source,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated)
+        ) {
             should_auto_paste = false;
         }
 

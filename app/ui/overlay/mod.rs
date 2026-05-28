@@ -266,12 +266,12 @@ fn action_handler_class() -> *const Class {
             on_copy_transcript as extern "C" fn(&Object, Sel, Id),
         );
         decl.add_method(
-            sel!(onAugmentTranscript:),
-            on_augment_transcript as extern "C" fn(&Object, Sel, Id),
+            sel!(onAgentTranscript:),
+            on_agent_transcript as extern "C" fn(&Object, Sel, Id),
         );
         decl.add_method(
-            sel!(onSaveTranscript:),
-            on_save_transcript as extern "C" fn(&Object, Sel, Id),
+            sel!(onFormatTranscript:),
+            on_format_transcript as extern "C" fn(&Object, Sel, Id),
         );
         decl.add_method(
             sel!(onCommitRecording:),
@@ -350,11 +350,13 @@ extern "C" fn on_copy_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     hide_transcription_overlay();
 }
 
-/// Handler: Augment transcript = save segment (implicit Commit) + open voice
-/// chat with handoff. Recording continues; the segment is clipped from the
-/// recorder buffer and routed through controller for save + LLM handoff
-/// (off-main-thread to avoid AppKit deadlock).
-extern "C" fn on_augment_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
+/// Handler: Agent = hand the whole transcript to the Agent (Emil).
+///
+/// Decision-mode (post-recording): hands off the complete session transcript to
+/// the voice-chat overlay as a single message. Live (mid-recording, legacy) clips
+/// and commits the current segment, then augments. ADR 2026-05-28 Faza 1 renames
+/// the former "Augment" action to "Agent" — same handoff, clearer contract.
+extern "C" fn on_agent_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     let action = {
         let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         augment_action_for_state(&state)
@@ -376,8 +378,13 @@ extern "C" fn on_augment_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     hide_transcription_overlay();
 }
 
-/// Handler: Save (save already happened in controller; just close overlay)
-extern "C" fn on_save_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
+/// Handler: Format = run AI formatting on the decision transcript, then paste.
+///
+/// ADR 2026-05-28 Faza 1: formatting is a post-recording CHOICE, not something the
+/// dictation does mid-stream. The async format + paste runs off the main thread via
+/// the controller; the overlay closes immediately.
+extern "C" fn on_format_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
+    crate::controller::request_format_and_paste();
     hide_transcription_overlay();
 }
 
@@ -1312,37 +1319,37 @@ fn show_transcription_overlay_impl() {
             },
         };
 
-        let save_button = create_button(save_frame, "Save", button_style::GLASS);
+        // Decision-mode action contract (ADR 2026-05-28 Faza 1): one hands-off
+        // recording → three post-recording actions. [Format] polishes via AI + pastes,
+        // [Copy] copies the transcript, [Agent] hands the whole session to Emil.
+        let format_button = create_button(save_frame, "Format", button_style::GLASS);
         let copy_button = create_button(copy_frame, "Copy", button_style::ROUNDED);
-        let augment_button = create_button(augment_frame, "Augment", button_style::ROUNDED);
+        let agent_button = create_button(augment_frame, "Agent", button_style::ROUNDED);
         let commit_button = create_button(commit_frame, "Finish", button_style::GLASS);
         set_tooltip(
             copy_button,
             copy_action_tooltip(TranscriptionActionContractMode::Raw),
         );
         set_tooltip(
-            augment_button,
+            agent_button,
             augment_action_tooltip(TranscriptionActionContractMode::Raw),
         );
-        set_tooltip(
-            save_button,
-            "Close dictation overlay (transcript already saved)",
-        );
+        set_tooltip(format_button, "Format the transcript with AI, then paste");
         set_tooltip(commit_button, "Stop recording and enter decision mode");
 
-        button_set_action(save_button, action_handler, sel!(onSaveTranscript:));
+        button_set_action(format_button, action_handler, sel!(onFormatTranscript:));
         button_set_action(copy_button, action_handler, sel!(onCopyTranscript:));
-        button_set_action(augment_button, action_handler, sel!(onAugmentTranscript:));
+        button_set_action(agent_button, action_handler, sel!(onAgentTranscript:));
         button_set_action(commit_button, action_handler, sel!(onCommitRecording:));
 
-        add_subview(content_view, save_button);
+        add_subview(content_view, format_button);
         add_subview(content_view, copy_button);
-        add_subview(content_view, augment_button);
+        add_subview(content_view, agent_button);
         add_subview(content_view, commit_button);
 
-        set_hidden(save_button, true);
+        set_hidden(format_button, true);
         set_hidden(copy_button, true);
-        set_hidden(augment_button, true);
+        set_hidden(agent_button, true);
         set_hidden(commit_button, true);
 
         // Show the window with fade-in animation
@@ -1367,8 +1374,8 @@ fn show_transcription_overlay_impl() {
         state.auto_hide_label = Some(auto_hide_label as usize);
         state.blur_view = Some(blur_view as usize);
         state.copy_button = Some(copy_button as usize);
-        state.augment_button = Some(augment_button as usize);
-        state.save_button = Some(save_button as usize);
+        state.augment_button = Some(agent_button as usize);
+        state.save_button = Some(format_button as usize);
         state.commit_button = Some(commit_button as usize);
         state.progress_indicator = Some(spinner as usize);
         state.tracking_area = Some(tracking_area as usize);
