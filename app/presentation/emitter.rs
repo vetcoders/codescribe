@@ -366,10 +366,23 @@ impl EventSink for PresentationEmitter {
                     cb(payload);
                 }
                 if matches!(self.delta_render_mode, DeltaRenderMode::SessionRendered) {
-                    let rendered = {
+                    let (rendered, committed_len) = {
                         let state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.rendered_text()
+                        (state.rendered_text(), state.committed.len())
                     };
+                    // Diagnostic (ADR 2026-05-28 Faza 1 append regression): the emitter
+                    // cadence is unit-proven cumulative (session_rendered_accumulates_across_
+                    // multiple_utterances), so if a LIVE hands-off session still shows replace,
+                    // the cause is upstream — either UtteranceFinal never reaching here during
+                    // continuous speech, or the emitter being recreated mid-session. This
+                    // per-utterance (low-frequency) info! confirms at runtime whether
+                    // `committed` actually grows. info! so it survives release tracing level.
+                    info!(
+                        utterance_id = *utterance_id,
+                        committed_utterances = committed_len,
+                        rendered_chars = rendered.chars().count(),
+                        "PresentationEmitter: utterance committed (session-rendered, cumulative)"
+                    );
                     self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 }
             }
@@ -587,6 +600,56 @@ mod tests {
         assert!(
             snapshot.starts_with("Ala ma"),
             "expected previous utterance to stay committed, got: {snapshot:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_rendered_accumulates_across_multiple_utterances() {
+        // ADR 2026-05-28 Faza 1: hands-off long-form must build ONE continuous
+        // transcript — every finalized utterance APPENDS, never replaces. This drives
+        // a realistic multi-utterance cadence (Preview -> UtteranceFinal x3, plus a
+        // trailing live preview) through the default SessionRendered mode and asserts
+        // the rendered buffer is cumulative. Guards the operator-reported regression
+        // "UI nie dodaje tekstu na końcu ogona" (replace instead of append).
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        let finalize = |id: u64, text: &str| EngineEvent::UtteranceFinal {
+            utterance_id: id,
+            text: text.to_string(),
+            raw_text: text.to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        };
+
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "Pierwsze".to_string(),
+        });
+        emitter.on_event(&finalize(1, "Pierwsze zdanie."));
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 2,
+            text: "drugie".to_string(),
+        });
+        emitter.on_event(&finalize(2, "drugie zdanie."));
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 3,
+            text: "trzecie na żywo".to_string(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let snapshot = transcript.lock().await.clone();
+        assert!(
+            snapshot.contains("Pierwsze zdanie.")
+                && snapshot.contains("drugie zdanie.")
+                && snapshot.contains("trzecie na żywo"),
+            "session-rendered must accumulate every utterance (append, not replace), got: {snapshot:?}"
         );
     }
 
