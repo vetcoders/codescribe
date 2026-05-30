@@ -475,20 +475,28 @@ fn augment_action_tooltip(mode: TranscriptionActionContractMode) -> &'static str
     }
 }
 
+/// Tooltip for the `[Format]` action (decision-mode). ADR 2026-05-28 Faza 1:
+/// Format is an on-demand AI polish + paste — it works on the RAW transcript too,
+/// it is NOT the old "Save closes" no-op. (Completes the Save->Format rename: the
+/// creation-time tooltip was being clobbered back to the old Save text on every
+/// action-contract refresh.)
+fn format_action_tooltip(_mode: TranscriptionActionContractMode) -> &'static str {
+    "Format the transcript with AI, then paste"
+}
+
 fn decision_hint_text(
     mode: TranscriptionActionContractMode,
     display_status: &str,
     include_auto_hide: bool,
 ) -> String {
     let mode_label = action_contract_source_label(mode);
+    // Action-driven contract (ADR 2026-05-28 Faza 1): [Format] polishes via AI + pastes,
+    // [Copy] copies, [Agent] hands off. No more "Save closes" — Format is a real action.
     let base = if display_status.is_empty() {
-        format!(
-            "Dictation overlay | {} | Save closes | Augment -> Agent",
-            mode_label
-        )
+        format!("Dictation overlay | {} | Format · Copy · Agent", mode_label)
     } else {
         format!(
-            "Dictation overlay | {} | {} | Save closes | Augment -> Agent",
+            "Dictation overlay | {} | {} | Format · Copy · Agent",
             mode_label, display_status
         )
     };
@@ -516,11 +524,11 @@ fn refresh_action_contract_ui_unlocked(
         }
     }
     if let Some(save_ptr) = snap.save_button {
+        // `save_button` slot now holds the [Format] button (ADR 2026-05-28 Faza 1).
+        // It must advertise the format action, not the old Save "close" semantics —
+        // otherwise this refresh clobbers the creation-time tooltip back to "Save".
         unsafe {
-            set_tooltip(
-                save_ptr as Id,
-                "Close dictation overlay (transcript already saved)",
-            );
+            set_tooltip(save_ptr as Id, format_action_tooltip(mode));
         }
     }
     if let Some(label_ptr) = snap.auto_hide_label {
@@ -1322,7 +1330,9 @@ fn show_transcription_overlay_impl() {
         // Decision-mode action contract (ADR 2026-05-28 Faza 1): one hands-off
         // recording → three post-recording actions. [Format] polishes via AI + pastes,
         // [Copy] copies the transcript, [Agent] hands the whole session to Emil.
-        let format_button = create_button(save_frame, "Format", button_style::GLASS);
+        // ROUNDED (not GLASS): Format is an active peer action alongside Copy/Agent.
+        // GLASS rendered translucent → read as disabled/"wyszarzony" by the operator.
+        let format_button = create_button(save_frame, "Format", button_style::ROUNDED);
         let copy_button = create_button(copy_frame, "Copy", button_style::ROUNDED);
         let agent_button = create_button(augment_frame, "Agent", button_style::ROUNDED);
         let commit_button = create_button(commit_frame, "Finish", button_style::GLASS);
