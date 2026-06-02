@@ -33,8 +33,9 @@ use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
     add_subview, animate_fade, button_set_action, button_style, clamp_overlay_position,
     create_button, create_glass_effect_view_with, create_label, create_scrollable_text_view,
-    ns_string, set_glass_effect_content_view, set_hidden, set_text, set_text_view_string,
-    set_tooltip, ui_colors, ui_tokens, window_discard, window_set_alpha, window_show,
+    get_text_view_string, ns_string, set_glass_effect_content_view, set_hidden, set_text,
+    set_text_view_string, set_tooltip, ui_colors, ui_tokens, window_discard, window_set_alpha,
+    window_show,
 };
 use objc::declare::ClassDecl;
 use objc::runtime::Sel;
@@ -51,6 +52,8 @@ const NSTRACKING_ACTIVE_ALWAYS: u64 = 1 << 7;
 const NSTRACKING_IN_VISIBLE_RECT: u64 = 1 << 9;
 
 const OVERLAY_WINDOW_WIDTH: f64 = 420.0;
+const OVERLAY_WINDOW_MIN_WIDTH: f64 = 360.0;
+const OVERLAY_WINDOW_MAX_WIDTH: f64 = 760.0;
 const OVERLAY_WINDOW_MIN_HEIGHT: f64 = 180.0;
 const OVERLAY_WINDOW_MAX_HEIGHT_RATIO: f64 = 0.5;
 const OVERLAY_PADDING: f64 = 16.0;
@@ -71,6 +74,11 @@ const MIN_AUTO_HIDE_DELAY_SECS: u64 = 3;
 const MAX_AUTO_HIDE_DELAY_SECS: u64 = 60;
 const OVERLAY_LAYOUT_THROTTLE_MS: u64 = 80;
 const OVERLAY_LAYOUT_HYSTERESIS_PX: f64 = 1.0;
+const NSVIEW_WIDTH_SIZABLE: isize = 2;
+const NSVIEW_MAX_X_MARGIN: isize = 4;
+const NSVIEW_MIN_Y_MARGIN: isize = 8;
+const NSVIEW_HEIGHT_SIZABLE: isize = 16;
+const NSVIEW_MAX_Y_MARGIN: isize = 32;
 
 fn parse_auto_hide_delay_secs(raw: Option<&str>) -> u64 {
     raw.and_then(|v| v.parse::<u64>().ok())
@@ -139,7 +147,6 @@ struct TranscriptionOverlayState {
     raw_text: String,
     last_pass_text: String,
     accumulated_text: String,
-    window_width: f64,
     min_height: f64,
     max_height: f64,
     last_applied_height: f64,
@@ -170,7 +177,6 @@ lazy_static::lazy_static! {
         raw_text: String::new(),
         last_pass_text: String::new(),
         accumulated_text: String::new(),
-        window_width: OVERLAY_WINDOW_WIDTH,
         min_height: OVERLAY_WINDOW_MIN_HEIGHT,
         max_height: OVERLAY_WINDOW_MIN_HEIGHT,
         last_applied_height: OVERLAY_WINDOW_MIN_HEIGHT,
@@ -208,7 +214,6 @@ struct OverlaySnapshot {
     commit_button: Option<usize>,
     progress_indicator: Option<usize>,
     display_status: String,
-    window_width: f64,
     min_height: f64,
     max_height: f64,
     last_applied_height: f64,
@@ -230,7 +235,6 @@ impl OverlaySnapshot {
             commit_button: state.commit_button,
             progress_indicator: state.progress_indicator,
             display_status: state.display_status.clone(),
-            window_width: state.window_width,
             min_height: state.min_height,
             max_height: state.max_height,
             last_applied_height: state.last_applied_height,
@@ -250,6 +254,7 @@ static AUTO_HIDE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 static ACTION_HANDLER_INIT: Once = Once::new();
 static mut ACTION_HANDLER_CLASS: *const Class = std::ptr::null();
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AugmentAction {
     CommitLiveSegment,
@@ -298,6 +303,25 @@ fn action_text_for_contract(state: &TranscriptionOverlayState) -> String {
     }
 }
 
+fn current_action_text_snapshot() -> (String, bool, OverlaySnapshot) {
+    let (fallback, decision_mode, snap) = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            action_text_for_contract(&state),
+            state.decision_mode,
+            OverlaySnapshot::from_state(&state),
+        )
+    };
+
+    if decision_mode && let Some(text_view_ptr) = snap.text_view {
+        let edited = unsafe { get_text_view_string(text_view_ptr as Id) };
+        return (edited, decision_mode, snap);
+    }
+
+    (fallback, decision_mode, snap)
+}
+
+#[cfg(test)]
 fn augment_action_for_state(state: &TranscriptionOverlayState) -> Option<AugmentAction> {
     let text = action_text_for_contract(state);
     if text.trim().is_empty() {
@@ -315,8 +339,8 @@ fn augment_action_for_state(state: &TranscriptionOverlayState) -> Option<Augment
 /// read segment text for save without coupling button handlers to controller
 /// state. Returns empty string if overlay state lock is poisoned (recoverable).
 pub fn current_segment_text() -> String {
-    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    action_text_for_contract(&state)
+    let (text, _, _) = current_action_text_snapshot();
+    text
 }
 
 fn display_text_for_state(state: &TranscriptionOverlayState) -> String {
@@ -330,13 +354,7 @@ fn display_text_for_state(state: &TranscriptionOverlayState) -> String {
 
 /// Handler: Copy transcript using contract source of truth.
 extern "C" fn on_copy_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
-    let (text, snap) = {
-        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            action_text_for_contract(&state),
-            OverlaySnapshot::from_state(&state),
-        )
-    };
+    let (text, _, snap) = current_action_text_snapshot();
     if text.is_empty() {
         return;
     }
@@ -357,23 +375,17 @@ extern "C" fn on_copy_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
 /// and commits the current segment, then augments. ADR 2026-05-28 Faza 1 renames
 /// the former "Augment" action to "Agent" — same handoff, clearer contract.
 extern "C" fn on_agent_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
-    let action = {
-        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        augment_action_for_state(&state)
-    };
-    let Some(action) = action else {
+    let (text, decision_mode, _) = current_action_text_snapshot();
+    if text.trim().is_empty() {
         return;
-    };
+    }
 
-    match action {
-        AugmentAction::CommitLiveSegment => {
-            crate::controller::request_segment_commit_and_augment();
-        }
-        AugmentAction::HandoffDecisionText(text) => {
-            crate::ui::voice_chat::show_voice_chat_overlay();
-            crate::ui::voice_chat::show_agent_tab();
-            crate::ui::voice_chat::handoff_transcript_to_chat(&text);
-        }
+    if decision_mode {
+        crate::ui::voice_chat::show_voice_chat_overlay();
+        crate::ui::voice_chat::show_agent_tab();
+        crate::ui::voice_chat::handoff_transcript_to_chat(&text);
+    } else {
+        crate::controller::request_segment_commit_and_augment();
     }
     hide_transcription_overlay();
 }
@@ -673,6 +685,16 @@ fn scroll_text_view_to_bottom(text_view: Id) {
     }
 }
 
+fn set_text_view_editable_unlocked(snap: &OverlaySnapshot, editable: bool) {
+    if let Some(text_view_ptr) = snap.text_view {
+        unsafe {
+            let text_view = text_view_ptr as Id;
+            let _: () = msg_send![text_view, setEditable: editable];
+            let _: () = msg_send![text_view, setSelectable: true];
+        }
+    }
+}
+
 /// Resize overlay window to fit text content. Call ONLY outside the `OVERLAY_STATE` lock.
 /// Returns the new `last_applied_height` for write-back to state.
 fn resize_overlay_unlocked(snap: &OverlaySnapshot) -> f64 {
@@ -682,13 +704,16 @@ fn resize_overlay_unlocked(snap: &OverlaySnapshot) -> f64 {
             _ => return snap.last_applied_height,
         };
 
-    let text_width = (snap.window_width - OVERLAY_PADDING * 2.0).max(120.0);
-    let text_content_height = measure_text_view_content_height(text_view_ptr, text_width);
-    let metrics =
-        compute_overlay_layout_metrics(text_content_height, snap.min_height, snap.max_height);
-
     unsafe {
         let current_frame: CGRect = msg_send![window_ptr, frame];
+        let window_width = current_frame
+            .size
+            .width
+            .clamp(OVERLAY_WINDOW_MIN_WIDTH, OVERLAY_WINDOW_MAX_WIDTH);
+        let text_width = (window_width - OVERLAY_PADDING * 2.0).max(120.0);
+        let text_content_height = measure_text_view_content_height(text_view_ptr, text_width);
+        let metrics =
+            compute_overlay_layout_metrics(text_content_height, snap.min_height, snap.max_height);
         let top_y = current_frame.origin.y + current_frame.size.height;
         let should_resize =
             (snap.last_applied_height - metrics.target_height).abs() > OVERLAY_LAYOUT_HYSTERESIS_PX;
@@ -699,7 +724,7 @@ fn resize_overlay_unlocked(snap: &OverlaySnapshot) -> f64 {
                     y: top_y - metrics.target_height,
                 },
                 size: CGSize {
-                    width: snap.window_width,
+                    width: window_width,
                     height: metrics.target_height,
                 },
             };
@@ -740,7 +765,7 @@ fn resize_overlay_unlocked(snap: &OverlaySnapshot) -> f64 {
         let header_y = applied_height - OVERLAY_PADDING - OVERLAY_HEADER_HEIGHT;
         let info_y = header_y - OVERLAY_HEADER_GAP - OVERLAY_INFO_HEIGHT;
         let spinner_size = 14.0;
-        let spinner_x = snap.window_width - OVERLAY_PADDING - spinner_size;
+        let spinner_x = window_width - OVERLAY_PADDING - spinner_size;
         let status_gap = 6.0;
         let status_max_x = spinner_x - status_gap;
         let status_width = OVERLAY_STATUS_WIDTH.min((status_max_x - OVERLAY_PADDING).max(80.0));
@@ -782,7 +807,7 @@ fn resize_overlay_unlocked(snap: &OverlaySnapshot) -> f64 {
                     y: info_y,
                 },
                 size: CGSize {
-                    width: snap.window_width - OVERLAY_PADDING * 2.0,
+                    width: window_width - OVERLAY_PADDING * 2.0,
                     height: OVERLAY_INFO_HEIGHT,
                 },
             };
@@ -807,7 +832,7 @@ fn resize_overlay_unlocked(snap: &OverlaySnapshot) -> f64 {
             let blur_frame = CGRect {
                 origin: CGPoint { x: 0.0, y: 0.0 },
                 size: CGSize {
-                    width: snap.window_width,
+                    width: window_width,
                     height: applied_height,
                 },
             };
@@ -817,7 +842,7 @@ fn resize_overlay_unlocked(snap: &OverlaySnapshot) -> f64 {
         let button_width = 100.0;
         let button_gap = 10.0;
         let row_width = button_width * 3.0 + button_gap * 2.0;
-        let row_x = (snap.window_width - row_width) / 2.0;
+        let row_x = (window_width - row_width) / 2.0;
         let save_frame = CGRect {
             origin: CGPoint {
                 x: row_x,
@@ -857,6 +882,19 @@ fn resize_overlay_unlocked(snap: &OverlaySnapshot) -> f64 {
         }
         if let Some(augment_ptr) = snap.augment_button {
             let _: () = msg_send![augment_ptr as Id, setFrame: augment_frame];
+        }
+        if let Some(commit_ptr) = snap.commit_button {
+            let commit_frame = CGRect {
+                origin: CGPoint {
+                    x: (window_width - button_width) / 2.0,
+                    y: OVERLAY_PADDING,
+                },
+                size: CGSize {
+                    width: button_width,
+                    height: OVERLAY_BUTTON_HEIGHT,
+                },
+            };
+            let _: () = msg_send![commit_ptr as Id, setFrame: commit_frame];
         }
 
         applied_height
@@ -1090,8 +1128,11 @@ fn show_transcription_overlay_impl() {
             return;
         }
 
-        // Borderless + FullSizeContentView for true vibrancy effect
-        let style_mask = NSWindowStyleMask::Borderless | NSWindowStyleMask::FullSizeContentView;
+        // Borderless + FullSizeContentView for true vibrancy effect; Resizable
+        // gives decision mode a native drag affordance without changing chrome.
+        let style_mask = NSWindowStyleMask::Borderless
+            | NSWindowStyleMask::FullSizeContentView
+            | NSWindowStyleMask::Resizable;
         let backing = NSBackingStoreType::Buffered;
         let window: Id = msg_send![
             window,
@@ -1113,6 +1154,12 @@ fn show_transcription_overlay_impl() {
         let _: () = msg_send![window, setMovableByWindowBackground: true];
         let _: () = msg_send![window, setHasShadow: true];
         let _: () = msg_send![window, setReleasedWhenClosed: false];
+        let _: () = msg_send![
+            window,
+            setMinSize: CGSize::new(OVERLAY_WINDOW_MIN_WIDTH, OVERLAY_WINDOW_MIN_HEIGHT)
+        ];
+        let _: () =
+            msg_send![window, setMaxSize: CGSize::new(OVERLAY_WINDOW_MAX_WIDTH, max_height)];
 
         // Join all spaces (follow focus)
         // Make sure the overlay shows up even when the user is in a fullscreen Space.
@@ -1147,12 +1194,14 @@ fn show_transcription_overlay_impl() {
             let _: () = msg_send![layer, setBorderColor: cg_border];
             let _: () = msg_send![layer, setBorderWidth: 1.0f64];
         }
+        let _: () =
+            msg_send![blur_view, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE];
 
         // Add blur view as background, then mount overlay controls via glass `contentView`.
         add_subview(window_content_view, blur_view);
         let content_view: Id = msg_send![Class::get("NSView").unwrap(), alloc];
         let content_view: Id = msg_send![content_view, initWithFrame: blur_frame];
-        let _: () = msg_send![content_view, setAutoresizingMask: 2_isize | 16_isize]; // Width | Height
+        let _: () = msg_send![content_view, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE];
         let _: bool = set_glass_effect_content_view(blur_view, content_view);
 
         let _: () = msg_send![window, setTitle: ns_string(OVERLAY_HEADER_LABEL)];
@@ -1183,6 +1232,7 @@ fn show_transcription_overlay_impl() {
             selectable: false,
             editable: false,
         });
+        let _: () = msg_send![header_label, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN];
         add_subview(content_view, header_label);
 
         let status_field = create_label(crate::ui_helpers::LabelConfig {
@@ -1199,6 +1249,8 @@ fn show_transcription_overlay_impl() {
             editable: false,
         });
         let _: () = msg_send![status_field, setAlignment: 2_isize];
+        let _: () =
+            msg_send![status_field, setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN];
         add_subview(content_view, status_field);
 
         let auto_hide_label = create_label(crate::ui_helpers::LabelConfig {
@@ -1214,6 +1266,10 @@ fn show_transcription_overlay_impl() {
             selectable: false,
             editable: false,
         });
+        let _: () = msg_send![
+            auto_hide_label,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN
+        ];
         add_subview(content_view, auto_hide_label);
         set_hidden(auto_hide_label, true);
 
@@ -1226,6 +1282,8 @@ fn show_transcription_overlay_impl() {
         );
         let spinner: Id = msg_send![ns_progress, alloc];
         let spinner: Id = msg_send![spinner, initWithFrame: spinner_frame];
+        let _: () =
+            msg_send![spinner, setAutoresizingMask: NSVIEW_MAX_X_MARGIN | NSVIEW_MIN_Y_MARGIN];
         let _: () = msg_send![spinner, setStyle: NS_PROGRESS_INDICATOR_STYLE_SPINNING];
         let _: () = msg_send![spinner, setIndeterminate: true];
         let _: () = msg_send![spinner, setDisplayedWhenStopped: false];
@@ -1241,6 +1299,10 @@ fn show_transcription_overlay_impl() {
             ),
         );
         let (text_scroll_view, text_view) = create_scrollable_text_view(text_frame, false);
+        let _: () = msg_send![
+            text_scroll_view,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
+        ];
         let ns_font_class = Class::get("NSFont").unwrap();
         let system_font: Id = msg_send![ns_font_class, systemFontOfSize: 14.0f64];
         let _: () = msg_send![text_view, setFont: system_font];
@@ -1336,6 +1398,11 @@ fn show_transcription_overlay_impl() {
         let copy_button = create_button(copy_frame, "Copy", button_style::ROUNDED);
         let agent_button = create_button(augment_frame, "Agent", button_style::ROUNDED);
         let commit_button = create_button(commit_frame, "Finish", button_style::GLASS);
+        let button_autoresize = NSVIEW_MAX_Y_MARGIN;
+        let _: () = msg_send![format_button, setAutoresizingMask: button_autoresize];
+        let _: () = msg_send![copy_button, setAutoresizingMask: button_autoresize];
+        let _: () = msg_send![agent_button, setAutoresizingMask: button_autoresize];
+        let _: () = msg_send![commit_button, setAutoresizingMask: button_autoresize];
         set_tooltip(
             copy_button,
             copy_action_tooltip(TranscriptionActionContractMode::Raw),
@@ -1392,7 +1459,6 @@ fn show_transcription_overlay_impl() {
         state.decision_mode = false;
         state.hover_active = false;
         state.action_handler = Some(action_handler as usize);
-        state.window_width = window_width;
         state.min_height = window_height;
         state.max_height = max_height;
         state.last_applied_height = window_height;
@@ -1533,6 +1599,7 @@ pub fn set_transcription_action_contract(
         }; // Lock dropped.
 
         refresh_action_contract_ui_unlocked(&snap, mode_copy, decision_mode);
+        set_text_view_editable_unlocked(&snap, decision_mode);
         update_overlay_text_unlocked(snap.text_view, &visible_text);
         let new_h = resize_overlay_unlocked(&snap);
         {
@@ -1574,6 +1641,7 @@ fn clear_transcription_text_impl() {
     set_action_buttons_visible_unlocked(&snap, false);
     set_recording_button_visible_unlocked(&snap, false);
     set_auto_hide_hint_visible_unlocked(&snap, TranscriptionActionContractMode::Raw, false);
+    set_text_view_editable_unlocked(&snap, false);
     if let Some(spinner_ptr) = snap.progress_indicator {
         unsafe {
             set_hidden(spinner_ptr as Id, true);
@@ -1654,6 +1722,7 @@ pub fn enter_decision_mode() {
         set_auto_hide_hint_visible_unlocked(&snap, mode, true);
         set_recording_button_visible_unlocked(&snap, false);
         set_recording_status_unlocked(&snap, false);
+        set_text_view_editable_unlocked(&snap, true);
     });
 }
 
@@ -1672,6 +1741,7 @@ pub fn enter_recording_mode() {
         set_action_buttons_visible_unlocked(&snap, false);
         set_auto_hide_hint_visible_unlocked(&snap, mode, false);
         set_recording_button_visible_unlocked(&snap, true);
+        set_text_view_editable_unlocked(&snap, false);
         // Show recording indicator (red dot + text), no spinner
         set_recording_status_unlocked(&snap, true);
     });
@@ -1693,6 +1763,7 @@ pub fn enter_processing_mode() {
         set_action_buttons_visible_unlocked(&snap, false);
         set_auto_hide_hint_visible_unlocked(&snap, mode, false);
         set_recording_button_visible_unlocked(&snap, false);
+        set_text_view_editable_unlocked(&snap, false);
         set_status_message_unlocked(&snap, "Thinking", true);
     });
 }
@@ -1953,7 +2024,6 @@ mod tests {
         state.raw_text.clear();
         state.last_pass_text.clear();
         state.accumulated_text.clear();
-        state.window_width = OVERLAY_WINDOW_WIDTH;
         state.min_height = OVERLAY_WINDOW_MIN_HEIGHT;
         state.max_height = OVERLAY_WINDOW_MIN_HEIGHT;
         state.last_applied_height = OVERLAY_WINDOW_MIN_HEIGHT;
