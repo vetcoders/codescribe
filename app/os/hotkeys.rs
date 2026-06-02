@@ -256,6 +256,41 @@ pub enum HotkeyEvent {
     ToggleRaw,
     /// Assistive toggle gesture (double-tap right Option)
     ToggleAssistive,
+    /// A double-tap gesture was detected but could not be routed.
+    DoubleTapBlocked {
+        gesture: DoubleTapGesture,
+        reason: DoubleTapBlockReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoubleTapGesture {
+    LeftOption,
+    RightOption,
+}
+
+impl DoubleTapGesture {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LeftOption => "Double-tap Left Option",
+            Self::RightOption => "Double-tap Right Option",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoubleTapBlockReason {
+    BindingDisabled,
+    ModifierComboActive,
+}
+
+impl DoubleTapBlockReason {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::BindingDisabled => "that gesture is not assigned to a CodeScribe mode",
+            Self::ModifierComboActive => "another modifier or hold gesture is active",
+        }
+    }
 }
 
 /// Modifier flags for hold gesture detection
@@ -628,33 +663,51 @@ impl HotkeyDetector {
                 return emitted;
             }
 
-            if !hold_binding_blocks_toggle {
-                let toggle_event = if released_right {
-                    self.last_left_tap_ts = None;
-                    if assistive_toggle_enabled {
-                        register_double_tap(
-                            &mut self.last_right_tap_ts,
-                            now,
-                            config.double_tap_interval_ms,
-                            HotkeyEvent::ToggleAssistive,
-                        )
-                    } else {
-                        None
-                    }
-                } else if normal_toggle_enabled {
-                    self.last_right_tap_ts = None;
+            let toggle_event = if hold_binding_blocks_toggle {
+                register_blocked_option_double_tap(
+                    self,
+                    released_right,
+                    now,
+                    config.double_tap_interval_ms,
+                    DoubleTapBlockReason::ModifierComboActive,
+                )
+            } else if released_right {
+                self.last_left_tap_ts = None;
+                if assistive_toggle_enabled {
                     register_double_tap(
-                        &mut self.last_left_tap_ts,
+                        &mut self.last_right_tap_ts,
                         now,
                         config.double_tap_interval_ms,
-                        HotkeyEvent::ToggleNormal,
+                        HotkeyEvent::ToggleAssistive,
                     )
                 } else {
-                    None
-                };
+                    register_blocked_option_double_tap(
+                        self,
+                        released_right,
+                        now,
+                        config.double_tap_interval_ms,
+                        DoubleTapBlockReason::BindingDisabled,
+                    )
+                }
+            } else if normal_toggle_enabled {
+                self.last_right_tap_ts = None;
+                register_double_tap(
+                    &mut self.last_left_tap_ts,
+                    now,
+                    config.double_tap_interval_ms,
+                    HotkeyEvent::ToggleNormal,
+                )
+            } else {
+                register_blocked_option_double_tap(
+                    self,
+                    released_right,
+                    now,
+                    config.double_tap_interval_ms,
+                    DoubleTapBlockReason::BindingDisabled,
+                )
+            };
 
-                emitted = emitted.or(toggle_event);
-            }
+            emitted = emitted.or(toggle_event);
         }
 
         if !modifiers.ctrl && !modifiers.option && !modifiers.cmd && !modifiers.fn_key {
@@ -675,15 +728,45 @@ fn register_double_tap(
     interval_ms: u64,
     event: HotkeyEvent,
 ) -> Option<HotkeyEvent> {
+    if consume_double_tap(last_tap, now, interval_ms) {
+        Some(event)
+    } else {
+        None
+    }
+}
+
+fn consume_double_tap(last_tap: &mut Option<Instant>, now: Instant, interval_ms: u64) -> bool {
     if let Some(previous) = *last_tap
         && elapsed_between(now, previous) <= Duration::from_millis(interval_ms)
     {
         *last_tap = None;
-        return Some(event);
+        return true;
     }
 
     *last_tap = Some(now);
-    None
+    false
+}
+
+fn register_blocked_option_double_tap(
+    detector: &mut HotkeyDetector,
+    released_right: bool,
+    now: Instant,
+    interval_ms: u64,
+    reason: DoubleTapBlockReason,
+) -> Option<HotkeyEvent> {
+    let (last_tap, gesture) = if released_right {
+        detector.last_left_tap_ts = None;
+        (
+            &mut detector.last_right_tap_ts,
+            DoubleTapGesture::RightOption,
+        )
+    } else {
+        detector.last_right_tap_ts = None;
+        (&mut detector.last_left_tap_ts, DoubleTapGesture::LeftOption)
+    };
+
+    consume_double_tap(last_tap, now, interval_ms)
+        .then_some(HotkeyEvent::DoubleTapBlocked { gesture, reason })
 }
 
 fn hold_base_pressed(
@@ -1851,6 +1934,124 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn detector_reports_disabled_option_double_tap() {
+        let mut detector = HotkeyDetector::default();
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::Disabled,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let base = Instant::now();
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, true, false, false, false),
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(1),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(100),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, true, false, false, false),
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(101),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::DoubleTapBlocked {
+                gesture: DoubleTapGesture::LeftOption,
+                reason: DoubleTapBlockReason::BindingDisabled,
+            })
+        );
+    }
+
+    #[test]
+    fn detector_reports_modifier_blocked_option_double_tap() {
+        let mut detector = HotkeyDetector::default();
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let base = Instant::now();
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, true, false, true, false),
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(1),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, false, false, true, false),
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(100),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, true, false, true, false),
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(101),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, false, false, true, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::DoubleTapBlocked {
+                gesture: DoubleTapGesture::LeftOption,
+                reason: DoubleTapBlockReason::ModifierComboActive,
+            })
+        );
     }
 
     #[test]

@@ -66,12 +66,13 @@ fn draw_status_glyph(rgba: &mut [u8], width: u32, height: u32, status: TrayStatu
     // - Red: Recording/Listening, Error (X shape)
     // - Orange: Processing/Thinking
     let color = match status {
-        TrayStatus::Idle => (80u8, 200, 100),   // Green - ready
-        TrayStatus::Listening => (255, 70, 70), // Red - recording
-        TrayStatus::Thinking => (255, 165, 0),  // Orange - processing
-        TrayStatus::Success => (80, 220, 100),  // Bright green - done
-        TrayStatus::Error => (255, 50, 50),     // Bright red - error
-        TrayStatus::Thermal => (255, 210, 40),  // Yellow - thermal pressure
+        TrayStatus::Idle => (80u8, 200, 100),         // Green - ready
+        TrayStatus::Listening => (255, 70, 70),       // Red - recording
+        TrayStatus::Thinking => (255, 165, 0),        // Orange - processing
+        TrayStatus::Success => (80, 220, 100),        // Bright green - done
+        TrayStatus::Error => (255, 50, 50),           // Bright red - error
+        TrayStatus::Thermal => (255, 210, 40),        // Yellow - thermal pressure
+        TrayStatus::HotkeyConflict => (180, 95, 255), // Violet - shortcut conflict
     };
 
     let params = GlyphParams {
@@ -153,12 +154,13 @@ pub fn create_fallback_icon(status: TrayStatus) -> Result<Icon> {
     const CENTER: i32 = 11;
 
     let (r, g, b) = match status {
-        TrayStatus::Idle => (100u8, 100, 100),  // Gray
-        TrayStatus::Listening => (220, 60, 60), // Red
-        TrayStatus::Thinking => (60, 130, 220), // Blue
-        TrayStatus::Success => (60, 200, 100),  // Green
-        TrayStatus::Error => (255, 50, 50),     // Bright red
-        TrayStatus::Thermal => (255, 210, 40),  // Yellow
+        TrayStatus::Idle => (100u8, 100, 100),        // Gray
+        TrayStatus::Listening => (220, 60, 60),       // Red
+        TrayStatus::Thinking => (60, 130, 220),       // Blue
+        TrayStatus::Success => (60, 200, 100),        // Green
+        TrayStatus::Error => (255, 50, 50),           // Bright red
+        TrayStatus::Thermal => (255, 210, 40),        // Yellow
+        TrayStatus::HotkeyConflict => (180, 95, 255), // Violet
     };
 
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];

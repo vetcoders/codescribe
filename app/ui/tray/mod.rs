@@ -263,6 +263,10 @@ mod tests {
             TrayStatus::Thermal.tooltip(),
             "CodeScribe - Thermal throttling"
         );
+        assert_eq!(
+            TrayStatus::HotkeyConflict.tooltip(),
+            "CodeScribe - Hotkey conflict"
+        );
     }
 
     #[test]
@@ -274,6 +278,10 @@ mod tests {
         assert_eq!(
             TrayStatus::Thermal.menu_label(),
             "Status: Thermal throttling"
+        );
+        assert_eq!(
+            TrayStatus::HotkeyConflict.menu_label(),
+            "Status: Hotkey conflict"
         );
     }
 }

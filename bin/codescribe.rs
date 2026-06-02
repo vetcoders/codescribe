@@ -891,6 +891,17 @@ async fn dispatch_hotkey_event(
             };
             controller.handle_hotkey_event(input).await?;
         }
+        HotkeyEvent::DoubleTapBlocked { gesture, reason } => {
+            let body = format!(
+                "{} was detected, but {}.",
+                gesture.label(),
+                reason.message()
+            );
+            tracing::warn!("Hotkey double-tap blocked: {}", body);
+            let _ =
+                codescribe::tray::update_tray_status(codescribe::tray::TrayStatus::HotkeyConflict);
+            codescribe::os::notifications::notify("CodeScribe hotkey conflict", &body);
+        }
     }
 
     Ok(())

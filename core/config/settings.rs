@@ -947,13 +947,15 @@ mod tests {
         // default. settings.json must support ALL non-secret parameters (operator's
         // "settings musi obsługiwać wszystkie parametry"). Exercises the real on-disk path.
         let _tmp = setup_isolated_data_dir();
-        let mut settings = UserSettings::default();
-        settings.transcript_send_mode = Some("paste".to_string());
-        settings.quick_notes_save_only = Some(true);
-        settings.agent_enter_sends = Some(false);
-        settings.whisper_model = Some("whisper-large-v3-turbo".to_string());
-        settings.llm_endpoint = Some("https://api.example/v1/responses".to_string());
-        settings.llm_model = Some("programmer".to_string());
+        let settings = UserSettings {
+            transcript_send_mode: Some("paste".to_string()),
+            quick_notes_save_only: Some(true),
+            agent_enter_sends: Some(false),
+            whisper_model: Some("whisper-large-v3-turbo".to_string()),
+            llm_endpoint: Some("https://api.example/v1/responses".to_string()),
+            llm_model: Some("programmer".to_string()),
+            ..Default::default()
+        };
         settings.save().expect("save settings");
 
         let loaded = UserSettings::load();

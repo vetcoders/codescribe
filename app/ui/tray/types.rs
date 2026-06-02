@@ -24,6 +24,8 @@ pub enum TrayStatus {
     Error,
     /// System thermal pressure is high enough to throttle STT.
     Thermal,
+    /// A hotkey gesture was detected but blocked before dispatch.
+    HotkeyConflict,
 }
 
 impl TrayStatus {
@@ -36,6 +38,7 @@ impl TrayStatus {
             TrayStatus::Success => "CodeScribe - Done!".to_string(),
             TrayStatus::Error => "CodeScribe - Backend unavailable!".to_string(),
             TrayStatus::Thermal => "CodeScribe - Thermal throttling".to_string(),
+            TrayStatus::HotkeyConflict => "CodeScribe - Hotkey conflict".to_string(),
         }
     }
 
@@ -48,6 +51,7 @@ impl TrayStatus {
             TrayStatus::Success => "Status: Done!",
             TrayStatus::Error => "Status: Error",
             TrayStatus::Thermal => "Status: Thermal throttling",
+            TrayStatus::HotkeyConflict => "Status: Hotkey conflict",
         }
     }
 
