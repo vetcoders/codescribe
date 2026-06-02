@@ -541,6 +541,11 @@ fn persist_legacy_assistive_thread(user_text: &str, assistant_text: &str) -> Res
     Ok(())
 }
 
+fn agent_send_error_allows_legacy_fallback(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    !message.starts_with("Provider stream error:")
+}
+
 async fn run_agent_send_path(
     runtime_state: &mut AgentRuntimeState,
     runtime_generation: u64,
@@ -606,6 +611,11 @@ async fn run_agent_send_path(
         Err(error) => {
             if overlay_state.streamed_any_delta {
                 crate::ui::voice_chat::finalize_voice_chat_assistant_message();
+            }
+            if !agent_send_error_allows_legacy_fallback(&error) {
+                crate::ui::voice_chat::set_voice_chat_sending(false);
+                crate::ui::voice_chat::update_voice_chat_status("Agent error");
+                return Ok(());
             }
             runtime_state.mark_runtime_degraded();
             crate::ui::voice_chat::set_voice_chat_runtime_degraded(
@@ -1178,6 +1188,22 @@ mod tests {
         assert_eq!(runtime.thread_store_id, "thread_recovered");
         assert!(recovered);
         assert!(!runtime_state.runtime_degraded);
+    }
+
+    #[test]
+    fn test_provider_stream_errors_skip_legacy_fallback() {
+        let error = anyhow::anyhow!(
+            "Provider stream error: Agent SSE error internal_error: 'list' object has no attribute 'uid'"
+        );
+
+        assert!(!agent_send_error_allows_legacy_fallback(&error));
+    }
+
+    #[test]
+    fn test_runtime_unavailable_errors_allow_legacy_fallback() {
+        let error = anyhow::anyhow!("Agent runtime unavailable");
+
+        assert!(agent_send_error_allows_legacy_fallback(&error));
     }
 
     #[test]
