@@ -355,55 +355,61 @@ clean:
 # Help
 # ============================================================================
 
+# Help colors
+HELP_C_CYAN   := \033[36m
+HELP_C_GREEN  := \033[32m
+HELP_C_YELLOW := \033[33m
+HELP_C_RESET  := \033[0m
+
 help:
-	@echo "CodeScribe - Speech-to-text (Pure Rust)"
-	@echo ""
-	@echo "Build & Install:"
-	@echo "  make build           Build debug binary"
-	@echo "  make release         Build release binary (embedded-first Whisper + embedded support assets)"
-	@echo "  make install         Install CLI with embedded-first Whisper"
-	@echo "  make install-no-embed Install without optional embedded assets (needs CODESCRIBE_MODEL_PATH)"
-	@echo "  make config          Edit ~/.codescribe/.env"
-	@echo "  make bundle          Create CodeScribe.app bundle"
-	@echo "  make install-app     Install to /Applications"
-	@echo ""
-	@echo "Release & Distribution:"
-	@echo "  make dmg             Build DMG (ad-hoc signed)"
-	@echo "  make dmg-signed      Build DMG (Developer ID signed)"
-	@echo "  make release-full    Build + sign + notarize DMG (release-ready)"
-	@echo "  make notarize        Notarize DMG with Apple"
-	@echo "  make download-model  Download Whisper model from HF"
-	@echo "  make download-e5     Download E5 embedder model from HF"
-	@echo "  make download-embedder Download MiniLM embedder from HF"
-	@echo "  make ensure-models   Download Whisper+MiniLM if missing from cache"
-	@echo ""
-	@echo "Run:"
-	@echo "  make start           Start CodeScribe"
-	@echo "  make stop            Stop CodeScribe"
-	@echo "  make restart         Restart"
-	@echo "  make status          Show status"
-	@echo "  make logs            Show logs"
-	@echo "  make logs-follow     Tail logs"
-	@echo ""
-	@echo "Version:"
-	@echo "  make version         Show current version"
-	@echo "  make bump-patch      Bump patch (0.5.1 -> 0.5.2)"
-	@echo "  make bump-minor      Bump minor (0.5.1 -> 0.6.0)"
-	@echo "  make bump-major      Bump major (0.5.1 -> 1.0.0)"
-	@echo ""
-	@echo "Quality:"
-	@echo "  make lint            Run clippy + fmt check"
-	@echo "  make format          Format Rust code"
-	@echo "  make fix             Format all code (Rust + Prettier)"
-	@echo "  make test            Run full test suite (incl. ignored real-API tests)"
-	@echo "  make test-quick      Run tests without real-API calls"
-	@echo "  make test-e2e        Run E2E tests (mock)"
-	@echo "  make test-e2e-real   Run E2E tests with real API (needs LLM_*_API_KEY)"
-	@echo "  make test-sse        Run SSE streaming tests (real API)"
-	@echo "  make test-formatting Run AI formatting tests"
-	@echo "  make test-all        Run full test suite"
-	@echo "  make check           Verify formatting + clippy + semgrep (CI-safe)"
-	@echo "  make hooks           Install pre-commit + pre-push hooks"
+	@printf '\n$(HELP_C_CYAN)%s$(HELP_C_RESET)\n' 'CodeScribe - Speech-to-text (Pure Rust)'
+	@printf '\n'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'BUILD & INSTALL'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'build' 'Build debug binary'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release binary (embedded-first Whisper + embedded support assets)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI with embedded-first Whisper'
+	@printf '%s\n' '  make install-no-embed Install without optional embedded assets (needs CODESCRIBE_MODEL_PATH)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bundle' 'Create CodeScribe.app bundle'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Install to /Applications'
+	@printf '\n'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RELEASE & DISTRIBUTION'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'dmg' 'Build DMG (ad-hoc signed)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'dmg-signed' 'Build DMG (Developer ID signed)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-full' 'Build + sign + notarize DMG (release-ready)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'notarize' 'Notarize DMG with Apple'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-model' 'Download Whisper model from HF'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-e5' 'Download E5 embedder model from HF'
+	@printf '%s\n' '  make download-embedder Download MiniLM embedder from HF'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'ensure-models' 'Download Whisper+MiniLM if missing from cache'
+	@printf '\n'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RUN'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'start' 'Start CodeScribe'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'stop' 'Stop CodeScribe'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'restart' 'Restart'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'status' 'Show status'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'logs' 'Show logs'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'logs-follow' 'Tail logs'
+	@printf '\n'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'VERSION'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'version' 'Show current version'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bump-patch' 'Bump patch (0.5.1 -> 0.5.2)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bump-minor' 'Bump minor (0.5.1 -> 0.6.0)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bump-major' 'Bump major (0.5.1 -> 1.0.0)'
+	@printf '\n'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'lint' 'Run clippy + fmt check'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'format' 'Format Rust code'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'fix' 'Format all code (Rust + Prettier)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Run full test suite (incl. ignored real-API tests)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-quick' 'Run tests without real-API calls'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e' 'Run E2E tests (mock)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e-real' 'Run E2E tests with real API (needs LLM_*_API_KEY)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-sse' 'Run SSE streaming tests (real API)'
+	@printf '%s\n' '  make test-formatting Run AI formatting tests'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-all' 'Run full test suite'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'check' 'Verify formatting + clippy + semgrep (CI-safe)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push hooks'
 
 # ============================================================================
 # Release & Distribution
