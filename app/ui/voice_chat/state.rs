@@ -41,6 +41,9 @@ pub enum ChatRole {
     User,
     Assistant,
     System,
+    /// Live reasoning summary streamed from the agent (its own lane, rendered
+    /// as a collapsible "thinking" entry — NOT mixed into the assistant text).
+    Reasoning,
 }
 
 /// A single chat message
@@ -167,6 +170,8 @@ pub struct VoiceChatOverlayState {
     pub active_user_stream_index: Option<usize>,
     /// Active streaming assistant message index (if any).
     pub active_assistant_stream_index: Option<usize>,
+    /// Active streaming reasoning-summary message index (if any).
+    pub active_reasoning_stream_index: Option<usize>,
     pub manual_draft: String,
     pub is_sending: bool,
     /// True while the agent is reasoning after a voice transcript was handed off / sent.
@@ -249,6 +254,7 @@ impl Default for VoiceChatOverlayState {
             messages: Vec::new(),
             active_user_stream_index: None,
             active_assistant_stream_index: None,
+            active_reasoning_stream_index: None,
             manual_draft: String::new(),
             is_sending: false,
             is_agent_thinking: false,

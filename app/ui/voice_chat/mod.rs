@@ -12,10 +12,11 @@ mod state;
 // Re-export public API
 pub use api::{
     add_voice_chat_error_message, add_voice_chat_system_message, add_voice_chat_user_message,
-    append_voice_chat_assistant_delta, append_voice_chat_user_delta, clear_voice_chat_text,
-    dispatch_voice_chat_send, filter_drawer, finalize_voice_chat_assistant_message,
-    finalize_voice_chat_user_message, handoff_transcript_to_chat, hide_voice_chat_overlay,
-    is_auto_send_enabled, is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,
+    append_voice_chat_assistant_delta, append_voice_chat_reasoning_delta,
+    append_voice_chat_user_delta, clear_voice_chat_text, dispatch_voice_chat_send, filter_drawer,
+    finalize_voice_chat_assistant_message, finalize_voice_chat_user_message,
+    handoff_transcript_to_chat, hide_voice_chat_overlay, is_auto_send_enabled,
+    is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,
     reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_agent_thinking,
     set_voice_chat_runtime_degraded, set_voice_chat_send_callback, set_voice_chat_sending,
     set_voice_chat_target_app, set_voice_chat_text, set_voice_chat_user_text, show_agent_tab,

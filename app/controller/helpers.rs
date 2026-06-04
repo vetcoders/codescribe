@@ -379,6 +379,9 @@ async fn apply_agent_ui_event(event: AgentUiEvent, overlay_state: &mut AgentUiOv
                 crate::ui::voice_chat::update_voice_chat_status("Reasoning... (60%)");
                 overlay_state.saw_reasoning_delta = true;
             }
+            // Surface the model's live reasoning instead of dropping it on the floor
+            // (this is what left the overlay silent). Reuses the proven append path.
+            crate::ui::voice_chat::append_voice_chat_reasoning_delta(&delta);
         }
         AgentUiEvent::ToolExecuting { name, .. } => {
             crate::ui::voice_chat::update_voice_chat_status(&format!("Tool running: {name}"));

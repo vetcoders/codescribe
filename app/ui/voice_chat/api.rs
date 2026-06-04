@@ -100,6 +100,19 @@ pub fn append_voice_chat_assistant_delta(delta: &str) {
     });
 }
 
+/// Append a delta to the live agent reasoning summary (streaming).
+///
+/// Reuses the exact same proven append path as the assistant/user lanes
+/// (`TranscriptDelta::apply` + `get_or_create_streaming_message_index`), only on
+/// the dedicated `Reasoning` lane — so the model's thinking is shown live instead
+/// of a silent spinner. NOT mixed into the assistant text.
+pub fn append_voice_chat_reasoning_delta(delta: &str) {
+    let delta_owned = delta.to_string();
+    Queue::main().exec_async(move || {
+        append_voice_chat_reasoning_delta_impl(&delta_owned);
+    });
+}
+
 /// Set the full text in the overlay for the assistant response
 pub fn set_voice_chat_text(text: &str) {
     let text_owned = text.to_string();
@@ -1132,8 +1145,10 @@ fn append_voice_chat_assistant_delta_impl(delta: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
 
-    // First assistant token → stop the "Thinking" indicator.
+    // First assistant token → stop the "Thinking" indicator and finalize any live
+    // reasoning lane (collapse it to its title — the answer is starting).
     clear_agent_thinking_state(&mut state);
+    finalize_streaming_reasoning(&mut state);
 
     let idx = get_or_create_streaming_message_index(&mut state, ChatRole::Assistant);
     if let Some(msg) = state.messages.get_mut(idx) {
@@ -1141,6 +1156,30 @@ fn append_voice_chat_assistant_delta_impl(delta: &str) {
         msg.is_streaming = true;
     }
     apply_delta_and_layout(&mut state, Some(idx));
+}
+
+fn append_voice_chat_reasoning_delta_impl(delta: &str) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_agent_tab_visible(&mut state);
+
+    // Reasoning IS the live "thinking" — surface it instead of a silent spinner.
+    // Do NOT clear the thinking indicator here; the first ASSISTANT token does that.
+    let idx = get_or_create_streaming_message_index(&mut state, ChatRole::Reasoning);
+    if let Some(msg) = state.messages.get_mut(idx) {
+        codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta).apply(&mut msg.text);
+        msg.is_streaming = true;
+    }
+    apply_delta_and_layout(&mut state, Some(idx));
+}
+
+/// Stop streaming on any live reasoning message (called when the assistant answer
+/// begins). The reasoning entry stays in the log as a finished, collapsible item.
+fn finalize_streaming_reasoning(state: &mut VoiceChatOverlayState) {
+    for msg in state.messages.iter_mut() {
+        if msg.role == ChatRole::Reasoning && msg.is_streaming {
+            msg.is_streaming = false;
+        }
+    }
 }
 
 fn display_text_for_message(message: &ChatMessage) -> String {
@@ -1168,6 +1207,7 @@ fn message_role_label(role: ChatRole) -> &'static str {
         ChatRole::User => "You",
         ChatRole::Assistant => "Assistant",
         ChatRole::System => "System",
+        ChatRole::Reasoning => "Reasoning",
     }
 }
 
@@ -1277,6 +1317,7 @@ fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index: us
             ChatRole::User => BubbleRole::User,
             ChatRole::Assistant => BubbleRole::Assistant,
             ChatRole::System => BubbleRole::System,
+            ChatRole::Reasoning => BubbleRole::System,
         };
         update_bubble_text(
             label,
@@ -1716,6 +1757,7 @@ fn active_stream_index_mut(
     match role {
         ChatRole::User => Some(&mut state.active_user_stream_index),
         ChatRole::Assistant => Some(&mut state.active_assistant_stream_index),
+        ChatRole::Reasoning => Some(&mut state.active_reasoning_stream_index),
         ChatRole::System => None,
     }
 }
@@ -1724,6 +1766,7 @@ fn active_stream_index(state: &VoiceChatOverlayState, role: ChatRole) -> Option<
     match role {
         ChatRole::User => state.active_user_stream_index,
         ChatRole::Assistant => state.active_assistant_stream_index,
+        ChatRole::Reasoning => state.active_reasoning_stream_index,
         ChatRole::System => None,
     }
 }
@@ -1807,6 +1850,7 @@ pub(super) fn update_chat_view_with_state(
                 ChatRole::User => BubbleRole::User,
                 ChatRole::Assistant => BubbleRole::Assistant,
                 ChatRole::System => BubbleRole::System,
+                ChatRole::Reasoning => BubbleRole::System,
             };
             let (bubble, text_label) = create_bubble_view(BubbleConfig {
                 text: message_text,
@@ -3459,6 +3503,7 @@ fn chat_markdown_from_messages(messages: &[ChatMessage], assistant_only: bool) -
             ChatRole::User => "User",
             ChatRole::Assistant => "Assistant",
             ChatRole::System => "System",
+            ChatRole::Reasoning => "Reasoning",
         };
         out.push_str(&format!("## {}\n\n", role));
         out.push_str(msg.text.trim_end());
