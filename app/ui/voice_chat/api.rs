@@ -242,15 +242,30 @@ pub fn set_voice_chat_sending(is_sending: bool) {
 pub fn set_voice_chat_agent_thinking(thinking: bool) {
     Queue::main().exec_async(move || {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if thinking {
-            state.is_agent_thinking = true;
-            state.status_base_text = "Thinking…".to_string();
-        } else {
-            clear_agent_thinking_state(&mut state);
-        }
-        update_voice_chat_status_impl(&state.status_base_text);
-        update_send_button_with_state(&mut state);
+        apply_agent_thinking(&mut state, thinking);
     });
+}
+
+/// Apply agent-thinking state on an already-held `OVERLAY_STATE` guard, then
+/// refresh status + send button in place. Must NOT lock `OVERLAY_STATE`: the
+/// caller already holds it.
+///
+/// DEADLOCK PREVENTION: the previous inline version called
+/// `update_voice_chat_status_impl` here, which re-locked the same non-reentrant
+/// `std::sync::Mutex` on the main thread and froze it in `__psynch_mutexwait`
+/// (overlay hang the moment Emil entered "Thinking…" after a voice handoff).
+/// Status is now applied via `apply_voice_chat_status`, which operates on the
+/// held guard without re-locking.
+fn apply_agent_thinking(state: &mut VoiceChatOverlayState, thinking: bool) {
+    if thinking {
+        state.is_agent_thinking = true;
+        state.status_base_text = "Thinking…".to_string();
+    } else {
+        clear_agent_thinking_state(state);
+    }
+    let base = state.status_base_text.clone();
+    apply_voice_chat_status(state, &base);
+    update_send_button_with_state(state);
 }
 
 /// Clear all chat messages and reset input state
@@ -883,6 +898,14 @@ fn reflow_footer_controls_locked(state: &mut VoiceChatOverlayState) {
 
 fn update_voice_chat_status_impl(status: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    apply_voice_chat_status(&mut state, status);
+}
+
+/// Apply status text + pill + tray update on an already-held `OVERLAY_STATE`
+/// guard. Must NOT lock `OVERLAY_STATE`: callers that already hold the guard
+/// (e.g. `apply_agent_thinking`) rely on this to avoid a re-entrant deadlock on
+/// the non-reentrant `std::sync::Mutex`.
+fn apply_voice_chat_status(state: &mut VoiceChatOverlayState, status: &str) {
     let trimmed = status.trim();
     state.status_base_text = if trimmed.is_empty() {
         "Ready".to_string()
@@ -896,7 +919,7 @@ fn update_voice_chat_status_impl(status: &str) {
     );
     let next_kind = status_kind_for_runtime(&state.status_base_text, state.is_agent_degraded);
     state.status_kind = next_kind;
-    apply_status_pill(&state);
+    apply_status_pill(state);
     let _ = crate::tray::update_tray_status(next_kind.to_tray());
 }
 
@@ -3652,6 +3675,39 @@ mod tests {
         assert_eq!(state.status_base_text, "Ready");
         assert_eq!(state.status_text, "Ready");
         assert_eq!(state.status_kind, UiStatus::Idle);
+    }
+
+    /// Regression: `set_voice_chat_agent_thinking` holds `OVERLAY_STATE` while
+    /// refreshing status. The old body called `update_voice_chat_status_impl`
+    /// there, which re-locked the same non-reentrant mutex on the same thread
+    /// and froze the main thread in `__psynch_mutexwait`. `apply_agent_thinking`
+    /// must mutate the held guard without re-locking. Run on a worker thread
+    /// with a watchdog so a regression surfaces as a timeout instead of hanging
+    /// the whole test run.
+    #[test]
+    #[serial]
+    fn apply_agent_thinking_does_not_relock_overlay_state() {
+        {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            *state = VoiceChatOverlayState::default();
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            apply_agent_thinking(&mut state, true);
+            let snapshot = (state.is_agent_thinking, state.status_base_text.clone());
+            drop(state);
+            let _ = tx.send(snapshot);
+        });
+
+        let (is_thinking, base_text) = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("apply_agent_thinking re-locked OVERLAY_STATE (re-entrant deadlock)");
+        worker.join().unwrap();
+
+        assert!(is_thinking);
+        assert_eq!(base_text, "Thinking…");
     }
 
     #[test]
