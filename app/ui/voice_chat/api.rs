@@ -2977,6 +2977,72 @@ pub fn handle_card_copy(index: usize) {
     }
 }
 
+pub fn handle_card_restore(index: usize) {
+    let thread = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = state.drawer_entries.get(index) else {
+            return;
+        };
+        if is_drawer_unavailable_placeholder(entry) {
+            return;
+        }
+        let DrawerEntrySource::Thread { id } = &entry.source else {
+            return;
+        };
+        let Ok(store) = ThreadStore::new() else {
+            warn!("Failed to initialize ThreadStore for restore");
+            return;
+        };
+        match store.load_thread(id) {
+            Ok(thread) => thread,
+            Err(error) => {
+                warn!("Failed to restore thread {id}: {error}");
+                return;
+            }
+        }
+    };
+
+    let title = thread.title.trim().to_string();
+    let mut restored_messages = thread_messages_for_restore(&thread);
+    if restored_messages.is_empty() {
+        restored_messages.push(ChatMessage {
+            role: ChatRole::System,
+            text: "Restored thread has no messages.".to_string(),
+            is_streaming: false,
+            is_error: false,
+            timestamp: SystemTime::now(),
+            mode: Some(mode_label(transcription_mode_from_thread_mode(&thread.mode)).to_string()),
+        });
+    }
+
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.messages = restored_messages;
+    state.active_user_stream_index = None;
+    state.active_assistant_stream_index = None;
+    state.is_sending = false;
+    state.manual_draft.clear();
+    state.attachments.clear();
+    state.attachments_last_sent = None;
+    clear_agent_thinking_state(&mut state);
+    update_active_tab_locked(&mut state, Tab::Agent);
+    update_chat_view_with_state(&mut state, true);
+    update_send_button_with_state(&mut state);
+    let title = if title.is_empty() {
+        "Restored thread".to_string()
+    } else {
+        format!("Restored: {title}")
+    };
+    state.status_base_text = title;
+    state.status_text = compose_runtime_status_text(
+        &state.status_base_text,
+        state.is_agent_degraded,
+        state.runtime_degraded_reason.as_deref(),
+    );
+    state.status_kind = UiStatus::Idle;
+    apply_status_pill(&state);
+    let _ = crate::tray::update_tray_status(state.status_kind.to_tray());
+}
+
 pub fn handle_card_edit(index: usize) {
     let (path, window_usize) = {
         let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -3731,6 +3797,54 @@ mod tests {
     }
 
     #[test]
+    fn thread_messages_for_restore_maps_thread_roles_and_text() {
+        let now = chrono::Utc::now();
+        let thread = Thread {
+            id: "t_2026-06-02_restore".to_string(),
+            created_at: now,
+            updated_at: now,
+            title: "Clinical thread".to_string(),
+            mode: "assistive".to_string(),
+            tags: Vec::new(),
+            notes: Vec::new(),
+            messages: vec![
+                codescribe_core::agent::ThreadMessage {
+                    role: "user".to_string(),
+                    content: vec![serde_json::json!({
+                        "type": "input_text",
+                        "text": "Summarize labs"
+                    })],
+                    timestamp: now,
+                    metadata: None,
+                },
+                codescribe_core::agent::ThreadMessage {
+                    role: "assistant".to_string(),
+                    content: vec![serde_json::json!({
+                        "type": "output_text",
+                        "text": "WBC improved."
+                    })],
+                    timestamp: now,
+                    metadata: None,
+                },
+            ],
+            summary: None,
+            total_tokens: None,
+            provider: "openai-responses".to_string(),
+            model: "gpt-5".to_string(),
+        };
+
+        let messages = thread_messages_for_restore(&thread);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, ChatRole::User);
+        assert_eq!(messages[0].text, "Summarize labs");
+        assert_eq!(messages[0].mode.as_deref(), Some("Shift/Cmd"));
+        assert_eq!(messages[1].role, ChatRole::Assistant);
+        assert_eq!(messages[1].text, "WBC improved.");
+        assert!(!messages[1].is_streaming);
+    }
+
+    #[test]
     fn display_text_for_message_handles_streaming() {
         let streaming_empty = ChatMessage {
             role: ChatRole::Assistant,
@@ -3904,13 +4018,19 @@ fn create_drawer_card(
         );
         let actions_container: Id = msg_send![actions_container, initWithFrame: actions_frame];
 
-        let button_titles = ["Copy", "Edit", "Delete"];
-        let button_actions = [sel!(onCardCopy:), sel!(onCardEdit:), sel!(onCardDelete:)];
+        let button_titles = ["Restore", "Copy", "Edit", "Delete"];
+        let button_actions = [
+            sel!(onCardRestore:),
+            sel!(onCardCopy:),
+            sel!(onCardEdit:),
+            sel!(onCardDelete:),
+        ];
         for (idx, title) in button_titles.iter().enumerate() {
+            let button_width = if *title == "Restore" { 76.0 } else { 62.0 };
             let button = crate::ui_helpers::create_button(
                 core_graphics::geometry::CGRect::new(
-                    &CGPoint::new((idx as f64) * 70.0, 0.0),
-                    &core_graphics::geometry::CGSize::new(64.0, 20.0),
+                    &CGPoint::new((idx as f64) * 74.0, 0.0),
+                    &core_graphics::geometry::CGSize::new(button_width, 20.0),
                 ),
                 title,
                 crate::ui_helpers::button_style::ROUNDED,
@@ -3929,7 +4049,7 @@ fn create_drawer_card(
 
         let favorite = crate::ui_helpers::create_button(
             core_graphics::geometry::CGRect::new(
-                &CGPoint::new(230.0, 0.0),
+                &CGPoint::new(310.0, 0.0),
                 &core_graphics::geometry::CGSize::new(28.0, 20.0),
             ),
             "",
@@ -4330,6 +4450,74 @@ fn thread_markdown_for_copy(thread: &Thread) -> String {
     }
 
     out.trim_end().to_string()
+}
+
+fn thread_messages_for_restore(thread: &Thread) -> Vec<ChatMessage> {
+    let mode = mode_label(transcription_mode_from_thread_mode(&thread.mode)).to_string();
+    thread
+        .messages
+        .iter()
+        .filter_map(|message| {
+            let text = thread_message_text_for_restore(message);
+            if text.trim().is_empty() {
+                return None;
+            }
+            Some(ChatMessage {
+                role: chat_role_from_thread_role(&message.role),
+                text,
+                is_streaming: false,
+                is_error: false,
+                timestamp: system_time_from_unix_millis(message.timestamp.timestamp_millis()),
+                mode: Some(mode.clone()),
+            })
+        })
+        .collect()
+}
+
+fn chat_role_from_thread_role(role: &str) -> ChatRole {
+    match role.to_ascii_lowercase().as_str() {
+        "assistant" => ChatRole::Assistant,
+        "system" => ChatRole::System,
+        _ => ChatRole::User,
+    }
+}
+
+fn thread_message_text_for_restore(message: &codescribe_core::agent::ThreadMessage) -> String {
+    let mut chunks = Vec::new();
+    for value in &message.content {
+        collect_restore_text(value, &mut chunks);
+    }
+    chunks.join(" ")
+}
+
+fn collect_restore_text(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) if !text.trim().is_empty() => {
+            out.push(text.to_string());
+        }
+        serde_json::Value::Array(items) => {
+            if items.iter().all(serde_json::Value::is_number) {
+                return;
+            }
+            for item in items {
+                collect_restore_text(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(text) = map.get("text").and_then(serde_json::Value::as_str)
+                && !text.trim().is_empty()
+            {
+                out.push(text.to_string());
+            }
+            if let Some(content) = map.get("content") {
+                collect_restore_text(content, out);
+            }
+            if let Some(input) = map.get("input") {
+                collect_restore_text(input, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn thread_message_text_for_copy(message: &codescribe_core::agent::ThreadMessage) -> String {

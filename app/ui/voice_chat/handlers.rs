@@ -23,7 +23,7 @@ use crate::ui_helpers::{
 use super::api::{
     clear_overlay_state, commit_last_user_message_impl, copy_assistant_bubble_from_recognizer,
     discard_last_message_impl, filter_drawer, handle_card_copy, handle_card_delete,
-    handle_card_edit, handle_card_favorite, reflow_agent_after_resize_impl,
+    handle_card_edit, handle_card_favorite, handle_card_restore, reflow_agent_after_resize_impl,
     reflow_overlay_after_resize_impl, render_attachment_chips, send_draft_message_impl,
     start_new_thread_impl, toggle_drawer_favorites_only_impl, update_active_tab_impl,
     update_attach_button_ui,
@@ -180,6 +180,10 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onCardCopy:),
                 on_card_copy as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onCardRestore:),
+                on_card_restore as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onCardEdit:),
@@ -1161,6 +1165,12 @@ extern "C" fn on_card_copy(_this: &Object, _cmd: Sel, sender: Id) {
     let index: isize = unsafe { msg_send![sender, tag] };
     let index = index.max(0) as usize;
     handle_card_copy(index);
+}
+
+extern "C" fn on_card_restore(_this: &Object, _cmd: Sel, sender: Id) {
+    let index: isize = unsafe { msg_send![sender, tag] };
+    let index = index.max(0) as usize;
+    handle_card_restore(index);
 }
 
 extern "C" fn on_card_edit(_this: &Object, _cmd: Sel, sender: Id) {

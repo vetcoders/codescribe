@@ -598,6 +598,30 @@ fn should_apply_incoming_mode_flags(current_state: State, event: &HotkeyInput) -
         && !(event.key_type == HotkeyType::Toggle && current_state == State::RecToggle)
 }
 
+fn is_hotkey_start_event(event: &HotkeyInput) -> bool {
+    matches!(
+        (event.key_type, event.action),
+        (HotkeyType::Hold, HotkeyAction::Down)
+            | (HotkeyType::Toggle, HotkeyAction::Press)
+            | (HotkeyType::Conversation, HotkeyAction::Press)
+    )
+}
+
+fn should_block_hotkey_during_agent_send(current_state: State, event: &HotkeyInput) -> bool {
+    current_state == State::Idle
+        && is_hotkey_start_event(event)
+        && helpers::is_agent_send_in_flight()
+}
+
+fn present_agent_send_hotkey_block() {
+    info!("Agent response is still streaming; ignoring hotkey start");
+    if !cfg!(test) {
+        crate::ui::voice_chat::show_voice_chat_overlay();
+        crate::ui::voice_chat::show_agent_tab();
+        crate::ui::voice_chat::update_voice_chat_status("Agent is answering...");
+    }
+}
+
 fn transcript_output_category(output_kind: crate::state::history::TranscriptKind) -> &'static str {
     match output_kind {
         crate::state::history::TranscriptKind::Raw => "Transcript",
@@ -1703,6 +1727,11 @@ impl RecordingController {
             event.force_ai,
             current_state
         );
+
+        if should_block_hotkey_during_agent_send(current_state, &event) {
+            present_agent_send_hotkey_block();
+            return Ok(());
+        }
 
         // Update mode flags from event (supports mid-hold mode changes via Press events).
         // A toggle press while already in RecToggle means "stop this session"; it must not

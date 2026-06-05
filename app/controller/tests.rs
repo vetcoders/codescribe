@@ -452,6 +452,32 @@ fn test_toggle_stop_event_preserves_active_session_identity() {
     );
 }
 
+#[tokio::test]
+#[serial]
+async fn test_agent_send_in_flight_blocks_new_hotkey_starts() {
+    let controller = RecordingController::new();
+    helpers::set_agent_send_in_flight_for_test(true);
+
+    let selection_hold = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+
+    controller
+        .handle_hotkey_event(selection_hold)
+        .await
+        .expect("agent-busy hotkey block should be non-fatal");
+
+    assert_eq!(controller.current_state().await, State::Idle);
+    assert_eq!(*controller.hold_mode.read().await, HoldMode::Raw);
+    assert!(!*controller.assistive_mode.read().await);
+    helpers::set_agent_send_in_flight_for_test(false);
+}
+
 fn make_final_pass_verdict(
     text: &str,
     speech_pct: f32,

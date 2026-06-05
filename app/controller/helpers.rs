@@ -6,7 +6,7 @@ use chrono::Utc;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc};
 use tracing::{debug, warn};
 
@@ -86,6 +86,7 @@ impl codescribe_core::pipeline::contracts::DeltaSink for RoutingDeltaSink {
 
 const AGENT_UI_CHANNEL_CAPACITY: usize = 256;
 static AGENT_THREAD_GENERATION: AtomicU64 = AtomicU64::new(1);
+static AGENT_SEND_IN_FLIGHT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static SHARED_AGENT_RUNTIME_STATE: OnceLock<StdMutex<Option<Arc<TokioMutex<AgentRuntimeState>>>>> =
     OnceLock::new();
 const RUNTIME_DEGRADED_REASON: &str = "Legacy formatter fallback is active.";
@@ -111,6 +112,30 @@ struct AgentRuntimeState {
 struct AgentUiOverlayState {
     streamed_any_delta: bool,
     saw_reasoning_delta: bool,
+}
+
+struct AgentSendInFlightGuard;
+
+impl AgentSendInFlightGuard {
+    fn new() -> Self {
+        AGENT_SEND_IN_FLIGHT_COUNT.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for AgentSendInFlightGuard {
+    fn drop(&mut self) {
+        AGENT_SEND_IN_FLIGHT_COUNT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub(crate) fn is_agent_send_in_flight() -> bool {
+    AGENT_SEND_IN_FLIGHT_COUNT.load(Ordering::SeqCst) > 0
+}
+
+#[cfg(test)]
+pub(super) fn set_agent_send_in_flight_for_test(active: bool) {
+    AGENT_SEND_IN_FLIGHT_COUNT.store(if active { 1 } else { 0 }, Ordering::SeqCst);
 }
 
 impl AgentRuntimeState {
@@ -688,6 +713,7 @@ async fn run_agent_send_with_fallback(
     whisper_language: crate::config::Language,
     ai_assistive_max_tokens: i32,
 ) {
+    let _send_guard = AgentSendInFlightGuard::new();
     let stream_options = build_agent_stream_options(ai_assistive_max_tokens);
     let agent_result = {
         let mut guard = runtime_state.lock().await;
@@ -1197,6 +1223,25 @@ mod tests {
         );
 
         assert!(!agent_send_error_allows_legacy_fallback(&error));
+    }
+
+    #[test]
+    fn test_agent_send_in_flight_guard_tracks_nested_sends() {
+        set_agent_send_in_flight_for_test(false);
+        assert!(!is_agent_send_in_flight());
+
+        let first_guard = AgentSendInFlightGuard::new();
+        assert!(is_agent_send_in_flight());
+
+        {
+            let second_guard = AgentSendInFlightGuard::new();
+            assert!(is_agent_send_in_flight());
+            drop(second_guard);
+            assert!(is_agent_send_in_flight());
+        }
+
+        drop(first_guard);
+        assert!(!is_agent_send_in_flight());
     }
 
     #[test]
