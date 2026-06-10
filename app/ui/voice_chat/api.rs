@@ -3436,6 +3436,14 @@ fn filtered_drawer_entries<'a>(
     out
 }
 
+fn drawer_top_scroll_y(document_height: f64, clip_height: f64, is_flipped: bool) -> f64 {
+    if is_flipped {
+        0.0
+    } else {
+        (document_height - clip_height).max(0.0)
+    }
+}
+
 fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: &str) {
     unsafe {
         let Some(container_ptr) = state.drawer_container else {
@@ -3456,19 +3464,41 @@ fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: &str) {
             stack_view_add(container, empty_state);
         }
 
+        let _: () = msg_send![container, setNeedsLayout: true];
+        let _: () = msg_send![container, layoutSubtreeIfNeeded];
+
         // Keep the scroll document height in sync with its arranged subviews; otherwise the
         // scroll view can end up showing an empty area (looks like the drawer "does nothing").
         if let Some(scroll_view_ptr) = state.drawer_scroll_view {
-            let fitting: CGSize = msg_send![container, fittingSize];
-            let frame: CGRect = msg_send![container, frame];
-            let new_size = CGSize::new(frame.size.width, fitting.height.max(frame.size.height));
-            let _: () = msg_send![container, setFrameSize: new_size];
-
-            // Scroll to top on refresh/filter.
             let scroll_view = scroll_view_ptr as Id;
             let content_view: Id = msg_send![scroll_view, contentView];
-            let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, 0.0)];
-            let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
+            if !content_view.is_null() {
+                let fitting: CGSize = msg_send![container, fittingSize];
+                let frame: CGRect = msg_send![container, frame];
+                let clip_bounds: CGRect = msg_send![content_view, bounds];
+                let document_width = frame.size.width.max(clip_bounds.size.width).max(1.0);
+                let document_height = fitting
+                    .height
+                    .ceil()
+                    .max(frame.size.height)
+                    .max(clip_bounds.size.height)
+                    .max(1.0);
+                let new_size = CGSize::new(document_width, document_height);
+                let _: () = msg_send![container, setFrameSize: new_size];
+                let _: () = msg_send![container, setNeedsLayout: true];
+                let _: () = msg_send![container, layoutSubtreeIfNeeded];
+
+                // Scroll to the visual top on every refresh/filter. NSStackView is not flipped,
+                // so its top is `document_height - clip_height`, not y=0.
+                let is_flipped: bool = msg_send![container, isFlipped];
+                let top_y =
+                    drawer_top_scroll_y(document_height, clip_bounds.size.height, is_flipped);
+                let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, top_y)];
+                let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
+                let _: () = msg_send![scroll_view, tile];
+                let _: () = msg_send![container, setNeedsDisplay: true];
+                let _: () = msg_send![scroll_view, setNeedsDisplay: true];
+            }
         }
     }
 }
@@ -4037,6 +4067,13 @@ mod tests {
         assert!(message.is_collapsed);
         assert_eq!(state.active_reasoning_stream_index, None);
         assert!(display_text_for_message(message).starts_with("Reasoning · "));
+    }
+
+    #[test]
+    fn drawer_top_scroll_y_matches_flippedness() {
+        assert_eq!(drawer_top_scroll_y(900.0, 300.0, false), 600.0);
+        assert_eq!(drawer_top_scroll_y(900.0, 300.0, true), 0.0);
+        assert_eq!(drawer_top_scroll_y(200.0, 300.0, false), 0.0);
     }
 
     #[test]
