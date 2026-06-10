@@ -947,10 +947,6 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
 // File Operations Helpers
 // ============================================================================
 
-/// Pick one or more files via native macOS open panel.
-///
-/// Returns absolute paths. Intended for "attach as context" flows (Agent chat).
-
 pub fn create_vertical_stack_view(frame: CGRect) -> Id {
     unsafe {
         let ns_stack_view = Class::get("NSStackView").unwrap();

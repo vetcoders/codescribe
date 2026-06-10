@@ -39,9 +39,9 @@ use crate::config::ShortcutBinding;
 use crate::os::hotkeys::ModeHotkeyBindings;
 
 use crate::ui_helpers::{
-    LabelConfig, add_subview, agent_chat_shell_frame, agent_chat_shell_panel_policy,
+    LabelConfig, NSEdgeInsets, add_subview, agent_chat_shell_frame, agent_chat_shell_panel_policy,
     apply_shared_shell_panel_policy, apply_tafla_surface, button_set_action, button_style,
-    chat_header_layout, chat_input_row_layout, color_clear, color_secondary_label, create_button,
+    chat_header_layout, chat_input_row_layout, color_secondary_label, create_button,
     create_flipped_vertical_stack_view, create_glass_effect_view_with, create_label,
     create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
     main_screen_visible_frame, ns_string, present_shared_shell_panel, set_button_symbol,
@@ -65,6 +65,14 @@ const NSVIEW_MAX_X_MARGIN: isize = 4;
 const NSVIEW_MIN_Y_MARGIN: isize = 8;
 const NSVIEW_HEIGHT_SIZABLE: isize = 16;
 const NSVIEW_MAX_Y_MARGIN: isize = 32;
+
+fn chat_content_height_under_header(
+    content_height: f64,
+    footer_height: f64,
+    content_gap: f64,
+) -> f64 {
+    (content_height - footer_height - content_gap).max(0.0)
+}
 
 pub(super) fn shortcuts_lines(bindings: ModeHotkeyBindings) -> (String, String) {
     let hold_line = match bindings.dictation {
@@ -275,7 +283,7 @@ fn show_voice_chat_overlay_impl() {
         // Agent input starts compact and can grow with content (see `resize_agent_input_locked`).
         let agent_input_height = ui_tokens::AGENT_INPUT_HEIGHT;
 
-        // Header container on the single root glass (no glass-on-glass dome).
+        // Header is an overlay: messages scroll underneath and the header blur remains clickable.
         let header_frame = CGRect::new(
             &CGPoint::new(
                 content_bounds.origin.x,
@@ -283,17 +291,21 @@ fn show_voice_chat_overlay_impl() {
             ),
             &CGSize::new(content_bounds.size.width.max(0.0), header_height),
         );
-        let header_bg: Id = msg_send![Class::get("NSView").unwrap(), alloc];
-        let header_bg: Id = msg_send![header_bg, initWithFrame: header_frame];
-        let _: () = msg_send![header_bg, setWantsLayer: true];
+        let header_bg: Id = create_glass_effect_view_with(
+            header_frame,
+            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectBlendingMode::WithinWindow,
+            NSVisualEffectState::Active,
+        );
         let _: () = msg_send![
             header_bg,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN
         ];
         let header_layer: Id = msg_send![header_bg, layer];
         if !header_layer.is_null() {
-            let clear_cg: Id = msg_send![color_clear(), CGColor];
-            let _: () = msg_send![header_layer, setBackgroundColor: clear_cg];
+            let header_bg_color = ui_colors::surface_glass();
+            let cg_header_bg: Id = msg_send![header_bg_color, CGColor];
+            let _: () = msg_send![header_layer, setBackgroundColor: cg_header_bg];
         }
         let header_separator: Id = msg_send![Class::get("NSView").unwrap(), alloc];
         let header_separator: Id = msg_send![
@@ -600,8 +612,11 @@ fn show_voice_chat_overlay_impl() {
             ),
             &CGSize::new(
                 (content_bounds.size.width - content_pad * 2.0).max(0.0),
-                (content_bounds.size.height - header_height - footer_height - content_gap * 2.0)
-                    .max(0.0),
+                chat_content_height_under_header(
+                    content_bounds.size.height,
+                    footer_height,
+                    content_gap,
+                ),
             ),
         );
 
@@ -781,6 +796,13 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![agent_scroll, setAutohidesScrollers: true];
         // NSScrollerStyleOverlay == 1
         let _: () = msg_send![agent_scroll, setScrollerStyle: 1_isize];
+        let agent_insets = NSEdgeInsets {
+            top: header_height,
+            left: 0.0,
+            bottom: 0.0,
+            right: 0.0,
+        };
+        let _: () = msg_send![agent_scroll, setContentInsets: agent_insets];
         let _: () = msg_send![
             agent_scroll,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
@@ -1176,5 +1198,21 @@ mod tests {
         });
         assert!(hold.contains("Ctrl+Option"));
         assert!(toggle.contains("Right"));
+    }
+
+    #[test]
+    fn chat_content_extends_under_header() {
+        let content_height = 720.0;
+        let footer_height = 64.0;
+        let content_gap = 10.0;
+        let header_height = 54.0;
+
+        let under_header =
+            chat_content_height_under_header(content_height, footer_height, content_gap);
+        let old_below_header =
+            (content_height - header_height - footer_height - content_gap * 2.0).max(0.0);
+
+        assert_eq!(under_header, 646.0);
+        assert_eq!(under_header - old_below_header, header_height + content_gap);
     }
 }

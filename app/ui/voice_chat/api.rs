@@ -934,7 +934,6 @@ fn reflow_footer_controls_locked(state: &mut VoiceChatOverlayState) {
             let _: () = msg_send![label, setFrame: frame];
         }
 
-        let header_height = ui_tokens::HEADER_HEIGHT_COMPACT;
         let content_gap = ui_tokens::CONTENT_GAP;
         let content_frame = CGRect::new(
             &CGPoint::new(
@@ -943,8 +942,7 @@ fn reflow_footer_controls_locked(state: &mut VoiceChatOverlayState) {
             ),
             &CGSize::new(
                 (content_bounds.size.width - content_pad * 2.0).max(0.0),
-                (content_bounds.size.height - header_height - footer_height - content_gap * 2.0)
-                    .max(0.0),
+                (content_bounds.size.height - footer_height - content_gap).max(0.0),
             ),
         );
 
