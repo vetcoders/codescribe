@@ -474,6 +474,27 @@ pub fn bubble_streaming_for_message(message: &ChatMessage) -> bool {
     !(message.role == ChatRole::Reasoning && message.is_collapsed) && message.is_streaming
 }
 
+pub fn message_render_role(message: &ChatMessage) -> BubbleRole {
+    match message.role {
+        ChatRole::User => BubbleRole::User,
+        ChatRole::Assistant => BubbleRole::Assistant,
+        ChatRole::System | ChatRole::Reasoning => BubbleRole::System,
+    }
+}
+
+pub fn message_render_mode_for(
+    overrides: &std::collections::HashMap<usize, RenderMode>,
+    index: usize,
+    message: &ChatMessage,
+) -> RenderMode {
+    overrides.get(&index).copied().unwrap_or_else(|| {
+        streaming_render_mode(
+            bubble_streaming_for_message(message),
+            message_render_role(message),
+        )
+    })
+}
+
 pub fn reasoning_summary_header(message: &ChatMessage) -> String {
     let elapsed = SystemTime::now()
         .duration_since(message.timestamp)
@@ -641,24 +662,21 @@ pub fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index
 
         let message = &state.messages[index];
         let (bubble_ptr, label_ptr) = state.agent_bubble_views[index];
+        let render_mode = message_render_mode_for(&state.message_render_modes, index, message);
 
         let container = bubble_ptr as Id;
         let label = label_ptr as Id;
         let old_container_height = view_height(container);
         let bubble_text = bubble_text_for_message(message);
         let bubble_is_streaming = bubble_streaming_for_message(message);
-        let bubble_role = match message.role {
-            ChatRole::User => BubbleRole::User,
-            ChatRole::Assistant => BubbleRole::Assistant,
-            ChatRole::System => BubbleRole::System,
-            ChatRole::Reasoning => BubbleRole::System,
-        };
-        update_bubble_text(
+        let bubble_role = message_render_role(message);
+        update_bubble_text_with_render_mode(
             label,
             &bubble_text,
             bubble_role,
             bubble_is_streaming,
             message.is_error,
+            render_mode,
         );
         let display_text = display_text_for_message(message);
         resize_bubble_container_for_text(container, label, &display_text);
@@ -678,6 +696,29 @@ pub fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index
             scroll_agent_to_bottom(Some(container as usize), state.agent_scroll_view);
         }
         true
+    }
+}
+
+pub fn toggle_message_render_mode_impl(index: usize) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(message) = state.messages.get(index) else {
+        debug!("Render toggle pointed outside message list");
+        return;
+    };
+    if !matches!(
+        message.role,
+        ChatRole::Assistant | ChatRole::System | ChatRole::Reasoning
+    ) {
+        debug!("Render toggle ignored for role {:?}", message.role);
+        return;
+    }
+
+    let current = message_render_mode_for(&state.message_render_modes, index, message);
+    let next = next_render_mode(current);
+    state.message_render_modes.insert(index, next);
+
+    if !try_update_message_view_in_place(&mut state, index) {
+        update_chat_view_with_state(&mut state, false);
     }
 }
 
@@ -972,6 +1013,10 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
         release_agent_bubble_click_recognizers(state);
         stack_view_clear(container);
         state.agent_bubble_views.clear();
+        let message_len = state.messages.len();
+        state
+            .message_render_modes
+            .retain(|index, _| *index < message_len);
         state.cached_agent_stack_height = None;
 
         // Size bubbles to the current visible content width (supports resizable overlay).
@@ -1001,17 +1046,14 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
             let message_text = bubble_text_for_message(message);
             let message_is_streaming = bubble_streaming_for_message(message);
             let message_is_error = message.is_error;
+            let message_render_mode =
+                message_render_mode_for(&state.message_render_modes, index, message);
             let message_metadata = if message_role == ChatRole::Reasoning && message.is_collapsed {
                 None
             } else {
                 Some(message_metadata(message))
             };
-            let role = match message_role {
-                ChatRole::User => BubbleRole::User,
-                ChatRole::Assistant => BubbleRole::Assistant,
-                ChatRole::System => BubbleRole::System,
-                ChatRole::Reasoning => BubbleRole::System,
-            };
+            let role = message_render_role(message);
             let (bubble, text_label) = create_bubble_view(BubbleConfig {
                 text: message_text,
                 role,
@@ -1019,6 +1061,7 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
                 font_size: base_font * zoom,
                 is_streaming: message_is_streaming,
                 is_error: message_is_error,
+                render_mode: Some(message_render_mode),
                 metadata: message_metadata,
                 message_index: Some(index),
                 copy_action_target: state.action_handler.map(|p| p as Id),

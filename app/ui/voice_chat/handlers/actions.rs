@@ -132,6 +132,12 @@ pub extern "C" fn on_copy_message(_this: &Object, _cmd: Sel, sender: Id) {
     }
 }
 
+pub extern "C" fn on_toggle_bubble_render(_this: &Object, _cmd: Sel, sender: Id) {
+    let index: isize = unsafe { msg_send![sender, tag] };
+    let index = index.max(0) as usize;
+    toggle_message_render_mode_impl(index);
+}
+
 pub extern "C" fn on_assistant_bubble_click(_this: &Object, _cmd: Sel, sender: Id) {
     handle_message_bubble_click_from_recognizer(sender);
 }

@@ -28,13 +28,14 @@ use super::state::{
 };
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
-    BubbleConfig, BubbleRole, LabelConfig, NSEdgeInsets, add_subview, apply_tafla_surface,
-    button_set_action, button_style, chat_header_layout, color_label, color_rgba,
-    color_secondary_label, copy_to_clipboard, create_bubble_view, create_button, create_label,
-    get_text_field_string, get_text_view_string, layout_region_frame_for_view, ns_string,
-    open_file_in_editor, resize_bubble_container_for_text, set_button_symbol,
-    set_text_field_string, set_text_view_string, set_tooltip, stack_view_add, stack_view_clear,
-    ui_colors, ui_tokens, update_bubble_text, window_set_alpha, window_show,
+    BubbleConfig, BubbleRole, LabelConfig, NSEdgeInsets, RenderMode, add_subview,
+    apply_tafla_surface, button_set_action, button_style, chat_header_layout, color_label,
+    color_rgba, color_secondary_label, copy_to_clipboard, create_bubble_view, create_button,
+    create_label, get_text_field_string, get_text_view_string, layout_region_frame_for_view,
+    next_render_mode, ns_string, open_file_in_editor, resize_bubble_container_for_text,
+    set_button_symbol, set_text_field_string, set_text_view_string, set_tooltip, stack_view_add,
+    stack_view_clear, streaming_render_mode, ui_colors, ui_tokens,
+    update_bubble_text_with_render_mode, window_set_alpha, window_show,
 };
 use chrono::{DateTime, Local};
 use codescribe_core::agent::{Thread, ThreadIndex, ThreadStore};

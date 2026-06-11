@@ -2,7 +2,7 @@
 //!
 //! Contains overlay state, configuration, and message types.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
@@ -10,6 +10,7 @@ use std::time::{Instant, SystemTime};
 use codescribe_core::attachment::Attachment;
 
 use crate::ui::shared::status::UiStatus;
+use crate::ui_helpers::RenderMode;
 
 /// Type alias for voice chat send callback
 pub type VoiceChatSendCallback = Arc<dyn Fn(String) + Send + Sync>;
@@ -150,6 +151,8 @@ pub struct VoiceChatOverlayState {
     pub agent_container: Option<usize>,
     pub agent_bubble_views: Vec<(usize, usize)>,
     pub agent_bubble_click_recognizers: Vec<(usize, usize)>,
+    /// Explicit per-message render overrides. Missing entries use the raw Markdown default.
+    pub message_render_modes: HashMap<usize, RenderMode>,
     /// Cached document stack height for amortized streaming layout updates.
     pub cached_agent_stack_height: Option<f64>,
     pub agent_input_bar: Option<usize>,
@@ -249,6 +252,7 @@ impl Default for VoiceChatOverlayState {
             agent_container: None,
             agent_bubble_views: Vec::new(),
             agent_bubble_click_recognizers: Vec::new(),
+            message_render_modes: HashMap::new(),
             cached_agent_stack_height: None,
             agent_input_bar: None,
             agent_input_scroll_view: None,

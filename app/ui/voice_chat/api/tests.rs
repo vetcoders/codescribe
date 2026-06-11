@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui_helpers::{BubbleRole, RenderMode, streaming_render_mode};
+use crate::ui_helpers::{BubbleRole, RenderMode, next_render_mode, streaming_render_mode};
 use serial_test::serial;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -500,7 +500,7 @@ fn should_autoscroll_follows_pinned_state() {
 }
 
 #[test]
-fn render_mode_keeps_streaming_plain_and_final_assistant_system_markdown() {
+fn render_mode_defaults_every_bubble_to_plain() {
     assert_eq!(
         streaming_render_mode(true, BubbleRole::User),
         RenderMode::Plain
@@ -519,12 +519,47 @@ fn render_mode_keeps_streaming_plain_and_final_assistant_system_markdown() {
     );
     assert_eq!(
         streaming_render_mode(false, BubbleRole::Assistant),
-        RenderMode::Markdown
+        RenderMode::Plain
     );
     assert_eq!(
         streaming_render_mode(false, BubbleRole::System),
-        RenderMode::Markdown
+        RenderMode::Plain
     );
+}
+
+#[test]
+fn next_render_mode_toggles_between_raw_and_rich() {
+    assert_eq!(next_render_mode(RenderMode::Plain), RenderMode::Markdown);
+    assert_eq!(next_render_mode(RenderMode::Markdown), RenderMode::Plain);
+}
+
+#[test]
+#[serial]
+fn finalize_assistant_message_state_only_preserves_render_mode_override() {
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+        state.messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            text: "**raw stays selected**".to_string(),
+            is_streaming: true,
+            is_collapsed: false,
+            is_error: false,
+            timestamp: SystemTime::now(),
+            mode: Some("AI".to_string()),
+        });
+        state.active_assistant_stream_index = Some(0);
+        state.message_render_modes.insert(0, RenderMode::Markdown);
+    }
+
+    finalize_assistant_message_state_only_impl(false);
+
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(
+        state.message_render_modes.get(&0).copied(),
+        Some(RenderMode::Markdown)
+    );
+    assert!(!state.messages[0].is_streaming);
 }
 
 #[test]

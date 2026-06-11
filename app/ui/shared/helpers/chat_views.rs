@@ -4,7 +4,9 @@ use objc::runtime::{Class, Object, Sel};
 use objc::{msg_send, sel, sel_impl};
 use std::sync::Once;
 
-use super::{Id, add_subview, apply_tafla_surface, ns_string, ui_colors, ui_tokens};
+use super::{
+    Id, add_subview, apply_tafla_surface, ns_string, set_button_symbol, ui_colors, ui_tokens,
+};
 
 const NSTRACKING_MOUSE_ENTERED_AND_EXITED: u64 = 1 << 0;
 const NSTRACKING_ACTIVE_ALWAYS: u64 = 1 << 7;
@@ -24,13 +26,14 @@ pub enum RenderMode {
     Markdown,
 }
 
-pub fn streaming_render_mode(is_streaming: bool, role: BubbleRole) -> RenderMode {
-    if is_streaming {
-        return RenderMode::Plain;
-    }
-    match role {
-        BubbleRole::Assistant | BubbleRole::System => RenderMode::Markdown,
-        BubbleRole::User => RenderMode::Plain,
+pub fn streaming_render_mode(_is_streaming: bool, _role: BubbleRole) -> RenderMode {
+    RenderMode::Plain
+}
+
+pub fn next_render_mode(current: RenderMode) -> RenderMode {
+    match current {
+        RenderMode::Plain => RenderMode::Markdown,
+        RenderMode::Markdown => RenderMode::Plain,
     }
 }
 
@@ -65,6 +68,13 @@ pub(crate) fn should_apply_native_markdown(text: &str) -> bool {
     // the work until a real block renderer exists.
     let _ = looks_like_markdown_table(text);
     false
+}
+
+fn should_render_native_markdown(render_mode: RenderMode, text: &str) -> bool {
+    match render_mode {
+        RenderMode::Markdown => true,
+        RenderMode::Plain => should_apply_native_markdown(text),
+    }
 }
 
 fn markdown_options_with_base_font(_text: &str, font: Id) -> Option<Id> {
@@ -289,6 +299,7 @@ pub struct BubbleConfig {
     pub font_size: f64,
     pub is_streaming: bool,
     pub is_error: bool,
+    pub render_mode: Option<RenderMode>,
     pub metadata: Option<String>,
     /// Optional message index for Copy button (None = no button)
     pub message_index: Option<usize>,
@@ -439,9 +450,10 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let _: () = msg_send![text_label, setTextColor: text_color];
 
         let _: () = msg_send![text_label, setFont: font];
-        let render_mode = streaming_render_mode(config.is_streaming, config.role);
-        if !(matches!(render_mode, RenderMode::Markdown)
-            && should_apply_native_markdown(&display_text)
+        let render_mode = config
+            .render_mode
+            .unwrap_or_else(|| streaming_render_mode(config.is_streaming, config.role));
+        if !(should_render_native_markdown(render_mode, &display_text)
             && apply_markdown_to_text_field(text_label, &display_text, font))
         {
             let _: () = msg_send![text_label, setStringValue: text_str];
@@ -575,19 +587,23 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
 
         // Assemble hierarchy
         // (text_label already added to bubble above — directly or via scroll wrapper)
-        // Add Copy button if message_index is provided
+        // Add hover action buttons if message_index is provided.
         if let (Some(msg_index), Some(target)) = (config.message_index, config.copy_action_target) {
-            let ns_button = Class::get("NSButton").unwrap();
+            let Some(ns_button) = Class::get("NSButton") else {
+                let _: () = msg_send![container, addSubview: bubble];
+                return (container, text_label);
+            };
 
-            let button_width = 40.0;
+            let copy_button_width = 40.0;
+            let render_button_width = 24.0;
             let button_height = copy_button_height;
-            let button_x = bubble_width - button_width - padding_x;
+            let copy_button_x = bubble_width - copy_button_width - padding_x;
             // Flipped coords: anchor near the bottom edge.
             let button_y = (bubble_height - button_height - 4.0).max(4.0);
 
             let button_frame = CGRect::new(
-                &CGPoint::new(button_x, button_y),
-                &CGSize::new(button_width, button_height),
+                &CGPoint::new(copy_button_x, button_y),
+                &CGSize::new(copy_button_width, button_height),
             );
 
             let copy_button: Id = msg_send![ns_button, alloc];
@@ -625,6 +641,47 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
 
             let _: () = msg_send![copy_button, setHidden: true];
             let _: () = msg_send![bubble, addSubview: copy_button];
+
+            if matches!(config.role, BubbleRole::Assistant | BubbleRole::System) {
+                let render_x = (copy_button_x - render_button_width - 4.0).max(4.0);
+                let render_frame = CGRect::new(
+                    &CGPoint::new(render_x, button_y),
+                    &CGSize::new(render_button_width, button_height),
+                );
+                let render_button: Id = msg_send![ns_button, alloc];
+                let render_button: Id = msg_send![render_button, initWithFrame: render_frame];
+                let _: () = msg_send![render_button, setBezelStyle: 0_isize];
+                let _: () = msg_send![render_button, setBordered: false];
+
+                let fallback_title = match render_mode {
+                    RenderMode::Plain => "Rich",
+                    RenderMode::Markdown => "Raw",
+                };
+                let _: () = msg_send![render_button, setTitle: ns_string(fallback_title)];
+                let _ = set_button_symbol(
+                    render_button,
+                    match render_mode {
+                        RenderMode::Plain => "textformat",
+                        RenderMode::Markdown => "curlybraces",
+                    },
+                );
+                let tooltip = match render_mode {
+                    RenderMode::Plain => "Render Markdown",
+                    RenderMode::Markdown => "Show raw Markdown",
+                };
+                let _: () = msg_send![render_button, setToolTip: ns_string(tooltip)];
+                let _: () = msg_send![render_button, setFont: small_font];
+                let _: () = msg_send![render_button, setContentTintColor: button_color];
+                let _: () = msg_send![render_button, setTag: msg_index as isize];
+                let _: () = msg_send![
+                    render_button,
+                    setIdentifier: ns_string("codescribe_render_button")
+                ];
+                let _: () = msg_send![render_button, setTarget: target];
+                let _: () = msg_send![render_button, setAction: sel!(onToggleBubbleRender:)];
+                let _: () = msg_send![render_button, setHidden: true];
+                let _: () = msg_send![bubble, addSubview: render_button];
+            }
         }
 
         let _: () = msg_send![container, addSubview: bubble];
@@ -662,6 +719,30 @@ pub unsafe fn update_bubble_text(
     is_streaming: bool,
     is_error: bool,
 ) {
+    let render_mode = streaming_render_mode(is_streaming, role);
+    unsafe {
+        update_bubble_text_with_render_mode(
+            text_label,
+            text,
+            role,
+            is_streaming,
+            is_error,
+            render_mode,
+        );
+    }
+}
+
+/// Update bubble text with an explicit render mode.
+/// # Safety
+/// `text_label` must be a valid `NSTextField` instance.
+pub unsafe fn update_bubble_text_with_render_mode(
+    text_label: Id,
+    text: &str,
+    role: BubbleRole,
+    is_streaming: bool,
+    is_error: bool,
+    render_mode: RenderMode,
+) {
     unsafe {
         let display_text = if is_streaming && text.is_empty() {
             "• • •".to_string()
@@ -671,7 +752,6 @@ pub unsafe fn update_bubble_text(
             text.to_string()
         };
 
-        let render_mode = streaming_render_mode(is_streaming, role);
         // Always create a fresh monospace font instead of reading from the label.
         // After markdown parsing, text_label.font may return a system font from
         // the first attributed range, causing cascading degradation on subsequent updates.
@@ -690,10 +770,7 @@ pub unsafe fn update_bubble_text(
             jb_font
         };
         let _: () = msg_send![text_label, setFont: font];
-        // Streaming updates stay on the cheap plain-text path; final Assistant/System
-        // messages are the only path allowed to invoke AppKit Markdown parsing.
-        if !(matches!(render_mode, RenderMode::Markdown)
-            && should_apply_native_markdown(&display_text)
+        if !(should_render_native_markdown(render_mode, &display_text)
             && apply_markdown_to_text_field(text_label, &display_text, font))
         {
             let text_str = ns_string(&display_text);
@@ -1110,7 +1187,7 @@ unsafe fn toggle_bubble_copy_buttons(view: Id, visible: bool) {
                 let c_str: *const i8 = msg_send![ident, UTF8String];
                 if !c_str.is_null() {
                     let s = unsafe { std::ffi::CStr::from_ptr(c_str) }.to_string_lossy();
-                    if s == "codescribe_copy_button" {
+                    if s == "codescribe_copy_button" || s == "codescribe_render_button" {
                         let _: () = msg_send![v, setHidden: !visible];
                     }
                 }

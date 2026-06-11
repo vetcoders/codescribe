@@ -143,6 +143,10 @@ pub fn action_handler_class() -> *const Class {
                 on_copy_message as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
+                sel!(onToggleBubbleRender:),
+                on_toggle_bubble_render as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
                 sel!(onAssistantBubbleClick:),
                 on_assistant_bubble_click as extern "C" fn(&Object, Sel, Id),
             );
