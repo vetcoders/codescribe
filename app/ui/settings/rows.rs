@@ -23,6 +23,19 @@ pub(super) struct SliderSettingRowSpec<'a> {
     pub(super) gap: f64,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct SliderSettingRowHandles {
+    pub(super) label: usize,
+    pub(super) value_label: usize,
+    pub(super) slider: usize,
+}
+
+impl SliderSettingRowHandles {
+    pub(super) fn all_views(self) -> [usize; 3] {
+        [self.label, self.value_label, self.slider]
+    }
+}
+
 pub(super) fn toggle_row_step(has_description: bool, gap: f64) -> f64 {
     if has_description {
         TOGGLE_ROW_DESC_OFFSET + TOGGLE_ROW_DESC_HEIGHT + gap
@@ -65,7 +78,7 @@ pub(super) unsafe fn add_slider_setting_row(
     width: f64,
     secondary: Id,
     spec: SliderSettingRowSpec<'_>,
-) -> usize {
+) -> SliderSettingRowHandles {
     let label = create_label(LabelConfig {
         frame: CGRect::new(&CGPoint::new(x, *y), &CGSize::new(136.0, 18.0)),
         text: spec.title.to_string(),
@@ -110,7 +123,11 @@ pub(super) unsafe fn add_slider_setting_row(
     }
 
     *y -= 24.0 + spec.gap;
-    value_label as usize
+    SliderSettingRowHandles {
+        label: label as usize,
+        value_label: value_label as usize,
+        slider: slider as usize,
+    }
 }
 
 pub(super) unsafe fn autosize_tab_document_view(document_view: Id, minimum_height: f64) -> f64 {

@@ -158,7 +158,71 @@ pub(super) unsafe fn build_quality_tab(
         add_subview(container, preview_hint);
         y -= 16.0 + gap;
 
-        state.preview_buffer_delay_value_label = Some(add_slider_setting_row(
+        let preview_preset = detect_preset(preview_model);
+        state.preview_advanced_expanded = matches!(preview_preset, PreviewTimingPreset::Custom);
+
+        // Smooth anchor for C5b audit: 1038ms / 10.6 cps / 5 words / 8.0s.
+        let preset_control_w = (content_w - 138.0).clamp(320.0, 420.0);
+        let preset_segment = create_segmented_control(
+            CGRect::new(
+                &CGPoint::new(pad, y - 2.0),
+                &CGSize::new(preset_control_w, 24.0),
+            ),
+            &PREVIEW_PRESET_LABELS,
+        );
+        let _: () = msg_send![
+            preset_segment,
+            setSelectedSegment: preview_preset.segment_index()
+        ];
+        button_set_action(
+            preset_segment,
+            action_handler,
+            sel!(onPreviewPresetChanged:),
+        );
+        add_subview(container, preset_segment);
+        state.preview_preset_segment = Some(preset_segment as usize);
+
+        let env_override = preview_timing_has_env_override();
+        let override_label = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(pad + preset_control_w + 10.0, y),
+                &CGSize::new((content_w - preset_control_w - 10.0).max(96.0), 18.0),
+            ),
+            text: if env_override {
+                "overridden by .env".to_string()
+            } else {
+                String::new()
+            },
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            text_color: ui_colors::status_warning(),
+            ..Default::default()
+        });
+        let _: () = msg_send![override_label, setHidden: !env_override];
+        add_subview(container, override_label);
+        state.preview_env_override_label = Some(override_label as usize);
+        y -= 24.0 + gap;
+
+        let advanced_button = create_button(
+            CGRect::new(&CGPoint::new(pad, y - 2.0), &CGSize::new(132.0, 24.0)),
+            if state.preview_advanced_expanded {
+                "Hide advanced"
+            } else {
+                "Show advanced"
+            },
+            button_style::GLASS,
+        );
+        button_set_action(
+            advanced_button,
+            action_handler,
+            sel!(onPreviewAdvancedToggled:),
+        );
+        add_subview(container, advanced_button);
+        state.preview_advanced_button = Some(advanced_button as usize);
+        y -= 24.0 + gap;
+
+        let advanced_hidden = !state.preview_advanced_expanded;
+
+        let buffer_row = add_slider_setting_row(
             container,
             action_handler,
             pad,
@@ -174,8 +238,15 @@ pub(super) unsafe fn build_quality_tab(
                 action: sel!(onPreviewBufferDelayChanged:),
                 gap,
             },
-        ));
-        state.preview_typing_cps_value_label = Some(add_slider_setting_row(
+        );
+        for ptr in buffer_row.all_views() {
+            let _: () = msg_send![ptr as Id, setHidden: advanced_hidden];
+            state.preview_advanced_rows.push(ptr);
+        }
+        state.preview_buffer_delay_value_label = Some(buffer_row.value_label);
+        state.preview_buffer_delay_slider = Some(buffer_row.slider);
+
+        let typing_row = add_slider_setting_row(
             container,
             action_handler,
             pad,
@@ -191,8 +262,15 @@ pub(super) unsafe fn build_quality_tab(
                 action: sel!(onPreviewTypingCpsChanged:),
                 gap,
             },
-        ));
-        state.preview_emit_words_max_value_label = Some(add_slider_setting_row(
+        );
+        for ptr in typing_row.all_views() {
+            let _: () = msg_send![ptr as Id, setHidden: advanced_hidden];
+            state.preview_advanced_rows.push(ptr);
+        }
+        state.preview_typing_cps_value_label = Some(typing_row.value_label);
+        state.preview_typing_cps_slider = Some(typing_row.slider);
+
+        let emit_row = add_slider_setting_row(
             container,
             action_handler,
             pad,
@@ -208,8 +286,15 @@ pub(super) unsafe fn build_quality_tab(
                 action: sel!(onPreviewEmitWordsMaxChanged:),
                 gap,
             },
-        ));
-        state.preview_interim_sec_value_label = Some(add_slider_setting_row(
+        );
+        for ptr in emit_row.all_views() {
+            let _: () = msg_send![ptr as Id, setHidden: advanced_hidden];
+            state.preview_advanced_rows.push(ptr);
+        }
+        state.preview_emit_words_max_value_label = Some(emit_row.value_label);
+        state.preview_emit_words_max_slider = Some(emit_row.slider);
+
+        let interim_row = add_slider_setting_row(
             container,
             action_handler,
             pad,
@@ -236,7 +321,13 @@ pub(super) unsafe fn build_quality_tab(
                 action: sel!(onPreviewInterimCadenceChanged:),
                 gap,
             },
-        ));
+        );
+        for ptr in interim_row.all_views() {
+            let _: () = msg_send![ptr as Id, setHidden: advanced_hidden];
+            state.preview_advanced_rows.push(ptr);
+        }
+        state.preview_interim_sec_value_label = Some(interim_row.value_label);
+        state.preview_interim_sec_slider = Some(interim_row.slider);
 
         let preview_summary = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),

@@ -480,6 +480,90 @@ pub(super) extern "C" fn on_transcription_overlay_toggled(
     }
 }
 
+pub(super) extern "C" fn on_preview_preset_changed(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    sender: Id,
+) {
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
+    unsafe {
+        let selected: isize = msg_send![sender, selectedSegment];
+        let preset = PreviewTimingPreset::from_segment_index(selected);
+        {
+            let mut state = SETTINGS_WINDOW_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            state.preview_advanced_expanded = matches!(preset, PreviewTimingPreset::Custom);
+        }
+
+        if matches!(preset, PreviewTimingPreset::Custom) {
+            refresh_preview_advanced_visibility();
+            refresh_transcription_preview_panel();
+            return;
+        }
+
+        let config = Config::load();
+        if matches!(preset, PreviewTimingPreset::Off) {
+            info!("Settings: preview preset -> Off");
+            if let Err(err) = config.save_to_env("TRANSCRIPTION_OVERLAY_ENABLED", "0") {
+                warn!("Settings: failed to save preview preset Off: {err}");
+            }
+        } else if let Some(values) = preset_values(preset) {
+            info!("Settings: preview preset -> {:?}", preset);
+            let entries: Vec<(&str, String)> = vec![
+                ("TRANSCRIPTION_OVERLAY_ENABLED", "1".to_string()),
+                (
+                    "CODESCRIBE_BUFFER_DELAY_MS",
+                    values.buffer_delay_ms.to_string(),
+                ),
+                ("CODESCRIBE_TYPING_CPS", format!("{:.1}", values.typing_cps)),
+                (
+                    "CODESCRIBE_EMIT_WORDS_MAX",
+                    values.emit_words_max.to_string(),
+                ),
+                (
+                    "CODESCRIBE_BUFFERED_INTERIM_SEC",
+                    format!("{:.1}", values.interim_sec),
+                ),
+            ];
+            let borrowed: Vec<(&str, &str)> = entries
+                .iter()
+                .map(|(key, value)| (*key, value.as_str()))
+                .collect();
+            if let Err(err) = config.save_to_env_many(&borrowed) {
+                warn!(
+                    "Settings: failed to save preview preset {:?}: {err}",
+                    preset
+                );
+            }
+        }
+
+        sync_runtime_config_via_ipc();
+        refresh_transcription_preview_panel();
+    }
+}
+
+pub(super) extern "C" fn on_preview_advanced_toggled(
+    _this: &Object,
+    _cmd: objc::runtime::Sel,
+    _sender: Id,
+) {
+    {
+        let mut state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        state.preview_advanced_expanded = !state.preview_advanced_expanded;
+    }
+    refresh_preview_advanced_visibility();
+}
+
+fn mark_preview_timing_custom() {
+    let mut state = SETTINGS_WINDOW_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.preview_advanced_expanded = true;
+}
+
 pub(super) extern "C" fn on_preview_buffer_delay_changed(
     _this: &Object,
     _cmd: objc::runtime::Sel,
@@ -493,6 +577,7 @@ pub(super) extern "C" fn on_preview_buffer_delay_changed(
         let config = Config::load();
         let _ = config.save_to_env("CODESCRIBE_BUFFER_DELAY_MS", &ms.to_string());
         sync_runtime_config_via_ipc();
+        mark_preview_timing_custom();
         refresh_transcription_preview_panel();
     }
 }
@@ -510,6 +595,7 @@ pub(super) extern "C" fn on_preview_typing_cps_changed(
         let config = Config::load();
         let _ = config.save_to_env("CODESCRIBE_TYPING_CPS", &format!("{cps:.1}"));
         sync_runtime_config_via_ipc();
+        mark_preview_timing_custom();
         refresh_transcription_preview_panel();
     }
 }
@@ -527,6 +613,7 @@ pub(super) extern "C" fn on_preview_emit_words_max_changed(
         let config = Config::load();
         let _ = config.save_to_env("CODESCRIBE_EMIT_WORDS_MAX", &words.to_string());
         sync_runtime_config_via_ipc();
+        mark_preview_timing_custom();
         refresh_transcription_preview_panel();
     }
 }
@@ -544,6 +631,7 @@ pub(super) extern "C" fn on_preview_interim_cadence_changed(
         let config = Config::load();
         let _ = config.save_to_env("CODESCRIBE_BUFFERED_INTERIM_SEC", &format!("{secs:.1}"));
         sync_runtime_config_via_ipc();
+        mark_preview_timing_custom();
         refresh_transcription_preview_panel();
     }
 }

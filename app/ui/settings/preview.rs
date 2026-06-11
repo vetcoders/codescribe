@@ -2,6 +2,116 @@
 
 use super::*;
 
+pub(super) const PREVIEW_TIMING_ENV_KEYS: [&str; 4] = [
+    "CODESCRIBE_BUFFER_DELAY_MS",
+    "CODESCRIBE_TYPING_CPS",
+    "CODESCRIBE_EMIT_WORDS_MAX",
+    "CODESCRIBE_BUFFERED_INTERIM_SEC",
+];
+
+pub(super) const PREVIEW_PRESET_LABELS: [&str; 5] =
+    ["Smooth", "Snappy", "Relaxed", "Off", "Custom"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PreviewTimingPreset {
+    Smooth,
+    Snappy,
+    Relaxed,
+    Off,
+    Custom,
+}
+
+impl PreviewTimingPreset {
+    pub(super) fn segment_index(self) -> isize {
+        match self {
+            Self::Smooth => 0,
+            Self::Snappy => 1,
+            Self::Relaxed => 2,
+            Self::Off => 3,
+            Self::Custom => 4,
+        }
+    }
+
+    pub(super) fn from_segment_index(index: isize) -> Self {
+        match index {
+            0 => Self::Smooth,
+            1 => Self::Snappy,
+            2 => Self::Relaxed,
+            3 => Self::Off,
+            _ => Self::Custom,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct PreviewTimingValues {
+    pub(super) buffer_delay_ms: u64,
+    pub(super) typing_cps: f32,
+    pub(super) emit_words_max: usize,
+    pub(super) interim_sec: f32,
+}
+
+// Source: operator screenshot, 2026-06-11. This is the recommended default
+// because it produced the smoothest live preview in real dictation use.
+const SMOOTH_PREVIEW_TIMING: PreviewTimingValues = PreviewTimingValues {
+    buffer_delay_ms: 1038,
+    typing_cps: 10.6,
+    emit_words_max: 5,
+    interim_sec: 8.0,
+};
+
+const SNAPPY_PREVIEW_TIMING: PreviewTimingValues = PreviewTimingValues {
+    buffer_delay_ms: 350,
+    typing_cps: 28.0,
+    emit_words_max: 3,
+    interim_sec: 4.0,
+};
+
+const RELAXED_PREVIEW_TIMING: PreviewTimingValues = PreviewTimingValues {
+    buffer_delay_ms: 1500,
+    typing_cps: 8.0,
+    emit_words_max: 8,
+    interim_sec: 8.0,
+};
+
+pub(super) fn preset_values(preset: PreviewTimingPreset) -> Option<PreviewTimingValues> {
+    match preset {
+        PreviewTimingPreset::Smooth => Some(SMOOTH_PREVIEW_TIMING),
+        PreviewTimingPreset::Snappy => Some(SNAPPY_PREVIEW_TIMING),
+        PreviewTimingPreset::Relaxed => Some(RELAXED_PREVIEW_TIMING),
+        PreviewTimingPreset::Off | PreviewTimingPreset::Custom => None,
+    }
+}
+
+pub(super) fn detect_preset(model: PreviewTimingModel) -> PreviewTimingPreset {
+    if !model.overlay_enabled {
+        return PreviewTimingPreset::Off;
+    }
+
+    for preset in [
+        PreviewTimingPreset::Smooth,
+        PreviewTimingPreset::Snappy,
+        PreviewTimingPreset::Relaxed,
+    ] {
+        if let Some(values) = preset_values(preset)
+            && preview_timing_values_match(model, values)
+        {
+            return preset;
+        }
+    }
+
+    PreviewTimingPreset::Custom
+}
+
+fn preview_timing_values_match(model: PreviewTimingModel, values: PreviewTimingValues) -> bool {
+    let buffer_close = model.buffer_delay_ms.abs_diff(values.buffer_delay_ms) <= 10;
+    let cps_close = (model.typing_cps - values.typing_cps).abs() <= 0.15;
+    let words_match = model.emit_words_max == values.emit_words_max;
+    let interim_close = (model.requested_interim_sec - values.interim_sec).abs() <= 0.15;
+
+    buffer_close && cps_close && words_match && interim_close
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PreviewTimingModel {
     pub(super) overlay_enabled: bool,
@@ -35,18 +145,75 @@ pub(super) fn preview_effective_interim_sec(
 pub(super) fn current_preview_timing_model() -> PreviewTimingModel {
     let config = Config::load();
     let settings = UserSettings::load();
-    let requested_interim_sec = settings.buffered_interim_sec.unwrap_or(1.2);
+    let requested_interim_sec = settings
+        .buffered_interim_sec
+        .unwrap_or(SMOOTH_PREVIEW_TIMING.interim_sec);
 
     PreviewTimingModel {
         overlay_enabled: config.transcription_overlay_enabled,
-        buffer_delay_ms: settings.buffer_delay_ms.unwrap_or(280),
-        typing_cps: settings.typing_cps.unwrap_or(90.0).max(5.0),
-        emit_words_max: settings.emit_words_max.unwrap_or(2).clamp(1, 10) as usize,
+        buffer_delay_ms: settings
+            .buffer_delay_ms
+            .unwrap_or(SMOOTH_PREVIEW_TIMING.buffer_delay_ms),
+        typing_cps: settings
+            .typing_cps
+            .unwrap_or(SMOOTH_PREVIEW_TIMING.typing_cps)
+            .max(5.0),
+        emit_words_max: settings
+            .emit_words_max
+            .unwrap_or(SMOOTH_PREVIEW_TIMING.emit_words_max as u64)
+            .clamp(1, 10) as usize,
         requested_interim_sec,
         effective_interim_sec: preview_effective_interim_sec(
             config.transcription_overlay_enabled,
             requested_interim_sec,
         ),
+    }
+}
+
+pub(super) fn preview_timing_has_env_override() -> bool {
+    let settings = UserSettings::load();
+    let process_override = PREVIEW_TIMING_ENV_KEYS.iter().any(|key| {
+        std::env::var(key)
+            .map(|value| preview_env_value_differs_from_settings(key, &value, &settings))
+            .unwrap_or(false)
+    });
+    if process_override {
+        return true;
+    }
+
+    let env_path = Config::env_path();
+    Config::parse_env_file(&env_path)
+        .map(|vars| {
+            PREVIEW_TIMING_ENV_KEYS
+                .iter()
+                .any(|key| vars.contains_key(*key))
+        })
+        .unwrap_or(false)
+}
+
+fn preview_env_value_differs_from_settings(
+    key: &str,
+    value: &str,
+    settings: &UserSettings,
+) -> bool {
+    match key {
+        "CODESCRIBE_BUFFER_DELAY_MS" => settings
+            .buffer_delay_ms
+            .map(|v| value != v.to_string())
+            .unwrap_or(true),
+        "CODESCRIBE_TYPING_CPS" => settings
+            .typing_cps
+            .map(|v| value != format!("{v:.1}"))
+            .unwrap_or(true),
+        "CODESCRIBE_EMIT_WORDS_MAX" => settings
+            .emit_words_max
+            .map(|v| value != v.to_string())
+            .unwrap_or(true),
+        "CODESCRIBE_BUFFERED_INTERIM_SEC" => settings
+            .buffered_interim_sec
+            .map(|v| value != format!("{v:.1}"))
+            .unwrap_or(true),
+        _ => false,
     }
 }
 
@@ -252,26 +419,40 @@ pub(super) fn preview_timing_report_text(model: PreviewTimingModel) -> String {
 
 pub(super) fn refresh_transcription_preview_panel() {
     let model = current_preview_timing_model();
+    let preset = detect_preset(model);
+    let env_override = preview_timing_has_env_override();
     let preview_text = preview_timing_report_text(model);
     let summary_text = preview_timing_summary_text(model);
     let (
         buffer_delay_label,
+        buffer_delay_slider,
         typing_cps_label,
+        typing_cps_slider,
         emit_words_label,
+        emit_words_slider,
         interim_label,
+        interim_slider,
         summary_label,
         preview_text_view,
+        preset_segment,
+        env_override_label,
     ) = {
         let state = SETTINGS_WINDOW_STATE
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         (
             state.preview_buffer_delay_value_label,
+            state.preview_buffer_delay_slider,
             state.preview_typing_cps_value_label,
+            state.preview_typing_cps_slider,
             state.preview_emit_words_max_value_label,
+            state.preview_emit_words_max_slider,
             state.preview_interim_sec_value_label,
+            state.preview_interim_sec_slider,
             state.preview_timing_summary_label,
             state.preview_timing_text_view,
+            state.preview_preset_segment,
+            state.preview_env_override_label,
         )
     };
 
@@ -280,11 +461,20 @@ pub(super) fn refresh_transcription_preview_panel() {
         if let Some(ptr) = buffer_delay_label {
             set_text_field_string(ptr as Id, &format!("{} ms", model.buffer_delay_ms));
         }
+        if let Some(ptr) = buffer_delay_slider {
+            let _: () = msg_send![ptr as Id, setDoubleValue: model.buffer_delay_ms as f64];
+        }
         if let Some(ptr) = typing_cps_label {
             set_text_field_string(ptr as Id, &format!("{:.1} cps", model.typing_cps));
         }
+        if let Some(ptr) = typing_cps_slider {
+            let _: () = msg_send![ptr as Id, setDoubleValue: model.typing_cps as f64];
+        }
         if let Some(ptr) = emit_words_label {
             set_text_field_string(ptr as Id, &format!("{} words", model.emit_words_max));
+        }
+        if let Some(ptr) = emit_words_slider {
+            let _: () = msg_send![ptr as Id, setDoubleValue: model.emit_words_max as f64];
         }
         if let Some(ptr) = interim_label {
             let label = if (model.effective_interim_sec - model.requested_interim_sec).abs()
@@ -299,11 +489,57 @@ pub(super) fn refresh_transcription_preview_panel() {
             };
             set_text_field_string(ptr as Id, &label);
         }
+        if let Some(ptr) = interim_slider {
+            let _: () = msg_send![ptr as Id, setDoubleValue: model.requested_interim_sec as f64];
+        }
         if let Some(ptr) = summary_label {
             set_text_field_string(ptr as Id, &summary_text);
         }
         if let Some(ptr) = preview_text_view {
             set_text_view_string(ptr as Id, &preview_text);
+        }
+        if let Some(ptr) = preset_segment {
+            let _: () = msg_send![ptr as Id, setSelectedSegment: preset.segment_index()];
+        }
+        if let Some(ptr) = env_override_label {
+            set_text_field_string(
+                ptr as Id,
+                if env_override {
+                    "overridden by .env"
+                } else {
+                    ""
+                },
+            );
+            let _: () = msg_send![ptr as Id, setHidden: !env_override];
+        }
+    }
+    refresh_preview_advanced_visibility();
+}
+
+pub(super) fn refresh_preview_advanced_visibility() {
+    let (advanced_rows, advanced_button, expanded) = {
+        let state = SETTINGS_WINDOW_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        (
+            state.preview_advanced_rows.clone(),
+            state.preview_advanced_button,
+            state.preview_advanced_expanded,
+        )
+    };
+
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
+    unsafe {
+        for ptr in advanced_rows {
+            let _: () = msg_send![ptr as Id, setHidden: !expanded];
+        }
+        if let Some(ptr) = advanced_button {
+            let title = if expanded {
+                "Hide advanced"
+            } else {
+                "Show advanced"
+            };
+            let _: () = msg_send![ptr as Id, setTitle: ns_string(title)];
         }
     }
 }

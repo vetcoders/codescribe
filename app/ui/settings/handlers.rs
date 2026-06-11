@@ -14,13 +14,14 @@ use super::{
     on_enter_send_toggled, on_formatting_level_changed, on_formatting_toggled, on_language_changed,
     on_llm_endpoint_changed, on_llm_key_changed, on_llm_model_changed, on_mode_binding_change,
     on_open_qube_report, on_open_system_settings, on_permission_action,
-    on_preview_buffer_delay_changed, on_preview_emit_words_max_changed,
-    on_preview_interim_cadence_changed, on_preview_typing_cps_changed, on_prompt_load,
-    on_prompt_reset, on_prompt_save, on_prompt_type_changed, on_quality_refresh,
-    on_qube_daemon_toggled, on_refresh_permissions, on_save_api_settings,
-    on_show_dock_icon_toggled, on_show_hotkey_conflicts, on_stt_endpoint_changed,
-    on_stt_key_changed, on_stt_provider_changed, on_transcript_tagging_toggled,
-    on_transcription_overlay_toggled, on_ultra_quality_toggled, on_volume_changed, switch_tab,
+    on_preview_advanced_toggled, on_preview_buffer_delay_changed,
+    on_preview_emit_words_max_changed, on_preview_interim_cadence_changed,
+    on_preview_preset_changed, on_preview_typing_cps_changed, on_prompt_load, on_prompt_reset,
+    on_prompt_save, on_prompt_type_changed, on_quality_refresh, on_qube_daemon_toggled,
+    on_refresh_permissions, on_save_api_settings, on_show_dock_icon_toggled,
+    on_show_hotkey_conflicts, on_stt_endpoint_changed, on_stt_key_changed, on_stt_provider_changed,
+    on_transcript_tagging_toggled, on_transcription_overlay_toggled, on_ultra_quality_toggled,
+    on_volume_changed, switch_tab,
 };
 
 pub use crate::ui_helpers::Id;
@@ -173,6 +174,14 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onPreviewBufferDelayChanged:),
                 on_preview_buffer_delay_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPreviewPresetChanged:),
+                on_preview_preset_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPreviewAdvancedToggled:),
+                on_preview_advanced_toggled as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onPreviewTypingCpsChanged:),
@@ -427,6 +436,16 @@ mod tests {
             class,
             sel!(onPreviewBufferDelayChanged:),
             "onPreviewBufferDelayChanged:",
+        );
+        assert_selector_registered(
+            class,
+            sel!(onPreviewPresetChanged:),
+            "onPreviewPresetChanged:",
+        );
+        assert_selector_registered(
+            class,
+            sel!(onPreviewAdvancedToggled:),
+            "onPreviewAdvancedToggled:",
         );
         assert_selector_registered(
             class,

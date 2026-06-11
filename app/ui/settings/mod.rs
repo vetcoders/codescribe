@@ -55,10 +55,11 @@ use crate::ui::settings::handlers::{
 use crate::ui_helpers::{
     LabelConfig, add_subview, apply_shared_shell_panel_policy, button_set_action, button_style,
     create_button, create_glass_effect_view_with, create_label, create_scrollable_text_view,
-    create_secure_text_input, create_slider, create_text_input, create_toggle,
-    get_text_view_string, layout_region_frame_for_view, ns_string, present_shared_shell_panel,
-    set_glass_effect_content_view, set_text_field_string, set_text_view_string,
-    settings_shell_panel_policy, ui_colors, ui_tokens, window_close, window_content_view,
+    create_secure_text_input, create_segmented_control, create_slider, create_text_input,
+    create_toggle, get_text_view_string, layout_region_frame_for_view, ns_string,
+    present_shared_shell_panel, set_glass_effect_content_view, set_text_field_string,
+    set_text_view_string, settings_shell_panel_policy, ui_colors, ui_tokens, window_close,
+    window_content_view,
 };
 
 mod handlers;
@@ -192,11 +193,20 @@ struct SettingsWindowState {
     hold_delay_value_label: Option<usize>,
     double_tap_value_label: Option<usize>,
     preview_buffer_delay_value_label: Option<usize>,
+    preview_buffer_delay_slider: Option<usize>,
     preview_typing_cps_value_label: Option<usize>,
+    preview_typing_cps_slider: Option<usize>,
     preview_emit_words_max_value_label: Option<usize>,
+    preview_emit_words_max_slider: Option<usize>,
     preview_interim_sec_value_label: Option<usize>,
+    preview_interim_sec_slider: Option<usize>,
     preview_timing_summary_label: Option<usize>,
     preview_timing_text_view: Option<usize>,
+    preview_preset_segment: Option<usize>,
+    preview_env_override_label: Option<usize>,
+    preview_advanced_button: Option<usize>,
+    preview_advanced_rows: Vec<usize>,
+    preview_advanced_expanded: bool,
     config_cache: Option<Config>,
     // Onboarding additions
     permission_labels: [Option<usize>; 5],
@@ -247,11 +257,20 @@ fn clear_settings_ui_state(state: &mut SettingsWindowState) {
     state.hold_delay_value_label = None;
     state.double_tap_value_label = None;
     state.preview_buffer_delay_value_label = None;
+    state.preview_buffer_delay_slider = None;
     state.preview_typing_cps_value_label = None;
+    state.preview_typing_cps_slider = None;
     state.preview_emit_words_max_value_label = None;
+    state.preview_emit_words_max_slider = None;
     state.preview_interim_sec_value_label = None;
+    state.preview_interim_sec_slider = None;
     state.preview_timing_summary_label = None;
     state.preview_timing_text_view = None;
+    state.preview_preset_segment = None;
+    state.preview_env_override_label = None;
+    state.preview_advanced_button = None;
+    state.preview_advanced_rows.clear();
+    state.preview_advanced_expanded = false;
     state.permission_labels = [None, None, None, None, None];
     state.permission_action_buttons = [None, None, None, None, None];
     state.permission_requested = [false; 5];
@@ -504,11 +523,20 @@ unsafe fn attach_settings_view(parent: Id, frame: core_graphics::geometry::CGRec
         state.hold_delay_value_label = built_state.hold_delay_value_label;
         state.double_tap_value_label = built_state.double_tap_value_label;
         state.preview_buffer_delay_value_label = built_state.preview_buffer_delay_value_label;
+        state.preview_buffer_delay_slider = built_state.preview_buffer_delay_slider;
         state.preview_typing_cps_value_label = built_state.preview_typing_cps_value_label;
+        state.preview_typing_cps_slider = built_state.preview_typing_cps_slider;
         state.preview_emit_words_max_value_label = built_state.preview_emit_words_max_value_label;
+        state.preview_emit_words_max_slider = built_state.preview_emit_words_max_slider;
         state.preview_interim_sec_value_label = built_state.preview_interim_sec_value_label;
+        state.preview_interim_sec_slider = built_state.preview_interim_sec_slider;
         state.preview_timing_summary_label = built_state.preview_timing_summary_label;
         state.preview_timing_text_view = built_state.preview_timing_text_view;
+        state.preview_preset_segment = built_state.preview_preset_segment;
+        state.preview_env_override_label = built_state.preview_env_override_label;
+        state.preview_advanced_button = built_state.preview_advanced_button;
+        state.preview_advanced_rows = built_state.preview_advanced_rows;
+        state.preview_advanced_expanded = built_state.preview_advanced_expanded;
         state.config_cache = built_state.config_cache;
         state.permission_labels = built_state.permission_labels;
         state.permission_action_buttons = built_state.permission_action_buttons;
@@ -1213,6 +1241,64 @@ mod tests {
             preview_effective_interim_sec(false, 1.2),
             PREVIEW_NO_OVERLAY_MIN_INTERIM_SEC
         );
+    }
+
+    fn model_for_preset(values: PreviewTimingValues) -> PreviewTimingModel {
+        PreviewTimingModel {
+            overlay_enabled: true,
+            buffer_delay_ms: values.buffer_delay_ms,
+            typing_cps: values.typing_cps,
+            emit_words_max: values.emit_words_max,
+            requested_interim_sec: values.interim_sec,
+            effective_interim_sec: values.interim_sec,
+        }
+    }
+
+    #[test]
+    fn preview_preset_values_anchor_smooth_operator_default() {
+        let smooth = preset_values(PreviewTimingPreset::Smooth).expect("smooth preset has values");
+        assert_eq!(smooth.buffer_delay_ms, 1038);
+        assert!((smooth.typing_cps - 10.6).abs() < f32::EPSILON);
+        assert_eq!(smooth.emit_words_max, 5);
+        assert!((smooth.interim_sec - 8.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn preview_detect_preset_recognizes_presets_and_custom() {
+        for preset in [
+            PreviewTimingPreset::Smooth,
+            PreviewTimingPreset::Snappy,
+            PreviewTimingPreset::Relaxed,
+        ] {
+            let values = preset_values(preset).expect("timing preset has values");
+            assert_eq!(detect_preset(model_for_preset(values)), preset);
+        }
+
+        let smooth = preset_values(PreviewTimingPreset::Smooth).expect("smooth preset has values");
+        let off_model = PreviewTimingModel {
+            overlay_enabled: false,
+            ..model_for_preset(smooth)
+        };
+        assert_eq!(detect_preset(off_model), PreviewTimingPreset::Off);
+
+        let custom_model = PreviewTimingModel {
+            buffer_delay_ms: smooth.buffer_delay_ms + 25,
+            ..model_for_preset(smooth)
+        };
+        assert_eq!(detect_preset(custom_model), PreviewTimingPreset::Custom);
+    }
+
+    #[test]
+    fn preview_detect_preset_allows_small_tolerance() {
+        let smooth = preset_values(PreviewTimingPreset::Smooth).expect("smooth preset has values");
+        let near_smooth = PreviewTimingModel {
+            buffer_delay_ms: smooth.buffer_delay_ms + 5,
+            typing_cps: smooth.typing_cps + 0.1,
+            requested_interim_sec: smooth.interim_sec - 0.1,
+            effective_interim_sec: smooth.interim_sec - 0.1,
+            ..model_for_preset(smooth)
+        };
+        assert_eq!(detect_preset(near_smooth), PreviewTimingPreset::Smooth);
     }
 
     #[test]
