@@ -1,6 +1,7 @@
 pub mod clipboard;
 pub mod filesystem;
 pub mod github;
+pub mod mcp;
 pub mod screenshot;
 pub mod selection;
 pub mod typing;
@@ -8,6 +9,11 @@ pub mod typing;
 use codescribe_core::agent::ToolRegistry;
 
 pub fn register_all_tools(registry: &mut ToolRegistry) {
+    register_native_tools(registry);
+    mcp::register(registry);
+}
+
+fn register_native_tools(registry: &mut ToolRegistry) {
     screenshot::register(registry);
     clipboard::register(registry);
     selection::register(registry);
@@ -23,7 +29,7 @@ mod tests {
     #[test]
     fn register_all_tools_registers_expected_names() {
         let mut registry = ToolRegistry::new();
-        register_all_tools(&mut registry);
+        register_native_tools(&mut registry);
 
         let mut names = registry
             .definitions()

@@ -47,6 +47,7 @@ pub mod embedder;
 mod hf_cache;
 pub mod ipc;
 pub mod llm;
+pub mod mcp;
 pub mod pipeline;
 pub mod quality;
 pub mod state;
