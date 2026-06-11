@@ -23,7 +23,7 @@ use super::{
     on_ultra_quality_toggled, on_volume_changed, switch_tab,
 };
 
-pub type Id = *mut Object;
+pub use crate::ui_helpers::Id;
 
 static ACTION_HANDLER_INIT: Once = Once::new();
 static mut ACTION_HANDLER_CLASS: *const Class = std::ptr::null();
