@@ -74,6 +74,10 @@ fn chat_content_height_under_header(
     (content_height - footer_height - content_gap).max(0.0)
 }
 
+fn chat_scroll_inset_above_input(input_height: f64, inner_pad: f64, content_gap: f64) -> f64 {
+    (input_height + inner_pad + content_gap).max(0.0)
+}
+
 pub(super) fn shortcuts_lines(bindings: ModeHotkeyBindings) -> (String, String) {
     let hold_line = match bindings.dictation {
         ShortcutBinding::HoldFn => "Hold Fn — record • Fn+Shift — chat • Fn+Cmd — selection",
@@ -778,14 +782,17 @@ fn show_voice_chat_overlay_impl() {
         ];
         add_subview(sidebar_view, drawer_edge_effect);
 
-        // Agent scroll view + stack
-        let agent_scroll_frame_bottom = agent_input_height + inner_pad + content_gap;
+        // Agent scroll view + stack — full-bleed to the pane bottom so messages
+        // scroll beneath the floating input bar; the bottom content inset keeps
+        // the last bubble clear of it (mirrors the header inset above).
+        let agent_scroll_inset_bottom =
+            chat_scroll_inset_above_input(agent_input_height, inner_pad, content_gap);
         let agent_scroll_frame_top = (content_frame.size.height - inner_pad).max(0.0);
         let agent_scroll_frame = CGRect::new(
-            &CGPoint::new(inner_pad, agent_scroll_frame_bottom),
+            &CGPoint::new(inner_pad, 0.0),
             &CGSize::new(
                 (content_frame.size.width - inner_pad * 2.0).max(0.0),
-                (agent_scroll_frame_top - agent_scroll_frame_bottom).max(0.0),
+                agent_scroll_frame_top,
             ),
         );
         let agent_scroll: Id = msg_send![ns_scroll, alloc];
@@ -799,7 +806,7 @@ fn show_voice_chat_overlay_impl() {
         let agent_insets = NSEdgeInsets {
             top: header_height,
             left: 0.0,
-            bottom: 0.0,
+            bottom: agent_scroll_inset_bottom,
             right: 0.0,
         };
         let _: () = msg_send![agent_scroll, setContentInsets: agent_insets];
@@ -901,6 +908,22 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![input_bar, setWantsLayer: true];
         let _: () =
             msg_send![input_bar, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN];
+        // Glass backing so messages scrolling beneath stay readable through the
+        // blur; the bar layer's masksToBounds clips it to the tafla corners.
+        let input_glass = create_glass_effect_view_with(
+            CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(input_frame.size.width, agent_input_height),
+            ),
+            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectBlendingMode::WithinWindow,
+            NSVisualEffectState::Active,
+        );
+        let _: () = msg_send![
+            input_glass,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
+        ];
+        let _: () = msg_send![input_bar, addSubview: input_glass];
         let drag_types: Id = msg_send![ns_mut_array, array];
         let _: () = msg_send![drag_types, addObject: ns_string("public.file-url")];
         let _: () = msg_send![drag_types, addObject: ns_string("NSFilenamesPboardType")];
@@ -1214,5 +1237,22 @@ mod tests {
 
         assert_eq!(under_header, 646.0);
         assert_eq!(under_header - old_below_header, header_height + content_gap);
+    }
+
+    #[test]
+    fn chat_scroll_extends_under_input_bar() {
+        let agent_input_height = 44.0;
+        let inner_pad = 12.0;
+        let content_gap = 10.0;
+
+        let inset = chat_scroll_inset_above_input(agent_input_height, inner_pad, content_gap);
+        let old_frame_bottom = agent_input_height + inner_pad + content_gap;
+
+        // The frame now starts at the pane bottom (y = 0); the bottom inset
+        // equals the old frame bottom, so messages gained exactly that much
+        // scroll-under room without losing clearance above the input bar.
+        assert_eq!(inset, 66.0);
+        assert_eq!(inset, old_frame_bottom);
+        assert_eq!(chat_scroll_inset_above_input(-100.0, 12.0, 10.0), 0.0);
     }
 }

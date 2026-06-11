@@ -1053,15 +1053,17 @@ pub fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
         let current_bar: CGRect = msg_send![input_bar, frame];
         let height_same = (current_bar.size.height - desired_h).abs() < 0.5;
         let width_same = (current_bar.size.width - bar_width).abs() < 0.5;
-        // Check if agent scroll frame needs updating (e.g. chip strip toggled).
-        // We compare the actual frame origin against the expected bottom rather
-        // than checking visibility flags, because setHidden may have already been
-        // called (by render_attachment_chips_locked) before we get here — making
-        // the visibility flag look "stable" even though the scroll frame hasn't
-        // been adjusted yet.
+        // Check if the agent scroll bottom inset needs updating (e.g. chip strip
+        // toggled). The scroll frame is full-bleed (messages pass beneath the
+        // input bar), so the inset — not the frame origin — carries the layout.
+        // We compare against the actual inset rather than visibility flags,
+        // because setHidden may have already been called (by
+        // render_attachment_chips_locked) before we get here — making the
+        // visibility flag look "stable" even though the inset hasn't been
+        // adjusted yet.
         let scroll_needs_reflow = if let Some(agent_scroll_ptr) = state.agent_scroll_view {
             let agent_scroll = agent_scroll_ptr as Id;
-            let current_frame: CGRect = msg_send![agent_scroll, frame];
+            let current_insets: NSEdgeInsets = msg_send![agent_scroll, contentInsets];
             let strip_extra = if let Some(strip_ptr) = state.attachment_chip_strip {
                 let strip = strip_ptr as Id;
                 let strip_visible: bool = !msg_send![strip, isHidden];
@@ -1074,7 +1076,7 @@ pub fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
                 0.0
             };
             let expected_bottom = footer_inset + desired_h + input_gap + strip_extra;
-            (current_frame.origin.y - expected_bottom).abs() > 0.5
+            (current_insets.bottom - expected_bottom).abs() > 0.5
         } else {
             false
         };
@@ -1128,19 +1130,21 @@ pub fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
             0.0
         };
 
-        // Resize Agent scroll view so it doesn't overlap with input + chips.
+        // Keep the agent scroll full-bleed and track input + chips with the
+        // bottom content inset, so messages scroll beneath the input bar while
+        // the last bubble stays clear of it.
         if let Some(agent_scroll_ptr) = state.agent_scroll_view {
             let agent_scroll = agent_scroll_ptr as Id;
-            let bottom = footer_inset + desired_h + input_gap + chip_strip_extra;
+            let inset_bottom = footer_inset + desired_h + input_gap + chip_strip_extra;
             let top = content_height - gap;
             let new_agent_frame = CGRect::new(
-                &CGPoint::new(pad, bottom),
-                &CGSize::new(
-                    (content_width - pad * 2.0).max(0.0),
-                    (top - bottom).max(0.0),
-                ),
+                &CGPoint::new(pad, 0.0),
+                &CGSize::new((content_width - pad * 2.0).max(0.0), top.max(0.0)),
             );
             let _: () = msg_send![agent_scroll, setFrame: new_agent_frame];
+            let mut agent_insets: NSEdgeInsets = msg_send![agent_scroll, contentInsets];
+            agent_insets.bottom = inset_bottom;
+            let _: () = msg_send![agent_scroll, setContentInsets: agent_insets];
 
             if let Some(container_ptr) = state.agent_container {
                 let container = container_ptr as Id;
