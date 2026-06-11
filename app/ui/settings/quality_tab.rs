@@ -49,6 +49,7 @@ pub(super) unsafe fn build_quality_tab(
         add_subview(container, subtitle);
         y -= 16.0 + gap;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 142.0);
         let engine_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Final Transcript Path".to_string(),
@@ -135,6 +136,7 @@ pub(super) unsafe fn build_quality_tab(
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 376.0);
         let preview_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Preview Timing".to_string(),

@@ -47,6 +47,7 @@ pub(super) unsafe fn build_engine_tab(
         add_subview(container, subtitle);
         y -= 16.0 + ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 172.0);
         let runtime_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Runtime Truth".to_string(),
@@ -105,12 +106,13 @@ pub(super) unsafe fn build_engine_tab(
             ),
         ];
         for (label, value, color) in runtime_rows {
-            add_engine_metric_row(container, &mut y, pad, content_w, label, &value, color, gap);
+            add_engine_metric_row(container, &mut y, pad, content_w, label, &value, color);
         }
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 170.0);
         let matrix_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Permission Matrix".to_string(),
@@ -150,6 +152,7 @@ pub(super) unsafe fn build_engine_tab(
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 118.0);
         let conflicts_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Hotkey Conflicts".to_string(),
@@ -220,6 +223,7 @@ pub(super) unsafe fn build_engine_tab(
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 140.0);
         let dashboard_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Quality Daemon".to_string(),
@@ -245,7 +249,6 @@ pub(super) unsafe fn build_engine_tab(
             } else {
                 ui_colors::status_warning()
             },
-            gap,
         ));
         state.quality_pending_label = Some(add_engine_metric_row(
             container,
@@ -259,7 +262,6 @@ pub(super) unsafe fn build_engine_tab(
             } else {
                 secondary
             },
-            gap,
         ));
         state.quality_last_check_label = Some(add_engine_metric_row(
             container,
@@ -269,7 +271,6 @@ pub(super) unsafe fn build_engine_tab(
             "Last check:",
             &quality_last_check_text(&daemon_state.last_check),
             secondary,
-            gap,
         ));
         state.qube_report_label = Some(add_engine_metric_row(
             container,
@@ -279,7 +280,6 @@ pub(super) unsafe fn build_engine_tab(
             "Latest report:",
             &qube_report_text(daemon_state),
             secondary,
-            gap,
         ));
 
         let refresh_btn = create_button(
@@ -315,7 +315,6 @@ fn add_engine_metric_row(
     label: &str,
     value: &str,
     value_color: Id,
-    gap: f64,
 ) -> usize {
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     let label_view = create_label(LabelConfig {
@@ -344,6 +343,6 @@ fn add_engine_metric_row(
     unsafe {
         add_subview(container, value_view);
     }
-    *y -= 18.0 + gap;
+    *y -= 18.0 + ui_tokens::DENSITY_COMFORTABLE;
     value_view as usize
 }

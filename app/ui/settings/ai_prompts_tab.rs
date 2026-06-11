@@ -22,8 +22,6 @@ pub(super) unsafe fn build_ai_prompts_tab(
         let mut y = frame.size.height - (24.0 + gap);
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
-        let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
-
         let title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
             text: "User".to_string(),
@@ -40,7 +38,7 @@ pub(super) unsafe fn build_ai_prompts_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Slow-moving user choices, AI formatting, provider keys, and prompt editing."
+            text: "Slow-moving user choices, AI formatting preference, and prompt editing."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -49,6 +47,7 @@ pub(super) unsafe fn build_ai_prompts_tab(
         add_subview(container, subtitle);
         y -= 16.0 + gap;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 198.0);
         let user_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "User Toggles".to_string(),
@@ -149,6 +148,7 @@ pub(super) unsafe fn build_ai_prompts_tab(
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 104.0);
         let fmt_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Formatting AI (optional)".to_string(),
@@ -208,208 +208,6 @@ pub(super) unsafe fn build_ai_prompts_tab(
         add_subview(container, fmt_popup);
         y -= 24.0 + gap;
 
-        let llm_endpoint_val = std::env::var("LLM_FORMATTING_ENDPOINT")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_default();
-        let llm_endpoint_field = create_text_input(
-            CGRect::new(
-                &CGPoint::new(pad, y),
-                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
-            ),
-            "Endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
-            &llm_endpoint_val,
-        );
-        style_paper_input(llm_endpoint_field);
-        let _: () = msg_send![llm_endpoint_field, setFont: mono_font_input];
-        button_set_action(
-            llm_endpoint_field,
-            action_handler,
-            sel!(onLlmEndpointChanged:),
-        );
-        add_subview(container, llm_endpoint_field);
-        state.llm_endpoint_field = Some(llm_endpoint_field as usize);
-        y -= SETTINGS_INPUT_HEIGHT + gap;
-
-        let llm_model_val = std::env::var("LLM_FORMATTING_MODEL")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_default();
-        let llm_model_field = create_text_input(
-            CGRect::new(
-                &CGPoint::new(pad, y),
-                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
-            ),
-            "Model (e.g. programmer)",
-            &llm_model_val,
-        );
-        style_paper_input(llm_model_field);
-        let _: () = msg_send![llm_model_field, setFont: mono_font_input];
-        button_set_action(llm_model_field, action_handler, sel!(onLlmModelChanged:));
-        add_subview(container, llm_model_field);
-        state.llm_model_field = Some(llm_model_field as usize);
-        y -= SETTINGS_INPUT_HEIGHT + gap;
-
-        let llm_key_field = create_secure_text_input(
-            CGRect::new(
-                &CGPoint::new(pad, y),
-                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
-            ),
-            "API Key (stored in Keychain)",
-        );
-        style_paper_input(llm_key_field);
-        let _: () = msg_send![llm_key_field, setFont: mono_font_input];
-        button_set_action(llm_key_field, action_handler, sel!(onLlmKeyChanged:));
-        add_subview(container, llm_key_field);
-        state.llm_key_field = Some(llm_key_field as usize);
-        y -= SETTINGS_INPUT_HEIGHT + gap;
-
-        let llm_key_status = formatting_key_is_set();
-        let llm_status_icon = create_key_status_indicator(
-            CGRect::new(
-                &CGPoint::new(pad, y + 1.0),
-                &CGSize::new(KEY_STATUS_ICON_SIZE, KEY_STATUS_ICON_SIZE),
-            ),
-            llm_key_status,
-        );
-        add_subview(container, llm_status_icon);
-        state.llm_key_status_icon = Some(llm_status_icon as usize);
-
-        let llm_status_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(pad + KEY_STATUS_ICON_SIZE + 6.0, y),
-                &CGSize::new(content_w - KEY_STATUS_ICON_SIZE - 6.0, 16.0),
-            ),
-            text: key_status_text(llm_key_status).to_string(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            text_color: key_status_color(llm_key_status),
-            ..Default::default()
-        });
-        add_subview(container, llm_status_label);
-        state.llm_key_status_label = Some(llm_status_label as usize);
-        y -= 16.0 + gap;
-
-        // Section divider + extra gap before Assistive AI section
-        y = add_tafla_header_separator(container, pad, y, content_w);
-        y -= ui_tokens::SECTION_GAP;
-
-        let assist_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
-            text: "Assistive AI (agent chat)".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: secondary,
-            ..Default::default()
-        });
-        add_subview(container, assist_header);
-        y -= 18.0 + gap;
-
-        let assist_endpoint_val = std::env::var("LLM_ASSISTIVE_ENDPOINT").unwrap_or_default();
-        let assist_endpoint_field = create_text_input(
-            CGRect::new(
-                &CGPoint::new(pad, y),
-                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
-            ),
-            "Endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
-            &assist_endpoint_val,
-        );
-        style_paper_input(assist_endpoint_field);
-        let _: () = msg_send![assist_endpoint_field, setFont: mono_font_input];
-        button_set_action(
-            assist_endpoint_field,
-            action_handler,
-            sel!(onAssistiveEndpointChanged:),
-        );
-        add_subview(container, assist_endpoint_field);
-        state.assistive_endpoint_field = Some(assist_endpoint_field as usize);
-        y -= SETTINGS_INPUT_HEIGHT + gap;
-
-        let assist_model_val = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_default();
-        let assist_model_field = create_text_input(
-            CGRect::new(
-                &CGPoint::new(pad, y),
-                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
-            ),
-            "Model (e.g. programmer)",
-            &assist_model_val,
-        );
-        style_paper_input(assist_model_field);
-        let _: () = msg_send![assist_model_field, setFont: mono_font_input];
-        button_set_action(
-            assist_model_field,
-            action_handler,
-            sel!(onAssistiveModelChanged:),
-        );
-        add_subview(container, assist_model_field);
-        state.assistive_model_field = Some(assist_model_field as usize);
-        y -= SETTINGS_INPUT_HEIGHT + gap;
-
-        let assist_key_field = create_secure_text_input(
-            CGRect::new(
-                &CGPoint::new(pad, y),
-                &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
-            ),
-            "API Key (stored in Keychain)",
-        );
-        style_paper_input(assist_key_field);
-        let _: () = msg_send![assist_key_field, setFont: mono_font_input];
-        button_set_action(
-            assist_key_field,
-            action_handler,
-            sel!(onAssistiveKeyChanged:),
-        );
-        add_subview(container, assist_key_field);
-        state.assistive_key_field = Some(assist_key_field as usize);
-        y -= SETTINGS_INPUT_HEIGHT + gap;
-
-        let assist_key_status = keychain_key_is_set("LLM_ASSISTIVE_API_KEY");
-        let assist_status_icon = create_key_status_indicator(
-            CGRect::new(
-                &CGPoint::new(pad, y + 1.0),
-                &CGSize::new(KEY_STATUS_ICON_SIZE, KEY_STATUS_ICON_SIZE),
-            ),
-            assist_key_status,
-        );
-        add_subview(container, assist_status_icon);
-        state.assistive_key_status_icon = Some(assist_status_icon as usize);
-
-        let assist_status_label = create_label(LabelConfig {
-            frame: CGRect::new(
-                &CGPoint::new(pad + KEY_STATUS_ICON_SIZE + 6.0, y),
-                &CGSize::new(content_w - KEY_STATUS_ICON_SIZE - 6.0, 16.0),
-            ),
-            text: key_status_text(assist_key_status).to_string(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            text_color: key_status_color(assist_key_status),
-            ..Default::default()
-        });
-        add_subview(container, assist_status_label);
-        state.assistive_key_status_label = Some(assist_status_label as usize);
-        y -= 16.0 + gap;
-
-        let save_btn = create_button(
-            CGRect::new(
-                &CGPoint::new(frame.size.width - pad - 90.0, y - 2.0),
-                &CGSize::new(90.0, 24.0),
-            ),
-            "Save AI",
-            button_style::GLASS,
-        );
-        button_set_action(save_btn, action_handler, sel!(onSaveApiSettings:));
-        add_subview(container, save_btn);
-        y -= 24.0 + gap;
-
-        let runtime_hint = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w - 98.0, 16.0)),
-            text: "Save AI persists endpoint/model/key values. Prompt content is edited below."
-                .to_string(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            text_color: secondary,
-            ..Default::default()
-        });
-        add_subview(container, runtime_hint);
-        y -= 16.0 + gap;
-
         let section_divider = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 1.0)),
             text: String::new(),
@@ -420,6 +218,7 @@ pub(super) unsafe fn build_ai_prompts_tab(
         add_subview(container, section_divider);
         y -= ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 312.0);
         let prompt_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Prompt Editor".to_string(),

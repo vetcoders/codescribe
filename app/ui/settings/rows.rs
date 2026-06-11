@@ -70,6 +70,42 @@ pub(super) unsafe fn add_tafla_header_separator(container: Id, x: f64, y: f64, w
     y - 1.0
 }
 
+pub(super) unsafe fn add_settings_group_card(
+    container: Id,
+    x: f64,
+    top_y: f64,
+    width: f64,
+    height: f64,
+) -> Id {
+    let ns_view = objc_class("NSView");
+    let card: Id = msg_send![ns_view, alloc];
+    let card: Id = msg_send![
+        card,
+        initWithFrame: CGRect::new(
+            &CGPoint::new(x, top_y - height),
+            &CGSize::new(width.max(120.0), height.max(44.0)),
+        )
+    ];
+    let _: () = msg_send![card, setWantsLayer: true];
+    let layer: Id = msg_send![card, layer];
+    if !layer.is_null() {
+        let bg = ui_colors::card_bg();
+        let cg_color: Id = msg_send![bg, CGColor];
+        let _: () = msg_send![layer, setBackgroundColor: cg_color];
+        // SAFETY: `layer` belongs to the AppKit card view allocated above on the main thread.
+        unsafe {
+            crate::ui_helpers::apply_tafla_surface(layer, true);
+        }
+        let _: () = msg_send![layer, setMasksToBounds: true];
+        let _: () = msg_send![layer, setShadowRadius: 0.0f64];
+    }
+    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
+    unsafe {
+        add_subview(container, card);
+    }
+    card
+}
+
 pub(super) unsafe fn add_slider_setting_row(
     container: Id,
     action_handler: Id,

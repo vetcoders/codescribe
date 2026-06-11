@@ -48,6 +48,7 @@ pub(super) unsafe fn build_audio_input_tab(
         add_subview(container, subtitle);
         y -= 16.0 + gap;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 244.0);
         // Language dropdown
         let lang_label = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(130.0, 18.0)),

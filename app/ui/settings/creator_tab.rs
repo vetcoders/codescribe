@@ -47,6 +47,7 @@ pub(super) unsafe fn build_creator_tab(
         add_subview(container, subtitle);
         y -= 16.0 + ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 218.0);
         let checklist_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Permission Checklist".to_string(),
@@ -124,6 +125,7 @@ pub(super) unsafe fn build_creator_tab(
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 178.0);
         let quick_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Quick Start".to_string(),
@@ -209,6 +211,7 @@ pub(super) unsafe fn build_creator_tab(
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
+        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 94.0);
         let launch_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Launchpads".to_string(),
