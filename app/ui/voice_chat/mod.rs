@@ -43,15 +43,16 @@ use crate::ui_helpers::{
     apply_shared_shell_panel_policy, apply_tafla_surface, button_set_action, button_style,
     chat_header_layout, chat_input_row_layout, color_secondary_label, create_button,
     create_flipped_vertical_stack_view, create_glass_effect_view_with, create_label,
-    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
-    main_screen_visible_frame, ns_string, present_shared_shell_panel, set_button_symbol,
-    set_focus_ring, set_glass_effect_content_view, set_hidden, set_tooltip,
+    create_scrollable_text_view_with_class, create_vertical_stack_view,
+    layout_region_frame_for_view, main_screen_visible_frame, ns_string, present_shared_shell_panel,
+    set_button_symbol, set_focus_ring, set_glass_effect_content_view, set_hidden, set_tooltip,
     style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha,
 };
 
 use api::update_active_tab_impl;
 use handlers::{
-    action_handler_class, drop_target_view_class, overlay_window_class, window_delegate_class,
+    action_handler_class, agent_input_text_view_class, drop_target_view_class,
+    overlay_window_class, window_delegate_class,
 };
 use state::{OVERLAY_STATE, Tab};
 
@@ -952,8 +953,11 @@ fn show_voice_chat_overlay_impl() {
             &CGPoint::new(input_row.text_x, input_row.text_y),
             &CGSize::new(input_row.text_width, input_row.text_height),
         );
-        let (agent_input_scroll, agent_input_text_view) =
-            create_scrollable_text_view(text_area_frame, true);
+        let (agent_input_scroll, agent_input_text_view) = create_scrollable_text_view_with_class(
+            text_area_frame,
+            true,
+            &*agent_input_text_view_class(),
+        );
         let _: () = msg_send![
             agent_input_scroll,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE

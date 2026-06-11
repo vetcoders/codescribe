@@ -390,6 +390,24 @@ pub extern "C" fn on_chip_copy_path(_this: &Object, _cmd: Sel, sender: Id) {
 // Paste-as-attachment
 // ═══════════════════════════════════════════════════════════
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PasteDisposition {
+    Attachment,
+    TextPaste,
+}
+
+pub(super) fn paste_disposition(
+    has_files: bool,
+    has_image: bool,
+    has_text: bool,
+) -> PasteDisposition {
+    if has_files || (has_image && !has_text) {
+        PasteDisposition::Attachment
+    } else {
+        PasteDisposition::TextPaste
+    }
+}
+
 /// Check the general pasteboard and, if it contains file URLs or a standalone image
 /// (no accompanying text), treat the paste as an attachment instead of text insertion.
 ///
@@ -404,7 +422,7 @@ pub unsafe fn try_paste_as_attachment() -> bool {
 
     // 1. File URLs → always treat as attachments
     let file_paths = extract_paths_from_pasteboard(pasteboard);
-    if !file_paths.is_empty() {
+    if paste_disposition(!file_paths.is_empty(), false, false) == PasteDisposition::Attachment {
         let (btn_ptr, count, names, skipped) = {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             let mut skipped = Vec::new();
@@ -437,7 +455,7 @@ pub unsafe fn try_paste_as_attachment() -> bool {
         || unsafe { pasteboard_has_type(pasteboard, "public.png") };
     let has_text = unsafe { pasteboard_has_type(pasteboard, "public.utf8-plain-text") };
 
-    if has_image && !has_text {
+    if paste_disposition(false, has_image, has_text) == PasteDisposition::Attachment {
         // Read PNG data from pasteboard (try PNG first, then TIFF→PNG conversion)
         if let Some(image_data) = unsafe { read_image_from_pasteboard(pasteboard) } {
             match AttachmentStore::save_clipboard_image(&image_data, "png") {

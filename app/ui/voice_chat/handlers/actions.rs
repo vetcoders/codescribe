@@ -261,9 +261,9 @@ pub extern "C" fn on_do_command_by_selector(
     _text_view: Id,
     selector: Sel,
 ) -> bool {
-    // ── Cmd+V paste interception ──
-    // Intercept paste: to handle file URLs and standalone images as attachments.
-    // Text paste (with or without accompanying image) falls through to default.
+    // ── Defense-in-depth paste interception ──
+    // The Agent input text view overrides paste: for the Edit menu / Cmd+V path.
+    // This delegate hook fires only for key-binding initiated paste commands.
     if selector == sel!(paste:) {
         let handled = unsafe { try_paste_as_attachment() };
         if handled {

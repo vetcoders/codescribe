@@ -34,3 +34,37 @@ fn overlay_window_subclass_keeps_floating_input_keyable() {
     assert_selector_registered(class, sel!(canBecomeKeyWindow), "canBecomeKeyWindow");
     assert_selector_registered(class, sel!(canBecomeMainWindow), "canBecomeMainWindow");
 }
+
+#[test]
+fn agent_input_text_view_overrides_paste() {
+    let class = agent_input_text_view_class();
+    assert!(
+        !class.is_null(),
+        "VoiceChatAgentInputTextView class should be registered"
+    );
+
+    assert_selector_registered(class, sel!(paste:), "paste:");
+}
+
+#[test]
+fn paste_disposition_matches_attachment_policy() {
+    use PasteDisposition::{Attachment, TextPaste};
+
+    let cases = [
+        (true, false, false, Attachment),
+        (true, true, false, Attachment),
+        (true, true, true, Attachment),
+        (false, true, false, Attachment),
+        (false, false, false, TextPaste),
+        (false, false, true, TextPaste),
+        (false, true, true, TextPaste),
+    ];
+
+    for (has_files, has_image, has_text, expected) in cases {
+        assert_eq!(
+            paste_disposition(has_files, has_image, has_text),
+            expected,
+            "has_files={has_files}, has_image={has_image}, has_text={has_text}"
+        );
+    }
+}

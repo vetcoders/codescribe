@@ -449,9 +449,18 @@ pub fn create_card_view(frame: CGRect, title: &str, subtitle: &str, preview: &st
 
 /// Create a scroll view with embedded text view for multi-line text display
 pub fn create_scrollable_text_view(frame: CGRect, editable: bool) -> (Id, Id) {
+    let ns_text_view = Class::get("NSTextView").expect("NSTextView class missing");
+    create_scrollable_text_view_with_class(frame, editable, ns_text_view)
+}
+
+/// Create a scroll view with embedded text view using a caller-provided NSTextView subclass.
+pub fn create_scrollable_text_view_with_class(
+    frame: CGRect,
+    editable: bool,
+    text_view_class: &'static Class,
+) -> (Id, Id) {
     unsafe {
         let ns_scroll_view = Class::get("NSScrollView").unwrap();
-        let ns_text_view = Class::get("NSTextView").unwrap();
         let ns_color = Class::get("NSColor").unwrap();
 
         // Create scroll view
@@ -471,7 +480,7 @@ pub fn create_scrollable_text_view(frame: CGRect, editable: bool) -> (Id, Id) {
             &CGPoint::new(0.0, 0.0),
             &CGSize::new(frame.size.width, frame.size.height),
         );
-        let text_view: Id = msg_send![ns_text_view, alloc];
+        let text_view: Id = msg_send![text_view_class, alloc];
         let text_view: Id = msg_send![text_view, initWithFrame: text_frame];
 
         let _: () = msg_send![text_view, setEditable: editable];

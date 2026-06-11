@@ -12,6 +12,8 @@ static WINDOW_DELEGATE_INIT: Once = Once::new();
 static mut WINDOW_DELEGATE_CLASS: *const Class = std::ptr::null();
 static OVERLAY_WINDOW_INIT: Once = Once::new();
 static mut OVERLAY_WINDOW_CLASS: *const Class = std::ptr::null();
+static AGENT_INPUT_TEXT_VIEW_INIT: Once = Once::new();
+static mut AGENT_INPUT_TEXT_VIEW_CLASS: *const Class = std::ptr::null();
 static DROP_TARGET_INIT: Once = Once::new();
 static mut DROP_TARGET_CLASS: *const Class = std::ptr::null();
 #[repr(C)]
@@ -352,6 +354,39 @@ pub fn overlay_window_class() -> *const Class {
             OVERLAY_WINDOW_CLASS = cls;
         });
         OVERLAY_WINDOW_CLASS
+    }
+}
+
+/// NSTextView subclass for the Agent input bar.
+///
+/// The Edit menu dispatches Cmd+V as `paste:` directly through the responder
+/// chain, bypassing `textView:doCommandBySelector:`. Override `paste:` here so
+/// file URLs and standalone clipboard images reach the attachment interceptor.
+pub fn agent_input_text_view_class() -> *const Class {
+    unsafe {
+        AGENT_INPUT_TEXT_VIEW_INIT.call_once(|| {
+            let superclass = Class::get("NSTextView").expect("NSTextView not found");
+            let mut decl = ClassDecl::new("VoiceChatAgentInputTextView", superclass)
+                .expect("Failed to declare agent input text view class");
+            decl.add_method(
+                sel!(paste:),
+                on_agent_input_paste as extern "C" fn(&Object, Sel, Id),
+            );
+            let cls = decl.register();
+            AGENT_INPUT_TEXT_VIEW_CLASS = cls;
+        });
+        AGENT_INPUT_TEXT_VIEW_CLASS
+    }
+}
+
+pub extern "C" fn on_agent_input_paste(this: &Object, _cmd: Sel, sender: Id) {
+    unsafe {
+        if try_paste_as_attachment() {
+            return;
+        }
+
+        let superclass = Class::get("NSTextView").expect("NSTextView not found");
+        let _: () = msg_send![super(this, superclass), paste: sender];
     }
 }
 
