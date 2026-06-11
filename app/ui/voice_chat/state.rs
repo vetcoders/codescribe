@@ -147,6 +147,8 @@ pub struct VoiceChatOverlayState {
     pub agent_container: Option<usize>,
     pub agent_bubble_views: Vec<(usize, usize)>,
     pub agent_bubble_click_recognizers: Vec<(usize, usize)>,
+    /// Cached document stack height for amortized streaming layout updates.
+    pub cached_agent_stack_height: Option<f64>,
     pub agent_input_bar: Option<usize>,
     pub agent_input_scroll_view: Option<usize>,
     pub agent_input_text_view: Option<usize>,
@@ -244,6 +246,7 @@ impl Default for VoiceChatOverlayState {
             agent_container: None,
             agent_bubble_views: Vec::new(),
             agent_bubble_click_recognizers: Vec::new(),
+            cached_agent_stack_height: None,
             agent_input_bar: None,
             agent_input_scroll_view: None,
             agent_input_text_view: None,

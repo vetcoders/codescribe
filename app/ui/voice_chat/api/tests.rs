@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui_helpers::{BubbleRole, RenderMode, streaming_render_mode};
 use serial_test::serial;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -404,6 +405,47 @@ fn should_autoscroll_follows_pinned_state() {
     assert!(should_autoscroll(true));
     assert!(!should_autoscroll(false));
     assert!(VoiceChatOverlayState::default().scroll_pinned);
+}
+
+#[test]
+fn render_mode_keeps_streaming_plain_and_final_assistant_system_markdown() {
+    assert_eq!(
+        streaming_render_mode(true, BubbleRole::User),
+        RenderMode::Plain
+    );
+    assert_eq!(
+        streaming_render_mode(true, BubbleRole::Assistant),
+        RenderMode::Plain
+    );
+    assert_eq!(
+        streaming_render_mode(true, BubbleRole::System),
+        RenderMode::Plain
+    );
+    assert_eq!(
+        streaming_render_mode(false, BubbleRole::User),
+        RenderMode::Plain
+    );
+    assert_eq!(
+        streaming_render_mode(false, BubbleRole::Assistant),
+        RenderMode::Markdown
+    );
+    assert_eq!(
+        streaming_render_mode(false, BubbleRole::System),
+        RenderMode::Markdown
+    );
+}
+
+#[test]
+fn update_cached_stack_height_applies_last_bubble_delta() {
+    assert_eq!(
+        update_cached_stack_height(40.0, 75.0, Some(200.0)),
+        Some(235.0)
+    );
+    assert_eq!(update_cached_stack_height(40.0, 75.0, None), None);
+    assert_eq!(
+        update_cached_stack_height(120.0, 10.0, Some(50.0)),
+        Some(1.0)
+    );
 }
 
 #[test]

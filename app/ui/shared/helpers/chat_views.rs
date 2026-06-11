@@ -18,6 +18,22 @@ pub enum BubbleRole {
     System,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderMode {
+    Plain,
+    Markdown,
+}
+
+pub fn streaming_render_mode(is_streaming: bool, role: BubbleRole) -> RenderMode {
+    if is_streaming {
+        return RenderMode::Plain;
+    }
+    match role {
+        BubbleRole::Assistant | BubbleRole::System => RenderMode::Markdown,
+        BubbleRole::User => RenderMode::Plain,
+    }
+}
+
 fn is_markdown_table_separator_line(line: &str) -> bool {
     let trimmed = line.trim().trim_matches('|').trim();
     if trimmed.is_empty() || !trimmed.contains('-') {
@@ -423,8 +439,8 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
         let _: () = msg_send![text_label, setTextColor: text_color];
 
         let _: () = msg_send![text_label, setFont: font];
-        let allow_markdown = matches!(config.role, BubbleRole::Assistant | BubbleRole::System);
-        if !(allow_markdown
+        let render_mode = streaming_render_mode(config.is_streaming, config.role);
+        if !(matches!(render_mode, RenderMode::Markdown)
             && should_apply_native_markdown(&display_text)
             && apply_markdown_to_text_field(text_label, &display_text, font))
         {
@@ -655,7 +671,7 @@ pub unsafe fn update_bubble_text(
             text.to_string()
         };
 
-        let allow_markdown = matches!(role, BubbleRole::Assistant | BubbleRole::System);
+        let render_mode = streaming_render_mode(is_streaming, role);
         // Always create a fresh monospace font instead of reading from the label.
         // After markdown parsing, text_label.font may return a system font from
         // the first attributed range, causing cascading degradation on subsequent updates.
@@ -674,7 +690,9 @@ pub unsafe fn update_bubble_text(
             jb_font
         };
         let _: () = msg_send![text_label, setFont: font];
-        if !(allow_markdown
+        // Streaming updates stay on the cheap plain-text path; final Assistant/System
+        // messages are the only path allowed to invoke AppKit Markdown parsing.
+        if !(matches!(render_mode, RenderMode::Markdown)
             && should_apply_native_markdown(&display_text)
             && apply_markdown_to_text_field(text_label, &display_text, font))
         {

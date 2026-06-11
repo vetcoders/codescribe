@@ -1165,6 +1165,7 @@ pub fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
                 // That disables scrolling and makes long agent replies unscrollable.
                 let new_size = CGSize::new(new_agent_frame.size.width, container_frame.size.height);
                 let _: () = msg_send![container, setFrameSize: new_size];
+                state.cached_agent_stack_height = None;
             }
 
             if state.scroll_pinned {

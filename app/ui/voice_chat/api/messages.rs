@@ -540,52 +540,91 @@ pub unsafe fn agent_max_width(state: &VoiceChatOverlayState) -> f64 {
     width.max(240.0)
 }
 
-pub unsafe fn sync_agent_document_view_size(state: &VoiceChatOverlayState, max_width: f64) {
+pub fn update_cached_stack_height(
+    old_height: f64,
+    new_height: f64,
+    cached_height: Option<f64>,
+) -> Option<f64> {
+    cached_height.map(|height| (height - old_height.max(0.0) + new_height.max(0.0)).max(1.0))
+}
+
+unsafe fn view_height(view: Id) -> f64 {
+    unsafe {
+        let frame: CGRect = msg_send![view, frame];
+        frame.size.height.max(0.0)
+    }
+}
+
+unsafe fn measure_agent_stack_height(container: Id) -> f64 {
+    unsafe {
+        // Ensure arrangedSubviews frames are up-to-date before measuring.
+        let _: () = msg_send![container, setNeedsLayout: true];
+        let _: () = msg_send![container, layoutSubtreeIfNeeded];
+
+        // Prefer AppKit's own fittingSize; it accounts for stack layout and avoids cases where
+        // arrangedSubviews frames lag behind until interaction (which would make scroll "dead").
+        let fitting: CGSize = msg_send![container, fittingSize];
+        let mut total_h = fitting.height.max(1.0);
+
+        // Defensive: also sum arranged subview heights + spacing, and take the max.
+        let arranged: Id = msg_send![container, arrangedSubviews];
+        if !arranged.is_null() {
+            let count: usize = msg_send![arranged, count];
+            let spacing: f64 = msg_send![container, spacing];
+            let mut sum_h = 0.0;
+            for i in 0..count {
+                let v: Id = msg_send![arranged, objectAtIndex: i];
+                if v.is_null() {
+                    continue;
+                }
+                let frame: CGRect = msg_send![v, frame];
+                sum_h += frame.size.height.max(0.0);
+                if i + 1 < count {
+                    sum_h += spacing;
+                }
+            }
+            total_h = total_h.max(sum_h.max(1.0));
+        }
+
+        total_h
+    }
+}
+
+pub unsafe fn sync_agent_document_view_size(
+    state: &mut VoiceChatOverlayState,
+    max_width: f64,
+    streaming_height_delta: Option<(f64, f64)>,
+) {
     let Some(container_ptr) = state.agent_container else {
         return;
     };
     let container = container_ptr as Id;
 
-    // Ensure arrangedSubviews frames are up-to-date before measuring.
-    let _: () = msg_send![container, setNeedsLayout: true];
-    let _: () = msg_send![container, layoutSubtreeIfNeeded];
+    let total_h = if let Some((old_height, new_height)) = streaming_height_delta
+        && let Some(cached) =
+            update_cached_stack_height(old_height, new_height, state.cached_agent_stack_height)
+    {
+        state.cached_agent_stack_height = Some(cached);
+        cached
+    } else {
+        let measured = unsafe { measure_agent_stack_height(container) };
+        state.cached_agent_stack_height = Some(measured);
+        measured
+    };
 
-    // Prefer AppKit's own fittingSize; it accounts for stack layout and avoids cases where
-    // arrangedSubviews frames lag behind until interaction (which would make scroll "dead").
-    let fitting: CGSize = msg_send![container, fittingSize];
-    let mut total_h = fitting.height.max(1.0);
+    unsafe {
+        let _: () = msg_send![container, setFrameSize: CGSize::new(max_width, total_h)];
+        let _: () = msg_send![container, setNeedsLayout: true];
+        let _: () = msg_send![container, layoutSubtreeIfNeeded];
 
-    // Defensive: also sum arranged subview heights + spacing, and take the max.
-    let arranged: Id = msg_send![container, arrangedSubviews];
-    if !arranged.is_null() {
-        let count: usize = msg_send![arranged, count];
-        let spacing: f64 = msg_send![container, spacing];
-        let mut sum_h = 0.0;
-        for i in 0..count {
-            let v: Id = msg_send![arranged, objectAtIndex: i];
-            if v.is_null() {
-                continue;
+        // Ensure the scroll view updates its clip view after the document view changes size.
+        if let Some(scroll_view_ptr) = state.agent_scroll_view {
+            let scroll_view = scroll_view_ptr as Id;
+            let _: () = msg_send![scroll_view, tile];
+            let content_view: Id = msg_send![scroll_view, contentView];
+            if !content_view.is_null() {
+                let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
             }
-            let frame: CGRect = msg_send![v, frame];
-            sum_h += frame.size.height.max(0.0);
-            if i + 1 < count {
-                sum_h += spacing;
-            }
-        }
-        total_h = total_h.max(sum_h.max(1.0));
-    }
-
-    let _: () = msg_send![container, setFrameSize: CGSize::new(max_width, total_h)];
-    let _: () = msg_send![container, setNeedsLayout: true];
-    let _: () = msg_send![container, layoutSubtreeIfNeeded];
-
-    // Ensure the scroll view updates its clip view after the document view changes size.
-    if let Some(scroll_view_ptr) = state.agent_scroll_view {
-        let scroll_view = scroll_view_ptr as Id;
-        let _: () = msg_send![scroll_view, tile];
-        let content_view: Id = msg_send![scroll_view, contentView];
-        if !content_view.is_null() {
-            let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
         }
     }
 }
@@ -605,6 +644,7 @@ pub fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index
 
         let container = bubble_ptr as Id;
         let label = label_ptr as Id;
+        let old_container_height = view_height(container);
         let bubble_text = bubble_text_for_message(message);
         let bubble_is_streaming = bubble_streaming_for_message(message);
         let bubble_role = match message.role {
@@ -622,8 +662,15 @@ pub fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index
         );
         let display_text = display_text_for_message(message);
         resize_bubble_container_for_text(container, label, &display_text);
+        let new_container_height = view_height(container);
+        let last_streaming_bubble_delta =
+            if bubble_is_streaming && index + 1 == state.agent_bubble_views.len() {
+                Some((old_container_height, new_container_height))
+            } else {
+                None
+            };
         let max_width = agent_max_width(state);
-        sync_agent_document_view_size(state, max_width);
+        sync_agent_document_view_size(state, max_width, last_streaming_bubble_delta);
 
         update_latest_pill_visibility(state);
 
@@ -925,6 +972,7 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
         release_agent_bubble_click_recognizers(state);
         stack_view_clear(container);
         state.agent_bubble_views.clear();
+        state.cached_agent_stack_height = None;
 
         // Size bubbles to the current visible content width (supports resizable overlay).
         let max_width = agent_max_width(state);
@@ -997,7 +1045,7 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
 
         // Ensure the document view size matches its arranged subviews; otherwise scrolling can
         // be disabled and long messages will just "grow" out of view.
-        sync_agent_document_view_size(state, max_width);
+        sync_agent_document_view_size(state, max_width, None);
 
         update_latest_pill_visibility(state);
 
