@@ -115,20 +115,40 @@ fn runtime_contract_blocks_legacy_delta_callback_api() {
 
 #[test]
 fn runtime_contract_blocks_legacy_worker_symbols() {
-    let guarded_files = [
-        "core/audio/streaming_recorder.rs",
-        "core/pipeline/streaming.rs",
-        "app/controller/mod.rs",
-        "bin/codescribe.rs",
-    ];
     let banned_symbols = ["VadWorker", "LegacyVadWorker", "TranscriptionWorker"];
 
-    for relative_path in guarded_files {
-        let source = read_workspace_source(relative_path);
+    let mut guarded_sources: Vec<(String, String)> = [
+        "core/audio/streaming_recorder.rs",
+        "app/controller/mod.rs",
+        "bin/codescribe.rs",
+    ]
+    .into_iter()
+    .map(|relative_path| {
+        (
+            relative_path.to_string(),
+            read_workspace_source(relative_path),
+        )
+    })
+    .collect();
+
+    // The streaming pipeline is a module directory after decomposition; guard
+    // every Rust file inside it so new submodules stay covered automatically.
+    let streaming_dir = workspace_root().join("core/pipeline/streaming");
+    for entry in fs::read_dir(&streaming_dir).expect("streaming module directory must exist") {
+        let path = entry.expect("readable streaming dir entry").path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            let display = path.display().to_string();
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("failed to read {display}: {err}"));
+            guarded_sources.push((display, source));
+        }
+    }
+
+    for (name, source) in guarded_sources {
         for banned in banned_symbols {
             assert!(
                 !source.contains(banned),
-                "legacy worker symbol `{banned}` must not appear in {relative_path}"
+                "legacy worker symbol `{banned}` must not appear in {name}"
             );
         }
     }
