@@ -220,6 +220,7 @@ async fn test_toggle_starts_immediately() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_busy_state_ignores_hotkeys() {
     let controller = RecordingController::new();
 
@@ -294,6 +295,7 @@ async fn test_is_recording_states() {
 // - Toggle (no force_ai) → respects AI_FORMATTING_ENABLED setting
 
 #[tokio::test]
+#[serial]
 async fn test_hold_down_sets_force_raw_mode() {
     let controller = RecordingController::new();
 
@@ -912,6 +914,7 @@ fn test_truth_display_status_defaults_to_ready_when_no_signals() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_toggle_press_does_not_set_force_raw_mode() {
     let controller = RecordingController::new();
 
@@ -938,6 +941,7 @@ async fn test_toggle_press_does_not_set_force_raw_mode() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_toggle_press_sets_force_ai_mode() {
     let controller = RecordingController::new();
 
@@ -987,6 +991,7 @@ async fn test_left_double_option_does_not_switch_to_assistive_routing() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hold_with_shift_sets_assistive_not_force_raw() {
     let controller = RecordingController::new();
 
@@ -1013,6 +1018,7 @@ async fn test_hold_with_shift_sets_assistive_not_force_raw() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
     let controller = RecordingController::new();
 
@@ -1055,6 +1061,7 @@ async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hold_up_preserves_mode_flags_when_idle() {
     let controller = RecordingController::new();
 
@@ -1146,6 +1153,7 @@ async fn test_reset_clears_all_mode_flags() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_mode_matrix_coverage() {
     // This test documents all possible mode combinations:
     //

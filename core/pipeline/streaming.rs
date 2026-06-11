@@ -567,6 +567,10 @@ fn classify_partial_trigger(flags: PartialPassTriggerFlags) -> Option<PartialPas
     flags.primary_reason()
 }
 
+// allow(too_many_arguments): hot-path seam between the audio loop and the STT
+// scheduler; 15 discrete knobs are threaded through by design today. The
+// honest fix is a PartialPassCtx struct — deferred to the streaming.rs
+// decomposition cut (tracked in prune report follow-ups).
 #[allow(clippy::too_many_arguments)]
 fn schedule_partial_pass(
     stt_scheduler: &SttScheduler,

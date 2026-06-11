@@ -320,6 +320,9 @@ fn truth_display_status(
     }
 }
 
+// allow(too_many_arguments): verdict aggregates 9 independent recording-truth
+// signals collected at one call site; a params struct would only restate the
+// same nine names. Revisit if call sites multiply.
 #[allow(clippy::too_many_arguments)]
 fn build_truth_verdict(
     raw_text: Option<String>,
@@ -738,6 +741,10 @@ fn should_allow_full_user_bubble_rewrite(
     !skip_user_bubble && !append_mode && !live_stream_session
 }
 
+// FORGOTTEN-GEM(vc-prune 2026-06-10): rewrite-permission policy written and
+// unit-tested below, but never wired into the assistant rewrite path — zero
+// runtime callers. Wire it where full-rewrite is decided or delete it with
+// its tests; operator decision tracked in the forgotten-gems report.
 #[allow(dead_code)]
 fn should_allow_full_assistant_rewrite(append_mode: bool, live_stream_session: bool) -> bool {
     !append_mode && !live_stream_session
@@ -976,7 +983,6 @@ pub struct RecordingController {
     ///
     /// Every cancel/reschedule bumps this value. Spawned tasks compare their
     /// captured generation before/after critical awaits to avoid stale-start races.
-    #[allow(dead_code)]
     hold_start_generation: Arc<AtomicU64>,
     /// Guard flag used to prevent idle-recovery from killing a freshly-starting session.
     start_transition_in_flight: Arc<AtomicBool>,
@@ -1446,7 +1452,6 @@ impl RecordingController {
         recorder.set_event_sink(None);
     }
 
-    #[allow(dead_code)]
     async fn ensure_recorder_ready_for_start(
         recorder: &mut StreamingRecorder,
         context: &str,
@@ -1464,7 +1469,6 @@ impl RecordingController {
         Ok(())
     }
 
-    #[allow(dead_code)]
     async fn reset_session_after_start_failure(&self, context: &str) {
         warn!("{context}: resetting controller flags after failed start");
         self.set_state(State::Idle).await;
@@ -2104,6 +2108,9 @@ impl RecordingController {
     /// The main conversation audio processing loop
     ///
     /// Runs in a background task: captures audio → ConversationEngine → speaker
+    // allow(too_many_arguments): spawn boundary of the conversation loop — each
+    // Arc/channel is moved into the task; bundling into a struct would hide
+    // which shared handles cross the thread boundary.
     #[allow(clippy::too_many_arguments)]
     async fn conversation_audio_loop(
         engine: Arc<Mutex<Option<ConversationEngine>>>,
@@ -3426,6 +3433,9 @@ impl RecordingController {
         result.map(|_| ())
     }
 
+    // allow(too_many_arguments): single-call-site pipeline seam carrying the
+    // stop-recording context; grouping into a struct is planned with the
+    // controller decomposition cut (see prune report follow-ups).
     #[allow(clippy::too_many_arguments)]
     async fn process_stopped_recording(
         &self,

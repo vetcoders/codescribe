@@ -30,7 +30,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 // Type alias for Objective-C object pointers
-pub type Id = *mut Object;
+pub use crate::ui_helpers::Id;
 
 const WINDOW_WIDTH: f64 = 720.0;
 const WINDOW_HEIGHT: f64 = 540.0;
@@ -221,6 +221,9 @@ fn mode_api_key_configured() -> bool {
 ///
 /// Retained for diagnostics and possible future tooling: the current lock
 /// path uses `flock(2)` and no longer relies on PID liveness to gate access.
+// FORGOTTEN-GEM(vc-prune 2026-06-10): kill(pid,0) liveness probe with no
+// callers — likely intended for onboarding daemon checks that never landed.
+// Wire it or delete it; operator decision tracked in forgotten-gems report.
 #[allow(dead_code)]
 fn process_is_alive(pid: u32) -> bool {
     let result = unsafe { libc::kill(pid as i32, 0) };

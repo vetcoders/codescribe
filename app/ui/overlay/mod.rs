@@ -42,7 +42,7 @@ use objc::runtime::Sel;
 use std::sync::Once;
 
 // Type alias for Objective-C object pointers
-type Id = *mut Object;
+use crate::ui_helpers::Id;
 
 // Window level constants
 const NS_FLOATING_WINDOW_LEVEL: i64 = 3;

@@ -13,8 +13,8 @@ use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
+use objc::runtime::Class;
 use objc::runtime::Sel;
-use objc::runtime::{Class, Object};
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSEvent, NSWindowCollectionBehavior, NSWindowStyleMask,
@@ -29,7 +29,7 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 // Type alias for Objective-C object pointers (compatible with objc crate msg_send!)
-type Id = *mut Object;
+use crate::ui_helpers::Id;
 
 // Accessibility API bindings (use raw pointers compatible with C FFI)
 type AXId = *mut std::ffi::c_void;

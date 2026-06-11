@@ -876,6 +876,13 @@ reload = "rebuild"
 category = "build"
 description = "Skip embedding Whisper model in binary"
 
+[vars.CODESCRIBE_EMBED_WHISPER]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "build"
+description = "Opt-in: embed Whisper model in binary (distribution builds); default loads from HF cache at runtime"
+
 [vars.CODESCRIBE_EMBED_TTS]
 default = "0"
 type = "bool"

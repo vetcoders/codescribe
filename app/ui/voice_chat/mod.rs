@@ -28,7 +28,7 @@ pub use state::{ConversationModeState, VoiceChatOverlayConfig};
 use codescribe_core::config::{Config, OverlayPositionMode};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
-use objc::runtime::{Class, Object};
+use objc::runtime::Class;
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState};
 use std::thread;
@@ -56,7 +56,7 @@ use handlers::{
 use state::{OVERLAY_STATE, Tab};
 
 // Type alias for Objective-C object pointers
-pub type Id = *mut Object;
+pub use crate::ui_helpers::Id;
 
 // NSViewAutoresizingMaskOptions (bitmask)
 const NSVIEW_MIN_X_MARGIN: isize = 1;

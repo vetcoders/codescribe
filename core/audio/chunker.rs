@@ -34,6 +34,9 @@ const SILERO_GATE_MODE: VadGateMode = VadGateMode::Supervisor;
 // ═══════════════════════════════════════════════════════════
 
 pub(crate) enum SpeechEvent {
+    // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+    // legacy buffered-chunk payload of the pre-scheduler speech path. Field is
+    // unread while SpeechMode::Stream is parked; revive or delete together with it.
     #[allow(dead_code)]
     Chunk(Vec<f32>),
     /// Interim utterance slice emitted during long continuous speech to keep streaming responsive.
@@ -44,7 +47,14 @@ pub(crate) enum SpeechEvent {
     UtteranceFinal(Vec<f32>),
 }
 
+// FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+// legacy fixed-chunk streaming mode superseded by the STT scheduler path.
+// Revive-or-delete decision belongs to the operator (forgotten-gems report).
+#[allow(dead_code)]
 pub(crate) enum SpeechMode {
+    // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+    // legacy fixed-chunk streaming mode superseded by the utterance/scheduler
+    // path. Revive-or-delete belongs to the operator (forgotten-gems report).
     #[allow(dead_code)]
     Stream {
         chunk_limit: usize,
@@ -60,10 +70,14 @@ pub(crate) enum SpeechMode {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum VadGateMode {
+    // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+    // legacy VAD gate modes superseded by the Supervisor mode below; kept as
+    // documented fallback semantics until the operator rules on removal.
+    #[allow(dead_code)]
     /// Gate audio before it reaches Whisper (legacy).
     Simple,
+    #[allow(dead_code)]
     /// Silero VAD iter logic as a hard gate (legacy).
     Iter,
     /// Silero VAD is a supervisor: audio always flows, VAD only defines boundaries.
@@ -150,6 +164,8 @@ pub(crate) struct SpeechSession {
 }
 
 impl SpeechSession {
+    // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+    // constructor of the parked SpeechMode::Stream path (see enum above).
     #[allow(dead_code)]
     pub fn new_stream(sample_rate: u32, chunk_duration_sec: f32, overlap_sec: f32) -> Self {
         let config = hardcoded_gate_config();
@@ -1092,6 +1108,9 @@ fn utterance_silence_sec_override() -> Option<f32> {
 // Configuration helpers
 // ═══════════════════════════════════════════════════════════
 
+// FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+// canonical tuned-gate preset retained as reference values for GateConfig
+// regressions; not wired to any runtime path today.
 #[allow(dead_code)]
 pub(crate) fn hardcoded_gate_config() -> GateConfig {
     let vad_cfg = vad::VadConfig::default();

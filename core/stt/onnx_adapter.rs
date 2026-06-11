@@ -174,6 +174,8 @@ pub(crate) fn transcribe_long_with_segments(
 }
 
 /// Transcribe a single chunk via the ONNX engine (blocking lock).
+// FORGOTTEN-GEM(vc-prune 2026-06-10): parked sync transcription contract —
+// see core/stt/mod.rs::candle_transcribe_chunk for the cluster rationale.
 #[allow(dead_code)]
 pub(crate) fn transcribe_chunk(
     audio: &[f32],
@@ -189,6 +191,7 @@ pub(crate) fn transcribe_chunk(
 }
 
 /// Transcribe long audio via the ONNX engine (try_lock) with segment metadata.
+#[allow(dead_code)]
 pub(crate) fn try_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,

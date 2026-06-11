@@ -35,7 +35,7 @@ use super::state::{
 };
 
 // Type alias for Objective-C object pointers
-pub type Id = *mut Object;
+pub use crate::ui_helpers::Id;
 
 // ═══════════════════════════════════════════════════════════
 // Public API

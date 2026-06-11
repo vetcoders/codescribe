@@ -32,7 +32,7 @@ use super::api::{
 use super::state::{ChatRole, OVERLAY_STATE, Tab, VoiceChatOverlayState};
 
 // Type alias for Objective-C object pointers
-pub type Id = *mut Object;
+pub use crate::ui_helpers::Id;
 
 static ACTION_HANDLER_INIT: Once = Once::new();
 static mut ACTION_HANDLER_CLASS: *const Class = std::ptr::null();

@@ -721,7 +721,6 @@ fn ensure_layout_region_guides_for_class(class_name: &str) {
     // ObjC runtime internally casts Imp to the correct signature via selector dispatch.
     // Encoding "@@:" means: return `id`, args `(id self, SEL _cmd)`, which
     // matches `extern "C" fn(&Object, Sel) -> Id`.
-    #[allow(clippy::transmute_ptr_to_ptr)]
     unsafe {
         let imp: objc::runtime::Imp =
             std::mem::transmute(layout_region_guides as extern "C" fn(&Object, Sel) -> Id);
@@ -893,164 +892,6 @@ pub unsafe fn set_visual_effect_state(view: Id, state: NSVisualEffectState) {
         return;
     }
     let _: () = msg_send![view, setState: state];
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core_graphics::geometry::CGPoint;
-    use serial_test::serial;
-
-    #[test]
-    fn markdown_table_detection_handles_common_patterns() {
-        let table = "| Name | Value |\n| ---- | ----- |\n| A | 1 |";
-        assert!(looks_like_markdown_table(table));
-
-        let plain = "line one\nline two\nline three";
-        assert!(!looks_like_markdown_table(plain));
-    }
-
-    #[test]
-    fn native_markdown_is_bypassed_for_chat_bubbles() {
-        let table = "# Report\n\n| Name | Value |\n| ---- | ----- |\n| A | 1 |";
-        assert!(!should_apply_native_markdown(table));
-
-        let inline_markdown = "**bold** `code`";
-        assert!(!should_apply_native_markdown(inline_markdown));
-    }
-
-    #[test]
-    fn chat_header_layout_avoids_cluster_collisions() {
-        let header_w = 450.0;
-        let right_pad = ui_tokens::EDGE_PADDING_TIGHT;
-        let cluster_w =
-            ui_tokens::CHAT_HEADER_BUTTON_SIZE * 5.0 + ui_tokens::CHAT_HEADER_BUTTON_GAP * 4.0;
-        let right_cluster_start_x = header_w - right_pad - cluster_w;
-        let title_x = ui_tokens::EDGE_PADDING_TIGHT;
-        let title_w = ui_tokens::CHAT_TITLE_LABEL_WIDTH;
-
-        let layout = chat_header_layout(title_x, title_w, right_cluster_start_x);
-        let tabs_right =
-            layout.tab_cluster_x + layout.tab_button_width * 3.0 + layout.tab_button_gap * 2.0;
-        assert!(tabs_right <= right_cluster_start_x - ui_tokens::CHAT_HEADER_GROUP_GAP + 0.001);
-        if layout.show_status_pill {
-            assert!(layout.status_pill_x >= tabs_right + ui_tokens::CHAT_HEADER_GROUP_GAP - 0.001);
-            assert!(
-                layout.status_pill_x + layout.status_pill_width
-                    <= right_cluster_start_x - ui_tokens::CHAT_HEADER_GROUP_GAP + 0.001
-            );
-        }
-    }
-
-    #[test]
-    fn chat_header_layout_hides_status_when_space_is_tight() {
-        let layout = chat_header_layout(12.0, ui_tokens::CHAT_TITLE_LABEL_WIDTH, 142.0);
-        assert!(!layout.show_status_pill);
-        let tabs_right =
-            layout.tab_cluster_x + layout.tab_button_width * 3.0 + layout.tab_button_gap * 2.0;
-        assert!(tabs_right <= 142.0 - ui_tokens::CHAT_HEADER_GROUP_GAP + 0.001);
-    }
-
-    #[test]
-    fn chat_header_layout_keeps_status_before_right_cluster() {
-        let right_cluster_start_x = 270.0;
-        let layout = chat_header_layout(
-            86.0,
-            ui_tokens::CHAT_TITLE_LABEL_WIDTH,
-            right_cluster_start_x,
-        );
-        if layout.show_status_pill {
-            let right_anchor = right_cluster_start_x - ui_tokens::CHAT_HEADER_GROUP_GAP;
-            assert!(layout.status_pill_x + layout.status_pill_width <= right_anchor + 0.001);
-        }
-    }
-
-    #[test]
-    fn chat_input_row_layout_keeps_buttons_on_sides() {
-        let layout = chat_input_row_layout(420.0, ui_tokens::AGENT_INPUT_HEIGHT);
-        assert!(
-            layout.attach_x + layout.button_width + ui_tokens::CHAT_INPUT_CONTROL_GAP
-                <= layout.text_x
-        );
-        assert!(
-            layout.text_x + layout.text_width + ui_tokens::CHAT_INPUT_CONTROL_GAP <= layout.send_x
-        );
-    }
-
-    #[test]
-    fn chat_input_row_layout_avoids_overlap_on_narrow_width() {
-        let layout = chat_input_row_layout(140.0, ui_tokens::AGENT_INPUT_HEIGHT);
-        assert!(layout.text_width >= 0.0);
-        assert!(layout.attach_x + layout.button_width <= layout.send_x);
-    }
-
-    #[test]
-    #[serial]
-    #[cfg(target_os = "macos")]
-    fn layout_insets_default_are_non_negative() {
-        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
-            return;
-        }
-        unsafe {
-            let ns_view = Class::get("NSView").unwrap();
-            let view: Id = msg_send![ns_view, alloc];
-            let view: Id = msg_send![
-                view,
-                initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(120.0, 80.0))
-            ];
-            let insets = layout_insets_for_view(view);
-            assert!(insets.left >= 0.0);
-            assert!(insets.right >= 0.0);
-            assert!(insets.top >= 0.0);
-            assert!(insets.bottom >= 0.0);
-        }
-    }
-
-    #[test]
-    #[serial]
-    #[cfg(target_os = "macos")]
-    fn markdown_render_applies_or_falls_back() {
-        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
-            return;
-        }
-        unsafe {
-            let ns_text = Class::get("NSTextField").unwrap();
-            let ns_font = Class::get("NSFont").unwrap();
-            let field: Id = msg_send![ns_text, alloc];
-            let field: Id = msg_send![
-                field,
-                initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(200.0, 60.0))
-            ];
-            let font: Id = msg_send![ns_font, systemFontOfSize: 13.0f64];
-            let applied = apply_markdown_to_text_field(field, "**bold** `code`", font);
-            let text = get_text(field);
-            assert!(text.contains("bold"));
-            assert!(text.contains("code"));
-            if applied {
-                let attr: Id = msg_send![field, attributedStringValue];
-                let len: usize = msg_send![attr, length];
-                assert!(len >= text.len());
-            }
-        }
-    }
-
-    #[test]
-    #[serial]
-    #[cfg(target_os = "macos")]
-    fn set_button_symbol_uses_sf_symbols() {
-        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
-            return;
-        }
-        unsafe {
-            let ns_button = Class::get("NSButton").unwrap();
-            let button: Id = msg_send![ns_button, alloc];
-            let button: Id = msg_send![
-                button,
-                initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(24.0, 24.0))
-            ];
-            assert!(set_button_symbol(button, "tray.full"));
-        }
-    }
 }
 
 /// Clamp overlay position to visible frame with margin.
@@ -1235,6 +1076,164 @@ pub unsafe fn monospace_font(size: f64) -> Id {
             font
         } else {
             msg_send![ns_font, systemFontOfSize: size]
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_graphics::geometry::CGPoint;
+    use serial_test::serial;
+
+    #[test]
+    fn markdown_table_detection_handles_common_patterns() {
+        let table = "| Name | Value |\n| ---- | ----- |\n| A | 1 |";
+        assert!(looks_like_markdown_table(table));
+
+        let plain = "line one\nline two\nline three";
+        assert!(!looks_like_markdown_table(plain));
+    }
+
+    #[test]
+    fn native_markdown_is_bypassed_for_chat_bubbles() {
+        let table = "# Report\n\n| Name | Value |\n| ---- | ----- |\n| A | 1 |";
+        assert!(!should_apply_native_markdown(table));
+
+        let inline_markdown = "**bold** `code`";
+        assert!(!should_apply_native_markdown(inline_markdown));
+    }
+
+    #[test]
+    fn chat_header_layout_avoids_cluster_collisions() {
+        let header_w = 450.0;
+        let right_pad = ui_tokens::EDGE_PADDING_TIGHT;
+        let cluster_w =
+            ui_tokens::CHAT_HEADER_BUTTON_SIZE * 5.0 + ui_tokens::CHAT_HEADER_BUTTON_GAP * 4.0;
+        let right_cluster_start_x = header_w - right_pad - cluster_w;
+        let title_x = ui_tokens::EDGE_PADDING_TIGHT;
+        let title_w = ui_tokens::CHAT_TITLE_LABEL_WIDTH;
+
+        let layout = chat_header_layout(title_x, title_w, right_cluster_start_x);
+        let tabs_right =
+            layout.tab_cluster_x + layout.tab_button_width * 3.0 + layout.tab_button_gap * 2.0;
+        assert!(tabs_right <= right_cluster_start_x - ui_tokens::CHAT_HEADER_GROUP_GAP + 0.001);
+        if layout.show_status_pill {
+            assert!(layout.status_pill_x >= tabs_right + ui_tokens::CHAT_HEADER_GROUP_GAP - 0.001);
+            assert!(
+                layout.status_pill_x + layout.status_pill_width
+                    <= right_cluster_start_x - ui_tokens::CHAT_HEADER_GROUP_GAP + 0.001
+            );
+        }
+    }
+
+    #[test]
+    fn chat_header_layout_hides_status_when_space_is_tight() {
+        let layout = chat_header_layout(12.0, ui_tokens::CHAT_TITLE_LABEL_WIDTH, 142.0);
+        assert!(!layout.show_status_pill);
+        let tabs_right =
+            layout.tab_cluster_x + layout.tab_button_width * 3.0 + layout.tab_button_gap * 2.0;
+        assert!(tabs_right <= 142.0 - ui_tokens::CHAT_HEADER_GROUP_GAP + 0.001);
+    }
+
+    #[test]
+    fn chat_header_layout_keeps_status_before_right_cluster() {
+        let right_cluster_start_x = 270.0;
+        let layout = chat_header_layout(
+            86.0,
+            ui_tokens::CHAT_TITLE_LABEL_WIDTH,
+            right_cluster_start_x,
+        );
+        if layout.show_status_pill {
+            let right_anchor = right_cluster_start_x - ui_tokens::CHAT_HEADER_GROUP_GAP;
+            assert!(layout.status_pill_x + layout.status_pill_width <= right_anchor + 0.001);
+        }
+    }
+
+    #[test]
+    fn chat_input_row_layout_keeps_buttons_on_sides() {
+        let layout = chat_input_row_layout(420.0, ui_tokens::AGENT_INPUT_HEIGHT);
+        assert!(
+            layout.attach_x + layout.button_width + ui_tokens::CHAT_INPUT_CONTROL_GAP
+                <= layout.text_x
+        );
+        assert!(
+            layout.text_x + layout.text_width + ui_tokens::CHAT_INPUT_CONTROL_GAP <= layout.send_x
+        );
+    }
+
+    #[test]
+    fn chat_input_row_layout_avoids_overlap_on_narrow_width() {
+        let layout = chat_input_row_layout(140.0, ui_tokens::AGENT_INPUT_HEIGHT);
+        assert!(layout.text_width >= 0.0);
+        assert!(layout.attach_x + layout.button_width <= layout.send_x);
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    fn layout_insets_default_are_non_negative() {
+        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
+            return;
+        }
+        unsafe {
+            let ns_view = Class::get("NSView").unwrap();
+            let view: Id = msg_send![ns_view, alloc];
+            let view: Id = msg_send![
+                view,
+                initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(120.0, 80.0))
+            ];
+            let insets = layout_insets_for_view(view);
+            assert!(insets.left >= 0.0);
+            assert!(insets.right >= 0.0);
+            assert!(insets.top >= 0.0);
+            assert!(insets.bottom >= 0.0);
+        }
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    fn markdown_render_applies_or_falls_back() {
+        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
+            return;
+        }
+        unsafe {
+            let ns_text = Class::get("NSTextField").unwrap();
+            let ns_font = Class::get("NSFont").unwrap();
+            let field: Id = msg_send![ns_text, alloc];
+            let field: Id = msg_send![
+                field,
+                initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(200.0, 60.0))
+            ];
+            let font: Id = msg_send![ns_font, systemFontOfSize: 13.0f64];
+            let applied = apply_markdown_to_text_field(field, "**bold** `code`", font);
+            let text = get_text(field);
+            assert!(text.contains("bold"));
+            assert!(text.contains("code"));
+            if applied {
+                let attr: Id = msg_send![field, attributedStringValue];
+                let len: usize = msg_send![attr, length];
+                assert!(len >= text.len());
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    fn set_button_symbol_uses_sf_symbols() {
+        if std::env::var("CODESCRIBE_UI_TESTS").is_err() {
+            return;
+        }
+        unsafe {
+            let ns_button = Class::get("NSButton").unwrap();
+            let button: Id = msg_send![ns_button, alloc];
+            let button: Id = msg_send![
+                button,
+                initWithFrame: CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(24.0, 24.0))
+            ];
+            assert!(set_button_symbol(button, "tray.full"));
         }
     }
 }

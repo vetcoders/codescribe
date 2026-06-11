@@ -541,6 +541,8 @@ impl<'a> ResponsesStreamingManager<'a> {
     }
 }
 
+// allow(too_many_arguments): task entry point for one agent SSE stream; all
+// eight values are owned moves into the spawned task.
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_stream(
     client: Client,
