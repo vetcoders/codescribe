@@ -24,6 +24,9 @@ fn sample_drawer_entry(
         path: PathBuf::from(path),
         timestamp: SystemTime::now(),
         mode,
+        title: None,
+        model: None,
+        total_tokens: None,
         preview: preview.to_string(),
         search_corpus,
         is_ai_formatted,
@@ -140,6 +143,9 @@ fn filtered_drawer_entries_matches_thread_message_and_note_corpus() {
             path: PathBuf::from("thread_t_2026-02-23_abc123.json"),
             timestamp: SystemTime::now(),
             mode: TranscriptionMode::Assistive,
+            title: Some("Clinical recap".to_string()),
+            model: Some("gpt-5".to_string()),
+            total_tokens: Some(1536),
             preview: "clinical recap".to_string(),
             search_corpus: "renal values improved call owner tomorrow".to_string(),
             is_ai_formatted: true,
@@ -183,6 +189,9 @@ fn drawer_entry_matches_query_does_not_leak_absolute_path() {
         ),
         timestamp: SystemTime::now(),
         mode: TranscriptionMode::Assistive,
+        title: Some("AI failed output".to_string()),
+        model: None,
+        total_tokens: None,
         preview: "ai failed output_text".to_string(),
         search_corpus:
             "threadstore source:thread assistive thread:t_2026-04-21_h15b5t ai failed output_text"
@@ -314,15 +323,98 @@ fn drawer_entry_subtitle_marks_threadstore_index_only_when_path_missing() {
         path: PathBuf::from("__missing_thread_guardrail_test__.json"),
         timestamp: SystemTime::now(),
         mode: TranscriptionMode::Assistive,
+        title: Some("Missing thread".to_string()),
+        model: Some("gpt-5".to_string()),
+        total_tokens: Some(2048),
         preview: "summary".to_string(),
         search_corpus: "summary".to_string(),
         is_ai_formatted: true,
-        is_favorite: false,
+        is_favorite: true,
     };
 
     let subtitle = drawer_entry_subtitle(&entry);
-    assert!(subtitle.contains("ThreadStore (index-only)"));
-    assert!(subtitle.contains("thread:t_2026-02-23_missing"));
+    assert!(subtitle.contains("Shift/Cmd"));
+    assert!(subtitle.contains("gpt-5"));
+    assert!(subtitle.contains("2.0k tok"));
+    assert!(subtitle.contains("★"));
+}
+
+#[test]
+fn drawer_entry_subtitle_omits_empty_optional_metadata() {
+    let subtitle = format_drawer_subtitle("4 h", "Toggle", None, None, false);
+
+    assert_eq!(subtitle, "4 h • Toggle");
+}
+
+#[test]
+fn drawer_entry_title_prefers_thread_title_then_preview() {
+    let mut entry = sample_drawer_entry(
+        "thread.md",
+        "preview fallback text",
+        TranscriptionMode::Assistive,
+        true,
+        false,
+    );
+    entry.title = Some("Clinical plan".to_string());
+
+    assert_eq!(drawer_entry_title(&entry), "Clinical plan");
+
+    entry.title = Some("   ".to_string());
+    assert_eq!(drawer_entry_title(&entry), "preview fallback text");
+}
+
+#[test]
+fn section_for_groups_drawer_entries_by_local_day_boundaries() {
+    let today = chrono::Local::now().date_naive();
+    let now_local = today
+        .and_hms_opt(12, 0, 0)
+        .expect("valid noon timestamp")
+        .and_local_timezone(chrono::Local)
+        .single()
+        .expect("local noon must be unambiguous");
+    let now = SystemTime::from(now_local);
+
+    let today_early = today
+        .and_hms_opt(0, 1, 0)
+        .expect("valid today timestamp")
+        .and_local_timezone(chrono::Local)
+        .single()
+        .expect("local today timestamp must be unambiguous");
+    let yesterday_late = (today - chrono::Duration::days(1))
+        .and_hms_opt(23, 59, 0)
+        .expect("valid yesterday timestamp")
+        .and_local_timezone(chrono::Local)
+        .single()
+        .expect("local yesterday timestamp must be unambiguous");
+    let six_days = (today - chrono::Duration::days(6))
+        .and_hms_opt(12, 0, 0)
+        .expect("valid six-day timestamp")
+        .and_local_timezone(chrono::Local)
+        .single()
+        .expect("local six-day timestamp must be unambiguous");
+    let eight_days = (today - chrono::Duration::days(8))
+        .and_hms_opt(12, 0, 0)
+        .expect("valid eight-day timestamp")
+        .and_local_timezone(chrono::Local)
+        .single()
+        .expect("local eight-day timestamp must be unambiguous");
+
+    assert_eq!(
+        section_for(SystemTime::from(today_early), now),
+        DrawerSection::Today
+    );
+    assert_eq!(
+        section_for(SystemTime::from(yesterday_late), now),
+        DrawerSection::Yesterday
+    );
+    assert_eq!(
+        section_for(SystemTime::from(six_days), now),
+        DrawerSection::ThisWeek
+    );
+    assert_eq!(
+        section_for(SystemTime::from(eight_days), now),
+        DrawerSection::Older
+    );
 }
 
 #[test]

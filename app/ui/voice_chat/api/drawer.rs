@@ -2,6 +2,17 @@
 
 use super::*;
 
+const DRAWER_PREVIEW_IDENTIFIER: &str = "codescribe_drawer_preview";
+const DRAWER_ACTION_IDENTIFIER: &str = "codescribe_drawer_action";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawerSection {
+    Today,
+    Yesterday,
+    ThisWeek,
+    Older,
+}
+
 /// Refresh drawer entries from disk
 pub fn refresh_drawer() {
     Queue::main().exec_async(|| {
@@ -387,9 +398,17 @@ pub fn render_drawer_entries(state: &mut VoiceChatOverlayState, query: &str) {
         stack_view_clear(container);
 
         let visible = filtered_drawer_entries(state, query);
+        let now = SystemTime::now();
+        let mut last_section: Option<DrawerSection> = None;
         for (index, entry) in visible.iter() {
-            let card = create_drawer_card(entry, *index, state.action_handler, query);
-            stack_view_add(container, card);
+            let section = section_for(entry.timestamp, now);
+            if last_section != Some(section) {
+                let header = create_drawer_section_header(section);
+                stack_view_add(container, header);
+                last_section = Some(section);
+            }
+            let row = create_drawer_row(entry, *index, state.action_handler, query);
+            stack_view_add(container, row);
         }
 
         if visible.is_empty() {
@@ -546,51 +565,148 @@ pub fn create_drawer_empty_state(width: f64, handler: Option<usize>) -> Id {
     }
 }
 
-pub fn create_drawer_card(
+pub fn create_drawer_row(
     entry: &DrawerEntry,
     index: usize,
     handler: Option<usize>,
     query: &str,
 ) -> Id {
     unsafe {
-        let ns_view = Class::get("NSView").unwrap();
+        let ns_view = Class::get("NSView").expect("NSView class missing");
         let frame = core_graphics::geometry::CGRect::new(
             &CGPoint::new(0.0, 0.0),
-            &core_graphics::geometry::CGSize::new(410.0, 120.0),
+            &core_graphics::geometry::CGSize::new(
+                ui_tokens::DRAWER_ROW_WIDTH,
+                ui_tokens::DRAWER_ROW_HEIGHT,
+            ),
         );
-        let title = format!(
-            "{}  {}",
-            entry_type_label(entry),
-            format_relative_time(entry.timestamp)
-        );
-        let subtitle = drawer_entry_subtitle(entry);
+        let row_class = drawer_row_view_class();
+        let row: Id = msg_send![row_class, alloc];
+        let row: Id = msg_send![row, initWithFrame: frame];
+        let _: () = msg_send![row, setWantsLayer: true];
+        let layer: Id = msg_send![row, layer];
+        if !layer.is_null() {
+            let bg = ui_colors::surface_paper_cool();
+            let cg: Id = msg_send![bg, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg];
+            let border = ui_colors::surface_border();
+            let border_cg: Id = msg_send![border, CGColor];
+            let _: () = msg_send![layer, setBorderColor: border_cg];
+            let _: () = msg_send![layer, setBorderWidth: ui_tokens::SURFACE_BORDER_WIDTH];
+            let _: () = msg_send![layer, setCornerRadius: ui_tokens::SURFACE_RADIUS];
+            apply_tafla_surface(layer, true);
+        }
+
+        add_drawer_tracking_area(row, frame);
+
+        let pad = ui_tokens::DRAWER_ROW_PAD_X;
+        let badge = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(pad, frame.size.height - 26.0),
+                &CGSize::new(
+                    ui_tokens::DRAWER_BADGE_WIDTH,
+                    ui_tokens::DRAWER_BADGE_HEIGHT,
+                ),
+            ),
+            text: drawer_badge_label(entry).to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            bold: true,
+            text_color: color_label(),
+            background_color: Some(ui_colors::accent_tint(0.18)),
+            selectable: false,
+            editable: false,
+        });
+        let _: () = msg_send![badge, setWantsLayer: true];
+        let badge_layer: Id = msg_send![badge, layer];
+        if !badge_layer.is_null() {
+            let _: () =
+                msg_send![badge_layer, setCornerRadius: ui_tokens::DRAWER_BADGE_HEIGHT / 2.0];
+            let _: () = msg_send![badge_layer, setMasksToBounds: true];
+        }
+        add_subview(row, badge);
+
+        let text_x = pad + ui_tokens::DRAWER_BADGE_WIDTH + 8.0;
+        let action_zone = (ui_tokens::DRAWER_ACTION_BUTTON_SIZE * 4.0)
+            + (ui_tokens::DRAWER_ACTION_BUTTON_GAP * 3.0)
+            + 6.0;
+        let text_w = (frame.size.width - text_x - action_zone - pad).max(80.0);
+        let title = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(text_x, frame.size.height - 27.0),
+                &CGSize::new(text_w, 18.0),
+            ),
+            text: drawer_entry_title(entry),
+            font_size: ui_tokens::BODY_FONT_SIZE,
+            bold: true,
+            text_color: color_label(),
+            background_color: None,
+            selectable: false,
+            editable: false,
+        });
+        add_subview(row, title);
+
         let preview = entry.preview.clone();
-        let card = create_card_view(frame, &title, &subtitle, &preview);
-        // Highlight matching query text in the preview field (last NSTextField subview).
-        if !query.is_empty() {
-            let subviews: Id = msg_send![card, subviews];
-            let count: usize = msg_send![subviews, count];
-            // The preview field is typically the 3rd text field added (index 2).
-            // Walk subviews in reverse to find it (last NSTextField before action buttons).
-            for i in (0..count).rev() {
-                let subview: Id = msg_send![subviews, objectAtIndex: i];
-                let ns_text_field = Class::get("NSTextField").unwrap();
-                let is_text_field: bool = msg_send![subview, isKindOfClass: ns_text_field];
-                if is_text_field {
-                    apply_search_highlight(subview, &preview, query);
-                    break;
-                }
-            }
+        let preview_field = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(pad, frame.size.height - 44.0),
+                &CGSize::new(frame.size.width - pad * 2.0, 15.0),
+            ),
+            text: preview.clone(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: false,
+            text_color: color_secondary_label(),
+            background_color: None,
+            selectable: false,
+            editable: false,
+        });
+        let preview_identifier = ns_string("codescribe_drawer_preview");
+        let _: () = msg_send![preview_field, setIdentifier: preview_identifier];
+        add_subview(row, preview_field);
+
+        let subtitle = drawer_entry_subtitle(entry);
+        let subtitle_field = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(pad, 8.0),
+                &CGSize::new(frame.size.width - pad * 2.0, 14.0),
+            ),
+            text: subtitle,
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            bold: false,
+            text_color: color_secondary_label(),
+            background_color: None,
+            selectable: false,
+            editable: false,
+        });
+        add_subview(row, subtitle_field);
+
+        // Highlight matching query text in the stable preview field, not by subview order.
+        if !query.is_empty()
+            && let Some(field) = find_drawer_preview_field(row)
+        {
+            apply_search_highlight(field, &preview, query);
         }
 
         let actions_container: Id = msg_send![ns_view, alloc];
+        let button_size = ui_tokens::DRAWER_ACTION_BUTTON_SIZE;
+        let button_gap = ui_tokens::DRAWER_ACTION_BUTTON_GAP;
+        let actions_width = button_size * 4.0 + button_gap * 3.0;
         let actions_frame = core_graphics::geometry::CGRect::new(
-            &CGPoint::new(12.0, 8.0),
-            &core_graphics::geometry::CGSize::new(386.0, 20.0),
+            &CGPoint::new(
+                frame.size.width - pad - actions_width,
+                frame.size.height - 36.0,
+            ),
+            &core_graphics::geometry::CGSize::new(actions_width, button_size),
         );
         let actions_container: Id = msg_send![actions_container, initWithFrame: actions_frame];
 
-        let button_titles = ["Restore", "Copy", "Edit", "Delete"];
+        let button_titles = ["", "", "", ""];
+        let button_symbols = [
+            "arrow.counterclockwise",
+            "doc.on.doc",
+            "square.and.pencil",
+            "trash",
+        ];
+        let button_tooltips = ["Restore", "Copy", "Edit", "Delete"];
         let button_actions = [
             sel!(onCardRestore:),
             sel!(onCardCopy:),
@@ -598,15 +714,16 @@ pub fn create_drawer_card(
             sel!(onCardDelete:),
         ];
         for (idx, title) in button_titles.iter().enumerate() {
-            let button_width = if *title == "Restore" { 76.0 } else { 62.0 };
             let button = crate::ui_helpers::create_button(
                 core_graphics::geometry::CGRect::new(
-                    &CGPoint::new((idx as f64) * 74.0, 0.0),
-                    &core_graphics::geometry::CGSize::new(button_width, 20.0),
+                    &CGPoint::new((idx as f64) * (button_size + button_gap), 0.0),
+                    &core_graphics::geometry::CGSize::new(button_size, button_size),
                 ),
                 title,
-                crate::ui_helpers::button_style::ROUNDED,
+                crate::ui_helpers::button_style::INLINE,
             );
+            let _ = set_button_symbol(button, button_symbols[idx]);
+            crate::ui_helpers::style_toolbar_icon_button(button);
             let supports_control_size: bool =
                 msg_send![button, respondsToSelector: sel!(setControlSize:)];
             if supports_control_size {
@@ -616,38 +733,197 @@ pub fn create_drawer_card(
                 crate::ui_helpers::button_set_action(button, handler as Id, button_actions[idx]);
             }
             let _: () = msg_send![button, setTag: index as isize];
+            let action_identifier = ns_string(DRAWER_ACTION_IDENTIFIER);
+            let _: () = msg_send![button, setIdentifier: action_identifier];
+            set_tooltip(button, button_tooltips[idx]);
+            let _: () = msg_send![button, setHidden: true];
             let _: () = msg_send![actions_container, addSubview: button];
         }
 
         let favorite = crate::ui_helpers::create_button(
             core_graphics::geometry::CGRect::new(
-                &CGPoint::new(310.0, 0.0),
-                &core_graphics::geometry::CGSize::new(28.0, 20.0),
+                &CGPoint::new(0.0, 0.0),
+                &core_graphics::geometry::CGSize::new(1.0, 1.0),
             ),
             "",
             crate::ui_helpers::button_style::INLINE,
         );
-        let fav_symbol = if entry.is_favorite {
-            "heart.fill"
-        } else {
-            "heart"
-        };
-        let _ = set_button_symbol(favorite, fav_symbol);
-        crate::ui_helpers::style_toolbar_icon_button(favorite);
-        let supports_control_size: bool =
-            msg_send![favorite, respondsToSelector: sel!(setControlSize:)];
-        if supports_control_size {
-            let _: () = msg_send![favorite, setControlSize: 1_isize];
-        }
         if let Some(handler) = handler {
             crate::ui_helpers::button_set_action(favorite, handler as Id, sel!(onCardFavorite:));
         }
-        set_tooltip(favorite, "Favorite");
         let _: () = msg_send![favorite, setTag: index as isize];
-        let _: () = msg_send![actions_container, addSubview: favorite];
+        let _: () = msg_send![favorite, setHidden: true];
+        let _: () = msg_send![row, addSubview: favorite];
 
-        let _: () = msg_send![card, addSubview: actions_container];
-        card
+        let source_label = drawer_entry_source_label(entry);
+        set_tooltip(row, &source_label);
+        let _: () = msg_send![row, addSubview: actions_container];
+        row
+    }
+}
+
+pub fn create_drawer_section_header(section: DrawerSection) -> Id {
+    unsafe {
+        let ns_view = Class::get("NSView").expect("NSView class missing");
+        let frame = CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &CGSize::new(
+                ui_tokens::DRAWER_ROW_WIDTH,
+                ui_tokens::DRAWER_SECTION_HEADER_HEIGHT,
+            ),
+        );
+        let view: Id = msg_send![ns_view, alloc];
+        let view: Id = msg_send![view, initWithFrame: frame];
+        let label = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(ui_tokens::DRAWER_ROW_PAD_X, 4.0),
+                &CGSize::new(frame.size.width - ui_tokens::DRAWER_ROW_PAD_X * 2.0, 16.0),
+            ),
+            text: section.title().to_string(),
+            font_size: ui_tokens::MICRO_FONT_SIZE,
+            bold: true,
+            text_color: color_secondary_label(),
+            background_color: None,
+            selectable: false,
+            editable: false,
+        });
+        add_subview(view, label);
+        view
+    }
+}
+
+impl DrawerSection {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Today => "Today",
+            Self::Yesterday => "Yesterday",
+            Self::ThisWeek => "This week",
+            Self::Older => "Older",
+        }
+    }
+}
+
+pub fn section_for(timestamp: SystemTime, now: SystemTime) -> DrawerSection {
+    let entry_date = DateTime::<Local>::from(timestamp).date_naive();
+    let today = DateTime::<Local>::from(now).date_naive();
+    let days = today.signed_duration_since(entry_date).num_days();
+    if days <= 0 {
+        DrawerSection::Today
+    } else if days == 1 {
+        DrawerSection::Yesterday
+    } else if days <= 6 {
+        DrawerSection::ThisWeek
+    } else {
+        DrawerSection::Older
+    }
+}
+
+fn drawer_row_view_class() -> &'static Class {
+    static mut CLS: *const Class = std::ptr::null();
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        let superclass = Class::get("NSView").expect("NSView class missing");
+        let mut decl = objc::declare::ClassDecl::new("CodeScribeDrawerRowView", superclass)
+            .expect("CodeScribeDrawerRowView already defined");
+        decl.add_method(
+            sel!(mouseEntered:),
+            drawer_row_mouse_entered as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(mouseExited:),
+            drawer_row_mouse_exited as extern "C" fn(&Object, Sel, Id),
+        );
+        let cls = decl.register();
+        CLS = cls as *const Class;
+    });
+    unsafe { &*CLS }
+}
+
+extern "C" fn drawer_row_mouse_entered(this: &Object, _cmd: Sel, _event: Id) {
+    unsafe {
+        let view: Id = (this as *const Object) as Id;
+        toggle_drawer_action_buttons(view, true);
+    }
+}
+
+extern "C" fn drawer_row_mouse_exited(this: &Object, _cmd: Sel, _event: Id) {
+    unsafe {
+        let view: Id = (this as *const Object) as Id;
+        toggle_drawer_action_buttons(view, false);
+    }
+}
+
+unsafe fn add_drawer_tracking_area(row: Id, frame: CGRect) {
+    unsafe {
+        let ns_tracking_area = Class::get("NSTrackingArea").expect("NSTrackingArea class missing");
+        let options = 1_usize | 32_usize | 512_usize;
+        let area: Id = msg_send![ns_tracking_area, alloc];
+        let area: Id = msg_send![
+            area,
+            initWithRect: frame
+            options: options
+            owner: row
+            userInfo: std::ptr::null::<Object>()
+        ];
+        let _: () = msg_send![row, addTrackingArea: area];
+    }
+}
+
+unsafe fn toggle_drawer_action_buttons(view: Id, visible: bool) {
+    unsafe {
+        let subviews: Id = msg_send![view, subviews];
+        if subviews.is_null() {
+            return;
+        }
+        let count: usize = msg_send![subviews, count];
+        for i in 0..count {
+            let child: Id = msg_send![subviews, objectAtIndex: i];
+            if child.is_null() {
+                continue;
+            }
+            if identifier_matches(child, DRAWER_ACTION_IDENTIFIER) {
+                let _: () = msg_send![child, setHidden: !visible];
+            }
+            toggle_drawer_action_buttons(child, visible);
+        }
+    }
+}
+
+unsafe fn find_drawer_preview_field(view: Id) -> Option<Id> {
+    unsafe {
+        if identifier_matches(view, DRAWER_PREVIEW_IDENTIFIER) {
+            return Some(view);
+        }
+        let subviews: Id = msg_send![view, subviews];
+        if subviews.is_null() {
+            return None;
+        }
+        let count: usize = msg_send![subviews, count];
+        for i in 0..count {
+            let child: Id = msg_send![subviews, objectAtIndex: i];
+            if child.is_null() {
+                continue;
+            }
+            if let Some(found) = find_drawer_preview_field(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+}
+
+unsafe fn identifier_matches(view: Id, expected: &str) -> bool {
+    unsafe {
+        let ident: Id = msg_send![view, identifier];
+        if ident.is_null() {
+            return false;
+        }
+        let c_str: *const i8 = msg_send![ident, UTF8String];
+        if c_str.is_null() {
+            return false;
+        }
+        let actual = std::ffi::CStr::from_ptr(c_str).to_string_lossy();
+        actual == expected
     }
 }
 
@@ -748,25 +1024,68 @@ pub fn drawer_entry_source_label(entry: &DrawerEntry) -> String {
 
 pub fn drawer_entry_subtitle(entry: &DrawerEntry) -> String {
     if is_drawer_unavailable_placeholder(entry) {
-        return "Shift/Cmd • ThreadStore • unavailable".to_string();
+        return "just now • Shift/Cmd • unavailable".to_string();
     }
-    let source_label = drawer_entry_source_label(entry);
-    match &entry.source {
-        DrawerEntrySource::Thread { id } => {
-            format!(
-                "{} • {} • thread:{id}",
-                mode_label(entry.mode),
-                source_label
-            )
-        }
-        DrawerEntrySource::LegacyFile => {
-            format!(
-                "{} • {} • {}",
-                mode_label(entry.mode),
-                source_label,
-                entry.path.display()
-            )
-        }
+    format_drawer_subtitle(
+        &format_relative_time(entry.timestamp),
+        mode_label(entry.mode),
+        entry.model.as_deref(),
+        entry.total_tokens,
+        entry.is_favorite,
+    )
+}
+
+pub fn format_drawer_subtitle(
+    relative_time: &str,
+    mode: &str,
+    model: Option<&str>,
+    total_tokens: Option<u64>,
+    favorite: bool,
+) -> String {
+    let mut parts = vec![relative_time.to_string(), mode.to_string()];
+    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+        parts.push(model.to_string());
+    }
+    if let Some(tokens) = total_tokens {
+        parts.push(format_token_count(tokens));
+    }
+    if favorite {
+        parts.push("★".to_string());
+    }
+    parts.join(" • ")
+}
+
+pub fn format_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M tok", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k tok", tokens as f64 / 1_000.0)
+    } else {
+        format!("{tokens} tok")
+    }
+}
+
+pub fn drawer_entry_title(entry: &DrawerEntry) -> String {
+    if let Some(title) = entry
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return normalize_preview(title, 64);
+    }
+    let fallback = normalize_preview(&entry.preview, 64);
+    if fallback.trim().is_empty() {
+        "Untitled thread".to_string()
+    } else {
+        fallback
+    }
+}
+
+fn drawer_badge_label(entry: &DrawerEntry) -> &'static str {
+    match entry.source {
+        DrawerEntrySource::Thread { .. } => mode_label(entry.mode),
+        DrawerEntrySource::LegacyFile => entry_type_label(entry),
     }
 }
 
@@ -819,6 +1138,9 @@ pub fn thread_history_unavailable_drawer_entry() -> DrawerEntry {
         path: PathBuf::from(""),
         timestamp: SystemTime::now(),
         mode: TranscriptionMode::Assistive,
+        title: None,
+        model: None,
+        total_tokens: None,
         preview: "Thread history unavailable — storage error".to_string(),
         search_corpus: "thread history unavailable storage error".to_string(),
         is_ai_formatted: false,
@@ -886,12 +1208,24 @@ pub fn load_thread_drawer_entries(favorites: &HashSet<String>) -> Vec<DrawerEntr
                 mode_label, id, search_corpus
             )
             .to_ascii_lowercase();
+            let thread_metadata = store.load_thread(&id).ok();
+            let model = thread_metadata
+                .as_ref()
+                .map(|thread| thread.model.trim().to_string())
+                .filter(|model| !model.is_empty());
+            let total_tokens = thread_metadata
+                .as_ref()
+                .and_then(|thread| thread.total_tokens.as_ref())
+                .map(|usage| usage.input.saturating_add(usage.output));
 
             DrawerEntry {
                 source,
                 path,
                 timestamp,
                 mode,
+                title: Some(summary.title.clone()).filter(|title| !title.trim().is_empty()),
+                model,
+                total_tokens,
                 preview,
                 search_corpus,
                 is_ai_formatted: true,

@@ -30,9 +30,9 @@ use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
     BubbleConfig, BubbleRole, LabelConfig, NSEdgeInsets, add_subview, apply_tafla_surface,
     button_set_action, button_style, chat_header_layout, color_label, color_rgba,
-    color_secondary_label, copy_to_clipboard, create_bubble_view, create_button, create_card_view,
-    create_label, get_text_field_string, get_text_view_string, layout_region_frame_for_view,
-    ns_string, open_file_in_editor, resize_bubble_container_for_text, set_button_symbol,
+    color_secondary_label, copy_to_clipboard, create_bubble_view, create_button, create_label,
+    get_text_field_string, get_text_view_string, layout_region_frame_for_view, ns_string,
+    open_file_in_editor, resize_bubble_container_for_text, set_button_symbol,
     set_text_field_string, set_text_view_string, set_tooltip, stack_view_add, stack_view_clear,
     ui_colors, ui_tokens, update_bubble_text, window_set_alpha, window_show,
 };
@@ -41,7 +41,7 @@ use codescribe_core::agent::{Thread, ThreadIndex, ThreadStore};
 use codescribe_core::attachment::Attachment;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
-use objc::runtime::{Class, Object};
+use objc::runtime::{Class, Object, Sel};
 use objc::{msg_send, sel, sel_impl};
 use std::collections::HashSet;
 use std::path::PathBuf;

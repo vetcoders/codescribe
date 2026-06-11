@@ -113,6 +113,15 @@ pub mod ui_tokens {
     pub const EMPTY_STATE_BUTTON_WIDTH: f64 = 140.0;
     pub const EMPTY_STATE_BUTTON_GAP: f64 = 12.0;
 
+    pub const DRAWER_ROW_WIDTH: f64 = 410.0;
+    pub const DRAWER_ROW_HEIGHT: f64 = 64.0;
+    pub const DRAWER_ROW_PAD_X: f64 = 12.0;
+    pub const DRAWER_BADGE_WIDTH: f64 = 72.0;
+    pub const DRAWER_BADGE_HEIGHT: f64 = 18.0;
+    pub const DRAWER_ACTION_BUTTON_SIZE: f64 = 24.0;
+    pub const DRAWER_ACTION_BUTTON_GAP: f64 = 4.0;
+    pub const DRAWER_SECTION_HEADER_HEIGHT: f64 = 24.0;
+
     // ─── Tafla: unified surface design system ──────────────────────
     // Glass = frame (cool, system materials).  Paper = content (warm, readable).
     // One radius, one border, no stacking — flat pane, not bubble soup.
