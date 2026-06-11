@@ -26,7 +26,7 @@ pub(super) unsafe fn build_ai_prompts_tab(
 
         let title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
-            text: "AI & Prompts".to_string(),
+            text: "User".to_string(),
             font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
@@ -40,7 +40,7 @@ pub(super) unsafe fn build_ai_prompts_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Runtime AI endpoints plus an in-app prompt editor for formatting + assistive (agent) modes."
+            text: "Slow-moving user choices, AI formatting, provider keys, and prompt editing."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -48,6 +48,106 @@ pub(super) unsafe fn build_ai_prompts_tab(
         });
         add_subview(container, subtitle);
         y -= 16.0 + gap;
+
+        let user_header = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
+            text: "User Toggles".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            bold: true,
+            text_color: primary,
+            ..Default::default()
+        });
+        add_subview(container, user_header);
+        y -= 18.0 + gap;
+
+        let _dock_check = add_toggle_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            ToggleRowSpec {
+                title: "Show Dock icon",
+                checked: _config.show_dock_icon,
+                action: sel!(onShowDockIconToggled:),
+                description: Some("Keep CodeScribe in the Dock after windows close."),
+                tag: None,
+                gap,
+            },
+        );
+
+        let quality_on = UserSettings::load()
+            .qube_daemon_autostart
+            .unwrap_or_else(|| {
+                std::env::var("QUBE_DAEMON_AUTOSTART")
+                    .map(|v| parse_env_bool(&v))
+                    .unwrap_or(false)
+            });
+        let quality_check = add_toggle_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            ToggleRowSpec {
+                title: "Start quality daemon automatically",
+                checked: quality_on,
+                action: sel!(onQubeDaemonToggled:),
+                description: Some(
+                    "Starts bundled `qube-daemon --daemon` immediately and on next CodeScribe launch when the binary is installed.",
+                ),
+                tag: None,
+                gap,
+            },
+        );
+        state.qube_daemon_checkbox = Some(quality_check as usize);
+
+        let ultra_on = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS")
+            .map(|v| parse_env_bool(&v))
+            .unwrap_or(false);
+        let ultra_check = add_toggle_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            ToggleRowSpec {
+                title: "Local file-based final pass",
+                checked: ultra_on,
+                action: sel!(onUltraQualityToggled:),
+                description: Some(
+                    "Re-runs local Whisper on saved audio after capture ends to strengthen or downgrade the committed verdict.",
+                ),
+                tag: None,
+                gap,
+            },
+        );
+        state.ultra_quality_checkbox = Some(ultra_check as usize);
+
+        let _tagging_check = add_toggle_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            ToggleRowSpec {
+                title: "Tag transcripts for AI agents",
+                checked: _config.transcript_tagging_enabled,
+                action: sel!(onTranscriptTaggingToggled:),
+                description: Some(
+                    "Pastes speech as <codescribe mode=\"dictation\" lang=\"pl\">... for agent-aware dictated input.",
+                ),
+                tag: None,
+                gap,
+            },
+        );
+
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= ui_tokens::SECTION_GAP;
 
         let fmt_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
@@ -59,6 +159,54 @@ pub(super) unsafe fn build_ai_prompts_tab(
         });
         add_subview(container, fmt_header);
         y -= 18.0 + gap;
+
+        let _fmt_check = add_toggle_row(
+            container,
+            action_handler,
+            pad,
+            &mut y,
+            content_w,
+            secondary,
+            ToggleRowSpec {
+                title: "AI Formatting",
+                checked: _config.ai_formatting_enabled,
+                action: sel!(onFormattingToggled:),
+                description: Some(
+                    "Uses the formatting model to clean up the committed transcript; raw transcript is preserved on fallback.",
+                ),
+                tag: None,
+                gap,
+            },
+        );
+
+        let fmt_level_label = create_label(LabelConfig {
+            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 18.0)),
+            text: "Formatting level:".to_string(),
+            font_size: ui_tokens::SMALL_FONT_SIZE,
+            text_color: secondary,
+            ..Default::default()
+        });
+        add_subview(container, fmt_level_label);
+
+        let fmt_popup: Id = msg_send![ns_popup, alloc];
+        let fmt_popup: Id = msg_send![fmt_popup, initWithFrame:
+            CGRect::new(&CGPoint::new(pad + 124.0, y - 2.0), &CGSize::new(240.0, 24.0))
+            pullsDown: false
+        ];
+        let _: () = msg_send![fmt_popup, addItemWithTitle: ns_string("Raw")];
+        let _: () = msg_send![fmt_popup, addItemWithTitle: ns_string("Medium")];
+        let _: () = msg_send![fmt_popup, addItemWithTitle: ns_string("Creative")];
+        let current_level = std::env::var("FORMATTING_LEVEL").unwrap_or_default();
+        let sel_idx: isize = match current_level.as_str() {
+            "raw" => 0,
+            "medium" => 1,
+            "creative" => 2,
+            _ => 1,
+        };
+        let _: () = msg_send![fmt_popup, selectItemAtIndex: sel_idx];
+        button_set_action(fmt_popup, action_handler, sel!(onFormattingLevelChanged:));
+        add_subview(container, fmt_popup);
+        y -= 24.0 + gap;
 
         let llm_endpoint_val = std::env::var("LLM_FORMATTING_ENDPOINT")
             .ok()

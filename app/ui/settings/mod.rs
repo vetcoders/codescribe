@@ -67,8 +67,9 @@ mod handlers;
 mod actions;
 mod ai_prompts_tab;
 mod audio_input_tab;
+mod creator_tab;
 mod dashboards;
-mod diagnostics_tab;
+mod engine_tab;
 mod hotkey_conflicts;
 mod keychain_status;
 mod mode_bindings;
@@ -82,8 +83,9 @@ mod rows;
 use actions::*;
 use ai_prompts_tab::*;
 use audio_input_tab::*;
+use creator_tab::*;
 use dashboards::*;
-use diagnostics_tab::*;
+use engine_tab::*;
 use hotkey_conflicts::*;
 use keychain_status::*;
 use mode_bindings::*;
@@ -110,12 +112,13 @@ const TAB_ACTIVE_BORDER_ALPHA: f64 = 0.22;
 const SIDEBAR_INSET: f64 = 12.0;
 const SETTINGS_TITLEBAR_SAFE_INSET: f64 = 56.0;
 const SETTINGS_TAB_START_OFFSET: f64 = 20.0;
-const TAB_TRANSCRIPTION: usize = 0;
-const TAB_MODES_SHORTCUTS: usize = 1;
-const TAB_AI_PROMPTS: usize = 2;
-const TAB_AUDIO_INPUT: usize = 3;
-const TAB_DIAGNOSTICS: usize = 4;
-const TAB_COUNT: usize = 5;
+const TAB_CREATOR: usize = 0;
+const TAB_KEYS: usize = 1;
+const TAB_AUDIO: usize = 2;
+const TAB_VOICE_LAB: usize = 3;
+const TAB_ENGINE: usize = 4;
+const TAB_USER: usize = 5;
+const TAB_COUNT: usize = 6;
 
 const TOGGLE_ROW_HEIGHT: f64 = 22.0;
 const TOGGLE_SWITCH_WIDTH: f64 = 38.0;
@@ -249,7 +252,7 @@ fn clear_settings_ui_state(state: &mut SettingsWindowState) {
     state.step_labels = [None, None, None];
     state.tab_buttons = [None; TAB_COUNT];
     state.content_views = [None; TAB_COUNT];
-    state.active_tab = TAB_TRANSCRIPTION;
+    state.active_tab = TAB_CREATOR;
     state.keys_mode_binding_labels = [None; 3];
     state.keys_recorder_hint_label = None;
     state.keys_conflict_label = None;
@@ -710,19 +713,14 @@ unsafe fn build_settings_ui(
 
         // Sidebar tab buttons (inside sidebar container, no redundant title label)
         let tab_start_y = body_h - titlebar_inset - SETTINGS_TAB_START_OFFSET;
-        let tab_names = [
-            "Transcription",
-            "Modes & Shortcuts",
-            "AI & Prompts",
-            "Audio & Input",
-            "Diagnostics",
-        ];
+        let tab_names = ["Creator", "Keys", "Audio", "Voice Lab", "Engine", "User"];
         let tab_sels = [
-            sel!(onTabTranscription:),
-            sel!(onTabModesShortcuts:),
-            sel!(onTabAiPrompts:),
-            sel!(onTabAudioInput:),
-            sel!(onTabDiagnostics:),
+            sel!(onTabCreator:),
+            sel!(onTabKeys:),
+            sel!(onTabAudio:),
+            sel!(onTabVoiceLab:),
+            sel!(onTabEngine:),
+            sel!(onTabUser:),
         ];
         let mut tab_buttons: [Option<usize>; TAB_COUNT] = [None; TAB_COUNT];
 
@@ -749,7 +747,7 @@ unsafe fn build_settings_ui(
                 &CGSize::new(SIDEBAR_WIDTH - SIDEBAR_INSET * 2.0, TAB_BUTTON_HEIGHT),
             );
 
-            let tab_btn = create_sidebar_tab_button(btn_frame, name, i == TAB_TRANSCRIPTION);
+            let tab_btn = create_sidebar_tab_button(btn_frame, name, i == TAB_CREATOR);
             button_set_action(tab_btn, action_handler, *sel);
             add_subview(sidebar_container, tab_btn);
             tab_buttons[i] = Some(tab_btn as usize);
@@ -773,52 +771,58 @@ unsafe fn build_settings_ui(
             &CGSize::new(tab_content_frame.size.width, tab_content_frame.size.height),
         );
 
-        // --- Transcription tab (index 0) ---
-        let transcription_view =
-            build_quality_tab(action_handler, tab_document_frame, config, &mut state);
-        let transcription_scroll =
-            wrap_tab_content_in_scroll_view(tab_content_frame, transcription_view);
-        add_subview(content_container, transcription_scroll);
+        // --- Creator tab (index 0) ---
+        let creator_view =
+            build_creator_tab(action_handler, tab_document_frame, config, &mut state);
+        let creator_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, creator_view);
+        add_subview(content_container, creator_scroll);
 
-        // --- Modes & Shortcuts tab (index 1) ---
+        // --- Keys tab (index 1) ---
         let keys_view =
             build_modes_shortcuts_tab(action_handler, tab_document_frame, config, &mut state);
         let keys_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, keys_view);
         let _: () = msg_send![keys_scroll, setHidden: true];
         add_subview(content_container, keys_scroll);
 
-        // --- AI & Prompts tab (index 2) ---
-        let api_view = build_ai_prompts_tab(action_handler, tab_document_frame, config, &mut state);
-        let api_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, api_view);
-        let _: () = msg_send![api_scroll, setHidden: true];
-        add_subview(content_container, api_scroll);
-
-        // --- Audio & Input tab (index 3) ---
+        // --- Audio tab (index 2) ---
         let audio_view = build_audio_input_tab(action_handler, tab_document_frame, config);
         let audio_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, audio_view);
         let _: () = msg_send![audio_scroll, setHidden: true];
         add_subview(content_container, audio_scroll);
 
-        // --- Diagnostics tab (index 4) ---
-        let diagnostics_view =
-            build_diagnostics_tab(action_handler, tab_document_frame, config, &mut state);
-        let diagnostics_scroll =
-            wrap_tab_content_in_scroll_view(tab_content_frame, diagnostics_view);
-        let _: () = msg_send![diagnostics_scroll, setHidden: true];
-        add_subview(content_container, diagnostics_scroll);
+        // --- Voice Lab tab (index 3) ---
+        let voice_lab_view =
+            build_quality_tab(action_handler, tab_document_frame, config, &mut state);
+        let voice_lab_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, voice_lab_view);
+        let _: () = msg_send![voice_lab_scroll, setHidden: true];
+        add_subview(content_container, voice_lab_scroll);
+
+        // --- Engine tab (index 4) ---
+        let engine_view = build_engine_tab(action_handler, tab_document_frame, config, &mut state);
+        let engine_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, engine_view);
+        let _: () = msg_send![engine_scroll, setHidden: true];
+        add_subview(content_container, engine_scroll);
+
+        // --- User tab (index 5) ---
+        let user_view =
+            build_ai_prompts_tab(action_handler, tab_document_frame, config, &mut state);
+        let user_scroll = wrap_tab_content_in_scroll_view(tab_content_frame, user_view);
+        let _: () = msg_send![user_scroll, setHidden: true];
+        add_subview(content_container, user_scroll);
 
         // ====================================================================
         // Store state
         // ====================================================================
         state.tab_buttons = tab_buttons;
         state.content_views = [
-            Some(transcription_scroll as usize),
+            Some(creator_scroll as usize),
             Some(keys_scroll as usize),
-            Some(api_scroll as usize),
             Some(audio_scroll as usize),
-            Some(diagnostics_scroll as usize),
+            Some(voice_lab_scroll as usize),
+            Some(engine_scroll as usize),
+            Some(user_scroll as usize),
         ];
-        state.active_tab = TAB_TRANSCRIPTION;
+        state.active_tab = TAB_CREATOR;
         state.config_cache = Some(config.clone());
 
         state
@@ -851,11 +855,12 @@ unsafe fn create_sidebar_tab_button(
 
         // Add SF Symbol icon based on title
         let symbol_name = match title {
-            "Transcription" => "waveform",
-            "Modes & Shortcuts" => "keyboard",
-            "AI & Prompts" => "text.bubble",
-            "Audio & Input" => "speaker.wave.2",
-            "Diagnostics" => "stethoscope",
+            "Creator" => "wand.and.stars",
+            "Keys" => "keyboard",
+            "Audio" => "speaker.wave.2",
+            "Voice Lab" => "waveform",
+            "Engine" => "stethoscope",
+            "User" => "person.crop.circle",
             _ => "circle",
         };
         crate::ui_helpers::set_button_symbol(btn, symbol_name);
@@ -956,12 +961,14 @@ pub(super) fn switch_tab(index: usize) {
             }
         }
 
-        if index == TAB_TRANSCRIPTION {
-            refresh_quality_dashboard();
+        if index == TAB_CREATOR {
+            refresh_permission_indicators();
+        } else if index == TAB_VOICE_LAB {
             refresh_transcription_preview_panel();
-        } else if index == TAB_DIAGNOSTICS {
+        } else if index == TAB_ENGINE {
+            refresh_quality_dashboard();
             refresh_diagnostics_dashboard();
-        } else if index == TAB_AI_PROMPTS {
+        } else if index == TAB_USER {
             refresh_prompt_editor_labels();
         }
     });

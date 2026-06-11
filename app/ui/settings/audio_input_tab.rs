@@ -23,10 +23,9 @@ pub(super) unsafe fn build_audio_input_tab(
         let primary = crate::ui_helpers::color_label();
         let secondary = crate::ui_helpers::color_secondary_label();
 
-        // Section title
         let title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
-            text: "Audio & Input".to_string(),
+            text: "Audio".to_string(),
             font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
@@ -40,7 +39,8 @@ pub(super) unsafe fn build_audio_input_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Speech capture defaults, recorder feedback, and overlay behavior.".to_string(),
+            text: "Speech capture defaults, recorder feedback, and simple input toggles."
+                .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -123,22 +123,6 @@ pub(super) unsafe fn build_audio_input_tab(
                 description: Some(
                     "On: live floating preview with fast partials. Off: no overlay and buffered partials for lower local load.",
                 ),
-                tag: None,
-                gap,
-            },
-        );
-        let _dock_check = add_toggle_row(
-            container,
-            action_handler,
-            pad,
-            &mut y,
-            content_w,
-            secondary,
-            ToggleRowSpec {
-                title: "Show Dock icon",
-                checked: config.show_dock_icon,
-                action: sel!(onShowDockIconToggled:),
-                description: Some("Keep CodeScribe in the Dock after windows close."),
                 tag: None,
                 gap,
             },

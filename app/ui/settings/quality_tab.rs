@@ -1,4 +1,4 @@
-//! AppKit builder for the Transcription quality settings tab.
+//! AppKit builder for the Voice Lab settings tab.
 
 use super::*;
 
@@ -17,7 +17,6 @@ pub(super) unsafe fn build_quality_tab(
 
         let pad = ui_tokens::EDGE_PADDING;
         let content_w = frame.size.width - pad * 2.0;
-        let field_w = content_w;
         let gap = ui_tokens::DENSITY_COMFORTABLE;
         let mut y = frame.size.height - (24.0 + gap);
         let mono_font_input = crate::ui_helpers::monospace_font(ui_tokens::BODY_FONT_SIZE);
@@ -27,7 +26,7 @@ pub(super) unsafe fn build_quality_tab(
 
         let title = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 24.0)),
-            text: "Transcription".to_string(),
+            text: "Voice Lab".to_string(),
             font_size: ui_tokens::TITLE_FONT_SIZE,
             bold: true,
             text_color: primary,
@@ -41,7 +40,7 @@ pub(super) unsafe fn build_quality_tab(
 
         let subtitle = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Choose the backend for the committed transcript. Overlay preview stays local and provisional."
+            text: "Live preview cadence and final STT routing. Only knobs that materially improve UX live here."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -357,310 +356,15 @@ pub(super) unsafe fn build_quality_tab(
         state.preview_timing_text_view = Some(preview_text_view as usize);
         y -= preview_box_height + gap;
 
-        y = add_tafla_header_separator(container, pad, y, content_w);
-        y -= ui_tokens::SECTION_GAP;
-
-        let final_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
-            text: "Final Transcript".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: primary,
-            ..Default::default()
-        });
-        add_subview(container, final_header);
-        y -= 18.0 + gap;
-
-        let ultra_on = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS")
-            .map(|v| parse_env_bool(&v))
-            .unwrap_or(false);
-        let ultra_check = add_toggle_row(
-            container,
-            action_handler,
-            pad,
-            &mut y,
-            field_w,
-            secondary,
-            ToggleRowSpec {
-                title: "Local file-based final pass",
-                checked: ultra_on,
-                action: sel!(onUltraQualityToggled:),
-                description: Some(
-                    "Re-runs local Whisper on the saved audio after capture ends. Best lever when preview looks fine but the committed verdict should be upgraded, downgraded, or blocked before paste/save.",
-                ),
-                tag: None,
-                gap,
-            },
-        );
-        state.ultra_quality_checkbox = Some(ultra_check as usize);
-
-        let _fmt_check = add_toggle_row(
-            container,
-            action_handler,
-            pad,
-            &mut y,
-            field_w,
-            secondary,
-            ToggleRowSpec {
-                title: "AI Formatting",
-                checked: _config.ai_formatting_enabled,
-                action: sel!(onFormattingToggled:),
-                description: Some(
-                    "Uses the formatting model to clean up the committed transcript. If formatting fails, the raw transcript is preserved and labeled as a formatting fallback.",
-                ),
-                tag: None,
-                gap,
-            },
-        );
-
-        let _tagging_check = add_toggle_row(
-            container,
-            action_handler,
-            pad,
-            &mut y,
-            field_w,
-            secondary,
-            ToggleRowSpec {
-                title: "Tag transcripts for AI agents",
-                checked: _config.transcript_tagging_enabled,
-                action: sel!(onTranscriptTaggingToggled:),
-                description: Some(
-                    "Pastes speech as <codescribe mode=\"dictation\" lang=\"pl\">... so agents treat dictated text as spoken, revisable input.",
-                ),
-                tag: None,
-                gap,
-            },
-        );
-
-        let fmt_level_label = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(120.0, 18.0)),
-            text: "Formatting level:".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            text_color: secondary,
-            ..Default::default()
-        });
-        add_subview(container, fmt_level_label);
-
-        let ns_popup = objc_class("NSPopUpButton");
-        let fmt_popup: Id = msg_send![ns_popup, alloc];
-        let fmt_popup: Id = msg_send![fmt_popup, initWithFrame:
-            CGRect::new(&CGPoint::new(pad + 124.0, y - 2.0), &CGSize::new(240.0, 24.0))
-            pullsDown: false
-        ];
-        let _: () = msg_send![fmt_popup, addItemWithTitle: ns_string("Raw")];
-        let _: () = msg_send![fmt_popup, addItemWithTitle: ns_string("Medium")];
-        let _: () = msg_send![fmt_popup, addItemWithTitle: ns_string("Creative")];
-        let current_level = std::env::var("FORMATTING_LEVEL").unwrap_or_default();
-        let sel_idx: isize = match current_level.as_str() {
-            "raw" => 0,
-            "medium" => 1,
-            "creative" => 2,
-            _ => 1,
-        };
-        let _: () = msg_send![fmt_popup, selectItemAtIndex: sel_idx];
-        button_set_action(fmt_popup, action_handler, sel!(onFormattingLevelChanged:));
-        add_subview(container, fmt_popup);
-        y -= 24.0 + gap;
-
         let routing_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Whisper language lives in Audio & Input. AI endpoints and prompts live in AI & Prompts."
+            text: "Whisper language lives in Audio. AI formatting and slow-moving user toggles live in User."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
         });
         add_subview(container, routing_hint);
-        y -= 16.0 + gap;
-
-        let divider = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 1.0)),
-            text: String::new(),
-            background_color: Some(ui_colors::surface_border()),
-            ..Default::default()
-        });
-        let _: () = msg_send![divider, setAlphaValue: 0.9f64];
-        add_subview(container, divider);
-        y -= ui_tokens::SECTION_GAP;
-
-        let automation_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
-            text: "Quality Automation".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: primary,
-            ..Default::default()
-        });
-        add_subview(container, automation_header);
-        y -= 18.0 + gap;
-
-        let quality_on = UserSettings::load()
-            .qube_daemon_autostart
-            .unwrap_or_else(|| {
-                std::env::var("QUBE_DAEMON_AUTOSTART")
-                    .map(|v| parse_env_bool(&v))
-                    .unwrap_or(false)
-            });
-        let quality_check = add_toggle_row(
-            container,
-            action_handler,
-            pad,
-            &mut y,
-            field_w,
-            secondary,
-            ToggleRowSpec {
-                title: "Start quality daemon automatically",
-                checked: quality_on,
-                action: sel!(onQubeDaemonToggled:),
-                description: Some(
-                    "Starts bundled `qube-daemon --daemon` immediately and on next CodeScribe launch when the binary is installed. \
-                     Turning it off stops the daemon only when CodeScribe owns that process; externally managed launchd or shell runs remain untouched.",
-                ),
-                tag: None,
-                gap,
-            },
-        );
-        state.qube_daemon_checkbox = Some(quality_check as usize);
-
-        let automation_hint = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Use reports below to compare raw, postprocess, and final output when the runtime starts lying."
-                .to_string(),
-            font_size: ui_tokens::MICRO_FONT_SIZE,
-            text_color: secondary,
-            ..Default::default()
-        });
-        add_subview(container, automation_hint);
-        y -= 16.0 + gap;
-
-        let daemon_divider = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(field_w, 1.0)),
-            text: String::new(),
-            background_color: Some(ui_colors::surface_border()),
-            ..Default::default()
-        });
-        let _: () = msg_send![daemon_divider, setAlphaValue: 0.9f64];
-        add_subview(container, daemon_divider);
-        y -= ui_tokens::SECTION_GAP;
-
-        let dashboard_header = create_label(LabelConfig {
-            frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
-            text: "Daemon State".to_string(),
-            font_size: ui_tokens::SMALL_FONT_SIZE,
-            bold: true,
-            text_color: primary,
-            ..Default::default()
-        });
-        add_subview(container, dashboard_header);
-        y -= 18.0 + gap;
-
-        let snapshot = crate::qube_lifecycle::dashboard_snapshot();
-        let daemon_state = &snapshot.daemon_state;
-
-        let add_metric_row = |container: Id,
-                              y: &mut f64,
-                              label: &str,
-                              value: &str,
-                              value_color: Id,
-                              width: f64,
-                              pad: f64,
-                              gap: f64|
-         -> usize {
-            let label_view = create_label(LabelConfig {
-                frame: CGRect::new(&CGPoint::new(pad, *y), &CGSize::new(124.0, 18.0)),
-                text: label.to_string(),
-                font_size: ui_tokens::SMALL_FONT_SIZE,
-                text_color: crate::ui_helpers::color_secondary_label(),
-                ..Default::default()
-            });
-            add_subview(container, label_view);
-
-            let value_view = create_label(LabelConfig {
-                frame: CGRect::new(
-                    &CGPoint::new(pad + 126.0, *y),
-                    &CGSize::new((width - 126.0).max(120.0), 18.0),
-                ),
-                text: value.to_string(),
-                font_size: ui_tokens::SMALL_FONT_SIZE,
-                text_color: value_color,
-                ..Default::default()
-            });
-            add_subview(container, value_view);
-            *y -= 18.0 + gap;
-            value_view as usize
-        };
-
-        let available_text = snapshot.availability_label();
-        let available_color = if snapshot.available {
-            ui_colors::status_granted()
-        } else {
-            ui_colors::status_warning()
-        };
-        state.quality_available_label = Some(add_metric_row(
-            container,
-            &mut y,
-            "Availability:",
-            available_text,
-            available_color,
-            content_w,
-            pad,
-            gap,
-        ));
-        state.quality_pending_label = Some(add_metric_row(
-            container,
-            &mut y,
-            "Pending:",
-            &daemon_state.pending_mismatches.to_string(),
-            if daemon_state.pending_mismatches > 0 {
-                ui_colors::status_warning()
-            } else {
-                secondary
-            },
-            content_w,
-            pad,
-            gap,
-        ));
-        state.quality_last_check_label = Some(add_metric_row(
-            container,
-            &mut y,
-            "Last check:",
-            &quality_last_check_text(&daemon_state.last_check),
-            secondary,
-            content_w,
-            pad,
-            gap,
-        ));
-        state.qube_report_label = Some(add_metric_row(
-            container,
-            &mut y,
-            "Latest report:",
-            &qube_report_text(daemon_state),
-            secondary,
-            content_w,
-            pad,
-            gap,
-        ));
-
-        let refresh_btn = create_button(
-            CGRect::new(&CGPoint::new(pad, y - 2.0), &CGSize::new(116.0, 24.0)),
-            "Refresh status",
-            button_style::GLASS,
-        );
-        button_set_action(refresh_btn, action_handler, sel!(onQualityRefresh:));
-        add_subview(container, refresh_btn);
-
-        let open_report_btn = create_button(
-            CGRect::new(
-                &CGPoint::new(pad + 126.0, y - 2.0),
-                &CGSize::new(128.0, 24.0),
-            ),
-            "Open report",
-            button_style::GLASS,
-        );
-        button_set_action(open_report_btn, action_handler, sel!(onOpenQualityReport:));
-        let _: () = msg_send![open_report_btn, setEnabled: qube_report_exists(daemon_state)];
-        add_subview(container, open_report_btn);
-        state.quality_open_report_button = Some(open_report_btn as usize);
 
         container
     }
