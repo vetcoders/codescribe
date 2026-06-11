@@ -1130,6 +1130,18 @@ pub fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
             0.0
         };
 
+        if let Some(latest_ptr) = state.agent_latest_button {
+            let latest_button = latest_ptr as Id;
+            let latest_frame = super::super::latest_pill_frame(
+                content_width,
+                footer_inset,
+                desired_h,
+                input_gap,
+                chip_strip_extra,
+            );
+            let _: () = msg_send![latest_button, setFrame: latest_frame];
+        }
+
         // Keep the agent scroll full-bleed and track input + chips with the
         // bottom content inset, so messages scroll beneath the input bar while
         // the last bubble stays clear of it.
@@ -1154,6 +1166,17 @@ pub fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
                 let new_size = CGSize::new(new_agent_frame.size.width, container_frame.size.height);
                 let _: () = msg_send![container, setFrameSize: new_size];
             }
+
+            if state.scroll_pinned {
+                let last_bubble = state
+                    .agent_bubble_views
+                    .last()
+                    .map(|(bubble_ptr, _)| *bubble_ptr);
+                scroll_agent_to_bottom(last_bubble, Some(agent_scroll_ptr));
+            } else {
+                state.scroll_pinned = is_scrolled_to_bottom(agent_scroll);
+            }
+            update_latest_pill_visibility(state);
         }
     }
 }

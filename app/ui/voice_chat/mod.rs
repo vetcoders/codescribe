@@ -79,6 +79,20 @@ fn chat_scroll_inset_above_input(input_height: f64, inner_pad: f64, content_gap:
     (input_height + inner_pad + content_gap).max(0.0)
 }
 
+fn latest_pill_frame(
+    content_width: f64,
+    footer_inset: f64,
+    input_height: f64,
+    content_gap: f64,
+    extra_above_input: f64,
+) -> CGRect {
+    let width = 96.0;
+    let height = 28.0;
+    let x = ((content_width - width) / 2.0).max(0.0);
+    let y = footer_inset + input_height + content_gap.max(6.0) + extra_above_input;
+    CGRect::new(&CGPoint::new(x, y), &CGSize::new(width, height))
+}
+
 pub(super) fn shortcuts_lines(bindings: ModeHotkeyBindings) -> (String, String) {
     let hold_line = match bindings.dictation {
         ShortcutBinding::HoldFn => "Hold Fn — record • Fn+Shift — chat • Fn+Cmd — selection",
@@ -833,6 +847,17 @@ fn show_voice_chat_overlay_impl() {
         // Same rule: keep the document view width-resizable, but let its height expand to content.
         let _: () = msg_send![agent_container, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE];
         let _: () = msg_send![agent_scroll, setDocumentView: agent_container];
+        if let Some(notification_center) = Class::get("NSNotificationCenter") {
+            let center: Id = msg_send![notification_center, defaultCenter];
+            let live_scroll = ns_string("NSScrollViewDidLiveScrollNotification");
+            let _: () = msg_send![
+                center,
+                addObserver: action_handler
+                selector: sel!(onAgentScrollLive:)
+                name: live_scroll
+                object: agent_scroll
+            ];
+        }
         add_subview(content_view, agent_scroll);
 
         // Drawer footer (search) — lives inside the sidebar column so its
@@ -1032,6 +1057,39 @@ fn show_voice_chat_overlay_impl() {
         ];
         let _: () = msg_send![input_bar, addSubview: agent_send_button];
 
+        let latest_button = create_button(
+            latest_pill_frame(
+                content_frame.size.width,
+                ui_tokens::FOOTER_INSET,
+                agent_input_height,
+                ui_tokens::CONTENT_GAP,
+                0.0,
+            ),
+            "↓ Latest",
+            button_style::ROUNDED,
+        );
+        let _: () = msg_send![latest_button, setWantsLayer: true];
+        let latest_layer: Id = msg_send![latest_button, layer];
+        if !latest_layer.is_null() {
+            let color = ui_colors::input_bar_bg();
+            let cg_color: Id = msg_send![color, CGColor];
+            let _: () = msg_send![latest_layer, setBackgroundColor: cg_color];
+            let border = ui_colors::input_bar_border();
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![latest_layer, setBorderColor: cg_border];
+            let _: () = msg_send![latest_layer, setBorderWidth: ui_tokens::SURFACE_BORDER_WIDTH];
+            apply_tafla_surface(latest_layer, false);
+            let _: () = msg_send![latest_layer, setMasksToBounds: true];
+        }
+        button_set_action(latest_button, action_handler, sel!(onLatestMessage:));
+        set_tooltip(latest_button, "Jump to latest message");
+        let _: () = msg_send![
+            latest_button,
+            setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MAX_X_MARGIN | NSVIEW_MAX_Y_MARGIN
+        ];
+        set_hidden(latest_button, true);
+        add_subview(content_view, latest_button);
+
         // Attachment chip strip (horizontal, above input bar, hidden when empty).
         let chip_strip_height = 36.0f64;
         let chip_strip_y = ui_tokens::FOOTER_INSET + agent_input_height + ui_tokens::CONTENT_GAP;
@@ -1072,6 +1130,7 @@ fn show_voice_chat_overlay_impl() {
         // Initial visibility
         set_hidden(agent_scroll, true);
         set_hidden(input_bar, true);
+        set_hidden(latest_button, true);
         set_hidden(title_label, true);
 
         // Phase 3 — store widget pointers into state (short lock scope).
@@ -1107,6 +1166,7 @@ fn show_voice_chat_overlay_impl() {
             state.agent_input_field = None;
             state.agent_attach_button = Some(agent_attach_button as usize);
             state.agent_send_button = Some(agent_send_button as usize);
+            state.agent_latest_button = Some(latest_button as usize);
             state.attachment_chip_strip = Some(chip_scroll as usize);
             state.action_handler = Some(action_handler as usize);
             // Restore persisted zoom level from settings.json.

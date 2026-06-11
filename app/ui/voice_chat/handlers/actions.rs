@@ -136,6 +136,14 @@ pub extern "C" fn on_assistant_bubble_click(_this: &Object, _cmd: Sel, sender: I
     handle_message_bubble_click_from_recognizer(sender);
 }
 
+pub extern "C" fn on_agent_scroll_live(_this: &Object, _cmd: Sel, _notification: Id) {
+    handle_agent_scroll_live();
+}
+
+pub extern "C" fn on_latest_message(_this: &Object, _cmd: Sel, _sender: Id) {
+    pin_agent_scroll_to_latest_impl();
+}
+
 pub extern "C" fn on_card_copy(_this: &Object, _cmd: Sel, sender: Id) {
     let index: isize = unsafe { msg_send![sender, tag] };
     let index = index.max(0) as usize;

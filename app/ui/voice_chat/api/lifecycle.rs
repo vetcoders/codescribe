@@ -43,6 +43,18 @@ pub struct ReleasedOverlayHandles {
     window: Option<usize>,
 }
 
+fn remove_notification_observer(observer: Option<usize>) {
+    let Some(observer) = observer else {
+        return;
+    };
+    unsafe {
+        if let Some(notification_center) = Class::get("NSNotificationCenter") {
+            let center: Id = msg_send![notification_center, defaultCenter];
+            let _: () = msg_send![center, removeObserver: observer as Id];
+        }
+    }
+}
+
 /// Drain the three owned ObjC handles out of the overlay state and clear all
 /// other fields. Returns the handles for the caller to release after dropping
 /// the state lock. Calling code MUST eventually `release` each `Some(ptr)`
@@ -70,6 +82,8 @@ pub fn hide_voice_chat_overlay_impl() {
     };
 
     if let Some(window_ptr) = handles.window {
+        remove_notification_observer(handles.action_handler);
+
         // SAFETY: `window_ptr` was obtained from `[NSWindow alloc] init...]`
         // / `[cls new]` on the main thread and stored in `handles.window`
         // while still retained. We are on the main thread (overlay teardown
@@ -118,6 +132,8 @@ pub fn hide_voice_chat_overlay_impl() {
             });
         });
     } else {
+        remove_notification_observer(handles.action_handler);
+
         // If there was no window, we still need to release the delegate and action handler
         unsafe {
             if let Some(ptr) = handles.window_delegate {
@@ -172,6 +188,7 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.agent_input_field = None;
     state.agent_attach_button = None;
     state.agent_send_button = None;
+    state.agent_latest_button = None;
     state.attachments.clear();
     state.attachments_last_sent = None;
     state.attachment_chip_strip = None;
@@ -181,6 +198,7 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.active_assistant_stream_index = None;
     state.active_reasoning_stream_index = None;
     state.is_sending = false;
+    state.scroll_pinned = true;
     state.manual_draft.clear();
     state.conversation_state = ConversationModeState::Inactive;
 }

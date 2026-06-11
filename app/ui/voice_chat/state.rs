@@ -153,6 +153,7 @@ pub struct VoiceChatOverlayState {
     pub agent_input_field: Option<usize>,
     pub agent_attach_button: Option<usize>,
     pub agent_send_button: Option<usize>,
+    pub agent_latest_button: Option<usize>,
     /// Attachments (files, images, URLs, GitHub blobs) for Agent chat context.
     pub attachments: Vec<Attachment>,
     /// Fingerprint of the last attachment set sent to the assistant.
@@ -178,6 +179,8 @@ pub struct VoiceChatOverlayState {
     /// True while the agent is reasoning after a voice transcript was handed off / sent.
     /// Used to show "Thinking..." / reasoning indicator in the Agent tab.
     pub is_agent_thinking: bool,
+    /// True when the user is pinned to the bottom of the agent transcript.
+    pub scroll_pinned: bool,
     pub auto_send_enabled: bool,
     /// Last status text provided by caller before runtime-health decoration is applied.
     pub status_base_text: String,
@@ -247,6 +250,7 @@ impl Default for VoiceChatOverlayState {
             agent_input_field: None,
             agent_attach_button: None,
             agent_send_button: None,
+            agent_latest_button: None,
             attachments: Vec::new(),
             attachments_last_sent: None,
             attachment_chip_strip: None,
@@ -259,6 +263,7 @@ impl Default for VoiceChatOverlayState {
             manual_draft: String::new(),
             is_sending: false,
             is_agent_thinking: false,
+            scroll_pinned: true,
             auto_send_enabled: true,
             status_base_text: "Ready".to_string(),
             status_text: "Ready".to_string(),

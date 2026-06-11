@@ -55,6 +55,7 @@ pub fn update_active_tab_impl(tab: Tab) {
         agent_bar,
         agent_attach,
         agent_send,
+        latest_button,
         title_label,
         window_ptr,
         agent_input_tv,
@@ -80,6 +81,7 @@ pub fn update_active_tab_impl(tab: Tab) {
             state.agent_input_bar,
             state.agent_attach_button,
             state.agent_send_button,
+            state.agent_latest_button,
             state.title_label,
             state.window,
             state.agent_input_text_view,
@@ -139,6 +141,9 @@ pub fn update_active_tab_impl(tab: Tab) {
         if let Some(p) = agent_send {
             crate::ui_helpers::set_hidden(p as Id, !show_agent);
         }
+        if let Some(p) = latest_button {
+            crate::ui_helpers::set_hidden(p as Id, true);
+        }
         if let Some(p) = title_label {
             crate::ui_helpers::set_hidden(p as Id, !show_agent);
         }
@@ -150,6 +155,7 @@ pub fn update_active_tab_impl(tab: Tab) {
                 update_chat_view_with_state(&mut state, true);
             }
             resize_agent_input_locked(&mut state);
+            update_latest_pill_visibility(&state);
         }
 
         // Nudge first responder to agent input when window is already key.
@@ -224,6 +230,9 @@ pub fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
         if let Some(agent_send) = state.agent_send_button {
             crate::ui_helpers::set_hidden(agent_send as Id, !show_agent);
         }
+        if let Some(latest_button) = state.agent_latest_button {
+            crate::ui_helpers::set_hidden(latest_button as Id, true);
+        }
         if let Some(title_label) = state.title_label {
             crate::ui_helpers::set_hidden(title_label as Id, !show_agent);
         }
@@ -236,6 +245,7 @@ pub fn update_active_tab_locked(state: &mut VoiceChatOverlayState, tab: Tab) {
                 update_chat_view_with_state(state, true);
             }
             resize_agent_input_locked(state);
+            update_latest_pill_visibility(state);
         }
 
         // When switching to Agent, make sure the input field can actually receive text.

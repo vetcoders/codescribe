@@ -400,6 +400,21 @@ fn display_text_for_message_handles_streaming() {
 }
 
 #[test]
+fn should_autoscroll_follows_pinned_state() {
+    assert!(should_autoscroll(true));
+    assert!(!should_autoscroll(false));
+    assert!(VoiceChatOverlayState::default().scroll_pinned);
+}
+
+#[test]
+fn scrolled_to_bottom_math_uses_visible_max_y_threshold() {
+    assert!(scrolled_to_bottom_math(476.0, 300.0, 800.0, 24.0));
+    assert!(scrolled_to_bottom_math(500.0, 300.0, 800.0, 24.0));
+    assert!(!scrolled_to_bottom_math(450.0, 300.0, 800.0, 24.0));
+    assert!(scrolled_to_bottom_math(0.0, 500.0, 300.0, 24.0));
+}
+
+#[test]
 fn streaming_reasoning_collapses_when_finalized() {
     let mut state = VoiceChatOverlayState::default();
     state.messages.push(ChatMessage {

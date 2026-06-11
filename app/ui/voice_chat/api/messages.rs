@@ -210,6 +210,125 @@ pub fn handle_message_bubble_click_from_recognizer(sender: Id) {
 
 /// Minimum interval between layout passes during streaming (prevents main-thread saturation).
 pub const DELTA_LAYOUT_THROTTLE: Duration = Duration::from_millis(50);
+pub const SCROLL_BOTTOM_THRESHOLD: f64 = 24.0;
+
+pub fn should_autoscroll(scroll_pinned: bool) -> bool {
+    scroll_pinned
+}
+
+pub fn scrolled_to_bottom_math(
+    visible_y: f64,
+    visible_height: f64,
+    document_height: f64,
+    threshold: f64,
+) -> bool {
+    let visible_max_y = visible_y.max(0.0) + visible_height.max(0.0);
+    let threshold = threshold.max(0.0);
+    let bottom_y = (document_height.max(0.0) - threshold).max(0.0);
+    visible_max_y + f64::EPSILON >= bottom_y
+}
+
+pub unsafe fn is_scrolled_to_bottom(agent_scroll: Id) -> bool {
+    unsafe {
+        if agent_scroll.is_null() {
+            return true;
+        }
+        let document_view: Id = msg_send![agent_scroll, documentView];
+        if document_view.is_null() {
+            return true;
+        }
+        let visible: CGRect = msg_send![agent_scroll, documentVisibleRect];
+        let document_frame: CGRect = msg_send![document_view, frame];
+        scrolled_to_bottom_math(
+            visible.origin.y,
+            visible.size.height,
+            document_frame.size.height,
+            SCROLL_BOTTOM_THRESHOLD,
+        )
+    }
+}
+
+pub fn latest_message_is_streaming(state: &VoiceChatOverlayState) -> bool {
+    state
+        .messages
+        .last()
+        .map(|message| message.is_streaming)
+        .unwrap_or(false)
+}
+
+pub fn update_latest_pill_visibility(state: &VoiceChatOverlayState) {
+    let Some(button_ptr) = state.agent_latest_button else {
+        return;
+    };
+    let should_show = state.active_tab == Tab::Agent
+        && !state.scroll_pinned
+        && latest_message_is_streaming(state);
+    unsafe {
+        crate::ui_helpers::set_hidden(button_ptr as Id, !should_show);
+    }
+}
+
+pub unsafe fn scroll_agent_to_bottom(
+    last_bubble_ptr: Option<usize>,
+    scroll_view_ptr: Option<usize>,
+) {
+    unsafe {
+        if let Some(bubble_ptr) = last_bubble_ptr {
+            let bubble = bubble_ptr as Id;
+            let bounds: CGRect = msg_send![bubble, bounds];
+            let y = (bounds.size.height - 2.0).max(0.0);
+            let rect = CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(bounds.size.width, 2.0));
+            let _: () = msg_send![bubble, scrollRectToVisible: rect];
+            return;
+        }
+
+        if let Some(scroll_view_ptr) = scroll_view_ptr {
+            let scroll_view = scroll_view_ptr as Id;
+            let content_view: Id = msg_send![scroll_view, contentView];
+            if !content_view.is_null() {
+                let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, 0.0)];
+                let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
+            }
+        }
+    }
+}
+
+pub fn handle_agent_scroll_live() {
+    let scroll_view_ptr = {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.agent_scroll_view
+    };
+    let Some(scroll_view_ptr) = scroll_view_ptr else {
+        return;
+    };
+
+    let pinned = unsafe { is_scrolled_to_bottom(scroll_view_ptr as Id) };
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.agent_scroll_view != Some(scroll_view_ptr) {
+        return;
+    }
+    state.scroll_pinned = pinned;
+    update_latest_pill_visibility(&state);
+}
+
+pub fn pin_agent_scroll_to_latest_impl() {
+    let (last_bubble, scroll_view) = {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.scroll_pinned = true;
+        update_latest_pill_visibility(&state);
+        (
+            state
+                .agent_bubble_views
+                .last()
+                .map(|(bubble_ptr, _)| *bubble_ptr),
+            state.agent_scroll_view,
+        )
+    };
+
+    unsafe {
+        scroll_agent_to_bottom(last_bubble, scroll_view);
+    }
+}
 
 pub fn resolve_delta_index(
     state: &VoiceChatOverlayState,
@@ -506,17 +625,10 @@ pub fn try_update_message_view_in_place(state: &mut VoiceChatOverlayState, index
         let max_width = agent_max_width(state);
         sync_agent_document_view_size(state, max_width);
 
-        // Keep the latest message in view while streaming.
-        if index + 1 == state.agent_bubble_views.len()
-            && let Some(scroll_view_ptr) = state.agent_scroll_view
-        {
-            let _ = scroll_view_ptr;
-            let bounds: CGRect = msg_send![container, bounds];
-            // Scroll to the bottom edge of the bubble; if the bubble is taller than the viewport,
-            // scrolling the whole bounds can keep the top visible and never reach the bottom.
-            let y = (bounds.size.height - 2.0).max(0.0);
-            let rect = CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(bounds.size.width, 2.0));
-            let _: () = msg_send![container, scrollRectToVisible: rect];
+        update_latest_pill_visibility(state);
+
+        if should_autoscroll(state.scroll_pinned) && index + 1 == state.agent_bubble_views.len() {
+            scroll_agent_to_bottom(Some(container as usize), state.agent_scroll_view);
         }
         true
     }
@@ -887,17 +999,13 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
         // be disabled and long messages will just "grow" out of view.
         sync_agent_document_view_size(state, max_width);
 
-        if scroll_to_bottom {
+        update_latest_pill_visibility(state);
+
+        if scroll_to_bottom && should_autoscroll(state.scroll_pinned) {
             if let Some(bubble) = last_bubble {
-                let bounds: CGRect = msg_send![bubble, bounds];
-                let y = (bounds.size.height - 2.0).max(0.0);
-                let rect = CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(bounds.size.width, 2.0));
-                let _: () = msg_send![bubble, scrollRectToVisible: rect];
+                scroll_agent_to_bottom(Some(bubble as usize), state.agent_scroll_view);
             } else if let Some(scroll_view_ptr) = state.agent_scroll_view {
-                let scroll_view = scroll_view_ptr as Id;
-                let content_view: Id = msg_send![scroll_view, contentView];
-                let _: () = msg_send![content_view, scrollToPoint: CGPoint::new(0.0, 0.0)];
-                let _: () = msg_send![scroll_view, reflectScrolledClipView: content_view];
+                scroll_agent_to_bottom(None, Some(scroll_view_ptr));
             }
         }
     }

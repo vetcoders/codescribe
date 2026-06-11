@@ -147,6 +147,14 @@ pub fn action_handler_class() -> *const Class {
                 on_assistant_bubble_click as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
+                sel!(onAgentScrollLive:),
+                on_agent_scroll_live as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onLatestMessage:),
+                on_latest_message as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
                 sel!(onCardCopy:),
                 on_card_copy as extern "C" fn(&Object, Sel, Id),
             );
