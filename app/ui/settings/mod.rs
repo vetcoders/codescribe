@@ -210,6 +210,7 @@ struct SettingsWindowState {
     preview_advanced_button: Option<usize>,
     preview_advanced_rows: Vec<usize>,
     preview_advanced_expanded: bool,
+    preview_timing_forced_custom: bool,
     config_cache: Option<Config>,
     // Onboarding additions
     permission_labels: [Option<usize>; 5],
@@ -274,6 +275,7 @@ fn clear_settings_ui_state(state: &mut SettingsWindowState) {
     state.preview_advanced_button = None;
     state.preview_advanced_rows.clear();
     state.preview_advanced_expanded = false;
+    state.preview_timing_forced_custom = false;
     state.permission_labels = [None, None, None, None, None];
     state.permission_action_buttons = [None, None, None, None, None];
     state.permission_requested = [false; 5];

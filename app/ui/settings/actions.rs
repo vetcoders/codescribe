@@ -494,6 +494,7 @@ pub(super) extern "C" fn on_preview_preset_changed(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             state.preview_advanced_expanded = matches!(preset, PreviewTimingPreset::Custom);
+            state.preview_timing_forced_custom = matches!(preset, PreviewTimingPreset::Custom);
         }
 
         if matches!(preset, PreviewTimingPreset::Custom) {
@@ -562,6 +563,7 @@ fn mark_preview_timing_custom() {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     state.preview_advanced_expanded = true;
+    state.preview_timing_forced_custom = true;
 }
 
 pub(super) extern "C" fn on_preview_buffer_delay_changed(

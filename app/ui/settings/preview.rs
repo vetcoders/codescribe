@@ -419,7 +419,6 @@ pub(super) fn preview_timing_report_text(model: PreviewTimingModel) -> String {
 
 pub(super) fn refresh_transcription_preview_panel() {
     let model = current_preview_timing_model();
-    let preset = detect_preset(model);
     let env_override = preview_timing_has_env_override();
     let preview_text = preview_timing_report_text(model);
     let summary_text = preview_timing_summary_text(model);
@@ -436,6 +435,7 @@ pub(super) fn refresh_transcription_preview_panel() {
         preview_text_view,
         preset_segment,
         env_override_label,
+        forced_custom,
     ) = {
         let state = SETTINGS_WINDOW_STATE
             .lock()
@@ -453,7 +453,13 @@ pub(super) fn refresh_transcription_preview_panel() {
             state.preview_timing_text_view,
             state.preview_preset_segment,
             state.preview_env_override_label,
+            state.preview_timing_forced_custom,
         )
+    };
+    let preset = if forced_custom {
+        PreviewTimingPreset::Custom
+    } else {
+        detect_preset(model)
     };
 
     // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.

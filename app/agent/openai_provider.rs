@@ -497,12 +497,11 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{OpenAiProvider, build_request_input_items, format_tool_output, request_messages};
-    use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
 
     use codescribe_core::agent::{
-        AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
+        AgentAssetStore, AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions,
     };
     use reqwest::Client;
     use serde_json::json;
@@ -607,14 +606,10 @@ mod tests {
 
     #[test]
     fn tool_result_image_asset_adds_native_input_image_item() {
-        let tmp = tempfile::NamedTempFile::new().expect("temp image should be created");
-        std::fs::write(tmp.path(), b"png bytes").expect("temp image should be writable");
-        let asset = ImageAsset {
-            asset_id: "screenshot_test".to_string(),
-            path: PathBuf::from(tmp.path()),
-            media_type: "image/png".to_string(),
-            size_bytes: 9,
-        };
+        let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
+            .expect("image asset should save");
+        let asset_id = asset.asset_id.clone();
+        let asset_path = asset.path.clone();
         let messages = vec![Message::new(
             Role::User,
             vec![ContentBlock::ToolResult {
@@ -633,7 +628,7 @@ mod tests {
             items[0]["output"]
                 .as_str()
                 .expect("tool output should be a string")
-                .contains("screenshot_test")
+                .contains(&asset_id)
         );
         assert_eq!(items[1]["type"], "message");
         assert_eq!(items[1]["content"][0]["type"], "input_image");
@@ -643,6 +638,7 @@ mod tests {
                 .expect("image_url should be a string")
                 .starts_with("data:image/png;base64,")
         );
+        std::fs::remove_file(asset_path).ok();
     }
 
     #[tokio::test]
