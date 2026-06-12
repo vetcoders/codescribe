@@ -477,6 +477,29 @@ fn test_should_use_toggle_adjudicated_stop_only_for_raw_toggle_when_enabled() {
 }
 
 #[test]
+fn test_transcript_delivery_wrap_is_default_off() {
+    let config = Config::default();
+
+    assert_eq!(
+        maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
+        "literal transcript"
+    );
+}
+
+#[test]
+fn test_transcript_delivery_wrap_uses_config_when_enabled() {
+    let mut config = Config::default();
+    config.transcript_tagging_enabled = true;
+    config.transcript_tag_template =
+        codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string();
+
+    assert_eq!(
+        maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
+        "<codescribe mode=\"dictation\" lang=\"pl\">\nliteral transcript\n</codescribe>"
+    );
+}
+
+#[test]
 fn test_toggle_stop_event_preserves_active_session_identity() {
     let right_option_stop = HotkeyInput {
         key_type: HotkeyType::Toggle,
