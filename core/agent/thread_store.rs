@@ -311,8 +311,16 @@ fn content_block_to_value(block: &ContentBlock) -> Value {
         }),
         ContentBlock::Image { data, media_type } => json!({
             "type": "image",
-            "data": data,
             "media_type": media_type,
+            "size_bytes": data.len(),
+            "data_omitted": true,
+        }),
+        ContentBlock::ImageAsset(asset) => json!({
+            "type": "image_asset",
+            "asset_id": asset.asset_id,
+            "path": asset.path,
+            "media_type": asset.media_type,
+            "size_bytes": asset.size_bytes,
         }),
         ContentBlock::ToolUse { id, name, input } => json!({
             "type": "tool_use",
@@ -347,22 +355,39 @@ fn value_to_content_block(value: &Value) -> ContentBlock {
                 .to_string(),
         ),
         "image" => {
-            let data = value
-                .get("data")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|byte| byte.as_u64().and_then(|raw| u8::try_from(raw).ok()))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
             let media_type = value
                 .get("media_type")
                 .and_then(Value::as_str)
                 .unwrap_or("application/octet-stream")
                 .to_string();
-            ContentBlock::Image { data, media_type }
+            ContentBlock::Image {
+                data: Vec::new(),
+                media_type,
+            }
+        }
+        "image_asset" => {
+            let asset = crate::agent::ImageAsset {
+                asset_id: value
+                    .get("asset_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                path: value
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from)
+                    .unwrap_or_default(),
+                media_type: value
+                    .get("media_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("application/octet-stream")
+                    .to_string(),
+                size_bytes: value
+                    .get("size_bytes")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+            };
+            ContentBlock::ImageAsset(asset)
         }
         "tool_use" => ContentBlock::ToolUse {
             id: value

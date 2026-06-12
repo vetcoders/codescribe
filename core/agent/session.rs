@@ -8,8 +8,8 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info, warn};
 
 use super::{
-    AgentEvent, AgentProvider, AgentUiEvent, ContentBlock, Message, Role, StreamOptions,
-    ToolDefinition, ToolRegistry, ToolResultContent,
+    AgentAssetStore, AgentEvent, AgentProvider, AgentUiEvent, ContentBlock, Message, Role,
+    StreamOptions, ToolDefinition, ToolRegistry, ToolResultContent,
 };
 
 const DEFAULT_MAX_ITERATIONS: usize = 25;
@@ -350,7 +350,15 @@ impl AgentSession {
                             content_blocks.push(ContentBlock::Text(text))
                         }
                         ToolResultContent::Image { data, media_type } => {
-                            content_blocks.push(self.provider.build_image_block(&data, &media_type))
+                            match AgentAssetStore::save_image(&data, &media_type) {
+                                Ok(asset) => content_blocks.push(ContentBlock::ImageAsset(asset)),
+                                Err(error) => content_blocks.push(ContentBlock::Text(format!(
+                                    "Image result could not be stored as an asset: {error}"
+                                ))),
+                            }
+                        }
+                        ToolResultContent::ImageAsset(asset) => {
+                            content_blocks.push(ContentBlock::ImageAsset(asset))
                         }
                         ToolResultContent::Error(message) => {
                             content_blocks.push(ContentBlock::Text(message))
@@ -430,7 +438,7 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
                     first_text = Some(text.trim().to_string());
                 }
             }
-            ToolResultContent::Image { .. } => image_count += 1,
+            ToolResultContent::Image { .. } | ToolResultContent::ImageAsset(_) => image_count += 1,
             ToolResultContent::Error(_) => error_count += 1,
         }
     }

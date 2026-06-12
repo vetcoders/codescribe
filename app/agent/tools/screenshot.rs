@@ -3,7 +3,7 @@ use std::ptr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{AgentAssetStore, ToolDefinition, ToolRegistry, ToolResultContent};
 use core_foundation::base::{CFRelease, CFType, TCFType, kCFAllocatorDefault};
 use core_foundation::data::{CFData, CFDataCreateMutable, CFDataRef, CFMutableDataRef};
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
@@ -45,7 +45,7 @@ fn screenshot_definition() -> ToolDefinition {
     ToolDefinition {
         name: "take_screenshot".to_string(),
         description:
-        "Capture a screenshot of the screen or a specific region. Returns the image as PNG data."
+        "Capture a screenshot of the screen or a specific region. Returns a saved image asset reference."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -63,10 +63,16 @@ fn screenshot_definition() -> ToolDefinition {
 
 async fn handle_take_screenshot(input: Value) -> Vec<ToolResultContent> {
     match capture_and_encode(input) {
-        Ok(png_bytes) => vec![ToolResultContent::Image {
-            data: png_bytes,
-            media_type: "image/png".to_string(),
-        }],
+        Ok(png_bytes) => match AgentAssetStore::save_image(&png_bytes, "image/png") {
+            Ok(asset) => vec![
+                ToolResultContent::Text(format!(
+                    "Screenshot captured as asset {} (image/png, {} bytes)",
+                    asset.asset_id, asset.size_bytes
+                )),
+                ToolResultContent::ImageAsset(asset),
+            ],
+            Err(error) => vec![ToolResultContent::Error(error.to_string())],
+        },
         Err(error) => vec![ToolResultContent::Error(error.to_string())],
     }
 }

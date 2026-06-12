@@ -4,6 +4,8 @@ use std::pin::Pin;
 
 use anyhow::{Context, Result};
 
+use super::types::ImageAsset;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolDefinition {
     pub name: String,
@@ -15,6 +17,7 @@ pub struct ToolDefinition {
 pub enum ToolResultContent {
     Text(String),
     Image { data: Vec<u8>, media_type: String },
+    ImageAsset(ImageAsset),
     Error(String),
 }
 

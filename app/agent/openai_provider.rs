@@ -12,7 +12,8 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::info;
 
 use codescribe_core::agent::{
-    AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions, ToolDefinition,
+    AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
+    ToolDefinition,
 };
 use codescribe_core::llm::responses_streaming_manager::{
     ResponsesStreamingManager, StreamCallbacks,
@@ -307,6 +308,9 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                         "image_url": to_data_uri(data, media_type)
                     }));
                 }
+                ContentBlock::ImageAsset(asset) => {
+                    content.push(image_asset_input_content(asset)?);
+                }
                 ContentBlock::ToolUse { id, name, input } => {
                     let arguments = serde_json::to_string(input).with_context(|| {
                         format!("Failed to serialize arguments for tool '{name}'")
@@ -328,6 +332,14 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                         "call_id": tool_use_id,
                         "output": format_tool_output(tool_content, *is_error)?
                     }));
+                    let image_content = tool_result_image_content(tool_content)?;
+                    if !image_content.is_empty() {
+                        items.push(json!({
+                            "type": "message",
+                            "role": "user",
+                            "content": image_content
+                        }));
+                    }
                 }
             }
         }
@@ -358,9 +370,19 @@ fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String
             }
             ContentBlock::Image { data, media_type } => {
                 parts.push(json!({
-                    "type": "image",
+                    "type": "image_reference",
                     "media_type": media_type,
-                    "data": BASE64.encode(data)
+                    "size_bytes": data.len(),
+                    "data_omitted": true
+                }));
+            }
+            ContentBlock::ImageAsset(asset) => {
+                parts.push(json!({
+                    "type": "image_asset",
+                    "asset_id": asset.asset_id,
+                    "media_type": asset.media_type,
+                    "size_bytes": asset.size_bytes,
+                    "path": asset.path
                 }));
             }
             ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. } => {}
@@ -391,6 +413,36 @@ fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String
         "content": parts
     });
     serde_json::to_string(&payload).context("Failed to serialize tool output payload")
+}
+
+fn tool_result_image_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
+    let mut image_content = Vec::new();
+    for block in content {
+        match block {
+            ContentBlock::Image { data, media_type } => {
+                image_content.push(json!({
+                    "type": "input_image",
+                    "image_url": to_data_uri(data, media_type)
+                }));
+            }
+            ContentBlock::ImageAsset(asset) => {
+                image_content.push(image_asset_input_content(asset)?);
+            }
+            ContentBlock::Text(_)
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::ToolResult { .. } => {}
+        }
+    }
+    Ok(image_content)
+}
+
+fn image_asset_input_content(asset: &ImageAsset) -> Result<Value> {
+    let data = std::fs::read(&asset.path)
+        .with_context(|| format!("Failed to read image asset {}", asset.path.display()))?;
+    Ok(json!({
+        "type": "input_image",
+        "image_url": to_data_uri(&data, &asset.media_type)
+    }))
 }
 
 fn role_to_str(role: Role) -> &'static str {
@@ -442,12 +494,13 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{OpenAiProvider, build_request_input_items, request_messages};
+    use super::{OpenAiProvider, build_request_input_items, format_tool_output, request_messages};
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
 
     use codescribe_core::agent::{
-        AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions,
+        AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     };
     use reqwest::Client;
     use serde_json::json;
@@ -532,6 +585,62 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["type"], "function_call_output");
         assert_eq!(items[0]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn format_tool_output_omits_raw_image_base64() {
+        let output = format_tool_output(
+            &[ContentBlock::Image {
+                data: b"not really a png".to_vec(),
+                media_type: "image/png".to_string(),
+            }],
+            false,
+        )
+        .expect("tool output should serialize");
+
+        assert!(output.contains("image_reference"));
+        assert!(output.contains("data_omitted"));
+        assert!(!output.contains("bm90IHJlYWxseSBhIHBuZw"));
+    }
+
+    #[test]
+    fn tool_result_image_asset_adds_native_input_image_item() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp image should be created");
+        std::fs::write(tmp.path(), b"png bytes").expect("temp image should be writable");
+        let asset = ImageAsset {
+            asset_id: "screenshot_test".to_string(),
+            path: PathBuf::from(tmp.path()),
+            media_type: "image/png".to_string(),
+            size_bytes: 9,
+        };
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_screenshot".to_string(),
+                content: vec![ContentBlock::ImageAsset(asset)],
+                is_error: false,
+            }],
+        )];
+
+        let items = build_request_input_items(&messages, None)
+            .expect("request input items should include image asset");
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["type"], "function_call_output");
+        assert!(
+            items[0]["output"]
+                .as_str()
+                .expect("tool output should be a string")
+                .contains("screenshot_test")
+        );
+        assert_eq!(items[1]["type"], "message");
+        assert_eq!(items[1]["content"][0]["type"], "input_image");
+        assert!(
+            items[1]["content"][0]["image_url"]
+                .as_str()
+                .expect("image_url should be a string")
+                .starts_with("data:image/png;base64,")
+        );
     }
 
     #[tokio::test]
