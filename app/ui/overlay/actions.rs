@@ -31,6 +31,81 @@ pub(super) enum AugmentAction {
     HandoffDecisionText(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OverlayActionButtonRole {
+    FormatPaste,
+    Copy,
+    AgentClose,
+    Finish,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OverlayButtonAction {
+    Format,
+    Paste,
+    Copy,
+    Agent,
+    Close,
+    Finish,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OverlayButtonRoute {
+    pub(super) action: OverlayButtonAction,
+    pub(super) selector_name: &'static str,
+}
+
+pub(super) const SETTINGS_SELECTOR_NAME: &str = "onTabSettings:";
+
+pub(super) fn overlay_button_route(
+    role: OverlayActionButtonRole,
+    phase: FormatPhase,
+) -> OverlayButtonRoute {
+    match role {
+        OverlayActionButtonRole::FormatPaste => match phase {
+            FormatPhase::Formatted => OverlayButtonRoute {
+                action: OverlayButtonAction::Paste,
+                selector_name: "onPasteTranscript:",
+            },
+            FormatPhase::Idle | FormatPhase::Formatting => OverlayButtonRoute {
+                action: OverlayButtonAction::Format,
+                selector_name: "onFormatTranscript:",
+            },
+        },
+        OverlayActionButtonRole::Copy => OverlayButtonRoute {
+            action: OverlayButtonAction::Copy,
+            selector_name: "onCopyTranscript:",
+        },
+        OverlayActionButtonRole::AgentClose => match phase {
+            FormatPhase::Formatted => OverlayButtonRoute {
+                action: OverlayButtonAction::Close,
+                selector_name: "onCloseTranscript:",
+            },
+            FormatPhase::Idle | FormatPhase::Formatting => OverlayButtonRoute {
+                action: OverlayButtonAction::Agent,
+                selector_name: "onAgentTranscript:",
+            },
+        },
+        OverlayActionButtonRole::Finish => OverlayButtonRoute {
+            action: OverlayButtonAction::Finish,
+            selector_name: "onCommitRecording:",
+        },
+    }
+}
+
+pub(super) fn overlay_button_selector(role: OverlayActionButtonRole, phase: FormatPhase) -> Sel {
+    let route = overlay_button_route(role, phase);
+    debug_assert_ne!(route.selector_name, SETTINGS_SELECTOR_NAME);
+    match route.action {
+        OverlayButtonAction::Format => sel!(onFormatTranscript:),
+        OverlayButtonAction::Paste => sel!(onPasteTranscript:),
+        OverlayButtonAction::Copy => sel!(onCopyTranscript:),
+        OverlayButtonAction::Agent => sel!(onAgentTranscript:),
+        OverlayButtonAction::Close => sel!(onCloseTranscript:),
+        OverlayButtonAction::Finish => sel!(onCommitRecording:),
+    }
+}
+
 pub(super) fn action_handler_class() -> *const Class {
     ACTION_HANDLER_INIT.call_once(|| unsafe {
         let superclass = Class::get("NSObject").unwrap();
@@ -47,6 +122,14 @@ pub(super) fn action_handler_class() -> *const Class {
         decl.add_method(
             sel!(onFormatTranscript:),
             on_format_transcript as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(onPasteTranscript:),
+            on_paste_transcript as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(onCloseTranscript:),
+            on_close_transcript as extern "C" fn(&Object, Sel, Id),
         );
         decl.add_method(
             sel!(onCommitRecording:),
@@ -133,12 +216,7 @@ extern "C" fn on_copy_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
 /// and commits the current segment, then augments. ADR 2026-05-28 Faza 1 renames
 /// the former "Augment" action to "Agent" — same handoff, clearer contract.
 extern "C" fn on_agent_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
-    let (text, decision_mode, snap) = current_action_text_snapshot();
-    if snap.format_phase == FormatPhase::Formatted {
-        hide_transcription_overlay();
-        return;
-    }
-
+    let (text, decision_mode, _) = current_action_text_snapshot();
     if text.trim().is_empty() {
         return;
     }
@@ -167,8 +245,7 @@ extern "C" fn on_format_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
     match snap.format_phase {
         FormatPhase::Formatting => {}
         FormatPhase::Formatted => {
-            crate::controller::request_overlay_paste(text);
-            set_status_message_unlocked(&snap, "Pasted", false);
+            on_paste_transcript(_this, _cmd, _sender);
         }
         FormatPhase::Idle => {
             crate::ui::overlay::enter_overlay_formatting();
@@ -177,6 +254,22 @@ extern "C" fn on_format_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
             });
         }
     }
+}
+
+/// Handler: Paste = paste the current editable formatted transcript.
+extern "C" fn on_paste_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
+    let (text, _, snap) = current_action_text_snapshot();
+    if text.trim().is_empty() {
+        return;
+    }
+
+    crate::controller::request_overlay_paste(text);
+    set_status_message_unlocked(&snap, "Pasted", false);
+}
+
+/// Handler: Close = dismiss the formatted overlay without routing through Agent.
+extern "C" fn on_close_transcript(_this: &Object, _cmd: Sel, _sender: Id) {
+    hide_transcription_overlay();
 }
 
 /// Handler: Commit segment = save WAV + transcript + Quick Notes WITHOUT

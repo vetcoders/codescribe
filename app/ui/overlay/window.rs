@@ -16,7 +16,7 @@ use objc2_app_kit::{
 };
 use tracing::{info, warn};
 
-use super::actions::action_handler_class;
+use super::actions::{OverlayActionButtonRole, action_handler_class, overlay_button_selector};
 use super::layout::{
     NS_FLOATING_WINDOW_LEVEL, NSVIEW_HEIGHT_SIZABLE, NSVIEW_MAX_X_MARGIN, NSVIEW_MAX_Y_MARGIN,
     NSVIEW_MIN_Y_MARGIN, NSVIEW_WIDTH_SIZABLE, OVERLAY_BUTTON_HEIGHT, OVERLAY_CONTENT_GAP,
@@ -471,10 +471,26 @@ fn show_transcription_overlay_impl() {
         );
         set_tooltip(commit_button, "Stop recording and enter decision mode");
 
-        button_set_action(format_button, action_handler, sel!(onFormatTranscript:));
-        button_set_action(copy_button, action_handler, sel!(onCopyTranscript:));
-        button_set_action(agent_button, action_handler, sel!(onAgentTranscript:));
-        button_set_action(commit_button, action_handler, sel!(onCommitRecording:));
+        button_set_action(
+            format_button,
+            action_handler,
+            overlay_button_selector(OverlayActionButtonRole::FormatPaste, FormatPhase::Idle),
+        );
+        button_set_action(
+            copy_button,
+            action_handler,
+            overlay_button_selector(OverlayActionButtonRole::Copy, FormatPhase::Idle),
+        );
+        button_set_action(
+            agent_button,
+            action_handler,
+            overlay_button_selector(OverlayActionButtonRole::AgentClose, FormatPhase::Idle),
+        );
+        button_set_action(
+            commit_button,
+            action_handler,
+            overlay_button_selector(OverlayActionButtonRole::Finish, FormatPhase::Idle),
+        );
 
         add_subview(content_view, format_button);
         add_subview(content_view, copy_button);

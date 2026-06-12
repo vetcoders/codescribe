@@ -8,6 +8,7 @@
 use objc::runtime::Object;
 use objc::{msg_send, sel, sel_impl};
 
+use super::actions::{OverlayActionButtonRole, overlay_button_selector};
 use super::state::{
     FormatPhase, OverlaySnapshot, TranscriptionActionContractMode, auto_hide_delay_secs,
 };
@@ -166,6 +167,21 @@ fn set_button_enabled(button: Id, enabled: bool) {
     }
 }
 
+fn set_button_route(
+    button: Id,
+    target: Option<usize>,
+    role: OverlayActionButtonRole,
+    phase: FormatPhase,
+) {
+    let action = overlay_button_selector(role, phase);
+    unsafe {
+        if let Some(target_ptr) = target {
+            let _: () = msg_send![button, setTarget: target_ptr as Id];
+        }
+        let _: () = msg_send![button, setAction: action];
+    }
+}
+
 pub(super) fn set_format_phase_ui_unlocked(
     snap: &OverlaySnapshot,
     mode: TranscriptionActionContractMode,
@@ -179,13 +195,26 @@ pub(super) fn set_format_phase_ui_unlocked(
         let button = format_ptr as Id;
         set_button_title(button, title);
         set_button_enabled(button, snap.format_phase != FormatPhase::Formatting);
+        set_button_route(
+            button,
+            snap.action_handler,
+            OverlayActionButtonRole::FormatPaste,
+            snap.format_phase,
+        );
         unsafe {
             set_tooltip(button, format_action_tooltip(snap.format_phase));
         }
     }
 
     if let Some(copy_ptr) = snap.copy_button {
-        set_button_enabled(copy_ptr as Id, snap.format_phase != FormatPhase::Formatting);
+        let button = copy_ptr as Id;
+        set_button_enabled(button, snap.format_phase != FormatPhase::Formatting);
+        set_button_route(
+            button,
+            snap.action_handler,
+            OverlayActionButtonRole::Copy,
+            snap.format_phase,
+        );
     }
 
     if let Some(augment_ptr) = snap.augment_button {
@@ -197,6 +226,12 @@ pub(super) fn set_format_phase_ui_unlocked(
         };
         set_button_title(button, title);
         set_button_enabled(button, snap.format_phase != FormatPhase::Formatting);
+        set_button_route(
+            button,
+            snap.action_handler,
+            OverlayActionButtonRole::AgentClose,
+            snap.format_phase,
+        );
         unsafe {
             set_tooltip(button, augment_action_tooltip(mode, snap.format_phase));
         }

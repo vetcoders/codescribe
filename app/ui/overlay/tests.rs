@@ -4,7 +4,10 @@
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use super::actions::{AugmentAction, augment_action_for_state};
+use super::actions::{
+    AugmentAction, OverlayActionButtonRole, OverlayButtonAction, SETTINGS_SELECTOR_NAME,
+    augment_action_for_state, overlay_button_route,
+};
 use super::layout::{
     OVERLAY_TEXT_MIN_HEIGHT, OVERLAY_WINDOW_MIN_HEIGHT, compute_overlay_layout_metrics,
 };
@@ -187,6 +190,72 @@ impl DeltaSink for OverlayReplaySink {
             .unwrap_or_else(|e| e.into_inner())
             .push(visible);
     }
+}
+
+#[test]
+fn test_overlay_button_routes_are_distinct_from_settings_handler() {
+    let cases = [
+        (
+            OverlayActionButtonRole::FormatPaste,
+            FormatPhase::Idle,
+            OverlayButtonAction::Format,
+            "onFormatTranscript:",
+        ),
+        (
+            OverlayActionButtonRole::FormatPaste,
+            FormatPhase::Formatted,
+            OverlayButtonAction::Paste,
+            "onPasteTranscript:",
+        ),
+        (
+            OverlayActionButtonRole::Copy,
+            FormatPhase::Idle,
+            OverlayButtonAction::Copy,
+            "onCopyTranscript:",
+        ),
+        (
+            OverlayActionButtonRole::Copy,
+            FormatPhase::Formatted,
+            OverlayButtonAction::Copy,
+            "onCopyTranscript:",
+        ),
+        (
+            OverlayActionButtonRole::AgentClose,
+            FormatPhase::Idle,
+            OverlayButtonAction::Agent,
+            "onAgentTranscript:",
+        ),
+        (
+            OverlayActionButtonRole::AgentClose,
+            FormatPhase::Formatted,
+            OverlayButtonAction::Close,
+            "onCloseTranscript:",
+        ),
+        (
+            OverlayActionButtonRole::Finish,
+            FormatPhase::Idle,
+            OverlayButtonAction::Finish,
+            "onCommitRecording:",
+        ),
+    ];
+
+    for (role, phase, expected_action, expected_selector) in cases {
+        let route = overlay_button_route(role, phase);
+        assert_eq!(route.action, expected_action);
+        assert_eq!(route.selector_name, expected_selector);
+        assert_ne!(route.selector_name, SETTINGS_SELECTOR_NAME);
+    }
+
+    assert_ne!(
+        overlay_button_route(OverlayActionButtonRole::FormatPaste, FormatPhase::Idle).selector_name,
+        overlay_button_route(OverlayActionButtonRole::FormatPaste, FormatPhase::Formatted)
+            .selector_name
+    );
+    assert_ne!(
+        overlay_button_route(OverlayActionButtonRole::AgentClose, FormatPhase::Idle).selector_name,
+        overlay_button_route(OverlayActionButtonRole::AgentClose, FormatPhase::Formatted)
+            .selector_name
+    );
 }
 
 #[test]
