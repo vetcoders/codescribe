@@ -211,9 +211,22 @@ pub fn handle_message_bubble_click_from_recognizer(sender: Id) {
 /// Minimum interval between layout passes during streaming (prevents main-thread saturation).
 pub const DELTA_LAYOUT_THROTTLE: Duration = Duration::from_millis(50);
 pub const SCROLL_BOTTOM_THRESHOLD: f64 = 24.0;
+pub const AGENT_SCROLL_BOTTOM_CLEARANCE: f64 = 16.0;
 
 pub fn should_autoscroll(scroll_pinned: bool) -> bool {
     scroll_pinned
+}
+
+pub fn agent_document_height_for_bottom_clearance(
+    stack_height: f64,
+    bottom_inset: f64,
+    clearance: f64,
+) -> f64 {
+    stack_height.max(1.0) + bottom_inset.max(0.0) + clearance.max(0.0)
+}
+
+pub fn agent_stack_height_from_document(document_height: f64, bottom_inset: f64) -> f64 {
+    (document_height.max(1.0) - bottom_inset.max(0.0) - AGENT_SCROLL_BOTTOM_CLEARANCE).max(1.0)
 }
 
 pub fn scrolled_to_bottom_math(
@@ -634,7 +647,19 @@ pub unsafe fn sync_agent_document_view_size(
     };
 
     unsafe {
-        let _: () = msg_send![container, setFrameSize: CGSize::new(max_width, total_h)];
+        let bottom_inset = if let Some(scroll_view_ptr) = state.agent_scroll_view {
+            let scroll_view = scroll_view_ptr as Id;
+            let insets: NSEdgeInsets = msg_send![scroll_view, contentInsets];
+            insets.bottom
+        } else {
+            0.0
+        };
+        let document_height = agent_document_height_for_bottom_clearance(
+            total_h,
+            bottom_inset,
+            AGENT_SCROLL_BOTTOM_CLEARANCE,
+        );
+        let _: () = msg_send![container, setFrameSize: CGSize::new(max_width, document_height)];
         let _: () = msg_send![container, setNeedsLayout: true];
         let _: () = msg_send![container, layoutSubtreeIfNeeded];
 

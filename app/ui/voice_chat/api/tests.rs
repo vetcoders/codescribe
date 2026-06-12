@@ -364,6 +364,21 @@ fn drawer_entry_title_prefers_thread_title_then_preview() {
 }
 
 #[test]
+fn drawer_row_action_layout_reserves_title_truncation_space() {
+    let layout = drawer_row_action_layout(280.0);
+
+    assert!(layout.title_width >= 24.0);
+    assert!(
+        layout.title_x + layout.title_width < layout.actions_x,
+        "title must end before hover action buttons begin"
+    );
+    assert_eq!(
+        layout.actions_width,
+        ui_tokens::DRAWER_ACTION_BUTTON_SIZE * 4.0 + ui_tokens::DRAWER_ACTION_BUTTON_GAP * 3.0
+    );
+}
+
+#[test]
 fn section_for_groups_drawer_entries_by_local_day_boundaries() {
     let today = chrono::Local::now().date_naive();
     let now_local = today
@@ -581,6 +596,24 @@ fn scrolled_to_bottom_math_uses_visible_max_y_threshold() {
     assert!(scrolled_to_bottom_math(500.0, 300.0, 800.0, 24.0));
     assert!(!scrolled_to_bottom_math(450.0, 300.0, 800.0, 24.0));
     assert!(scrolled_to_bottom_math(0.0, 500.0, 300.0, 24.0));
+}
+
+#[test]
+fn agent_document_height_preserves_bottom_clearance_above_input_bar() {
+    let stack_height = 920.0;
+    let bottom_inset = 96.0;
+    let clearance = 18.0;
+    let document_height =
+        agent_document_height_for_bottom_clearance(stack_height, bottom_inset, clearance);
+
+    assert_eq!(document_height, stack_height + bottom_inset + clearance);
+    assert_eq!(
+        agent_stack_height_from_document(
+            stack_height + bottom_inset + AGENT_SCROLL_BOTTOM_CLEARANCE,
+            bottom_inset,
+        ),
+        stack_height
+    );
 }
 
 #[test]

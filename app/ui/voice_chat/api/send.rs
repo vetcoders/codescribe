@@ -1155,17 +1155,28 @@ pub fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
             );
             let _: () = msg_send![agent_scroll, setFrame: new_agent_frame];
             let mut agent_insets: NSEdgeInsets = msg_send![agent_scroll, contentInsets];
+            let old_bottom_inset = agent_insets.bottom;
             agent_insets.bottom = inset_bottom;
             let _: () = msg_send![agent_scroll, setContentInsets: agent_insets];
 
             if let Some(container_ptr) = state.agent_container {
                 let container = container_ptr as Id;
                 let container_frame: CGRect = msg_send![container, frame];
+                let stack_height = state.cached_agent_stack_height.unwrap_or_else(|| {
+                    agent_stack_height_from_document(container_frame.size.height, old_bottom_inset)
+                });
+                state.cached_agent_stack_height = Some(stack_height);
                 // IMPORTANT: do NOT clamp the document view height to the visible clip height.
                 // That disables scrolling and makes long agent replies unscrollable.
-                let new_size = CGSize::new(new_agent_frame.size.width, container_frame.size.height);
+                let new_size = CGSize::new(
+                    new_agent_frame.size.width,
+                    agent_document_height_for_bottom_clearance(
+                        stack_height,
+                        inset_bottom,
+                        AGENT_SCROLL_BOTTOM_CLEARANCE,
+                    ),
+                );
                 let _: () = msg_send![container, setFrameSize: new_size];
-                state.cached_agent_stack_height = None;
             }
 
             if state.scroll_pinned {

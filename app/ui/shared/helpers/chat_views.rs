@@ -37,6 +37,55 @@ pub fn next_render_mode(current: RenderMode) -> RenderMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BubbleActionFrame {
+    x: f64,
+    width: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BubbleActionFrames {
+    copy: BubbleActionFrame,
+    render: Option<BubbleActionFrame>,
+}
+
+fn bubble_action_frames(
+    bubble_width: f64,
+    padding_x: f64,
+    include_render_toggle: bool,
+) -> BubbleActionFrames {
+    let copy_width = 40.0;
+    let render_width = 24.0;
+    let gap = 6.0;
+    let left = padding_x.max(4.0);
+    let right = (bubble_width - padding_x).max(left);
+
+    if include_render_toggle {
+        let total = render_width + gap + copy_width;
+        let start = (right - total).max(left);
+        let render = BubbleActionFrame {
+            x: start,
+            width: render_width,
+        };
+        let copy = BubbleActionFrame {
+            x: start + render_width + gap,
+            width: copy_width.min((right - (start + render_width + gap)).max(1.0)),
+        };
+        BubbleActionFrames {
+            copy,
+            render: Some(render),
+        }
+    } else {
+        BubbleActionFrames {
+            copy: BubbleActionFrame {
+                x: (right - copy_width).max(left),
+                width: copy_width.min((right - left).max(1.0)),
+            },
+            render: None,
+        }
+    }
+}
+
 fn is_markdown_table_separator_line(line: &str) -> bool {
     let trimmed = line.trim().trim_matches('|').trim();
     if trimmed.is_empty() || !trimmed.contains('-') {
@@ -594,16 +643,18 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
                 return (container, text_label);
             };
 
-            let copy_button_width = 40.0;
-            let render_button_width = 24.0;
+            let action_frames = bubble_action_frames(
+                bubble_width,
+                padding_x,
+                matches!(config.role, BubbleRole::Assistant | BubbleRole::System),
+            );
             let button_height = copy_button_height;
-            let copy_button_x = bubble_width - copy_button_width - padding_x;
             // Flipped coords: anchor near the bottom edge.
             let button_y = (bubble_height - button_height - 4.0).max(4.0);
 
             let button_frame = CGRect::new(
-                &CGPoint::new(copy_button_x, button_y),
-                &CGSize::new(copy_button_width, button_height),
+                &CGPoint::new(action_frames.copy.x, button_y),
+                &CGSize::new(action_frames.copy.width, button_height),
             );
 
             let copy_button: Id = msg_send![ns_button, alloc];
@@ -642,11 +693,10 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let _: () = msg_send![copy_button, setHidden: true];
             let _: () = msg_send![bubble, addSubview: copy_button];
 
-            if matches!(config.role, BubbleRole::Assistant | BubbleRole::System) {
-                let render_x = (copy_button_x - render_button_width - 4.0).max(4.0);
+            if let Some(render_action_frame) = action_frames.render {
                 let render_frame = CGRect::new(
-                    &CGPoint::new(render_x, button_y),
-                    &CGSize::new(render_button_width, button_height),
+                    &CGPoint::new(render_action_frame.x, button_y),
+                    &CGSize::new(render_action_frame.width, button_height),
                 );
                 let render_button: Id = msg_send![ns_button, alloc];
                 let render_button: Id = msg_send![render_button, initWithFrame: render_frame];
@@ -1298,5 +1348,38 @@ pub unsafe fn stack_view_clear(stack: Id) {
             let _: () = msg_send![stack, removeArrangedSubview: view];
             let _: () = msg_send![view, removeFromSuperview];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame_right(frame: BubbleActionFrame) -> f64 {
+        frame.x + frame.width
+    }
+
+    #[test]
+    fn bubble_action_frames_keep_render_and_copy_separate() {
+        let frames = bubble_action_frames(92.0, 12.0, true);
+        let render = frames
+            .render
+            .expect("assistant bubbles should get render toggle");
+
+        assert!(
+            frame_right(render) <= frames.copy.x,
+            "render and copy actions must not overlap"
+        );
+        assert!(render.x >= 4.0);
+        assert!(frame_right(frames.copy) <= 92.0);
+    }
+
+    #[test]
+    fn bubble_action_frames_without_render_use_right_edge_for_copy() {
+        let frames = bubble_action_frames(180.0, 12.0, false);
+
+        assert_eq!(frames.render, None);
+        assert_eq!(frames.copy.width, 40.0);
+        assert_eq!(frames.copy.x, 128.0);
     }
 }

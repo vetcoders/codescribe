@@ -5,6 +5,14 @@ use super::*;
 const DRAWER_PREVIEW_IDENTIFIER: &str = "codescribe_drawer_preview";
 const DRAWER_ACTION_IDENTIFIER: &str = "codescribe_drawer_action";
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawerRowActionLayout {
+    pub title_x: f64,
+    pub title_width: f64,
+    pub actions_x: f64,
+    pub actions_width: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrawerSection {
     Today,
@@ -18,6 +26,23 @@ pub fn refresh_drawer() {
     Queue::main().exec_async(|| {
         refresh_drawer_impl();
     });
+}
+
+pub fn drawer_row_action_layout(row_width: f64) -> DrawerRowActionLayout {
+    let pad = ui_tokens::DRAWER_ROW_PAD_X;
+    let title_x = pad + ui_tokens::DRAWER_BADGE_WIDTH + 8.0;
+    let button_size = ui_tokens::DRAWER_ACTION_BUTTON_SIZE;
+    let button_gap = ui_tokens::DRAWER_ACTION_BUTTON_GAP;
+    let actions_width = button_size * 4.0 + button_gap * 3.0;
+    let actions_x = (row_width - pad - actions_width).max(title_x);
+    let title_width = (actions_x - title_x - pad).max(24.0);
+
+    DrawerRowActionLayout {
+        title_x,
+        title_width,
+        actions_x,
+        actions_width,
+    }
 }
 
 /// Filter drawer entries by query (reloads from disk)
@@ -625,11 +650,9 @@ pub fn create_drawer_row(
         }
         add_subview(row, badge);
 
-        let text_x = pad + ui_tokens::DRAWER_BADGE_WIDTH + 8.0;
-        let action_zone = (ui_tokens::DRAWER_ACTION_BUTTON_SIZE * 4.0)
-            + (ui_tokens::DRAWER_ACTION_BUTTON_GAP * 3.0)
-            + 6.0;
-        let text_w = (frame.size.width - text_x - action_zone - pad).max(80.0);
+        let row_action_layout = drawer_row_action_layout(frame.size.width);
+        let text_x = row_action_layout.title_x;
+        let text_w = row_action_layout.title_width;
         let title = create_label(LabelConfig {
             frame: CGRect::new(
                 &CGPoint::new(text_x, frame.size.height - 27.0),
@@ -643,6 +666,12 @@ pub fn create_drawer_row(
             selectable: false,
             editable: false,
         });
+        let title_cell: Id = msg_send![title, cell];
+        if !title_cell.is_null() {
+            let _: () = msg_send![title_cell, setLineBreakMode: 4_isize];
+            let _: () = msg_send![title_cell, setTruncatesLastVisibleLine: true];
+        }
+        let _: () = msg_send![title, setUsesSingleLineMode: true];
         add_subview(row, title);
 
         let preview = entry.preview.clone();
@@ -689,13 +718,9 @@ pub fn create_drawer_row(
         let actions_container: Id = msg_send![ns_view, alloc];
         let button_size = ui_tokens::DRAWER_ACTION_BUTTON_SIZE;
         let button_gap = ui_tokens::DRAWER_ACTION_BUTTON_GAP;
-        let actions_width = button_size * 4.0 + button_gap * 3.0;
         let actions_frame = core_graphics::geometry::CGRect::new(
-            &CGPoint::new(
-                frame.size.width - pad - actions_width,
-                frame.size.height - 36.0,
-            ),
-            &core_graphics::geometry::CGSize::new(actions_width, button_size),
+            &CGPoint::new(row_action_layout.actions_x, frame.size.height - 36.0),
+            &core_graphics::geometry::CGSize::new(row_action_layout.actions_width, button_size),
         );
         let actions_container: Id = msg_send![actions_container, initWithFrame: actions_frame];
 
