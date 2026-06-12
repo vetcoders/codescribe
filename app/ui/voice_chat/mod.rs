@@ -1337,9 +1337,11 @@ mod tests {
         let band = crate::ui_helpers::ui_tokens::CHAT_FOOTER_HEIGHT
             + crate::ui_helpers::ui_tokens::CONTENT_GAP;
         assert!(band <= 24.0, "bottom band grew back to {band}pt");
+        let chat_footer = crate::ui_helpers::ui_tokens::CHAT_FOOTER_HEIGHT;
+        let footer = crate::ui_helpers::ui_tokens::FOOTER_HEIGHT;
         assert!(
-            crate::ui_helpers::ui_tokens::CHAT_FOOTER_HEIGHT
-                < crate::ui_helpers::ui_tokens::FOOTER_HEIGHT
+            chat_footer < footer,
+            "chat footer {chat_footer}pt must stay slimmer than drawer footer {footer}pt"
         );
 
         // Pane height gained exactly the footer slimming delta.

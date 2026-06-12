@@ -488,10 +488,12 @@ fn test_transcript_delivery_wrap_is_default_off() {
 
 #[test]
 fn test_transcript_delivery_wrap_uses_config_when_enabled() {
-    let mut config = Config::default();
-    config.transcript_tagging_enabled = true;
-    config.transcript_tag_template =
-        codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string();
+    let config = Config {
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        ..Config::default()
+    };
 
     assert_eq!(
         maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
