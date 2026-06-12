@@ -3,6 +3,7 @@ pub mod filesystem;
 pub mod github;
 pub mod mcp;
 pub mod screenshot;
+pub mod search_threads;
 pub mod selection;
 pub mod typing;
 
@@ -20,6 +21,7 @@ fn register_native_tools(registry: &mut ToolRegistry) {
     filesystem::register(registry);
     typing::register(registry);
     github::register(registry);
+    search_threads::register(registry);
 }
 
 #[cfg(test)]
@@ -46,6 +48,7 @@ mod tests {
                 "get_selected_text".to_string(),
                 "read_clipboard".to_string(),
                 "read_file".to_string(),
+                "search_threads".to_string(),
                 "take_screenshot".to_string(),
                 "type_text".to_string(),
                 "write_clipboard".to_string(),
