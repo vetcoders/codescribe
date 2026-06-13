@@ -5,6 +5,7 @@ pub mod mcp;
 pub mod screenshot;
 pub mod search_threads;
 pub mod selection;
+pub mod transcribe_audio;
 pub mod typing;
 
 use codescribe_core::agent::ToolRegistry;
@@ -22,6 +23,7 @@ fn register_native_tools(registry: &mut ToolRegistry) {
     typing::register(registry);
     github::register(registry);
     search_threads::register(registry);
+    transcribe_audio::register(registry);
 }
 
 #[cfg(test)]
@@ -50,6 +52,7 @@ mod tests {
                 "read_file".to_string(),
                 "search_threads".to_string(),
                 "take_screenshot".to_string(),
+                "transcribe_audio".to_string(),
                 "type_text".to_string(),
                 "write_clipboard".to_string(),
             ]
