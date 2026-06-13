@@ -10,6 +10,17 @@ pub fn append_voice_chat_user_delta(delta: &str) {
     });
 }
 
+/// Append one finalized toggle dictation utterance to the live user draft.
+pub fn append_voice_chat_user_utterance(text: &str) {
+    let text_owned = text.trim().to_string();
+    if text_owned.is_empty() {
+        return;
+    }
+    Queue::main().exec_async(move || {
+        run_when_overlay_unlocked(move || append_voice_chat_user_utterance_impl(&text_owned));
+    });
+}
+
 /// Finalize the user message text (stop streaming)
 pub fn set_voice_chat_user_text(text: &str) {
     let text_owned = text.to_string();
@@ -414,6 +425,26 @@ pub fn append_voice_chat_user_delta_impl(delta: &str) {
     let idx = get_or_create_streaming_message_index(&mut state, ChatRole::User);
     if let Some(msg) = state.messages.get_mut(idx) {
         codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta).apply(&mut msg.text);
+        msg.is_streaming = true;
+        msg.is_collapsed = false;
+    }
+    apply_delta_and_layout(&mut state, Some(idx));
+}
+
+pub fn append_voice_chat_user_utterance_impl(text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_agent_tab_visible(&mut state);
+    let idx = get_or_create_streaming_message_index(&mut state, ChatRole::User);
+    if let Some(msg) = state.messages.get_mut(idx) {
+        if !msg.text.trim().is_empty() && !msg.text.ends_with(char::is_whitespace) {
+            msg.text.push(' ');
+        }
+        msg.text.push_str(text);
         msg.is_streaming = true;
         msg.is_collapsed = false;
     }

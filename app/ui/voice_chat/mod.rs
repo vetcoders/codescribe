@@ -13,7 +13,8 @@ mod state;
 pub use api::{
     add_voice_chat_error_message, add_voice_chat_system_message, add_voice_chat_user_message,
     append_voice_chat_assistant_delta, append_voice_chat_reasoning_delta,
-    append_voice_chat_user_delta, clear_voice_chat_text, dispatch_voice_chat_send, filter_drawer,
+    append_voice_chat_user_delta, append_voice_chat_user_utterance, clear_voice_chat_text,
+    commit_last_user_message, dispatch_voice_chat_send, filter_drawer,
     finalize_voice_chat_assistant_message, finalize_voice_chat_user_message,
     handoff_transcript_to_chat, hide_voice_chat_overlay, is_auto_send_enabled,
     is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,

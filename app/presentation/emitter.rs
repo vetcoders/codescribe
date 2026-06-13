@@ -154,6 +154,8 @@ pub struct PresentationEmitter {
     utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// Optional callback for VAD stop detection.
     vad_start_callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Optional callback for VAD end/silence boundary detection.
+    vad_end_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     vad_start_emitted: std::sync::atomic::AtomicBool,
     /// Source-of-truth transcript state: committed utterances + active preview tail.
     session_state: std::sync::Mutex<SessionTranscriptState>,
@@ -224,6 +226,7 @@ impl PresentationEmitter {
             cmd_handle,
             utterance_callback: None,
             vad_start_callback: None,
+            vad_end_callback: None,
             vad_start_emitted: std::sync::atomic::AtomicBool::new(false),
             session_state: std::sync::Mutex::new(SessionTranscriptState::default()),
             last_dispatched_utterance_id: std::sync::atomic::AtomicU64::new(0),
@@ -241,6 +244,10 @@ impl PresentationEmitter {
 
     pub fn set_vad_start_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
         self.vad_start_callback = cb;
+    }
+
+    pub fn set_vad_end_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
+        self.vad_end_callback = cb;
     }
 
     /// Signal the emitter to finish and wait for both the command worker
@@ -304,6 +311,13 @@ impl EventSink for PresentationEmitter {
                     .swap(true, std::sync::atomic::Ordering::SeqCst)
                     && let Some(cb) = &self.vad_start_callback
                 {
+                    cb();
+                }
+            }
+            EngineEvent::VadEnd { .. } => {
+                self.vad_start_emitted
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                if let Some(cb) = &self.vad_end_callback {
                     cb();
                 }
             }
@@ -452,7 +466,6 @@ impl EventSink for PresentationEmitter {
             EngineEvent::Warning { code, message } => {
                 tracing::warn!("Engine warning [{}]: {}", code, message);
             }
-            _ => {}
         }
     }
 }

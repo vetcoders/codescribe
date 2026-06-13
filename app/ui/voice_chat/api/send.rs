@@ -30,6 +30,16 @@ pub fn send_voice_chat_draft() {
     });
 }
 
+/// Submit the currently streaming user bubble without reading or clearing the input field.
+pub fn commit_last_user_message() {
+    Queue::main().exec_async(|| {
+        run_when_overlay_unlocked(|| {
+            finalize_user_message_state_only_impl();
+            commit_last_user_message_impl();
+        });
+    });
+}
+
 /// Set the send callback invoked when the user submits a message
 pub fn set_voice_chat_send_callback(
     callback: Option<crate::ui::voice_chat::state::VoiceChatSendCallback>,

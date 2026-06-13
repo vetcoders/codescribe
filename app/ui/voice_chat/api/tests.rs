@@ -764,3 +764,66 @@ fn dispatch_voice_chat_send_invokes_callback() {
     let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
     *cb = None;
 }
+
+#[test]
+#[serial]
+fn toggle_callback_appends_finalized_utterances_to_user_draft() {
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+    }
+
+    append_voice_chat_user_utterance_impl("Pierwsze moje myśli.");
+    append_voice_chat_user_utterance_impl("Druga fraza już nie może zastąpić pierwszej.");
+    append_voice_chat_user_utterance_impl("Trzecia zostaje na końcu.");
+
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(
+        state.messages[0].text,
+        "Pierwsze moje myśli. Druga fraza już nie może zastąpić pierwszej. Trzecia zostaje na końcu."
+    );
+    assert!(state.messages[0].is_streaming);
+}
+
+#[test]
+#[serial]
+fn toggle_vad_flush_sends_accumulated_draft_and_keeps_next_draft_open() {
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::new(Mutex::new(String::new()));
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+    }
+    {
+        let count = Arc::clone(&call_count);
+        let observed = Arc::clone(&observed);
+        let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        *cb = Some(Arc::new(move |text: String| {
+            count.fetch_add(1, Ordering::SeqCst);
+            *observed.lock().unwrap_or_else(|e| e.into_inner()) = text;
+        }));
+    }
+
+    append_voice_chat_user_utterance_impl("Pierwszy segment.");
+    append_voice_chat_user_utterance_impl("Drugi segment.");
+    finalize_user_message_state_only_impl();
+    commit_last_user_message_impl();
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        observed.lock().unwrap_or_else(|e| e.into_inner()).as_str(),
+        "Pierwszy segment. Drugi segment."
+    );
+
+    append_voice_chat_user_utterance_impl("Nowy segment po ciszy.");
+
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(state.messages.len(), 2);
+    assert!(!state.messages[0].is_streaming);
+    assert_eq!(state.messages[1].text, "Nowy segment po ciszy.");
+    assert!(state.messages[1].is_streaming);
+
+    let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+    *cb = None;
+}

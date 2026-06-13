@@ -1791,25 +1791,31 @@ impl RecordingController {
     fn configure_toggle_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
+        flush_voice_chat_on_vad_end: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
     ) {
-        // Hands-off is ONE continuous session (ADR 2026-05-28 Faza 1). Deltas append
-        // cumulatively to the active surface via `RoutingDeltaSink`:
-        //   - normal hands-off  → transcription overlay (SessionRendered cumulative text)
-        //   - assistive hands-off → Emil chat bubble (also cumulative — no per-utterance
-        //     finalize, so Emil receives the WHOLE session as one message on stop)
+        // Hands-off is ONE continuous recorder session (ADR 2026-05-28 Faza 1).
+        // Normal hands-off uses cumulative SessionRendered deltas in the transcription overlay.
         //
-        // There is intentionally NO per-utterance callback: previously every utterance
-        // boundary fired a full `process_transcript_text_pipeline` pass (wasteful, and the
-        // source of the "tnie per zdanie" fragmentation). The session transcript is built
-        // once in `transcript_buffer` and consumed on stop.
+        // Assistive hands-off is intentionally callback-driven: every finalized utterance
+        // appends into the current chat user bubble, and VAD end commits that bubble to the
+        // agent without stopping the recorder. Do not route assistive live preview deltas
+        // into the same bubble, or previews and finals will duplicate.
         let tb = recorder.transcript_buffer_handle();
         let delta_sink = preview_deltas_enabled.then(|| {
             Arc::new(helpers::RoutingDeltaSink)
                 as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
         });
-        let pe = PresentationEmitter::new(tb, delta_sink, None);
+        let mut pe = PresentationEmitter::new(tb, delta_sink, None);
+        if flush_voice_chat_on_vad_end {
+            pe.set_utterance_callback(Some(Arc::new(|text: String| {
+                crate::ui::voice_chat::append_voice_chat_user_utterance(&text);
+            })));
+            pe.set_vad_end_callback(Some(Arc::new(|| {
+                crate::ui::voice_chat::commit_last_user_message();
+            })));
+        }
 
         let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> = Arc::new(pe);
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
@@ -2931,7 +2937,8 @@ impl RecordingController {
         // Runtime pipeline is always event-based.
         Self::configure_toggle_event_sink(
             recorder,
-            is_assistive || overlay_enabled,
+            !is_assistive && overlay_enabled,
+            is_assistive,
             self.event_broadcast.clone(),
             Arc::clone(&self.session_telemetry),
         );
@@ -2950,7 +2957,8 @@ impl RecordingController {
                 Self::clear_recorder_callbacks(recorder);
                 Self::configure_toggle_event_sink(
                     recorder,
-                    is_assistive || overlay_enabled,
+                    !is_assistive && overlay_enabled,
+                    is_assistive,
                     self.event_broadcast.clone(),
                     Arc::clone(&self.session_telemetry),
                 );
