@@ -6,6 +6,7 @@
 //! - `loader` - Load audio files (WAV, MP3, etc.)
 //! - `playback` - System sound playback
 
+pub(crate) mod archive;
 pub mod chunker;
 pub mod loader;
 pub mod playback;
