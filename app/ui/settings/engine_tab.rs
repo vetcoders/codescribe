@@ -47,7 +47,7 @@ pub(super) unsafe fn build_engine_tab(
         add_subview(container, subtitle);
         y -= 16.0 + ui_tokens::SECTION_GAP;
 
-        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 172.0);
+        let runtime_card_top = y + 28.0;
         let runtime_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Runtime Truth".to_string(),
@@ -108,11 +108,18 @@ pub(super) unsafe fn build_engine_tab(
         for (label, value, color) in runtime_rows {
             add_engine_metric_row(container, &mut y, pad, content_w, label, &value, color);
         }
+        add_settings_group_card_dynamic(
+            container,
+            pad - 10.0,
+            runtime_card_top,
+            content_w + 20.0,
+            y,
+        );
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
-        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 170.0);
+        let matrix_card_top = y + 28.0;
         let matrix_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Permission Matrix".to_string(),
@@ -148,11 +155,18 @@ pub(super) unsafe fn build_engine_tab(
             y -= 20.0 + gap;
         }
         state.diagnostics_permission_labels = diagnostics_permission_labels;
+        add_settings_group_card_dynamic(
+            container,
+            pad - 10.0,
+            matrix_card_top,
+            content_w + 20.0,
+            y,
+        );
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
-        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 118.0);
+        let conflicts_card_top = y + 28.0;
         let conflicts_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Hotkey Conflicts".to_string(),
@@ -218,12 +232,20 @@ pub(super) unsafe fn build_engine_tab(
         );
         button_set_action(copy_diag_btn, action_handler, sel!(onCopyDiagnostics:));
         add_subview(container, copy_diag_btn);
+        // `copy_diag_btn` origin sits at `y - 2.0`; close the card just below it.
+        add_settings_group_card_dynamic(
+            container,
+            pad - 10.0,
+            conflicts_card_top,
+            content_w + 20.0,
+            y - 2.0,
+        );
         y -= 24.0 + ui_tokens::SECTION_GAP;
 
         y = add_tafla_header_separator(container, pad, y, content_w);
         y -= ui_tokens::SECTION_GAP;
 
-        add_settings_group_card(container, pad - 10.0, y + 28.0, content_w + 20.0, 140.0);
+        let dashboard_card_top = y + 28.0;
         let dashboard_header = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 18.0)),
             text: "Quality Daemon".to_string(),
@@ -302,8 +324,79 @@ pub(super) unsafe fn build_engine_tab(
         let _: () = msg_send![open_report_btn, setEnabled: qube_report_exists(daemon_state)];
         add_subview(container, open_report_btn);
         state.quality_open_report_button = Some(open_report_btn as usize);
+        // Both buttons share origin `y - 2.0`; close the daemon card below them.
+        add_settings_group_card_dynamic(
+            container,
+            pad - 10.0,
+            dashboard_card_top,
+            content_w + 20.0,
+            y - 2.0,
+        );
+
+        y -= 24.0 + ui_tokens::SECTION_GAP;
+        y = add_tafla_header_separator(container, pad, y, content_w);
+        y -= ui_tokens::SECTION_GAP;
+        build_mcp_section(container, &mut y, pad, content_w);
 
         container
+    }
+}
+
+/// Render the read-only "MCP Servers" runtime-truth section.
+///
+/// MCP servers are discovered when the Agent runtime initializes
+/// (`agent::tools::mcp::register`). Discovery used to fail silently into
+/// `tracing::warn!`, so the Settings UI showed *nothing* — indistinguishable
+/// from "MCP doesn't exist" even when `~/.codescribe/mcp.json` was present and a
+/// server simply failed to spawn. This section reads the cheap config probe plus
+/// the cached runtime discovery report so the UI tells the truth: config path,
+/// whether the file exists/parses, and each server's real state + failure
+/// reason.
+fn build_mcp_section(container: Id, y: &mut f64, pad: f64, content_w: f64) {
+    use crate::agent::tools::mcp::McpRowTone;
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+    let primary = crate::ui_helpers::color_label();
+    let secondary = crate::ui_helpers::color_secondary_label();
+    let status = crate::agent::tools::mcp::probe_mcp_status();
+
+    let card_top = *y + 28.0;
+    let header = create_label(LabelConfig {
+        frame: CGRect::new(&CGPoint::new(pad, *y), &CGSize::new(content_w, 18.0)),
+        text: "MCP Servers".to_string(),
+        font_size: ui_tokens::SMALL_FONT_SIZE,
+        bold: true,
+        text_color: primary,
+        ..Default::default()
+    });
+    // SAFETY: Settings AppKit main-thread build path.
+    unsafe {
+        add_subview(container, header);
+    }
+    *y -= 18.0 + ui_tokens::DENSITY_COMFORTABLE;
+
+    add_engine_metric_row(
+        container,
+        y,
+        pad,
+        content_w,
+        "Config:",
+        &status.config_path_display,
+        secondary,
+    );
+
+    for row in status.summary_rows() {
+        let color = match row.tone {
+            McpRowTone::Good => ui_colors::status_granted(),
+            McpRowTone::Warn => ui_colors::status_warning(),
+            McpRowTone::Bad => ui_colors::bubble_error_text(),
+            McpRowTone::Neutral => secondary,
+        };
+        add_engine_metric_row(container, y, pad, content_w, &row.label, &row.value, color);
+    }
+
+    // SAFETY: Settings AppKit main-thread build path.
+    unsafe {
+        add_settings_group_card_dynamic(container, pad - 10.0, card_top, content_w + 20.0, *y);
     }
 }
 

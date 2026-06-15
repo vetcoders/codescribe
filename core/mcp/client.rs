@@ -40,13 +40,6 @@ impl McpConfigFile {
         }
         Self::load(path).map(Some)
     }
-
-    pub fn enabled_servers(&self) -> impl Iterator<Item = (&str, &McpServerConfig)> {
-        self.servers
-            .iter()
-            .filter(|(_, config)| config.enabled.unwrap_or(true))
-            .map(|(name, config)| (name.as_str(), config))
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -158,9 +151,16 @@ impl StdioConnection {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
 
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("Failed to spawn MCP server '{}'", config.command))?;
+        let mut child = command.spawn().map_err(|err| {
+            // Give the most common failure a concrete, actionable reason instead
+            // of a generic spawn error — this string surfaces in the Engine tab.
+            if err.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("command not found: '{}'", config.command)
+            } else {
+                anyhow::Error::new(err)
+                    .context(format!("Failed to spawn MCP server '{}'", config.command))
+            }
+        })?;
 
         let stdin = child
             .stdin
@@ -443,6 +443,28 @@ mod tests {
 
         assert!(
             error.to_string().contains("Timed out waiting"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_missing_command_reports_command_not_found() {
+        let config = McpServerConfig {
+            command: "codescribe-not-a-real-mcp-binary-xyz".to_string(),
+            args: vec![],
+            env: Default::default(),
+            enabled: Some(true),
+            timeout_seconds: Some(2),
+        };
+        let client = McpClient::new(config);
+
+        let error = client
+            .list_tools()
+            .await
+            .expect_err("a non-existent command must fail discovery");
+
+        assert!(
+            error.to_string().contains("command not found"),
             "unexpected error: {error}"
         );
     }

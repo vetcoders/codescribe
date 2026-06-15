@@ -1,10 +1,177 @@
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
 use codescribe_core::mcp::{McpClient, McpConfigFile, McpServerConfig, McpTool};
 use tracing::{info, warn};
+
+/// Per-server runtime discovery outcome captured during `register` (real spawn
+/// + `tools/list` handshake). Read back by the Settings Engine tab so the UI
+///   reflects what actually happened instead of guessing.
+#[derive(Debug, Clone)]
+enum ServerRuntime {
+    /// Server responded to `tools/list`; payload is the exposed tool count.
+    Tools(usize),
+    /// Server is configured + enabled but discovery failed; payload is the
+    /// concrete reason (spawn failure, command not found, parse error, …).
+    Failed(String),
+    /// Server is present in config but disabled (`"enabled": false`).
+    Disabled,
+}
+
+/// Cache of the last runtime discovery, keyed by server name. Written once per
+/// agent-runtime init, read on demand by the read-only Engine settings tab.
+static MCP_RUNTIME: OnceLock<Mutex<BTreeMap<String, ServerRuntime>>> = OnceLock::new();
+
+fn runtime_cache() -> &'static Mutex<BTreeMap<String, ServerRuntime>> {
+    MCP_RUNTIME.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn record_runtime(snapshot: BTreeMap<String, ServerRuntime>) {
+    let mut guard = runtime_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    *guard = snapshot;
+}
+
+fn anyhow_root_cause(error: &anyhow::Error) -> String {
+    error.root_cause().to_string()
+}
+
+/// Visual tone for an MCP status row, mapped to concrete `ui_colors` by the
+/// Settings layer. Keeping this UI-agnostic avoids coupling agent tooling to
+/// AppKit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpRowTone {
+    Good,
+    Warn,
+    Bad,
+    Neutral,
+}
+
+/// One labelled status line in the Engine tab's "MCP Servers" section.
+pub struct McpStatusRow {
+    pub label: String,
+    pub value: String,
+    pub tone: McpRowTone,
+}
+
+/// Honest snapshot of MCP config + runtime state for the Settings UI.
+pub struct McpStatusReport {
+    pub config_path_display: String,
+    rows: Vec<McpStatusRow>,
+}
+
+impl McpStatusReport {
+    pub fn summary_rows(&self) -> &[McpStatusRow] {
+        &self.rows
+    }
+
+    fn single(config_path_display: String, label: &str, value: String, tone: McpRowTone) -> Self {
+        Self {
+            config_path_display,
+            rows: vec![McpStatusRow {
+                label: label.to_string(),
+                value,
+                tone,
+            }],
+        }
+    }
+}
+
+/// Probe MCP config + cached runtime discovery for the read-only Engine tab.
+///
+/// Cheap: reads/parses `mcp.json` (no server spawning) and merges in whatever
+/// the last real discovery recorded. Never claims "MCP doesn't exist" when the
+/// config file is present — a present-but-broken config reports the concrete
+/// failure instead.
+pub fn probe_mcp_status() -> McpStatusReport {
+    let path = match codescribe_core::mcp::default_mcp_config_path() {
+        Ok(path) => path,
+        Err(error) => {
+            return McpStatusReport::single(
+                "unavailable".to_string(),
+                "Status:",
+                format!("config path unavailable: {error}"),
+                McpRowTone::Bad,
+            );
+        }
+    };
+    probe_mcp_status_at(&path)
+}
+
+fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
+    let config_path_display = path.display().to_string();
+
+    if !path.exists() {
+        return McpStatusReport::single(
+            config_path_display,
+            "Status:",
+            "no mcp.json (optional — MCP off)".to_string(),
+            McpRowTone::Neutral,
+        );
+    }
+
+    let config = match McpConfigFile::load(path) {
+        Ok(config) => config,
+        Err(error) => {
+            return McpStatusReport::single(
+                config_path_display,
+                "Config error:",
+                anyhow_root_cause(&error),
+                McpRowTone::Bad,
+            );
+        }
+    };
+
+    if config.servers.is_empty() {
+        return McpStatusReport::single(
+            config_path_display,
+            "Status:",
+            "config present, no servers defined".to_string(),
+            McpRowTone::Warn,
+        );
+    }
+
+    let runtime = runtime_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+
+    let mut names: Vec<&String> = config.servers.keys().collect();
+    names.sort();
+    let mut rows = Vec::with_capacity(names.len());
+    for name in names {
+        let enabled = config
+            .servers
+            .get(name)
+            .and_then(|server| server.enabled)
+            .unwrap_or(true);
+        let (value, tone) = match runtime.get(name) {
+            Some(ServerRuntime::Tools(count)) => (format!("{count} tool(s)"), McpRowTone::Good),
+            Some(ServerRuntime::Failed(reason)) => (format!("failed: {reason}"), McpRowTone::Bad),
+            Some(ServerRuntime::Disabled) => ("disabled".to_string(), McpRowTone::Neutral),
+            None if !enabled => ("disabled".to_string(), McpRowTone::Neutral),
+            None => (
+                "configured (agent not started)".to_string(),
+                McpRowTone::Warn,
+            ),
+        };
+        rows.push(McpStatusRow {
+            label: format!("{name}:"),
+            value,
+            tone,
+        });
+    }
+
+    McpStatusReport {
+        config_path_display,
+        rows,
+    }
+}
 
 pub fn register(registry: &mut ToolRegistry) {
     let path = match codescribe_core::mcp::default_mcp_config_path() {
@@ -103,21 +270,35 @@ struct DiscoveredMcpTool {
 
 fn discover_mcp_tools_blocking(config: McpConfigFile) -> Result<Vec<DiscoveredMcpTool>> {
     thread::spawn(move || -> Result<Vec<DiscoveredMcpTool>> {
-        let servers = config
-            .enabled_servers()
-            .map(|(name, server_config)| (name.to_string(), server_config.clone()))
-            .collect::<Vec<_>>();
+        // Capture EVERY configured server (enabled or not) so the runtime cache
+        // reports disabled servers truthfully instead of as "missing".
+        let mut servers: Vec<(String, McpServerConfig, bool)> = config
+            .servers
+            .iter()
+            .map(|(name, server_config)| {
+                let enabled = server_config.enabled.unwrap_or(true);
+                (name.clone(), server_config.clone(), enabled)
+            })
+            .collect();
+        servers.sort_by(|a, b| a.0.cmp(&b.0));
+
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("Failed to create MCP discovery runtime")?;
 
-        runtime.block_on(async move {
+        let (discovered, status) = runtime.block_on(async move {
             let mut discovered = Vec::new();
-            for (server_name, server_config) in servers {
+            let mut status: BTreeMap<String, ServerRuntime> = BTreeMap::new();
+            for (server_name, server_config, enabled) in servers {
+                if !enabled {
+                    status.insert(server_name, ServerRuntime::Disabled);
+                    continue;
+                }
                 let client = McpClient::new(server_config.clone());
                 match client.list_tools().await {
                     Ok(tools) => {
+                        status.insert(server_name.clone(), ServerRuntime::Tools(tools.len()));
                         for tool in tools {
                             discovered.push(DiscoveredMcpTool {
                                 server_name: server_name.clone(),
@@ -127,12 +308,19 @@ fn discover_mcp_tools_blocking(config: McpConfigFile) -> Result<Vec<DiscoveredMc
                         }
                     }
                     Err(error) => {
-                        warn!("MCP server '{server_name}' discovery failed: {error}");
+                        // Concrete root cause (spawn failure, command not found,
+                        // parse error, timeout, …) — surfaced to logs AND the UI.
+                        let reason = anyhow_root_cause(&error);
+                        warn!("MCP server '{server_name}' discovery failed: {reason}");
+                        status.insert(server_name, ServerRuntime::Failed(reason));
                     }
                 }
             }
-            Ok(discovered)
-        })
+            (discovered, status)
+        });
+
+        record_runtime(status);
+        Ok(discovered)
     })
     .join()
     .map_err(|_| anyhow::anyhow!("MCP discovery thread panicked"))?
@@ -167,7 +355,79 @@ mod tests {
     use codescribe_core::agent::{ToolRegistry, ToolResultContent};
     use serde_json::json;
 
-    use super::{public_tool_name, register_mcp_tools_from_config_path};
+    use super::{
+        McpRowTone, probe_mcp_status_at, public_tool_name, register_mcp_tools_from_config_path,
+    };
+
+    #[test]
+    fn probe_reports_missing_config_as_optional_not_broken() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json"); // never created
+        let report = probe_mcp_status_at(&path);
+        let rows = report.summary_rows();
+        assert_eq!(rows.len(), 1);
+        // Honest: "no mcp.json" is neutral/optional, NOT a hard error.
+        assert_eq!(rows[0].tone, McpRowTone::Neutral);
+        assert!(
+            rows[0].value.contains("no mcp.json"),
+            "got: {}",
+            rows[0].value
+        );
+    }
+
+    #[test]
+    fn probe_reports_parse_error_with_reason_when_config_present() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json");
+        fs::write(&path, "{ this is not json").expect("write garbage config");
+        let report = probe_mcp_status_at(&path);
+        let rows = report.summary_rows();
+        // Config IS present but broken — must surface a concrete error, never
+        // claim "MCP doesn't exist".
+        assert_eq!(rows[0].tone, McpRowTone::Bad);
+        assert_eq!(rows[0].label, "Config error:");
+        assert!(!rows[0].value.is_empty());
+    }
+
+    #[test]
+    fn probe_reports_present_config_with_no_servers() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json");
+        fs::write(&path, json!({ "mcpServers": {} }).to_string()).expect("write config");
+        let report = probe_mcp_status_at(&path);
+        let rows = report.summary_rows();
+        assert_eq!(rows[0].tone, McpRowTone::Warn);
+        assert!(rows[0].value.contains("no servers"));
+    }
+
+    #[test]
+    fn probe_lists_configured_server_before_runtime_discovery() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json");
+        // Unique name that the runtime cache cannot already hold.
+        let config = json!({
+            "mcpServers": {
+                "probe_only_unprobed_server": {
+                    "command": "python3",
+                    "args": ["x.py"],
+                    "enabled": true
+                }
+            }
+        });
+        fs::write(&path, config.to_string()).expect("write config");
+        let report = probe_mcp_status_at(&path);
+        let row = report
+            .summary_rows()
+            .iter()
+            .find(|r| r.label == "probe_only_unprobed_server:")
+            .expect("server row present");
+        assert_eq!(row.tone, McpRowTone::Warn);
+        assert!(
+            row.value.contains("agent not started"),
+            "got: {}",
+            row.value
+        );
+    }
 
     #[tokio::test]
     async fn registers_and_dispatches_mcp_tool_from_config() {

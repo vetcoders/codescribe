@@ -48,6 +48,42 @@ const NSTRACKING_IN_VISIBLE_RECT: u64 = 1 << 9;
 
 const OVERLAY_HEADER_LABEL: &str = "CodeScribe - Dictation Overlay";
 
+static OVERLAY_WINDOW_INIT: std::sync::Once = std::sync::Once::new();
+static mut OVERLAY_WINDOW_CLASS: *const Class = std::ptr::null();
+
+extern "C" fn overlay_can_become_key(_this: &Object, _cmd: objc::runtime::Sel) -> bool {
+    true
+}
+
+/// NSWindow subclass for the dictation overlay.
+///
+/// The overlay is a borderless floating window. On macOS a borderless
+/// `NSWindow` returns `canBecomeKeyWindow = NO` by default, which means its
+/// `NSTextView` can never become first responder — so `setEditable: true` is a
+/// visual lie: a caret never appears and keystrokes are dropped. Overriding
+/// `canBecomeKeyWindow`/`canBecomeMainWindow` lets the user click into the
+/// transcript and actually edit it (mirrors `VoiceChatOverlayWindow`).
+pub(super) fn overlay_window_class() -> *const Class {
+    unsafe {
+        OVERLAY_WINDOW_INIT.call_once(|| {
+            let superclass = Class::get("NSWindow").expect("NSWindow class missing");
+            let mut decl =
+                objc::declare::ClassDecl::new("CodeScribeDictationOverlayWindow", superclass)
+                    .expect("Failed to declare dictation overlay window class");
+            decl.add_method(
+                sel!(canBecomeKeyWindow),
+                overlay_can_become_key as extern "C" fn(&Object, objc::runtime::Sel) -> bool,
+            );
+            decl.add_method(
+                sel!(canBecomeMainWindow),
+                overlay_can_become_key as extern "C" fn(&Object, objc::runtime::Sel) -> bool,
+            );
+            OVERLAY_WINDOW_CLASS = decl.register();
+        });
+        OVERLAY_WINDOW_CLASS
+    }
+}
+
 /// Show the transcription overlay window
 pub fn show_transcription_overlay() {
     // Cancel any pending auto-hide
@@ -91,15 +127,13 @@ fn show_transcription_overlay_impl() {
         drop(state); // Release lock BEFORE heavy AppKit widget creation.
 
         // Get classes
-        let ns_window_class = Class::get("NSWindow");
         let ns_screen_class = Class::get("NSScreen");
         let ns_color_class = Class::get("NSColor");
         let ns_progress_class = Class::get("NSProgressIndicator");
         let ns_tracking_area_class = Class::get("NSTrackingArea");
 
         // Defensive checks for Cocoa classes
-        if ns_window_class.is_none()
-            || ns_screen_class.is_none()
+        if ns_screen_class.is_none()
             || ns_color_class.is_none()
             || ns_progress_class.is_none()
             || ns_tracking_area_class.is_none()
@@ -108,7 +142,8 @@ fn show_transcription_overlay_impl() {
             return;
         }
 
-        let ns_window = ns_window_class.unwrap();
+        // Keyable borderless subclass so the transcript NSTextView accepts edits.
+        let ns_window = overlay_window_class();
         let ns_screen = ns_screen_class.unwrap();
         let ns_color = ns_color_class.unwrap();
         let ns_progress = ns_progress_class.unwrap();

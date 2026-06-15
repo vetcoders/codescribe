@@ -55,8 +55,10 @@ fn bubble_action_frames(
     include_render_toggle: bool,
 ) -> BubbleActionFrames {
     let copy_width = 40.0;
-    let render_width = 24.0;
-    let gap = 6.0;
+    let render_width = 28.0;
+    // Comfortable, unmistakable gap so the Markdown and Copy hitboxes never
+    // touch — a click in the dead space between them hits neither button.
+    let gap = 10.0;
     let left = padding_x.max(4.0);
     let right = (bubble_width - padding_x).max(left);
 
@@ -664,7 +666,10 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let _: () = msg_send![copy_button, setBezelStyle: 0_isize]; // NSBezelStyleRounded
             let _: () = msg_send![copy_button, setBordered: false];
 
-            // Title "Copy" in small font
+            // "Copy" title is the fallback; the native system copy glyph
+            // (`doc.on.doc`) replaces it whenever SF Symbols are available so the
+            // action reads unambiguously as Copy, distinct from the Markdown
+            // toggle next to it.
             let title = ns_string("Copy");
             let _: () = msg_send![copy_button, setTitle: title];
 
@@ -674,6 +679,9 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
                 msg_send![ns_font, fontWithName: jb_name size: 10.0f64]
             };
             let _: () = msg_send![copy_button, setFont: small_font];
+            let _ = set_button_symbol(copy_button, "doc.on.doc");
+            let _: () = msg_send![copy_button, setToolTip: ns_string("Copy")];
+            let _: () = msg_send![copy_button, setAccessibilityLabel: ns_string("Copy")];
 
             // Match bubble text tint
             let button_color: Id = ui_colors::bubble_text();
@@ -686,7 +694,9 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
                 setIdentifier: ns_string("codescribe_copy_button")
             ];
 
-            // Set action
+            // Dedicated frame + handler — an NSButton hit-tests to its own
+            // bounds, and `bubble_action_frames` guarantees those bounds never
+            // overlap the Markdown toggle, so Copy can never toggle Markdown.
             let _: () = msg_send![copy_button, setTarget: target];
             let _: () = msg_send![copy_button, setAction: sel!(onCopyMessage:)];
 
@@ -703,23 +713,18 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
                 let _: () = msg_send![render_button, setBezelStyle: 0_isize];
                 let _: () = msg_send![render_button, setBordered: false];
 
-                let fallback_title = match render_mode {
-                    RenderMode::Plain => "Rich",
-                    RenderMode::Markdown => "Raw",
-                };
-                let _: () = msg_send![render_button, setTitle: ns_string(fallback_title)];
-                let _ = set_button_symbol(
-                    render_button,
-                    match render_mode {
-                        RenderMode::Plain => "textformat",
-                        RenderMode::Markdown => "curlybraces",
-                    },
-                );
+                // Explicit `MD` text label — replaces the ambiguous "Aa"
+                // (`textformat`) / "{}" (`curlybraces`) SF Symbols the operator
+                // flagged. Title-only (no image) so it never reads as a generic
+                // glyph; the tooltip + accessibility label carry toggle direction.
+                let _: () = msg_send![render_button, setTitle: ns_string("MD")];
+                let _: () = msg_send![render_button, setImagePosition: 0_isize]; // NSNoImage
                 let tooltip = match render_mode {
                     RenderMode::Plain => "Render Markdown",
                     RenderMode::Markdown => "Show raw Markdown",
                 };
                 let _: () = msg_send![render_button, setToolTip: ns_string(tooltip)];
+                let _: () = msg_send![render_button, setAccessibilityLabel: ns_string(tooltip)];
                 let _: () = msg_send![render_button, setFont: small_font];
                 let _: () = msg_send![render_button, setContentTintColor: button_color];
                 let _: () = msg_send![render_button, setTag: msg_index as isize];
@@ -727,6 +732,7 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
                     render_button,
                     setIdentifier: ns_string("codescribe_render_button")
                 ];
+                // Dedicated frame + handler — Markdown toggle never copies.
                 let _: () = msg_send![render_button, setTarget: target];
                 let _: () = msg_send![render_button, setAction: sel!(onToggleBubbleRender:)];
                 let _: () = msg_send![render_button, setHidden: true];

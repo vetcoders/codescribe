@@ -77,6 +77,45 @@ pub(super) unsafe fn add_settings_group_card(
     width: f64,
     height: f64,
 ) -> Id {
+    unsafe { build_settings_group_card(container, x, top_y, width, height.max(44.0), false) }
+}
+
+/// Padding (px) the dynamic card keeps below a section's last content row.
+pub(super) const SETTINGS_CARD_BOTTOM_PAD: f64 = 12.0;
+
+/// Draw a settings group card sized to the section's *actual* content advance
+/// instead of a hand-tuned fixed height, inserted BEHIND the rows that were
+/// already added.
+///
+/// AppKit has no constraint solver here: section rows are laid out by a manual
+/// top-down `y` cursor. Hardcoding the card height (the old `172.0`/`170.0`/...)
+/// drifts the instant a row step or token gap changes, so the last rows spill
+/// past the card and collide with the next section. Capturing `top_y` before
+/// the rows and `content_bottom_y` after them makes the card track reality and
+/// stay collision-free at any font scale / value length.
+///
+/// `content_bottom_y` is the cursor position just below the last row; the card
+/// extends `SETTINGS_CARD_BOTTOM_PAD` further down for breathing room. Inserted
+/// at the back of `container` (NSWindowBelow) so the rows stay legible on top.
+pub(super) unsafe fn add_settings_group_card_dynamic(
+    container: Id,
+    x: f64,
+    top_y: f64,
+    width: f64,
+    content_bottom_y: f64,
+) -> Id {
+    let height = (top_y - (content_bottom_y - SETTINGS_CARD_BOTTOM_PAD)).max(44.0);
+    unsafe { build_settings_group_card(container, x, top_y, width, height, true) }
+}
+
+unsafe fn build_settings_group_card(
+    container: Id,
+    x: f64,
+    top_y: f64,
+    width: f64,
+    height: f64,
+    behind: bool,
+) -> Id {
     let ns_view = objc_class("NSView");
     let card: Id = msg_send![ns_view, alloc];
     let card: Id = msg_send![
@@ -99,9 +138,17 @@ pub(super) unsafe fn add_settings_group_card(
         let _: () = msg_send![layer, setMasksToBounds: true];
         let _: () = msg_send![layer, setShadowRadius: 0.0f64];
     }
-    // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
-    unsafe {
-        add_subview(container, card);
+    if behind {
+        // NSWindowBelow == -1: drop the card to the back so the section's rows,
+        // which were added first, render on top of it.
+        let below: isize = -1;
+        let nil_view: Id = std::ptr::null_mut();
+        let _: () = msg_send![container, addSubview: card positioned: below relativeTo: nil_view];
+    } else {
+        // SAFETY: see module-level # Safety doc — main-thread AppKit / msg_send! access on retained `Id` pointers.
+        unsafe {
+            add_subview(container, card);
+        }
     }
     card
 }

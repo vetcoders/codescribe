@@ -300,6 +300,34 @@ fn test_transcription_text() {
     let _ = get_transcription_text();
 }
 
+/// The dictation overlay is a borderless floating window. A plain borderless
+/// `NSWindow` returns `canBecomeKeyWindow = NO`, which silently blocks all
+/// keyboard input to the transcript `NSTextView` — so `setEditable: true` would
+/// be a visual lie. Verify the overlay window subclass opts into key/main
+/// status so the transcript is genuinely editable.
+#[test]
+fn overlay_window_subclass_is_keyable() {
+    use objc::runtime::Sel;
+    use objc::{msg_send, sel, sel_impl};
+
+    let class = super::window::overlay_window_class();
+    assert!(!class.is_null(), "overlay window class should register");
+
+    let key_sel: Sel = sel!(canBecomeKeyWindow);
+    let main_sel: Sel = sel!(canBecomeMainWindow);
+    // SAFETY: querying the runtime whether instances respond to a selector.
+    let responds_key: bool = unsafe { msg_send![class, instancesRespondToSelector: key_sel] };
+    let responds_main: bool = unsafe { msg_send![class, instancesRespondToSelector: main_sel] };
+    assert!(
+        responds_key,
+        "overlay window must override canBecomeKeyWindow"
+    );
+    assert!(
+        responds_main,
+        "overlay window must override canBecomeMainWindow"
+    );
+}
+
 #[test]
 #[serial]
 fn test_current_segment_text_smoke() {
