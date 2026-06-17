@@ -231,7 +231,14 @@ impl<'a> ResponsesStreamingManager<'a> {
                         anyhow::bail!("{}", format_sse_error("SSE", &error));
                     }
 
-                    if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                    let chunk = match serde_json::from_str::<StreamChunk>(data) {
+                        Ok(parsed) => parsed,
+                        Err(error) => {
+                            warn!("Skipping malformed SSE chunk: {}", error);
+                            continue;
+                        }
+                    };
+                    {
                         if let Some(seq) = chunk.sequence_number {
                             last_sequence_number = Some(seq);
                         }
@@ -491,7 +498,14 @@ impl<'a> ResponsesStreamingManager<'a> {
                         anyhow::bail!("{}", format_sse_error("Resume SSE", &error));
                     }
 
-                    if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
+                    let chunk = match serde_json::from_str::<StreamChunk>(data) {
+                        Ok(parsed) => parsed,
+                        Err(error) => {
+                            warn!("Skipping malformed SSE chunk: {}", error);
+                            continue;
+                        }
+                    };
+                    {
                         match chunk.chunk_type.as_str() {
                             "response.output_text.delta" => {
                                 if let Some(delta) = chunk.delta {
