@@ -2264,6 +2264,12 @@ impl RecordingController {
         // Processing loop
         let mut last_response_check = std::time::Instant::now();
         let response_check_interval = Duration::from_millis(100);
+        // Track the last conversation state pushed to the UI so the per-chunk
+        // loop (~20Hz) only dispatches on the main thread when the state
+        // actually changes, instead of every audio chunk (P2.5). The status
+        // string is derived 1:1 from `ui_state`, so tracking the state covers
+        // both dispatches.
+        let mut last_emitted_conv_state: Option<ConversationModeState> = None;
 
         while !stop_flag.load(Ordering::SeqCst) {
             // Process incoming audio chunks
@@ -2292,8 +2298,12 @@ impl RecordingController {
                                 }
                                 _ => ("Listening...", ConversationModeState::Listening),
                             };
-                            crate::ui::voice_chat::update_voice_chat_status(status);
-                            crate::ui::voice_chat::update_conversation_state(ui_state);
+                            // Only dispatch to the main thread when the state changed.
+                            if last_emitted_conv_state != Some(ui_state) {
+                                crate::ui::voice_chat::update_voice_chat_status(status);
+                                crate::ui::voice_chat::update_conversation_state(ui_state);
+                                last_emitted_conv_state = Some(ui_state);
+                            }
                         }
                     }
                 }
@@ -2335,6 +2345,9 @@ impl RecordingController {
                     crate::ui::voice_chat::update_conversation_state(
                         ConversationModeState::AssistantSpeaking,
                     );
+                    // Keep the per-chunk dedup tracker in sync with the playback
+                    // dispatch so the next state change is still emitted (P2.5).
+                    last_emitted_conv_state = Some(ConversationModeState::AssistantSpeaking);
 
                     // Play response audio in separate blocking task (non-blocking for loop)
                     // This preserves full-duplex: we can still process mic while playing
