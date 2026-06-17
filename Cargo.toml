@@ -148,3 +148,18 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Diagnostic / crash-reproduction profile.
+# Inherits the optimized release build but keeps full debug info (no strip) so
+# the panic-hook backtrace can be symbolized when reproducing crashes. This is
+# NOT the default and does NOT touch [profile.release] (still strip + abort) or
+# [profile.dev]. Use it only for diagnostics.
+#
+# Build: cargo build --profile diag
+# (split debug info is emitted as a packed .dSYM bundle alongside the binary in
+#  target/diag/; symbolize backtraces with e.g. `atos`/`llvm-symbolizer`.)
+[profile.diag]
+inherits = "release"
+debug = true
+strip = false
+split-debuginfo = "packed"
