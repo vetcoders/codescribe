@@ -144,7 +144,7 @@ impl AgentProvider for OpenAiProvider {
             self.inter_chunk_timeout,
         );
 
-        let mut provider_rx = manager.stream_agent(&request).await?;
+        let provider_rx = manager.stream_agent(&request).await?;
 
         if !self.use_previous_response_id {
             return Ok(provider_rx);
@@ -153,21 +153,11 @@ impl AgentProvider for OpenAiProvider {
         let (tx, rx) = mpsc::channel(256);
         let previous_response_id = Arc::clone(&self.previous_response_id);
 
-        tokio::spawn(async move {
-            while let Some(event) = provider_rx.recv().await {
-                if let AgentEvent::ResponseDone { response_id } = &event
-                    && let Some(response_id) = response_id
-                    && !response_id.is_empty()
-                {
-                    let mut lock = previous_response_id.lock().await;
-                    *lock = Some(response_id.clone());
-                }
-
-                if tx.send(event).await.is_err() {
-                    break;
-                }
-            }
-        });
+        tokio::spawn(forward_events_and_track_chain(
+            provider_rx,
+            tx,
+            previous_response_id,
+        ));
 
         Ok(rx)
     }
@@ -222,6 +212,38 @@ impl OpenAiProvider {
                 "Agent provider chain reset requested (provider=openai-responses); clearing stored previous_response_id before request"
             );
             *lock = None;
+        }
+    }
+}
+
+/// Forward provider events to the consumer while advancing the chain id.
+///
+/// The chain (`previous_response_id`) must only advance for turns the consumer
+/// actually received. We capture the candidate id from `ResponseDone`, deliver
+/// the event FIRST, and commit the chain ONLY on a successful send. If the
+/// consumer's `rx` was dropped (session gone), `tx.send` returns `Err`, we
+/// break without writing the chain, and a stale id cannot outlive the session
+/// (P3.7).
+async fn forward_events_and_track_chain(
+    mut provider_rx: mpsc::Receiver<AgentEvent>,
+    tx: mpsc::Sender<AgentEvent>,
+    previous_response_id: Arc<Mutex<Option<String>>>,
+) {
+    while let Some(event) = provider_rx.recv().await {
+        let chain_update = match &event {
+            AgentEvent::ResponseDone {
+                response_id: Some(response_id),
+            } if !response_id.is_empty() => Some(response_id.clone()),
+            _ => None,
+        };
+
+        if tx.send(event).await.is_err() {
+            break;
+        }
+
+        if let Some(response_id) = chain_update {
+            let mut lock = previous_response_id.lock().await;
+            *lock = Some(response_id);
         }
     }
 }
@@ -503,7 +525,10 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{OpenAiProvider, build_request_input_items, format_tool_output, request_messages};
+    use super::{
+        OpenAiProvider, build_request_input_items, format_tool_output,
+        forward_events_and_track_chain, request_messages,
+    };
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -512,7 +537,7 @@ mod tests {
     };
     use reqwest::Client;
     use serde_json::json;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, mpsc};
 
     #[test]
     fn request_messages_replays_full_history_without_previous_response_id() {
@@ -784,6 +809,79 @@ mod tests {
             stored_chain.lock().await.as_deref(),
             Some("resp_keep_me"),
             "default options must preserve conversational chain"
+        );
+    }
+
+    /// P3.7: the detached forwarder must not advance `previous_response_id` once
+    /// the consumer has dropped its receiver. Otherwise a chain id from a turn
+    /// nobody received outlives the session and poisons the next request.
+    #[tokio::test]
+    async fn forwarder_does_not_update_chain_after_drop() {
+        let stored_chain: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        let (provider_tx, provider_rx) = mpsc::channel::<AgentEvent>(8);
+        let (consumer_tx, consumer_rx) = mpsc::channel::<AgentEvent>(8);
+
+        // Consumer is gone before any event flows through the forwarder.
+        drop(consumer_rx);
+
+        let forwarder = tokio::spawn(forward_events_and_track_chain(
+            provider_rx,
+            consumer_tx,
+            Arc::clone(&stored_chain),
+        ));
+
+        // Emit a clean ResponseDone with a real id — under a live consumer this
+        // would advance the chain.
+        provider_tx
+            .send(AgentEvent::ResponseDone {
+                response_id: Some("resp_after_drop".to_string()),
+            })
+            .await
+            .expect("provider channel should accept the event");
+        drop(provider_tx);
+
+        forwarder.await.expect("forwarder task should finish");
+
+        assert!(
+            stored_chain.lock().await.is_none(),
+            "chain must stay None when the consumer dropped before delivery"
+        );
+    }
+
+    /// Counterpart to the drop case: with a live consumer, a clean ResponseDone
+    /// advances the chain exactly once.
+    #[tokio::test]
+    async fn forwarder_updates_chain_when_delivered() {
+        let stored_chain: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        let (provider_tx, provider_rx) = mpsc::channel::<AgentEvent>(8);
+        let (consumer_tx, mut consumer_rx) = mpsc::channel::<AgentEvent>(8);
+
+        let forwarder = tokio::spawn(forward_events_and_track_chain(
+            provider_rx,
+            consumer_tx,
+            Arc::clone(&stored_chain),
+        ));
+
+        provider_tx
+            .send(AgentEvent::ResponseDone {
+                response_id: Some("resp_delivered".to_string()),
+            })
+            .await
+            .expect("provider channel should accept the event");
+
+        // Drain delivery so the forwarder commits the chain.
+        let received = consumer_rx.recv().await.expect("event should be delivered");
+        assert!(matches!(received, AgentEvent::ResponseDone { .. }));
+
+        drop(provider_tx);
+        forwarder.await.expect("forwarder task should finish");
+
+        assert_eq!(
+            stored_chain.lock().await.as_deref(),
+            Some("resp_delivered"),
+            "delivered clean ResponseDone must advance the chain"
         );
     }
 }
