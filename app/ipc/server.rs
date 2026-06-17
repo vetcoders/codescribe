@@ -695,7 +695,13 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
                 "TRANSCRIPTION_OVERLAY_ENABLED" => {
                     settings.transcription_overlay_enabled = Some(bool_val)
                 }
-                _ => unreachable!(),
+                // The outer and inner key lists are maintained by hand; a key
+                // added to the outer arm but not here must not abort the
+                // settings-write path. Log and leave settings untouched
+                // (symmetric to the outer fallback below).
+                _ => {
+                    warn!("IPC bool setting key has no inner mapping to UserSettings: {key}");
+                }
             }
         }
         _ => {
