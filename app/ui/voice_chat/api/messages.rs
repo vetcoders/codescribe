@@ -76,63 +76,81 @@ pub fn finalize_voice_chat_assistant_message() {
 pub fn add_voice_chat_error_message(text: &str) {
     let text_owned = text.to_string();
     Queue::main().exec_async(move || {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.active_assistant_stream_index = None;
-        state.active_reasoning_stream_index = None;
-        clear_agent_thinking_state(&mut state);
-        let mode = message_mode_label(&state);
-        state.messages.push(ChatMessage {
-            role: ChatRole::System,
-            text: text_owned.clone(),
-            is_streaming: false,
-            is_collapsed: false,
-            is_error: true,
-            timestamp: SystemTime::now(),
-            mode: Some(mode),
-        });
-        state.is_sending = false;
-        update_chat_view_with_state(&mut state, true);
-        update_send_button_with_state(&mut state);
+        // P2.10: build views via `run_when_overlay_unlocked`. This block locks
+        // OVERLAY_STATE and then calls `update_chat_view_with_state`, which spins
+        // AppKit layout/scroll work; running it while an OUTER main-thread frame
+        // still holds the non-reentrant guard self-deadlocks the mutex.
+        run_when_overlay_unlocked(move || add_voice_chat_error_message_impl(&text_owned));
     });
+}
+
+fn add_voice_chat_error_message_impl(text: &str) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.active_assistant_stream_index = None;
+    state.active_reasoning_stream_index = None;
+    clear_agent_thinking_state(&mut state);
+    let mode = message_mode_label(&state);
+    state.messages.push(ChatMessage {
+        role: ChatRole::System,
+        text: text.to_string(),
+        is_streaming: false,
+        is_collapsed: false,
+        is_error: true,
+        timestamp: SystemTime::now(),
+        mode: Some(mode),
+    });
+    state.is_sending = false;
+    update_chat_view_with_state(&mut state, true);
+    update_send_button_with_state(&mut state);
 }
 
 /// Add a non-error system message to the chat log.
 pub fn add_voice_chat_system_message(text: &str) {
     let text_owned = text.to_string();
     Queue::main().exec_async(move || {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let mode = message_mode_label(&state);
-        state.messages.push(ChatMessage {
-            role: ChatRole::System,
-            text: text_owned.clone(),
-            is_streaming: false,
-            is_collapsed: false,
-            is_error: false,
-            timestamp: SystemTime::now(),
-            mode: Some(mode),
-        });
-        update_chat_view_with_state(&mut state, true);
+        // P2.10: see `add_voice_chat_error_message` — guard the view build.
+        run_when_overlay_unlocked(move || add_voice_chat_system_message_impl(&text_owned));
     });
+}
+
+fn add_voice_chat_system_message_impl(text: &str) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let mode = message_mode_label(&state);
+    state.messages.push(ChatMessage {
+        role: ChatRole::System,
+        text: text.to_string(),
+        is_streaming: false,
+        is_collapsed: false,
+        is_error: false,
+        timestamp: SystemTime::now(),
+        mode: Some(mode),
+    });
+    update_chat_view_with_state(&mut state, true);
 }
 
 /// Add a user message to the chat
 pub fn add_voice_chat_user_message(text: &str) {
     let text_owned = text.to_string();
     Queue::main().exec_async(move || {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.active_user_stream_index = None;
-        let mode = message_mode_label(&state);
-        state.messages.push(ChatMessage {
-            role: ChatRole::User,
-            text: text_owned,
-            is_streaming: false,
-            is_collapsed: false,
-            is_error: false,
-            timestamp: SystemTime::now(),
-            mode: Some(mode),
-        });
-        update_chat_view_with_state(&mut state, true);
+        // P2.10: see `add_voice_chat_error_message` — guard the view build.
+        run_when_overlay_unlocked(move || add_voice_chat_user_message_impl(&text_owned));
     });
+}
+
+fn add_voice_chat_user_message_impl(text: &str) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.active_user_stream_index = None;
+    let mode = message_mode_label(&state);
+    state.messages.push(ChatMessage {
+        role: ChatRole::User,
+        text: text.to_string(),
+        is_streaming: false,
+        is_collapsed: false,
+        is_error: false,
+        timestamp: SystemTime::now(),
+        mode: Some(mode),
+    });
+    update_chat_view_with_state(&mut state, true);
 }
 
 /// Seed chat with a transcript and submit it as a user message.
@@ -154,8 +172,14 @@ pub fn handoff_transcript_to_chat(transcript: &str) {
 /// Used to drive "Thinking..." UI in the Agent tab of the voice chat overlay.
 pub fn set_voice_chat_agent_thinking(thinking: bool) {
     Queue::main().exec_async(move || {
-        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        apply_agent_thinking(&mut state, thinking);
+        // P2.10: guard the lock-then-update path. `apply_agent_thinking` mutates
+        // the held guard and refreshes the status pill / send button; if an outer
+        // main-thread frame already holds OVERLAY_STATE, locking here would
+        // self-deadlock the non-reentrant mutex.
+        run_when_overlay_unlocked(move || {
+            let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            apply_agent_thinking(&mut state, thinking);
+        });
     });
 }
 
