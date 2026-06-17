@@ -1519,11 +1519,19 @@ impl RecordingController {
         Ok(())
     }
 
-    async fn reset_session_after_start_failure(&self, context: &str) {
-        warn!("{context}: resetting controller flags after failed start");
-        // Clear satellite flags BEFORE flipping `state` to Idle so cross-thread
-        // readers (e.g. VAD monitor polling current_state) never observe Idle
-        // alongside stale satellite flags (P2.2).
+    /// Atomically reset the full set of session-lifecycle fields owned by the
+    /// controller and flip `state` to Idle as the final mutation.
+    ///
+    /// This is the single source of truth for which fields constitute "session
+    /// state" so the various reset entry points (start-failure, finished
+    /// recording, toggle-stop, nuclear reset) can no longer drift apart in the
+    /// subset of fields they clear (P3.1). Each caller keeps its own UI /
+    /// telemetry / status-string tail.
+    ///
+    /// Ordering note (P2.2): every satellite flag is cleared before
+    /// `set_state(State::Idle)` so cross-thread readers (e.g. the VAD monitor
+    /// polling `current_state`) never observe Idle alongside stale flags.
+    async fn reset_session_fields(&self) {
         *self.assistive_mode.write().await = false;
         *self.hold_mode.write().await = HoldMode::Raw;
         *self.force_raw_mode.write().await = false;
@@ -1537,28 +1545,22 @@ impl RecordingController {
         self.toggle_user_has_text.store(false, Ordering::SeqCst);
         self.toggle_assistant_has_text
             .store(false, Ordering::SeqCst);
-        set_assistive_session(false);
-        reset_session_telemetry(&self.session_telemetry);
         // `state` becomes Idle only once the rest of the session state is consistent.
         self.set_state(State::Idle).await;
+    }
+
+    async fn reset_session_after_start_failure(&self, context: &str) {
+        warn!("{context}: resetting controller flags after failed start");
+        self.reset_session_fields().await;
+        set_assistive_session(false);
+        reset_session_telemetry(&self.session_telemetry);
         hide_hold_badge();
         crate::ui::voice_chat::update_voice_chat_status("Ready");
     }
 
     async fn reset_finished_recording_state(&self) {
-        // Satellite flags cleared before set_state(Idle) (P2.2).
-        *self.assistive_mode.write().await = false;
-        *self.hold_mode.write().await = HoldMode::Raw;
-        *self.force_raw_mode.write().await = false;
-        *self.force_ai_mode.write().await = false;
-        *self.session_id.write().await = None;
-        *self.assistive_context.write().await = None;
-        *self.pre_overlay_frontmost_app.write().await = None;
-        self.start_transition_in_flight
-            .store(false, Ordering::SeqCst);
-        self.assistive_loop_active.store(false, Ordering::SeqCst);
+        self.reset_session_fields().await;
         set_assistive_session(false);
-        self.set_state(State::Idle).await;
         hide_hold_badge();
     }
 
@@ -3079,20 +3081,9 @@ impl RecordingController {
             None
         };
 
-        // Reset state. Clear satellite flags BEFORE flipping `state` to Idle so
-        // cross-thread readers never observe Idle with stale flags (P2.2).
-        *self.assistive_mode.write().await = false;
-        *self.hold_mode.write().await = HoldMode::Raw;
-        *self.force_raw_mode.write().await = false;
-        *self.force_ai_mode.write().await = false;
-        *self.session_id.write().await = None;
-        self.start_transition_in_flight
-            .store(false, Ordering::SeqCst);
-        self.assistive_loop_active.store(false, Ordering::SeqCst);
-        self.toggle_user_has_text.store(false, Ordering::SeqCst);
-        self.toggle_assistant_has_text
-            .store(false, Ordering::SeqCst);
-        self.set_state(State::Idle).await;
+        // Reset state. `assistive_context` was already captured above (preserved
+        // path), so clearing it here via the shared helper is safe.
+        self.reset_session_fields().await;
 
         // Reset UI indicators
         hide_hold_badge();
@@ -4464,15 +4455,7 @@ impl RecordingController {
 
     /// Internal helper to reset all state variables
     async fn reset_state(&self) {
-        // Satellite flags cleared before set_state(Idle) (P2.2).
-        *self.assistive_mode.write().await = false;
-        *self.hold_mode.write().await = HoldMode::Raw;
-        *self.force_raw_mode.write().await = false;
-        *self.force_ai_mode.write().await = false;
-        *self.session_id.write().await = None;
-        *self.assistive_context.write().await = None;
-        *self.pre_overlay_frontmost_app.write().await = None;
-        self.set_state(State::Idle).await;
+        self.reset_session_fields().await;
 
         // Hide UI indicators
         hide_hold_badge();
