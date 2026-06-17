@@ -395,6 +395,18 @@ async fn scheduler_worker(
                     // Commit contract (hard): always VAD-prefilter before inference.
                     // Never add env/runtime bypasses that allow raw commit passthrough.
                     // The Commit lane must remain deterministic and VAD-first.
+                    //
+                    // P3.9 note (intentional duplicate VAD): the interim lane also
+                    // runs extract_speech on overlapping audio. Reusing that result
+                    // here is NOT done deliberately — the interim pass extracts
+                    // speech over accumulated *sub-buffers*, whereas this prefilter
+                    // must extract over the *whole* utterance as one deterministic,
+                    // self-contained pass (the invariant above). The two are not
+                    // substitutable. The cheap part — Silero VAD sample counts
+                    // (`speech_vad_samples`) — is already reused upstream for the
+                    // silence-drop gate and telemetry; only the full speech-sample
+                    // extraction is recomputed here, and that recompute is required
+                    // to keep the Commit lane independent of interim chunking.
                     let speech = (commit_prefilter)(&req.samples, req.sample_rate);
                     if speech.is_empty() {
                         tracing::info!(
