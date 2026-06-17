@@ -233,6 +233,41 @@ fn simulate_cmd_v() -> Result<()> {
     Ok(())
 }
 
+/// Reads `NSPasteboard.generalPasteboard.changeCount`.
+///
+/// The change count is a monotonically increasing token that bumps every time
+/// the pasteboard is written to, regardless of *what* was written. Comparing it
+/// across a synthetic Cmd+C is a content-agnostic way to detect whether the copy
+/// actually wrote anything — it eliminates the false-negative where a selection
+/// happens to equal the previous clipboard text, and the false-positive where
+/// the previous clipboard held a non-text payload (e.g. an image) and stale text
+/// gets mistaken for "the selection".
+///
+/// Returns `None` when the AppKit binding is unavailable (non-macOS, or class
+/// lookup fails) so callers can fall back to content comparison.
+#[cfg(target_os = "macos")]
+pub(crate) fn pasteboard_change_count() -> Option<i64> {
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+
+    // SAFETY: NSPasteboard.generalPasteboard returns a shared singleton and
+    // changeCount is a simple integer accessor; no ownership transfer occurs.
+    unsafe {
+        let cls = Class::get("NSPasteboard")?;
+        let pasteboard: *mut objc::runtime::Object = msg_send![cls, generalPasteboard];
+        if pasteboard.is_null() {
+            return None;
+        }
+        let count: i64 = msg_send![pasteboard, changeCount];
+        Some(count)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn pasteboard_change_count() -> Option<i64> {
+    None
+}
+
 /// Simulates Cmd+C keystroke using CGEvent
 ///
 /// Used for best-effort selection capture (clipboard snapshot+restore).
