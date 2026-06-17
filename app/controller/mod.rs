@@ -2355,50 +2355,69 @@ impl RecordingController {
                     let stop_flag_clone = Arc::clone(&stop_flag);
                     let generation_clone = Arc::clone(&generation_counter);
                     let playback_active_clone = Arc::clone(&playback_active);
-                    let playback_active_reset = Arc::clone(&playback_active);
 
-                    // Wrap spawn in catch_unwind to reset playback_active if spawn itself fails
-                    let spawn_result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let handle = tokio::runtime::Handle::current();
-                            tokio::task::spawn_blocking(move || {
-                                // Drop guard ensures playback_active is reset even on panic
-                                struct PlaybackGuard(Arc<AtomicBool>);
-                                impl Drop for PlaybackGuard {
-                                    fn drop(&mut self) {
-                                        self.0.store(false, Ordering::SeqCst);
-                                    }
-                                }
-                                let _guard = PlaybackGuard(Arc::clone(&playback_active_clone));
+                    let handle = tokio::runtime::Handle::current();
+                    // Run the playback body on a blocking worker. catch_unwind is
+                    // placed INSIDE the closure so it actually wraps the playback
+                    // body that runs on the worker thread (the previous version
+                    // wrapped only the spawn_blocking() call, which never panics
+                    // synchronously, so a panic in p.play()/block_on/UI update was
+                    // never caught). On Err we log the panic payload as the root
+                    // cause (P1.2).
+                    //
+                    // Reliability caveat: under panic="abort" (release builds) a
+                    // panic aborts the process before catch_unwind or the
+                    // PlaybackGuard Drop can run, so this recovery is effective
+                    // only under panic="unwind" (debug/tests). The real fix for
+                    // the release crash symptom is owned by the panic group
+                    // (panic hook P0.1 + abort/unwind decision P1.1).
+                    tokio::task::spawn_blocking(move || {
+                        // Resets playback_active when this scope exits (also on an
+                        // unwinding panic; NOT under panic="abort", see above).
+                        struct PlaybackGuard(Arc<AtomicBool>);
+                        impl Drop for PlaybackGuard {
+                            fn drop(&mut self) {
+                                self.0.store(false, Ordering::SeqCst);
+                            }
+                        }
+                        let _guard = PlaybackGuard(Arc::clone(&playback_active_clone));
 
-                                // Block this thread for playback, but don't block the async loop
-                                let player_guard = handle.block_on(player_clone.lock());
-                                if let Some(ref p) = *player_guard
-                                    && let Err(e) = p.play(&response_samples, response_rate)
-                                {
-                                    warn!("AudioPlayer.play error: {}", e);
-                                }
-                                // Only update UI if:
-                                // 1. Conversation wasn't stopped (stop_flag)
-                                // 2. This is still the current session (generation matches)
-                                // This prevents cross-session UI races
-                                let current_gen = generation_clone.load(Ordering::SeqCst);
-                                if !stop_flag_clone.load(Ordering::SeqCst)
-                                    && current_gen == my_generation
-                                {
-                                    crate::ui::voice_chat::update_voice_chat_status("Listening...");
-                                    crate::ui::voice_chat::update_conversation_state(
-                                        ConversationModeState::Listening,
-                                    );
-                                }
-                                // _guard dropped here, resets playback_active even on panic
-                            })
+                        let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            // Block this thread for playback, but don't block the async loop
+                            let player_guard = handle.block_on(player_clone.lock());
+                            if let Some(ref p) = *player_guard
+                                && let Err(e) = p.play(&response_samples, response_rate)
+                            {
+                                warn!("AudioPlayer.play error: {}", e);
+                            }
+                            // Only update UI if:
+                            // 1. Conversation wasn't stopped (stop_flag)
+                            // 2. This is still the current session (generation matches)
+                            // This prevents cross-session UI races
+                            let current_gen = generation_clone.load(Ordering::SeqCst);
+                            if !stop_flag_clone.load(Ordering::SeqCst)
+                                && current_gen == my_generation
+                            {
+                                crate::ui::voice_chat::update_voice_chat_status("Listening...");
+                                crate::ui::voice_chat::update_conversation_state(
+                                    ConversationModeState::Listening,
+                                );
+                            }
                         }));
 
-                    if spawn_result.is_err() {
-                        warn!("spawn_blocking panicked - resetting playback_active");
-                        playback_active_reset.store(false, Ordering::SeqCst);
-                    }
+                        if let Err(panic_payload) = body {
+                            let root_cause = panic_payload
+                                .downcast_ref::<&str>()
+                                .map(|s| s.to_string())
+                                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                            warn!(
+                                "Playback task panicked (root cause: {root_cause}); \
+                                 playback_active reset by guard"
+                            );
+                        }
+                        // _guard dropped here, resetting playback_active.
+                    });
                 }
             }
         }
