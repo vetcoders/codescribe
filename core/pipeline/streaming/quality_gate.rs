@@ -166,5 +166,109 @@ pub(crate) fn is_hallucination(text: &str, language: Option<&str>) -> bool {
     {
         return true;
     }
+    if is_repetition_hallucination(&lower) {
+        return true;
+    }
     false
+}
+
+/// Minimum word count before the repetition heuristic engages. Short utterances
+/// (e.g. "tak tak tak", "no no no") are legitimate and must never be flagged.
+const REPETITION_MIN_WORDS: usize = 8;
+
+/// Minimum fraction of words that must belong to repeated occurrences of the
+/// dominant token before text is treated as a repetition hallucination.
+const REPETITION_DOMINANCE: f32 = 0.6;
+
+/// Cheap auto-repetition detector for longer hallucinations: Whisper sometimes
+/// loops a phrase/word many times (e.g. "do widzenia do widzenia do widzenia
+/// ..."). Flags text that is both long enough to be implausible as real speech
+/// and dominated by a single repeated word. Conservative by design: it stays
+/// silent on short legitimate repeats (gated by `REPETITION_MIN_WORDS`) and only
+/// fires when one token covers most of the text (`REPETITION_DOMINANCE`).
+fn is_repetition_hallucination(lower: &str) -> bool {
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    if words.len() < REPETITION_MIN_WORDS {
+        return false;
+    }
+
+    // Unigram dominance: a single word covering most of the text is the cheapest
+    // and most reliable loop signal.
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for w in &words {
+        *counts.entry(*w).or_insert(0) += 1;
+    }
+    let max_count = counts.values().copied().max().unwrap_or(0);
+    if max_count as f32 / words.len() as f32 >= REPETITION_DOMINANCE {
+        return true;
+    }
+
+    // Bigram dominance: catches two-word phrases looped (the unigram split
+    // between the two words keeps either below the unigram threshold).
+    if words.len() >= 2 * REPETITION_MIN_WORDS {
+        let mut bigrams: std::collections::HashMap<(&str, &str), usize> =
+            std::collections::HashMap::new();
+        for pair in words.windows(2) {
+            *bigrams.entry((pair[0], pair[1])).or_insert(0) += 1;
+        }
+        let max_bigram = bigrams.values().copied().max().unwrap_or(0);
+        let total_bigrams = words.len() - 1;
+        // Each repeated bigram covers ~2 words; compare covered words to total.
+        if (max_bigram * 2) as f32 / words.len() as f32 >= REPETITION_DOMINANCE
+            && max_bigram >= total_bigrams / 2
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hallucination_existing_matches_preserved() {
+        // Exact-match list entries still flagged.
+        assert!(is_hallucination("Thank you", None));
+        assert!(is_hallucination("  Dziękuję za uwagę  ", Some("pl")));
+        assert!(is_hallucination(
+            "Napisy stworzone przez społeczność",
+            Some("pl")
+        ));
+        // Whitelist + normal speech still pass.
+        assert!(!is_hallucination("Tak", Some("pl")));
+        assert!(!is_hallucination("This is a normal sentence.", Some("en")));
+    }
+
+    #[test]
+    fn hallucination_repetition_detected() {
+        // Single word looped many times (long enough to be implausible speech).
+        assert!(is_hallucination(
+            "do do do do do do do do do do",
+            Some("pl")
+        ));
+        // Two-word phrase looped.
+        assert!(is_hallucination(
+            "do widzenia do widzenia do widzenia do widzenia do widzenia do widzenia do widzenia do widzenia",
+            Some("pl")
+        ));
+    }
+
+    #[test]
+    fn hallucination_legit_repeat() {
+        // Short legitimate repeats must NOT be flagged (below min-words gate).
+        assert!(!is_hallucination("tak tak tak", Some("pl")));
+        assert!(!is_hallucination("no no no", Some("pl")));
+        assert!(!is_hallucination("nie nie nie nie", Some("pl")));
+        // Longer but varied real speech (no single-word dominance) passes.
+        assert!(!is_hallucination(
+            "i wtedy poszedłem do sklepu żeby kupić chleb mleko oraz masło",
+            Some("pl")
+        ));
+        // Repetition heuristic helper: empty / short are inert.
+        assert!(!is_repetition_hallucination(""));
+        assert!(!is_repetition_hallucination("tak tak tak"));
+    }
 }
