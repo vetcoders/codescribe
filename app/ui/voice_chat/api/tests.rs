@@ -66,6 +66,58 @@ fn filtered_drawer_entries_matches_preview_path_and_title_case_insensitively() {
 }
 
 #[test]
+fn drawer_filter_in_memory_returns_correct_subset_without_disk_io() {
+    // P1.3: search-as-you-type must filter the already-loaded in-memory
+    // `drawer_entries` snapshot, never re-read ThreadStore from disk per
+    // keystroke. This exercises the same `filtered_drawer_entries` path the
+    // debounced `filter_drawer` callback renders from, proving the filter is a
+    // pure in-memory operation over a fixed `Vec<DrawerEntry>` (no I/O).
+    let state = VoiceChatOverlayState {
+        drawer_entries: vec![
+            sample_drawer_entry(
+                "alpha.md",
+                "renal panel recap",
+                TranscriptionMode::Hold,
+                false,
+                false,
+            ),
+            sample_drawer_entry(
+                "beta.md",
+                "surgical follow-up",
+                TranscriptionMode::Assistive,
+                false,
+                false,
+            ),
+            sample_drawer_entry(
+                "gamma.md",
+                "renal recheck tomorrow",
+                TranscriptionMode::Toggle,
+                false,
+                false,
+            ),
+        ],
+        ..Default::default()
+    };
+
+    // Two entries contain "renal", original indices preserved for card actions.
+    let renal = filtered_drawer_entries(&state, "renal");
+    assert_eq!(renal.len(), 2);
+    assert_eq!(renal[0].0, 0);
+    assert_eq!(renal[1].0, 2);
+
+    // Single match.
+    let surgical = filtered_drawer_entries(&state, "surgical");
+    assert_eq!(surgical.len(), 1);
+    assert_eq!(surgical[0].0, 1);
+
+    // No match → empty (still no I/O).
+    assert!(filtered_drawer_entries(&state, "cardiology").is_empty());
+
+    // Empty query → full set unchanged.
+    assert_eq!(filtered_drawer_entries(&state, "").len(), 3);
+}
+
+#[test]
 fn filtered_drawer_entries_returns_empty_when_query_has_no_match() {
     let state = VoiceChatOverlayState {
         drawer_entries: vec![

@@ -1,9 +1,21 @@
 //! Drawer tab: transcription/thread cards, filtering, rendering and loading.
 
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const DRAWER_PREVIEW_IDENTIFIER: &str = "codescribe_drawer_preview";
 const DRAWER_ACTION_IDENTIFIER: &str = "codescribe_drawer_action";
+
+/// Search-as-you-type debounce window. Fast typing only triggers ONE render
+/// (the last keystroke after the user pauses), not one render per character.
+const DRAWER_SEARCH_DEBOUNCE: Duration = Duration::from_millis(180);
+
+/// Monotonic generation token for search debounce. Each keystroke bumps this;
+/// a queued debounce callback only renders if its captured token is still the
+/// latest, so stale callbacks from earlier keystrokes are dropped. Lives at
+/// module scope (not in `OVERLAY_STATE`) so the keystroke path never has to
+/// `.lock()` the non-reentrant overlay mutex just to schedule a debounce.
+static DRAWER_SEARCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawerRowActionLayout {
@@ -23,11 +35,29 @@ pub enum DrawerSection {
     Older,
 }
 
-/// Refresh drawer entries from disk
+/// Refresh drawer entries from disk.
+///
+/// Disk I/O (favorites + `ThreadStore`/`ThreadIndex` scan) runs on a background
+/// thread; only the resulting owned `Vec` is marshalled back to the main thread
+/// for state assignment + render. This keeps the AppKit main thread responsive
+/// even when the thread index is large (P1.3 acceptance #4).
 pub fn refresh_drawer() {
-    Queue::main().exec_async(|| {
-        refresh_drawer_impl();
+    std::thread::spawn(|| {
+        let favorites = load_favorites_from_disk();
+        let entries = load_drawer_entries();
+        Queue::main().exec_async(move || {
+            apply_refreshed_drawer_entries(favorites, entries);
+        });
     });
+}
+
+/// Apply a freshly loaded (off-main) drawer snapshot on the main thread.
+fn apply_refreshed_drawer_entries(favorites: HashSet<String>, entries: Vec<DrawerEntry>) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.favorites = favorites;
+    let query = drawer_query_from_state(&state);
+    state.drawer_entries = entries;
+    render_drawer_entries(&mut state, &query);
 }
 
 pub fn drawer_row_action_layout(row_width: f64) -> DrawerRowActionLayout {
@@ -51,22 +81,29 @@ pub fn drawer_row_action_layout(row_width: f64) -> DrawerRowActionLayout {
     }
 }
 
-/// Filter drawer entries by query (reloads from disk)
+/// Filter drawer entries by query (search-as-you-type path).
+///
+/// This is the per-keystroke hot path. It does NOT touch disk: the full entry
+/// set is loaded once when the drawer opens / refreshes (`refresh_drawer`), and
+/// every keystroke filters that in-memory `state.drawer_entries` snapshot via
+/// `render_drawer_entries` (which calls `filtered_drawer_entries`). Re-reading
+/// `ThreadStore` / `ThreadIndex` on every character was the jank source (P1.3).
+///
+/// Renders are debounced: each call bumps `DRAWER_SEARCH_GENERATION` and queues
+/// a callback after `DRAWER_SEARCH_DEBOUNCE`; only the callback whose captured
+/// generation is still current performs the render, so a burst of fast typing
+/// collapses to a single render after the user pauses.
 pub fn filter_drawer(query: &str) {
     let query_owned = query.to_string();
-    Queue::main().exec_async(move || {
+    let generation = DRAWER_SEARCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    Queue::main().exec_after(DRAWER_SEARCH_DEBOUNCE, move || {
+        // Stale callback: a newer keystroke superseded this one. Drop it.
+        if DRAWER_SEARCH_GENERATION.load(Ordering::SeqCst) != generation {
+            return;
+        }
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.drawer_entries = load_drawer_entries_with_query(&query_owned);
         render_drawer_entries(&mut state, &query_owned);
     });
-}
-
-pub fn refresh_drawer_impl() {
-    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.favorites = load_favorites_from_disk();
-    let query = drawer_query_from_state(&state);
-    state.drawer_entries = load_drawer_entries();
-    render_drawer_entries(&mut state, &query);
 }
 
 pub fn handle_card_copy(index: usize) {
