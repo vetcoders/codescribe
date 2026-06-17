@@ -68,6 +68,11 @@ impl AgentSession {
         &self.messages
     }
 
+    pub fn restore_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+        self.thread_id = None;
+    }
+
     async fn stream_with_retry(
         &self,
         tool_definitions: &[ToolDefinition],
@@ -706,6 +711,29 @@ mod tests {
         fn name(&self) -> &str {
             "permanent-failure-provider"
         }
+    }
+
+    #[test]
+    fn restore_messages_seeds_history_and_clears_provider_thread_id() {
+        let (ui_tx, _ui_rx) = mpsc::channel(4);
+        let mut session = AgentSession::new(
+            Box::new(ScriptedProvider::new(Vec::new())),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        );
+        session.thread_id = Some("resp_old".to_string());
+
+        let restored = vec![
+            Message::new(Role::User, vec![ContentBlock::Text("First".to_string())]),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("Second".to_string())],
+            ),
+        ];
+        session.restore_messages(restored.clone());
+
+        assert_eq!(session.messages(), restored.as_slice());
+        assert_eq!(session.thread_id(), None);
     }
 
     #[tokio::test]

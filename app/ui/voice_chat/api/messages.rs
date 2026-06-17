@@ -222,7 +222,7 @@ pub fn handle_message_bubble_click_from_recognizer(sender: Id) {
 /// Minimum interval between layout passes during streaming (prevents main-thread saturation).
 pub const DELTA_LAYOUT_THROTTLE: Duration = Duration::from_millis(50);
 pub const SCROLL_BOTTOM_THRESHOLD: f64 = 24.0;
-pub const AGENT_SCROLL_BOTTOM_CLEARANCE: f64 = 16.0;
+pub const AGENT_SCROLL_BOTTOM_CLEARANCE: f64 = 36.0;
 
 pub fn should_autoscroll(scroll_pinned: bool) -> bool {
     scroll_pinned
@@ -301,7 +301,10 @@ pub unsafe fn scroll_agent_to_bottom(
             let bubble = bubble_ptr as Id;
             let bounds: CGRect = msg_send![bubble, bounds];
             let y = (bounds.size.height - 2.0).max(0.0);
-            let rect = CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(bounds.size.width, 2.0));
+            let rect = CGRect::new(
+                &CGPoint::new(0.0, y),
+                &CGSize::new(bounds.size.width, AGENT_SCROLL_BOTTOM_CLEARANCE + 2.0),
+            );
             let _: () = msg_send![bubble, scrollRectToVisible: rect];
             return;
         }

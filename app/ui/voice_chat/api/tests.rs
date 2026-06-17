@@ -387,6 +387,11 @@ fn drawer_row_action_layout_reserves_title_truncation_space() {
         layout.title_x + layout.title_width < layout.actions_x,
         "title must end before hover action buttons begin"
     );
+    assert_eq!(layout.text_column_x, layout.title_x);
+    assert!(
+        layout.text_column_width > layout.title_width,
+        "preview/subtitle should breathe under the title instead of starting under the badge"
+    );
     assert_eq!(
         layout.actions_width,
         ui_tokens::DRAWER_ACTION_BUTTON_SIZE * 4.0 + ui_tokens::DRAWER_ACTION_BUTTON_GAP * 3.0
@@ -617,7 +622,7 @@ fn scrolled_to_bottom_math_uses_visible_max_y_threshold() {
 fn agent_document_height_preserves_bottom_clearance_above_input_bar() {
     let stack_height = 920.0;
     let bottom_inset = 96.0;
-    let clearance = 18.0;
+    let clearance = AGENT_SCROLL_BOTTOM_CLEARANCE;
     let document_height =
         agent_document_height_for_bottom_clearance(stack_height, bottom_inset, clearance);
 

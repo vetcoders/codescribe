@@ -95,3 +95,4 @@ docs/runtime-diagnosis.md
 AGENTS.md
 /.vibecrafted
 /*test*.rs
+*.zip

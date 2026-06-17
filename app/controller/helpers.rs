@@ -296,6 +296,59 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
     })
 }
 
+fn restore_thread_into_agent_runtime(mut runtime: AgentRuntime, thread: &Thread) -> AgentRuntime {
+    runtime.thread_store_id = thread.id.clone();
+    runtime.session.restore_messages(
+        thread
+            .messages
+            .iter()
+            .map(ThreadMessage::to_message)
+            .collect(),
+    );
+    runtime
+}
+
+fn initialize_agent_runtime_from_thread(thread: &Thread) -> Result<AgentRuntime> {
+    let runtime = initialize_agent_runtime()?;
+    let runtime = restore_thread_into_agent_runtime(runtime, thread);
+    Ok(runtime)
+}
+
+pub(crate) async fn restore_agent_runtime_from_thread(thread: Thread) -> Result<()> {
+    let generation = request_new_agent_thread_boundary();
+    let runtime_state = shared_agent_runtime_state();
+    let mut guard = runtime_state.lock().await;
+
+    if let Some(previous_runtime) = guard
+        .runtime
+        .as_ref()
+        .filter(|runtime| !runtime.session.messages().is_empty())
+        && let Err(error) = persist_runtime_thread(previous_runtime)
+    {
+        warn!("Failed to persist previous Agent runtime before restore: {error}");
+    }
+
+    match initialize_agent_runtime_from_thread(&thread) {
+        Ok(runtime) => {
+            guard.runtime_generation = generation;
+            guard.runtime = Some(runtime);
+            guard.runtime_degraded = false;
+            crate::ui::voice_chat::set_voice_chat_runtime_degraded(false, None);
+            Ok(())
+        }
+        Err(error) => {
+            guard.runtime_generation = generation;
+            guard.runtime = None;
+            guard.runtime_degraded = true;
+            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
+                true,
+                Some(RUNTIME_DEGRADED_REASON),
+            );
+            Err(error).context("Failed to initialize Agent runtime for restored thread")
+        }
+    }
+}
+
 fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
@@ -861,7 +914,7 @@ pub(crate) struct SessionEngineStats {
     pub partial_runs_total: u64,
     pub trigger_utterance_count: u64,
     pub trigger_speech_count: u64,
-    pub trigger_watchdog_count: u64,
+    pub trigger_timer_count: u64,
     pub partial_stale_count: u64,
     pub partial_coalesced_count: u64,
     pub partial_dropped_count: u64,
@@ -940,7 +993,7 @@ impl EventSink for SessionTelemetrySink {
                 partial_runs_total,
                 trigger_utterance_count,
                 trigger_speech_count,
-                trigger_watchdog_count,
+                trigger_timer_count,
                 partial_stale_count,
                 partial_coalesced_count,
                 partial_dropped_count,
@@ -955,7 +1008,7 @@ impl EventSink for SessionTelemetrySink {
                     partial_runs_total: *partial_runs_total,
                     trigger_utterance_count: *trigger_utterance_count,
                     trigger_speech_count: *trigger_speech_count,
-                    trigger_watchdog_count: *trigger_watchdog_count,
+                    trigger_timer_count: *trigger_timer_count,
                     partial_stale_count: *partial_stale_count,
                     partial_coalesced_count: *partial_coalesced_count,
                     partial_dropped_count: *partial_dropped_count,
@@ -1075,7 +1128,7 @@ mod tests {
             partial_runs_total: 6,
             trigger_utterance_count: 2,
             trigger_speech_count: 3,
-            trigger_watchdog_count: 1,
+            trigger_timer_count: 1,
             partial_stale_count: 7,
             partial_coalesced_count: 8,
             partial_dropped_count: 9,
@@ -1096,7 +1149,7 @@ mod tests {
         assert_eq!(stats.partial_runs_total, 6);
         assert_eq!(stats.trigger_utterance_count, 2);
         assert_eq!(stats.trigger_speech_count, 3);
-        assert_eq!(stats.trigger_watchdog_count, 1);
+        assert_eq!(stats.trigger_timer_count, 1);
         assert_eq!(stats.partial_stale_count, 7);
         assert_eq!(stats.partial_coalesced_count, 8);
         assert_eq!(stats.partial_dropped_count, 9);
@@ -1311,6 +1364,54 @@ mod tests {
 
         assert!(!persisted);
         assert_eq!(persist_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_restore_thread_into_runtime_keeps_thread_id_and_history() {
+        let now = Utc::now();
+        let thread = Thread {
+            id: "thread_restored".to_string(),
+            created_at: now,
+            updated_at: now,
+            title: "Restored conversation".to_string(),
+            mode: "assistive".to_string(),
+            tags: Vec::new(),
+            notes: Vec::new(),
+            messages: vec![
+                ThreadMessage {
+                    role: "user".to_string(),
+                    content: vec![serde_json::json!({"type":"text","text":"hello"})],
+                    timestamp: now,
+                    metadata: None,
+                },
+                ThreadMessage {
+                    role: "assistant".to_string(),
+                    content: vec![serde_json::json!({"type":"text","text":"world"})],
+                    timestamp: now,
+                    metadata: None,
+                },
+            ],
+            summary: None,
+            total_tokens: None,
+            provider: "test".to_string(),
+            model: "test-model".to_string(),
+        };
+
+        let runtime =
+            restore_thread_into_agent_runtime(runtime_with_thread_id("thread_old"), &thread);
+
+        assert_eq!(runtime.thread_store_id, "thread_restored");
+        assert_eq!(runtime.session.messages().len(), 2);
+        assert_eq!(runtime.session.messages()[0].role, Role::User);
+        assert_eq!(runtime.session.messages()[1].role, Role::Assistant);
+        assert!(matches!(
+            &runtime.session.messages()[0].content[0],
+            ContentBlock::Text(text) if text == "hello"
+        ));
+        assert!(matches!(
+            &runtime.session.messages()[1].content[0],
+            ContentBlock::Text(text) if text == "world"
+        ));
     }
 
     #[test]

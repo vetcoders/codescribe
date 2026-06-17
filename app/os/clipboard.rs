@@ -416,14 +416,10 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    // Note: These tests require real clipboard access which may crash in CI
-    // environments without a proper display server. Run manually:
-    // cargo test --lib -- clipboard --ignored
-
     #[test]
     #[serial]
-    #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_set_and_get_clipboard() {
+        let _guard = ClipboardTestGuard::capture();
         let test_text = "Test clipboard content";
         set_clipboard(test_text).expect("Failed to set clipboard");
 
@@ -434,6 +430,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_empty_clipboard_warning() {
+        let _guard = ClipboardTestGuard::capture();
         // Should not panic, just log warning
         let result = set_clipboard("");
         assert!(result.is_ok());
@@ -441,8 +438,8 @@ mod tests {
 
     #[test]
     #[serial]
-    #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_clipboard_snapshot_capture() {
+        let _guard = ClipboardTestGuard::capture();
         // Set some text
         set_clipboard("Test snapshot content").expect("Failed to set clipboard");
 
@@ -457,8 +454,8 @@ mod tests {
 
     #[test]
     #[serial]
-    #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_clipboard_snapshot_restore() {
+        let _guard = ClipboardTestGuard::capture();
         // Set original content
         let original = "Original clipboard text";
         set_clipboard(original).expect("Failed to set clipboard");
@@ -479,12 +476,28 @@ mod tests {
 
     #[test]
     #[serial]
-    #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_copy_alias() {
+        let _guard = ClipboardTestGuard::capture();
         let test_text = "Copy alias test";
         copy(test_text).expect("Failed to copy");
 
         let retrieved = get_clipboard().expect("Failed to get clipboard");
         assert_eq!(retrieved, test_text);
+    }
+
+    struct ClipboardTestGuard(Option<ClipboardSnapshot>);
+
+    impl ClipboardTestGuard {
+        fn capture() -> Self {
+            Self(ClipboardSnapshot::capture().ok())
+        }
+    }
+
+    impl Drop for ClipboardTestGuard {
+        fn drop(&mut self) {
+            if let Some(snapshot) = &self.0 {
+                let _ = snapshot.restore();
+            }
+        }
     }
 }

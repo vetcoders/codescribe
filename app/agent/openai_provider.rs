@@ -297,7 +297,7 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                 ContentBlock::Text(text) => {
                     if !text.is_empty() {
                         content.push(json!({
-                            "type": "input_text",
+                            "type": text_content_type(message.role),
                             "text": text
                         }));
                     }
@@ -354,6 +354,13 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
     }
 
     Ok(items)
+}
+
+fn text_content_type(role: Role) -> &'static str {
+    match role {
+        Role::Assistant => "output_text",
+        Role::User | Role::System => "input_text",
+    }
 }
 
 fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String> {
@@ -586,6 +593,29 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["type"], "function_call_output");
         assert_eq!(items[0]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn build_request_input_items_uses_output_text_for_assistant_history() {
+        let messages = vec![
+            Message::new(Role::User, vec![ContentBlock::Text("question".to_string())]),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("answer".to_string())],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text("follow-up".to_string())],
+            ),
+        ];
+
+        let items =
+            build_request_input_items(&messages, None).expect("request input items should build");
+
+        assert_eq!(items[0]["content"][0]["type"], "input_text");
+        assert_eq!(items[1]["role"], "assistant");
+        assert_eq!(items[1]["content"][0]["type"], "output_text");
+        assert_eq!(items[2]["content"][0]["type"], "input_text");
     }
 
     #[test]

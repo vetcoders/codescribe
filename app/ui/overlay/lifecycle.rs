@@ -58,6 +58,9 @@ pub(super) fn append_transcription_delta_impl(delta: &str) {
     // Extract text + snapshot under lock, then drop before AppKit calls.
     let (visible_text, snap, needs_resize) = {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.user_edited {
+            return;
+        }
         let len_before = state.accumulated_text.len();
         codescribe_core::pipeline::contracts::TranscriptDelta::from_raw(delta)
             .apply(&mut state.accumulated_text);
@@ -102,6 +105,7 @@ fn set_transcription_text_impl(text: &str) {
         let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.accumulated_text = text.to_string();
         state.last_pass_text = text.to_string();
+        state.user_edited = false;
         let visible = display_text_for_state(&state);
         let snap = OverlaySnapshot::from_state(&state);
         state.last_layout_resize_at = Instant::now();
@@ -135,6 +139,7 @@ pub fn set_transcription_action_contract(
             state.accumulated_text.clear();
             state.raw_text = raw_text_owned;
             state.last_pass_text = last_pass_owned;
+            state.user_edited = false;
             state.action_contract_mode = mode_copy;
             state.format_phase = FormatPhase::Idle;
             state.display_status = display_status;
@@ -180,6 +185,7 @@ fn clear_transcription_text_impl() {
         state.accumulated_text.clear();
         state.raw_text.clear();
         state.last_pass_text.clear();
+        state.user_edited = false;
         state.action_contract_mode = TranscriptionActionContractMode::Raw;
         state.format_phase = FormatPhase::Idle;
         state.display_status.clear();
@@ -297,6 +303,7 @@ pub fn apply_overlay_format_result(formatted_text: &str) {
             let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.accumulated_text = formatted_text.clone();
             state.last_pass_text = formatted_text;
+            state.user_edited = false;
             state.decision_mode = true;
             state.action_contract_mode = TranscriptionActionContractMode::AiFormat;
             state.format_phase = FormatPhase::Formatted;
@@ -359,6 +366,7 @@ pub fn enter_recording_mode() {
             state.decision_mode = false;
             state.hover_active = false;
             state.format_phase = FormatPhase::Idle;
+            state.user_edited = false;
             (
                 OverlaySnapshot::from_state(&state),
                 state.action_contract_mode,
@@ -383,6 +391,7 @@ pub fn enter_processing_mode() {
             state.decision_mode = false;
             state.hover_active = false;
             state.format_phase = FormatPhase::Idle;
+            state.user_edited = false;
             (
                 OverlaySnapshot::from_state(&state),
                 state.action_contract_mode,
@@ -444,6 +453,7 @@ fn hide_transcription_overlay_impl() {
         window_ptr,
         tracking_area_ptr,
         action_handler_ptr,
+        text_view_ptr,
         copy_button_ptr,
         augment_button_ptr,
         save_button_ptr,
@@ -453,13 +463,13 @@ fn hide_transcription_overlay_impl() {
         let wp = state.window.take();
         let tap = state.tracking_area.take();
         let ahp = state.action_handler.take();
+        let tvp = state.text_view.take();
         let cbp = state.copy_button.take();
         let abp = state.augment_button.take();
         let sbp = state.save_button.take();
         let cmp = state.commit_button.take();
         state.header_label = None;
         state.text_scroll_view = None;
-        state.text_view = None;
         state.status_field = None;
         state.auto_hide_label = None;
         state.blur_view = None;
@@ -468,11 +478,12 @@ fn hide_transcription_overlay_impl() {
         state.hover_active = false;
         state.action_contract_mode = TranscriptionActionContractMode::Raw;
         state.format_phase = FormatPhase::Idle;
+        state.user_edited = false;
         state.last_applied_height = OVERLAY_WINDOW_MIN_HEIGHT;
         state.last_layout_resize_at = Instant::now();
         state.pending_layout_resize = false;
         // Note: accumulated_text is NOT cleared here - it's needed for clipboard copy
-        (wp, tap, ahp, cbp, abp, sbp, cmp)
+        (wp, tap, ahp, tvp, cbp, abp, sbp, cmp)
     }; // Lock dropped.
 
     if let Some(window_ptr) = window_ptr {
@@ -488,6 +499,9 @@ fn hide_transcription_overlay_impl() {
         // control/tracking callback can fire on a freed pointer during fade-out.
         unsafe {
             let nil_target: Id = std::ptr::null_mut();
+            if let Some(tv_ptr) = text_view_ptr {
+                let _: () = msg_send![tv_ptr as Id, setDelegate: nil_target];
+            }
             for button_ptr in [
                 copy_button_ptr,
                 augment_button_ptr,

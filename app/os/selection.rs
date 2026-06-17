@@ -310,9 +310,13 @@ pub fn build_assistive_input(user_voice_text: &str, ctx: &AssistiveContext) -> S
     out.push_str(instruction);
     out.push_str("\n>\n\n");
 
-    out.push_str("ZAZNACZONY_TEKST:\n<<<\n");
-    out.push_str(selected_text);
-    out.push_str("\n>\n");
+    if !selected_text.is_empty() {
+        out.push_str("ZAZNACZONY_TEKST:\n<<<\n");
+        out.push_str(selected_text);
+        out.push_str("\n>\n");
+    } else {
+        out.push_str("ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n");
+    }
 
     if !frontmost_app.is_empty() {
         out.push_str("\nKONTEKST:\n- frontmost_app: ");
@@ -484,6 +488,22 @@ mod tests {
         assert_eq!(ctx.selected_text.as_deref(), Some("selected terminal text"));
         let input = build_assistive_input("opisz zaznaczenie", &ctx);
         assert!(input.contains("selected terminal text"));
+    }
+
+    #[test]
+    fn assistive_input_handles_missing_selection_without_empty_context_block() {
+        let ctx = AssistiveContext {
+            frontmost_app: Some("GitHub Desktop".to_string()),
+            selected_text: None,
+        };
+
+        let input = build_assistive_input("kontynuuj bez selekcji", &ctx);
+
+        assert!(input.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+        assert!(input.contains("kontynuuj bez selekcji"));
+        assert!(input.contains("ZAZNACZONY_TEKST: brak dostępnego zaznaczenia."));
+        assert!(!input.contains("ZAZNACZONY_TEKST:\n<<<\n\n>"));
+        assert!(input.contains("frontmost_app: GitHub Desktop"));
     }
 
     #[test]

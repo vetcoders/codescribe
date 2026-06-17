@@ -11,6 +11,9 @@ use super::{
 const NSTRACKING_MOUSE_ENTERED_AND_EXITED: u64 = 1 << 0;
 const NSTRACKING_ACTIVE_ALWAYS: u64 = 1 << 7;
 const NSTRACKING_IN_VISIBLE_RECT: u64 = 1 << 9;
+const BUBBLE_COPY_ACTION_WIDTH: f64 = 40.0;
+const BUBBLE_RENDER_ACTION_WIDTH: f64 = 28.0;
+const BUBBLE_ACTION_GAP: f64 = 10.0;
 
 /// Role for chat bubble styling
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,24 +57,24 @@ fn bubble_action_frames(
     padding_x: f64,
     include_render_toggle: bool,
 ) -> BubbleActionFrames {
-    let copy_width = 40.0;
-    let render_width = 28.0;
-    // Comfortable, unmistakable gap so the Markdown and Copy hitboxes never
-    // touch — a click in the dead space between them hits neither button.
-    let gap = 10.0;
+    // Put Markdown and Copy on opposite bubble edges. Keeping the toggle away
+    // from Copy is more robust than a small same-edge gap during streaming
+    // resizes and makes the hitboxes visually unmistakable.
     let left = padding_x.max(4.0);
     let right = (bubble_width - padding_x).max(left);
 
     if include_render_toggle {
-        let total = render_width + gap + copy_width;
-        let start = (right - total).max(left);
+        let copy_width = BUBBLE_COPY_ACTION_WIDTH.min((right - left).max(1.0));
+        let copy_x = (right - copy_width).max(left);
+        let render_width =
+            BUBBLE_RENDER_ACTION_WIDTH.min((copy_x - BUBBLE_ACTION_GAP - left).max(1.0));
         let render = BubbleActionFrame {
-            x: start,
+            x: left,
             width: render_width,
         };
         let copy = BubbleActionFrame {
-            x: start + render_width + gap,
-            width: copy_width.min((right - (start + render_width + gap)).max(1.0)),
+            x: copy_x,
+            width: copy_width,
         };
         BubbleActionFrames {
             copy,
@@ -80,8 +83,8 @@ fn bubble_action_frames(
     } else {
         BubbleActionFrames {
             copy: BubbleActionFrame {
-                x: (right - copy_width).max(left),
-                width: copy_width.min((right - left).max(1.0)),
+                x: (right - BUBBLE_COPY_ACTION_WIDTH).max(left),
+                width: BUBBLE_COPY_ACTION_WIDTH.min((right - left).max(1.0)),
             },
             render: None,
         }
@@ -648,7 +651,10 @@ pub fn create_bubble_view(config: BubbleConfig) -> (Id, Id) {
             let action_frames = bubble_action_frames(
                 bubble_width,
                 padding_x,
-                matches!(config.role, BubbleRole::Assistant | BubbleRole::System),
+                matches!(
+                    config.role,
+                    BubbleRole::User | BubbleRole::Assistant | BubbleRole::System
+                ),
             );
             let button_height = copy_button_height;
             // Flipped coords: anchor near the bottom edge.
@@ -1033,11 +1039,15 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
                 let _: () = msg_send![meta_ptr, setFrame: meta_frame];
             }
 
-            // Reposition the Copy button to stay anchored near the bottom edge (flipped coords).
+            // Reposition action buttons to stay anchored near the bottom edge (flipped coords)
+            // and recompute X from bubble width. Streaming can widen bubbles after creation;
+            // preserving the old X lets MD/Copy hitboxes drift into each other.
             let ns_button = Class::get("NSButton").unwrap();
             let subviews: Id = msg_send![bubble, subviews];
             if !subviews.is_null() {
                 let sub_count: usize = msg_send![subviews, count];
+                let mut copy_button: Option<Id> = None;
+                let mut render_button: Option<Id> = None;
                 for i in 0..sub_count {
                     let v: Id = msg_send![subviews, objectAtIndex: i];
                     if v.is_null() {
@@ -1047,14 +1057,45 @@ pub unsafe fn resize_bubble_container_for_text(container: Id, text_label: Id, di
                     if !is_button {
                         continue;
                     }
-                    let btn_frame: CGRect = msg_send![v, frame];
+                    let ident: Id = msg_send![v, identifier];
+                    if ident.is_null() {
+                        continue;
+                    }
+                    let c_str: *const i8 = msg_send![ident, UTF8String];
+                    if c_str.is_null() {
+                        continue;
+                    }
+                    let s = std::ffi::CStr::from_ptr(c_str).to_string_lossy();
+                    match s.as_ref() {
+                        "codescribe_copy_button" => copy_button = Some(v),
+                        "codescribe_render_button" => render_button = Some(v),
+                        _ => {}
+                    }
+                }
+
+                let action_frames =
+                    bubble_action_frames(bubble_width, padding_x, render_button.is_some());
+                if let Some(button) = render_button
+                    && let Some(render_frame) = action_frames.render
+                {
+                    let btn_frame: CGRect = msg_send![button, frame];
                     let btn_h = btn_frame.size.height;
                     let new_y = (bubble_height - btn_h - 4.0).max(4.0);
                     let new_frame = CGRect::new(
-                        &CGPoint::new(btn_frame.origin.x, new_y),
-                        &CGSize::new(btn_frame.size.width, btn_frame.size.height),
+                        &CGPoint::new(render_frame.x, new_y),
+                        &CGSize::new(render_frame.width, btn_h),
                     );
-                    let _: () = msg_send![v, setFrame: new_frame];
+                    let _: () = msg_send![button, setFrame: new_frame];
+                }
+                if let Some(button) = copy_button {
+                    let btn_frame: CGRect = msg_send![button, frame];
+                    let btn_h = btn_frame.size.height;
+                    let new_y = (bubble_height - btn_h - 4.0).max(4.0);
+                    let new_frame = CGRect::new(
+                        &CGPoint::new(action_frames.copy.x, new_y),
+                        &CGSize::new(action_frames.copy.width, btn_h),
+                    );
+                    let _: () = msg_send![button, setFrame: new_frame];
                 }
             }
 
@@ -1370,11 +1411,17 @@ mod tests {
         let frames = bubble_action_frames(92.0, 12.0, true);
         let render = frames
             .render
-            .expect("assistant bubbles should get render toggle");
+            .expect("renderable bubbles should get render toggle");
 
+        assert_eq!(render.x, 12.0);
+        assert_eq!(frames.copy.x, 40.0);
         assert!(
             frame_right(render) <= frames.copy.x,
             "render and copy actions must not overlap"
+        );
+        assert!(
+            frames.copy.x - frame_right(render) >= BUBBLE_ACTION_GAP,
+            "render and copy actions must keep a strict gap"
         );
         assert!(render.x >= 4.0);
         assert!(frame_right(frames.copy) <= 92.0);
@@ -1385,7 +1432,7 @@ mod tests {
         let frames = bubble_action_frames(180.0, 12.0, false);
 
         assert_eq!(frames.render, None);
-        assert_eq!(frames.copy.width, 40.0);
+        assert_eq!(frames.copy.width, BUBBLE_COPY_ACTION_WIDTH);
         assert_eq!(frames.copy.x, 128.0);
     }
 }

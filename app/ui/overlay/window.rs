@@ -122,6 +122,7 @@ fn show_transcription_overlay_impl() {
         state.accumulated_text.clear();
         state.raw_text.clear();
         state.last_pass_text.clear();
+        state.user_edited = false;
         state.action_contract_mode = TranscriptionActionContractMode::Raw;
         state.format_phase = FormatPhase::Idle;
         drop(state); // Release lock BEFORE heavy AppKit widget creation.
@@ -415,6 +416,7 @@ fn show_transcription_overlay_impl() {
         let handler_class = action_handler_class();
         let action_handler: Id = msg_send![handler_class, alloc];
         let action_handler: Id = msg_send![action_handler, init];
+        let _: () = msg_send![text_view, setDelegate: action_handler];
 
         // Track hover on the overlay (show actions only on hover in decision mode)
         let tracking_opts = NSTRACKING_MOUSE_ENTERED_AND_EXITED

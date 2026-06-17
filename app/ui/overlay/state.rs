@@ -87,6 +87,7 @@ pub(super) struct TranscriptionOverlayState {
     pub(super) raw_text: String,
     pub(super) last_pass_text: String,
     pub(super) accumulated_text: String,
+    pub(super) user_edited: bool,
     pub(super) min_height: f64,
     pub(super) max_height: f64,
     pub(super) last_applied_height: f64,
@@ -118,6 +119,7 @@ lazy_static::lazy_static! {
         raw_text: String::new(),
         last_pass_text: String::new(),
         accumulated_text: String::new(),
+        user_edited: false,
         min_height: OVERLAY_WINDOW_MIN_HEIGHT,
         max_height: OVERLAY_WINDOW_MIN_HEIGHT,
         last_applied_height: OVERLAY_WINDOW_MIN_HEIGHT,
@@ -190,5 +192,18 @@ pub(super) fn action_text_for_contract(state: &TranscriptionOverlayState) -> Str
     match state.action_contract_mode {
         TranscriptionActionContractMode::Raw => state.raw_text.clone(),
         TranscriptionActionContractMode::AiFormat => state.last_pass_text.clone(),
+    }
+}
+
+pub(super) fn apply_user_edit_to_state(state: &mut TranscriptionOverlayState, text: String) {
+    state.user_edited = true;
+    state.accumulated_text = text.clone();
+    match state.action_contract_mode {
+        TranscriptionActionContractMode::Raw => {
+            state.raw_text = text;
+        }
+        TranscriptionActionContractMode::AiFormat => {
+            state.last_pass_text = text;
+        }
     }
 }

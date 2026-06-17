@@ -25,6 +25,7 @@
 mod helpers;
 mod types;
 
+pub(crate) use helpers::restore_agent_runtime_from_thread;
 pub use helpers::{
     is_assistive_session, is_conversation_session, set_assistive_session, set_conversation_session,
 };
@@ -3749,7 +3750,7 @@ impl RecordingController {
                         stats.partial_runs_total,
                         stats.trigger_utterance_count,
                         stats.trigger_speech_count,
-                        stats.trigger_watchdog_count,
+                        stats.trigger_timer_count,
                         stats.partial_stale_count,
                         stats.partial_coalesced_count,
                         stats.partial_dropped_count

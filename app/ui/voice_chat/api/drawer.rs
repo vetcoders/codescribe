@@ -9,6 +9,8 @@ const DRAWER_ACTION_IDENTIFIER: &str = "codescribe_drawer_action";
 pub struct DrawerRowActionLayout {
     pub title_x: f64,
     pub title_width: f64,
+    pub text_column_x: f64,
+    pub text_column_width: f64,
     pub actions_x: f64,
     pub actions_width: f64,
 }
@@ -36,10 +38,14 @@ pub fn drawer_row_action_layout(row_width: f64) -> DrawerRowActionLayout {
     let actions_width = button_size * 4.0 + button_gap * 3.0;
     let actions_x = (row_width - ui_tokens::DRAWER_ACTION_RIGHT_INSET - actions_width).max(title_x);
     let title_width = (actions_x - title_x - 8.0).max(24.0);
+    let text_column_x = title_x;
+    let text_column_width = (row_width - pad - text_column_x).max(24.0);
 
     DrawerRowActionLayout {
         title_x,
         title_width,
+        text_column_x,
+        text_column_width,
         actions_x,
         actions_width,
     }
@@ -117,6 +123,7 @@ pub fn handle_card_restore(index: usize) {
 
     let title = thread.title.trim().to_string();
     let mut restored_messages = thread_messages_for_restore(&thread);
+    let backend_thread = thread.clone();
     if restored_messages.is_empty() {
         restored_messages.push(ChatMessage {
             role: ChatRole::System,
@@ -128,6 +135,13 @@ pub fn handle_card_restore(index: usize) {
             mode: Some(mode_label(transcription_mode_from_thread_mode(&thread.mode)).to_string()),
         });
     }
+    tokio::spawn(async move {
+        if let Err(error) =
+            crate::controller::restore_agent_runtime_from_thread(backend_thread).await
+        {
+            warn!("Failed to restore Agent runtime from drawer thread: {error}");
+        }
+    });
 
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.messages = restored_messages;
@@ -676,8 +690,8 @@ pub fn create_drawer_row(
         let preview = entry.preview.clone();
         let preview_field = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(pad, frame.size.height - 40.0),
-                &CGSize::new(frame.size.width - pad * 2.0, 15.0),
+                &CGPoint::new(row_action_layout.text_column_x, frame.size.height - 42.0),
+                &CGSize::new(row_action_layout.text_column_width, 16.0),
             ),
             text: preview.clone(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
@@ -694,8 +708,8 @@ pub fn create_drawer_row(
         let subtitle = drawer_entry_subtitle(entry);
         let subtitle_field = create_label(LabelConfig {
             frame: CGRect::new(
-                &CGPoint::new(pad, 6.0),
-                &CGSize::new(frame.size.width - pad * 2.0, 14.0),
+                &CGPoint::new(row_action_layout.text_column_x, 7.0),
+                &CGSize::new(row_action_layout.text_column_width, 14.0),
             ),
             text: subtitle,
             font_size: ui_tokens::MICRO_FONT_SIZE,

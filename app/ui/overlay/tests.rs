@@ -16,7 +16,7 @@ use super::preview::{display_text_for_state, overlay_visible_text, stable_overla
 use super::state::{
     AUTO_HIDE_GENERATION, AUTO_HIDE_PENDING, DEFAULT_AUTO_HIDE_DELAY_SECS, FormatPhase,
     MAX_AUTO_HIDE_DELAY_SECS, MIN_AUTO_HIDE_DELAY_SECS, OVERLAY_STATE, action_text_for_contract,
-    parse_auto_hide_delay_secs,
+    apply_user_edit_to_state, parse_auto_hide_delay_secs,
 };
 use super::widgets::{decision_hint_text, overlay_status_label, transcript_text_view_editable};
 use super::{
@@ -148,6 +148,7 @@ fn reset_overlay_state_for_test() {
     state.raw_text.clear();
     state.last_pass_text.clear();
     state.accumulated_text.clear();
+    state.user_edited = false;
     state.min_height = OVERLAY_WINDOW_MIN_HEIGHT;
     state.max_height = OVERLAY_WINDOW_MIN_HEIGHT;
     state.last_applied_height = OVERLAY_WINDOW_MIN_HEIGHT;
@@ -548,6 +549,41 @@ fn test_action_text_ai_mode_returns_empty_when_last_pass_empty() {
 
     let text = action_text_for_contract(&state);
     assert!(text.is_empty());
+}
+
+#[test]
+#[serial]
+fn test_manual_overlay_edit_updates_raw_contract_and_blocks_deltas() {
+    reset_overlay_state_for_test();
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.action_contract_mode = TranscriptionActionContractMode::Raw;
+        state.accumulated_text = "server text".to_string();
+        state.raw_text = "server text".to_string();
+        apply_user_edit_to_state(&mut state, "manual edit".to_string());
+    }
+
+    append_transcription_delta_impl(" overwritten");
+
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(state.user_edited);
+    assert_eq!(state.accumulated_text, "manual edit");
+    assert_eq!(state.raw_text, "manual edit");
+}
+
+#[test]
+#[serial]
+fn test_manual_overlay_edit_updates_ai_contract() {
+    reset_overlay_state_for_test();
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.action_contract_mode = TranscriptionActionContractMode::AiFormat;
+    state.last_pass_text = "formatted".to_string();
+
+    apply_user_edit_to_state(&mut state, "formatted manual edit".to_string());
+
+    assert_eq!(state.last_pass_text, "formatted manual edit");
+    assert!(state.raw_text.is_empty());
+    assert_eq!(action_text_for_contract(&state), "formatted manual edit");
 }
 
 #[test]

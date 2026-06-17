@@ -20,7 +20,7 @@ use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
 use crate::vad;
 
 use super::correction::{
-    PARTIAL_PASS_TRIGGER_WATCHDOG_MS, PartialPassTelemetry, PartialPassTriggerState,
+    PARTIAL_PASS_TRIGGER_TIMER_MS, PartialPassTelemetry, PartialPassTriggerState,
     apply_final_boundary_text, classify_partial_trigger, correction_baseline_text,
     correction_is_stale, postprocess_correction_with_snapshot, schedule_partial_pass,
 };
@@ -591,8 +591,8 @@ pub(crate) async fn transcription_session(
                 }
             }
             _ = tokio::time::sleep_until(
-                partial_trigger_state.watchdog_baseline
-                    + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS)
+                partial_trigger_state.timer_baseline
+                    + Duration::from_millis(PARTIAL_PASS_TRIGGER_TIMER_MS)
             ), if correction_in_flight.is_none() && !correction_audio_buf.is_empty() => {
                 let now = Instant::now();
                 let trigger_flags = partial_trigger_state.evaluate(now);
@@ -1069,7 +1069,7 @@ pub(crate) async fn transcription_session(
         partial_runs_total: partial_telemetry.runs_total,
         trigger_utterance_count: partial_telemetry.trigger_utterance_count,
         trigger_speech_count: partial_telemetry.trigger_speech_count,
-        trigger_watchdog_count: partial_telemetry.trigger_watchdog_count,
+        trigger_timer_count: partial_telemetry.trigger_timer_count,
         partial_stale_count: partial_telemetry.stale_count,
         partial_coalesced_count: partial_telemetry.coalesced_count,
         partial_dropped_count: partial_telemetry.dropped_count,
@@ -1091,7 +1091,7 @@ pub(crate) async fn transcription_session(
         partial_telemetry.runs_total,
         partial_telemetry.trigger_utterance_count,
         partial_telemetry.trigger_speech_count,
-        partial_telemetry.trigger_watchdog_count,
+        partial_telemetry.trigger_timer_count,
         partial_telemetry.stale_count,
         partial_telemetry.coalesced_count,
         partial_telemetry.dropped_count

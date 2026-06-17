@@ -17,20 +17,20 @@ use super::quality_gate::silero_vad_samples_to_ms;
 // Trigger earlier to improve retranscription visibility in hands-off sessions.
 pub(crate) const PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS: u32 = 1;
 pub(crate) const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 1_800;
-pub(crate) const PARTIAL_PASS_TRIGGER_WATCHDOG_MS: u64 = 3_000;
+pub(crate) const PARTIAL_PASS_TRIGGER_TIMER_MS: u64 = 3_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PartialPassTrigger {
     Utterance,
     Speech,
-    Watchdog,
+    Timer,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct PartialPassTriggerFlags {
     pub(crate) utterance_finals: bool,
     pub(crate) silero_speech: bool,
-    pub(crate) watchdog: bool,
+    pub(crate) timer: bool,
 }
 
 impl PartialPassTriggerFlags {
@@ -39,8 +39,8 @@ impl PartialPassTriggerFlags {
             Some(PartialPassTrigger::Utterance)
         } else if self.silero_speech {
             Some(PartialPassTrigger::Speech)
-        } else if self.watchdog {
-            Some(PartialPassTrigger::Watchdog)
+        } else if self.timer {
+            Some(PartialPassTrigger::Timer)
         } else {
             None
         }
@@ -51,7 +51,7 @@ impl PartialPassTriggerFlags {
 pub(crate) struct PartialPassTriggerState {
     pub(crate) utterance_finals_since_partial: u32,
     pub(crate) silero_speech_ms_since_partial: u64,
-    pub(crate) watchdog_baseline: Instant,
+    pub(crate) timer_baseline: Instant,
 }
 
 impl PartialPassTriggerState {
@@ -59,7 +59,7 @@ impl PartialPassTriggerState {
         Self {
             utterance_finals_since_partial: 0,
             silero_speech_ms_since_partial: 0,
-            watchdog_baseline: now,
+            timer_baseline: now,
         }
     }
 
@@ -74,20 +74,20 @@ impl PartialPassTriggerState {
     }
 
     pub(crate) fn evaluate(&self, now: Instant) -> PartialPassTriggerFlags {
-        let watchdog_elapsed_ms = now.duration_since(self.watchdog_baseline).as_millis() as u64;
+        let timer_elapsed_ms = now.duration_since(self.timer_baseline).as_millis() as u64;
         PartialPassTriggerFlags {
             utterance_finals: self.utterance_finals_since_partial
                 >= PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS,
             silero_speech: self.silero_speech_ms_since_partial
                 >= PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
-            watchdog: watchdog_elapsed_ms >= PARTIAL_PASS_TRIGGER_WATCHDOG_MS,
+            timer: timer_elapsed_ms >= PARTIAL_PASS_TRIGGER_TIMER_MS,
         }
     }
 
     pub(crate) fn reset_after_success(&mut self, now: Instant) {
         self.utterance_finals_since_partial = 0;
         self.silero_speech_ms_since_partial = 0;
-        self.watchdog_baseline = now;
+        self.timer_baseline = now;
     }
 }
 
@@ -165,7 +165,7 @@ pub(crate) struct PartialPassTelemetry {
     pub(crate) runs_total: u64,
     pub(crate) trigger_utterance_count: u64,
     pub(crate) trigger_speech_count: u64,
-    pub(crate) trigger_watchdog_count: u64,
+    pub(crate) trigger_timer_count: u64,
     pub(crate) stale_count: u64,
     pub(crate) coalesced_count: u64,
     pub(crate) dropped_count: u64,
@@ -181,8 +181,8 @@ impl PartialPassTelemetry {
             PartialPassTrigger::Speech => {
                 self.trigger_speech_count = self.trigger_speech_count.saturating_add(1);
             }
-            PartialPassTrigger::Watchdog => {
-                self.trigger_watchdog_count = self.trigger_watchdog_count.saturating_add(1);
+            PartialPassTrigger::Timer => {
+                self.trigger_timer_count = self.trigger_timer_count.saturating_add(1);
             }
         }
     }

@@ -13,7 +13,7 @@ use tracing::warn;
 use crate::ui::shared::helpers::{
     LabelConfig, add_subview, button, button_set_action, color_clear, color_label,
     color_secondary_label, create_glass_effect_view_with, create_label, create_secure_text_input,
-    ns_string, window_show,
+    ns_string, present_shared_shell_panel,
 };
 
 use super::Id;
@@ -63,7 +63,7 @@ fn show_onboarding_wizard_impl() -> bool {
             let ns_window = Class::get("NSWindow").unwrap();
             let valid: bool = msg_send![window, isKindOfClass: ns_window];
             if valid {
-                window_show(window);
+                present_shared_shell_panel(window);
                 return true;
             }
         }
@@ -173,7 +173,7 @@ fn show_onboarding_wizard_impl() -> bool {
         save_onboarding_progress(resume_step);
 
         render_current_step();
-        window_show(window);
+        present_shared_shell_panel(window);
         true
     }
 }

@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 use objc::declare::ClassDecl;
 use objc::runtime::{Class, Object, Sel};
-use objc::{sel, sel_impl};
+use objc::{msg_send, sel, sel_impl};
 use tracing::{info, warn};
 
 use super::lifecycle::{hide_transcription_overlay, schedule_auto_hide};
@@ -15,7 +15,7 @@ use super::lifecycle::{hide_transcription_overlay, schedule_auto_hide};
 use super::state::TranscriptionOverlayState;
 use super::state::{
     AUTO_HIDE_GENERATION, AUTO_HIDE_PENDING, FormatPhase, OVERLAY_STATE, OverlaySnapshot,
-    action_text_for_contract,
+    action_text_for_contract, apply_user_edit_to_state,
 };
 use super::widgets::{set_action_buttons_visible_unlocked, set_status_message_unlocked};
 use crate::os::clipboard;
@@ -146,6 +146,10 @@ pub(super) fn action_handler_class() -> *const Class {
         decl.add_method(
             sel!(mouseExited:),
             on_mouse_exited as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(textDidChange:),
+            on_text_did_change as extern "C" fn(&Object, Sel, Id),
         );
 
         ACTION_HANDLER_CLASS = decl.register();
@@ -317,4 +321,36 @@ extern "C" fn on_mouse_exited(_this: &Object, _cmd: Sel, _sender: Id) {
     } else {
         set_action_buttons_visible_unlocked(&snap, false);
     }
+}
+
+extern "C" fn on_text_did_change(_this: &Object, _cmd: Sel, notification: Id) {
+    let text_view = unsafe {
+        let from_notification: Id = if notification.is_null() {
+            std::ptr::null_mut()
+        } else {
+            msg_send![notification, object]
+        };
+        if !from_notification.is_null() {
+            from_notification
+        } else {
+            let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .text_view
+                .map(|ptr| ptr as Id)
+                .unwrap_or(std::ptr::null_mut())
+        }
+    };
+    if text_view.is_null() {
+        return;
+    }
+
+    let edited_text = unsafe { get_text_view_string(text_view) };
+    let snap = {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        apply_user_edit_to_state(&mut state, edited_text);
+        OverlaySnapshot::from_state(&state)
+    };
+    AUTO_HIDE_GENERATION.fetch_add(1, Ordering::SeqCst);
+    AUTO_HIDE_PENDING.store(false, Ordering::SeqCst);
+    set_status_message_unlocked(&snap, "Edited", false);
 }

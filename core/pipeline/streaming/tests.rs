@@ -558,40 +558,40 @@ fn test_partial_trigger_contract_silero_speech_path() {
 }
 
 #[test]
-fn test_partial_trigger_contract_watchdog_path() {
+fn test_partial_trigger_contract_timer_path() {
     let now = Instant::now();
     let state = PartialPassTriggerState::new(now);
 
     assert_eq!(
         classify_partial_trigger(state.evaluate(
-            now + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS.saturating_sub(1))
+            now + Duration::from_millis(PARTIAL_PASS_TRIGGER_TIMER_MS.saturating_sub(1))
         )),
         None
     );
     assert_eq!(
         classify_partial_trigger(
-            state.evaluate(now + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS))
+            state.evaluate(now + Duration::from_millis(PARTIAL_PASS_TRIGGER_TIMER_MS))
         ),
-        Some(PartialPassTrigger::Watchdog),
-        "{}ms watchdog should trigger partial pass",
-        PARTIAL_PASS_TRIGGER_WATCHDOG_MS
+        Some(PartialPassTrigger::Timer),
+        "{}ms timer should trigger partial pass",
+        PARTIAL_PASS_TRIGGER_TIMER_MS
     );
 }
 
 #[test]
-fn test_partial_trigger_precedence_prefers_speech_over_watchdog_without_utterance_trigger() {
+fn test_partial_trigger_precedence_prefers_speech_over_timer_without_utterance_trigger() {
     let now = Instant::now();
     let mut state = PartialPassTriggerState::new(now);
 
     state.observe_speech_event(false, u64::from(vad::VAD_SAMPLE_RATE) * 6);
-    let flags = state.evaluate(now + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS));
+    let flags = state.evaluate(now + Duration::from_millis(PARTIAL_PASS_TRIGGER_TIMER_MS));
     assert!(!flags.utterance_finals);
     assert!(flags.silero_speech);
-    assert!(flags.watchdog);
+    assert!(flags.timer);
     assert_eq!(
         classify_partial_trigger(flags),
         Some(PartialPassTrigger::Speech),
-        "speech trigger should outrank watchdog when utterance-count threshold is not met"
+        "speech trigger should outrank timer when utterance-count threshold is not met"
     );
 }
 
@@ -601,7 +601,7 @@ fn test_partial_trigger_precedence_matrix_is_explicit() {
         classify_partial_trigger(PartialPassTriggerFlags {
             utterance_finals: true,
             silero_speech: true,
-            watchdog: true,
+            timer: true,
         }),
         Some(PartialPassTrigger::Utterance),
         "utterance-count trigger should dominate when multiple trigger paths are true"
@@ -610,19 +610,19 @@ fn test_partial_trigger_precedence_matrix_is_explicit() {
         classify_partial_trigger(PartialPassTriggerFlags {
             utterance_finals: false,
             silero_speech: true,
-            watchdog: true,
+            timer: true,
         }),
         Some(PartialPassTrigger::Speech),
-        "speech trigger should outrank watchdog when utterance threshold is not met"
+        "speech trigger should outrank timer when utterance threshold is not met"
     );
     assert_eq!(
         classify_partial_trigger(PartialPassTriggerFlags {
             utterance_finals: false,
             silero_speech: false,
-            watchdog: true,
+            timer: true,
         }),
-        Some(PartialPassTrigger::Watchdog),
-        "watchdog should be selected when it is the only triggered path"
+        Some(PartialPassTrigger::Timer),
+        "timer should be selected when it is the only triggered path"
     );
 }
 
@@ -630,7 +630,7 @@ fn test_partial_trigger_precedence_matrix_is_explicit() {
 fn test_partial_trigger_precedence_matrix_covers_all_flag_combinations() {
     let cases = [
         (false, false, false, None),
-        (false, false, true, Some(PartialPassTrigger::Watchdog)),
+        (false, false, true, Some(PartialPassTrigger::Timer)),
         (false, true, false, Some(PartialPassTrigger::Speech)),
         (false, true, true, Some(PartialPassTrigger::Speech)),
         (true, false, false, Some(PartialPassTrigger::Utterance)),
@@ -639,21 +639,21 @@ fn test_partial_trigger_precedence_matrix_covers_all_flag_combinations() {
         (true, true, true, Some(PartialPassTrigger::Utterance)),
     ];
 
-    for (utterance_finals, silero_speech, watchdog, expected) in cases {
+    for (utterance_finals, silero_speech, timer, expected) in cases {
         assert_eq!(
             classify_partial_trigger(PartialPassTriggerFlags {
                 utterance_finals,
                 silero_speech,
-                watchdog,
+                timer,
             }),
             expected,
-            "trigger precedence mismatch for flags: utterance_finals={utterance_finals}, silero_speech={silero_speech}, watchdog={watchdog}"
+            "trigger precedence mismatch for flags: utterance_finals={utterance_finals}, silero_speech={silero_speech}, timer={timer}"
         );
     }
 }
 
 #[test]
-fn test_partial_trigger_coalesces_and_reset_clears_watchdog_baseline() {
+fn test_partial_trigger_coalesces_and_reset_clears_timer_baseline() {
     let now = Instant::now();
     let mut state = PartialPassTriggerState::new(now);
     let two_seconds = u64::from(vad::VAD_SAMPLE_RATE) * 2;
@@ -665,7 +665,7 @@ fn test_partial_trigger_coalesces_and_reset_clears_watchdog_baseline() {
     let flags = state.evaluate(due_at);
     assert!(flags.utterance_finals);
     assert!(flags.silero_speech);
-    assert!(flags.watchdog);
+    assert!(flags.timer);
     assert_eq!(
         classify_partial_trigger(flags),
         Some(PartialPassTrigger::Utterance),
@@ -676,7 +676,7 @@ fn test_partial_trigger_coalesces_and_reset_clears_watchdog_baseline() {
     assert_eq!(
         classify_partial_trigger(state.evaluate(due_at + Duration::from_millis(1))),
         None,
-        "successful partial pass must reset watchdog baseline"
+        "successful partial pass must reset timer baseline"
     );
 }
 
@@ -689,7 +689,7 @@ fn test_partial_trigger_reset_clears_utterance_and_speech_accumulators() {
     for _ in 0..3 {
         state.observe_speech_event(true, two_seconds);
     }
-    let due_at = now + Duration::from_millis(PARTIAL_PASS_TRIGGER_WATCHDOG_MS);
+    let due_at = now + Duration::from_millis(PARTIAL_PASS_TRIGGER_TIMER_MS);
     assert_eq!(
         classify_partial_trigger(state.evaluate(due_at)),
         Some(PartialPassTrigger::Utterance)
@@ -699,7 +699,7 @@ fn test_partial_trigger_reset_clears_utterance_and_speech_accumulators() {
     assert_eq!(
         state.evaluate(due_at + Duration::from_millis(1)),
         PartialPassTriggerFlags::default(),
-        "reset should clear all trigger counters and watchdog elapsed time"
+        "reset should clear all trigger counters and timer elapsed time"
     );
 
     for _ in 0..PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS.saturating_sub(1) {
@@ -786,13 +786,13 @@ async fn test_partial_trigger_paths_stay_stable_under_async_interleaving() {
             reset_after_success: true,
         },
         TriggerStep::Evaluate {
-            advance_ms: PARTIAL_PASS_TRIGGER_WATCHDOG_MS - 1,
+            advance_ms: PARTIAL_PASS_TRIGGER_TIMER_MS - 1,
             expected: None,
             reset_after_success: false,
         },
         TriggerStep::Evaluate {
             advance_ms: 1,
-            expected: Some(PartialPassTrigger::Watchdog),
+            expected: Some(PartialPassTrigger::Timer),
             reset_after_success: true,
         },
         TriggerStep::Evaluate {
@@ -855,7 +855,7 @@ async fn test_partial_trigger_paths_stay_stable_under_async_interleaving() {
     assert_eq!(telemetry.runs_total, 3);
     assert_eq!(telemetry.trigger_utterance_count, 1);
     assert_eq!(telemetry.trigger_speech_count, 1);
-    assert_eq!(telemetry.trigger_watchdog_count, 1);
+    assert_eq!(telemetry.trigger_timer_count, 1);
 }
 
 #[test]
@@ -992,7 +992,7 @@ fn test_partial_telemetry_counters_accumulate() {
     let mut telemetry = PartialPassTelemetry::default();
     telemetry.record_run(PartialPassTrigger::Utterance);
     telemetry.record_run(PartialPassTrigger::Speech);
-    telemetry.record_run(PartialPassTrigger::Watchdog);
+    telemetry.record_run(PartialPassTrigger::Timer);
     telemetry.record_stale();
     telemetry.record_coalesced();
     telemetry.record_dropped();
@@ -1000,7 +1000,7 @@ fn test_partial_telemetry_counters_accumulate() {
     assert_eq!(telemetry.runs_total, 3);
     assert_eq!(telemetry.trigger_utterance_count, 1);
     assert_eq!(telemetry.trigger_speech_count, 1);
-    assert_eq!(telemetry.trigger_watchdog_count, 1);
+    assert_eq!(telemetry.trigger_timer_count, 1);
     assert_eq!(telemetry.stale_count, 1);
     assert_eq!(telemetry.coalesced_count, 1);
     assert_eq!(telemetry.dropped_count, 1);
@@ -1065,7 +1065,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         7,
         "draft-a",
         PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
-        PartialPassTrigger::Watchdog,
+        PartialPassTrigger::Timer,
         &mut partial_telemetry,
         &event_sink,
     ));
@@ -1120,7 +1120,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         "newly scheduled correction should replace the previous tracked handle"
     );
     assert_eq!(partial_telemetry.runs_total, 2);
-    assert_eq!(partial_telemetry.trigger_watchdog_count, 1);
+    assert_eq!(partial_telemetry.trigger_timer_count, 1);
     assert_eq!(partial_telemetry.trigger_speech_count, 1);
     assert_eq!(partial_telemetry.trigger_utterance_count, 0);
     assert_eq!(partial_telemetry.coalesced_count, 1);
@@ -1232,9 +1232,9 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
     let trigger_sequence = [
         PartialPassTrigger::Utterance,
         PartialPassTrigger::Speech,
-        PartialPassTrigger::Watchdog,
+        PartialPassTrigger::Timer,
         PartialPassTrigger::Speech,
-        PartialPassTrigger::Watchdog,
+        PartialPassTrigger::Timer,
     ];
     let first_marker = 31u32;
     let expected_last_id = first_marker + trigger_sequence.len() as u32 - 1;
@@ -1314,7 +1314,7 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
     assert_eq!(partial_telemetry.runs_total, 5);
     assert_eq!(partial_telemetry.trigger_utterance_count, 1);
     assert_eq!(partial_telemetry.trigger_speech_count, 2);
-    assert_eq!(partial_telemetry.trigger_watchdog_count, 2);
+    assert_eq!(partial_telemetry.trigger_timer_count, 2);
     assert_eq!(partial_telemetry.coalesced_count, 4);
     assert_eq!(partial_telemetry.stale_count, 0);
     assert_eq!(partial_telemetry.dropped_count, 0);
@@ -1376,7 +1376,7 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
                 partial_runs_total,
                 trigger_utterance_count,
                 trigger_speech_count,
-                trigger_watchdog_count,
+                trigger_timer_count,
                 partial_stale_count,
                 partial_coalesced_count,
                 partial_dropped_count,
@@ -1391,7 +1391,7 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
                 assert_eq!(*partial_runs_total, 0);
                 assert_eq!(*trigger_utterance_count, 0);
                 assert_eq!(*trigger_speech_count, 0);
-                assert_eq!(*trigger_watchdog_count, 0);
+                assert_eq!(*trigger_timer_count, 0);
                 assert_eq!(*partial_stale_count, 0);
                 assert_eq!(*partial_coalesced_count, 0);
                 assert_eq!(*partial_dropped_count, 0);
@@ -1469,7 +1469,7 @@ async fn transcription_session_silent_callbacks_keep_no_speech_stats_coherent() 
                 partial_runs_total,
                 trigger_utterance_count,
                 trigger_speech_count,
-                trigger_watchdog_count,
+                trigger_timer_count,
                 partial_stale_count,
                 partial_coalesced_count,
                 partial_dropped_count,
@@ -1484,7 +1484,7 @@ async fn transcription_session_silent_callbacks_keep_no_speech_stats_coherent() 
                 assert_eq!(*partial_runs_total, 0);
                 assert_eq!(*trigger_utterance_count, 0);
                 assert_eq!(*trigger_speech_count, 0);
-                assert_eq!(*trigger_watchdog_count, 0);
+                assert_eq!(*trigger_timer_count, 0);
                 assert_eq!(*partial_stale_count, 0);
                 assert_eq!(*partial_coalesced_count, 0);
                 assert_eq!(*partial_dropped_count, 0);

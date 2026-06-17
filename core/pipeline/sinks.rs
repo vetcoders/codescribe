@@ -379,7 +379,7 @@ mod tests {
             partial_runs_total: 0,
             trigger_utterance_count: 0,
             trigger_speech_count: 0,
-            trigger_watchdog_count: 0,
+            trigger_timer_count: 0,
             partial_stale_count: 0,
             partial_coalesced_count: 0,
             partial_dropped_count: 0,
