@@ -29,6 +29,26 @@ pub struct OpenAiProvider {
     api_key: String,
     default_model: String,
     use_previous_response_id: bool,
+    /// Single source of truth for the AGENT path's response chain
+    /// (`previous_response_id`).
+    ///
+    /// P2.12 (source-of-truth contract): the assistive feature has TWO distinct
+    /// execution paths, each owning its own chain — they are intentionally
+    /// separate, not redundant:
+    ///   1. Agent 2.0 path (this provider): owns the chain HERE, in this
+    ///      per-provider `Arc<Mutex>`. Advanced/reset by
+    ///      `forward_events_and_track_chain` and `apply_chain_reset`.
+    ///   2. Legacy formatter fallback path (`run_legacy_send_path` ->
+    ///      `ai_formatting`): owns its chain in the global
+    ///      `core::state::conversation` store under `AiMode::Assistive`
+    ///      (`assistive_response_id`).
+    ///
+    /// A given turn runs through exactly one path, so the two chains never both
+    /// drive the same request. Do NOT cross-wire them: the agent path must never
+    /// read/write `conversation::*_response_id`, and the legacy path must never
+    /// touch this field. If the legacy fallback is ever retired, the
+    /// `AiMode::Assistive` branch in `core::state::conversation` becomes dead and
+    /// should be removed (owner: GROUP state).
     previous_response_id: Arc<Mutex<Option<String>>>,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
