@@ -1011,9 +1011,26 @@ fn paste_overlay_text_with_target(text: String, target_app: Option<String>) {
     #[cfg(target_os = "macos")]
     {
         if let Some(app_name) = target_app {
-            Queue::main().exec_async(move || activate_target_app(&app_name));
+            Queue::main().exec_async({
+                let app_name = app_name.clone();
+                move || activate_target_app(&app_name)
+            });
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(80));
+                // Confirm focus actually landed on the target before pasting,
+                // instead of a fixed sleep that is too short under a CPU spike and
+                // lets the synthetic Cmd+V hit the wrong window. `activate_target_app`
+                // uses `activateWithOptions`, and `wait_for_frontmost_app` reads
+                // `NSWorkspace.frontmostApplication`, so the confirm works regardless
+                // of the activation mechanism. Budget is bounded so a stuck
+                // activation cannot wedge the paste path; on miss we proceed
+                // best-effort, matching the selection-capture path.
+                let budget = Duration::from_millis(200);
+                if !crate::os::selection::wait_for_frontmost_app(&app_name, budget) {
+                    debug!(
+                        "Overlay paste: focus did not confirm on '{}' within {:?}; pasting best-effort",
+                        app_name, budget
+                    );
+                }
                 Queue::main().exec_async(move || paste_overlay_text_now(&text));
             });
         } else {
