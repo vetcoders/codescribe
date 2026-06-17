@@ -4096,7 +4096,11 @@ impl RecordingController {
             // - Selection: if no selection was captured, we already downgraded to Chat mode.
             let assistive_input = build_assistive_input(&clean_text, &ctx);
             if chat_active {
-                crate::ui::voice_chat::finalize_voice_chat_user_message();
+                // Single source of truth: render the user bubble with exactly what
+                // the agent receives (clean_text), reusing the streaming bubble —
+                // same fix as the stop_toggle_recording path. Prevents the desync
+                // where the agent answers but no user bubble shows.
+                crate::ui::voice_chat::set_voice_chat_user_text(&clean_text);
                 crate::ui::voice_chat::set_voice_chat_sending(true);
                 send_assistive_with_agent_runtime(
                     assistive_input,
