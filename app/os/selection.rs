@@ -193,8 +193,12 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
             if out.status.success() {
                 true
             } else {
-                debug!(
-                    "App activation failed for '{}': exit={:?}",
+                // A non-zero exit here is the signature of a silent Automation
+                // TCC denial (errAEEventNotPermitted, -1743) as well as a
+                // missing target app. Surface it at warn so the cause is not
+                // lost in debug noise.
+                warn!(
+                    "App activation failed for '{}': exit={:?} (possible Automation TCC denial)",
                     app_name,
                     out.status.code()
                 );
@@ -202,7 +206,7 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
             }
         }
         Err(e) => {
-            debug!("App activation failed for '{}': {}", app_name, e);
+            warn!("App activation failed for '{}': {}", app_name, e);
             false
         }
     }
@@ -338,9 +342,20 @@ fn frontmost_app_name() -> Option<String> {
             r#"tell application "System Events" to name of first application process whose frontmost is true"#,
         ])
         .output()
+        .map_err(|e| {
+            warn!("frontmost_app_name: failed to run osascript: {}", e);
+            e
+        })
         .ok()?;
 
     if !output.status.success() {
+        // System Events query failing here typically means a silent Automation
+        // TCC denial (errAEEventNotPermitted, -1743). Log at warn so the cause
+        // of a missing frontmost app is observable.
+        warn!(
+            "frontmost_app_name: System Events query failed: exit={:?} (possible Automation TCC denial)",
+            output.status.code()
+        );
         return None;
     }
 

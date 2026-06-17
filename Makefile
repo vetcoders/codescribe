@@ -126,6 +126,7 @@ bundle: ensure-models release
 		'  <key>NSAccessibilityUsageDescription</key><string>Needed to monitor hotkeys and paste results.</string>' \
 		'  <key>NSInputMonitoringUsageDescription</key><string>Needed to detect global hotkeys.</string>' \
 		'  <key>NSScreenCaptureUsageDescription</key><string>Capture screen context for AI-assisted features.</string>' \
+		'  <key>NSAppleEventsUsageDescription</key><string>Needed to activate the previously focused app and restore selection context.</string>' \
 		'</dict>' \
 		'</plist>' \
 		> bundle/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist; \
