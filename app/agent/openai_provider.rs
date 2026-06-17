@@ -812,6 +812,93 @@ mod tests {
         );
     }
 
+    /// P3.8: exercise the implicit chain invariant end-to-end across the
+    /// sequence `send -> ResponseDone(id) -> next send (trailing-user only) ->
+    /// error -> retry(reset_chain) -> success -> next (full replay)`.
+    ///
+    /// The non-fakeable proof is the number of input items handed to the
+    /// provider per phase: a present chain id sends only the trailing user
+    /// turn, while a None id (after reset) replays the full history. If a future
+    /// change makes `request_messages` truncate history at id=None, the
+    /// full-replay assertions fail.
+    #[tokio::test]
+    async fn chain_reset_then_full_replay() {
+        // Conversation history: user turn, assistant reply, follow-up user turn.
+        let history = vec![
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text("first question".to_string())],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("first answer".to_string())],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text("follow-up question".to_string())],
+            ),
+        ];
+
+        // Phase 1 — first send, no chain yet (id=None): full replay of history.
+        let phase1 =
+            build_request_input_items(&history, None).expect("phase 1 input items should build");
+        assert_eq!(
+            phase1.len(),
+            3,
+            "id=None must replay the full history (3 items)"
+        );
+
+        // Phase 2 — provider returned ResponseDone(id); next send carries the
+        // chain id, so only the trailing user turn is sent.
+        let chain_id = "resp_phase1";
+        let phase2 = build_request_input_items(&history, Some(chain_id))
+            .expect("phase 2 input items should build");
+        assert_eq!(
+            phase2.len(),
+            1,
+            "a present chain id must send only the trailing user turn"
+        );
+        assert_eq!(
+            phase2[0]["role"], "user",
+            "trailing item must be the user turn"
+        );
+
+        // Phase 3 — that turn errored; the session retry path requests a chain
+        // reset. apply_chain_reset must zero the stored chain so the rebuild
+        // sees id=None.
+        let stored_chain = Arc::new(Mutex::new(Some(chain_id.to_string())));
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "programmer".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::clone(&stored_chain),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+        };
+        let reset_options = StreamOptions {
+            reset_chain: true,
+            ..StreamOptions::default()
+        };
+        provider.apply_chain_reset(&reset_options).await;
+        let chain_after_reset = stored_chain.lock().await.clone();
+        assert!(
+            chain_after_reset.is_none(),
+            "apply_chain_reset must clear the stored chain before the retry"
+        );
+
+        // Phase 4 — retry success with id=None: full replay again, proving the
+        // invariant "id None => full replay" holds after a reset.
+        let phase4 = build_request_input_items(&history, chain_after_reset.as_deref())
+            .expect("phase 4 input items should build");
+        assert_eq!(
+            phase4.len(),
+            3,
+            "after reset (id=None) the retry must replay the full history"
+        );
+    }
+
     /// P3.7: the detached forwarder must not advance `previous_response_id` once
     /// the consumer has dropped its receiver. Otherwise a chain id from a turn
     /// nobody received outlives the session and poisons the next request.
