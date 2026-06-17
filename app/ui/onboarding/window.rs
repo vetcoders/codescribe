@@ -32,6 +32,13 @@ pub(super) const WINDOW_WIDTH: f64 = 720.0;
 pub(super) const WINDOW_HEIGHT: f64 = 540.0;
 
 pub(super) fn launch_onboarding_window() {
+    // NOTE: this `catch_unwind` recovery is only effective under a profile that
+    // unwinds on panic (dev / `cargo test`/`run`). The release profile sets
+    // `panic="abort"` (Cargo.toml `[profile.release]`), so a panic in
+    // `show_onboarding_wizard_impl` aborts the process before this `Err` arm can
+    // run. In release the only panic diagnostic is the global panic hook
+    // installed in `main` (`install_panic_hook`), which logs payload + location
+    // + thread + backtrace before the abort.
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(show_onboarding_wizard_impl)) {
         Ok(true) => {}
         Ok(false) => {
