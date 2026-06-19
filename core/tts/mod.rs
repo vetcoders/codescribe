@@ -39,6 +39,3 @@ pub use singleton::{get_model_path, init, is_initialized, play, synthesize, synt
 
 /// Default sample rate for CSM output (24kHz)
 pub const SAMPLE_RATE: u32 = 24000;
-
-/// Default speaker index (0 = first voice in model)
-pub const DEFAULT_SPEAKER: usize = 0;

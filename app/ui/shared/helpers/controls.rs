@@ -185,8 +185,6 @@ pub fn create_segmented_control(frame: CGRect, labels: &[&str]) -> Id {
 /// Button style constants
 pub mod button_style {
     pub const ROUNDED: isize = 1;
-    pub const REGULAR_SQUARE: isize = 2;
-    pub const SHADOWLESS_SQUARE: isize = 6;
     pub const SMALL_SQUARE: isize = 10;
     pub const INLINE: isize = 15;
     pub const GLASS: isize = 16;
