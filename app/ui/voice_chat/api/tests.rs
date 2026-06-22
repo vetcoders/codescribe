@@ -1025,6 +1025,79 @@ fn assistive_followup_busy_capture_waits_for_explicit_send() {
 
 #[test]
 #[serial]
+fn assistive_followup_finalization_keeps_pending_until_explicit_send() {
+    let call_count = Arc::new(AtomicUsize::new(0));
+    {
+        let count = Arc::clone(&call_count);
+        let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        *cb = Some(Arc::new(move |_text: String| {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+    }
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+        state.is_sending = true;
+    }
+
+    append_voice_chat_user_utterance_impl("Follow-up after first send.");
+    finalize_user_message_state_only_impl();
+
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(call_count.load(Ordering::SeqCst), 0);
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(state.messages[0].text, "Follow-up after first send.");
+    assert!(
+        state.messages[0].is_pending_followup,
+        "finalizing a busy follow-up must keep the explicit follow-up affordance"
+    );
+    assert!(
+        !state.messages[0].is_streaming,
+        "finalization may close transcription streaming without demoting the follow-up"
+    );
+    assert_eq!(state.active_user_stream_index, None);
+
+    let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+    *cb = None;
+}
+
+#[test]
+#[serial]
+fn assistive_followup_text_finalization_keeps_pending_until_explicit_send() {
+    let call_count = Arc::new(AtomicUsize::new(0));
+    {
+        let count = Arc::clone(&call_count);
+        let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        *cb = Some(Arc::new(move |_text: String| {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+    }
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+        state.is_agent_thinking = true;
+    }
+
+    append_voice_chat_user_delta_impl("partial follow-up");
+    finalize_user_message_impl("Final follow-up transcript");
+
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(call_count.load(Ordering::SeqCst), 0);
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(state.messages[0].text, "Final follow-up transcript");
+    assert!(
+        state.messages[0].is_pending_followup,
+        "text finalization must not demote a busy follow-up into a sent user bubble"
+    );
+    assert!(!state.messages[0].is_streaming);
+    assert_eq!(state.active_user_stream_index, None);
+
+    let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+    *cb = None;
+}
+
+#[test]
+#[serial]
 fn assistive_followup_edit_moves_pending_text_to_draft_without_send() {
     let call_count = Arc::new(AtomicUsize::new(0));
     {

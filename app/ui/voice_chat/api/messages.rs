@@ -896,11 +896,16 @@ pub fn finalize_user_message_impl(text: &str) {
         });
         state.messages.len() - 1
     };
+    let preserve_pending_followup = state
+        .messages
+        .get(idx)
+        .map(|msg| msg.is_pending_followup)
+        .unwrap_or(false);
     if let Some(msg) = state.messages.get_mut(idx) {
         msg.text = text.to_string();
         msg.is_streaming = false;
         msg.is_error = false;
-        msg.is_pending_followup = false;
+        msg.is_pending_followup = preserve_pending_followup;
     }
     update_chat_view_with_state(&mut state, true);
 }
@@ -917,7 +922,6 @@ pub fn finalize_user_message_state_only_impl() {
     if let Some(last) = state.messages.get_mut(idx) {
         last.is_streaming = false;
         last.is_error = false;
-        last.is_pending_followup = false;
     }
     update_chat_view_with_state(&mut state, true);
 }
