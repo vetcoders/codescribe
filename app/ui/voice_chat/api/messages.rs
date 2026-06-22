@@ -865,36 +865,9 @@ pub unsafe fn attach_message_bubble_click_recognizer(
 pub fn finalize_user_message_impl(text: &str) {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     ensure_agent_tab_visible(&mut state);
-    let idx = if let Some(idx) = state.active_user_stream_index.take() {
-        if is_valid_stream_message(&state, idx, ChatRole::User) {
-            idx
-        } else {
-            let mode = message_mode_label(&state);
-            state.messages.push(ChatMessage {
-                role: ChatRole::User,
-                text: String::new(),
-                is_streaming: false,
-                is_collapsed: false,
-                is_error: false,
-                timestamp: SystemTime::now(),
-                mode: Some(mode),
-                is_pending_followup: false,
-            });
-            state.messages.len() - 1
-        }
-    } else {
-        let mode = message_mode_label(&state);
-        state.messages.push(ChatMessage {
-            role: ChatRole::User,
-            text: String::new(),
-            is_streaming: false,
-            is_collapsed: false,
-            is_error: false,
-            timestamp: SystemTime::now(),
-            mode: Some(mode),
-            is_pending_followup: false,
-        });
-        state.messages.len() - 1
+    let idx = match state.active_user_stream_index.take() {
+        Some(idx) if is_valid_stream_message(&state, idx, ChatRole::User) => idx,
+        _ => reuse_or_push_finalized_user_message(&mut state, text),
     };
     let preserve_pending_followup = state
         .messages
@@ -908,6 +881,40 @@ pub fn finalize_user_message_impl(text: &str) {
         msg.is_pending_followup = preserve_pending_followup;
     }
     update_chat_view_with_state(&mut state, true);
+}
+
+/// Resolve the target index for a finalized user message when no live streaming
+/// index is available.
+///
+/// Reuses the last visible bubble only when it is itself a `User` message whose
+/// trimmed text already equals the final transcript; otherwise pushes a fresh
+/// empty user bubble. The assistive controller finalizes the same first utterance
+/// twice (full-rewrite render, then again right before send), and a cold overlay
+/// has no `active_user_stream_index` to reuse — without this guard the second
+/// finalize pushed a second identical bubble, rendering the first message twice
+/// (fix/assistive-double-send). Reuse never reaches back across an
+/// assistant/system/reasoning message: a closed turn stays closed, so a genuinely
+/// new utterance with identical text still gets its own bubble.
+fn reuse_or_push_finalized_user_message(state: &mut VoiceChatOverlayState, text: &str) -> usize {
+    if let Some(last) = state.messages.last()
+        && last.role == ChatRole::User
+        && last.text.trim() == text.trim()
+    {
+        return state.messages.len() - 1;
+    }
+
+    let mode = message_mode_label(state);
+    state.messages.push(ChatMessage {
+        role: ChatRole::User,
+        text: String::new(),
+        is_streaming: false,
+        is_collapsed: false,
+        is_error: false,
+        timestamp: SystemTime::now(),
+        mode: Some(mode),
+        is_pending_followup: false,
+    });
+    state.messages.len() - 1
 }
 
 pub fn finalize_user_message_state_only_impl() {

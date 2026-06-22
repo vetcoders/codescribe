@@ -1098,6 +1098,77 @@ fn assistive_followup_text_finalization_keeps_pending_until_explicit_send() {
 
 #[test]
 #[serial]
+fn assistive_first_message_double_finalize_renders_single_user_bubble() {
+    // Regression (fix/assistive-double-send): the assistive controller finalizes
+    // the same first utterance twice — once on the full-rewrite render, once
+    // again right before send (`set_voice_chat_user_text` → this impl). A cold
+    // overlay has no active streaming index to reuse, so the second call used to
+    // push a second identical User bubble, rendering the first message twice.
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+    }
+
+    let text = "Dobra, wez zacznij w schowek i tylko przyjmij do wiadomosci.";
+    finalize_user_message_impl(text);
+    finalize_user_message_impl(text);
+
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(
+        state.messages.len(),
+        1,
+        "two finalizes of the same first utterance must render exactly one user bubble"
+    );
+    assert_eq!(state.messages[0].role, ChatRole::User);
+    assert_eq!(state.messages[0].text, text);
+    assert!(!state.messages[0].is_streaming);
+}
+
+#[test]
+#[serial]
+fn finalize_user_message_does_not_merge_across_assistant_boundary() {
+    // Guard against over-reach: reuse must never reach back past a non-user
+    // message. A prior user turn already answered by the assistant is a closed
+    // turn; a fresh utterance with identical text is a new bubble, not a merge.
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+        state.messages.push(ChatMessage {
+            role: ChatRole::User,
+            text: "Repeat that".to_string(),
+            is_streaming: false,
+            is_collapsed: false,
+            is_error: false,
+            timestamp: SystemTime::now(),
+            mode: Some("AI".to_string()),
+            is_pending_followup: false,
+        });
+        state.messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            text: "Sure, here it is.".to_string(),
+            is_streaming: false,
+            is_collapsed: false,
+            is_error: false,
+            timestamp: SystemTime::now(),
+            mode: Some("AI".to_string()),
+            is_pending_followup: false,
+        });
+    }
+
+    finalize_user_message_impl("Repeat that");
+
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(
+        state.messages.len(),
+        3,
+        "identical text behind an assistant reply must push a new user bubble"
+    );
+    assert_eq!(state.messages[2].role, ChatRole::User);
+    assert_eq!(state.messages[2].text, "Repeat that");
+}
+
+#[test]
+#[serial]
 fn assistive_followup_edit_moves_pending_text_to_draft_without_send() {
     let call_count = Arc::new(AtomicUsize::new(0));
     {
