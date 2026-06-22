@@ -57,6 +57,7 @@ pub struct ChatMessage {
     pub is_error: bool,
     pub timestamp: SystemTime,
     pub mode: Option<String>,
+    pub is_pending_followup: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

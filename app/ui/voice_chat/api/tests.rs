@@ -562,6 +562,7 @@ fn display_text_for_message_handles_streaming() {
         is_error: false,
         timestamp: SystemTime::now(),
         mode: None,
+        is_pending_followup: false,
     };
     assert_eq!(display_text_for_message(&streaming_empty), "• • •");
 
@@ -634,6 +635,7 @@ fn finalize_assistant_message_state_only_preserves_render_mode_override() {
             is_error: false,
             timestamp: SystemTime::now(),
             mode: Some("AI".to_string()),
+            is_pending_followup: false,
         });
         state.active_assistant_stream_index = Some(0);
         state.message_render_modes.insert(0, RenderMode::Markdown);
@@ -699,6 +701,7 @@ fn streaming_reasoning_collapses_when_finalized() {
         is_error: false,
         timestamp: SystemTime::now(),
         mode: Some("AI".to_string()),
+        is_pending_followup: false,
     });
     state.active_reasoning_stream_index = Some(0);
 
@@ -845,7 +848,60 @@ fn toggle_callback_appends_finalized_utterances_to_user_draft() {
 
 #[test]
 #[serial]
-fn toggle_vad_flush_sends_accumulated_draft_and_keeps_next_draft_open() {
+fn assistive_toggle_vad_end_appends_without_sending_until_explicit_send() {
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::new(Mutex::new(String::new()));
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+    }
+    {
+        let count = Arc::clone(&call_count);
+        let observed = Arc::clone(&observed);
+        let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        *cb = Some(Arc::new(move |text: String| {
+            count.fetch_add(1, Ordering::SeqCst);
+            *observed.lock().unwrap_or_else(|e| e.into_inner()) = text;
+        }));
+    }
+
+    append_voice_chat_user_utterance_impl("Pierwszy segment.");
+    append_voice_chat_user_utterance_impl("Drugi segment.");
+
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        0,
+        "VAD-end utterance append must not dispatch the draft to the agent"
+    );
+    {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].role, ChatRole::User);
+        assert_eq!(state.messages[0].text, "Pierwszy segment. Drugi segment.");
+        assert!(
+            state.messages[0].is_streaming,
+            "VAD-end keeps the user bubble open until toggle-stop finalizes/sends"
+        );
+    }
+
+    assert!(dispatch_voice_chat_send("Pierwszy segment. Drugi segment."));
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "toggle-stop/runtime boundary should send the accumulated transcript exactly once"
+    );
+    assert_eq!(
+        observed.lock().unwrap_or_else(|e| e.into_inner()).as_str(),
+        "Pierwszy segment. Drugi segment."
+    );
+
+    let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+    *cb = None;
+}
+
+#[test]
+#[serial]
+fn explicit_commit_sends_accumulated_draft_and_keeps_next_draft_open() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let observed = Arc::new(Mutex::new(String::new()));
     {
@@ -880,6 +936,117 @@ fn toggle_vad_flush_sends_accumulated_draft_and_keeps_next_draft_open() {
     assert!(!state.messages[0].is_streaming);
     assert_eq!(state.messages[1].text, "Nowy segment po ciszy.");
     assert!(state.messages[1].is_streaming);
+
+    let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+    *cb = None;
+}
+
+#[test]
+#[serial]
+fn assistive_followup_busy_capture_waits_for_explicit_send() {
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::new(Mutex::new(Vec::<String>::new()));
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+        state.messages.push(ChatMessage {
+            role: ChatRole::User,
+            text: "Already sent prompt".to_string(),
+            is_streaming: false,
+            is_collapsed: false,
+            is_error: false,
+            timestamp: SystemTime::now(),
+            mode: Some("AI".to_string()),
+            is_pending_followup: false,
+        });
+        state.is_sending = true;
+    }
+    {
+        let count = Arc::clone(&call_count);
+        let observed = Arc::clone(&observed);
+        let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        *cb = Some(Arc::new(move |text: String| {
+            count.fetch_add(1, Ordering::SeqCst);
+            observed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(text);
+        }));
+    }
+
+    append_voice_chat_user_delta_impl("Follow-up while busy");
+    append_voice_chat_user_delta_impl(" please");
+
+    {
+        let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(state.messages[0].text, "Already sent prompt");
+        assert!(!state.messages[0].is_pending_followup);
+        assert_eq!(state.messages[1].role, ChatRole::User);
+        assert_eq!(state.messages[1].text, "Follow-up while busy please");
+        assert!(state.messages[1].is_pending_followup);
+        assert!(state.messages[1].is_streaming);
+        assert!(
+            message_metadata(&state.messages[1]).contains("Pending follow-up"),
+            "metadata should expose the waiting affordance used by the bubble"
+        );
+    }
+    assert_eq!(call_count.load(Ordering::SeqCst), 0);
+
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.is_sending = false;
+        state.is_agent_thinking = false;
+    }
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        0,
+        "captured follow-up must not auto-send when the agent becomes idle"
+    );
+
+    commit_pending_followup_message_impl();
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        observed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_slice(),
+        &["Follow-up while busy please".to_string()]
+    );
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(state.messages.len(), 2);
+    assert!(!state.messages[1].is_pending_followup);
+    assert!(!state.messages[1].is_streaming);
+
+    let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+    *cb = None;
+}
+
+#[test]
+#[serial]
+fn assistive_followup_edit_moves_pending_text_to_draft_without_send() {
+    let call_count = Arc::new(AtomicUsize::new(0));
+    {
+        let count = Arc::clone(&call_count);
+        let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        *cb = Some(Arc::new(move |_text: String| {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+    }
+    {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        *state = VoiceChatOverlayState::default();
+        state.is_agent_thinking = true;
+    }
+
+    append_voice_chat_user_delta_impl("Needs correction");
+    edit_pending_followup_message_impl();
+
+    let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(call_count.load(Ordering::SeqCst), 0);
+    assert!(state.messages.is_empty());
+    assert_eq!(state.manual_draft, "Needs correction");
 
     let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
     *cb = None;

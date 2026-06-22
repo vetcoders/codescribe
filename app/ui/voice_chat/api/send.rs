@@ -40,6 +40,20 @@ pub fn commit_last_user_message() {
     });
 }
 
+/// Explicitly submit the visible pending follow-up captured while the agent was busy.
+pub fn commit_pending_followup_message() {
+    Queue::main().exec_async(|| {
+        run_when_overlay_unlocked(commit_pending_followup_message_impl);
+    });
+}
+
+/// Move the visible pending follow-up back into the editable draft without sending.
+pub fn edit_pending_followup_message() {
+    Queue::main().exec_async(|| {
+        run_when_overlay_unlocked(edit_pending_followup_message_impl);
+    });
+}
+
 /// Set the send callback invoked when the user submits a message
 pub fn set_voice_chat_send_callback(
     callback: Option<crate::ui::voice_chat::state::VoiceChatSendCallback>,
@@ -176,6 +190,7 @@ pub fn send_draft_message_impl() {
                 is_error: false,
                 timestamp: SystemTime::now(),
                 mode: Some(mode),
+                is_pending_followup: false,
             });
         }
 
@@ -188,6 +203,7 @@ pub fn send_draft_message_impl() {
             is_error: false,
             timestamp: SystemTime::now(),
             mode: Some(mode),
+            is_pending_followup: false,
         });
         state.manual_draft.clear();
         state.is_sending = true;
@@ -253,6 +269,7 @@ pub fn commit_last_user_message_impl() {
                 is_error: false,
                 timestamp: SystemTime::now(),
                 mode: Some(mode),
+                is_pending_followup: false,
             });
         }
         state.is_sending = true;
@@ -275,6 +292,66 @@ pub fn commit_last_user_message_impl() {
     } else {
         handler(text);
     }
+}
+
+pub fn commit_pending_followup_message_impl() {
+    let callback = {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(idx) = pending_followup_index(&state) else {
+            return;
+        };
+        let text = state.messages[idx].text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+
+        let handler_guard = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(handler) = handler_guard.clone() else {
+            return;
+        };
+        drop(handler_guard);
+
+        if let Some(message) = state.messages.get_mut(idx) {
+            message.text = text.clone();
+            message.is_pending_followup = false;
+            message.is_streaming = false;
+            message.is_error = false;
+        }
+        if state.active_user_stream_index == Some(idx) {
+            state.active_user_stream_index = None;
+        }
+        state.is_sending = true;
+        update_chat_view_with_state(&mut state, true);
+        update_send_button_with_state(&mut state);
+        (handler, text)
+    };
+
+    let (handler, text) = callback;
+    handler(text);
+}
+
+pub fn edit_pending_followup_message_impl() {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(idx) = pending_followup_index(&state) else {
+        return;
+    };
+    let text = state.messages.remove(idx).text.trim().to_string();
+    state.manual_draft = text.clone();
+    state.active_user_stream_index = state
+        .active_user_stream_index
+        .and_then(|active| match active.cmp(&idx) {
+            std::cmp::Ordering::Less => Some(active),
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => Some(active - 1),
+        });
+    if let Some(text_view) = state.agent_input_text_view {
+        unsafe { set_text_view_string(text_view as Id, &text) };
+    } else if let Some(input_field) = state.agent_input_field {
+        unsafe { set_text_field_string(input_field as Id, &text) };
+    }
+    resize_agent_input_locked(&mut state);
+    update_chat_view_with_state(&mut state, true);
+    update_send_button_with_state(&mut state);
 }
 
 pub fn discard_last_message_impl() {
@@ -1217,7 +1294,8 @@ pub fn resize_agent_input_locked(state: &mut VoiceChatOverlayState) {
 
 pub fn create_commit_action_bar(action_handler: Option<usize>) -> Id {
     unsafe {
-        let ns_view = Class::get("NSView").unwrap();
+        let ns_view =
+            Class::get("NSView").expect("NSView class should exist for commit action bar");
         let max_width = 390.0;
         let bar_height = 28.0;
 
@@ -1266,6 +1344,65 @@ pub fn create_commit_action_bar(action_handler: Option<usize>) -> Id {
             crate::ui_helpers::button_set_action(commit_btn, handler as Id, sel!(onCommitMessage:));
         }
         let _: () = msg_send![bar, addSubview: commit_btn];
+
+        bar
+    }
+}
+
+pub fn create_pending_followup_action_bar(action_handler: Option<usize>) -> Id {
+    unsafe {
+        let ns_view = Class::get("NSView")
+            .expect("NSView class should exist for pending follow-up action bar");
+        let max_width = 390.0;
+        let bar_height = 28.0;
+
+        let bar: Id = msg_send![ns_view, alloc];
+        let bar_frame = core_graphics::geometry::CGRect::new(
+            &CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(max_width, bar_height),
+        );
+        let bar: Id = msg_send![bar, initWithFrame: bar_frame];
+
+        let btn_width = 72.0;
+        let btn_height = 22.0;
+        let gap = 8.0;
+        let right_edge = max_width - 8.0;
+
+        let edit_x = right_edge - btn_width * 2.0 - gap;
+        let edit_btn = crate::ui_helpers::create_button(
+            core_graphics::geometry::CGRect::new(
+                &CGPoint::new(edit_x, 3.0),
+                &core_graphics::geometry::CGSize::new(btn_width, btn_height),
+            ),
+            "Edit",
+            crate::ui_helpers::button_style::SMALL_SQUARE,
+        );
+        if let Some(handler) = action_handler {
+            crate::ui_helpers::button_set_action(
+                edit_btn,
+                handler as Id,
+                sel!(onEditPendingFollowup:),
+            );
+        }
+        let _: () = msg_send![bar, addSubview: edit_btn];
+
+        let send_x = right_edge - btn_width;
+        let send_btn = crate::ui_helpers::create_button(
+            core_graphics::geometry::CGRect::new(
+                &CGPoint::new(send_x, 3.0),
+                &core_graphics::geometry::CGSize::new(btn_width, btn_height),
+            ),
+            "Send now",
+            crate::ui_helpers::button_style::ROUNDED,
+        );
+        if let Some(handler) = action_handler {
+            crate::ui_helpers::button_set_action(
+                send_btn,
+                handler as Id,
+                sel!(onCommitPendingFollowup:),
+            );
+        }
+        let _: () = msg_send![bar, addSubview: send_btn];
 
         bar
     }

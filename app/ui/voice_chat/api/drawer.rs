@@ -170,6 +170,7 @@ pub fn handle_card_restore(index: usize) {
             is_error: false,
             timestamp: SystemTime::now(),
             mode: Some(mode_label(transcription_mode_from_thread_mode(&thread.mode)).to_string()),
+            is_pending_followup: false,
         });
     }
     tokio::spawn(async move {
@@ -1469,6 +1470,7 @@ pub fn thread_messages_for_restore(thread: &Thread) -> Vec<ChatMessage> {
                 is_error: false,
                 timestamp: system_time_from_unix_millis(message.timestamp.timestamp_millis()),
                 mode: Some(mode.clone()),
+                is_pending_followup: false,
             })
         })
         .collect()
