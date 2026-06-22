@@ -72,7 +72,8 @@ use codescribe_core::tts::AudioPlayer;
 // UI state for conversation mode
 use crate::ui::voice_chat::ConversationModeState;
 use codescribe_core::pipeline::contracts::{
-    FinalPassDisposition, TranscriptionConfidenceFlag, TranscriptionVerdict,
+    FileTranscriptionOptions, FinalPassDisposition, TranscriptionConfidenceFlag,
+    TranscriptionVerdict,
 };
 
 use helpers::{
@@ -395,6 +396,7 @@ fn adjudicate_recording_truth(
     streaming_text: String,
     cloud_verdict: Option<crate::client::CloudTranscriptionVerdict>,
     session_telemetry: &SessionTelemetrySnapshot,
+    streaming_verdict_source: Option<RecordingTranscriptSource>,
 ) -> RecordingTruthVerdict {
     let streaming_text = non_empty_transcript(Some(streaming_text));
     let cloud_verdict = cloud_verdict.filter(|verdict| !verdict.text.trim().is_empty());
@@ -499,6 +501,20 @@ fn adjudicate_recording_truth(
         }
 
         if let Some(text) = streaming_text {
+            if let Some(source) = streaming_verdict_source {
+                return build_truth_verdict(
+                    Some(text),
+                    Some(source),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    None,
+                );
+            }
+
             let mut fallback_flags = confidence_flags.clone();
             push_typed_flag(
                 &mut fallback_flags,
@@ -633,6 +649,25 @@ fn should_use_toggle_adjudicated_stop(
     toggle_final_pass: bool,
 ) -> bool {
     current_state == State::RecToggle && !assistive && toggle_final_pass
+}
+
+fn raw_recording_streaming_source(
+    assistive: bool,
+    force_raw: bool,
+    transcript_source_override: Option<RecordingTranscriptSource>,
+) -> Option<RecordingTranscriptSource> {
+    if assistive {
+        return None;
+    }
+
+    if matches!(
+        transcript_source_override,
+        Some(RecordingTranscriptSource::ToggleSessionAdjudicated)
+    ) {
+        return transcript_source_override;
+    }
+
+    force_raw.then_some(RecordingTranscriptSource::Streaming)
 }
 
 fn should_apply_incoming_mode_flags(current_state: State, event: &HotkeyInput) -> bool {
@@ -3303,7 +3338,7 @@ impl RecordingController {
 
             let phase3 = std::time::Instant::now();
             info!(
-                "stop_toggle_inner: PHASE 3 — process_stopped_recording (Whisper final-pass + post-process + paste/handoff decision)"
+                "stop_toggle_inner: PHASE 3 — process_stopped_recording (truth selection + post-process + paste/handoff decision)"
             );
             let r = self
                 .process_stopped_recording(
@@ -3576,6 +3611,11 @@ impl RecordingController {
         let language_opt = Some(language.as_str());
         let use_local_stt = config.use_local_stt;
         let raw_save_enabled = raw_save_enabled(assistive);
+        let streaming_verdict_source = if use_local_stt {
+            raw_recording_streaming_source(assistive, force_raw, transcript_source_override)
+        } else {
+            None
+        };
 
         let cloud_config = if use_local_stt {
             None
@@ -3626,39 +3666,46 @@ impl RecordingController {
 
         if use_local_stt && local_final_pass_enabled {
             if let Some(path) = &audio_path {
-                local_final_pass_attempted = true;
-                let wav_path = path.as_path().to_path_buf();
-                let lang = language_opt.map(str::to_string);
+                if let Some(source) = streaming_verdict_source {
+                    info!(
+                        "Skipping final-pass local STT for raw stop; using streaming session verdict ({})",
+                        source.label()
+                    );
+                } else {
+                    local_final_pass_attempted = true;
+                    let wav_path = path.as_path().to_path_buf();
+                    let lang = language_opt.map(str::to_string);
 
-                if chat_active {
-                    crate::ui::voice_chat::update_voice_chat_status("Finalizing… (20%)");
-                }
-
-                info!(
-                    "Running final-pass local STT adjudicator: {}",
-                    wav_path.display()
-                );
-
-                match tokio::task::spawn_blocking(move || {
-                    crate::whisper::transcribe_file_verdict(
-                        &wav_path,
-                        lang.as_deref(),
-                        codescribe_core::pipeline::contracts::FileTranscriptionOptions::default(),
-                    )
-                })
-                .await
-                {
-                    Ok(Ok(verdict)) => {
-                        info!(
-                            "Final-pass verdict captured ({} chars, speech_pct={:?}, avg_logprob={:?})",
-                            verdict.text.len(),
-                            verdict.vad.as_ref().map(|vad| vad.speech_pct),
-                            verdict.raw.avg_logprob
-                        );
-                        local_final_pass_verdict = Some(verdict);
+                    if chat_active {
+                        crate::ui::voice_chat::update_voice_chat_status("Finalizing… (20%)");
                     }
-                    Ok(Err(e)) => warn!("Final-pass transcription failed: {}", e),
-                    Err(e) => warn!("Final-pass transcription task failed: {}", e),
+
+                    info!(
+                        "Running final-pass local STT adjudicator: {}",
+                        wav_path.display()
+                    );
+
+                    match tokio::task::spawn_blocking(move || {
+                        crate::whisper::transcribe_file_verdict(
+                            &wav_path,
+                            lang.as_deref(),
+                            FileTranscriptionOptions::default(),
+                        )
+                    })
+                    .await
+                    {
+                        Ok(Ok(verdict)) => {
+                            info!(
+                                "Final-pass verdict captured ({} chars, speech_pct={:?}, avg_logprob={:?})",
+                                verdict.text.len(),
+                                verdict.vad.as_ref().map(|vad| vad.speech_pct),
+                                verdict.raw.avg_logprob
+                            );
+                            local_final_pass_verdict = Some(verdict);
+                        }
+                        Ok(Err(e)) => warn!("Final-pass transcription failed: {}", e),
+                        Err(e) => warn!("Final-pass transcription task failed: {}", e),
+                    }
                 }
             } else {
                 warn!("Final-pass local STT skipped: no audio file available");
@@ -3686,6 +3733,7 @@ impl RecordingController {
             streaming_text,
             cloud_verdict_opt.clone(),
             &session_telemetry,
+            streaming_verdict_source,
         );
         if transcript_source_override.is_some()
             && matches!(
