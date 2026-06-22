@@ -11,9 +11,9 @@ use objc2_app_kit::{
 use tracing::warn;
 
 use crate::ui::shared::helpers::{
-    LabelConfig, NS_FLOATING_WINDOW_LEVEL, add_subview, button, button_set_action, color_clear,
-    color_label, color_secondary_label, create_glass_effect_view_with, create_label,
-    create_secure_text_input, ns_string, present_shared_shell_panel,
+    LabelConfig, add_subview, button, button_set_action, color_clear, color_label,
+    color_secondary_label, create_glass_effect_view_with, create_label, create_secure_text_input,
+    ns_string, present_shared_shell_panel,
 };
 
 use super::Id;
@@ -111,10 +111,8 @@ fn show_onboarding_wizard_impl() -> bool {
         let _: () = msg_send![window, setBackgroundColor: color_clear()];
         let _: () = msg_send![window, setReleasedWhenClosed: false];
         let _: () = msg_send![window, setMovableByWindowBackground: true];
-        let _: () = msg_send![window, setLevel: NS_FLOATING_WINDOW_LEVEL];
-        let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary;
-        let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
+        let _: () =
+            msg_send![window, setCollectionBehavior: NSWindowCollectionBehavior::FullScreenNone];
         let size = CGSize::new(WINDOW_WIDTH, WINDOW_HEIGHT);
         let _: () = msg_send![window, setContentMinSize: size];
         let _: () = msg_send![window, setContentMaxSize: size];
