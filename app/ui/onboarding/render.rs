@@ -165,7 +165,7 @@ pub(super) fn render_current_step() {
         }
         WizardStep::HotkeyMode => {
             set_text_if_present(ui.icon_label, "HOTKEY");
-            set_text_if_present(ui.title_label, "Customize Mode Shortcuts");
+            set_text_if_present(ui.title_label, "Mode Shortcuts");
             set_text_if_present(
                 ui.description_label,
                 "Mode first, keys second. Dictation aims for a committed transcript verdict, Formatting upgrades text only when safe, and Assistive stays in the chat overlay instead of silent paste.",

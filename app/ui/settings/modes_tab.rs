@@ -79,11 +79,8 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
         let settings_snapshot = UserSettings::load();
         let mut mode_binding_labels: [Option<usize>; 3] = [None; 3];
         for (mode, tag) in mode_specs {
-            let change_button_w = 96.0;
             let disable_button_w = 72.0;
-            let button_gap = 8.0;
-            let change_x = pad + content_w - change_button_w;
-            let disable_x = change_x - button_gap - disable_button_w;
+            let disable_x = pad + content_w - disable_button_w;
             let binding_right_x = disable_x - 8.0;
 
             let row_title = create_label(LabelConfig {
@@ -120,18 +117,6 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
             let _: () = msg_send![disable_button, setTag: tag + MODE_DISABLE_TAG_OFFSET];
             button_set_action(disable_button, action_handler, sel!(onModeBindingChange:));
             add_subview(container, disable_button);
-
-            let change_button = create_button(
-                CGRect::new(
-                    &CGPoint::new(change_x, y - 2.0),
-                    &CGSize::new(change_button_w, 24.0),
-                ),
-                "\u{2328} Customize",
-                button_style::GLASS,
-            );
-            let _: () = msg_send![change_button, setTag: tag];
-            button_set_action(change_button, action_handler, sel!(onModeBindingChange:));
-            add_subview(container, change_button);
 
             y -= 24.0;
 
@@ -173,7 +158,7 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
 
         let recorder_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Shortcut recorder: click [⌨ Customize], press Fn/Ctrl/Option. Esc cancels."
+            text: "Mode shortcuts are fixed presets for now. Use Disable to turn a mode off."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
