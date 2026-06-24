@@ -393,7 +393,7 @@ fn persist_api_key_from_field() -> bool {
 
             if let Some(label_ptr) = state.ui.api_hint_label {
                 unsafe {
-                    set_text_field_string(label_ptr as Id, "API key saved to Keychain.");
+                    set_text_field_string(label_ptr as Id, "OpenAI API key saved to Keychain.");
                     let green = system_green_color();
                     let _: () = msg_send![label_ptr as Id, setTextColor: green];
                 }

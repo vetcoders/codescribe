@@ -377,7 +377,7 @@
           <div class="split">
             <div class="field">
               <label>LLM_MODEL</label>
-              <input id="llm-model" placeholder="gpt-4.1-mini" />
+              <input id="llm-model" placeholder="gpt-4.1" />
             </div>
             <div class="field">
               <label>LLM_API_KEY 🔐</label>
@@ -715,7 +715,7 @@
             document.getElementById("toggle-ai").classList.add("on");
             document.getElementById("llm-endpoint").value =
               "https://api.openai.com/v1/responses";
-            document.getElementById("llm-model").value = "gpt-4.1-mini";
+            document.getElementById("llm-model").value = "gpt-4.1";
             break;
           case "cloud":
             document.getElementById("toggle-local-stt").classList.remove("on");
@@ -727,8 +727,8 @@
             document.getElementById("toggle-local-stt").classList.add("on");
             document.getElementById("toggle-ai").classList.add("on");
             document.getElementById("llm-endpoint").value =
-              "https://api.libraxis.cloud/v1/responses";
-            document.getElementById("llm-model").value = "programmer";
+              "https://api.openai.com/v1/responses";
+            document.getElementById("llm-model").value = "gpt-5.5";
             document.getElementById("stt-endpoint").value =
               "https://api.libraxis.cloud/v1/audio/transcriptions";
             break;

@@ -153,15 +153,15 @@ pub(super) fn render_current_step() {
         }
         WizardStep::ApiKey => {
             set_text_if_present(ui.icon_label, "API");
-            set_text_if_present(ui.title_label, "Add API Key (Optional)");
+            set_text_if_present(ui.title_label, "Add OpenAI API Key");
             set_text_if_present(
                 ui.description_label,
-                "Optional. Your LLM API key unlocks formatted transcript and assistant features, while raw transcript truth stays preserved whenever AI is skipped, rejected, or unavailable.",
+                "Put your OpenAI API key here to unlock formatting and the dictation-driven agent. Raw local transcript still works if you skip.",
             );
             set_hidden_if_present(ui.api_view, false);
             set_button_title_if_present(ui.primary_button, "Save & Continue");
             set_hidden_if_present(ui.skip_button, false);
-            set_button_title_if_present(ui.skip_button, "Skip (Offline)");
+            set_button_title_if_present(ui.skip_button, "Skip OpenAI");
         }
         WizardStep::HotkeyMode => {
             set_text_if_present(ui.icon_label, "HOTKEY");
@@ -271,15 +271,15 @@ fn update_summary_view(
     }
 
     let api_status = if api_key_configured {
-        "Configured"
+        "OpenAI key configured"
     } else {
-        "Skipped (Offline mode)"
+        "OpenAI key not configured"
     };
 
     set_text_if_present(
         ui.summary_config_label,
         &format!(
-            "Language: {}\nAPI key: {}\nMode profile: {}\nTruth model: Live preview stays local and provisional. CodeScribe only commits a final verdict after capture, and degraded fallback blocks silent auto-paste.",
+            "Language: {}\nOpenAI: {}\nMode profile: {}\nTruth model: Live preview stays local and provisional. CodeScribe only commits a final verdict after capture, and degraded fallback blocks silent auto-paste.",
             language.label(),
             api_status,
             hotkey_mode.label()

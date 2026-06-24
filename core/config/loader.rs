@@ -14,6 +14,9 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
+use super::defaults::{
+    default_assistive_model, default_formatting_model, default_llm_endpoint, default_llm_model,
+};
 use super::types::{Config, Language, OverlayPositionMode, TranscriptSendMode};
 
 impl Config {
@@ -66,6 +69,7 @@ impl Config {
 
         // Override with environment variables (explicit runtime env + injected env-managed .env).
         config.load_from_env();
+        config.apply_default_llm_runtime_env();
         config.sanitize();
         config
     }
@@ -85,6 +89,36 @@ impl Config {
                 Self::config_init_set_env(key, value);
             }
         }
+    }
+
+    fn env_missing_or_empty(key: &str) -> bool {
+        std::env::var(key)
+            .ok()
+            .is_none_or(|value| value.trim().is_empty())
+    }
+
+    fn config_init_set_env_if_missing(key: &str, value: impl AsRef<str>) {
+        if Self::env_missing_or_empty(key) {
+            Self::config_init_set_env(key, value.as_ref());
+        }
+    }
+
+    fn apply_default_llm_runtime_env(&mut self) {
+        let endpoint = self
+            .llm_endpoint
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(default_llm_endpoint);
+
+        self.llm_endpoint = Some(endpoint.clone());
+
+        Self::config_init_set_env_if_missing("LLM_ENDPOINT", &endpoint);
+        Self::config_init_set_env_if_missing("LLM_MODEL", default_llm_model());
+        Self::config_init_set_env_if_missing("LLM_FORMATTING_ENDPOINT", &endpoint);
+        Self::config_init_set_env_if_missing("LLM_FORMATTING_MODEL", default_formatting_model());
+        Self::config_init_set_env_if_missing("LLM_ASSISTIVE_ENDPOINT", &endpoint);
+        Self::config_init_set_env_if_missing("LLM_ASSISTIVE_MODEL", default_assistive_model());
     }
 
     /// Load configuration values from environment variables.
@@ -1065,6 +1099,55 @@ mod tests {
         set_env_for_test("CODESCRIBE_DATA_DIR", tmp.path());
         remove_env_for_test("USE_LOCAL_STT");
         tmp
+    }
+
+    #[test]
+    #[serial]
+    fn load_injects_openai_responses_defaults_without_api_key() {
+        let _tmp = setup_isolated_data_dir();
+        let _endpoint = TestEnvGuard::unset("LLM_ENDPOINT");
+        let _model = TestEnvGuard::unset("LLM_MODEL");
+        let _formatting_endpoint = TestEnvGuard::unset("LLM_FORMATTING_ENDPOINT");
+        let _formatting_model = TestEnvGuard::unset("LLM_FORMATTING_MODEL");
+        let _assistive_endpoint = TestEnvGuard::unset("LLM_ASSISTIVE_ENDPOINT");
+        let _assistive_model = TestEnvGuard::unset("LLM_ASSISTIVE_MODEL");
+        let _api_key = TestEnvGuard::unset("LLM_API_KEY");
+        let _formatting_key = TestEnvGuard::unset("LLM_FORMATTING_API_KEY");
+        let _assistive_key = TestEnvGuard::unset("LLM_ASSISTIVE_API_KEY");
+
+        let config = Config::load();
+
+        assert_eq!(
+            config.llm_endpoint.as_deref(),
+            Some(super::super::DEFAULT_OPENAI_RESPONSES_ENDPOINT)
+        );
+        assert_eq!(
+            std::env::var("LLM_ENDPOINT").as_deref(),
+            Ok(super::super::DEFAULT_OPENAI_RESPONSES_ENDPOINT)
+        );
+        assert_eq!(
+            std::env::var("LLM_MODEL").as_deref(),
+            Ok(super::super::DEFAULT_LLM_MODEL)
+        );
+        assert_eq!(
+            std::env::var("LLM_FORMATTING_ENDPOINT").as_deref(),
+            Ok(super::super::DEFAULT_OPENAI_RESPONSES_ENDPOINT)
+        );
+        assert_eq!(
+            std::env::var("LLM_FORMATTING_MODEL").as_deref(),
+            Ok(super::super::DEFAULT_FORMATTING_MODEL)
+        );
+        assert_eq!(
+            std::env::var("LLM_ASSISTIVE_ENDPOINT").as_deref(),
+            Ok(super::super::DEFAULT_OPENAI_RESPONSES_ENDPOINT)
+        );
+        assert_eq!(
+            std::env::var("LLM_ASSISTIVE_MODEL").as_deref(),
+            Ok(super::super::DEFAULT_ASSISTIVE_MODEL)
+        );
+        assert!(std::env::var("LLM_API_KEY").is_err());
+        assert!(std::env::var("LLM_FORMATTING_API_KEY").is_err());
+        assert!(std::env::var("LLM_ASSISTIVE_API_KEY").is_err());
     }
 
     #[test]

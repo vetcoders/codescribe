@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc};
 use tracing::{debug, warn};
 
-use crate::config::Config;
+use crate::config::{Config, default_assistive_model};
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ContentBlock, Message, Role, StreamOptions, Thread, ThreadMessage,
@@ -381,16 +381,13 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
         .ok()
         .filter(|tokens| *tokens > 0);
 
-    // Model name MUST come from operator's settings.json → loader.rs → env var.
-    // Prior `String::new()` was a placeholder left by the 2026-02-23 Agent 2.0
-    // wire-up (commit 65714a5) that never got filled. Empty model name caused
-    // the backend to either error out (→ "Agent runtime unavailable" log →
-    // legacy formatter fallback → no Emil persona reaching user) or default
-    // to a random model with off-character behavior. Matches the
-    // `std::env::var("LLM_ASSISTIVE_MODEL")` pattern used elsewhere in this
-    // file (lines ~440 and ~487). Fallback `"programmer"` matches the
-    // canonical libraxis.cloud config operator persisted in settings.json.
-    let model = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_else(|_| "programmer".to_string());
+    // Model name comes from settings.json -> loader.rs -> env var. Keep a
+    // release-safe OpenAI default so the agent path never falls into an empty
+    // or provider-specific placeholder model.
+    let model = std::env::var("LLM_ASSISTIVE_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(default_assistive_model);
 
     StreamOptions {
         model,

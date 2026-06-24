@@ -388,6 +388,15 @@ fn build_mcp_section(container: Id, y: &mut f64, pad: f64, content_w: f64) {
         &status.config_path_display,
         secondary,
     );
+    add_engine_metric_row(
+        container,
+        y,
+        pad,
+        content_w,
+        "Custom:",
+        "Add MCP servers in ~/.codescribe/mcp.json",
+        secondary,
+    );
 
     for row in status.summary_rows() {
         let color = match row.tone {

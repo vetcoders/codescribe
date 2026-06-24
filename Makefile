@@ -5,8 +5,8 @@
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-formatting test-all \
-        demo demo-raw demo-assistive check fix clean help \
-        dmg dmg-signed release-full notarize download-model download-e5 download-embedder ensure-models \
+        demo demo-raw demo-assistive check semgrep fix clean help \
+        dmg dmg-signed release-standard release-full release-dmgs notarize download-model download-e5 download-embedder ensure-models \
         hooks
 
 SHELL := /bin/bash
@@ -61,7 +61,7 @@ build:
 	@cargo build
 
 release-codescribe:
-	@echo "Building codescribe (release, runtime Whisper from HF cache)..."
+	@echo "Building codescribe (release, embedded support assets; Whisper from cache/download)..."
 	@cargo build --release --bin codescribe
 
 release-codescribe-embedded:
@@ -75,7 +75,7 @@ release-qube:
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing CodeScribe (embedded-first Whisper + embedded support assets)..."
+	@echo "Installing CodeScribe (embedded support assets; Whisper from cache/download)..."
 	@./scripts/ensure-models.sh
 	@cargo install --path . --force
 	@mkdir -p ~/.codescribe
@@ -332,6 +332,9 @@ check:
 	@semgrep scan --config auto --error .
 	@echo "Quality gate passed"
 
+semgrep:
+	@semgrep scan --config auto --error --quiet .
+
 fix:
 	@echo "=== Format Fix (Rust) ==="
 	@cargo fmt --all
@@ -373,8 +376,8 @@ help:
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'BUILD & INSTALL'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'build' 'Build debug binary'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release binary (embedded-first Whisper + embedded support assets)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI with embedded-first Whisper'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release binary with embedded support assets; Whisper from cache/download'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI with embedded support assets'
 	@printf '%s\n' '  make install-no-embed Install without optional embedded assets (needs CODESCRIBE_MODEL_PATH)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bundle' 'Create CodeScribe.app bundle'
@@ -383,7 +386,9 @@ help:
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RELEASE & DISTRIBUTION'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'dmg' 'Build DMG (ad-hoc signed)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'dmg-signed' 'Build DMG (Developer ID signed)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-full' 'Build + sign + notarize DMG (release-ready)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-standard' 'Build + sign + notarize standard DMG'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-full' 'Build + sign + notarize full DMG with embedded Whisper'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-dmgs' 'Build both notarized release DMGs'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'notarize' 'Notarize DMG with Apple'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-model' 'Download Whisper model from HF'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-e5' 'Download E5 embedder model from HF'
@@ -416,6 +421,7 @@ help:
 	@printf '%s\n' '  make test-formatting Run AI formatting tests'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-all' 'Run full test suite'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'check' 'Verify formatting + clippy + semgrep (CI-safe)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push hooks'
 
 # ============================================================================
@@ -428,8 +434,13 @@ dmg:
 dmg-signed:
 	@./scripts/build-dmg.sh --sign
 
-release-full:
+release-standard:
 	@./scripts/build-dmg.sh --sign --notarize
+
+release-full:
+	@./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full
+
+release-dmgs: release-standard release-full
 
 notarize:
 	@if ls CodeScribe_*.dmg 1> /dev/null 2>&1; then \

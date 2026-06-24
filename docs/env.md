@@ -247,17 +247,18 @@ i runtime nie może znaleźć Whispera przez cache / config:
 Makefile **automatycznie** ładuje `~/.codescribe/.env` przy uruchamianiu testów.
 
 **Domyślnie** testy używają Twojej referencji z `~/.codescribe/.env`.
-Jeśli chcesz **lokalnie** (Ollama), uruchom:
+Jeśli chcesz wymusić lokalny test LLM (diagnostycznie), uruchom:
 
 ```
 TEST_USE_LOCAL_LLM=1 make test
 ```
 
-Lokalny endpoint (Ollama):
+Domyślny endpoint aplikacji:
 
 ```
-http://localhost:11434/v1/responses
-model: gpt-oss:120b-cloud
+https://api.openai.com/v1/responses
+formatting model: gpt-4.1
+assistive model: gpt-5.5
 ```
 
 Jeśli chcesz tylko SSE / streaming:
@@ -297,7 +298,7 @@ USE_LOCAL_STT=1
 ```
 AI_FORMATTING_ENABLED=1
 LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1-mini
+LLM_MODEL=gpt-4.1
 LLM_API_KEY=sk-...
 ```
 

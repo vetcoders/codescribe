@@ -2,6 +2,8 @@
 
 use super::*;
 
+const PROMPT_HISTORY_LIMIT: usize = 100;
+
 /// Dispatch a payload through the registered chat send callback without mutating bubbles.
 ///
 /// Returns `true` when a callback was found and invoked.
@@ -130,6 +132,7 @@ pub fn clear_voice_chat_text_impl() {
         state.active_assistant_stream_index = None;
         state.active_reasoning_stream_index = None;
         state.manual_draft.clear();
+        state.prompt_history_cursor = None;
         state.is_sending = false;
         state.attachments.clear();
         state.attachments_last_sent = None;
@@ -193,6 +196,8 @@ pub fn send_draft_message_impl() {
                 is_pending_followup: false,
             });
         }
+        push_prompt_history_locked(&mut state, &draft);
+        follow_latest_after_manual_send_locked(&mut state);
 
         let mode = message_mode_label(&state);
         state.messages.push(ChatMessage {
@@ -206,6 +211,7 @@ pub fn send_draft_message_impl() {
             is_pending_followup: false,
         });
         state.manual_draft.clear();
+        state.prompt_history_cursor = None;
         state.is_sending = true;
         if let Some(text_view) = state.agent_input_text_view {
             unsafe { set_text_view_string(text_view as Id, "") };
@@ -330,6 +336,89 @@ pub fn commit_pending_followup_message_impl() {
     handler(text);
 }
 
+pub fn recall_previous_prompt() -> bool {
+    recall_prompt_history(true)
+}
+
+pub fn recall_next_prompt() -> bool {
+    recall_prompt_history(false)
+}
+
+fn recall_prompt_history(previous: bool) -> bool {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(next_cursor) = next_prompt_history_cursor(
+        state.prompt_history.len(),
+        state.prompt_history_cursor,
+        previous,
+    ) else {
+        return false;
+    };
+
+    let text = if next_cursor == state.prompt_history.len() {
+        state.prompt_history_cursor = None;
+        String::new()
+    } else {
+        state.prompt_history_cursor = Some(next_cursor);
+        state.prompt_history[next_cursor].clone()
+    };
+    state.manual_draft = text.clone();
+
+    if let Some(text_view) = state.agent_input_text_view {
+        unsafe { set_text_view_string(text_view as Id, &text) };
+    } else if let Some(input_field) = state.agent_input_field {
+        unsafe { set_text_field_string(input_field as Id, &text) };
+    }
+    resize_agent_input_locked(&mut state);
+    update_send_button_with_state(&mut state);
+    true
+}
+
+pub fn push_prompt_history_locked(state: &mut VoiceChatOverlayState, prompt: &str) {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return;
+    }
+    if state
+        .prompt_history
+        .last()
+        .is_some_and(|last| last == prompt)
+    {
+        return;
+    }
+    state.prompt_history.push(prompt.to_string());
+    if state.prompt_history.len() > PROMPT_HISTORY_LIMIT {
+        let overflow = state.prompt_history.len() - PROMPT_HISTORY_LIMIT;
+        state.prompt_history.drain(0..overflow);
+    }
+}
+
+pub fn follow_latest_after_manual_send_locked(state: &mut VoiceChatOverlayState) {
+    state.scroll_pinned = true;
+}
+
+pub fn next_prompt_history_cursor(
+    len: usize,
+    cursor: Option<usize>,
+    previous: bool,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    if previous {
+        Some(match cursor {
+            Some(0) => 0,
+            Some(idx) if idx <= len => idx.saturating_sub(1),
+            _ => len - 1,
+        })
+    } else {
+        match cursor {
+            None => None,
+            Some(idx) if idx + 1 < len => Some(idx + 1),
+            Some(_) => Some(len),
+        }
+    }
+}
+
 pub fn edit_pending_followup_message_impl() {
     let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(idx) = pending_followup_index(&state) else {
@@ -337,6 +426,7 @@ pub fn edit_pending_followup_message_impl() {
     };
     let text = state.messages.remove(idx).text.trim().to_string();
     state.manual_draft = text.clone();
+    state.prompt_history_cursor = None;
     state.active_user_stream_index = state
         .active_user_stream_index
         .and_then(|active| match active.cmp(&idx) {

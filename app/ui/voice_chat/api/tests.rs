@@ -66,6 +66,41 @@ fn filtered_drawer_entries_matches_preview_path_and_title_case_insensitively() {
 }
 
 #[test]
+fn prompt_history_cursor_walks_previous_and_next() {
+    assert_eq!(next_prompt_history_cursor(0, None, true), None);
+    assert_eq!(next_prompt_history_cursor(3, None, true), Some(2));
+    assert_eq!(next_prompt_history_cursor(3, Some(2), true), Some(1));
+    assert_eq!(next_prompt_history_cursor(3, Some(0), true), Some(0));
+    assert_eq!(next_prompt_history_cursor(3, None, false), None);
+    assert_eq!(next_prompt_history_cursor(3, Some(0), false), Some(1));
+    assert_eq!(next_prompt_history_cursor(3, Some(2), false), Some(3));
+}
+
+#[test]
+fn prompt_history_keeps_recent_unique_sent_prompts() {
+    let mut state = VoiceChatOverlayState::default();
+
+    push_prompt_history_locked(&mut state, " first ");
+    push_prompt_history_locked(&mut state, "first");
+    push_prompt_history_locked(&mut state, "second");
+    push_prompt_history_locked(&mut state, "");
+
+    assert_eq!(state.prompt_history, vec!["first", "second"]);
+}
+
+#[test]
+fn manual_send_reenables_follow_latest_after_prior_scrollback() {
+    let mut state = VoiceChatOverlayState {
+        scroll_pinned: false,
+        ..Default::default()
+    };
+
+    follow_latest_after_manual_send_locked(&mut state);
+
+    assert!(should_autoscroll(state.scroll_pinned));
+}
+
+#[test]
 fn drawer_filter_in_memory_returns_correct_subset_without_disk_io() {
     // P1.3: search-as-you-type must filter the already-loaded in-memory
     // `drawer_entries` snapshot, never re-read ThreadStore from disk per

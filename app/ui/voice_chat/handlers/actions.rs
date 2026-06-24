@@ -296,6 +296,13 @@ pub extern "C" fn on_do_command_by_selector(
         return false; // default NSTextView paste
     }
 
+    if selector == sel!(moveUp:) {
+        return crate::ui::voice_chat::api::recall_previous_prompt();
+    }
+    if selector == sel!(moveDown:) {
+        return crate::ui::voice_chat::api::recall_next_prompt();
+    }
+
     if selector == sel!(insertNewline:) {
         let (shift_held, cmd_held) = unsafe {
             let ns_app = Class::get("NSApplication").unwrap();

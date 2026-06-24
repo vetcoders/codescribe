@@ -24,8 +24,8 @@ description = "Speech-to-text tray app for macOS - Pure Rust"
 authors = ["VetCoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"
 repository = "https://github.com/VetCoders/CodeScribe"
-homepage = "https://github.com/VetCoders/CodeScribe"
-documentation = "https://github.com/VetCoders/CodeScribe/tree/main/docs"
+homepage = "https://vetcoders.github.io/CodeScribe/"
+documentation = "https://vetcoders.github.io/CodeScribe/quickstart/"
 keywords = ["speech-to-text", "whisper", "macos", "dictation", "audio"]
 categories = ["command-line-utilities", "multimedia::audio"]
 
