@@ -22,10 +22,9 @@
 //!
 //! `extract_speech()` uses a per-thread cache to avoid reloading the ONNX
 //! model on every call. The cache is invalidated when sample rate changes.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 pub mod config;
+pub mod discriminator;
 pub mod embedded;
 pub mod install;
 pub mod silero_ort;
@@ -35,6 +34,7 @@ use std::cell::RefCell;
 use tracing::warn;
 
 pub use config::VadConfig;
+pub use discriminator::{DISCRIMINATOR_WINDOW_MS, VadTimeline, classify_windows};
 pub use install::{
     SILERO_VAD_FILE, SILERO_VAD_URL, ensure_downloaded_to_user_dir, user_model_path,
     user_models_dir,
@@ -59,8 +59,13 @@ pub struct VadExtractStats {
     pub speech_windows: usize,
     /// Total windows analysed.
     pub total_windows: usize,
+    /// Reason preserved when extraction concludes with no usable speech.
+    pub no_speech_reason: Option<String>,
     /// Sparkline visualisation (one char per 500ms window).
     pub sparkline: String,
+    /// Raw per-window speech probabilities (one entry per processed
+    /// 500ms window). Empty when extraction short-circuited.
+    pub probabilities: Vec<f32>,
 }
 
 /// Window size for VAD analysis: 500ms of audio.
@@ -101,14 +106,29 @@ fn return_extract_vad(sample_rate: u32, vad: AccumulatingVad) {
 ///
 /// Returns an empty vector when no speech is detected or VAD is unavailable.
 pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtractStats) {
-    if samples.is_empty() || sample_rate == 0 {
+    if samples.is_empty() {
         return (
             Vec::new(),
             VadExtractStats {
                 speech_pct: 0.0,
                 speech_windows: 0,
                 total_windows: 0,
+                no_speech_reason: Some("vad_input_empty".to_string()),
                 sparkline: String::new(),
+                probabilities: Vec::new(),
+            },
+        );
+    }
+    if sample_rate == 0 {
+        return (
+            Vec::new(),
+            VadExtractStats {
+                speech_pct: 0.0,
+                speech_windows: 0,
+                total_windows: 0,
+                no_speech_reason: Some("vad_invalid_sample_rate".to_string()),
+                sparkline: String::new(),
+                probabilities: Vec::new(),
             },
         );
     }
@@ -121,7 +141,9 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                 speech_pct: 0.0,
                 speech_windows: 0,
                 total_windows: 0,
+                no_speech_reason: Some("vad_invalid_window_size".to_string()),
                 sparkline: String::new(),
+                probabilities: Vec::new(),
             },
         );
     }
@@ -139,17 +161,27 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                     speech_pct: 0.0,
                     speech_windows: 0,
                     total_windows: 0,
+                    no_speech_reason: Some("vad_unavailable".to_string()),
                     sparkline: String::new(),
+                    probabilities: Vec::new(),
                 },
             );
         }
     };
+
+    // Reset once at the start of this extraction: the VAD is reused from a
+    // thread-local cache and may carry Silero state/accumulator from a previous,
+    // unrelated utterance. Within this call we keep the state CONTINUOUS across
+    // windows (Silero v6 is stateful) instead of cold-starting each 500ms window,
+    // which previously truncated speech onsets.
+    vad.reset();
 
     let threshold = vad.threshold();
     let mut speech_samples = Vec::with_capacity(samples.len() / 2);
     let mut speech_windows = 0usize;
     let mut total_windows = 0usize;
     let mut sparkline = String::new();
+    let mut probabilities = Vec::new();
     let mut last_window_was_speech = false;
 
     for window in samples.chunks(window_size) {
@@ -166,10 +198,11 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
             break;
         }
 
-        // Reset between windows for independent measurement
-        vad.reset();
+        // No per-window reset: Silero state is carried across windows so speech
+        // onsets spanning a window boundary are not lost (see reset() above).
         let prob = vad.feed(window);
         total_windows += 1;
+        probabilities.push(prob);
 
         sparkline.push(if prob >= 0.9 {
             '\u{2588}' // █
@@ -198,6 +231,13 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
     } else {
         0.0
     };
+    let no_speech_reason = if !speech_samples.is_empty() {
+        None
+    } else if total_windows == 0 {
+        Some("vad_audio_too_short".to_string())
+    } else {
+        Some("vad_no_speech_detected".to_string())
+    };
 
     (
         speech_samples,
@@ -205,7 +245,9 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
             speech_pct,
             speech_windows,
             total_windows,
+            no_speech_reason,
             sparkline,
+            probabilities,
         },
     )
 }
@@ -249,5 +291,45 @@ mod tests {
         assert_eq!(stats.speech_pct, 0.0);
         assert_eq!(stats.speech_windows, 0);
         assert_eq!(stats.total_windows, 0);
+        assert_eq!(stats.no_speech_reason.as_deref(), Some("vad_input_empty"));
+        assert!(stats.probabilities.is_empty());
+    }
+
+    #[test]
+    fn invalid_sample_rate_reports_specific_no_speech_reason() {
+        let (samples, stats) = extract_speech(&[0.0; 1024], 0);
+        assert!(samples.is_empty());
+        assert_eq!(
+            stats.no_speech_reason.as_deref(),
+            Some("vad_invalid_sample_rate")
+        );
+        assert!(stats.probabilities.is_empty());
+    }
+
+    #[test]
+    fn multi_window_extraction_runs_with_continuous_state() {
+        // 1.5s at 16kHz => 3 windows of EXTRACT_WINDOW_MS (500ms). With the
+        // per-window reset removed, Silero state must flow across all windows
+        // without panic and every window must still be measured.
+        let window_size = (SAMPLE_RATE * EXTRACT_WINDOW_MS / 1000) as usize;
+        let samples = vec![0.0f32; window_size * 3];
+        let (_speech, stats) = extract_speech(&samples, SAMPLE_RATE);
+        assert_eq!(stats.total_windows, 3, "all full windows measured");
+        assert_eq!(stats.probabilities.len(), 3);
+        // Silence input must not be misclassified as speech.
+        assert_eq!(stats.speech_windows, 0);
+    }
+
+    #[test]
+    fn short_audio_reports_vad_audio_too_short() {
+        let samples = vec![0.0; (SAMPLE_RATE as usize / 10).max(1)];
+        let (speech, stats) = extract_speech(&samples, SAMPLE_RATE);
+        assert!(speech.is_empty());
+        assert_eq!(stats.total_windows, 0);
+        assert_eq!(
+            stats.no_speech_reason.as_deref(),
+            Some("vad_audio_too_short")
+        );
+        assert!(stats.probabilities.is_empty());
     }
 }

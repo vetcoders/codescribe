@@ -10,8 +10,6 @@
 //!
 //! Implements the same `TranscriptionAdapter` trait as the candle-based
 //! `WhisperSingletonAdapter`, making it a drop-in replacement.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -161,21 +159,23 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
-/// Transcribe long audio via the ONNX engine (blocking lock).
-pub(crate) fn transcribe_long(
+/// Transcribe long audio via the ONNX engine with segment metadata.
+pub(crate) fn transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
     language: Option<&str>,
-) -> Result<String> {
+) -> Result<RawTranscript> {
     init()?;
     let engine = ENGINE.get().context("ONNX engine not initialized")?;
     let mut guard = engine
         .lock()
         .map_err(|e| anyhow!("ONNX lock error: {}", e))?;
-    guard.transcribe_long(audio, sample_rate, language)
+    guard.transcribe_long_raw(audio, sample_rate, language)
 }
 
 /// Transcribe a single chunk via the ONNX engine (blocking lock).
+// FORGOTTEN-GEM(vc-prune 2026-06-10): parked sync transcription contract —
+// see core/stt/mod.rs::candle_transcribe_chunk for the cluster rationale.
 #[allow(dead_code)]
 pub(crate) fn transcribe_chunk(
     audio: &[f32],
@@ -191,6 +191,7 @@ pub(crate) fn transcribe_chunk(
 }
 
 /// Transcribe long audio via the ONNX engine (try_lock) with segment metadata.
+#[allow(dead_code)]
 pub(crate) fn try_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
@@ -436,13 +437,9 @@ impl OnnxEngine {
                 .context("Decoder missing 'logits'")?;
             let (logits_shape, logits_data) = logits_value.try_extract_tensor::<f32>()?;
 
-            let vocab_size = *logits_shape.last().unwrap() as usize;
-            let out_seq_len = logits_shape[1] as usize;
-            let last_pos_offset = (out_seq_len - 1) * vocab_size;
-            let last_logits = &logits_data[last_pos_offset..last_pos_offset + vocab_size];
-
-            // Copy logits to mutable vec for manipulation
-            let mut logits_vec: Vec<f32> = last_logits.to_vec();
+            // Guard against malformed model output: shape values come from the model
+            // and must not be trusted to panic-index. See `last_position_logits`.
+            let mut logits_vec: Vec<f32> = last_position_logits(logits_shape, logits_data)?;
 
             // No-speech check on first step (proper softmax, matching candle engine)
             if step == 0
@@ -529,25 +526,8 @@ impl OnnxEngine {
         Ok(RawTranscript {
             text: text.trim().to_string(),
             segments,
+            ..Default::default()
         })
-    }
-
-    /// Transcribe long audio by chunking in 30s windows.
-    ///
-    /// ONNX encoder input is fixed at [1, 128, 3000] = exactly 30s.
-    /// We use 30s chunks with 5s overlap so each chunk fills the encoder
-    /// natively without pad-or-trim distortion. Only the last chunk may
-    /// be shorter and gets zero-padded by the mel pad-or-trim in
-    /// `transcribe_internal`.
-    fn transcribe_long(
-        &mut self,
-        samples: &[f32],
-        sample_rate: u32,
-        language: Option<&str>,
-    ) -> Result<String> {
-        Ok(self
-            .transcribe_long_raw(samples, sample_rate, language)?
-            .text)
     }
 
     fn transcribe_long_raw(
@@ -603,6 +583,7 @@ impl OnnxEngine {
         Ok(RawTranscript {
             text: crate::stt::whisper::dedup_repetitions(trimmed),
             segments: all_segments,
+            ..Default::default()
         })
     }
 }
@@ -771,6 +752,58 @@ fn build_whisper_config(config_json: &serde_json::Value) -> WhisperConfig {
     }
 }
 
+// ── Decoder logits extraction ────────────────────────────────────────────────
+
+/// Extract the logits row for the last sequence position from a decoder output
+/// tensor, validating the shape so malformed model output yields a readable
+/// `Err` instead of a panic.
+///
+/// Expected layout: `[batch, seq_len, vocab_size]` (rank >= 2; the last axis is
+/// vocab, the second axis is the sequence length). Shape values originate from
+/// the ONNX model and must not be trusted to panic-index.
+fn last_position_logits(shape: &[i64], data: &[f32]) -> Result<Vec<f32>> {
+    let raw_vocab_size = *shape
+        .last()
+        .ok_or_else(|| anyhow!("decoder logits tensor has empty shape"))?;
+    ensure!(
+        shape.len() >= 2,
+        "decoder logits tensor has rank {} (expected >= 2): {:?}",
+        shape.len(),
+        shape
+    );
+    ensure!(
+        raw_vocab_size > 0,
+        "decoder logits vocab dimension must be positive, got {}",
+        raw_vocab_size
+    );
+    let vocab_size = raw_vocab_size as usize;
+
+    let raw_out_seq_len = shape[1];
+    ensure!(
+        raw_out_seq_len > 0,
+        "decoder logits seq_len must be positive, got {}",
+        raw_out_seq_len
+    );
+    let out_seq_len = raw_out_seq_len as usize;
+    let last_index = out_seq_len - 1;
+    let last_pos_offset = last_index
+        .checked_mul(vocab_size)
+        .ok_or_else(|| anyhow!("decoder logits offset overflow"))?;
+    let range_end = last_pos_offset
+        .checked_add(vocab_size)
+        .ok_or_else(|| anyhow!("decoder logits range overflow"))?;
+    let range = last_pos_offset..range_end;
+    let last_logits = data.get(range.clone()).ok_or_else(|| {
+        anyhow!(
+            "decoder logits slice {:?} out of bounds (data len {}, shape {:?})",
+            range,
+            data.len(),
+            shape
+        )
+    })?;
+    Ok(last_logits.to_vec())
+}
+
 // ── Mel filterbank computation ───────────────────────────────────────────────
 
 /// Compute standard mel filterbank matrix.
@@ -905,6 +938,32 @@ mod tests {
             "softmax sum={}, expected 1.0",
             total
         );
+    }
+
+    #[test]
+    fn last_position_logits_extracts_last_row() {
+        // shape [1, 2, 3]: two positions, vocab=3. Last row is [4,5,6].
+        let data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let out = last_position_logits(&[1, 2, 3], &data).expect("valid shape");
+        assert_eq!(out, vec![4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn onnx_decode_malformed_shape() {
+        // Rank 1 (len < 2) → Err, not panic.
+        assert!(last_position_logits(&[5], &[0.0f32; 5]).is_err());
+        // Empty shape → Err.
+        assert!(last_position_logits(&[], &[0.0f32; 4]).is_err());
+        // seq_len == 0 → Err (no underflow on (out_seq_len - 1)).
+        assert!(last_position_logits(&[1, 0, 3], &[0.0f32; 0]).is_err());
+        // seq_len < 0 → Err, not usize wraparound.
+        assert!(last_position_logits(&[1, -1, 3], &[0.0f32; 0]).is_err());
+        // vocab == 0 → Err.
+        assert!(last_position_logits(&[1, 2, 0], &[0.0f32; 4]).is_err());
+        // vocab < 0 → Err, not usize wraparound.
+        assert!(last_position_logits(&[1, 2, -1], &[0.0f32; 4]).is_err());
+        // Shape claims more than data holds → Err (slice OOB), not panic.
+        assert!(last_position_logits(&[1, 2, 3], &[0.0f32; 2]).is_err());
     }
 
     /// Verify adapter satisfies Send + Sync (required by TranscriptionAdapter).

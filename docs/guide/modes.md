@@ -14,7 +14,7 @@ CodeScribe exposes **three work modes**. Each mode has **one shortcut binding** 
 
 Notes:
 
-- **Dictation** runs with or without AI depending on **Settings → Audio & Input → AI Formatting**.
+- **Dictation** runs with or without AI depending on **Settings → Quality → AI Formatting**.
 - **Formatting** and **Assistive** always require AI provider config (see **Settings → AI & Prompts**).
 
 ---
@@ -99,7 +99,7 @@ Use the built‑in conflict detector if macOS already uses the same shortcut.
 
 ## Advanced Tuning
 
-- **Hold delay** and **double‑tap interval** are in **Settings → Advanced**.
+- **Hold delay** and **double‑tap interval** are in **Settings → Modes & Shortcuts**.
 
 ---
 

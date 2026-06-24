@@ -17,6 +17,9 @@ Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez Code
 >
 > **Uwaga:** GUI zapisuje „regularne” ustawienia do `~/Library/Application Support/CodeScribe/settings.json`,
 > a sekrety trafiają do **macOS Keychain**. `.env` jest tylko dla power‑userów i override’ów.
+>
+> **Hotkeys truth:** per-mode bindings żyją już tylko w `settings.json` (`Settings → Modes & Shortcuts`).
+> `.env` nie ustawia już `Dictation` / `Formatting` / `Assistive` bindings.
 
 ---
 
@@ -26,9 +29,8 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 
 **Hotkeys / UI / zachowanie podstawowe**
 
-- `HOLD_MODS` – domyślnie `fn` (RESTART NEEDED)
-- `HOLD_EXCLUSIVE` – domyślnie `1` (RESTART NEEDED)
-- `TOGGLE_TRIGGER` – domyślnie `double_option` (RESTART NEEDED)
+- mode bindings (`Dictation`, `Formatting`, `Assistive`) – konfigurowane w `settings.json` przez GUI
+- `HOLD_EXCLUSIVE` – domyślnie `0` (RESTART NEEDED) — `1` robi Fn-hold RAW-only i wyłącza modyfikatory Fn+Shift→Chat / Fn+Cmd→Selection
 - `HOLD_START_DELAY_MS` – domyślnie `800` (RESTART NEEDED)
 - `DOUBLE_TAP_INTERVAL_MS` – domyślnie `200` (RESTART NEEDED)
 - `TOGGLE_SILENCE_SEC` – domyślnie `5.0` (RESTART NEEDED)
@@ -80,9 +82,10 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `CODESCRIBE_STREAM_SIMILARITY` – domyślnie z kodu (HOT RELOADED)
 - `CODESCRIBE_STREAM_NOVELTY` – domyślnie z kodu (HOT RELOADED)
 
-**Model lokalny (embedded)**
+**Model lokalny (embedded-first)**
 
-- brak wymaganych env – model jest w binarce.
+- brak wymaganych envów, jeśli build znalazł kompletny model przy kompilacji
+- jeśli build powstał z `CODESCRIBE_NO_EMBED=1` albo bez modelu, runtime użyje fallbacku przez `CODESCRIBE_MODEL_PATH`, cache lub skonfigurowane ścieżki
 
 ---
 
@@ -91,7 +94,7 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 Samo **local‑only** uruchomienie nie wymaga żadnych envów.
 Poniżej — kiedy coś staje się wymagane.
 
-**1) Cloud STT (gdy wyłączasz local)**
+**1) Cloud final transcript (gdy nie chcesz commitować local transcriptu)**
 Wymagane **tylko jeśli** `USE_LOCAL_STT=0` (RESTART NEEDED):
 
 - `STT_ENDPOINT` (RESTART NEEDED)
@@ -103,8 +106,9 @@ Wymagane **tylko jeśli** `AI_FORMATTING_ENABLED=1` i chcesz LLM:
 - `LLM_ENDPOINT`, `LLM_MODEL`, `LLM_API_KEY` (HOT RELOADED)
   - albo tryb‑specyficzne: `LLM_FORMATTING_*` i/lub `LLM_ASSISTIVE_*` (HOT RELOADED)
 
-**3) Brak embedded modelu (build dev)**
-Wymagane **tylko jeśli** zbudowałeś bez embedu:
+**3) Brak lokalnego modelu w ścieżkach runtime**
+Wymagane **tylko jeśli** build działa bez embedded Whispera (`CODESCRIBE_NO_EMBED=1` albo brak modelu przy buildzie)
+i runtime nie może znaleźć Whispera przez cache / config:
 
 - `CODESCRIBE_MODEL_PATH` (RESTART NEEDED)
 
@@ -121,8 +125,8 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 
 **Model lokalny**
 
-- `CODESCRIBE_MODEL_PATH` **nadpisuje embedded** (RESTART NEEDED)
-- `CODESCRIBE_NO_EMBED=1` (build‑time) → **musisz** ustawić `CODESCRIBE_MODEL_PATH` (REBUILD NEEDED)
+- `CODESCRIBE_MODEL_PATH` **nadpisuje runtime lookup** (RESTART NEEDED)
+- `CODESCRIBE_NO_EMBED=1` (build‑time) wyłącza opcjonalne embedy, w tym Whisper; wtedy `CODESCRIBE_MODEL_PATH` lub HF cache stają się fallbackiem runtime
 
 **STT endpointy**
 
@@ -189,9 +193,8 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 
 ### Hotkeys
 
-- `HOLD_MODS` (RESTART NEEDED)
+- per-mode bindings w `settings.json` (`Settings → Modes & Shortcuts`)
 - `HOLD_EXCLUSIVE` (RESTART NEEDED)
-- `TOGGLE_TRIGGER` (RESTART NEEDED)
 - `HOLD_START_DELAY_MS` (RESTART NEEDED)
 - `DOUBLE_TAP_INTERVAL_MS` (RESTART NEEDED)
 - `TOGGLE_SILENCE_SEC` (RESTART NEEDED)
@@ -244,17 +247,18 @@ Wymagane **tylko jeśli** zbudowałeś bez embedu:
 Makefile **automatycznie** ładuje `~/.codescribe/.env` przy uruchamianiu testów.
 
 **Domyślnie** testy używają Twojej referencji z `~/.codescribe/.env`.
-Jeśli chcesz **lokalnie** (Ollama), uruchom:
+Jeśli chcesz wymusić lokalny test LLM (diagnostycznie), uruchom:
 
 ```
 TEST_USE_LOCAL_LLM=1 make test
 ```
 
-Lokalny endpoint (Ollama):
+Domyślny endpoint aplikacji:
 
 ```
-http://localhost:11434/v1/responses
-model: gpt-oss:120b-cloud
+https://api.openai.com/v1/responses
+formatting model: gpt-4.1
+assistive model: gpt-5.5
 ```
 
 Jeśli chcesz tylko SSE / streaming:
@@ -294,7 +298,7 @@ USE_LOCAL_STT=1
 ```
 AI_FORMATTING_ENABLED=1
 LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1-mini
+LLM_MODEL=gpt-4.1
 LLM_API_KEY=sk-...
 ```
 

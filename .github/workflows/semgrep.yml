@@ -18,12 +18,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Semgrep (using brew)
-        run: brew install semgrep
+      - name: Install Semgrep
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      # Alternative (using pip):
-      # - name: Install Semgrep via pip
-      #   run: pip3 install semgrep
+          if command -v semgrep >/dev/null 2>&1; then
+            semgrep --version
+            exit 0
+          fi
+
+          if command -v brew >/dev/null 2>&1; then
+            brew install semgrep
+            semgrep --version
+            exit 0
+          fi
+
+          python3 -m venv "$RUNNER_TEMP/semgrep-venv"
+          "$RUNNER_TEMP/semgrep-venv/bin/pip" install --upgrade pip
+          "$RUNNER_TEMP/semgrep-venv/bin/pip" install semgrep
+          echo "$RUNNER_TEMP/semgrep-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/semgrep-venv/bin/semgrep" --version
 
       - name: Run Semgrep
         run: semgrep scan --config auto --error .

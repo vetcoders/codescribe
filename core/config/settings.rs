@@ -29,6 +29,10 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_tagging_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_tag_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub beep_on_start: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_volume: Option<f32>,
@@ -46,6 +50,8 @@ pub struct UserSettings {
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_dock_icon: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcription_overlay_enabled: Option<bool>,
 
     // ── Promoted from .env (settings.json is now source of truth) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,7 +79,7 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub quality_daemon_autostart: Option<bool>,
+    pub qube_daemon_autostart: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_enter_sends: Option<bool>,
 
@@ -119,6 +125,13 @@ struct InteractionV2 {
     hold: Option<HoldV2>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mode_bindings: Option<Vec<ModeBinding>>,
+    // De-ghosted (2026-05-30): these user-facing knobs existed in UserSettings + were
+    // promoted, but the V2 schema dropped them on every round-trip — settings.json could
+    // not actually express them. settings.json must support ALL non-secret parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    send_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_enter_sends: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -152,6 +165,12 @@ struct SpeechV2 {
     assistive: Option<AssistiveV2>,
     #[serde(skip_serializing_if = "Option::is_none")]
     emission: Option<EmissionV2>,
+    // De-ghosted (2026-05-30): base/default LLM endpoint + model (distinct from the
+    // formatting/assistive overrides). Previously dropped on V2 round-trip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -165,6 +184,9 @@ struct SpeechEngineV2 {
     cloud_transcription_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cloud_max_upload_mb: Option<u64>,
+    // De-ghosted (2026-05-30): Whisper model id (distinct from local_model_id path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    whisper_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -172,6 +194,10 @@ struct SpeechEngineV2 {
 struct FormattingV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcript_tagging_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcript_tag_template: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,8 +218,6 @@ struct AssistiveV2 {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct EmissionV2 {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     buffer_delay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,6 +255,8 @@ struct UiV2 {
     chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     show_dock_icon: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcription_overlay_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -240,6 +266,9 @@ struct FeaturesV2 {
     history_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     quick_notes_enabled: Option<bool>,
+    // De-ghosted (2026-05-30): previously dropped on V2 round-trip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quick_notes_save_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -248,7 +277,7 @@ struct SystemV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    quality_daemon_autostart: Option<bool>,
+    qube_daemon_autostart: Option<bool>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -267,6 +296,8 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "HOLD_EXCLUSIVE",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
+    "TRANSCRIPT_TAGGING_ENABLED",
+    "TRANSCRIPT_TAG_TEMPLATE",
     "FORMATTING_LEVEL",
     // Sound
     "BEEP_ON_START",
@@ -274,6 +305,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "SOUND_NAME",
     // App visibility
     "SHOW_DOCK_ICON",
+    "TRANSCRIPTION_OVERLAY_ENABLED",
     // LLM endpoints
     "LLM_ENDPOINT",
     "LLM_MODEL",
@@ -291,7 +323,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "QUICK_NOTES_ENABLED",
     "QUICK_NOTES_SAVE_ONLY",
     "START_AT_LOGIN",
-    "CODESCRIBE_AUTOSTART_QUALITY_DAEMON",
+    "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
     // Voice Lab survivors
     "CODESCRIBE_BUFFER_DELAY_MS",
@@ -322,6 +354,8 @@ impl UserSettings {
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
                 mode_bindings: Some(normalized_mode_bindings),
+                send_mode: self.transcript_send_mode.clone(),
+                agent_enter_sends: self.agent_enter_sends,
             }),
             speech: Some(SpeechV2 {
                 language: self.whisper_language.clone(),
@@ -332,9 +366,12 @@ impl UserSettings {
                     local_model_id: self.local_model.clone(),
                     cloud_transcription_endpoint: self.stt_endpoint.clone(),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
+                    whisper_model: self.whisper_model.clone(),
                 }),
                 formatting: Some(FormattingV2 {
                     enabled: self.ai_formatting_enabled,
+                    transcript_tagging_enabled: self.transcript_tagging_enabled,
+                    transcript_tag_template: self.transcript_tag_template.clone(),
                     level: self.formatting_level.clone(),
                     llm_endpoint: self.llm_formatting_endpoint.clone(),
                     llm_model: self.llm_formatting_model.clone(),
@@ -344,12 +381,13 @@ impl UserSettings {
                     llm_model: self.llm_assistive_model.clone(),
                 }),
                 emission: Some(EmissionV2 {
-                    mode: None,
                     buffer_delay_ms: self.buffer_delay_ms,
                     typing_cps: self.typing_cps,
                     emit_words_max: self.emit_words_max,
                     interim_cadence_sec: self.buffered_interim_sec,
                 }),
+                llm_endpoint: self.llm_endpoint.clone(),
+                llm_model: self.llm_model.clone(),
             }),
             audio: Some(AudioV2 {
                 input_device_id: self.audio_input_device.clone(),
@@ -362,14 +400,16 @@ impl UserSettings {
             ui: Some(UiV2 {
                 chat_zoom: self.chat_zoom,
                 show_dock_icon: self.show_dock_icon,
+                transcription_overlay_enabled: self.transcription_overlay_enabled,
             }),
             features: Some(FeaturesV2 {
                 history_enabled: self.history_enabled,
                 quick_notes_enabled: self.quick_notes_enabled,
+                quick_notes_save_only: self.quick_notes_save_only,
             }),
             system: Some(SystemV2 {
                 start_at_login: self.start_at_login,
-                quality_daemon_autostart: self.quality_daemon_autostart,
+                qube_daemon_autostart: self.qube_daemon_autostart,
             }),
         }
     }
@@ -406,6 +446,16 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.formatting.as_ref())
                 .and_then(|f| f.enabled),
+            transcript_tagging_enabled: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.formatting.as_ref())
+                .and_then(|f| f.transcript_tagging_enabled),
+            transcript_tag_template: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.formatting.as_ref())
+                .and_then(|f| f.transcript_tag_template.clone()),
             beep_on_start: v2
                 .audio
                 .as_ref()
@@ -421,8 +471,8 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.formatting.as_ref())
                 .and_then(|f| f.level.clone()),
-            llm_endpoint: None,
-            llm_model: None,
+            llm_endpoint: v2.speech.as_ref().and_then(|s| s.llm_endpoint.clone()),
+            llm_model: v2.speech.as_ref().and_then(|s| s.llm_model.clone()),
             llm_assistive_endpoint: v2
                 .speech
                 .as_ref()
@@ -435,6 +485,10 @@ impl UserSettings {
                 .and_then(|a| a.llm_model.clone()),
             chat_zoom: v2.ui.as_ref().and_then(|ui| ui.chat_zoom),
             show_dock_icon: v2.ui.as_ref().and_then(|ui| ui.show_dock_icon),
+            transcription_overlay_enabled: v2
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.transcription_overlay_enabled),
             llm_formatting_endpoint: v2
                 .speech
                 .as_ref()
@@ -461,7 +515,7 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.cloud_transcription_endpoint.clone()),
-            transcript_send_mode: None,
+            transcript_send_mode: v2.interaction.as_ref().and_then(|i| i.send_mode.clone()),
             audio_input_device: v2.audio.as_ref().and_then(|a| a.input_device_id.clone()),
             sound_name: v2
                 .audio
@@ -470,10 +524,10 @@ impl UserSettings {
                 .and_then(|f| f.sound_name.clone()),
             history_enabled: v2.features.as_ref().and_then(|f| f.history_enabled),
             quick_notes_enabled: v2.features.as_ref().and_then(|f| f.quick_notes_enabled),
-            quick_notes_save_only: None,
+            quick_notes_save_only: v2.features.as_ref().and_then(|f| f.quick_notes_save_only),
             start_at_login: v2.system.as_ref().and_then(|s| s.start_at_login),
-            quality_daemon_autostart: v2.system.as_ref().and_then(|s| s.quality_daemon_autostart),
-            agent_enter_sends: None,
+            qube_daemon_autostart: v2.system.as_ref().and_then(|s| s.qube_daemon_autostart),
+            agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
             buffer_delay_ms: v2
                 .speech
                 .as_ref()
@@ -494,7 +548,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.emission.as_ref())
                 .and_then(|e| e.interim_cadence_sec),
-            whisper_model: None,
+            whisper_model: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.whisper_model.clone()),
             backend_max_upload_mb: v2
                 .speech
                 .as_ref()
@@ -554,7 +612,7 @@ impl UserSettings {
     /// Loads settings from disk. Returns `Default` on any error.
     pub fn load() -> Self {
         let path = Self::settings_path();
-        let loaded = match fs::read_to_string(&path) {
+        match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
                 Ok(value) => {
                     if value.get("schema_version").is_some() {
@@ -611,9 +669,7 @@ impl UserSettings {
                 );
                 Self::default()
             }
-        };
-
-        import_legacy_mode_bindings_if_needed(loaded)
+        }
     }
 
     /// Persists current settings to disk as pretty-printed JSON.
@@ -728,6 +784,7 @@ impl UserSettings {
             "LLM_ASSISTIVE_ENDPOINT" => self.llm_assistive_endpoint = Some(value.to_owned()),
             "LLM_ASSISTIVE_MODEL" => self.llm_assistive_model = Some(value.to_owned()),
             "FORMATTING_LEVEL" => self.formatting_level = Some(value.to_owned()),
+            "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
             "LLM_FORMATTING_ENDPOINT" => self.llm_formatting_endpoint = Some(value.to_owned()),
             "LLM_FORMATTING_MODEL" => self.llm_formatting_model = Some(value.to_owned()),
             "LOCAL_MODEL" => self.local_model = Some(value.to_owned()),
@@ -749,15 +806,17 @@ impl UserSettings {
         let before = self.clone();
         match key {
             "AI_FORMATTING_ENABLED" => self.ai_formatting_enabled = Some(value),
+            "TRANSCRIPT_TAGGING_ENABLED" => self.transcript_tagging_enabled = Some(value),
             "BEEP_ON_START" => self.beep_on_start = Some(value),
             "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
+            "TRANSCRIPTION_OVERLAY_ENABLED" => self.transcription_overlay_enabled = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),
             "QUICK_NOTES_ENABLED" => self.quick_notes_enabled = Some(value),
             "QUICK_NOTES_SAVE_ONLY" => self.quick_notes_save_only = Some(value),
             "START_AT_LOGIN" => self.start_at_login = Some(value),
-            "CODESCRIBE_AUTOSTART_QUALITY_DAEMON" => self.quality_daemon_autostart = Some(value),
+            "QUBE_DAEMON_AUTOSTART" => self.qube_daemon_autostart = Some(value),
             "AGENT_ENTER_SENDS" => self.agent_enter_sends = Some(value),
             other => {
                 warn!("Unknown bool setting key: {other}");
@@ -798,114 +857,6 @@ impl UserSettings {
             }
         }
         self.save_if_changed(&before, "set_f32", key);
-    }
-}
-
-fn import_legacy_mode_bindings_if_needed(mut settings: UserSettings) -> UserSettings {
-    if settings.mode_bindings.is_some() {
-        return settings;
-    }
-
-    let Some(mode_bindings) = legacy_mode_bindings_from_env() else {
-        return settings;
-    };
-
-    settings.mode_bindings = Some(mode_bindings);
-    if let Err(error) = settings.save() {
-        warn!("Failed to persist imported legacy mode bindings: {error}");
-    } else {
-        info!("Imported legacy HOLD_MODS/TOGGLE_TRIGGER into mode bindings");
-    }
-    settings
-}
-
-fn legacy_mode_bindings_from_env() -> Option<Vec<ModeBinding>> {
-    let mut bindings = default_mode_bindings();
-    let mut imported_any = false;
-
-    if let Ok(raw_hold_mods) = std::env::var("HOLD_MODS") {
-        match parse_legacy_hold_binding(&raw_hold_mods) {
-            Some(binding) => {
-                set_mode_binding_value(&mut bindings, WorkMode::Dictation, binding);
-                imported_any = true;
-            }
-            None => warn!("Ignoring unknown legacy HOLD_MODS value: {raw_hold_mods}"),
-        }
-    }
-
-    if let Ok(raw_toggle_trigger) = std::env::var("TOGGLE_TRIGGER") {
-        match parse_legacy_toggle_bindings(&raw_toggle_trigger) {
-            Some((dictation, formatting, assistive)) => {
-                if let Some(binding) = dictation {
-                    set_mode_binding_value(&mut bindings, WorkMode::Dictation, binding);
-                }
-                if let Some(binding) = formatting {
-                    set_mode_binding_value(&mut bindings, WorkMode::Formatting, binding);
-                }
-                if let Some(binding) = assistive {
-                    set_mode_binding_value(&mut bindings, WorkMode::Assistive, binding);
-                }
-                imported_any = true;
-            }
-            None => warn!("Ignoring unknown legacy TOGGLE_TRIGGER value: {raw_toggle_trigger}"),
-        }
-    }
-
-    imported_any.then_some(bindings)
-}
-
-fn set_mode_binding_value(bindings: &mut [ModeBinding], mode: WorkMode, binding: ShortcutBinding) {
-    if let Some(existing) = bindings.iter_mut().find(|entry| entry.mode == mode) {
-        existing.binding = binding;
-    }
-}
-
-fn parse_legacy_hold_binding(raw: &str) -> Option<ShortcutBinding> {
-    match raw.trim().to_lowercase().as_str() {
-        "fn" | "globe" => Some(ShortcutBinding::HoldFn),
-        "none" | "disabled" | "off" => Some(ShortcutBinding::Disabled),
-        "ctrl" => Some(ShortcutBinding::HoldCtrl),
-        "ctrl_alt" | "ctrl+alt" => Some(ShortcutBinding::HoldCtrlAlt),
-        "ctrl_shift" | "ctrl+shift" => Some(ShortcutBinding::HoldCtrlShift),
-        "ctrl_cmd" | "ctrl+cmd" => Some(ShortcutBinding::HoldCtrlCmd),
-        _ => None,
-    }
-}
-
-fn parse_legacy_toggle_bindings(
-    raw: &str,
-) -> Option<(
-    Option<ShortcutBinding>,
-    Option<ShortcutBinding>,
-    Option<ShortcutBinding>,
-)> {
-    match raw.trim().to_lowercase().as_str() {
-        "double_option" => Some((
-            None,
-            Some(ShortcutBinding::DoubleLeftOption),
-            Some(ShortcutBinding::DoubleRightOption),
-        )),
-        "double_lalt" | "double_left_option" => Some((
-            None,
-            Some(ShortcutBinding::DoubleLeftOption),
-            Some(ShortcutBinding::Disabled),
-        )),
-        "double_ralt" | "double_right_option" => Some((
-            None,
-            Some(ShortcutBinding::Disabled),
-            Some(ShortcutBinding::DoubleRightOption),
-        )),
-        "double_ctrl" | "double_control" => Some((
-            Some(ShortcutBinding::DoubleCtrl),
-            Some(ShortcutBinding::Disabled),
-            Some(ShortcutBinding::Disabled),
-        )),
-        "none" | "disabled" => Some((
-            None,
-            Some(ShortcutBinding::Disabled),
-            Some(ShortcutBinding::Disabled),
-        )),
-        _ => None,
     }
 }
 
@@ -1014,13 +965,70 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_quality_daemon_autostart_persists_in_v2_system_section() {
+    fn test_deghosted_keys_survive_settings_json_roundtrip() {
+        // Regression guard (2026-05-30): these keys existed in UserSettings and were
+        // promoted, but to_v2/from_v2 dropped them — save→load silently reverted them to
+        // default. settings.json must support ALL non-secret parameters (operator's
+        // "settings musi obsługiwać wszystkie parametry"). Exercises the real on-disk path.
         let _tmp = setup_isolated_data_dir();
-        let mut settings = UserSettings::default();
-        settings.set_bool("CODESCRIBE_AUTOSTART_QUALITY_DAEMON", true);
+        let settings = UserSettings {
+            transcript_send_mode: Some("paste".to_string()),
+            quick_notes_save_only: Some(true),
+            agent_enter_sends: Some(false),
+            whisper_model: Some("whisper-large-v3-turbo".to_string()),
+            llm_endpoint: Some("https://api.example/v1/responses".to_string()),
+            llm_model: Some("gpt-4.1".to_string()),
+            ..Default::default()
+        };
+        settings.save().expect("save settings");
 
         let loaded = UserSettings::load();
-        assert_eq!(loaded.quality_daemon_autostart, Some(true));
+        assert_eq!(loaded.transcript_send_mode.as_deref(), Some("paste"));
+        assert_eq!(loaded.quick_notes_save_only, Some(true));
+        assert_eq!(loaded.agent_enter_sends, Some(false));
+        assert_eq!(
+            loaded.whisper_model.as_deref(),
+            Some("whisper-large-v3-turbo")
+        );
+        assert_eq!(
+            loaded.llm_endpoint.as_deref(),
+            Some("https://api.example/v1/responses")
+        );
+        assert_eq!(loaded.llm_model.as_deref(), Some("gpt-4.1"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_transcription_overlay_enabled_persists_in_v2_ui_section() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_bool("TRANSCRIPTION_OVERLAY_ENABLED", false);
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.transcription_overlay_enabled, Some(false));
+
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read persisted settings"))
+                .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("ui")
+                .and_then(|v| v.get("transcription_overlay_enabled"))
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_qube_daemon_autostart_persists_in_v2_system_section() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_bool("QUBE_DAEMON_AUTOSTART", true);
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.qube_daemon_autostart, Some(true));
 
         let path = UserSettings::settings_path();
         let persisted: serde_json::Value =
@@ -1029,7 +1037,7 @@ mod tests {
         assert_eq!(
             persisted
                 .get("system")
-                .and_then(|v| v.get("quality_daemon_autostart"))
+                .and_then(|v| v.get("qube_daemon_autostart"))
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
@@ -1073,7 +1081,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_load_imports_legacy_hold_and_toggle_hotkeys_into_mode_bindings() {
+    fn test_load_ignores_legacy_hotkey_env_imports() {
         let _tmp = setup_isolated_data_dir();
 
         unsafe {
@@ -1084,53 +1092,46 @@ mod tests {
         let settings = UserSettings::load();
         assert_eq!(
             settings.mode_binding_for(WorkMode::Dictation),
-            ShortcutBinding::HoldCtrlAlt
+            ShortcutBinding::HoldFn
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Formatting),
-            ShortcutBinding::Disabled
+            ShortcutBinding::DoubleLeftOption
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Assistive),
             ShortcutBinding::DoubleRightOption
         );
-
-        let persisted: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(UserSettings::settings_path()).expect("read imported settings"),
-        )
-        .expect("parse imported settings");
         assert!(
-            persisted
-                .get("interaction")
-                .and_then(|v| v.get("mode_bindings"))
-                .and_then(|v| v.as_array())
-                .is_some_and(|bindings| !bindings.is_empty()),
-            "legacy hotkeys should be persisted into canonical mode_bindings"
+            !UserSettings::settings_path().exists(),
+            "loading legacy hotkey envs should not synthesize settings.json"
         );
     }
 
     #[test]
     #[serial]
-    fn test_load_imports_legacy_double_ctrl_profile_into_current_contract() {
+    fn test_saved_mode_bindings_outrank_legacy_hotkey_env_noise() {
         let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_mode_binding(WorkMode::Dictation, ShortcutBinding::HoldCtrlCmd);
 
         unsafe {
             std::env::set_var("HOLD_MODS", "ctrl_alt");
             std::env::set_var("TOGGLE_TRIGGER", "double_ctrl");
         }
 
-        let settings = UserSettings::load();
+        let loaded = UserSettings::load();
         assert_eq!(
-            settings.mode_binding_for(WorkMode::Dictation),
-            ShortcutBinding::DoubleCtrl
+            loaded.mode_binding_for(WorkMode::Dictation),
+            ShortcutBinding::HoldCtrlCmd
         );
         assert_eq!(
-            settings.mode_binding_for(WorkMode::Formatting),
-            ShortcutBinding::Disabled
+            loaded.mode_binding_for(WorkMode::Formatting),
+            ShortcutBinding::DoubleLeftOption
         );
         assert_eq!(
-            settings.mode_binding_for(WorkMode::Assistive),
-            ShortcutBinding::Disabled
+            loaded.mode_binding_for(WorkMode::Assistive),
+            ShortcutBinding::DoubleRightOption
         );
     }
 }

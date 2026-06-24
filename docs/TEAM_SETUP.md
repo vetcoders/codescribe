@@ -55,21 +55,17 @@ Grant in: System Settings > Privacy & Security
 
 ## Model
 
-**Strictly Embedded (Release Policy)**: `whisper-large-v3-turbo-mlx-q8` (~888MB)
+**Embedded-first Whisper policy**: `whisper-large-v3-turbo-mlx-q8`
 **Embedded Embedder**: `paraphrase-multilingual-MiniLM-L12-v2` (for semantic gating)
 
-- **Zero Exceptions:** Release binaries ALWAYS contain the model.
-- **No external files:** We never bundle `Resources/models/*`.
-- **Zero I/O:** Model loads from memory directly to Metal.
+- `core/build.rs` embeds Whisper by default when a complete model is available at build time.
+- Runtime fallback resolves Whisper from exactly one shared contract in `core/config/models.rs`:
+  `CODESCRIBE_MODEL_PATH` → configured local model path/alias → configured HF repo snapshot →
+  default local turbo model → default HF cache snapshot.
+- `make install` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
 
-**Developer note (Build Time):**
-You still need the model files locally to _build_ the app (because they are `include_bytes!`-ed into the binary).
-
-```bash
-make download-model  # Required for build
-```
-
-Location (build-time only): `models/whisper-large-v3-turbo-mlx-q8/`
+**Developer note:**
+If runtime lookup cannot find the model, point `CODESCRIBE_MODEL_PATH` at a valid Whisper directory.
 
 ## CLI Usage
 
@@ -89,11 +85,11 @@ codescribe transcribe audio.wav --language pl
 New CLI tools for batch processing and automation:
 
 ```bash
-# Batch quality report
-codescribe-quality --help
+# Batch quality report (renamed from codescribe-quality in 0.9.0)
+qube-report --help
 
-# Self-improving quality loop
-codescribe-loop --help
+# Self-improving quality daemon (renamed from codescribe-loop in 0.9.0)
+qube-daemon --help
 ```
 
 ## Configuration
@@ -106,22 +102,22 @@ USE_LOCAL_STT=1
 # Whisper
 WHISPER_LANGUAGE=pl
 
-# AI formatting (optional) - separate providers for formatting vs assistive
+# AI formatting (optional) - OpenAI Responses by default
 AI_FORMATTING_ENABLED=1
 
-# Formatting mode (fast, cheap) - used by RAW / formatting paths
-LLM_FORMATTING_ENDPOINT=https://api.libraxis.cloud/v1/responses
-LLM_FORMATTING_MODEL=gpt-5-mini
+# Formatting mode - used by cleanup/formatting paths
+LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
+LLM_FORMATTING_MODEL=gpt-4.1
 LLM_FORMATTING_API_KEY=sk-xxx
 
-# Assistive mode (smart) - for Fn+Shift (chat) and assistive toggle
-LLM_ASSISTIVE_ENDPOINT=https://api.libraxis.cloud/v1/responses
-LLM_ASSISTIVE_MODEL=gpt-5.2
+# Assistive mode - dictation-driven agent
+LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
+LLM_ASSISTIVE_MODEL=gpt-5.5
 LLM_ASSISTIVE_API_KEY=sk-xxx
 
 # Shared fallback (if mode-specific not set)
 LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1-mini
+LLM_MODEL=gpt-4.1
 LLM_API_KEY=sk-proj-xxx
 ```
 

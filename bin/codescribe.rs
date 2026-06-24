@@ -2,8 +2,6 @@
 //!
 //! Lightweight CLI for direct audio file transcription.
 //! For the tray app + overlay, use CodeScribe.app.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -16,6 +14,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tracing::info;
 
 /// CodeScribe CLI - Local speech-to-text transcription
 ///
@@ -94,13 +93,34 @@ enum MigrateKind {
     Raw,
     Cloud,
     Ai,
+    Formatted,
     AiFailed,
+    FormattingFailed,
+    Interpretation,
     Failed,
 }
 
-#[tokio::main]
+// Cap the multi-thread tokio runtime worker count. Default is one worker per
+// CPU core — on M3 Pro (11 cores) that spawns ~11 workers, each idle in
+// `__psynch_cvwait` consuming kernel resources + scheduler overhead. CodeScribe
+// is not compute-parallel (whisper runs on Metal device, audio on cpal thread,
+// LLM is single SSE stream); 4 workers cover IPC server + HTTP client + LLM
+// stream + occasional background tasks with headroom. Confirmed empirically:
+// crash dump from PID 52228 (2026-05-13 12:11:17) showed ~24 tokio workers
+// alive simultaneously despite low task load.
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     init_tracing();
+    install_panic_hook();
+
+    // Build identity — first line in ~/.codescribe/logs/codescribe.log so every session
+    // is unambiguously tied to a build. The 8-char commit matches the About dialog.
+    tracing::info!(
+        "CodeScribe v{} build {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        env!("CODESCRIBE_BUILD_COMMIT"),
+        env!("CODESCRIBE_RUSTC_VERSION"),
+    );
 
     let cli = Cli::parse();
 
@@ -118,6 +138,47 @@ async fn main() -> Result<()> {
         }) => handle_migrate_history_command(dry_run, assume_kind),
         Some(Commands::Daemon) | None => run_daemon().await,
     }
+}
+
+/// Install a global panic hook that logs every panic through `tracing` before
+/// the process unwinds or aborts.
+///
+/// This is the only diagnostic that survives `panic="abort"` in the release
+/// profile (Cargo.toml `[profile.release]`): `std::panic::set_hook` runs the
+/// hook BEFORE the abort, so even a panic crossing an `extern "C"` boundary —
+/// where `catch_unwind` is useless — leaves a symbolizable trace
+/// (payload + location + thread name + backtrace) in
+/// `~/.codescribe/logs/codescribe.log`.
+///
+/// MUST be installed AFTER `init_tracing()` (so a subscriber exists) and BEFORE
+/// the first task/thread is spawned, otherwise early panics would be silent.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        // Extract a human-readable payload (panic message).
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>").to_string();
+
+        let backtrace = std::backtrace::Backtrace::force_capture();
+
+        tracing::error!(
+            target: "panic",
+            thread = %thread_name,
+            location = %location,
+            "PANIC: {message}\nbacktrace:\n{backtrace}"
+        );
+    }));
 }
 
 fn init_tracing() {
@@ -141,7 +202,8 @@ fn init_tracing() {
     let stderr_layer = fmt::layer()
         .with_ansi(true)
         .with_target(true)
-        .with_thread_ids(true);
+        .with_thread_ids(true)
+        .with_thread_names(true);
 
     let filter_layer = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
 
@@ -156,6 +218,7 @@ fn init_tracing() {
             .with_ansi(false)
             .with_target(true)
             .with_thread_ids(true)
+            .with_thread_names(true)
             .with_writer(move || (*file).try_clone().expect("Failed to clone log file"));
 
         let _ = tracing_subscriber::registry()
@@ -229,11 +292,17 @@ fn handle_migrate_history_command(dry_run: bool, assume_kind: MigrateKind) -> Re
     let kind = match assume_kind {
         MigrateKind::Raw => codescribe::state::history::TranscriptKind::Raw,
         MigrateKind::Cloud => codescribe::state::history::TranscriptKind::Cloud,
-        MigrateKind::Ai => codescribe::state::history::TranscriptKind::Ai,
-        MigrateKind::AiFailed => codescribe::state::history::TranscriptKind::AiFailed,
+        MigrateKind::Ai | MigrateKind::Formatted => {
+            codescribe::state::history::TranscriptKind::FormattedTranscript
+        }
+        MigrateKind::AiFailed | MigrateKind::FormattingFailed => {
+            codescribe::state::history::TranscriptKind::FormattingFailed
+        }
+        MigrateKind::Interpretation => {
+            codescribe::state::history::TranscriptKind::AssistantInterpretation
+        }
         MigrateKind::Failed => codescribe::state::history::TranscriptKind::Failed,
     };
-
     let report = codescribe::state::history::migrate_transcriptions(kind, dry_run)?;
 
     println!(
@@ -382,6 +451,10 @@ async fn handle_transcribe_file(
                 eprintln!("Formatted in {:?}", start.elapsed());
                 result.text
             }
+            ai_formatting::AiFormatStatus::AiNoop => {
+                eprintln!("AI returned no-op - using raw text");
+                raw_text
+            }
             ai_formatting::AiFormatStatus::Failed => {
                 eprintln!("Formatting failed - using raw text");
                 raw_text
@@ -480,6 +553,41 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
 }
 
 async fn run_daemon() -> Result<()> {
+    use codescribe::tray;
+
+    eprintln!("CodeScribe daemon starting...");
+
+    // ── Build metadata ──
+    info!(
+        "CodeScribe {} | build={} | profile={} | rustc={} | exe={}",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("CODESCRIBE_BUILD_COMMIT").unwrap_or("dev"),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        option_env!("CODESCRIBE_RUSTC_VERSION").unwrap_or("unknown"),
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "unknown".into()),
+    );
+
+    tray::run_with_startup(None, || {
+        tokio::spawn(async {
+            if let Err(e) = initialize_daemon_runtime().await {
+                tracing::error!("CodeScribe startup failed: {e:?}");
+                let _ = codescribe::tray::update_tray_status(codescribe::tray::TrayStatus::Error);
+                #[cfg(target_os = "macos")]
+                codescribe::os::notifications::notify("CodeScribe startup failed", &format!("{e}"));
+            }
+        });
+    })?;
+
+    Ok(())
+}
+
+async fn initialize_daemon_runtime() -> Result<()> {
     use anyhow::Context;
     use codescribe::config::{Config, UserSettings};
     use codescribe::controller::RecordingController;
@@ -489,12 +597,14 @@ async fn run_daemon() -> Result<()> {
     use std::sync::Arc;
     use tokio::runtime::Handle;
 
-    eprintln!("CodeScribe daemon starting...");
     let config = Config::load();
-    let user_settings = UserSettings::load();
+    let _user_settings = UserSettings::load();
+    let menu_rx = tray::menu_event_receiver()?;
+    let _ = codescribe::qube_lifecycle::start_if_enabled();
 
     #[cfg(target_os = "macos")]
     {
+        codescribe::os::thermal::install_thermal_probe();
         codescribe::set_dock_icon();
         codescribe::apply_dock_icon_visibility(config.show_dock_icon);
         codescribe::install_basic_edit_menu();
@@ -512,8 +622,8 @@ async fn run_daemon() -> Result<()> {
     {
         codescribe::os::permissions::check_all_permissions();
 
-        if codescribe::should_show_setup() {
-            codescribe::schedule_settings_window();
+        if codescribe::should_show_onboarding() {
+            codescribe::show_onboarding_wizard();
         }
     }
 
@@ -526,7 +636,6 @@ async fn run_daemon() -> Result<()> {
         }
     });
 
-    let menu_rx = tray::menu_event_receiver()?;
     let menu_controller = Arc::clone(&controller);
     let menu_handle = Handle::current();
     std::thread::spawn(move || {
@@ -585,31 +694,25 @@ async fn run_daemon() -> Result<()> {
     });
 
     let (tx, rx) = unbounded::<HotkeyEvent>();
-    let hotkey_manager = match hotkeys::HotkeyManager::new(tx) {
-        Ok(m) => Some(m),
-        Err(e) => {
-            eprintln!(
-                "Hotkeys disabled ({}). If this is macOS, check: System Settings > Privacy & Security > Accessibility.",
-                e
-            );
-            None
+    let hotkey_controller = Arc::clone(&controller);
+    let hotkey_handle = Handle::current();
+    std::thread::spawn(move || {
+        for event in rx {
+            let controller = Arc::clone(&hotkey_controller);
+            let handle = hotkey_handle.clone();
+            handle.spawn(async move {
+                if let Err(e) = dispatch_hotkey_event(event, controller).await {
+                    eprintln!("Hotkey event error: {}", e);
+                }
+            });
         }
-    };
+    });
 
-    if hotkey_manager.is_some() {
-        let hotkey_controller = Arc::clone(&controller);
-        let hotkey_handle = Handle::current();
-        std::thread::spawn(move || {
-            for event in rx {
-                let controller = Arc::clone(&hotkey_controller);
-                let handle = hotkey_handle.clone();
-                handle.spawn(async move {
-                    if let Err(e) = dispatch_hotkey_event(event, controller).await {
-                        eprintln!("Hotkey event error: {}", e);
-                    }
-                });
-            }
-        });
+    if let Err(e) = hotkeys::install_global_hotkey_manager(tx) {
+        eprintln!(
+            "Hotkeys waiting on permissions ({}). Grant Accessibility + Input Monitoring and CodeScribe will reinitialize them live.",
+            e
+        );
     }
 
     // VAD monitor task - auto-finish recording when silence detected
@@ -636,198 +739,10 @@ async fn run_daemon() -> Result<()> {
         }
     });
 
-    // Quality Loop daemon (self-improvement) — OFF by default.
-    //
-    // The daemon is useful, but if it survives app restarts it can confuse macOS
-    // permissions / input monitoring workflows. Turn it on explicitly when needed.
-    let quality_autostart = user_settings
-        .quality_daemon_autostart
-        .unwrap_or_else(|| env_bool("CODESCRIBE_AUTOSTART_QUALITY_DAEMON", false));
-    let quality_child = if quality_autostart {
-        spawn_quality_daemon()
-    } else {
-        stop_quality_daemon_if_running();
-        codescribe::quality_loop::mark_daemon_unavailable();
-        None
-    };
-
-    tray::run_with_hotkeys(hotkey_manager)?;
-
-    // Cleanup: kill quality daemon when tray exits
-    if let Some(mut handle) = quality_child {
-        let _ = handle.child.kill();
-        let _ = std::fs::remove_file(handle.pid_path);
-    }
+    let _ = tray::update_tray_status(tray::TrayStatus::Idle);
+    info!("CodeScribe daemon ready");
 
     Ok(())
-}
-
-fn env_bool(key: &str, default: bool) -> bool {
-    std::env::var(key)
-        .ok()
-        .map(|v| {
-            let v = v.trim().to_lowercase();
-            matches!(v.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(default)
-}
-
-fn stop_quality_daemon_if_running() {
-    let config_dir = codescribe::config::Config::config_dir();
-    let pid_path = config_dir.join("logs").join("quality_daemon.pid");
-
-    let pid = std::fs::read_to_string(&pid_path)
-        .ok()
-        .and_then(|s| s.trim().parse::<i32>().ok())
-        .unwrap_or(0);
-    if pid <= 0 {
-        let _ = std::fs::remove_file(&pid_path);
-        return;
-    }
-
-    if !is_process_alive(pid) {
-        let _ = std::fs::remove_file(&pid_path);
-        return;
-    }
-
-    // Best-effort safety check: only kill if it looks like codescribe-loop.
-    let is_codescribe_loop = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.contains("codescribe-loop"))
-        .unwrap_or(false);
-
-    if is_codescribe_loop {
-        let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
-        let _ = std::fs::remove_file(&pid_path);
-    }
-}
-
-/// Spawn `codescribe-loop --daemon` as a background child process.
-/// Returns the Child handle so we can kill it on app exit.
-struct QualityDaemonHandle {
-    child: std::process::Child,
-    pid_path: PathBuf,
-}
-
-fn spawn_quality_daemon() -> Option<QualityDaemonHandle> {
-    use std::process::{Command, Stdio};
-
-    // Strategy: find codescribe-loop binary next to current exe, or in PATH
-    let loop_bin = find_sibling_binary("codescribe-loop");
-
-    let bin_path = match loop_bin {
-        Some(path) => path,
-        None => {
-            // Try PATH fallback
-            if which_exists("codescribe-loop") {
-                PathBuf::from("codescribe-loop")
-            } else {
-                eprintln!("[quality-daemon] codescribe-loop not found; skipping auto-start");
-                codescribe::quality_loop::mark_daemon_unavailable();
-                return None;
-            }
-        }
-    };
-
-    let config_dir = codescribe::config::Config::config_dir();
-    let log_path = config_dir.join("logs").join("quality_daemon.log");
-    let pid_path = config_dir.join("logs").join("quality_daemon.pid");
-    std::fs::create_dir_all(config_dir.join("logs")).ok();
-
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
-        && let Ok(pid) = pid_str.trim().parse::<i32>()
-        && is_process_alive(pid)
-    {
-        eprintln!(
-            "[quality-daemon] Already running (pid={}); skipping auto-start",
-            pid
-        );
-        return None;
-    } else if pid_path.exists() {
-        let _ = std::fs::remove_file(&pid_path);
-    }
-
-    let log_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("[quality-daemon] Failed to open log file: {}", e);
-            codescribe::quality_loop::mark_daemon_unavailable();
-            return None;
-        }
-    };
-
-    let stderr_file = log_file.try_clone().unwrap_or_else(|_| {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .expect("log file")
-    });
-
-    match Command::new(&bin_path)
-        .args(["--daemon", "--apply", "--daemon-interval", "1800"])
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
-    {
-        Ok(child) => {
-            let _ = std::fs::write(&pid_path, child.id().to_string());
-            eprintln!(
-                "[quality-daemon] Started (pid={}, bin={}, log={})",
-                child.id(),
-                bin_path.display(),
-                log_path.display()
-            );
-            Some(QualityDaemonHandle { child, pid_path })
-        }
-        Err(e) => {
-            eprintln!("[quality-daemon] Failed to spawn: {}", e);
-            codescribe::quality_loop::mark_daemon_unavailable();
-            None
-        }
-    }
-}
-
-fn is_process_alive(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-    let res = unsafe { libc::kill(pid, 0) };
-    if res == 0 {
-        return true;
-    }
-    let err = std::io::Error::last_os_error();
-    matches!(err.raw_os_error(), Some(code) if code == libc::EPERM)
-}
-
-/// Find a sibling binary (same directory as current executable)
-fn find_sibling_binary(name: &str) -> Option<PathBuf> {
-    let current_exe = std::env::current_exe().ok()?;
-    let dir = current_exe.parent()?;
-    let sibling = dir.join(name);
-    if sibling.exists() {
-        Some(sibling)
-    } else {
-        None
-    }
-}
-
-/// Check if a binary exists in PATH
-fn which_exists(name: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(name)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 fn emit_stdout(text: &str) -> Result<()> {
@@ -1037,6 +952,17 @@ async fn dispatch_hotkey_event(
                 force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
+        }
+        HotkeyEvent::DoubleTapBlocked { gesture, reason } => {
+            let body = format!(
+                "{} was detected, but {}.",
+                gesture.label(),
+                reason.message()
+            );
+            tracing::warn!("Hotkey double-tap blocked: {}", body);
+            let _ =
+                codescribe::tray::update_tray_status(codescribe::tray::TrayStatus::HotkeyConflict);
+            codescribe::os::notifications::notify("CodeScribe hotkey conflict", &body);
         }
     }
 

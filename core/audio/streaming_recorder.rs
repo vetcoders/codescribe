@@ -187,8 +187,13 @@ impl StreamingRecorder {
         Ok((transcript, audio_path))
     }
 
+    #[deprecated(note = "use stop_and_discard_path instead")]
     pub async fn stop_without_saving(&mut self) -> Result<String> {
-        info!("Stopping streaming recorder (no WAV)...");
+        self.stop_and_discard_path().await
+    }
+
+    pub async fn stop_and_discard_path(&mut self) -> Result<String> {
+        info!("Stopping streaming recorder (discarding audio path)...");
 
         // Report any dropped audio chunks
         let drops = self.dropped_chunks.load(Ordering::Relaxed);
@@ -808,6 +813,7 @@ mod tests {
                 max_silence_duration_sec: 0.20,
                 max_utterance_sec: 300.0,
                 pre_roll_sec: 0.064,
+                ..vad::VadConfig::default()
             };
             let mut silero = vad::SileroVad::new(&model_path, vad_config).expect("load Silero");
             let mut resampler = vad::Resampler::new(sample_rate);

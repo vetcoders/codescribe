@@ -15,7 +15,6 @@
 #   --no-models                         # skip model downloader
 #   --dev | --verbose                   # enable DEV diagnostics, debug logs; run in foreground
 #   --fresh [--yes]                     # stop processes and wipe app caches/settings (keeps .env & models)
-#   --hold-mods <ctrl|ctrl+alt|...>     # persist to .env
 #   --hold-exclusive 0|1                # persist to .env
 #   --beep 0|1 --sound-name Tink|Pop --sound-volume 0.0-1.0  # persist to .env
 #
@@ -24,6 +23,7 @@
 #   FORMAT_ENABLED=0|1 (default: 1 -> paste formatted text)
 #   MODE=tray|backend (default: tray)
 #   LLM_ID=<local path or HF mlx repo id> (optional; requires FORMAT_ENABLED=1)
+#   Hotkey bindings are configured inside the app (Settings -> Modes & Shortcuts)
 #
 # Tips:
 # - On first microphone/paste/hotkey use, macOS will prompt for permissions.
@@ -103,7 +103,7 @@ if [[ -f .env ]]; then
       value="${value:1:${#value}-2}"
     fi
     case "$key" in
-      WHISPER_VARIANT|WHISPER_DIR|FORMAT_ENABLED|MODE|HOLD_MODS|HOLD_EXCLUSIVE|BEEP_ON_START|SOUND_NAME|SOUND_VOLUME)
+      WHISPER_VARIANT|WHISPER_DIR|FORMAT_ENABLED|MODE|HOLD_EXCLUSIVE|BEEP_ON_START|SOUND_NAME|SOUND_VOLUME)
         export "$key=$value"
         ;;
     esac
@@ -301,7 +301,6 @@ while [[ $# -gt 0 ]]; do
     --fresh) FRESH=1; shift;;
     --reset-tcc-self|--reset-access) RESET_TCC_SELF=1; shift;;
     --yes|--force) FRESH_YES=1; shift;;
-    --hold-mods) PERSIST_ENVS+=("HOLD_MODS=$2"); shift 2;;
     --hold-exclusive) PERSIST_ENVS+=("HOLD_EXCLUSIVE=$2"); shift 2;;
     --beep) PERSIST_ENVS+=("BEEP_ON_START=$2"); shift 2;;
     --sound-name) PERSIST_ENVS+=("SOUND_NAME=$2"); shift 2;;

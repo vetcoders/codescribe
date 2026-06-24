@@ -2,8 +2,6 @@
 //!
 //! Resolves local snapshot paths for repos downloaded via `hf download`.
 //! This avoids hardcoded model directories and uses HF cache directly.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::env;
 use std::fs;

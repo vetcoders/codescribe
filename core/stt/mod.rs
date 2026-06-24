@@ -97,6 +97,12 @@ fn run_apple_or_whisper<T>(
     }
 }
 
+// FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+// the whole synchronous one-shot transcription contract (transcribe_chunk /
+// try_transcribe_long_with_segments across whisper/apple/onnx providers) is
+// parked: runtime uses the scheduler+streaming path. Kept as the documented
+// provider contract for CLI/batch revival; operator decides revive-or-delete.
+#[allow(dead_code)]
 fn candle_transcribe_chunk(
     audio: &[f32],
     sample_rate: u32,
@@ -121,6 +127,7 @@ fn candle_transcribe_long_with_segments(
     guard.transcribe_long_with_language_segments(audio, sample_rate, language)
 }
 
+#[allow(dead_code)]
 fn candle_try_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
@@ -144,24 +151,8 @@ pub(crate) fn init_active_engine() -> anyhow::Result<()> {
     }
 }
 
-/// Transcribe long audio (blocking lock on whichever engine is active).
-pub(crate) fn transcribe_long(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<String> {
-    match selected_engine() {
-        SttEngine::Onnx => onnx_adapter::transcribe_long(audio, sample_rate, language),
-        SttEngine::Apple => run_apple_or_whisper(
-            "transcribe_long",
-            || apple_stt::transcribe_long(audio, sample_rate, language),
-            || whisper::transcribe(audio, sample_rate, language),
-        ),
-        SttEngine::Candle => whisper::transcribe(audio, sample_rate, language),
-    }
-}
-
 /// Transcribe a single chunk (blocking lock on whichever engine is active).
+// FORGOTTEN-GEM(vc-prune 2026-06-10): see candle_transcribe_chunk note above.
 #[allow(dead_code)]
 pub(crate) fn transcribe_chunk(
     audio: &[f32],
@@ -186,10 +177,9 @@ pub(crate) fn transcribe_long_with_segments(
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
     match selected_engine() {
-        SttEngine::Onnx => Ok(RawTranscript {
-            text: onnx_adapter::transcribe_long(audio, sample_rate, language)?,
-            segments: Vec::new(),
-        }),
+        SttEngine::Onnx => {
+            onnx_adapter::transcribe_long_with_segments(audio, sample_rate, language)
+        }
         SttEngine::Apple => run_apple_or_whisper(
             "transcribe_long_with_segments",
             || apple_stt::transcribe_long_with_segments(audio, sample_rate, language),

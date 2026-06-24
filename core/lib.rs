@@ -1,28 +1,35 @@
-//! CodeScribe Core - Speech-to-text and text-to-speech with embedded models
+//! CodeScribe Core - speech, transcription, and assistive runtime primitives.
 //!
 //! ## Quick Start
 //!
 //! ```ignore
-//! // Transcribe with embedded Whisper model (zero config!)
+//! // Resolve local Whisper, then transcribe.
 //! codescribe_core::whisper::init()?;
 //! let text = codescribe_core::whisper::transcribe(&samples, 16000, Some("pl"))?;
 //!
-//! // Synthesize speech with embedded CSM model
+//! // File-level transcription is verdict-first on purpose.
+//! let verdict = codescribe_core::whisper::transcribe_file_verdict(
+//!     std::path::Path::new("clip.wav"),
+//!     Some("pl"),
+//!     codescribe_core::contracts::FileTranscriptionOptions {
+//!         final_pass: codescribe_core::contracts::FinalPassMode::EmbeddedLexiconCleanup,
+//!     },
+//! )?;
+//!
+//! // Synthesize speech (optional embedded/runtime TTS depending on build).
 //! codescribe_core::tts::init()?;
 //! codescribe_core::tts::play("Hello, world!")?;
 //! ```
 //!
 //! ## Architecture
 //!
-//! - **whisper** - Embedded Whisper model (~900MB in binary), zero I/O
-//! - **tts** - Embedded CSM-1B model (~1GB in binary), text-to-speech
+//! - **whisper** - Embedded-first local Whisper with runtime fallback when embedding is disabled
+//! - **tts** - Text-to-speech with optional embedded assets depending on build policy
 //! - **vad** - Voice activity detection using Silero VAD neural network
 //! - **embedder** - Text embeddings using MiniLM model (offline)
 //! - **audio** - Recording and audio loading
 //! - **config** - User configuration
 //! - **ai_formatting** - Post-processing with LLMs
-//!
-//! Created by M&K (c)2026 VetCoders
 
 // ═══════════════════════════════════════════════════════════
 // Core modules (namespaced)
@@ -35,14 +42,17 @@ pub mod config;
 pub mod connectors;
 pub mod conversation;
 pub mod demux;
+pub mod embedded;
 pub mod embedder;
 mod hf_cache;
 pub mod ipc;
 pub mod llm;
+pub mod mcp;
 pub mod pipeline;
 pub mod quality;
 pub mod state;
 pub mod stt;
+pub mod transcript_tagging;
 pub mod tts;
 pub mod util;
 pub mod vad;
@@ -52,14 +62,15 @@ pub use stt::whisper;
 // Public API - Whisper (STT main interface)
 // ═══════════════════════════════════════════════════════════
 
-/// Initialize and transcribe with embedded model
+/// Initialize and transcribe with the embedded-first Whisper path.
 pub mod stt_api {
+    pub use crate::pipeline::contracts::{FileTranscriptionOptions, FinalPassMode};
     pub use crate::stt::whisper::embedded::{
         EmbeddedModel, get_embedded_data, is_embedded_available,
     };
     pub use crate::stt::whisper::{
-        detect_language, get_model_path, init, transcribe, transcribe_file, transcribe_streaming,
-        transcribe_with_segments,
+        detect_language, get_model_path, init, transcribe, transcribe_file_verdict,
+        transcribe_streaming, transcribe_with_segments,
     };
 }
 
@@ -67,7 +78,7 @@ pub mod stt_api {
 // Public API - TTS (text-to-speech interface)
 // ═══════════════════════════════════════════════════════════
 
-/// Initialize and synthesize speech with embedded CSM model
+/// Initialize and synthesize speech with the configured TTS engine.
 pub mod tts_api {
     pub use crate::tts::embedded::{EmbeddedTts, get_embedded_data, is_embedded_available};
     pub use crate::tts::{
@@ -131,5 +142,5 @@ pub use config::{get_assistive_prompt_path, get_formatting_prompt_path, reset_to
 pub use llm::{ai_formatting, client};
 pub use pipeline::contracts;
 pub use pipeline::stream_postprocess;
-pub use quality::{quality_loop, quality_report};
+pub use quality::{qube_daemon, qube_report};
 pub use util::{safe_path, status};

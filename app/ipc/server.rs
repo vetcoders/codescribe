@@ -303,7 +303,7 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
                 return IpcResponse::Error("No recording in progress".to_string());
             }
 
-            match controller.finish_recording().await {
+            match controller.stop_recording_from_external_surface().await {
                 Ok(()) => IpcResponse::Ok,
                 Err(e) => IpcResponse::Error(format!("Failed to stop recording: {}", e)),
             }
@@ -405,6 +405,16 @@ fn persist_config(config: &Config) -> Result<()> {
         &mut env_vars,
     );
     put(
+        "TRANSCRIPT_TAGGING_ENABLED",
+        bool_to_env(config.transcript_tagging_enabled),
+        &mut env_vars,
+    );
+    put(
+        "TRANSCRIPT_TAG_TEMPLATE",
+        config.transcript_tag_template.clone(),
+        &mut env_vars,
+    );
+    put(
         "AI_MAX_TOKENS",
         config.ai_max_tokens.to_string(),
         &mut env_vars,
@@ -423,6 +433,11 @@ fn persist_config(config: &Config) -> Result<()> {
     put(
         "SHOW_DOCK_ICON",
         bool_to_env(config.show_dock_icon),
+        &mut env_vars,
+    );
+    put(
+        "TRANSCRIPTION_OVERLAY_ENABLED",
+        bool_to_env(config.transcription_overlay_enabled),
         &mut env_vars,
     );
     put(
@@ -600,6 +615,7 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
         "LLM_FORMATTING_ENDPOINT" => settings.llm_formatting_endpoint = Some(value.to_string()),
         "LLM_FORMATTING_MODEL" => settings.llm_formatting_model = Some(value.to_string()),
         "TRANSCRIPT_SEND_MODE" => settings.transcript_send_mode = Some(value.to_string()),
+        "TRANSCRIPT_TAG_TEMPLATE" => settings.transcript_tag_template = Some(value.to_string()),
         "WHISPER_MODEL" => settings.whisper_model = Some(value.to_string()),
         // u64 fields
         "HOLD_START_DELAY_MS" => {
@@ -651,6 +667,7 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
         // bool fields
         "HOLD_EXCLUSIVE"
         | "AI_FORMATTING_ENABLED"
+        | "TRANSCRIPT_TAGGING_ENABLED"
         | "BEEP_ON_START"
         | "USE_LOCAL_STT"
         | "HISTORY_ENABLED"
@@ -658,11 +675,15 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
         | "QUICK_NOTES_ENABLED"
         | "QUICK_NOTES_SAVE_ONLY"
         | "AGENT_ENTER_SENDS"
-        | "SHOW_DOCK_ICON" => {
+        | "SHOW_DOCK_ICON"
+        | "TRANSCRIPTION_OVERLAY_ENABLED" => {
             let bool_val = matches!(value, "1" | "true" | "yes" | "on");
             match key {
                 "HOLD_EXCLUSIVE" => settings.hold_exclusive = Some(bool_val),
                 "AI_FORMATTING_ENABLED" => settings.ai_formatting_enabled = Some(bool_val),
+                "TRANSCRIPT_TAGGING_ENABLED" => {
+                    settings.transcript_tagging_enabled = Some(bool_val)
+                }
                 "BEEP_ON_START" => settings.beep_on_start = Some(bool_val),
                 "USE_LOCAL_STT" => settings.use_local_stt = Some(bool_val),
                 "HISTORY_ENABLED" => settings.history_enabled = Some(bool_val),
@@ -671,7 +692,16 @@ fn persist_promoted_setting(settings: &mut UserSettings, key: &str, value: &str)
                 "QUICK_NOTES_SAVE_ONLY" => settings.quick_notes_save_only = Some(bool_val),
                 "AGENT_ENTER_SENDS" => settings.agent_enter_sends = Some(bool_val),
                 "SHOW_DOCK_ICON" => settings.show_dock_icon = Some(bool_val),
-                _ => unreachable!(),
+                "TRANSCRIPTION_OVERLAY_ENABLED" => {
+                    settings.transcription_overlay_enabled = Some(bool_val)
+                }
+                // The outer and inner key lists are maintained by hand; a key
+                // added to the outer arm but not here must not abort the
+                // settings-write path. Log and leave settings untouched
+                // (symmetric to the outer fallback below).
+                _ => {
+                    warn!("IPC bool setting key has no inner mapping to UserSettings: {key}");
+                }
             }
         }
         _ => {

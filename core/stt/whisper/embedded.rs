@@ -1,11 +1,10 @@
-//! Embedded Whisper model - direct include via generated code
+//! Embedded Whisper model bytes.
 //!
-//! Release builds: Model files included directly in binary (~900MB)
-//! Debug builds: Empty slices, use CODESCRIBE_MODEL_PATH
-//!
-//! Model bytes are loaded DIRECTLY to GPU - zero disk I/O, zero temp files.
-//!
-//! Created by M&K (c)2026 VetCoders
+//! The default product build embeds Whisper when the model is available at
+//! build time. These helpers expose that payload to the singleton. When the
+//! build is produced with `CODESCRIBE_NO_EMBED=1` or without a complete model
+//! snapshot, the payload is intentionally absent and runtime lookup must take
+//! over.
 
 #[cfg(embed_model)]
 mod data {
@@ -20,19 +19,14 @@ mod data {
     pub static WEIGHTS: &[u8] = &[];
 }
 
-/// Check if embedded model is available
-///
-/// Note: We only check weights_size, not cfg!(embed_model).
-/// The cfg!() macro can return false in workspace builds even when
-/// the data was correctly embedded via #[cfg(embed_model)].
-/// If weights exist (len > 0), the model is available.
+/// Check if optional embedded model bytes are available.
 pub fn is_embedded_available() -> bool {
     let weights_size = data::WEIGHTS.len();
     tracing::debug!(weights_size, "Embedded model check");
     weights_size > 0
 }
 
-/// Get embedded model data if available
+/// Get optional embedded model data if available.
 pub fn get_embedded_data() -> Option<EmbeddedModel> {
     if !is_embedded_available() {
         return None;
@@ -45,7 +39,7 @@ pub fn get_embedded_data() -> Option<EmbeddedModel> {
     })
 }
 
-/// Embedded model data - static byte slices from binary
+/// Embedded model data - static byte slices from binary.
 pub struct EmbeddedModel {
     pub config: &'static [u8],
     pub tokenizer: &'static [u8],
@@ -65,16 +59,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_embedded_availability() {
-        let available = is_embedded_available();
-        println!("Embedded model available: {}", available);
+    #[cfg(embed_model)]
+    fn embedded_payload_is_available_when_compiled_in() {
+        assert!(is_embedded_available());
+        let model = get_embedded_data().expect("embedded payload must exist");
+        assert!(!model.config.is_empty());
+        assert!(!model.tokenizer.is_empty());
+        assert!(!model.mel_filters.is_empty());
+        assert!(!model.weights.is_empty());
+        assert!(model.total_size() > 0);
+    }
 
-        if available {
-            let model = get_embedded_data().unwrap();
-            println!(
-                "Model size: {:.1} MB",
-                model.total_size() as f64 / 1_000_000.0
-            );
-        }
+    #[test]
+    #[cfg(not(embed_model))]
+    fn embedded_payload_is_absent_when_not_compiled_in() {
+        assert!(!is_embedded_available());
+        assert!(get_embedded_data().is_none());
     }
 }

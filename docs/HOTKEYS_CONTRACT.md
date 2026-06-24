@@ -11,6 +11,12 @@
 CodeScribe uses a low-level CGEventTap to detect modifier-only keypresses on macOS.
 This approach avoids TSMGetInputSourceProperty crashes on macOS 26.2+ (Sequoia).
 
+Canonical hotkey configuration is **mode-first**:
+
+- `Dictation`, `Formatting`, and `Assistive` each own one `ShortcutBinding`
+- bindings are persisted in `~/Library/Application Support/CodeScribe/settings.json`
+- legacy `.env` hotkey keys such as `HOLD_MODS` / `TOGGLE_TRIGGER` are no longer part of the runtime contract
+
 ```mermaid
 flowchart TB
     subgraph Input["🎹 Input Layer"]
@@ -54,13 +60,15 @@ flowchart TB
 **Behavior:** Recording starts on key down, stops on key up
 **VAD:** DISABLED - user has 100% control via key release
 
-| Config                 | Keys         | Use Case                         |
-| ---------------------- | ------------ | -------------------------------- |
-| `HOLD_MODS=fn`         | Fn           | **Default** (best for terminals) |
-| `HOLD_MODS=ctrl`       | Ctrl         | Legacy / terminal-heavy users    |
-| `HOLD_MODS=ctrl_alt`   | Ctrl+Option  | Legacy power-combo preset        |
-| `HOLD_MODS=ctrl_shift` | Ctrl+Shift   | Assistive always (legacy)        |
-| `HOLD_MODS=ctrl_cmd`   | Ctrl+Command | macOS power users (legacy)       |
+| Mode binding          | Keys         | Use Case                         |
+| --------------------- | ------------ | -------------------------------- |
+| `Dictation=HoldFn`    | Fn           | **Default** (best for terminals) |
+| `Dictation=HoldCtrl`  | Ctrl         | Terminal-heavy users             |
+| `Dictation=HoldCtrlAlt` | Ctrl+Option | Power-combo preset               |
+| `Dictation=HoldCtrlShift` | Ctrl+Shift | Alternate hold dictation         |
+| `Dictation=HoldCtrlCmd` | Ctrl+Command | macOS power users               |
+
+If `Assistive` itself is configured to a hold binding, that binding becomes the assistive hold trigger.
 
 **Events:**
 
@@ -79,14 +87,15 @@ HotkeyInput { key_type: Hold, action: Up,   hold_mode: <current> }   // Release
 
 **Trigger:** Double-tap Option key within `DOUBLE_TAP_INTERVAL_MS` (default **200ms**, range 100–450ms)
 **Behavior:** First tap starts recording, second tap toggles send/stop
-**VAD:** ENABLED – auto‑sends on `TOGGLE_SILENCE_SEC` of silence (default 5s) without stopping recording
+**VAD:** ENABLED – finalized utterances append to the active draft; `TOGGLE_SILENCE_SEC` of silence
+(default 5s) sends the accumulated draft without stopping recording
 
-| Config                         | Keys                                           | Mode            |
-| ------------------------------ | ---------------------------------------------- | --------------- |
-| `TOGGLE_TRIGGER=double_option` | Left Option = normal, Right Option = assistive | Default         |
-| `TOGGLE_TRIGGER=double_lalt`   | Left Option only                               | Minimal         |
-| `TOGGLE_TRIGGER=double_ralt`   | Right Option only (assistive)                  | Minimal         |
-| `TOGGLE_TRIGGER=none`          | Toggle disabled                                | Hold-only users |
+| Mode binding                  | Keys                            | Mode             |
+| ---------------------------- | ------------------------------- | ---------------- |
+| `Formatting=DoubleLeftOption` | Left Option double-tap          | Formatting        |
+| `Assistive=DoubleRightOption` | Right Option double-tap         | Assistive         |
+| `Dictation=DoubleCtrl`        | Ctrl double-tap                 | Raw dictation     |
+| `Disabled`                    | no toggle for that work mode    | Hold-only profile |
 
 **Events:**
 
@@ -192,14 +201,15 @@ flowchart LR
 
 ### Hotkey Configuration
 
-| Variable                 | Default         | Options                                               | Reload  |
-| ------------------------ | --------------- | ----------------------------------------------------- | ------- |
-| `HOLD_MODS`              | `fn`            | `fn`, `ctrl`, `ctrl_alt`, `ctrl_shift`, `ctrl_cmd`    | RESTART |
-| `HOLD_EXCLUSIVE`         | `true`          | `true`, `false`                                       | RESTART |
-| `TOGGLE_TRIGGER`         | `double_option` | `double_option`, `double_lalt`, `double_ralt`, `none` | RESTART |
-| `HOLD_START_DELAY_MS`    | `800`           | 0-1000                                                | RESTART |
-| `DOUBLE_TAP_INTERVAL_MS` | `200`           | 100-450                                               | RESTART |
-| `TOGGLE_SILENCE_SEC`     | `5.0`           | 0.5-10.0                                              | RESTART |
+Bindings themselves are persisted in `settings.json`.
+The remaining runtime env surface only tunes detector behavior:
+
+| Variable                 | Default | Options   | Reload  |
+| ------------------------ | ------- | --------- | ------- |
+| `HOLD_EXCLUSIVE`         | `true`  | `true`, `false` | RESTART |
+| `HOLD_START_DELAY_MS`    | `800`   | 0-1000    | RESTART |
+| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450   | RESTART |
+| `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-10.0  | RESTART |
 
 ### VAD Configuration
 

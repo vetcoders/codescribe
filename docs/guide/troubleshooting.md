@@ -207,7 +207,7 @@ Common issues and solutions for CodeScribe.
 **Solutions**:
 
 1. Verify provider settings in **Settings → AI & Prompts** (Formatting AI / Assistive AI)
-2. If you're using **Dictation** mode: enable **Settings → Audio & Input → AI Formatting** (optional)
+2. If you're using **Dictation** mode: enable **Settings → Quality → AI Formatting** (optional)
 3. If you want AI every time: use **Formatting** (double‑tap `Left Option`) or **Assistive (Agent)** (double‑tap `Right Option`)
 
 ---

@@ -2,8 +2,6 @@
 //!
 //! Goal: make it easy to get `silero_vad.onnx` onto the machine without
 //! embedding it into the binary.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::{Path, PathBuf};
 

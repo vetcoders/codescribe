@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 
 use super::{AgentEvent, ContentBlock, Message, ToolDefinition};
@@ -21,6 +22,9 @@ pub trait AgentProvider: Send + Sync {
     ) -> Message;
 
     fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock;
+    fn stream_timeouts(&self) -> Option<(Duration, Duration)> {
+        None
+    }
     fn name(&self) -> &str;
 }
 
@@ -30,4 +34,11 @@ pub struct StreamOptions {
     pub system_prompt: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// Per-request chain control (operator's specification 2026-05-26 4th iteration):
+    /// retry attempts must NOT resend prior context via stored previous_response_id.
+    /// When `true`, provider clears any stored response chain BEFORE building the
+    /// request — next call starts fresh, no context bloat from prior failed attempts.
+    /// Callers (session retry path) set `true` for retry attempts; normal calls leave
+    /// `false` to preserve conversational chain.
+    pub reset_chain: bool,
 }

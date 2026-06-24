@@ -284,6 +284,14 @@ pub struct Config {
     #[serde(default)]
     pub transcript_send_mode: TranscriptSendMode,
 
+    /// Whether pasted dictation transcripts are wrapped in an epistemic tag.
+    #[serde(default)]
+    pub transcript_tagging_enabled: bool,
+
+    /// Template used when transcript tagging is enabled.
+    #[serde(default = "default_transcript_tag_template")]
+    pub transcript_tag_template: String,
+
     /// Maximum tokens for regular AI completions
     #[serde(default = "default_ai_max_tokens")]
     pub ai_max_tokens: i32,
@@ -300,6 +308,13 @@ pub struct Config {
     /// Whether app should appear in Dock
     #[serde(default = "default_show_dock_icon")]
     pub show_dock_icon: bool,
+
+    /// Whether non-assistive dictation should render through the floating overlay.
+    ///
+    /// When disabled, the runtime switches to a buffered no-overlay profile
+    /// intended for longer recordings and lower local Whisper pressure.
+    #[serde(default = "default_transcription_overlay_enabled")]
+    pub transcription_overlay_enabled: bool,
 
     /// Whether to show hold indicator badge
     #[serde(default = "default_hold_indicator")]
@@ -362,7 +377,14 @@ pub struct Config {
     pub quick_notes_save_only: bool,
 
     // ===== Backends =====
-    /// Whether to use local STT instead of cloud
+    /// Whether the local pipeline is the authority for the committed transcript.
+    ///
+    /// Live preview always stays local and provisional.
+    ///
+    /// When false, cloud STT becomes the committed verdict after capture if
+    /// endpoint credentials are configured. If that verdict is unavailable, the
+    /// app must surface any degraded fallback explicitly instead of silently
+    /// promoting preview text.
     #[serde(default)]
     pub use_local_stt: bool,
 
@@ -370,16 +392,17 @@ pub struct Config {
     #[serde(default = "default_local_model")]
     pub local_model: String,
 
-    /// Full STT endpoint URL (e.g., https://api.libraxis.cloud/stt/v1/transcribe)
+    /// Cloud STT endpoint used when cloud is selected as the committed verdict path.
     pub stt_endpoint: Option<String>,
 
-    /// Full LLM endpoint URL (e.g., https://api.libraxis.cloud/v1/responses)
+    /// Full LLM endpoint URL (default: https://api.openai.com/v1/responses)
+    #[serde(default = "default_llm_endpoint_option")]
     pub llm_endpoint: Option<String>,
 
     /// API key for cloud LLM providers
     pub llm_api_key: Option<String>,
 
-    /// API key for cloud STT providers
+    /// API key for cloud STT providers used on the committed verdict path
     pub stt_api_key: Option<String>,
 
     // ===== Clipboard =====
@@ -417,10 +440,13 @@ impl Default for Config {
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
             transcript_send_mode: TranscriptSendMode::default(),
+            transcript_tagging_enabled: false,
+            transcript_tag_template: default_transcript_tag_template(),
             ai_max_tokens: default_ai_max_tokens(),
             ai_assistive_max_tokens: default_ai_assistive_max_tokens(),
             show_tray_glyph: default_show_tray_glyph(),
             show_dock_icon: default_show_dock_icon(),
+            transcription_overlay_enabled: default_transcription_overlay_enabled(),
             hold_indicator: default_hold_indicator(),
             hold_badge_size: default_hold_badge_size(),
             hold_badge_offset_x: default_hold_badge_offset_x(),
@@ -438,7 +464,7 @@ impl Default for Config {
             use_local_stt: true,
             local_model: default_local_model(),
             stt_endpoint: None,
-            llm_endpoint: None,
+            llm_endpoint: Some(default_llm_endpoint()),
             llm_api_key: None,
             stt_api_key: None,
             restore_clipboard: default_restore_clipboard(),
@@ -474,7 +500,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::ShortcutBinding;
+    use super::{Config, ShortcutBinding};
+    use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
 
     #[test]
     fn shortcut_binding_parser_rejects_legacy_aliases() {
@@ -482,5 +509,26 @@ mod tests {
         assert!("fn".parse::<ShortcutBinding>().is_err());
         assert!("double_lalt".parse::<ShortcutBinding>().is_err());
         assert!("double_ralt".parse::<ShortcutBinding>().is_err());
+    }
+
+    #[test]
+    fn default_config_keeps_hold_modifiers_enabled() {
+        // hold_exclusive=true makes Fn-hold RAW-only and disables the documented
+        // Fn+Shift→Chat / Fn+Cmd→Selection modifiers (HOTKEYS_CONTRACT.md). The
+        // canonical default MUST stay false so those combos work out of the box;
+        // exclusive is opt-in (HOLD_EXCLUSIVE=1). Guards the 2026-05-30 regression
+        // where the runtime default / .env.example shipped exclusive ON.
+        assert!(
+            !Config::default().hold_exclusive,
+            "Config default must keep hold modifiers enabled (hold_exclusive=false)"
+        );
+    }
+
+    #[test]
+    fn default_config_uses_openai_responses_endpoint() {
+        assert_eq!(
+            Config::default().llm_endpoint.as_deref(),
+            Some(DEFAULT_OPENAI_RESPONSES_ENDPOINT)
+        );
     }
 }

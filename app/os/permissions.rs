@@ -380,6 +380,11 @@ pub fn check_full_disk_access() -> PermissionStatus {
     PermissionStatus::Granted
 }
 
+pub fn hotkey_permissions_granted() -> bool {
+    check_accessibility() == PermissionStatus::Granted
+        && check_input_monitoring() == PermissionStatus::Granted
+}
+
 /// Request Full Disk Access by opening the relevant System Settings pane.
 #[cfg(target_os = "macos")]
 pub fn request_full_disk_access() -> bool {
@@ -486,7 +491,9 @@ pub fn check_all_permissions() {
         PermissionStatus::Denied => {
             warn!("Microphone permission: DENIED - Recording will not work!");
             warn!("Grant access in: System Settings > Privacy & Security > Microphone");
-            warn!("After enabling access, restart CodeScribe if status does not refresh.");
+            warn!(
+                "After enabling access, retry recording or reopen Setup so CodeScribe can recheck live."
+            );
         }
     }
 }
@@ -584,6 +591,9 @@ pub fn diagnostics_report() -> String {
             );
         }
     }
+    if let Some(note) = crate::os::shortcut_registry::fn_tap_intercept_note(&settings) {
+        let _ = writeln!(&mut out, "mode_binding.note: {note}");
+    }
 
     // Small, safe config hints (do not print secrets).
     let config = crate::config::Config::load();
@@ -610,6 +620,11 @@ pub fn diagnostics_report() -> String {
     if let Ok(val) = std::env::var("CODESCRIBE_STREAM_CHUNK_SEC") {
         let _ = writeln!(&mut out, "CODESCRIBE_STREAM_CHUNK_SEC: {val}");
     }
+    let _ = writeln!(
+        &mut out,
+        "thermal.level: {:?}",
+        crate::os::thermal::current_thermal_level()
+    );
 
     // Best-effort codesign info (helps debug TCC resets).
     #[cfg(target_os = "macos")]

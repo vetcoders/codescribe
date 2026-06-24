@@ -6,7 +6,7 @@
 //!
 //! Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
 
-use objc::runtime::{Class, Object};
+use objc::runtime::Class;
 use objc::{msg_send, sel, sel_impl};
 use std::ffi::CString;
 use std::sync::Once;
@@ -16,7 +16,7 @@ use tracing::warn;
 #[link(name = "UserNotifications", kind = "framework")]
 unsafe extern "C" {}
 
-type Id = *mut Object;
+use crate::ui_helpers::Id;
 
 static AUTH_ONCE: Once = Once::new();
 

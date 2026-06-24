@@ -3,15 +3,17 @@
 //! Exports embedded model data and configuration.
 //! Generates embedded_tts_data.rs / embedded_embedder_data.rs / embedded_vad_data.rs in OUT_DIR.
 //!
-//! Whisper embedding is hard-disabled (runtime model loading only).
+//! Whisper embedding is OPT-IN via CODESCRIBE_EMBED_WHISPER=1 (distribution builds).
+//! Default builds resolve Whisper from the HF cache at runtime
+//! (`resolve_runtime_whisper_model_path`) — the model is held in memory for the
+//! session anyway, so baking ~1GB into every artifact only multiplied target/
+//! into tens of GB for zero runtime win (2026-06-10 policy, operator-decided).
 //! Release builds still embed Silero VAD + MiniLM embedder by default.
-//! Opt-out with CODESCRIBE_NO_EMBED=1 to skip optional embedding (except Silero).
+//! Opt-out of all optional embedding with CODESCRIBE_NO_EMBED=1 (except Silero).
 //! TTS requires opt-in via CODESCRIBE_EMBED_TTS.
 //!
-//! ⚠ Binary size stays lower with runtime Whisper loading.
+//! ⚠ Embedded Whisper materially increases artifact size.
 //!   TTS can still increase artifact size significantly — test before shipping!
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::env;
 use std::fs;
@@ -36,6 +38,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_MODEL_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_WHISPER");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_TTS");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBEDDER_REPO");
@@ -73,7 +76,55 @@ fn main() {
             && model_path.join("mel_filters.npz").exists()
             && weights_path.exists();
         if model_exists {
-            println!("cargo:rerun-if-changed={}", model_path.display());
+            println!(
+                "cargo:rerun-if-changed={}",
+                model_path.join("config.json").display()
+            );
+            println!(
+                "cargo:rerun-if-changed={}",
+                model_path.join("tokenizer.json").display()
+            );
+            println!(
+                "cargo:rerun-if-changed={}",
+                model_path.join("mel_filters.npz").display()
+            );
+            println!("cargo:rerun-if-changed={}", weights_path.display());
+        }
+
+        // Whisper model embedding (OPT-IN: distribution builds only).
+        let embed_whisper_requested = env_flag("CODESCRIBE_EMBED_WHISPER", false);
+        let whisper_dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
+        let whisper_embedded = embed_whisper_requested && !no_embed && model_exists;
+        if whisper_embedded {
+            println!(
+                "cargo:warning=Embedding Whisper model from: {}",
+                model_path.display()
+            );
+            let whisper_content = format!(
+                r#"
+                pub static CONFIG: &[u8] = include_bytes!(r"{}");
+                pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
+                pub static MEL_FILTERS: &[u8] = include_bytes!(r"{}");
+                pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
+                "#,
+                model_path.join("config.json").display(),
+                model_path.join("tokenizer.json").display(),
+                model_path.join("mel_filters.npz").display(),
+                weights_path.display(),
+            );
+            fs::write(&whisper_dest_path, whisper_content)
+                .expect("Failed to write embedded_model_data.rs");
+            println!("cargo:rustc-cfg=embed_model");
+        } else if embed_whisper_requested && !no_embed && !model_exists {
+            println!(
+                "cargo:warning=Whisper model not found for embedding: {}",
+                model_path.display()
+            );
+            println!(
+                "cargo:warning=Download with: hf download {}",
+                DEFAULT_WHISPER_REPO
+            );
+            println!("cargo:warning=Falling back to runtime Whisper lookup for this build");
         }
 
         // TTS model embedding (optional, via CODESCRIBE_EMBED_TTS=1)
@@ -194,39 +245,58 @@ fn main() {
             );
         }
 
-        // Whisper embedding is intentionally disabled (runtime loading only).
-        // We keep model discovery for diagnostics in build logs.
-        if is_release {
-            println!(
-                "cargo:warning=Whisper embedding is disabled by policy; using runtime model loading"
-            );
-            if !model_exists {
-                println!(
-                    "cargo:warning=Whisper model not found in build context (OK; resolve via CODESCRIBE_MODEL_PATH/HF cache at runtime)"
-                );
-            }
+        if is_release && whisper_embedded {
+            println!("cargo:warning=Whisper build policy: embedded by default");
         }
         println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
 
-        // Summary (single line for build logs)
-        let whisper_summary = "runtime_only";
-        let embedder_summary = if !no_embed && embedder_model_exists {
+        // Build-context detection: qube-* binaries are built into target-noembed/
+        // (see Makefile `release-qube`) and never use Whisper/Embedder at runtime.
+        // CODESCRIBE_NO_EMBED=1 has two distinct meanings:
+        //   (a) operator install via `make install-no-embed` (codescribe binary, runtime load from HF cache)
+        //   (b) build infra signal that this binary doesn't need STT models (qube-daemon, qube-report)
+        // OUT_DIR is the only signal that disambiguates them.
+        let qube_context = out_dir.contains("target-noembed");
+        let context_label = if qube_context {
+            "qube-tools"
+        } else if no_embed {
+            "codescribe (no-embed dev install)"
+        } else {
+            "codescribe"
+        };
+
+        let whisper_summary = if whisper_embedded {
+            "embedded"
+        } else if qube_context {
+            "not_used"
+        } else if embed_whisper_requested && !no_embed {
+            // Embed was explicitly requested but the snapshot is incomplete.
+            "missing_at_build_time"
+        } else {
+            // Default policy (2026-06-10): resolve from the HF cache at runtime.
+            "runtime_load_from_cache"
+        };
+        let embedder_summary = if qube_context {
+            "not_used"
+        } else if !no_embed && embedder_model_exists {
             "embedded"
         } else if no_embed {
-            "disabled"
+            "runtime_load_from_cache"
         } else {
-            "missing"
+            "missing_at_build_time"
         };
-        let tts_summary = if embed_tts && tts_model_exists && mimi_weights_path.exists() {
+        let tts_summary = if qube_context {
+            "not_used"
+        } else if embed_tts && tts_model_exists && mimi_weights_path.exists() {
             "embedded"
         } else if embed_tts {
-            "missing"
+            "missing_at_build_time"
         } else {
             "disabled"
         };
         println!(
-            "cargo:warning=Embedding summary: Whisper={}; Silero=embedded; Embedder={}; TTS={}",
-            whisper_summary, embedder_summary, tts_summary
+            "cargo:warning=Embedded models for {}: Whisper={}; Silero=embedded; Embedder={}; TTS={}",
+            context_label, whisper_summary, embedder_summary, tts_summary
         );
     }
 }

@@ -1,93 +1,93 @@
 # Contributing to CodeScribe
 
-Thanks for your interest in improving CodeScribe! This document explains how to set up
-your environment, the expectations we have for pull requests, and the checks that run in
-continuous integration.
+CodeScribe is a native macOS Rust application for dictation and assistive voice workflows. Contributions should be based on the current macOS runtime surface and the documented release path.
 
 ## Ground Rules
 
-- **Pull-request only.** Please do not push directly to `main`. Fork or create a topic
-  branch, then open a PR into `develop` (maintainers fast-forward `develop` → `main` when
-  release-ready).
-- **English user-facing text.** UI strings, docs, scripts, and comments must be in English.
-- **Security & privacy.** Do not add secrets, personal paths, or machine-specific data to the
-  repo. Shared configuration lives in `.env.example`.
-- **Stay on macOS.** CodeScribe targets Apple Silicon macOS. The tooling (MLX, pyobjc,
-  permissions prompts) assumes that platform.
+- Target platform: **Apple Silicon macOS**
+- Preferred contribution path: topic branch → PR into `develop`
+- Do not commit secrets, machine-specific paths, or captured user data
+- Keep user-facing copy and docs aligned with the real runtime surface
+- If an architecture note or README section describes a future-only surface, say so explicitly
 
-## Environment Setup
+## Local Setup
 
-1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
-2. Clone the repo and run `uv sync` (this creates/updates `.venv`).
-3. Download at least one Whisper model for local STT:
+1. Install Rust (toolchain new enough for edition 2024).
+2. Clone the repo.
+3. Copy or create your local config when needed:
    ```bash
-   uv run python scripts/get_models.py --whisper medium
+   cp .env.example ~/.codescribe/.env
    ```
-4. (Optional) Launch the tray + backend in dev mode:
+4. Build or install:
    ```bash
-   ./scripts/quickstart_mac.sh --mode both --dev --fg
+   make build
+   make install
    ```
-   The script automatically installs/refreshes `pre-commit` hooks (set
-   `SKIP_PRECOMMIT_BOOTSTRAP=1` to opt out).
-5. If you need an Ollama-backed formatter, start `ollama serve` in another shell and
-   configure the provider via the tray menu.
 
-### Helpful Utilities
-
-- `CodeScribe` – friendly launcher (start/stop/status/logs).
-- `CodeScribe-dev` – developer toolbox (fresh cleanup, build DMG, run lint/tests, etc.).
-- `.run/*.run.xml` – JetBrains run configs for the common actions above.
-
-## Coding Standards
-
-- Python 3.12
-- Ruff line length 100, import ordering via Ruff/isort (already configured).
-- `snake_case` for functions/variables, `CamelCase` for classes, `UPPER_SNAKE` for constants.
-- Keep UI copy concise; prefer structured logging with module + function context.
-- Avoid speculative abstractions—delete dead code instead of hiding it behind flags.
-
-## Required Checks (Local & CI)
-
-Before opening a PR, run the same commands that gate CI:
+Useful commands:
 
 ```bash
-uvx ruff format .
-uvx ruff check .
-uv run pytest -q > logs/pytest.log 2>&1 & disown  # keeps pytest alive while logging
+make build
+make install
+make install-app
+codescribe --version
+codescribe --config
 ```
 
-For quick iterations you can omit the log redirection, but the backgrounded version is
-recommended for longer suites. Add focused tests when touching a subsystem (e.g.,
-`scripts/test_hotkeys.sh` for hotkey regressions, `tests/e2e_ollama_memory_real.rs` when
-changing formatter plumbing).
+## Required Local Gates
 
-Git hooks: `./scripts/quickstart_mac.sh …` installs them automatically unless you
-explicitly set `git config core.hooksPath` (custom hook dir). In that case, run
-`uvx pre-commit install --install-hooks --overwrite` manually in your environment.
+Run these before opening a PR:
 
-## Continuous Integration
+```bash
+cargo fmt --all
+cargo clippy -- -D warnings
+cargo test
+make semgrep
+```
 
-GitHub Actions currently runs:
+When touching a focused subsystem, run the most relevant targeted tests too. Examples:
 
-1. **Lint (Ruff)** – `.github/workflows/lint.yml`
-2. **Tests (Pytest)** – `.github/workflows/tests.yml`
+```bash
+cargo test action_handler_registers_core_settings_selectors -- --nocapture
+cargo test --test e2e_round_trip -- --nocapture
+```
 
-Both workflows trigger on pushes to `main`, `develop`, and on every PR. Keep your PRs
-green by running the local commands above before pushing.
+## CI / GitHub Actions
 
-## Pull Request Checklist
+Current workflows in this repo:
 
-- [ ] All new code includes targeted tests (unit, hook, or manual smoke as appropriate).
-- [ ] `uvx ruff format .` and `uvx ruff check .` succeed.
-- [ ] `uv run pytest -q` passes (attach `logs/pytest.log` snippets for tricky failures).
-- [ ] Screenshots/logs are attached for visible UI changes or tray menu updates.
-- [ ] The PR description explains user impact and lists the commands you ran locally.
-- [ ] Commits use imperative mood (e.g., "Add websocket stream viewer").
+1. `rust.yml`
+2. `semgrep.yml`
+3. `release.yml`
+4. `pages.yml`
+
+Use the current workflows as the source of truth for CI and release behavior.
+
+## What Good Changes Look Like
+
+- Runtime behavior improved, not just code style
+- Settings, docs, and install path still tell the truth after the change
+- New settings are persisted through `settings.json` / Keychain / `.env` correctly
+- UI changes include screenshots or a short runtime note in the PR
+- Tests cover the real contract you changed
+
+## PR Checklist
+
+- [ ] `cargo fmt --all` passes
+- [ ] `cargo clippy -- -D warnings` passes
+- [ ] `cargo test` passes
+- [ ] `make semgrep` passes
+- [ ] PR description explains user impact and runtime impact
+- [ ] Docs/settings/install surface were updated if behavior changed
+- [ ] Screenshots or runtime notes are attached for visible UI changes
+
+## Packaging Truth
+
+- `make install-app` builds and installs the macOS `.app`
+- release DMGs are produced by the release workflow on version tags
+- public release DMGs must be Developer ID signed and notarized before announcement
+- source install is still the guaranteed path from inside this repo
 
 ## Getting Help
 
-File an issue or open a draft PR if you need early feedback. Maintainers hang out in the
-repository Discussions tab; feel free to start a thread if you have questions about the
-architecture or packaging.
-
-Thanks again for helping us keep CodeScribe reliable for the Vista desktop clients!
+Open a draft PR or issue if the expected behavior or code ownership is unclear. Documentation changes should land with behavior changes whenever the public surface changes.

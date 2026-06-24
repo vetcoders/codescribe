@@ -2,8 +2,6 @@
 //!
 //! Provides audio playback via cpal and WAV file export via hound.
 //! Used by TTS module to output synthesized speech.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
@@ -112,11 +110,14 @@ impl AudioPlayer {
 
         stream.play().context("Failed to start audio stream")?;
 
-        // Wait for playback to complete
+        // Wait for playback to complete.
+        // Poison-recovery on the playback wait: a panic elsewhere holding this
+        // lock must not turn into a permanent deadlock/abort on the audio path;
+        // recover the inner guard and continue waiting on the condvar.
         let (lock, cvar) = &*finished;
-        let mut done = lock.lock().unwrap();
+        let mut done = lock.lock().unwrap_or_else(|e| e.into_inner());
         while !*done {
-            done = cvar.wait(done).unwrap();
+            done = cvar.wait(done).unwrap_or_else(|e| e.into_inner());
         }
 
         debug!("Playback complete");
@@ -139,7 +140,10 @@ impl AudioPlayer {
         let stream = self.device.build_output_stream(
             &config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                let mut pos = position.lock().unwrap();
+                // Poison-recovery inside the real-time audio callback: a panic
+                // must not poison the position lock and silence all further
+                // playback; recover the inner guard and keep feeding samples.
+                let mut pos = position.lock().unwrap_or_else(|e| e.into_inner());
                 let samples_len = samples.len();
 
                 for frame in data.chunks_mut(channels) {
@@ -162,7 +166,7 @@ impl AudioPlayer {
                 // Signal completion when done
                 if *pos >= samples_len {
                     let (lock, cvar) = &*finished;
-                    let mut done = lock.lock().unwrap();
+                    let mut done = lock.lock().unwrap_or_else(|e| e.into_inner());
                     *done = true;
                     cvar.notify_one();
                 }

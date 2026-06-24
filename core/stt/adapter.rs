@@ -2,8 +2,6 @@
 //!
 //! This is a thin wrapper: no logic changes, just type translation.
 //! Future providers (cloud STT, etc.) would implement the same trait.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::Result;
 
@@ -72,6 +70,7 @@ mod tests {
             Ok(RawTranscript {
                 text: self.response.clone(),
                 segments: Vec::new(),
+                ..Default::default()
             })
         }
     }

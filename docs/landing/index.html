@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CodeScribe — Native macOS Audio Intelligence | VetCoders</title>
+    <title>CodeScribe — Dictation-driven Orchestration Agent | VetCoders</title>
     <meta
       name="description"
-      content="CodeScribe is a native macOS audio intelligence platform with embedded Whisper Live, adaptive quality loops, and agent-ready voice workflows."
+      content="CodeScribe is a native macOS dictation-driven Orchestration Agent: speak naturally, see local Whisper live preview, and coordinate voice, selection, files, tools, and workflow context."
     />
     <meta
       name="keywords"
@@ -14,28 +14,34 @@
     />
     <meta
       property="og:title"
-      content="CodeScribe — Native macOS Audio Intelligence"
+      content="CodeScribe — Dictation-driven Orchestration Agent"
     />
     <meta
       property="og:description"
-      content="From capture to transcript to agent-ready output, with local-first privacy and production-grade polish."
+      content="Speak naturally, watch local Whisper live preview, and orchestrate work from your current macOS context."
     />
     <meta property="og:type" content="website" />
     <meta
       property="og:image"
-      content="https://codescribe.vetcoders.io/og-codescribe.png"
+      content="https://vetcoders.github.io/CodeScribe/og-codescribe.png"
     />
+    <meta property="og:url" content="https://vetcoders.github.io/CodeScribe/" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta
       name="twitter:title"
-      content="CodeScribe — Native macOS Audio Intelligence"
+      content="CodeScribe — Dictation-driven Orchestration Agent"
     />
     <meta
       name="twitter:description"
-      content="Embedded Whisper Live, quality loop, and assistant workflows for fast production dictation."
+      content="A dictation-driven macOS orchestration agent with local Whisper live preview, selection context, files, and tool-aware workflows."
+    />
+    <meta
+      name="twitter:image"
+      content="https://vetcoders.github.io/CodeScribe/og-codescribe.png"
     />
     <!-- nosemgrep: html.security.audit.missing-integrity.missing-integrity canonical metadata link is not an executable subresource -->
-    <link rel="canonical" href="https://codescribe.vetcoders.io/" />
+    <link rel="canonical" href="https://vetcoders.github.io/CodeScribe/" />
+    <link rel="icon" href="./og-codescribe.png" />
     <style>
       :root {
         --vc-primary: #d97757;
@@ -150,87 +156,86 @@
       }
 
       .hero {
-        display: grid;
-        grid-template-columns: 1.08fr 1fr;
-        gap: 28px;
-        align-items: center;
-        margin-bottom: 34px;
-      }
-
-      .hero h1 {
-        margin: 0 0 14px;
-        font-family: "Poppins", Arial, sans-serif;
-        font-size: clamp(2rem, 4.8vw, 3.25rem);
-        line-height: 1.04;
-        letter-spacing: -0.02em;
-        text-wrap: balance;
-      }
-
-      .hero p {
-        margin: 0 0 20px;
-        color: var(--vc-mid);
-        font-size: 1.05rem;
-        line-height: 1.7;
-        max-width: 62ch;
-      }
-
-      .hero-canvas-wrap {
-        border: 1px solid var(--vc-border);
-        background: linear-gradient(
-          180deg,
-          rgba(30, 30, 29, 0.92),
-          rgba(20, 20, 19, 0.96)
-        );
-        border-radius: 20px;
-        box-shadow: var(--vc-shadow);
-        padding: 14px;
         position: relative;
+        width: 100vw;
+        min-height: clamp(520px, 78svh, 760px);
+        margin: 0 0 28px calc(50% - 50vw);
+        padding: clamp(54px, 9vw, 104px)
+          max(18px, calc((100vw - 1100px) / 2 + 18px)) 46px;
+        display: flex;
+        align-items: flex-end;
         overflow: hidden;
-        min-height: 360px;
+        background-image: linear-gradient(
+            90deg,
+            rgba(13, 13, 12, 0.64) 0%,
+            rgba(13, 13, 12, 0.36) 34%,
+            rgba(13, 13, 12, 0.1) 58%,
+            rgba(13, 13, 12, 0.02) 82%,
+            rgba(13, 13, 12, 0.08) 100%
+          ),
+          linear-gradient(
+            0deg,
+            rgba(13, 13, 12, 0.46) 0%,
+            rgba(13, 13, 12, 0.02) 44%
+          ),
+          url("./hero-dictation-agent.jpg");
+        background-position: center center;
+        background-size: cover;
+        box-shadow: inset 0 -1px 0 rgba(250, 249, 245, 0.1);
       }
 
-      .hero-canvas-wrap::after {
+      .hero::before {
         content: "";
         position: absolute;
         inset: 0;
         pointer-events: none;
         background: radial-gradient(
-          circle at 25% 18%,
-          rgba(250, 249, 245, 0.07),
-          transparent 44%
-        );
+            circle at 17% 58%,
+            rgba(240, 97, 61, 0.16),
+            transparent 25%
+          ),
+          linear-gradient(
+            180deg,
+            rgba(22, 22, 21, 0.1) 0%,
+            rgba(22, 22, 21, 0) 30%,
+            rgba(22, 22, 21, 0.12) 100%
+          );
       }
 
-      #marbleCanvas {
-        width: 100%;
-        height: 330px;
-        display: block;
-        border-radius: 14px;
-        background: radial-gradient(
-          circle at 50% 35%,
-          rgba(33, 33, 32, 0.9),
-          #111110 78%
-        );
+      .hero-content {
+        position: relative;
+        z-index: 1;
+        width: min(660px, 100%);
       }
 
-      .stats {
-        position: absolute;
-        right: 16px;
-        top: 14px;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(250, 249, 245, 0.12);
-        background: rgba(15, 15, 14, 0.72);
-        backdrop-filter: blur(4px);
+      .hero .hero-kicker {
+        margin: 0 0 12px;
+        color: #f0a17e;
         font-family: "Poppins", Arial, sans-serif;
-        font-size: 0.82rem;
-        color: var(--vc-light);
-        line-height: 1.5;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
       }
 
-      .stats .label {
-        color: var(--vc-mid);
-        margin-right: 6px;
+      .hero h1 {
+        margin: 0 0 14px;
+        font-family: "Poppins", Arial, sans-serif;
+        font-size: clamp(3.1rem, 9vw, 6.9rem);
+        line-height: 0.92;
+        letter-spacing: 0;
+        text-wrap: balance;
+        text-shadow: 0 2px 26px rgba(0, 0, 0, 0.78);
+      }
+
+      .hero .hero-copy {
+        margin: 0 0 20px;
+        color: #ece7dd;
+        font-family: "Poppins", Arial, sans-serif;
+        font-size: clamp(1.02rem, 2vw, 1.26rem);
+        line-height: 1.58;
+        max-width: 58ch;
+        text-shadow: 0 1px 18px rgba(0, 0, 0, 0.65);
       }
 
       .cta-row {
@@ -421,10 +426,6 @@
       }
 
       @media (max-width: 1024px) {
-        .hero {
-          grid-template-columns: 1fr;
-        }
-
         .orchestrator {
           grid-template-columns: 1fr;
         }
@@ -439,8 +440,11 @@
           grid-template-columns: 1fr;
         }
 
-        #marbleCanvas {
-          height: 280px;
+        .hero {
+          min-height: 70svh;
+          padding-top: 44px;
+          padding-bottom: 38px;
+          background-position: 35% center;
         }
       }
     </style>
@@ -454,126 +458,118 @@
           <span>CodeScribe by VetCoders</span>
         </div>
         <nav class="nav-links" aria-label="Primary">
-          <a href="#pipeline">Pipeline</a>
+          <a href="#pipeline">Product</a>
           <a href="#showcase">Showcase</a>
-          <a href="#ready">Readiness</a>
+          <a href="#ready">Releases</a>
         </nav>
       </header>
 
-      <section class="hero">
-        <div class="fade-up">
-          <h1>Native macOS audio intelligence that converges to production.</h1>
-          <p>
-            CodeScribe turns dictation, formatting, and assistive voice
-            workflows into a single local-first system. The same pipeline that
-            improves transcription quality also drives launch readiness: build,
-            converge, ship.
+      <section class="hero" id="showcase">
+        <div class="hero-content fade-up">
+          <p class="hero-kicker">Dictation-driven Orchestration Agent</p>
+          <h1>CodeScribe</h1>
+          <p class="hero-copy">
+            Speak naturally. See local Whisper live preview. Orchestrate work
+            with your voice, selected text, files, tools, and workflow context
+            — right from the app you are already using.
           </p>
           <div class="cta-row">
+            <a class="btn btn-primary" href="./quickstart/"
+              >Install from source</a
+            >
             <a
-              class="btn btn-primary"
+              class="btn btn-secondary"
+              href="https://github.com/VetCoders/CodeScribe/releases"
+              >View releases</a
+            >
+            <a
+              class="btn btn-secondary"
               href="https://github.com/VetCoders/CodeScribe"
               >Open repository</a
             >
-            <a class="btn btn-secondary" href="../guide/QUICKSTART.md"
-              >Quickstart docs</a
-            >
-          </div>
-        </div>
-        <div class="hero-canvas-wrap fade-up" id="showcase">
-          <canvas id="marbleCanvas" aria-label="Convergence canvas"></canvas>
-          <div class="stats">
-            <div>
-              <span class="label">Loop</span><strong id="loopCounter">0</strong>
-            </div>
-            <div>
-              <span class="label">Coverage</span
-              ><strong id="coverageCounter">0%</strong>
-            </div>
           </div>
         </div>
       </section>
 
       <section id="pipeline" class="fade-up">
-        <p class="mini-title">VetCoders pipeline</p>
+        <p class="mini-title">What ships</p>
         <div class="phase-grid">
           <article class="card phase-build tilt-card">
-            <h3>Phase 1 — Build</h3>
+            <h3>Local Whisper Live</h3>
             <p>
-              Bootstrap context, execute workflow, and close technical unknowns
-              across recording, transcription, settings, and agent flow.
+              Streaming local transcription starts while you speak, so the
+              overlay can preview words before the final paste path runs.
             </p>
           </article>
           <article class="card phase-converge tilt-card">
-            <h3>Phase 2 — Converge</h3>
+            <h3>Assistive voice overlay</h3>
             <p>
-              Marbles loop denoises known findings iteratively until critical
-              and credibility gaps are fully removed.
+              Right-Option toggle mode opens an agent-facing voice surface for
+              drafting, follow-ups, and context-aware responses.
             </p>
           </article>
           <article class="card phase-ship tilt-card">
-            <h3>Phase 3 — Ship</h3>
+            <h3>Custom MCP servers</h3>
             <p>
-              Definition of Undone audit plus hydration closes market-facing
-              gaps and turns implementation into adoption-ready surface.
+              Add your own MCP tools through CodeScribe config so the agent can
+              reach the systems you already use.
             </p>
           </article>
           <article class="card orchestrator fade-up">
             <div>
-              <h3>One orchestrator, explicit gates</h3>
+              <h3>One hotkey, explicit transcript truth</h3>
               <p>
-                Each phase yields measurable handover artifacts. That keeps
-                velocity high while preserving launch discipline.
+                The recording pipeline separates live preview, final
+                transcription, formatting, and assistive routing so the UI can
+                show what is draft, final, or rejected.
               </p>
               <code class="copyable"
-                >init -> workflow -> followup marbles loop (P0=0, P1=0, P2=0)
-                dou -> decorate -> hydrate</code
+                >Hold Fn -> local preview -> final transcript -> paste or
+                assistive response</code
               >
             </div>
             <ul class="checklist">
-              <li>Local-first transcription path with Whisper Live.</li>
-              <li>
-                Overlay + settings + hotkeys integrated for production usage.
-              </li>
-              <li>
-                Governance, discoverability, and install path tracked as
-                first-class work.
-              </li>
+              <li>Local-first by default; cloud final paths are optional.</li>
+              <li>OpenAI Responses powers Formatting and Assistive by default.</li>
+              <li>Native AppKit overlays, settings, onboarding, and tray.</li>
+              <li>FSL-1.1-ALv2 license with Apache-2.0 future conversion.</li>
             </ul>
           </article>
         </div>
       </section>
 
       <section id="ready" class="fade-up">
-        <p class="mini-title">Readiness contract</p>
+        <p class="mini-title">Public release status</p>
         <div class="phase-grid">
           <article class="card phase-internal tilt-card">
-            <h3>Discoverability</h3>
+            <h3>Current install path</h3>
             <p>
-              Search presence, metadata, and social cards are prepared so the
-              project can be found and understood without private context.
+              Source install is the guaranteed path until the current
+              <code>v0.12.x</code> standard and full DMGs are published,
+              Developer ID signed, notarized, and smoke-tested.
             </p>
           </article>
           <article class="card phase-internal tilt-card">
-            <h3>Adoption</h3>
+            <h3>Release gate</h3>
             <p>
-              Install path and onboarding are documented for strangers, not only
-              for local developer environments.
+              GitHub Release automation is configured for signed and notarized
+              standard/full DMGs. Missing Apple credentials block release
+              instead of shipping a hostile installer.
             </p>
           </article>
           <article class="card phase-internal tilt-card">
             <h3>Trust</h3>
             <p>
-              Security disclosure policy, issue intake templates, and release
-              metadata build confidence in maintenance quality.
+              Security policy, issue intake, PR template, changelog, license,
+              and public release checklist are tracked in the repository.
             </p>
           </article>
         </div>
       </section>
 
       <footer class="footer fade-up">
-        Visual identity and convergence demo generated in the `dou -> decorate
-        -> hydrate` phase.
+        Current public release target: `v0.12.2`. Source install remains the
+        honest CTA until a fresh notarized DMG exists.
       </footer>
     </div>
 
@@ -589,7 +585,7 @@
         var canvas = document.getElementById("marbleCanvas");
         var loopCounter = document.getElementById("loopCounter");
         var coverageCounter = document.getElementById("coverageCounter");
-        var ctx = canvas.getContext("2d");
+        var ctx = canvas ? canvas.getContext("2d") : null;
         var dpr = Math.max(1, window.devicePixelRatio || 1);
         var hover = { x: -9999, y: -9999 };
         var parallax = { x: 0, y: 0 };
@@ -860,8 +856,9 @@
           }
 
           displayCoverage += (currentCoverage - displayCoverage) * 0.08;
-          loopCounter.textContent = String(loop);
-          coverageCounter.textContent = Math.round(displayCoverage) + "%";
+          if (loopCounter) loopCounter.textContent = String(loop);
+          if (coverageCounter)
+            coverageCounter.textContent = Math.round(displayCoverage) + "%";
 
           var activeCount = Math.floor(
             marbles.length * (displayCoverage / 100)
@@ -968,14 +965,16 @@
           });
         });
 
-        canvas.addEventListener("mousemove", setParallax);
-        canvas.addEventListener("mouseleave", clearHover);
         window.addEventListener("scroll", updateProgress, { passive: true });
-        window.addEventListener("resize", resizeCanvas);
+        if (canvas && ctx) {
+          canvas.addEventListener("mousemove", setParallax);
+          canvas.addEventListener("mouseleave", clearHover);
+          window.addEventListener("resize", resizeCanvas);
+          resizeCanvas();
+          requestAnimationFrame(render);
+        }
 
-        resizeCanvas();
         updateProgress();
-        requestAnimationFrame(render);
       })();
     </script>
   </body>

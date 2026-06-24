@@ -2,8 +2,6 @@
 //!
 //! Provides text embeddings using a local/embedded paraphrase-multilingual-MiniLM-L12-v2 model (fp16).
 //! No runtime downloads; model must be embedded or present on disk.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::{Path, PathBuf};
 

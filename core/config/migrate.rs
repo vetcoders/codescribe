@@ -1,6 +1,7 @@
-//! One-time migration from .env-only to tiered config.
+//! One-time import from legacy `.env` installs into tiered config.
 //!
-//! Moves non-secret settings into `settings.json` and API keys into macOS Keychain.
+//! Moves promoted non-secret settings into `settings.json` and API keys into
+//! macOS Keychain. This is an import path, not an ongoing precedence rule.
 
 use super::keychain;
 use super::settings::UserSettings;
@@ -10,7 +11,7 @@ use tracing::{debug, info};
 /// Runs the one-time migration if `settings.json` does not yet exist.
 ///
 /// 1. Skips if `settings.json` already exists.
-/// 2. Reads current env vars to build a `UserSettings`.
+/// 2. Reads the existing `.env` contents to build a `UserSettings`.
 /// 3. Saves to `settings.json`.
 /// 4. Migrates API keys from env to Keychain.
 pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
@@ -19,6 +20,16 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
         debug!("settings.json already exists, skipping migration");
         return;
     }
+
+    let Some(file_env) = file_env else {
+        debug!("No .env snapshot present, skipping migration");
+        return;
+    };
+    if file_env.is_empty() {
+        debug!("Empty .env snapshot, skipping migration");
+        return;
+    }
+    let file_env = Some(file_env);
 
     let mut settings = UserSettings::default();
 
@@ -165,7 +176,88 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
 }
 
 fn migrated_value(file_env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
-    file_env
-        .and_then(|vars| vars.get(key).cloned())
-        .or_else(|| std::env::var(key).ok())
+    file_env.and_then(|vars| vars.get(key).cloned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    fn set_env_for_test<V: AsRef<std::ffi::OsStr>>(key: &str, value: V) {
+        // SAFETY: these tests are marked `serial` and intentionally isolate the
+        // process env so `UserSettings::settings_path()` resolves inside the temp dir.
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    fn remove_env_for_test(key: &str) {
+        // SAFETY: same invariant as `set_env_for_test` above.
+        unsafe { std::env::remove_var(key) };
+    }
+
+    fn setup_isolated_data_dir() -> TempDir {
+        let tmp = TempDir::new().expect("tempdir");
+        set_env_for_test("CODESCRIBE_DATA_DIR", tmp.path());
+        tmp
+    }
+
+    #[test]
+    #[serial]
+    fn migrate_skips_when_env_snapshot_is_absent() {
+        let _tmp = setup_isolated_data_dir();
+
+        migrate_if_needed(None);
+
+        assert!(
+            !UserSettings::settings_path().exists(),
+            "missing .env snapshot must not synthesize settings.json"
+        );
+
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn migrate_skips_when_env_snapshot_is_empty() {
+        let _tmp = setup_isolated_data_dir();
+        let empty = HashMap::new();
+
+        migrate_if_needed(Some(&empty));
+
+        assert!(
+            !UserSettings::settings_path().exists(),
+            "empty .env snapshot must not synthesize settings.json"
+        );
+
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn migrate_does_not_persist_runtime_env_when_env_file_lacks_key() {
+        let _tmp = setup_isolated_data_dir();
+        let mut file_env = HashMap::new();
+        file_env.insert("WHISPER_LANGUAGE".to_string(), "en".to_string());
+
+        set_env_for_test("AI_FORMATTING_ENABLED", "1");
+        migrate_if_needed(Some(&file_env));
+        remove_env_for_test("AI_FORMATTING_ENABLED");
+
+        let path = UserSettings::settings_path();
+        assert!(path.exists(), "non-empty .env snapshot triggers migration");
+
+        let persisted = UserSettings::load();
+        assert_eq!(
+            persisted.whisper_language.as_deref(),
+            Some("en"),
+            ".env-supplied promoted key migrates"
+        );
+        assert_eq!(
+            persisted.ai_formatting_enabled, None,
+            "runtime env value must not leak into migrated settings.json"
+        );
+
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
 }

@@ -9,16 +9,18 @@ use reqwest::Client;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
+use tracing::info;
 
 use codescribe_core::agent::{
-    AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions, ToolDefinition,
+    AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
+    ToolDefinition,
 };
 use codescribe_core::llm::responses_streaming_manager::{
     ResponsesStreamingManager, StreamCallbacks,
 };
 
-const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 30_000;
-const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
+const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 
 #[derive(Clone)]
 pub struct OpenAiProvider {
@@ -27,6 +29,26 @@ pub struct OpenAiProvider {
     api_key: String,
     default_model: String,
     use_previous_response_id: bool,
+    /// Single source of truth for the AGENT path's response chain
+    /// (`previous_response_id`).
+    ///
+    /// P2.12 (source-of-truth contract): the assistive feature has TWO distinct
+    /// execution paths, each owning its own chain — they are intentionally
+    /// separate, not redundant:
+    ///   1. Agent 2.0 path (this provider): owns the chain HERE, in this
+    ///      per-provider `Arc<Mutex>`. Advanced/reset by
+    ///      `forward_events_and_track_chain` and `apply_chain_reset`.
+    ///   2. Legacy formatter fallback path (`run_legacy_send_path` ->
+    ///      `ai_formatting`): owns its chain in the global
+    ///      `core::state::conversation` store under `AiMode::Assistive`
+    ///      (`assistive_response_id`).
+    ///
+    /// A given turn runs through exactly one path, so the two chains never both
+    /// drive the same request. Do NOT cross-wire them: the agent path must never
+    /// read/write `conversation::*_response_id`, and the legacy path must never
+    /// touch this field. If the legacy fallback is ever retired, the
+    /// `AiMode::Assistive` branch in `core::state::conversation` becomes dead and
+    /// should be removed (owner: GROUP state).
     previous_response_id: Arc<Mutex<Option<String>>>,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
@@ -36,7 +58,7 @@ impl OpenAiProvider {
     pub fn from_env() -> Result<Self> {
         let endpoint = get_env_non_empty("LLM_ASSISTIVE_ENDPOINT", "LLM endpoint (assistive)")?;
         let default_model = get_env_non_empty("LLM_ASSISTIVE_MODEL", "LLM model (assistive)")?;
-        let api_key = get_env_non_empty("LLM_ASSISTIVE_API_KEY", "LLM API key (assistive)")?;
+        let api_key = get_env_non_empty("LLM_ASSISTIVE_API_KEY", "OpenAI API key (assistive)")?;
 
         let use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);
@@ -53,6 +75,14 @@ impl OpenAiProvider {
             .timeout(Duration::from_secs(3600))
             .build()
             .context("Failed to create OpenAI agent HTTP client")?;
+
+        info!(
+            "OpenAI agent provider configured (model={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
+            default_model,
+            initial_response_timeout.as_secs(),
+            inter_chunk_timeout.as_secs(),
+            use_previous_response_id
+        );
 
         Ok(Self {
             client,
@@ -81,11 +111,35 @@ impl AgentProvider for OpenAiProvider {
             options.model.clone()
         };
 
+        // Operator's spec 2026-05-26 (4th iteration): retry must NOT resend prior
+        // chain. Caller (session retry path) signals via `options.reset_chain`.
+        self.apply_chain_reset(options).await;
+
         let previous_response_id = if self.use_previous_response_id {
             self.previous_response_id.lock().await.clone()
         } else {
             None
         };
+        let previous_response_state = if previous_response_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            "present"
+        } else {
+            "absent"
+        };
+
+        info!(
+            "Agent provider request (model={}, messages={}, tools={}, previous_response_id={}, timeout={}s, inter_chunk_timeout={}s)",
+            model,
+            messages.len(),
+            tools.len(),
+            previous_response_state,
+            self.initial_response_timeout.as_secs(),
+            self.inter_chunk_timeout.as_secs()
+        );
 
         let request = OpenAiResponsesRequest {
             model,
@@ -110,7 +164,7 @@ impl AgentProvider for OpenAiProvider {
             self.inter_chunk_timeout,
         );
 
-        let mut provider_rx = manager.stream_agent(&request).await?;
+        let provider_rx = manager.stream_agent(&request).await?;
 
         if !self.use_previous_response_id {
             return Ok(provider_rx);
@@ -119,21 +173,11 @@ impl AgentProvider for OpenAiProvider {
         let (tx, rx) = mpsc::channel(256);
         let previous_response_id = Arc::clone(&self.previous_response_id);
 
-        tokio::spawn(async move {
-            while let Some(event) = provider_rx.recv().await {
-                if let AgentEvent::ResponseDone { response_id } = &event
-                    && let Some(response_id) = response_id
-                    && !response_id.is_empty()
-                {
-                    let mut lock = previous_response_id.lock().await;
-                    *lock = Some(response_id.clone());
-                }
-
-                if tx.send(event).await.is_err() {
-                    break;
-                }
-            }
-        });
+        tokio::spawn(forward_events_and_track_chain(
+            provider_rx,
+            tx,
+            previous_response_id,
+        ));
 
         Ok(rx)
     }
@@ -161,8 +205,97 @@ impl AgentProvider for OpenAiProvider {
         }
     }
 
+    fn stream_timeouts(&self) -> Option<(Duration, Duration)> {
+        Some((self.initial_response_timeout, self.inter_chunk_timeout))
+    }
+
     fn name(&self) -> &str {
         "openai-responses"
+    }
+}
+
+impl OpenAiProvider {
+    /// Operator's spec 2026-05-26 (4th iteration): when caller requests chain
+    /// reset (typically session retry path after a failed attempt), clear the
+    /// stored `previous_response_id` BEFORE building the next request — fresh
+    /// start, no context bloat from the prior failed attempt's chain.
+    ///
+    /// Extracted as a standalone helper so the behavior is unit-testable
+    /// without needing a full mock SSE round-trip.
+    pub async fn apply_chain_reset(&self, options: &StreamOptions) {
+        if !options.reset_chain {
+            return;
+        }
+        let mut lock = self.previous_response_id.lock().await;
+        if lock.is_some() {
+            info!(
+                "Agent provider chain reset requested (provider=openai-responses); clearing stored previous_response_id before request"
+            );
+            *lock = None;
+        }
+    }
+}
+
+/// Outcome of inspecting a `ResponseDone` for its effect on the chain.
+enum ChainEffect {
+    /// Clean terminal with a usable id: advance the chain to this id.
+    Advance(String),
+    /// Dirty terminal (EOF/timeout, failed/incomplete): reset the chain so the
+    /// next turn replays from local history instead of resuming a poisoned one.
+    Reset,
+    /// Not a terminal event: leave the chain untouched.
+    None,
+}
+
+/// Forward provider events to the consumer while advancing the chain id.
+///
+/// The chain (`previous_response_id`) must only advance for turns that ended on
+/// a CLEAN terminal AND that the consumer actually received. We compute the
+/// chain effect from `ResponseDone { clean }`, deliver the event FIRST, and
+/// mutate the chain ONLY on a successful send:
+/// - clean terminal with id  -> advance the chain (P1.6 happy path);
+/// - dirty terminal          -> reset the chain to `None` so the next turn does
+///   a full replay (P1.6 chain-poisoning fix);
+/// - non-terminal events     -> untouched.
+///
+/// If the consumer's `rx` was dropped (session gone), `tx.send` returns `Err`,
+/// we break without mutating the chain, and a stale id cannot outlive the
+/// session (P3.7).
+async fn forward_events_and_track_chain(
+    mut provider_rx: mpsc::Receiver<AgentEvent>,
+    tx: mpsc::Sender<AgentEvent>,
+    previous_response_id: Arc<Mutex<Option<String>>>,
+) {
+    while let Some(event) = provider_rx.recv().await {
+        let chain_effect = match &event {
+            AgentEvent::ResponseDone {
+                response_id: Some(response_id),
+                clean: true,
+            } if !response_id.is_empty() => ChainEffect::Advance(response_id.clone()),
+            AgentEvent::ResponseDone { clean: false, .. } => ChainEffect::Reset,
+            _ => ChainEffect::None,
+        };
+
+        if tx.send(event).await.is_err() {
+            break;
+        }
+
+        match chain_effect {
+            ChainEffect::Advance(response_id) => {
+                let mut lock = previous_response_id.lock().await;
+                *lock = Some(response_id);
+            }
+            ChainEffect::Reset => {
+                let mut lock = previous_response_id.lock().await;
+                if lock.is_some() {
+                    info!(
+                        "Agent provider chain reset after dirty terminal (provider=openai-responses); next turn will full-replay"
+                    );
+                    *lock = None;
+                }
+            }
+            ChainEffect::None => {}
+        }
     }
 }
 
@@ -237,7 +370,7 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                 ContentBlock::Text(text) => {
                     if !text.is_empty() {
                         content.push(json!({
-                            "type": "input_text",
+                            "type": text_content_type(message.role),
                             "text": text
                         }));
                     }
@@ -247,6 +380,9 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                         "type": "input_image",
                         "image_url": to_data_uri(data, media_type)
                     }));
+                }
+                ContentBlock::ImageAsset(asset) => {
+                    content.push(image_asset_input_content(asset)?);
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     let arguments = serde_json::to_string(input).with_context(|| {
@@ -269,6 +405,14 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                         "call_id": tool_use_id,
                         "output": format_tool_output(tool_content, *is_error)?
                     }));
+                    let image_content = tool_result_image_content(tool_content)?;
+                    if !image_content.is_empty() {
+                        items.push(json!({
+                            "type": "message",
+                            "role": "user",
+                            "content": image_content
+                        }));
+                    }
                 }
             }
         }
@@ -285,6 +429,13 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
     Ok(items)
 }
 
+fn text_content_type(role: Role) -> &'static str {
+    match role {
+        Role::Assistant => "output_text",
+        Role::User | Role::System => "input_text",
+    }
+}
+
 fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String> {
     let mut parts = Vec::new();
     for block in content {
@@ -299,9 +450,19 @@ fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String
             }
             ContentBlock::Image { data, media_type } => {
                 parts.push(json!({
-                    "type": "image",
+                    "type": "image_reference",
                     "media_type": media_type,
-                    "data": BASE64.encode(data)
+                    "size_bytes": data.len(),
+                    "data_omitted": true
+                }));
+            }
+            ContentBlock::ImageAsset(asset) => {
+                parts.push(json!({
+                    "type": "image_asset",
+                    "asset_id": asset.asset_id,
+                    "media_type": asset.media_type,
+                    "size_bytes": asset.size_bytes,
+                    "path": asset.path
                 }));
             }
             ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. } => {}
@@ -332,6 +493,38 @@ fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String
         "content": parts
     });
     serde_json::to_string(&payload).context("Failed to serialize tool output payload")
+}
+
+fn tool_result_image_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
+    let mut image_content = Vec::new();
+    for block in content {
+        match block {
+            ContentBlock::Image { data, media_type } => {
+                image_content.push(json!({
+                    "type": "input_image",
+                    "image_url": to_data_uri(data, media_type)
+                }));
+            }
+            ContentBlock::ImageAsset(asset) => {
+                image_content.push(image_asset_input_content(asset)?);
+            }
+            ContentBlock::Text(_)
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::ToolResult { .. } => {}
+        }
+    }
+    Ok(image_content)
+}
+
+fn image_asset_input_content(asset: &ImageAsset) -> Result<Value> {
+    // Tainted-path guard: asset paths ride through conversation state, so the
+    // read goes through the store, which honors only the file name re-rooted
+    // under the canonical assets dir.
+    let data = codescribe_core::agent::AgentAssetStore::read_image(&asset.path)?;
+    Ok(json!({
+        "type": "input_image",
+        "image_url": to_data_uri(&data, &asset.media_type)
+    }))
 }
 
 fn role_to_str(role: Role) -> &'static str {
@@ -383,9 +576,19 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_request_input_items, request_messages};
-    use codescribe_core::agent::{ContentBlock, Message, Role};
+    use super::{
+        OpenAiProvider, build_request_input_items, format_tool_output,
+        forward_events_and_track_chain, request_messages,
+    };
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use codescribe_core::agent::{
+        AgentAssetStore, AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions,
+    };
+    use reqwest::Client;
     use serde_json::json;
+    use tokio::sync::{Mutex, mpsc};
 
     #[test]
     fn request_messages_replays_full_history_without_previous_response_id() {
@@ -466,5 +669,515 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["type"], "function_call_output");
         assert_eq!(items[0]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn build_request_input_items_uses_output_text_for_assistant_history() {
+        let messages = vec![
+            Message::new(Role::User, vec![ContentBlock::Text("question".to_string())]),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("answer".to_string())],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text("follow-up".to_string())],
+            ),
+        ];
+
+        let items =
+            build_request_input_items(&messages, None).expect("request input items should build");
+
+        assert_eq!(items[0]["content"][0]["type"], "input_text");
+        assert_eq!(items[1]["role"], "assistant");
+        assert_eq!(items[1]["content"][0]["type"], "output_text");
+        assert_eq!(items[2]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn format_tool_output_omits_raw_image_base64() {
+        let output = format_tool_output(
+            &[ContentBlock::Image {
+                data: b"not really a png".to_vec(),
+                media_type: "image/png".to_string(),
+            }],
+            false,
+        )
+        .expect("tool output should serialize");
+
+        assert!(output.contains("image_reference"));
+        assert!(output.contains("data_omitted"));
+        assert!(!output.contains("bm90IHJlYWxseSBhIHBuZw"));
+    }
+
+    #[test]
+    fn tool_result_image_asset_adds_native_input_image_item() {
+        let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
+            .expect("image asset should save");
+        let asset_id = asset.asset_id.clone();
+        let asset_path = asset.path.clone();
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_screenshot".to_string(),
+                content: vec![ContentBlock::ImageAsset(asset)],
+                is_error: false,
+            }],
+        )];
+
+        let items = build_request_input_items(&messages, None)
+            .expect("request input items should include image asset");
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["type"], "function_call_output");
+        assert!(
+            items[0]["output"]
+                .as_str()
+                .expect("tool output should be a string")
+                .contains(&asset_id)
+        );
+        assert_eq!(items[1]["type"], "message");
+        assert_eq!(items[1]["content"][0]["type"], "input_image");
+        assert!(
+            items[1]["content"][0]["image_url"]
+                .as_str()
+                .expect("image_url should be a string")
+                .starts_with("data:image/png;base64,")
+        );
+        std::fs::remove_file(asset_path).ok();
+    }
+
+    #[tokio::test]
+    async fn stream_surfaces_sse_error_event_as_specific_agent_error() {
+        let mut server = mockito::Server::new_async().await;
+        let body = [
+            "event: error",
+            r#"data: {"error":{"message":"'list' object has no attribute 'uid'","code":"internal_error"}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: format!("{}/v1/responses", server.url()),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-5.5".to_string(),
+            use_previous_response_id: false,
+            previous_response_id: Arc::new(Mutex::new(None)),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+        };
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("hello".to_string())],
+        )];
+
+        let mut rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("agent provider stream should start");
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("agent provider should emit an error event before timeout")
+            .expect("agent provider should emit one event");
+
+        match event {
+            AgentEvent::Error(message) => {
+                assert!(message.contains("Agent SSE error internal_error"));
+                assert!(message.contains("'list' object has no attribute 'uid'"));
+                assert!(!message.contains("AgentSession send failed"));
+            }
+            other => panic!("expected AgentEvent::Error, got {other:?}"),
+        }
+        mock.assert_async().await;
+    }
+
+    /// Operator's spec 2026-05-26 (4th iteration): retry attempts must NOT
+    /// resend prior chain via stored previous_response_id. `apply_chain_reset`
+    /// is the focused helper — when `options.reset_chain == true`, it clears
+    /// any stored chain BEFORE the request is built.
+    #[tokio::test]
+    async fn apply_chain_reset_clears_stored_previous_response_id_when_requested() {
+        let stored_chain = Arc::new(Mutex::new(Some("resp_prev_failed".to_string())));
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-5.5".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::clone(&stored_chain),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+        };
+
+        // Pre-condition: stored chain holds prior failed attempt's response id.
+        assert_eq!(
+            stored_chain.lock().await.as_deref(),
+            Some("resp_prev_failed")
+        );
+
+        let options = StreamOptions {
+            reset_chain: true,
+            ..StreamOptions::default()
+        };
+        provider.apply_chain_reset(&options).await;
+
+        // Post-condition: stored chain is cleared.
+        assert!(
+            stored_chain.lock().await.is_none(),
+            "reset_chain=true must clear stored previous_response_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_chain_reset_preserves_stored_chain_when_not_requested() {
+        let stored_chain = Arc::new(Mutex::new(Some("resp_keep_me".to_string())));
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-5.5".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::clone(&stored_chain),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+        };
+
+        let options = StreamOptions::default();
+        assert!(!options.reset_chain, "default must NOT reset chain");
+
+        provider.apply_chain_reset(&options).await;
+
+        assert_eq!(
+            stored_chain.lock().await.as_deref(),
+            Some("resp_keep_me"),
+            "default options must preserve conversational chain"
+        );
+    }
+
+    /// P3.8: exercise the implicit chain invariant end-to-end across the
+    /// sequence `send -> ResponseDone(id) -> next send (trailing-user only) ->
+    /// error -> retry(reset_chain) -> success -> next (full replay)`.
+    ///
+    /// The non-fakeable proof is the number of input items handed to the
+    /// provider per phase: a present chain id sends only the trailing user
+    /// turn, while a None id (after reset) replays the full history. If a future
+    /// change makes `request_messages` truncate history at id=None, the
+    /// full-replay assertions fail.
+    #[tokio::test]
+    async fn chain_reset_then_full_replay() {
+        // Conversation history: user turn, assistant reply, follow-up user turn.
+        let history = vec![
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text("first question".to_string())],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("first answer".to_string())],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text("follow-up question".to_string())],
+            ),
+        ];
+
+        // Phase 1 — first send, no chain yet (id=None): full replay of history.
+        let phase1 =
+            build_request_input_items(&history, None).expect("phase 1 input items should build");
+        assert_eq!(
+            phase1.len(),
+            3,
+            "id=None must replay the full history (3 items)"
+        );
+
+        // Phase 2 — provider returned ResponseDone(id); next send carries the
+        // chain id, so only the trailing user turn is sent.
+        let chain_id = "resp_phase1";
+        let phase2 = build_request_input_items(&history, Some(chain_id))
+            .expect("phase 2 input items should build");
+        assert_eq!(
+            phase2.len(),
+            1,
+            "a present chain id must send only the trailing user turn"
+        );
+        assert_eq!(
+            phase2[0]["role"], "user",
+            "trailing item must be the user turn"
+        );
+
+        // Phase 3 — that turn errored; the session retry path requests a chain
+        // reset. apply_chain_reset must zero the stored chain so the rebuild
+        // sees id=None.
+        let stored_chain = Arc::new(Mutex::new(Some(chain_id.to_string())));
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-5.5".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::clone(&stored_chain),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+        };
+        let reset_options = StreamOptions {
+            reset_chain: true,
+            ..StreamOptions::default()
+        };
+        provider.apply_chain_reset(&reset_options).await;
+        let chain_after_reset = stored_chain.lock().await.clone();
+        assert!(
+            chain_after_reset.is_none(),
+            "apply_chain_reset must clear the stored chain before the retry"
+        );
+
+        // Phase 4 — retry success with id=None: full replay again, proving the
+        // invariant "id None => full replay" holds after a reset.
+        let phase4 = build_request_input_items(&history, chain_after_reset.as_deref())
+            .expect("phase 4 input items should build");
+        assert_eq!(
+            phase4.len(),
+            3,
+            "after reset (id=None) the retry must replay the full history"
+        );
+    }
+
+    /// P3.7: the detached forwarder must not advance `previous_response_id` once
+    /// the consumer has dropped its receiver. Otherwise a chain id from a turn
+    /// nobody received outlives the session and poisons the next request.
+    #[tokio::test]
+    async fn forwarder_does_not_update_chain_after_drop() {
+        let stored_chain: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        let (provider_tx, provider_rx) = mpsc::channel::<AgentEvent>(8);
+        let (consumer_tx, consumer_rx) = mpsc::channel::<AgentEvent>(8);
+
+        // Consumer is gone before any event flows through the forwarder.
+        drop(consumer_rx);
+
+        let forwarder = tokio::spawn(forward_events_and_track_chain(
+            provider_rx,
+            consumer_tx,
+            Arc::clone(&stored_chain),
+        ));
+
+        // Emit a clean ResponseDone with a real id — under a live consumer this
+        // would advance the chain.
+        provider_tx
+            .send(AgentEvent::ResponseDone {
+                response_id: Some("resp_after_drop".to_string()),
+                clean: true,
+            })
+            .await
+            .expect("provider channel should accept the event");
+        drop(provider_tx);
+
+        forwarder.await.expect("forwarder task should finish");
+
+        assert!(
+            stored_chain.lock().await.is_none(),
+            "chain must stay None when the consumer dropped before delivery"
+        );
+    }
+
+    /// Counterpart to the drop case: with a live consumer, a clean ResponseDone
+    /// advances the chain exactly once.
+    #[tokio::test]
+    async fn forwarder_updates_chain_when_delivered() {
+        let stored_chain: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        let (provider_tx, provider_rx) = mpsc::channel::<AgentEvent>(8);
+        let (consumer_tx, mut consumer_rx) = mpsc::channel::<AgentEvent>(8);
+
+        let forwarder = tokio::spawn(forward_events_and_track_chain(
+            provider_rx,
+            consumer_tx,
+            Arc::clone(&stored_chain),
+        ));
+
+        provider_tx
+            .send(AgentEvent::ResponseDone {
+                response_id: Some("resp_delivered".to_string()),
+                clean: true,
+            })
+            .await
+            .expect("provider channel should accept the event");
+
+        // Drain delivery so the forwarder commits the chain.
+        let received = consumer_rx.recv().await.expect("event should be delivered");
+        assert!(matches!(received, AgentEvent::ResponseDone { .. }));
+
+        drop(provider_tx);
+        forwarder.await.expect("forwarder task should finish");
+
+        assert_eq!(
+            stored_chain.lock().await.as_deref(),
+            Some("resp_delivered"),
+            "delivered clean ResponseDone must advance the chain"
+        );
+    }
+
+    /// P1.6: a DIRTY terminal (`clean=false`, e.g. EOF/timeout or a
+    /// failed/incomplete response) must RESET the chain so the next turn does a
+    /// full replay instead of resuming a poisoned `previous_response_id`.
+    #[tokio::test]
+    async fn dirty_terminal_resets_chain() {
+        // Pre-existing chain from a prior clean turn.
+        let stored_chain: Arc<Mutex<Option<String>>> =
+            Arc::new(Mutex::new(Some("resp_prev_clean".to_string())));
+
+        let (provider_tx, provider_rx) = mpsc::channel::<AgentEvent>(8);
+        let (consumer_tx, mut consumer_rx) = mpsc::channel::<AgentEvent>(8);
+
+        let forwarder = tokio::spawn(forward_events_and_track_chain(
+            provider_rx,
+            consumer_tx,
+            Arc::clone(&stored_chain),
+        ));
+
+        // Synthetic dirty terminal: an id may still be present, but clean=false.
+        provider_tx
+            .send(AgentEvent::ResponseDone {
+                response_id: Some("resp_dirty".to_string()),
+                clean: false,
+            })
+            .await
+            .expect("provider channel should accept the event");
+
+        let received = consumer_rx.recv().await.expect("event should be delivered");
+        assert!(matches!(
+            received,
+            AgentEvent::ResponseDone { clean: false, .. }
+        ));
+
+        drop(provider_tx);
+        forwarder.await.expect("forwarder task should finish");
+
+        assert!(
+            stored_chain.lock().await.is_none(),
+            "dirty terminal must reset the chain to None for full replay"
+        );
+    }
+
+    /// P2.13 end-to-end (provider): a `response.failed` terminal arriving over
+    /// the real `stream()` path must reset the provider's stored
+    /// `previous_response_id`. The parser emits a dirty `ResponseDone` ahead of
+    /// the error, the forwarder consumes it, and the chain returns to None so the
+    /// next turn full-replays instead of resuming a poisoned chain.
+    #[tokio::test]
+    async fn failed_terminal_resets_provider_chain_end_to_end() {
+        let mut server = mockito::Server::new_async().await;
+        let body = [
+            r#"data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_e2e_fail"}}"#,
+            "",
+            r#"data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_e2e_fail","status":"failed","error":{"code":"server_error","message":"boom"}}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        // Pre-existing chain from a prior clean turn — this is the poisoned id.
+        let stored_chain = Arc::new(Mutex::new(Some("resp_prev_clean".to_string())));
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: format!("{}/v1/responses", server.url()),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-5.5".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::clone(&stored_chain),
+            initial_response_timeout: Duration::from_secs(2),
+            inter_chunk_timeout: Duration::from_secs(2),
+        };
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("hello".to_string())],
+        )];
+
+        let mut rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("agent provider stream should start");
+
+        // Drain the dirty ResponseDone (resets the chain) and the Error.
+        let first = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("first event should arrive")
+            .expect("first event present");
+        assert!(
+            matches!(first, AgentEvent::ResponseDone { clean: false, .. }),
+            "expected dirty ResponseDone first, got {first:?}"
+        );
+        let second = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("second event should arrive")
+            .expect("second event present");
+        assert!(
+            matches!(second, AgentEvent::Error(_)),
+            "expected Error after dirty terminal, got {second:?}"
+        );
+        // Drain any trailing events until the channel closes so the forwarder
+        // has committed the reset.
+        while tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("recv should not time out while draining")
+            .is_some()
+        {}
+
+        assert!(
+            stored_chain.lock().await.is_none(),
+            "failed terminal must reset the provider chain to None for full replay"
+        );
+        mock.assert_async().await;
+    }
+
+    /// P1.6 counterpart: a clean terminal must NOT be downgraded — the chain
+    /// advances even when a prior chain id was present.
+    #[tokio::test]
+    async fn clean_terminal_keeps_chain() {
+        let stored_chain: Arc<Mutex<Option<String>>> =
+            Arc::new(Mutex::new(Some("resp_prev".to_string())));
+
+        let (provider_tx, provider_rx) = mpsc::channel::<AgentEvent>(8);
+        let (consumer_tx, mut consumer_rx) = mpsc::channel::<AgentEvent>(8);
+
+        let forwarder = tokio::spawn(forward_events_and_track_chain(
+            provider_rx,
+            consumer_tx,
+            Arc::clone(&stored_chain),
+        ));
+
+        provider_tx
+            .send(AgentEvent::ResponseDone {
+                response_id: Some("resp_next_clean".to_string()),
+                clean: true,
+            })
+            .await
+            .expect("provider channel should accept the event");
+
+        let _ = consumer_rx.recv().await.expect("event should be delivered");
+        drop(provider_tx);
+        forwarder.await.expect("forwarder task should finish");
+
+        assert_eq!(
+            stored_chain.lock().await.as_deref(),
+            Some("resp_next_clean"),
+            "clean terminal must advance the chain"
+        );
     }
 }

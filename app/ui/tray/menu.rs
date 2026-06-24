@@ -4,10 +4,10 @@
 //! - Status line (dynamic)
 //! - Show Agent / Open history / Copy last
 //! - Notes ▸ / Diagnostics ▸
-//! - Quick Start / Help / About
+//! - Continue Onboarding / Settings / Help / About
 //! - Quit
 //!
-//! Note: Settings options moved to Settings tab in Chat Overlay
+//! Note: Settings opens the persistent Settings window.
 
 use std::cell::RefCell;
 
@@ -20,7 +20,7 @@ use codescribe_core::vad;
 
 use crate::config::Config;
 use crate::tray::state::NOTES_MENU_ITEMS;
-use crate::tray::types::{MenuIds, NotesMenuItems};
+use crate::tray::types::{MenuIds, NotesMenuItems, TrayStatus};
 
 // Thread-local storage for menu items that need dynamic updates
 thread_local! {
@@ -28,20 +28,20 @@ thread_local! {
     pub static STATUS_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
     pub static QUALITY_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
     pub static SILERO_VAD_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
-    pub static COMPLETE_SETUP_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
+    pub static CONTINUE_ONBOARDING_MENU_ITEM: RefCell<Option<MenuItem>> = const { RefCell::new(None) };
 }
 
 /// Build the tray menu
 ///
-/// Note: Settings moved to Settings tab in Chat Overlay
-pub fn build_menu() -> Result<(Menu, MenuIds)> {
+/// Note: Settings opens the persistent Settings window.
+pub fn build_menu(initial_status: TrayStatus) -> Result<(Menu, MenuIds)> {
     let menu = Menu::new();
     ROOT_MENU.with(|cell| {
         *cell.borrow_mut() = Some(menu.clone());
     });
 
     // 1. Status line (disabled, dynamic text)
-    let status_item = MenuItem::new("Status: Idle", false, None);
+    let status_item = MenuItem::new(initial_status.menu_label(), false, None);
     menu.append(&status_item)?;
 
     // Store for dynamic updates
@@ -115,9 +115,13 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
     diagnostics_menu.append(&copy_diag_item)?;
 
     // Quality menu item (shows pending mismatches from daemon)
-    let state = crate::quality_loop::read_daemon_state();
-    let quality_label = if !state.available {
-        "Quality: unavailable".to_string()
+    let snapshot = crate::qube_lifecycle::dashboard_snapshot();
+    let state = &snapshot.daemon_state;
+    let quality_label = if !snapshot.available {
+        match &snapshot.lifecycle {
+            crate::qube_lifecycle::QubeLifecycleState::Disabled => "Quality: disabled".to_string(),
+            _ => "Quality: unavailable".to_string(),
+        }
     } else if state.pending_mismatches > 0 {
         format!("Quality: {} pending", state.pending_mismatches)
     } else {
@@ -147,17 +151,16 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
 
     menu.append(&PredefinedMenuItem::separator())?;
 
-    let show_complete_setup = crate::should_show_onboarding() || crate::should_show_bootstrap();
-    let complete_setup_id = if show_complete_setup {
-        let complete_setup_item = MenuItem::new("Complete Setup...", true, None);
-        let id = complete_setup_item.id().clone();
-        menu.append(&complete_setup_item)?;
-        COMPLETE_SETUP_MENU_ITEM.with(|cell| {
-            *cell.borrow_mut() = Some(complete_setup_item);
+    let continue_onboarding_id = if crate::should_show_onboarding() {
+        let continue_onboarding_item = MenuItem::new("Continue Onboarding...", true, None);
+        let id = continue_onboarding_item.id().clone();
+        menu.append(&continue_onboarding_item)?;
+        CONTINUE_ONBOARDING_MENU_ITEM.with(|cell| {
+            *cell.borrow_mut() = Some(continue_onboarding_item);
         });
         Some(id)
     } else {
-        COMPLETE_SETUP_MENU_ITEM.with(|cell| {
+        CONTINUE_ONBOARDING_MENU_ITEM.with(|cell| {
             *cell.borrow_mut() = None;
         });
         None
@@ -193,7 +196,7 @@ pub fn build_menu() -> Result<(Menu, MenuIds)> {
             copy_last: copy_last_id,
             show_overlay: show_overlay_id,
             open_settings: settings_id,
-            complete_setup: complete_setup_id,
+            continue_onboarding: continue_onboarding_id,
             open_history: open_history_id,
             copy_diagnostics: copy_diag_id,
             help: help_id,
@@ -225,9 +228,13 @@ pub fn update_status_label(label: &str) {
 /// Update the quality label in the menu
 /// Call this periodically to reflect daemon state changes
 pub fn update_quality_label() {
-    let state = crate::quality_loop::read_daemon_state();
-    let label = if !state.available {
-        "Quality: unavailable".to_string()
+    let snapshot = crate::qube_lifecycle::dashboard_snapshot();
+    let state = &snapshot.daemon_state;
+    let label = if !snapshot.available {
+        match &snapshot.lifecycle {
+            crate::qube_lifecycle::QubeLifecycleState::Disabled => "Quality: disabled".to_string(),
+            _ => "Quality: unavailable".to_string(),
+        }
     } else if state.pending_mismatches > 0 {
         format!("Quality: {} pending", state.pending_mismatches)
     } else {
@@ -259,18 +266,18 @@ pub fn update_silero_vad_label() {
     });
 }
 
-pub fn update_complete_setup_item() {
-    if crate::should_show_setup() {
+pub fn update_onboarding_item() {
+    if crate::should_show_onboarding() {
         return;
     }
 
     let menu = ROOT_MENU.with(|cell| cell.borrow().clone());
-    let complete_setup_item = COMPLETE_SETUP_MENU_ITEM.with(|cell| cell.borrow_mut().take());
-    if let (Some(menu), Some(item)) = (menu, complete_setup_item)
+    let onboarding_item = CONTINUE_ONBOARDING_MENU_ITEM.with(|cell| cell.borrow_mut().take());
+    if let (Some(menu), Some(item)) = (menu, onboarding_item)
         && let Err(err) = menu.remove(&item)
     {
-        debug!("Failed to remove Complete Setup menu item: {}", err);
-        COMPLETE_SETUP_MENU_ITEM.with(|cell| {
+        debug!("Failed to remove Continue Onboarding menu item: {}", err);
+        CONTINUE_ONBOARDING_MENU_ITEM.with(|cell| {
             *cell.borrow_mut() = Some(item);
         });
     }
@@ -280,10 +287,11 @@ pub fn update_complete_setup_item() {
 mod tests {
     fn menu_labels_for_test() -> Vec<String> {
         vec![
-            "Status: Idle".to_string(),
+            "Status: Starting...".to_string(),
             "Show Agent".to_string(),
             "Open history...".to_string(),
             "Copy last transcript".to_string(),
+            "Continue Onboarding...".to_string(),
             "Settings".to_string(),
             "Help".to_string(),
             "About".to_string(),
@@ -297,5 +305,12 @@ mod tests {
         let labels = menu_labels_for_test();
         let found = labels.iter().any(|label| label == "Show Agent");
         assert!(found, "Show Agent menu item missing");
+    }
+
+    #[test]
+    fn tray_menu_uses_onboarding_vocabulary() {
+        let labels = menu_labels_for_test();
+        assert!(labels.iter().any(|label| label == "Continue Onboarding..."));
+        assert!(!labels.iter().any(|label| label.contains("Setup")));
     }
 }

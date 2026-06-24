@@ -1,11 +1,8 @@
-//! Global Whisper engine singleton - model welded to the process.
+//! Global Whisper engine singleton with embedded-first model provisioning.
 //!
-//! Release builds: Model bytes are embedded in binary, loaded directly to GPU.
-//! Zero disk I/O, zero temp files, zero extraction.
-//!
-//! Debug builds: Uses CODESCRIBE_MODEL_PATH or bundled .app model.
-//!
-//! Created by M&K (c)2026 VetCoders
+//! The canonical product path is an embedded Whisper payload built into the
+//! binary. Runtime lookup remains as a fallback for explicit no-embed builds,
+//! developer overrides, and recovery when the payload is unavailable.
 
 // This entire module is a public API for library consumers
 
@@ -13,99 +10,36 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result, anyhow};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::Config;
-use crate::config::models::ModelManager;
-use crate::hf_cache;
-use crate::pipeline::contracts::RawTranscript;
+use crate::config::models::resolve_runtime_whisper_model_path;
+use crate::pipeline::contracts::{FileTranscriptionOptions, RawTranscript, TranscriptionVerdict};
 
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
 
 /// Default model name (for dev/fallback mode)
-pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
-const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
+pub use crate::config::models::DEFAULT_MODEL;
 
 /// Global singleton engine
 static ENGINE: OnceLock<Mutex<LocalWhisperEngine>> = OnceLock::new();
 
-/// Model path - only used for non-embedded (dev) mode
+/// Runtime model path used only when embedded provisioning is unavailable.
 static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// Resolve the model path for dev/fallback mode
-///
-/// Only called when embedded model is NOT available.
+/// Resolve the model path for runtime Whisper fallback loading.
 fn resolve_model_path_fallback() -> Result<PathBuf> {
-    // 1. Dev override
-    if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH") {
-        let p = PathBuf::from(&path);
-        if p.join("tokenizer.json").exists() {
-            info!(
-                "DEV: Using model from CODESCRIBE_MODEL_PATH: {}",
-                p.display()
-            );
-            return Ok(p);
-        }
-        warn!("CODESCRIBE_MODEL_PATH set but model incomplete: {}", path);
-    }
-
-    // 2. Configured model (LOCAL_MODEL)
     let config = Config::load();
-    let configured_model = config.local_model;
-    if !configured_model.trim().is_empty() {
-        if configured_model.contains('/') {
-            if let Some(snapshot) = hf_cache::find_snapshot_with_any(
-                configured_model.trim(),
-                &["config.json", "tokenizer.json", "mel_filters.npz"],
-                &["weights.safetensors", "model.safetensors"],
-            ) {
-                info!("Using HF cache model: {}", snapshot.display());
-                return Ok(snapshot);
-            }
-        } else if configured_model == DEFAULT_MODEL
-            && let Some(snapshot) = hf_cache::find_snapshot_with_any(
-                DEFAULT_WHISPER_REPO,
-                &["config.json", "tokenizer.json", "mel_filters.npz"],
-                &["weights.safetensors", "model.safetensors"],
-            )
-        {
-            info!("Using HF cache model: {}", snapshot.display());
-            return Ok(snapshot);
-        }
-    }
-    if !configured_model.trim().is_empty()
-        && let Ok(manager) = ModelManager::new()
-    {
-        let candidate = manager.get_model_path(&configured_model);
-        if candidate.join("tokenizer.json").exists() {
-            info!("Using configured model: {}", candidate.display());
-            return Ok(candidate);
-        }
-    }
-
-    // 3. Bundled .app fallback (Tauri builds without embedding)
-    let exe = std::env::current_exe().context("Failed to get executable path")?;
-    let exe_dir = exe.parent().context("Failed to get executable directory")?;
-
-    let bundled_path = exe_dir.join("../Resources/models").join(DEFAULT_MODEL);
-
-    if bundled_path.join("tokenizer.json").exists() {
-        let canonical = bundled_path.canonicalize().unwrap_or(bundled_path);
-        info!("Using bundled model: {}", canonical.display());
-        return Ok(canonical);
-    }
-
-    Err(anyhow!(
-        "Whisper model not available.\n\
-         Debug builds: Set CODESCRIBE_MODEL_PATH\n\
-         Release builds: Model should be embedded\n\n\
-         Download with: hf download {}",
-        DEFAULT_WHISPER_REPO
-    ))
+    let resolved = resolve_runtime_whisper_model_path(Some(config.local_model.as_str()))?;
+    info!(
+        "Using runtime Whisper fallback model: {}",
+        resolved.display()
+    );
+    Ok(resolved)
 }
 
-/// Get the resolved model path (only for non-embedded mode)
+/// Get the resolved model path used by runtime Whisper fallback loading.
 pub fn get_model_path() -> Result<&'static PathBuf> {
     if let Some(path) = MODEL_PATH.get() {
         return Ok(path);
@@ -119,12 +53,12 @@ pub fn get_model_path() -> Result<&'static PathBuf> {
         .ok_or_else(|| anyhow!("Failed to store model path"))
 }
 
-/// Initialize the global engine (call once at startup)
+/// Initialize the global engine (call once at startup).
 ///
-/// Uses embedded model if available (zero I/O), otherwise falls back to path-based loading.
+/// Embedded Whisper is the product-default truth. Runtime path resolution is a
+/// deliberate fallback for no-embed builds and local recovery.
 pub fn init() -> Result<()> {
-    // 1. Embedded model (release builds) - ZERO DISK I/O
-    //    Model bytes → GPU tensors, no temp files
+    // 1. Primary shipped path: embedded Whisper payload.
     if let Some(embedded) = super::embedded::get_embedded_data() {
         let engine = LocalWhisperEngine::from_embedded(&embedded)
             .context("Failed to initialize from embedded model")?;
@@ -137,7 +71,7 @@ pub fn init() -> Result<()> {
         return Ok(());
     }
 
-    // 2. Fallback to path-based loading (dev mode, bundled .app)
+    // 2. Fallback path: resolve Whisper model at runtime.
     let path = get_model_path()?;
     let engine = LocalWhisperEngine::new_with_params(path, DecodingParams::default())
         .context("Failed to initialize Whisper engine from path")?;
@@ -199,27 +133,17 @@ pub fn transcribe_streaming<'a>(
     engine.transcribe_long_streaming(samples, sample_rate, language, callback)
 }
 
-/// Transcribe a file (VAD-filtered: only speech regions are sent to Whisper)
-pub fn transcribe_file(path: &std::path::Path, language: Option<&str>) -> Result<String> {
-    let (samples, sample_rate) =
-        crate::audio::load_audio_file(path).context("Failed to load audio file")?;
-
-    // Run Silero VAD to strip silence — without this, Whisper hallucinates on
-    // long recordings that are mostly silence (e.g. 4% speech / 96% silence).
-    let (speech_samples, stats) = crate::vad::extract_speech(&samples, sample_rate);
-    let total_sec = samples.len() as f32 / sample_rate as f32;
-    let speech_sec = speech_samples.len() as f32 / sample_rate as f32;
-    info!(
-        "transcribe_file VAD: {:.1}s speech / {:.1}s total ({:.0}% speech)",
-        speech_sec, total_sec, stats.speech_pct
-    );
-
-    if speech_samples.is_empty() {
-        info!("transcribe_file: no speech detected after VAD; returning empty transcript");
-        return Ok(String::new());
-    }
-
-    transcribe(&speech_samples, sample_rate, language)
+/// Transcribe a file with full structured verdict (VAD stats, confidence, provenance).
+pub fn transcribe_file_verdict(
+    path: &std::path::Path,
+    language: Option<&str>,
+    options: FileTranscriptionOptions,
+) -> Result<TranscriptionVerdict> {
+    let engine_mutex = engine()?;
+    let mut engine = engine_mutex
+        .lock()
+        .map_err(|e| anyhow!("Failed to lock engine: {}", e))?;
+    engine.transcribe_file_with_language(path, language, options)
 }
 
 /// Detect language from audio samples
@@ -235,19 +159,29 @@ pub fn detect_language(samples: &[f32], sample_rate: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
-    fn test_model_path_resolution() {
-        // This test verifies the path resolution logic works
-        // It may or may not find a model depending on environment
-        let result = resolve_model_path_fallback();
+    #[serial]
+    fn test_model_path_resolution_and_real_whisper_noop_load() {
+        let path = match resolve_model_path_fallback() {
+            Ok(path) => path,
+            Err(err) => {
+                println!("No model found (expected in CI): {err:?}");
+                return;
+            }
+        };
 
-        // In CI without model, this will fail - that's expected
-        if let Ok(path) = result {
-            assert!(path.join("tokenizer.json").exists());
-            println!("Found model at: {}", path.display());
-        } else {
-            println!("No model found (expected in CI): {:?}", result.err());
-        }
+        assert!(path.join("tokenizer.json").exists());
+        println!("Found model at: {}", path.display());
+
+        // This is the real contract we care about in core tests:
+        // if the runtime can resolve a model, Whisper must actually load and
+        // survive a no-op transcription path without mocking the engine.
+        let text = transcribe(&[], 16_000, Some("pl")).expect("Whisper no-op load should work");
+        assert!(
+            text.is_empty(),
+            "empty input should stay empty after no-op load"
+        );
     }
 }

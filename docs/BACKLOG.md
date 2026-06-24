@@ -23,7 +23,8 @@
 | Chat bubbles (user/assistant) | ✅     | `app/ui/voice_chat/mod.rs`      |
 | Streaming AI responses        | ✅     | `app/ui/voice_chat/api.rs`      |
 | Transcriptions tab            | ✅     | `app/ui/voice_chat/handlers.rs` |
-| Settings window (Bootstrap)   | ✅     | `app/ui/bootstrap/`             |
+| Settings window               | ✅     | `app/ui/settings/`              |
+| Attachments in chat           | ✅     | `app/ui/voice_chat/handlers.rs` |
 | Auto-send toggle              | ✅     | `app/ui/voice_chat/state.rs`    |
 | Collapsible right panel       | ✅     | `app/ui/voice_chat/mod.rs`      |
 
@@ -31,7 +32,7 @@
 
 | Feature                                | Status | Files                              |
 | -------------------------------------- | ------ | ---------------------------------- |
-| Embedded Whisper model (~888MB)        | ✅     | `core/stt/whisper/embedded.rs`     |
+| Runtime Whisper model lookup           | ✅     | `core/stt/whisper/`, `tests/support/e2e_stt_matrix.rs` |
 | Streaming transcription (Whisper Live) | ✅     | `core/audio/streaming_recorder.rs` |
 | IPC Server (Unix socket)               | ✅     | `app/ipc/server.rs`                |
 | Quality Loop (self-improvement)        | ✅     | `core/quality/quality_loop.rs`     |
@@ -71,22 +72,13 @@
   - Audio streaming over WebSocket
 - **Priority**: Low (current REST + SSE sufficient)
 
-### 4. Attachments in Chat
-
-- **Status**: 📋 Planned
-- **Goal**: Attach files to voice commands
-- **UI**: [📎] button in chat overlay
-- **Backend**: Multipart upload to AI provider
-
----
-
 ## 🔧 Technical Debt
 
 | Item                                   | Priority | Notes                      |
 | -------------------------------------- | -------- | -------------------------- |
-| ~~Split voice_chat_ui.rs (<1000 LOC)~~ | ✅ Done  | 4 modules created          |
+| ~~Split legacy voice chat monolith~~   | ✅ Done  | `app/ui/voice_chat/*`      |
 | ~~Split controller.rs (<1000 LOC)~~    | ✅ Done  | 4 modules created          |
-| ~~Move Settings to overlay~~           | ✅ Done  | Removed from tray menu     |
+| ~~Decouple Settings from overlay~~     | ✅ Done  | Separate settings window   |
 | Update lexicon (Roost→Rust, etc.)      | CRITICAL | `assets/programming.jsonl` |
 
 ---
@@ -95,11 +87,11 @@
 
 | Metric                | Value                |
 | --------------------- | -------------------- |
-| Total Rust LOC        | ~15,000              |
-| codescribe-core       | ~8,000 LOC           |
-| codescribe (daemon)   | ~7,000 LOC           |
-| Binary size (release) | ~900 MB (with model) |
-| Model size (embedded) | ~888 MB              |
+| Total Rust LOC        | ~84,500              |
+| `core/`               | ~38,000 LOC          |
+| `app/`                | ~37,000 LOC          |
+| `tests/`              | ~6,800 LOC           |
+| Whisper packaging     | Embedded-first       |
 
 ---
 

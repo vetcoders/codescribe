@@ -179,6 +179,13 @@ category = "streaming"
 description = "Override silence duration before utterance flush in buffered mode (sec)"
 range = "0.1-10.0"
 
+[vars.TRANSCRIPTION_OVERLAY_ENABLED]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "ui"
+description = "Enable live non-assistive transcription overlay; when disabled the next capture uses a buffered no-overlay profile"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -246,6 +253,48 @@ type = "string"
 reload = "restart"
 category = "stt"
 description = "STT engine: candle (default), onnx, or apple (SpeechAnalyzer on macOS 26+)"
+
+[vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Enable thermal-aware STT scheduling backoff"
+
+[vars.CODESCRIBE_STT_MIN_INFER_INTERVAL_MS]
+default = "180"
+type = "int"
+reload = "restart"
+category = "stt"
+description = "Minimum interval between live STT inference jobs in milliseconds"
+
+[vars.CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS]
+default = "350"
+type = "int"
+reload = "restart"
+category = "stt"
+description = "Minimum interval between committed STT inference jobs in milliseconds"
+
+[vars.CODESCRIBE_STT_THERMAL_FAIR_MULT]
+default = "1.0"
+type = "float"
+reload = "restart"
+category = "stt"
+description = "Thermal multiplier for fair system thermal pressure"
+
+[vars.CODESCRIBE_STT_THERMAL_SERIOUS_MULT]
+default = "2.0"
+type = "float"
+reload = "restart"
+category = "stt"
+description = "Thermal multiplier for serious system thermal pressure"
+
+[vars.CODESCRIBE_STT_THERMAL_CRITICAL_MULT]
+default = "4.0"
+type = "float"
+reload = "restart"
+category = "stt"
+description = "Thermal multiplier for critical system thermal pressure"
 
 [vars.CODESCRIBE_APPLE_STT_BRIDGE]
 default = "codescribe-stt-bridge"
@@ -317,6 +366,13 @@ reload = "restart"
 category = "stt"
 description = "Run final-pass local STT on full audio (overrides streaming output)"
 
+[vars.CODESCRIBE_TOGGLE_FINAL_PASS]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Use saved-WAV final-pass adjudication when stopping toggle dictation (0 restores preview-only stop path)"
+
 [vars.CODESCRIBE_HF_CACHE]
 default = ""
 type = "string"
@@ -381,6 +437,20 @@ type = "bool"
 reload = "restart"
 category = "llm"
 description = "Enable AI formatting of transcripts"
+
+[vars.CODESCRIBE_TRANSCRIPT_TAGGING]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "llm"
+description = "Override settings.json to wrap pasted dictation transcripts in an epistemic CodeScribe tag"
+
+[vars.CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE]
+default = "<codescribe mode=\"{mode}\" lang=\"{lang}\">\\n{text}\\n</codescribe>"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Template for transcript tagging; supports {text}, {mode}, and {lang} placeholders"
 
 [vars.AI_MAX_TOKENS]
 default = "0"
@@ -572,40 +642,12 @@ description = "Override path to TTS model directory"
 # Hotkeys
 # ═══════════════════════════════════════════════════════════════════════════════
 
-[vars.HOLD_MODS]
-default = "fn"
-type = "string"
-reload = "restart"
-category = "hotkeys"
-description = "Hold modifier keys (fn|ctrl|ctrl_alt|ctrl_shift|ctrl_cmd)"
-
 [vars.HOLD_EXCLUSIVE]
 default = "1"
 type = "bool"
 reload = "restart"
 category = "hotkeys"
 description = "Exclusive hold mode (no other keys during hold)"
-
-[vars.TOGGLE_TRIGGER]
-default = "double_option"
-type = "string"
-reload = "restart"
-category = "hotkeys"
-description = "Toggle recording trigger"
-
-[vars.HOTKEY_DOUBLE_TAP_LEFT]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "hotkeys"
-description = "Legacy left double-tap toggle (superseded by TOGGLE_TRIGGER)"
-
-[vars.HOTKEY_DOUBLE_TAP_RIGHT]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "hotkeys"
-description = "Legacy right double-tap toggle (superseded by TOGGLE_TRIGGER)"
 
 [vars.HOLD_START_DELAY_MS]
 default = "800"
@@ -784,14 +826,14 @@ description = "Override .env file path"
 # Quality / Daemon
 # ═══════════════════════════════════════════════════════════════════════════════
 
-[vars.CODESCRIBE_AUTOSTART_QUALITY_DAEMON]
+[vars.QUBE_DAEMON_AUTOSTART]
 default = "0"
 type = "bool"
 reload = "restart"
 category = "quality"
-description = "Auto-start quality daemon on app launch"
+description = "Start bundled qube-daemon on app launch when available; otherwise preserve the preference for external launchd/shell automation"
 
-[vars.CODESCRIBE_LOOP_USE_CLOUD_STT]
+[vars.QUBE_DAEMON_USE_CLOUD_STT]
 default = "0"
 type = "bool"
 reload = "restart"
@@ -847,6 +889,13 @@ type = "bool"
 reload = "rebuild"
 category = "build"
 description = "Skip embedding Whisper model in binary"
+
+[vars.CODESCRIBE_EMBED_WHISPER]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "build"
+description = "Opt-in: embed Whisper model in binary (distribution builds); default loads from HF cache at runtime"
 
 [vars.CODESCRIBE_EMBED_TTS]
 default = "0"
@@ -955,3 +1004,45 @@ type = "bool"
 reload = "restart"
 category = "assistive"
 description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."
+
+[vars.ASSISTIVE_CONTEXT_PROMPT_MAX_CHARS]
+default = "5000"
+type = "usize"
+reload = "restart"
+category = "assistive"
+description = "Max characters captured from selection for assistive context prompt"
+
+[vars.CODESCRIBE_ASSISTIVE_DEADLINE_SECS]
+default = "15"
+type = "u64"
+reload = "hot"
+category = "assistive"
+description = "Timeout in seconds for assistive tasks"
+
+[vars.TRACE_PIPELINE]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "debug"
+description = "Enable verbose pipeline tracing"
+
+[vars.TRANSCRIPTION_OVERLAY_AUTO_HIDE_SECS]
+default = "4"
+type = "u64"
+reload = "hot"
+category = "ui"
+description = "Auto-hide delay for transcription overlay in seconds"
+
+[vars.VOICE_CHAT_RECENT_CONTEXT_TTL_SECS]
+default = "60"
+type = "u64"
+reload = "hot"
+category = "assistive"
+description = "TTL for recent context in voice chat (seconds)"
+
+[vars.VOICE_CHAT_RECENT_SELECTION_MAX_CHARS]
+default = "5000"
+type = "usize"
+reload = "restart"
+category = "assistive"
+description = "Max characters captured from recent selection for voice chat"

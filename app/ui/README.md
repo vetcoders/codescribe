@@ -259,7 +259,7 @@ Potential improvements:
 
 ## License
 
-BSD-4-Clause (same as parent project)
+FSL-1.1-ALv2 (same as parent project)
 
 ---
 

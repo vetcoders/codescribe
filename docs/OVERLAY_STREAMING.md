@@ -2,7 +2,51 @@
 
 > Complete data flow documentation for CodeScribe's real-time speech-to-text pipeline.
 >
+> **Re-framed 2026-05-26** as the rendering surface for the
+> [Layered Incremental Transcription Pipeline (ADR)](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md).
+> The overlay is now a 5-layer incremental theatre — _NEVER rewrites from zero, always patches in place._
+>
 > Created by M&K (c)2026 VetCoders
+
+## Layered rendering model (ADR 2026-05-26)
+
+The overlay no longer renders a single linear stream of one engine's output. It now renders
+**five concurrent layers**, each emitting events into the same already-shown text buffer:
+
+| Layer | Engine | Event types | When |
+| --- | --- | --- | --- |
+| **0 — Live** | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `Preview`, `Correction`, `UtteranceFinal` | While the user speaks — owns first commit |
+| **1 — Tail Patch** | Whisper (Candle / mlx-audio / OpenAI / libraxis) | `ReplaceRange { source: TailPatch }` | ~1 s after each utterance boundary |
+| **2 — Polish** | Local lexicon + small LLM (Bielik-11B default) | `ReplaceRange { source: Lexicon \| InlineLlm }` | Debounced after Layer 1 settles |
+| **3 — Paralingual** | Silero classifier head | `InsertAnnotation { HesitationPause \| Paralingual }` | Continuously alongside Layers 0–2 |
+| **4 — Final BAM** | Session-end contextual pass | `ReplaceRange` (cross-utterance, within bounds) + `SessionFinalised` | On `stop()` / hold-release |
+
+**Hard invariant:** every layer mutates the buffer only through bounded events
+(`Append`, `ReplaceRange`, `InsertAnnotation`, `Backspace`). No layer is allowed to wipe the
+buffer and retype. The overlay (`app/ui/overlay/mod.rs`) is the enforcement point — its render
+path rejects any payload that would replace already-shown text outside of an explicit
+`ReplaceRange { start, end }` window. See ADR §Hard invariants for the full contract and rationale.
+
+```mermaid
+flowchart LR
+    L0[Layer 0<br/>Apple live deltas]
+    L1[Layer 1<br/>Whisper tail patch]
+    L2[Layer 2<br/>Lexicon + LLM polish]
+    L3[Layer 3<br/>Silero paralingual]
+    L4[Layer 4<br/>Final BAM]
+    BUF[(Already-shown buffer<br/>Overlay render target)]
+
+    L0 -- Preview / UtteranceFinal --> BUF
+    L1 -- ReplaceRange (bounded) --> BUF
+    L2 -- ReplaceRange (bounded) --> BUF
+    L3 -- InsertAnnotation --> BUF
+    L4 -- ReplaceRange (cross-utterance) + SessionFinalised --> BUF
+```
+
+The legacy single-engine pipeline below describes **what powers Layer 0 + Layer 1's Whisper
+backend today**. It still works exactly as documented when Apple is unavailable (fallback mode).
+When Apple is the active Layer 0, the same chunker/VAD/Whisper machinery moves to background
+duty and emits Layer 1 `ReplaceRange` events instead of primary `Preview` events.
 
 ## Pipeline Overview
 
@@ -184,8 +228,11 @@ The engine emits **semantic events** — it communicates what happened, not how 
 - `Preview.text` is **utterance-local**: full post-processed text for the current utterance only.
 - On each Whisper decode, `text` replaces the previous Preview (not appended). `rev` increments.
 - After `UtteranceFinal`, the engine resets internal state — next Preview starts fresh.
-- **Sinks must track `last_preview`** and compute diffs themselves (e.g. `TranscriptDelta::from_diff`).
-- On `UtteranceFinal`, sinks must reset their diff state.
+- Presentation must keep **session structure**, not only a flat string:
+  - committed utterances that are already safe to keep
+  - one active preview/correction tail for the current utterance
+- Corrections may rewrite only the active tail. Previously committed utterances must stay append-only.
+- UI sinks still consume only backspace-encoded `TranscriptDelta` payloads; full preview snapshots must be diffed upstream before they reach overlay/chat APIs.
 
 ### Delta generation (backspace magic)
 
@@ -217,8 +264,7 @@ The `\u{0008}` character is ASCII backspace. The UI applies it character-by-char
 App runtime uses a single path:
 
 - `start_event_session` → `transcription_session` (event pipeline only).
-- Preview → computes delta via `TranscriptDelta::from_diff` → `append_*_delta`.
-- Correction → delta diff (keeps `is_streaming = true`).
+- Preview/Correction → update session transcript state (`committed utterances + active preview`) → compute a new full session target → emit only the delta needed to reach that target.
 - UtteranceFinal → utterance callback → AI pipeline (skips user bubble re-write).
 
 Legacy worker path is kept only as deprecated compatibility/diagnostic code and is not used by app runtime.

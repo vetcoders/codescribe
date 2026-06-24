@@ -11,6 +11,117 @@ async fn test_initial_state() {
 }
 
 #[tokio::test]
+async fn test_last_segment_audio_offset_initialized_to_zero() {
+    // commit_segment relies on this starting at 0 — the first segment of a
+    // toggle session clips from sample 0. start_toggle_recording then resets
+    // it to 0 again (defensive against leaking offset across sessions).
+    let controller = RecordingController::new();
+    assert_eq!(
+        controller
+            .last_segment_audio_offset
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "last_segment_audio_offset must start at 0 — commit_segment first-call \
+         contract requires snapshot from buffer start of the active toggle session"
+    );
+}
+
+#[tokio::test]
+async fn test_last_segment_audio_offset_atomic_advance_and_reset() {
+    // Smoke for the atomic ops that commit_segment + start_toggle_recording use.
+    // commit_segment: load(SeqCst) → snapshot → store(end_offset, SeqCst).
+    // start_toggle_recording: store(0, SeqCst).
+    use std::sync::atomic::Ordering;
+    let controller = RecordingController::new();
+
+    controller
+        .last_segment_audio_offset
+        .store(48000, Ordering::SeqCst);
+    assert_eq!(
+        controller.last_segment_audio_offset.load(Ordering::SeqCst),
+        48000
+    );
+
+    // Simulate start_toggle_recording's reset on new session.
+    controller
+        .last_segment_audio_offset
+        .store(0, Ordering::SeqCst);
+    assert_eq!(
+        controller.last_segment_audio_offset.load(Ordering::SeqCst),
+        0
+    );
+}
+
+#[test]
+fn test_renamed_request_recording_stop_is_callable() {
+    // Compile-time guard that the rename `request_recording_commit` →
+    // `request_recording_stop` shipped intact. If anyone re-renames or
+    // removes the function this test stops compiling. Body doesn't have to
+    // execute (OVERLAY_CONTROLLER won't be registered in tests, so the call
+    // gates out early with a warn!) — we just need the symbol to resolve.
+    let _: fn() = request_recording_stop;
+    let _: fn() = request_segment_commit;
+    let _: fn() = request_segment_commit_and_augment;
+}
+
+#[test]
+fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
+    assert_eq!(effective_hold_start_delay_ms(200, false), 200);
+    assert_eq!(effective_hold_start_delay_ms(200, true), 400);
+    assert_eq!(effective_hold_start_delay_ms(800, true), 800);
+}
+
+#[test]
+fn test_toggle_stop_watchdog_allows_default_ai_attempt_budget() {
+    assert!(
+        toggle_stop_adjudicate_timeout() >= Duration::from_secs(90),
+        "toggle stop watchdog must not fire before the default AI attempt/inter-chunk budget"
+    );
+}
+
+#[test]
+fn test_overlay_format_result_marks_failed_formatting_raw() {
+    let out = overlay_format_result_text(
+        "raw transcript",
+        crate::ai_formatting::AiFormatResult {
+            text: "raw transcript".to_string(),
+            reasoning_text: None,
+            status: crate::ai_formatting::AiFormatStatus::Failed,
+        },
+    );
+
+    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
+}
+
+#[test]
+fn test_overlay_format_result_marks_empty_formatting_output() {
+    let out = overlay_format_result_text(
+        "raw transcript",
+        crate::ai_formatting::AiFormatResult {
+            text: "   ".to_string(),
+            reasoning_text: None,
+            status: crate::ai_formatting::AiFormatStatus::Applied,
+        },
+    );
+
+    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
+}
+
+#[test]
+fn test_overlay_format_result_keeps_applied_formatting() {
+    let out = overlay_format_result_text(
+        "raw transcript",
+        crate::ai_formatting::AiFormatResult {
+            text: "Formatted transcript.".to_string(),
+            reasoning_text: None,
+            status: crate::ai_formatting::AiFormatStatus::Applied,
+        },
+    );
+
+    assert_eq!(out, "Formatted transcript.");
+}
+
+#[tokio::test]
 #[serial]
 async fn test_hold_down_schedules_delayed_start() {
     let controller = RecordingController::new();
@@ -35,6 +146,30 @@ async fn test_hold_down_schedules_delayed_start() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Should now be REC_HOLD
+    assert_eq!(controller.current_state().await, State::RecHold);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
+    let controller = RecordingController::new();
+    controller.config.write().await.hold_start_delay_ms = 200;
+
+    let event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+
+    controller.handle_hotkey_event(event).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(controller.current_state().await, State::Idle);
+
+    tokio::time::sleep(Duration::from_millis(220)).await;
     assert_eq!(controller.current_state().await, State::RecHold);
 }
 
@@ -77,6 +212,37 @@ async fn test_hold_up_before_delay_cancels() {
 
 #[tokio::test]
 #[serial]
+async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
+    let controller = RecordingController::new();
+    controller.config.write().await.hold_start_delay_ms = 200;
+
+    let down_event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+    controller.handle_hotkey_event(down_event).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let up_event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Up,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+    controller.handle_hotkey_event(up_event).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert_eq!(controller.current_state().await, State::Idle);
+}
+
+#[tokio::test]
+#[serial]
 async fn test_toggle_starts_immediately() {
     let controller = RecordingController::new();
 
@@ -96,6 +262,7 @@ async fn test_toggle_starts_immediately() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_busy_state_ignores_hotkeys() {
     let controller = RecordingController::new();
 
@@ -170,6 +337,7 @@ async fn test_is_recording_states() {
 // - Toggle (no force_ai) → respects AI_FORMATTING_ENABLED setting
 
 #[tokio::test]
+#[serial]
 async fn test_hold_down_sets_force_raw_mode() {
     let controller = RecordingController::new();
 
@@ -204,7 +372,7 @@ fn test_action_contract_mode_prefers_raw_when_forced() {
     let mode = resolve_transcription_action_contract_mode(true, false, true, true);
     assert_eq!(
         mode,
-        crate::transcription_overlay::TranscriptionActionContractMode::Raw
+        crate::ui::overlay::TranscriptionActionContractMode::Raw
     );
 }
 
@@ -213,7 +381,7 @@ fn test_action_contract_mode_uses_ai_format_when_force_ai_enabled() {
     let mode = resolve_transcription_action_contract_mode(false, true, false, false);
     assert_eq!(
         mode,
-        crate::transcription_overlay::TranscriptionActionContractMode::AiFormat
+        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
     );
 }
 
@@ -222,7 +390,7 @@ fn test_action_contract_mode_uses_ai_format_for_toggle_ai_path() {
     let mode = resolve_transcription_action_contract_mode(false, false, true, true);
     assert_eq!(
         mode,
-        crate::transcription_overlay::TranscriptionActionContractMode::AiFormat
+        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
     );
 }
 
@@ -231,11 +399,653 @@ fn test_action_contract_mode_uses_raw_for_toggle_without_ai() {
     let mode = resolve_transcription_action_contract_mode(false, false, true, false);
     assert_eq!(
         mode,
-        crate::transcription_overlay::TranscriptionActionContractMode::Raw
+        crate::ui::overlay::TranscriptionActionContractMode::Raw
+    );
+}
+
+#[test]
+fn test_truth_engine_label_maps_toggle_session_adjudicated_to_local_whisper() {
+    assert_eq!(
+        truth_engine_label(Some(RecordingTranscriptSource::ToggleSessionAdjudicated)).as_deref(),
+        Some("local_whisper")
+    );
+}
+
+#[test]
+fn test_toggle_session_adjudicated_label_is_user_facing() {
+    assert_eq!(
+        RecordingTranscriptSource::ToggleSessionAdjudicated.label(),
+        "Toggle session adjudicated"
+    );
+}
+
+#[test]
+#[serial]
+fn test_toggle_final_pass_enabled_defaults_true_and_honors_falsey_values() {
+    unsafe {
+        std::env::remove_var("CODESCRIBE_TOGGLE_FINAL_PASS");
+    }
+    assert!(toggle_final_pass_enabled());
+
+    for falsey in ["0", "false", "FALSE", "no", "off", " off ", "   "] {
+        unsafe {
+            std::env::set_var("CODESCRIBE_TOGGLE_FINAL_PASS", falsey);
+        }
+        assert!(
+            !toggle_final_pass_enabled(),
+            "expected {falsey:?} to disable toggle final pass"
+        );
+    }
+
+    unsafe {
+        std::env::set_var("CODESCRIBE_TOGGLE_FINAL_PASS", "1");
+    }
+    assert!(toggle_final_pass_enabled());
+
+    unsafe {
+        std::env::remove_var("CODESCRIBE_TOGGLE_FINAL_PASS");
+    }
+}
+
+#[test]
+fn test_should_use_toggle_adjudicated_stop_only_for_raw_toggle_when_enabled() {
+    assert!(should_use_toggle_adjudicated_stop(
+        State::RecToggle,
+        false,
+        true
+    ));
+    assert!(!should_use_toggle_adjudicated_stop(
+        State::RecToggle,
+        true,
+        true
+    ));
+    assert!(!should_use_toggle_adjudicated_stop(
+        State::RecToggle,
+        false,
+        false
+    ));
+    assert!(!should_use_toggle_adjudicated_stop(
+        State::RecHold,
+        false,
+        true
+    ));
+    assert!(!should_use_toggle_adjudicated_stop(
+        State::Busy,
+        false,
+        true
+    ));
+}
+
+#[test]
+fn test_transcript_delivery_wrap_is_default_off() {
+    let config = Config::default();
+
+    assert_eq!(
+        maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
+        "literal transcript"
+    );
+}
+
+#[test]
+fn test_transcript_delivery_wrap_uses_config_when_enabled() {
+    let config = Config {
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        ..Config::default()
+    };
+
+    assert_eq!(
+        maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
+        "<codescribe mode=\"dictation\" lang=\"pl\">\nliteral transcript\n</codescribe>"
+    );
+}
+
+#[test]
+fn test_toggle_stop_event_preserves_active_session_identity() {
+    let right_option_stop = HotkeyInput {
+        key_type: HotkeyType::Toggle,
+        action: HotkeyAction::Press,
+        assistive: true,
+        hold_mode: HoldMode::Raw,
+        force_raw: false,
+        force_ai: false,
+    };
+    assert!(
+        !should_apply_incoming_mode_flags(State::RecToggle, &right_option_stop),
+        "A stop key must not smear its assistive/formatting flags onto the active toggle session"
+    );
+    assert!(
+        should_apply_incoming_mode_flags(State::Idle, &right_option_stop),
+        "The same key still defines a new session when no toggle session is active"
     );
 }
 
 #[tokio::test]
+#[serial]
+async fn test_agent_send_in_flight_blocks_new_hotkey_starts() {
+    let controller = RecordingController::new();
+    helpers::set_agent_send_in_flight_for_test(true);
+
+    let selection_hold = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+
+    controller
+        .handle_hotkey_event(selection_hold)
+        .await
+        .expect("agent-busy hotkey block should be non-fatal");
+
+    assert_eq!(controller.current_state().await, State::Idle);
+    assert_eq!(*controller.hold_mode.read().await, HoldMode::Raw);
+    assert!(!*controller.assistive_mode.read().await);
+    helpers::set_agent_send_in_flight_for_test(false);
+}
+
+fn make_final_pass_verdict(
+    text: &str,
+    speech_pct: f32,
+    avg_logprob: Option<f32>,
+    no_speech: bool,
+) -> codescribe_core::pipeline::contracts::TranscriptionVerdict {
+    codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+        text.to_string(),
+        codescribe_core::pipeline::contracts::RawTranscript {
+            text: text.to_string(),
+            segments: Vec::new(),
+            avg_logprob,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+        },
+        Some(codescribe_core::pipeline::contracts::VadVerdict {
+            speech_pct,
+            speech_windows: if no_speech { 0 } else { 4 },
+            total_windows: 10,
+            no_speech,
+            no_speech_reason: if no_speech {
+                Some("vad_no_speech_detected".to_string())
+            } else {
+                None
+            },
+            sparkline: String::new(),
+        }),
+        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+        codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+            codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+        ),
+        None,
+    )
+}
+
+fn make_cloud_verdict(text: &str) -> crate::client::CloudTranscriptionVerdict {
+    crate::client::CloudTranscriptionVerdict {
+        text: text.to_string(),
+        source: codescribe_core::pipeline::contracts::TranscriptionSource::Cloud,
+        confidence_flags: Vec::new(),
+        latency_ms: Some(120),
+        model_name: Some("mock-cloud".to_string()),
+    }
+}
+
+#[test]
+fn test_adjudicate_recording_truth_blocks_local_no_speech() {
+    let session = SessionTelemetrySnapshot {
+        no_speech_reason: Some("telemetry_should_not_override_core".to_string()),
+        stats: None,
+    };
+
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict("", 0.0, None, true)),
+        "preview text".to_string(),
+        None,
+        &session,
+    );
+
+    assert!(verdict.raw_text.is_none());
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass)
+    );
+    assert_eq!(
+        verdict.no_speech_reason.as_deref(),
+        Some("vad_no_speech_detected")
+    );
+    assert_eq!(
+        verdict.commit_trigger.as_deref(),
+        Some("no_reliable_speech")
+    );
+    assert_eq!(verdict.display_status, "No reliable speech detected");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
+    let verdict = adjudicate_recording_truth(
+        false,
+        false,
+        None,
+        "streaming fallback".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("streaming fallback"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::StreamingFallback)
+    );
+    assert_eq!(
+        verdict.fallback_class,
+        Some(RecordingFallbackClass::Degraded)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::CloudPrimaryMissing)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::UnverifiedStream)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict)
+    );
+    assert_eq!(
+        verdict.commit_trigger.as_deref(),
+        Some("streaming_preview_used_as_verdict")
+    );
+    assert_eq!(verdict.display_status, "Streaming fallback");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_prefers_local_final_pass_over_streaming_preview() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "czysty final pass",
+            82.0,
+            Some(-0.22),
+            false,
+        )),
+        "powtarzajacy sie streaming preview".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("czysty final pass"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass)
+    );
+    assert_eq!(verdict.fallback_class, None);
+    assert!(verdict.confidence_flags.is_empty());
+    assert_eq!(verdict.commit_trigger, None);
+    assert_eq!(verdict.display_status, "Final-pass local");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_marks_raw_streaming_preview_as_degraded_fallback() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        None,
+        "toggle transcript".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("toggle transcript"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::StreamingFallback)
+    );
+    assert_eq!(
+        verdict.fallback_class,
+        Some(RecordingFallbackClass::Degraded)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::LocalFinalPassUnavailable)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::UnverifiedStream)
+    );
+    assert_eq!(
+        verdict.commit_trigger.as_deref(),
+        Some("streaming_preview_used_as_verdict")
+    );
+    assert_eq!(verdict.display_status, "Streaming fallback");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_uses_typed_cloud_primary_verdict() {
+    let verdict = adjudicate_recording_truth(
+        false,
+        false,
+        None,
+        "preview text".to_string(),
+        Some(make_cloud_verdict("cloud primary")),
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("cloud primary"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::CloudPrimary)
+    );
+    assert!(verdict.confidence_flags.is_empty());
+    assert_eq!(verdict.display_status, "Cloud primary");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_marks_low_logprob_as_unsafe() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "niepewna transkrypcja",
+            28.0,
+            Some(-1.2),
+            false,
+        )),
+        "preview text".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass)
+    );
+    assert_eq!(verdict.fallback_class, Some(RecordingFallbackClass::Unsafe));
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::PossibleHallucinationLogprob)
+    );
+    assert_eq!(
+        verdict.commit_trigger.as_deref(),
+        Some("possible_hallucination_logprob")
+    );
+    assert_eq!(verdict.display_status, "Possible hallucination");
+}
+
+#[test]
+fn test_recorder_runtime_recovery_requires_granted_microphone_and_missing_recorder() {
+    assert!(should_attempt_recorder_runtime_recovery(
+        PermissionStatus::Granted,
+        true
+    ));
+    assert!(!should_attempt_recorder_runtime_recovery(
+        PermissionStatus::Denied,
+        true
+    ));
+    assert!(!should_attempt_recorder_runtime_recovery(
+        PermissionStatus::Granted,
+        false
+    ));
+}
+
+#[test]
+fn test_recorder_recovery_message_uses_settings_language() {
+    let message = RecordingController::format_recorder_recovery_message(
+        &["Accessibility", "Microphone"],
+        "DictationHotkey",
+        "FormattingHotkey",
+        "AssistiveHotkey",
+    );
+
+    assert!(message.contains("Open Settings"));
+    assert!(!message.contains("Setup"));
+    assert!(message.contains("Accessibility, Microphone"));
+}
+
+#[test]
+fn test_backend_recovery_message_uses_settings_language() {
+    let message =
+        RecordingController::format_backend_recovery_message(Some("Cloud endpoint timed out"));
+
+    assert!(message.contains("Open Settings"));
+    assert!(!message.contains("Setup"));
+    assert!(message.contains("Cloud endpoint timed out"));
+}
+
+// ── Pure-function unit tests for truth helpers (push_typed_flag,
+//    truth_review_trigger, truth_display_status). These guard the
+//    truth-surface adjudicator primitives so regressions in precedence or
+//    dedup logic fail loudly instead of leaking through integration tests.
+
+#[test]
+fn test_push_typed_flag_appends_new_flag() {
+    let mut flags: Vec<TranscriptionConfidenceFlag> = Vec::new();
+    push_typed_flag(&mut flags, TranscriptionConfidenceFlag::CloudFallbackUsed);
+    assert_eq!(flags, vec![TranscriptionConfidenceFlag::CloudFallbackUsed]);
+}
+
+#[test]
+fn test_push_typed_flag_deduplicates_existing_flag() {
+    let mut flags = vec![TranscriptionConfidenceFlag::CloudFallbackUsed];
+    push_typed_flag(&mut flags, TranscriptionConfidenceFlag::CloudFallbackUsed);
+    assert_eq!(flags.len(), 1);
+}
+
+#[test]
+fn test_push_typed_flag_preserves_order_when_adding_distinct_flags() {
+    let mut flags: Vec<TranscriptionConfidenceFlag> = Vec::new();
+    push_typed_flag(
+        &mut flags,
+        TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
+    );
+    push_typed_flag(&mut flags, TranscriptionConfidenceFlag::CloudFallbackUsed);
+    push_typed_flag(
+        &mut flags,
+        TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
+    ); // dup
+    assert_eq!(
+        flags,
+        vec![
+            TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
+            TranscriptionConfidenceFlag::CloudFallbackUsed,
+        ]
+    );
+}
+
+#[test]
+fn test_apply_ai_noop_signal_sets_flag_and_commit_trigger() {
+    let mut flags = vec![TranscriptionConfidenceFlag::CloudFallbackUsed];
+    let mut commit_trigger = Some("high_rewrite_ratio".to_string());
+
+    apply_ai_noop_signal(false, true, &mut flags, &mut commit_trigger);
+
+    assert_eq!(
+        flags,
+        vec![
+            TranscriptionConfidenceFlag::CloudFallbackUsed,
+            TranscriptionConfidenceFlag::AiNoopDetected,
+        ]
+    );
+    assert_eq!(commit_trigger.as_deref(), Some("ai_noop"));
+}
+
+#[test]
+fn test_apply_ai_noop_signal_is_noop_for_assistive_sessions() {
+    let mut flags = vec![TranscriptionConfidenceFlag::CloudFallbackUsed];
+    let mut commit_trigger = Some("high_rewrite_ratio".to_string());
+
+    apply_ai_noop_signal(true, true, &mut flags, &mut commit_trigger);
+
+    assert_eq!(flags, vec![TranscriptionConfidenceFlag::CloudFallbackUsed]);
+    assert_eq!(commit_trigger.as_deref(), Some("high_rewrite_ratio"));
+}
+
+#[test]
+fn test_truth_review_trigger_no_speech_short_circuits_all_other_signals() {
+    let flags = vec![
+        TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
+        TranscriptionConfidenceFlag::CloudFallbackUsed,
+    ];
+    let trigger = truth_review_trigger(
+        Some(RecordingFallbackClass::Unsafe),
+        Some("vad_no_speech_detected"),
+        &flags,
+    );
+    assert_eq!(trigger.as_deref(), Some("no_reliable_speech"));
+}
+
+#[test]
+fn test_truth_review_trigger_hallucination_wins_over_degraded_fallback() {
+    let flags = vec![TranscriptionConfidenceFlag::PossibleHallucinationLogprob];
+    let trigger = truth_review_trigger(Some(RecordingFallbackClass::Degraded), None, &flags);
+    assert_eq!(trigger.as_deref(), Some("possible_hallucination_logprob"));
+}
+
+#[test]
+fn test_truth_review_trigger_very_low_speech_wins_over_streaming_preview() {
+    let flags = vec![
+        TranscriptionConfidenceFlag::VeryLowSpeech,
+        TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
+    ];
+    let trigger = truth_review_trigger(None, None, &flags);
+    assert_eq!(trigger.as_deref(), Some("very_low_speech"));
+}
+
+#[test]
+fn test_truth_review_trigger_streaming_preview_wins_over_cloud_fallback() {
+    let flags = vec![
+        TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
+        TranscriptionConfidenceFlag::CloudFallbackUsed,
+    ];
+    let trigger = truth_review_trigger(None, None, &flags);
+    assert_eq!(
+        trigger.as_deref(),
+        Some("streaming_preview_used_as_verdict")
+    );
+}
+
+#[test]
+fn test_truth_review_trigger_cloud_fallback_flag_wins_over_acceptable_class() {
+    let flags = vec![TranscriptionConfidenceFlag::CloudFallbackUsed];
+    let trigger = truth_review_trigger(Some(RecordingFallbackClass::Acceptable), None, &flags);
+    assert_eq!(trigger.as_deref(), Some("cloud_fallback_used"));
+}
+
+#[test]
+fn test_truth_review_trigger_degraded_fallback_when_no_confidence_flags() {
+    let trigger = truth_review_trigger(Some(RecordingFallbackClass::Degraded), None, &[]);
+    assert_eq!(trigger.as_deref(), Some("degraded_fallback"));
+}
+
+#[test]
+fn test_truth_review_trigger_unsafe_fallback_when_no_confidence_flags() {
+    let trigger = truth_review_trigger(Some(RecordingFallbackClass::Unsafe), None, &[]);
+    assert_eq!(trigger.as_deref(), Some("unsafe_fallback"));
+}
+
+#[test]
+fn test_truth_review_trigger_acceptable_class_returns_none() {
+    assert!(truth_review_trigger(Some(RecordingFallbackClass::Acceptable), None, &[]).is_none());
+    assert!(truth_review_trigger(None, None, &[]).is_none());
+}
+
+#[test]
+fn test_truth_review_trigger_ignores_silero_tail_drop_flag() {
+    let flags = vec![TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 5 }];
+    assert!(truth_review_trigger(None, None, &flags).is_none());
+}
+
+#[test]
+fn test_truth_display_status_no_speech_is_user_facing_english() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        Some(RecordingFallbackClass::Unsafe),
+        Some("vad_no_speech_detected"),
+        &[TranscriptionConfidenceFlag::PossibleHallucinationLogprob],
+    );
+    assert_eq!(status, "No reliable speech detected");
+}
+
+#[test]
+fn test_truth_display_status_hallucination_wins_over_source_label() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        None,
+        None,
+        &[TranscriptionConfidenceFlag::PossibleHallucinationLogprob],
+    );
+    assert_eq!(status, "Possible hallucination");
+}
+
+#[test]
+fn test_truth_display_status_very_low_speech_wins_over_fallback_class() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        Some(RecordingFallbackClass::Degraded),
+        None,
+        &[TranscriptionConfidenceFlag::VeryLowSpeech],
+    );
+    assert_eq!(status, "Very low speech");
+}
+
+#[test]
+fn test_truth_display_status_streaming_fallback_short_circuits_fallback_label() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::StreamingFallback),
+        Some(RecordingFallbackClass::Degraded),
+        None,
+        &[],
+    );
+    assert_eq!(status, "Streaming fallback");
+}
+
+#[test]
+fn test_truth_display_status_composes_source_and_fallback_labels() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        Some(RecordingFallbackClass::Degraded),
+        None,
+        &[],
+    );
+    assert_eq!(status, "Final-pass local (degraded fallback)");
+}
+
+#[test]
+fn test_truth_display_status_source_only_uses_source_label() {
+    let status = truth_display_status(
+        Some(RecordingTranscriptSource::CloudPrimary),
+        None,
+        None,
+        &[],
+    );
+    assert_eq!(status, "Cloud primary");
+}
+
+#[test]
+fn test_truth_display_status_fallback_only_uses_fallback_label() {
+    let status = truth_display_status(None, Some(RecordingFallbackClass::Unsafe), None, &[]);
+    assert_eq!(status, "unsafe fallback");
+}
+
+#[test]
+fn test_truth_display_status_defaults_to_ready_when_no_signals() {
+    let status = truth_display_status(None, None, None, &[]);
+    assert_eq!(status, "Transcript ready");
+}
+
+#[tokio::test]
+#[serial]
 async fn test_toggle_press_does_not_set_force_raw_mode() {
     let controller = RecordingController::new();
 
@@ -262,6 +1072,7 @@ async fn test_toggle_press_does_not_set_force_raw_mode() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_toggle_press_sets_force_ai_mode() {
     let controller = RecordingController::new();
 
@@ -311,6 +1122,7 @@ async fn test_left_double_option_does_not_switch_to_assistive_routing() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hold_with_shift_sets_assistive_not_force_raw() {
     let controller = RecordingController::new();
 
@@ -337,6 +1149,7 @@ async fn test_hold_with_shift_sets_assistive_not_force_raw() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
     let controller = RecordingController::new();
 
@@ -379,6 +1192,7 @@ async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hold_up_preserves_mode_flags_when_idle() {
     let controller = RecordingController::new();
 
@@ -470,6 +1284,7 @@ async fn test_reset_clears_all_mode_flags() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_mode_matrix_coverage() {
     // This test documents all possible mode combinations:
     //
@@ -707,33 +1522,49 @@ fn test_quality_gate_triggers_commit_when_ai_failed() {
     let trigger = evaluate_quality_commit_trigger(
         false,
         &probe,
-        crate::state::history::TranscriptKind::AiFailed,
+        crate::state::history::TranscriptKind::FormattingFailed,
     );
     assert_eq!(trigger, Some("ai_failed_fallback"));
 }
 
 #[test]
+fn test_quality_gate_catches_short_ai_rewrites_in_danger_zone() {
+    let stats = crate::stream_postprocess::StreamPostProcessStats {
+        input_chunks: 4,
+        dropped_chunks: 0,
+        ..Default::default()
+    };
+    let probe = ActionQualityProbe::from_transcripts("abcdefghijk", "qrstuvwxyz!", &stats);
+    let trigger = evaluate_quality_commit_trigger(
+        false,
+        &probe,
+        crate::state::history::TranscriptKind::FormattedTranscript,
+    );
+    assert_eq!(trigger, Some("high_rewrite_ratio"));
+}
+
+#[test]
 fn test_delta_first_guards_block_full_rewrite_in_live_stream() {
     assert!(!should_allow_full_user_bubble_rewrite(false, false, true));
-    assert!(!should_allow_full_assistant_rewrite(false, true));
     assert!(!should_apply_transcription_action_contract(false, true));
 }
 
 #[test]
 fn test_delta_first_guards_allow_full_rewrite_offline() {
     assert!(should_allow_full_user_bubble_rewrite(false, false, false));
-    assert!(should_allow_full_assistant_rewrite(false, false));
     assert!(should_apply_transcription_action_contract(false, false));
 }
 
 #[test]
 fn test_process_recording_outcome_no_speech_is_soft() {
-    let outcome = ProcessRecordingOutcome::no_speech("vad_no_speech_detected");
+    let outcome =
+        ProcessRecordingOutcome::no_speech("vad_no_speech_detected", "No reliable speech detected");
     assert_eq!(
         outcome.no_speech_reason.as_deref(),
         Some("vad_no_speech_detected")
     );
     assert!(outcome.commit_trigger.is_none());
+    assert_eq!(outcome.final_status, "No reliable speech detected");
 }
 
 #[tokio::test]
@@ -881,4 +1712,47 @@ async fn test_reset_session_after_start_failure_clears_transient_state() {
             .load(std::sync::atomic::Ordering::SeqCst)
     );
     assert!(!is_assistive_session());
+}
+
+/// Regression guard for the toggle-stop self-deadlock (root cause behind
+/// commit 91b2346's watchdog).
+///
+/// Reproduces the exact lock pattern that hung `stop_toggle_and_adjudicate_inner`
+/// on operator's daily-driver: in Rust 2024 edition, the temporary
+/// `RwLockReadGuard` produced by an `if let Some(x) = lock.read().await.clone()`
+/// scrutinee lives until the end of the if-let block, so the task awaiting
+/// `lock.write()` inside the body deadlocks on its own read guard. The fix is to
+/// materialize the snapshot into a `let` binding first; the guard then drops at
+/// the semicolon and the subsequent `.write().await` resolves immediately.
+///
+/// If anyone reverts the snapshot pattern back to an inline `read().await.clone()`
+/// scrutinee, this test times out in 2s and fails — well under the 45s watchdog
+/// so the regression surfaces in CI/local test runs, not after a stuck recording.
+#[tokio::test]
+async fn rwlock_session_id_read_then_write_does_not_self_deadlock() {
+    use tokio::sync::RwLock;
+
+    let lock = RwLock::new(Some("session-xyz".to_string()));
+
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        let snapshot = lock.read().await.clone();
+        if let Some(current) = snapshot {
+            *lock.write().await = Some(format!("{current}:stopping"));
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "session_id read-snapshot + write pattern self-deadlocked — if the inline \
+         `if let Some(x) = lock.read().await.clone() {{ ... lock.write().await ... }}` \
+         pattern returned, the Rust 2024 if-let temporary scope extension is back. \
+         See commit fixing fix/toggle-stuck-watchdog."
+    );
+
+    assert_eq!(
+        *lock.read().await,
+        Some("session-xyz:stopping".to_string()),
+        "expected the write to land after the read guard dropped"
+    );
 }

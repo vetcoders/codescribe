@@ -195,6 +195,9 @@ fn mode_binding_contract_uses_settings_when_env_path_is_overridden() {
 
     let _g0 = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path().to_string_lossy().as_ref());
     let _g1 = EnvGuard::set("CODESCRIBE_ENV_PATH", env_path.to_string_lossy().as_ref());
+    let _g2 = EnvGuard::unset("WHISPER_LANGUAGE");
+    let _g3 = EnvGuard::unset("HOLD_MODS");
+    let _g4 = EnvGuard::unset("TOGGLE_TRIGGER");
 
     let cfg = Config::load();
     assert_eq!(cfg.whisper_language.as_str(), "en");

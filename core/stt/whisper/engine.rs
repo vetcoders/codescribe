@@ -6,8 +6,6 @@
 //! Supports two loading modes:
 //! - `new(path)` - load from filesystem (development, external models)
 //! - `from_embedded()` - load from binary-embedded bytes (production, zero I/O)
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::{Context, Result, anyhow, ensure};
 use std::collections::HashMap;
@@ -29,7 +27,14 @@ use tokenizers::Tokenizer;
 use super::model::Whisper as Model;
 use super::timestamps::{self, TimestampRange};
 use crate::audio::loader as audio_loader;
-use crate::pipeline::contracts::RawTranscript;
+use crate::pipeline::contracts::{
+    FileTranscriptionOptions, FinalPassDisposition, FinalPassMode, FinalPassVerdict, RawTranscript,
+    TranscriptionEngineMode, TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict,
+    VadVerdict,
+};
+use crate::pipeline::stream_postprocess::{
+    StreamPostProcessStats, StreamPostProcessor, final_pass_guardrail_reason,
+};
 use crate::safe_path;
 
 use super::embedded::EmbeddedModel;
@@ -38,6 +43,131 @@ use super::params::DecodingParams;
 /// Callback for streaming chunk results (called after each chunk is transcribed)
 pub type ChunkCallback<'a> = &'a dyn Fn(&str);
 
+/// Average decoder tokens per spoken word (BPE subwords + punctuation). Used to
+/// convert the words-per-second cap into a token budget for the runaway
+/// watchdog. Conservative (higher = looser budget).
+const RUNAWAY_TOKENS_PER_WORD: f32 = 2.0;
+
+/// Safety margin on the runaway token budget so legitimate fast/long speech is
+/// never cut: the watchdog only fires well past any plausible real word rate.
+const RUNAWAY_BUDGET_MARGIN: f32 = 2.0;
+
+/// Minimum token budget for the runaway watchdog regardless of audio length, so
+/// very short chunks still get enough headroom to emit normal short utterances.
+const RUNAWAY_MIN_BUDGET: usize = 64;
+
+/// Token budget for the in-loop runaway watchdog given the chunk audio length.
+///
+/// Derived from the shared words-per-second cap
+/// (`quality_gate::MAX_WORDS_PER_SEC`) times tokens-per-word and a generous
+/// safety margin. When generated tokens exceed this budget the decode loop bails
+/// instead of paying the full O(n^2)/O(n^3) cost of a runaway hallucination.
+fn runaway_token_budget(audio_sec: f32) -> usize {
+    let raw = (crate::pipeline::streaming::quality_gate::MAX_WORDS_PER_SEC
+        * audio_sec.max(0.0)
+        * RUNAWAY_TOKENS_PER_WORD
+        * RUNAWAY_BUDGET_MARGIN)
+        .ceil();
+    (raw as usize).max(RUNAWAY_MIN_BUDGET)
+}
+
+fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option<FinalPassVerdict> {
+    match options.final_pass {
+        FinalPassMode::None => None,
+        mode => Some(FinalPassVerdict {
+            mode,
+            disposition: FinalPassDisposition::Skipped,
+            reason: Some(reason.to_string()),
+            lexicon_rewrites: 0,
+            repetition_cleanups: 0,
+        }),
+    }
+}
+
+fn finalize_requested_final_pass(
+    raw_text: &str,
+    candidate_text: String,
+    mode: FinalPassMode,
+    stats: StreamPostProcessStats,
+) -> (String, FinalPassVerdict) {
+    let lexicon_rewrites = stats.lexicon_rewrites;
+    let repetition_cleanups = stats.repetition_cleanups;
+
+    if candidate_text == raw_text {
+        return (
+            candidate_text,
+            FinalPassVerdict {
+                mode,
+                disposition: FinalPassDisposition::Unchanged,
+                reason: None,
+                lexicon_rewrites,
+                repetition_cleanups,
+            },
+        );
+    }
+
+    if let Some(reason) = final_pass_guardrail_reason(raw_text, &candidate_text) {
+        return (
+            raw_text.to_string(),
+            FinalPassVerdict {
+                mode,
+                disposition: FinalPassDisposition::Rejected,
+                reason: Some(reason),
+                lexicon_rewrites,
+                repetition_cleanups,
+            },
+        );
+    }
+
+    (
+        candidate_text,
+        FinalPassVerdict {
+            mode,
+            disposition: FinalPassDisposition::Changed,
+            reason: None,
+            lexicon_rewrites,
+            repetition_cleanups,
+        },
+    )
+}
+
+fn apply_requested_final_pass(
+    raw: &RawTranscript,
+    options: FileTranscriptionOptions,
+) -> (String, Option<FinalPassVerdict>) {
+    match options.final_pass {
+        FinalPassMode::None => (raw.text.clone(), None),
+        FinalPassMode::EmbeddedLexiconCleanup => {
+            let mut processor = StreamPostProcessor::new();
+            match processor.process_utterance(&raw.text) {
+                Some(text) => {
+                    let stats = processor.stats();
+                    let (text, verdict) = finalize_requested_final_pass(
+                        &raw.text,
+                        text,
+                        FinalPassMode::EmbeddedLexiconCleanup,
+                        stats,
+                    );
+                    (text, Some(verdict))
+                }
+                None => {
+                    let stats = processor.stats();
+                    (
+                        String::new(),
+                        Some(FinalPassVerdict {
+                            mode: FinalPassMode::EmbeddedLexiconCleanup,
+                            disposition: FinalPassDisposition::Dropped,
+                            reason: Some("empty_after_cleanup".to_string()),
+                            lexicon_rewrites: stats.lexicon_rewrites,
+                            repetition_cleanups: stats.repetition_cleanups,
+                        }),
+                    )
+                }
+            }
+        }
+    }
+}
+
 pub struct LocalWhisperEngine {
     model: Model,
     tokenizer: Tokenizer,
@@ -45,6 +175,7 @@ pub struct LocalWhisperEngine {
     config: Config,
     mel_filters: Vec<f32>,
     ts_range: Option<TimestampRange>,
+    engine_provenance: TranscriptionEngineVerdict,
     pub decoding_params: DecodingParams,
 }
 
@@ -204,6 +335,9 @@ impl LocalWhisperEngine {
             config,
             mel_filters,
             ts_range,
+            engine_provenance: TranscriptionEngineVerdict::whisper(
+                TranscriptionEngineMode::RuntimeFallback,
+            ),
             decoding_params: DecodingParams::default(),
         })
     }
@@ -277,6 +411,9 @@ impl LocalWhisperEngine {
             config,
             mel_filters,
             ts_range,
+            engine_provenance: TranscriptionEngineVerdict::whisper(
+                TranscriptionEngineMode::EmbeddedDefault,
+            ),
             decoding_params: DecodingParams::default(),
         })
     }
@@ -297,7 +434,8 @@ impl LocalWhisperEngine {
         &mut self,
         path: &Path,
         language: Option<&str>,
-    ) -> Result<String> {
+        options: FileTranscriptionOptions,
+    ) -> Result<TranscriptionVerdict> {
         let (samples, sample_rate) =
             audio_loader::load_audio_file(path).context("Failed to load audio file")?;
 
@@ -310,8 +448,92 @@ impl LocalWhisperEngine {
             duration_secs
         );
 
-        // Use chunking for all files - handles both short and long audio
-        self.transcribe_long_with_language(&samples, sample_rate, language)
+        let (speech_samples, stats) = crate::vad::extract_speech(&samples, sample_rate);
+        let speech_sec = speech_samples.len() as f32 / sample_rate as f32;
+        tracing::info!(
+            "transcribe_file VAD: {:.1}s speech / {:.1}s total ({:.0}% speech)",
+            speech_sec,
+            duration_secs,
+            stats.speech_pct
+        );
+
+        let no_speech = speech_samples.is_empty();
+        let vad = VadVerdict {
+            speech_pct: stats.speech_pct,
+            speech_windows: stats.speech_windows,
+            total_windows: stats.total_windows,
+            no_speech,
+            no_speech_reason: stats.no_speech_reason.clone(),
+            sparkline: stats.sparkline.clone(),
+        };
+
+        if no_speech {
+            tracing::info!(
+                "transcribe_file: no speech detected after VAD; returning empty verdict"
+            );
+            return Ok(TranscriptionVerdict::from_parts(
+                String::new(),
+                RawTranscript::default(),
+                Some(vad),
+                TranscriptionSource::LocalFinalPass,
+                self.engine_provenance,
+                skipped_final_pass(
+                    options,
+                    stats
+                        .no_speech_reason
+                        .as_deref()
+                        .unwrap_or("vad_no_speech_detected"),
+                ),
+            ));
+        }
+
+        tracing::debug!(
+            "transcribe_file: speech detected; preserving full-audio decode path and using VAD as telemetry/no-speech gate only"
+        );
+
+        // Keep file transcription semantically honest: VAD contributes verdict
+        // metadata and an explicit no-speech short-circuit, but the raw STT
+        // result still comes from the full recording. Trimming down to
+        // `speech_samples` changed the behavior of the historical "raw file
+        // transcription" path and regressed canonical transcripts.
+        let raw = self.transcribe_long_with_language_segments(&samples, sample_rate, language)?;
+        let vad_config = crate::vad::VadConfig::default();
+        let timeline = crate::vad::classify_windows(&stats.probabilities, &vad_config);
+
+        let (raw_for_final_pass, tail_drop_count) = if raw.segments.is_empty() {
+            (raw.clone(), 0u32)
+        } else {
+            let outcome = crate::stt::whisper::map_whisper_segments_to_silero(
+                &raw.segments,
+                &timeline,
+                &vad_config,
+            );
+            if outcome.dropped_count > 0 {
+                tracing::info!(
+                    target: "tail_silence_filter",
+                    dropped_count = outcome.dropped_count,
+                    dropped_samples = ?outcome.dropped_text_samples,
+                    "Silero dropped Whisper tail segment(s)"
+                );
+            }
+
+            let mut filtered = raw.clone();
+            filtered.text = outcome.text;
+            filtered.segments = outcome.segments;
+            (filtered, outcome.dropped_count)
+        };
+
+        let (text, final_pass) = apply_requested_final_pass(&raw_for_final_pass, options);
+
+        Ok(TranscriptionVerdict::from_parts_with_silero_drops(
+            text,
+            raw_for_final_pass,
+            Some(vad),
+            TranscriptionSource::LocalFinalPass,
+            self.engine_provenance,
+            final_pass,
+            tail_drop_count,
+        ))
     }
 
     pub fn detect_language_file(&mut self, path: &Path) -> Result<String> {
@@ -320,8 +542,12 @@ impl LocalWhisperEngine {
         self.detect_language(&samples, sample_rate)
     }
 
-    pub fn transcribe_file(&mut self, path: &Path) -> Result<String> {
-        self.transcribe_file_with_language(path, None)
+    pub fn transcribe_file(
+        &mut self,
+        path: &Path,
+        options: FileTranscriptionOptions,
+    ) -> Result<TranscriptionVerdict> {
+        self.transcribe_file_with_language(path, None, options)
     }
 
     pub fn transcribe_with_language(
@@ -369,21 +595,6 @@ impl LocalWhisperEngine {
         self.transcribe_samples_16k_raw(&samples, language, debug_tokens)
     }
 
-    pub fn transcribe_long(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
-        self.transcribe_long_with_language(audio, sample_rate, None)
-    }
-
-    pub fn transcribe_long_with_language(
-        &mut self,
-        audio: &[f32],
-        sample_rate: u32,
-        language: Option<&str>,
-    ) -> Result<String> {
-        Ok(self
-            .transcribe_long_with_language_segments(audio, sample_rate, language)?
-            .text)
-    }
-
     pub fn transcribe_long_with_language_segments(
         &mut self,
         audio: &[f32],
@@ -417,12 +628,29 @@ impl LocalWhisperEngine {
         let mut out = String::new();
         let mut all_segments = Vec::new();
         let mut offset = 0usize;
+        let mut logprob_sum = 0.0_f32;
+        let mut logprob_count = 0_u32;
+        let mut worst_compression = 0.0_f32;
+        let mut any_quality_gate_dropped = false;
 
         while offset < samples.len() {
             let end = (offset + chunk_samples).min(samples.len());
             let chunk = &samples[offset..end];
             let transcript = self.transcribe_samples_16k_raw(chunk, language, debug_tokens)?;
             append_with_overlap_dedup(&mut out, &transcript.text);
+
+            if let Some(lp) = transcript.avg_logprob {
+                logprob_sum += lp;
+                logprob_count += 1;
+            }
+            if let Some(cr) = transcript.compression_ratio
+                && cr > worst_compression
+            {
+                worst_compression = cr;
+            }
+            if transcript.quality_gate_dropped {
+                any_quality_gate_dropped = true;
+            }
 
             if !transcript.segments.is_empty() {
                 let offset_sec = offset as f32 / 16_000.0;
@@ -439,7 +667,30 @@ impl LocalWhisperEngine {
         Ok(RawTranscript {
             text: dedup_repetitions(out.trim()),
             segments: all_segments,
+            avg_logprob: if logprob_count > 0 {
+                Some(logprob_sum / logprob_count as f32)
+            } else {
+                None
+            },
+            compression_ratio: if worst_compression > 0.0 {
+                Some(worst_compression)
+            } else {
+                None
+            },
+            quality_gate_dropped: any_quality_gate_dropped,
         })
+    }
+
+    /// Legacy convenience wrapper kept for direct engine callers and tests.
+    pub fn transcribe_long_with_language(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+    ) -> Result<String> {
+        Ok(self
+            .transcribe_long_with_language_segments(audio, sample_rate, language)?
+            .text)
     }
 
     /// Transcribe long audio with streaming callback
@@ -690,11 +941,29 @@ impl LocalWhisperEngine {
             .max_target_positions
             .saturating_sub(tokens.len());
         let ngram_size = self.decoding_params.no_repeat_ngram_size;
+        let mut ngram_blocker = NgramBlocker::new(ngram_size);
+
+        // Runaway watchdog: cap generated tokens at a generous multiple of the
+        // plausible word rate for this chunk's audio length, so a hallucinating
+        // decode bails early instead of grinding to max_new_tokens at O(n^2) cost.
+        let audio_sec = samples_16k.len() as f32 / whisper::SAMPLE_RATE as f32;
+        let runaway_budget = runaway_token_budget(audio_sec);
+        let mut runaway_tripped = false;
 
         let mut sum_logprob = 0.0f32;
         let mut token_count = 0usize;
 
         for step in 0..max_new_tokens {
+            if all_tokens.len() >= runaway_budget {
+                tracing::warn!(
+                    "Runaway watchdog tripped: {} tokens for {:.2}s audio (budget {})",
+                    all_tokens.len(),
+                    audio_sec,
+                    runaway_budget
+                );
+                runaway_tripped = true;
+                break;
+            }
             let token_tensor = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
             let hidden = self
                 .model
@@ -737,24 +1006,14 @@ impl LocalWhisperEngine {
                 }
             }
 
-            // Apply no_repeat_ngram blocking (faster-whisper style)
-            // Block tokens that would create a repeated n-gram
-            // Need at least ngram_size tokens to have a potential repeat
-            if ngram_size > 0 && all_tokens.len() >= ngram_size {
-                // Look at last (ngram_size - 1) tokens as prefix
-                let prefix_start = all_tokens.len() + 1 - ngram_size;
-                let prefix = &all_tokens[prefix_start..];
-
-                // Find all earlier positions where this (n-1)-gram occurred
-                let search_end = all_tokens.len() - ngram_size + 1;
-                for i in 0..search_end {
-                    if all_tokens[i..i + ngram_size - 1] == *prefix {
-                        // Block the token that followed this n-gram
-                        let blocked_token = all_tokens[i + ngram_size - 1] as usize;
-                        if blocked_token < logits_vec.len() {
-                            logits_vec[blocked_token] = f32::NEG_INFINITY;
-                        }
-                    }
+            // Apply no_repeat_ngram blocking (faster-whisper style).
+            // Block tokens that would create a repeated n-gram. Uses an
+            // incremental lookup (see NgramBlocker) instead of a full O(n) scan
+            // of all_tokens per step.
+            for &blocked_token in ngram_blocker.blocked_tokens(&all_tokens) {
+                let idx = blocked_token as usize;
+                if idx < logits_vec.len() {
+                    logits_vec[idx] = f32::NEG_INFINITY;
                 }
             }
 
@@ -840,6 +1099,18 @@ impl LocalWhisperEngine {
 
             tokens.push(best_token);
             all_tokens.push(best_token);
+            ngram_blocker.observe(&all_tokens);
+        }
+
+        // Runaway decode: drop the transcript rather than emit a hallucinated
+        // wall of text. Mirrors the post-hoc quality gate's dropped contract.
+        if runaway_tripped {
+            let avg_logprob = (token_count > 0).then(|| sum_logprob / token_count as f32);
+            return Ok(RawTranscript {
+                avg_logprob,
+                quality_gate_dropped: true,
+                ..Default::default()
+            });
         }
 
         let (text, segments) = if timestamps_enabled {
@@ -903,16 +1174,28 @@ impl LocalWhisperEngine {
                 avg_logprob,
                 final_ratio
             );
-            return Ok(RawTranscript::default());
+            return Ok(RawTranscript {
+                avg_logprob,
+                compression_ratio: Some(final_ratio),
+                quality_gate_dropped: true,
+                ..Default::default()
+            });
         }
 
         if final_text.is_empty() {
-            return Ok(RawTranscript::default());
+            return Ok(RawTranscript {
+                avg_logprob,
+                compression_ratio: Some(final_ratio),
+                ..Default::default()
+            });
         }
 
         Ok(RawTranscript {
             text: final_text,
             segments: final_segments,
+            avg_logprob,
+            compression_ratio: Some(final_ratio),
+            quality_gate_dropped: false,
         })
     }
 }
@@ -1129,6 +1412,70 @@ fn map_tensor_name(name: &str) -> String {
     }
     new_name = new_name.replace(".biases", ".bias");
     new_name
+}
+
+/// Incremental no-repeat n-gram blocker.
+///
+/// Replaces the per-step O(n) full scan of `all_tokens` (which made the decode
+/// loop O(n^2) in blocking cost) with an O(1)-amortized map from each completed
+/// `(ngram_size - 1)`-gram to the set of tokens that have followed it. After
+/// every emitted token the new trailing window is recorded; before each step the
+/// current tail's `(ngram_size - 1)`-gram is looked up to find tokens to block.
+///
+/// Behavior is identical to the previous full-scan: it blocks exactly the tokens
+/// that ever followed the current `(ngram_size - 1)`-gram tail elsewhere in the
+/// generated sequence. `ngram_size == 0` disables blocking; sequences shorter
+/// than `ngram_size` produce no blocks.
+struct NgramBlocker {
+    ngram_size: usize,
+    // (n-1)-gram window -> tokens observed immediately after it.
+    seen: HashMap<Vec<u32>, Vec<u32>>,
+    emitted: usize,
+}
+
+impl NgramBlocker {
+    fn new(ngram_size: usize) -> Self {
+        Self {
+            ngram_size,
+            seen: HashMap::new(),
+            emitted: 0,
+        }
+    }
+
+    /// Tokens to block given the full generated sequence so far. Mirrors the
+    /// prefix = last (n-1) tokens lookup of the original scan.
+    fn blocked_tokens(&self, all_tokens: &[u32]) -> &[u32] {
+        if self.ngram_size == 0 || all_tokens.len() < self.ngram_size {
+            return &[];
+        }
+        let prefix = &all_tokens[all_tokens.len() + 1 - self.ngram_size..];
+        self.seen.get(prefix).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Record the newly completed (n-1)-gram windows after `all_tokens` grew by
+    /// one. Must be called after each push to `all_tokens`.
+    fn observe(&mut self, all_tokens: &[u32]) {
+        // A successor at position `len-1` completes the window
+        // all_tokens[len-1-(n-1) .. len-1] -> all_tokens[len-1].
+        if self.ngram_size == 0 {
+            self.emitted = all_tokens.len();
+            return;
+        }
+        // Catch up if observe was skipped (defensive; loop calls every push).
+        let win = self.ngram_size - 1;
+        while self.emitted < all_tokens.len() {
+            let succ_pos = self.emitted;
+            if succ_pos >= win {
+                let key = all_tokens[succ_pos - win..succ_pos].to_vec();
+                let succ = all_tokens[succ_pos];
+                let entry = self.seen.entry(key).or_default();
+                if !entry.contains(&succ) {
+                    entry.push(succ);
+                }
+            }
+            self.emitted += 1;
+        }
+    }
 }
 
 fn compression_ratio(text: &str) -> f32 {
@@ -1421,11 +1768,166 @@ mod dedup_tests {
         assert_eq!(dedup_repetitions(input), expected);
     }
 
+    /// Reference implementation: the original full-scan n-gram block, used only
+    /// to prove the incremental NgramBlocker produces an identical block set.
+    fn reference_blocked(ngram_size: usize, all_tokens: &[u32]) -> Vec<u32> {
+        let mut blocked = Vec::new();
+        if ngram_size > 0 && all_tokens.len() >= ngram_size {
+            let prefix_start = all_tokens.len() + 1 - ngram_size;
+            let prefix = &all_tokens[prefix_start..];
+            let search_end = all_tokens.len() - ngram_size + 1;
+            for i in 0..search_end {
+                if all_tokens[i..i + ngram_size - 1] == *prefix {
+                    blocked.push(all_tokens[i + ngram_size - 1]);
+                }
+            }
+        }
+        blocked
+    }
+
+    fn assert_ngram_parity(ngram_size: usize, seq: &[u32]) {
+        let mut blocker = NgramBlocker::new(ngram_size);
+        let mut all: Vec<u32> = Vec::new();
+        for &t in seq {
+            // Lookup happens against the sequence as it stood before pushing t.
+            // Compare as sets: blocking a token is idempotent, so duplicate
+            // hits in the reference scan and the deduped incremental list have
+            // identical effect on the logits.
+            let mut inc: Vec<u32> = blocker.blocked_tokens(&all).to_vec();
+            let mut refr = reference_blocked(ngram_size, &all);
+            inc.sort_unstable();
+            inc.dedup();
+            refr.sort_unstable();
+            refr.dedup();
+            assert_eq!(
+                inc,
+                refr,
+                "block-set mismatch (n={ngram_size}) at len {}: inc={inc:?} ref={refr:?}",
+                all.len()
+            );
+            all.push(t);
+            blocker.observe(&all);
+        }
+    }
+
+    #[test]
+    fn runaway_watchdog_bails() {
+        // 1s of audio with 5 words/s cap, 2 tokens/word, 2x margin => 20 tokens,
+        // but RUNAWAY_MIN_BUDGET (64) floors it for short chunks.
+        assert_eq!(runaway_token_budget(1.0), RUNAWAY_MIN_BUDGET);
+
+        // 10s of audio: 5 * 10 * 2 * 2 = 200 tokens budget.
+        assert_eq!(runaway_token_budget(10.0), 200);
+
+        // The loop bails when generated tokens reach the budget, well before
+        // max_new_tokens (448). Simulate the in-loop guard for a runaway decode.
+        let audio_sec = 10.0;
+        let budget = runaway_token_budget(audio_sec);
+        let max_new_tokens = 448usize; // model max_target_positions ceiling
+        let mut generated = 0usize;
+        for _ in 0..max_new_tokens {
+            if generated >= budget {
+                break;
+            }
+            generated += 1; // pretend every step emits a non-EOT token
+        }
+        assert_eq!(generated, budget);
+        assert!(
+            generated < max_new_tokens,
+            "watchdog must bail before max_new_tokens"
+        );
+
+        // Budget is conservative: a normal 10s utterance at a realistic ~2.5
+        // words/s, 2 tokens/word = ~50 tokens, far below the 200 budget.
+        let normal_tokens = (2.5f32 * 10.0 * 2.0) as usize;
+        assert!(
+            normal_tokens < budget,
+            "normal speech ({normal_tokens}) must not trip budget ({budget})"
+        );
+
+        // Zero / negative audio_sec is clamped and floored, never panics.
+        assert_eq!(runaway_token_budget(0.0), RUNAWAY_MIN_BUDGET);
+        assert_eq!(runaway_token_budget(-5.0), RUNAWAY_MIN_BUDGET);
+    }
+
+    #[test]
+    fn ngram_block_parity() {
+        // Repetition-heavy synthetic sequence exercises the block path.
+        let seq = [5u32, 6, 7, 5, 6, 7, 5, 6, 7, 8, 9, 8, 9, 8, 9, 8];
+        for n in [0usize, 1, 2, 3, 5] {
+            assert_ngram_parity(n, &seq);
+        }
+        // Sequence shorter than n -> no blocks.
+        assert_ngram_parity(5, &[1, 2, 3]);
+        // Empty.
+        assert_ngram_parity(3, &[]);
+        // Single distinct token repeated (worst case for ngram_size==1).
+        assert_ngram_parity(1, &[42, 42, 42, 42]);
+    }
+
     #[test]
     fn quality_gate_requires_both_logprob_and_compression_signals() {
         let params = DecodingParams::default();
         assert!(!should_drop_for_quality_gate(Some(-0.2), 3.0, &params));
         assert!(!should_drop_for_quality_gate(Some(-3.0), 1.4, &params));
         assert!(should_drop_for_quality_gate(Some(-3.0), 3.0, &params));
+    }
+
+    #[test]
+    fn requested_final_pass_reports_embedded_lexicon_changes() {
+        let raw = RawTranscript {
+            text: "doker".to_string(),
+            ..Default::default()
+        };
+
+        let (text, final_pass) = apply_requested_final_pass(
+            &raw,
+            FileTranscriptionOptions {
+                final_pass: FinalPassMode::EmbeddedLexiconCleanup,
+            },
+        );
+
+        assert_eq!(text, "Docker");
+        let final_pass = final_pass.expect("expected final-pass provenance");
+        assert_eq!(final_pass.mode, FinalPassMode::EmbeddedLexiconCleanup);
+        assert_eq!(final_pass.disposition, FinalPassDisposition::Changed);
+        assert_eq!(final_pass.lexicon_rewrites, 1);
+    }
+
+    #[test]
+    fn requested_final_pass_skips_when_no_speech_already_known() {
+        let final_pass = skipped_final_pass(
+            FileTranscriptionOptions {
+                final_pass: FinalPassMode::EmbeddedLexiconCleanup,
+            },
+            "vad_no_speech_detected",
+        )
+        .expect("expected skipped final-pass provenance");
+
+        assert_eq!(final_pass.disposition, FinalPassDisposition::Skipped);
+        assert_eq!(final_pass.reason.as_deref(), Some("vad_no_speech_detected"));
+    }
+
+    #[test]
+    fn requested_final_pass_rejects_artifact_token_drift_and_keeps_raw() {
+        let raw = "zastanawiam się co ośreda, że ta funkcja już teoretycznie obsolesi legacy";
+        let candidate =
+            "zastanawiam going co ośreda, use ta funkcja już teoretycznie obsolesi legacy"
+                .to_string();
+        let stats = StreamPostProcessStats::default();
+
+        let (text, final_pass) = finalize_requested_final_pass(
+            raw,
+            candidate,
+            FinalPassMode::EmbeddedLexiconCleanup,
+            stats,
+        );
+
+        assert_eq!(text, raw);
+        assert_eq!(final_pass.disposition, FinalPassDisposition::Rejected);
+        assert_eq!(
+            final_pass.reason.as_deref(),
+            Some("artifact_token_drift:going,use")
+        );
     }
 }

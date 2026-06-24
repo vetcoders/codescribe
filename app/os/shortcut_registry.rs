@@ -48,6 +48,29 @@ pub fn detect_hotkey_conflicts(settings: &UserSettings) -> Vec<HotkeyConflict> {
     conflicts
 }
 
+pub fn fn_tap_intercept_note(settings: &UserSettings) -> Option<&'static str> {
+    let bindings = ModeHotkeyBindings::from_settings(settings);
+    if bindings.dictation != ShortcutBinding::HoldFn {
+        return None;
+    }
+
+    fn_tap_symbols_enabled().then_some(
+        "Fn/Globe tap is configured by macOS. CodeScribe Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn fn_tap_symbols_enabled() -> bool {
+    load_symbolic_signatures()
+        .iter()
+        .any(|signature| matches!(signature.id, 160 | 164))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fn_tap_symbols_enabled() -> bool {
+    false
+}
+
 fn active_gestures(bindings: ModeHotkeyBindings) -> Vec<HotkeyGesture> {
     let mut gestures = Vec::new();
 
@@ -202,9 +225,13 @@ fn gesture_conflicts_with_symbolic(gesture: HotkeyGesture, signature: SymbolicSi
 
     match gesture {
         HotkeyGesture::HoldFn => {
-            signature.id == 160
-                || signature.id == 164
-                || ((signature.keycode == FN_KEYCODE || signature.keycode == 65535)
+            // macOS symbolic IDs 160 and 164 are tap/double-tap Globe/Fn actions
+            // (Emoji & Symbols / Dictation). CodeScribe's HoldFn binding listens
+            // for a held modifier gesture, so reporting those tap-only shortcuts as
+            // "Hold Fn" conflicts is noisy and misleading.
+            signature.id != 160
+                && signature.id != 164
+                && ((signature.keycode == FN_KEYCODE || signature.keycode == 65535)
                     && signature.modifiers == 0)
         }
         HotkeyGesture::ToggleDoubleCtrl => {
@@ -414,15 +441,44 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn symbolic_conflict_detects_fn_registry_collision() {
+    fn symbolic_conflict_ignores_macos_fn_tap_for_hold_fn() {
+        let settings = settings_for(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::Disabled,
+            ShortcutBinding::Disabled,
+        );
+        let signatures = vec![
+            SymbolicSignature {
+                id: 160,
+                keycode: 65535,
+                modifiers: 0,
+            },
+            SymbolicSignature {
+                id: 164,
+                keycode: 65535,
+                modifiers: 0,
+            },
+        ];
+
+        let conflicts =
+            collect_symbolic_conflicts(ModeHotkeyBindings::from_settings(&settings), &signatures);
+        assert!(
+            conflicts.is_empty(),
+            "macOS Fn tap shortcuts must not be reported as Hold Fn conflicts"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn symbolic_conflict_detects_raw_fn_hold_signature() {
         let settings = settings_for(
             ShortcutBinding::HoldFn,
             ShortcutBinding::Disabled,
             ShortcutBinding::Disabled,
         );
         let signatures = vec![SymbolicSignature {
-            id: 160,
-            keycode: 65535,
+            id: 999,
+            keycode: 63,
             modifiers: 0,
         }];
 

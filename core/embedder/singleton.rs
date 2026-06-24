@@ -2,8 +2,6 @@
 //!
 //! Provides a global embedder instance that's initialized once and reused.
 //! Thread-safe via OnceLock + Mutex pattern.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::sync::{Mutex, OnceLock};
 

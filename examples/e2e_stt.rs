@@ -1,5 +1,6 @@
 use anyhow::Result;
 use codescribe::whisper::LocalWhisperEngine;
+use codescribe_core::pipeline::contracts::FileTranscriptionOptions;
 use std::fs;
 use std::path::PathBuf;
 
@@ -54,22 +55,29 @@ async fn main() -> Result<()> {
 
     println!("Transcribing short audio: {}", audio_short.display());
     let start = std::time::Instant::now();
-    let text_short = engine.transcribe_file_with_language(&audio_short, language.as_deref())?;
+    let verdict_short = engine.transcribe_file_with_language(
+        &audio_short,
+        language.as_deref(),
+        FileTranscriptionOptions::default(),
+    )?;
     let duration = start.elapsed();
     println!("Short transcription completed in {:?}:", duration);
     println!("---");
-    println!("{}", text_short);
+    println!("{}", verdict_short.text);
     println!("---");
 
     if run_medium {
         println!("Transcribing medium audio: {}", audio_medium.display());
         let start = std::time::Instant::now();
-        let text_medium =
-            engine.transcribe_file_with_language(&audio_medium, language.as_deref())?;
+        let verdict_medium = engine.transcribe_file_with_language(
+            &audio_medium,
+            language.as_deref(),
+            FileTranscriptionOptions::default(),
+        )?;
         let duration = start.elapsed();
         println!("Medium transcription completed in {:?}:", duration);
         println!("---");
-        println!("{}", text_medium);
+        println!("{}", verdict_medium.text);
         println!("---");
     } else {
         println!("Skipping medium transcription (CODESCRIBE_E2E_RUN_MEDIUM disabled)");

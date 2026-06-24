@@ -14,13 +14,13 @@
 //! ## Menu Structure
 //!
 //! ```text
-//! Status: Idle
+//! Status: Starting... / Idle
 //! Show Agent
 //! Open history...
 //! Copy last transcript
 //! Notes ▸
 //! Diagnostics ▸
-//! Complete Setup... (when setup is incomplete)
+//! Continue Onboarding... (when onboarding is incomplete)
 //! Settings
 //! Help
 //! About
@@ -89,10 +89,21 @@ pub fn run() -> Result<()> {
     run_with_hotkeys(None)
 }
 
+pub fn run_with_startup<F>(
+    hotkey_manager: Option<hotkeys::HotkeyManager>,
+    on_started: F,
+) -> Result<()>
+where
+    F: FnOnce() + 'static,
+{
+    run_inner(hotkey_manager, on_started)
+}
+
 fn shutdown_hotkeys(hotkey_manager: &mut Option<hotkeys::HotkeyManager>) {
     if let Some(hk_manager) = hotkey_manager.as_mut() {
         hk_manager.shutdown();
     }
+    hotkeys::shutdown_global_hotkey_manager();
     *hotkey_manager = None;
 }
 
@@ -112,6 +123,13 @@ fn shutdown_hotkeys(hotkey_manager: &mut Option<hotkeys::HotkeyManager>) {
 /// - Tray icon is removed
 /// - All channels are closed
 pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Result<()> {
+    run_inner(hotkey_manager, || {})
+}
+
+fn run_inner<F>(hotkey_manager: Option<hotkeys::HotkeyManager>, on_started: F) -> Result<()>
+where
+    F: FnOnce() + 'static,
+{
     info!("Initializing system tray...");
 
     // Inject layoutRegionGuides stub into NSVisualEffectView early,
@@ -128,10 +146,10 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
     let event_loop = EventLoopBuilder::new().build();
 
     // Build the menu and get IDs
-    let (menu, menu_ids) = menu::build_menu()?;
+    let initial_status = TrayStatus::Starting;
+    let (menu, menu_ids) = menu::build_menu(initial_status)?;
 
     // Create initial icon
-    let initial_status = TrayStatus::Idle;
     let icon = initial_status.to_icon()?;
 
     // Build the tray icon
@@ -146,7 +164,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
     // Get menu event receiver
     let menu_channel = MenuEvent::receiver();
 
-    if hotkey_manager.is_some() {
+    if hotkey_manager.is_some() || hotkeys::is_global_hotkey_manager_active() {
         info!("Global hotkeys enabled");
     }
 
@@ -155,24 +173,37 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
 
     // Poll interval for checking channels
     let poll_interval = Duration::from_millis(100);
+    let startup_blink_interval = Duration::from_millis(500);
+    let mut current_status = initial_status;
+    let mut startup_glyph_visible = true;
+    let mut last_startup_blink = Instant::now();
     let mut last_menu_refresh = Instant::now();
     let mut hotkey_manager = hotkey_manager;
 
+    on_started();
+
     // Run the event loop
     event_loop.run(move |event, _, control_flow| {
-        // Use WaitUntil to avoid busy-waiting while still checking channels
-        *control_flow = ControlFlow::WaitUntil(Instant::now() + poll_interval);
+        // Use WaitUntil to avoid busy-waiting while still checking channels.
+        // Startup blinking needs a shorter wake-up while the app is not ready.
+        let wake_interval = if current_status == TrayStatus::Starting {
+            poll_interval.min(startup_blink_interval)
+        } else {
+            poll_interval
+        };
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + wake_interval);
 
         // Handle dock icon click (macOS Reopen event)
         if let Event::Reopen { .. } = event {
             debug!("Dock icon clicked → opening Settings window");
-            crate::show_bootstrap_overlay();
+            crate::ui::settings::show_settings_window();
             return;
         }
 
         // Check for programmatic shutdown request
         if is_shutdown_requested() {
             info!("Shutdown flag detected, performing cleanup...");
+            let _ = crate::qube_lifecycle::stop_managed();
             shutdown_hotkeys(&mut hotkey_manager);
             *control_flow = ControlFlow::Exit;
             return;
@@ -182,14 +213,29 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
         if last_menu_refresh.elapsed() >= Duration::from_secs(2) {
             menu::update_quality_label();
             menu::update_silero_vad_label();
-            menu::update_complete_setup_item();
+            menu::update_onboarding_item();
             last_menu_refresh = Instant::now();
+        }
+
+        if current_status == TrayStatus::Starting
+            && last_startup_blink.elapsed() >= startup_blink_interval
+        {
+            startup_glyph_visible = !startup_glyph_visible;
+            last_startup_blink = Instant::now();
+            if let Ok(new_icon) = current_status.to_icon_with_glyph(startup_glyph_visible)
+                && let Err(e) = tray_icon.set_icon(Some(new_icon))
+            {
+                debug!("Failed to blink startup tray icon: {}", e);
+            }
         }
 
         // Check for status updates (non-blocking)
         match status_rx.try_recv() {
             Ok(new_status) => {
                 debug!("Received status update: {:?}", new_status);
+                current_status = new_status;
+                startup_glyph_visible = true;
+                last_startup_blink = Instant::now();
 
                 // Update menu label
                 state::apply_status_update(new_status);
@@ -200,7 +246,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
                 }
 
                 // Update icon
-                if let Ok(new_icon) = new_status.to_icon()
+                if let Ok(new_icon) = new_status.to_icon_with_glyph(true)
                     && let Err(e) = tray_icon.set_icon(Some(new_icon))
                 {
                     debug!("Failed to update tray icon: {}", e);
@@ -211,6 +257,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 info!("Status channel closed, exiting");
+                let _ = crate::qube_lifecycle::stop_managed();
                 shutdown_hotkeys(&mut hotkey_manager);
                 *control_flow = ControlFlow::Exit;
             }
@@ -225,6 +272,7 @@ pub fn run_with_hotkeys(hotkey_manager: Option<hotkeys::HotkeyManager>) -> Resul
             // Handle Quit specially to exit event loop
             if event.id == menu_ids.quit {
                 info!("Quit requested via menu, exiting...");
+                let _ = crate::qube_lifecycle::stop_managed();
                 shutdown_hotkeys(&mut hotkey_manager);
                 *control_flow = ControlFlow::Exit;
             }
@@ -247,21 +295,41 @@ mod tests {
     fn test_icon_creation() {
         let icon = TrayStatus::Idle.to_icon();
         assert!(icon.is_ok());
+        let startup_icon = TrayStatus::Starting.to_icon_with_glyph(false);
+        assert!(startup_icon.is_ok());
     }
 
     #[test]
     fn test_status_tooltips() {
+        assert_eq!(TrayStatus::Starting.tooltip(), "CodeScribe - Starting...");
         assert_eq!(TrayStatus::Idle.tooltip(), "CodeScribe - Ready");
         assert_eq!(TrayStatus::Listening.tooltip(), "CodeScribe - Recording...");
         assert_eq!(TrayStatus::Thinking.tooltip(), "CodeScribe - Processing...");
         assert_eq!(TrayStatus::Success.tooltip(), "CodeScribe - Done!");
+        assert_eq!(
+            TrayStatus::Thermal.tooltip(),
+            "CodeScribe - Thermal throttling"
+        );
+        assert_eq!(
+            TrayStatus::HotkeyConflict.tooltip(),
+            "CodeScribe - Hotkey conflict"
+        );
     }
 
     #[test]
     fn test_status_menu_labels() {
+        assert_eq!(TrayStatus::Starting.menu_label(), "Status: Starting...");
         assert_eq!(TrayStatus::Idle.menu_label(), "Status: Idle");
         assert_eq!(TrayStatus::Listening.menu_label(), "Status: Recording...");
         assert_eq!(TrayStatus::Thinking.menu_label(), "Status: Processing...");
         assert_eq!(TrayStatus::Success.menu_label(), "Status: Done!");
+        assert_eq!(
+            TrayStatus::Thermal.menu_label(),
+            "Status: Thermal throttling"
+        );
+        assert_eq!(
+            TrayStatus::HotkeyConflict.menu_label(),
+            "Status: Hotkey conflict"
+        );
     }
 }

@@ -14,8 +14,6 @@
 //! - [`SpeechSession`] — stateful VAD gate + chunker (Silero neural VAD)
 //! - [`SpeechEvent`] — emitted events: `Chunk` (streaming) or `Utterance` (complete)
 //! - [`VadIterState`] — Silero VAD iterator state machine (start/end boundary detection)
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -36,6 +34,9 @@ const SILERO_GATE_MODE: VadGateMode = VadGateMode::Supervisor;
 // ═══════════════════════════════════════════════════════════
 
 pub(crate) enum SpeechEvent {
+    // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+    // legacy buffered-chunk payload of the pre-scheduler speech path. Field is
+    // unread while SpeechMode::Stream is parked; revive or delete together with it.
     #[allow(dead_code)]
     Chunk(Vec<f32>),
     /// Interim utterance slice emitted during long continuous speech to keep streaming responsive.
@@ -46,7 +47,14 @@ pub(crate) enum SpeechEvent {
     UtteranceFinal(Vec<f32>),
 }
 
+// FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+// legacy fixed-chunk streaming mode superseded by the STT scheduler path.
+// Revive-or-delete decision belongs to the operator (forgotten-gems report).
+#[allow(dead_code)]
 pub(crate) enum SpeechMode {
+    // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+    // legacy fixed-chunk streaming mode superseded by the utterance/scheduler
+    // path. Revive-or-delete belongs to the operator (forgotten-gems report).
     #[allow(dead_code)]
     Stream {
         chunk_limit: usize,
@@ -62,10 +70,14 @@ pub(crate) enum SpeechMode {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum VadGateMode {
+    // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+    // legacy VAD gate modes superseded by the Supervisor mode below; kept as
+    // documented fallback semantics until the operator rules on removal.
+    #[allow(dead_code)]
     /// Gate audio before it reaches Whisper (legacy).
     Simple,
+    #[allow(dead_code)]
     /// Silero VAD iter logic as a hard gate (legacy).
     Iter,
     /// Silero VAD is a supervisor: audio always flows, VAD only defines boundaries.
@@ -152,6 +164,8 @@ pub(crate) struct SpeechSession {
 }
 
 impl SpeechSession {
+    // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+    // constructor of the parked SpeechMode::Stream path (see enum above).
     #[allow(dead_code)]
     pub fn new_stream(sample_rate: u32, chunk_duration_sec: f32, overlap_sec: f32) -> Self {
         let config = hardcoded_gate_config();
@@ -1094,6 +1108,9 @@ fn utterance_silence_sec_override() -> Option<f32> {
 // Configuration helpers
 // ═══════════════════════════════════════════════════════════
 
+// FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+// canonical tuned-gate preset retained as reference values for GateConfig
+// regressions; not wired to any runtime path today.
 #[allow(dead_code)]
 pub(crate) fn hardcoded_gate_config() -> GateConfig {
     let vad_cfg = vad::VadConfig::default();
@@ -1129,15 +1146,14 @@ pub(crate) fn hardcoded_utterance_gate_config() -> GateConfig {
 }
 
 pub(crate) fn init_silero_vad(sample_rate: u32, config: &vad::VadConfig) -> Option<vad::SileroVad> {
-    let model_path = vad::default_model_path();
-    match vad::SileroVad::new(&model_path, config.clone()) {
+    match vad::SileroVad::new_embedded(config.clone()) {
         Ok(mut vad) => {
             vad.set_input_sample_rate(sample_rate);
-            tracing::info!("Silero VAD ready (model: {})", model_path.display());
+            tracing::info!("Silero VAD ready (embedded model, zero I/O)");
             Some(vad)
         }
         Err(e) => {
-            tracing::warn!("Silero VAD init failed ({}): {}", model_path.display(), e);
+            tracing::warn!("Silero VAD embedded init failed: {}", e);
             None
         }
     }
@@ -1362,6 +1378,7 @@ mod tests {
                 max_silence_duration_sec: 0.20,
                 max_utterance_sec: 300.0,
                 pre_roll_sec: 0.064,
+                ..vad::VadConfig::default()
             },
             pre_roll_sec: 0.064,
             speech_pad_sec: 0.064,
@@ -1405,6 +1422,7 @@ mod tests {
                 max_silence_duration_sec: 0.20,
                 max_utterance_sec: 300.0,
                 pre_roll_sec: 0.064,
+                ..vad::VadConfig::default()
             },
             pre_roll_sec: 0.064,
             speech_pad_sec: 0.064,

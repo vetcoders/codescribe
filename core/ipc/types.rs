@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::contracts::{DropKind, EngineEvent, TranscriptSegment};
+use crate::pipeline::contracts::{
+    DropKind, EngineEvent, TranscriptSegment, TranscriptionConfidenceFlag,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IpcCommand {
@@ -113,6 +115,11 @@ pub enum EngineEventWire {
         start_ts: f32,
         end_ts: f32,
         segments: Vec<TranscriptSegment>,
+        vad_speech_pct: Option<f32>,
+        avg_logprob: Option<f32>,
+        compression_ratio: Option<f32>,
+        quality_gate_dropped: bool,
+        confidence_flags: Vec<TranscriptionConfidenceFlag>,
     },
     Drop {
         kind: String,
@@ -129,7 +136,7 @@ pub enum EngineEventWire {
         partial_runs_total: u64,
         trigger_utterance_count: u64,
         trigger_speech_count: u64,
-        trigger_watchdog_count: u64,
+        trigger_timer_count: u64,
         partial_stale_count: u64,
         partial_coalesced_count: u64,
         partial_dropped_count: u64,
@@ -173,6 +180,11 @@ impl From<&EngineEvent> for EngineEventWire {
                 start_ts,
                 end_ts,
                 segments,
+                vad_speech_pct,
+                avg_logprob,
+                compression_ratio,
+                quality_gate_dropped,
+                confidence_flags,
                 ..
             } => Self::UtteranceFinal {
                 utterance_id: *utterance_id,
@@ -180,6 +192,11 @@ impl From<&EngineEvent> for EngineEventWire {
                 start_ts: *start_ts,
                 end_ts: *end_ts,
                 segments: segments.clone(),
+                vad_speech_pct: *vad_speech_pct,
+                avg_logprob: *avg_logprob,
+                compression_ratio: *compression_ratio,
+                quality_gate_dropped: *quality_gate_dropped,
+                confidence_flags: confidence_flags.clone(),
             },
             EngineEvent::Drop { kind, text, reason } => Self::Drop {
                 kind: drop_kind_to_wire(kind).to_string(),
@@ -196,7 +213,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 partial_runs_total,
                 trigger_utterance_count,
                 trigger_speech_count,
-                trigger_watchdog_count,
+                trigger_timer_count,
                 partial_stale_count,
                 partial_coalesced_count,
                 partial_dropped_count,
@@ -210,7 +227,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 partial_runs_total: *partial_runs_total,
                 trigger_utterance_count: *trigger_utterance_count,
                 trigger_speech_count: *trigger_speech_count,
-                trigger_watchdog_count: *trigger_watchdog_count,
+                trigger_timer_count: *trigger_timer_count,
                 partial_stale_count: *partial_stale_count,
                 partial_coalesced_count: *partial_coalesced_count,
                 partial_dropped_count: *partial_dropped_count,
@@ -254,6 +271,11 @@ mod tests {
                 start_ts: 1.0,
                 end_ts: 2.5,
             }],
+            vad_speech_pct: Some(5.0),
+            avg_logprob: Some(-0.3),
+            compression_ratio: Some(1.1),
+            quality_gate_dropped: false,
+            confidence_flags: vec![TranscriptionConfidenceFlag::VeryLowSpeech],
         };
 
         let wire = EngineEventWire::from(&event);
@@ -270,6 +292,28 @@ mod tests {
         );
         assert_eq!(obj.get("text").and_then(Value::as_str), Some("hello world"));
         assert!(obj.get("segments").is_some(), "segments must be present");
+        assert_eq!(
+            obj.get("vad_speech_pct")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32),
+            Some(5.0),
+            "VAD speech ratio must survive IPC boundary"
+        );
+        assert_eq!(
+            obj.get("avg_logprob")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32),
+            Some(-0.3),
+            "confidence metadata must survive IPC boundary"
+        );
+        assert_eq!(
+            obj.get("quality_gate_dropped").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            obj.get("confidence_flags").and_then(Value::as_array),
+            Some(&vec![Value::String("very_low_speech".to_string())])
+        );
     }
 
     #[test]
@@ -311,7 +355,7 @@ mod tests {
             partial_runs_total: 7,
             trigger_utterance_count: 8,
             trigger_speech_count: 9,
-            trigger_watchdog_count: 10,
+            trigger_timer_count: 10,
             partial_stale_count: 11,
             partial_coalesced_count: 12,
             partial_dropped_count: 13,
@@ -325,7 +369,7 @@ mod tests {
             Some(7)
         );
         assert_eq!(
-            obj.get("trigger_watchdog_count").and_then(Value::as_u64),
+            obj.get("trigger_timer_count").and_then(Value::as_u64),
             Some(10)
         );
         assert_eq!(

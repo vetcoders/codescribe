@@ -10,3 +10,5 @@ pub mod permissions;
 pub mod selection;
 #[cfg(target_os = "macos")]
 pub mod shortcut_registry;
+#[cfg(target_os = "macos")]
+pub mod thermal;

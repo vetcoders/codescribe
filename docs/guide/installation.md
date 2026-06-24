@@ -27,9 +27,9 @@
 ```bash
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
-make download-model   # Download Whisper model (~888MB)
-make release          # Build with embedded model
-make install          # Install to /usr/local/bin
+make install          # Install CLI to ~/.cargo/bin and ensure runtime model/cache availability
+make bundle           # Optional: create bundle/CodeScribe.app
+make install-app      # Optional: copy app to /Applications
 ```
 
 ---
@@ -39,7 +39,7 @@ make install          # Install to /usr/local/bin
 1. **Open CodeScribe** from Applications or Spotlight
 2. **Grant Microphone access** when prompted
 3. **Grant Accessibility access** in System Settings → Privacy & Security → Accessibility
-4. **Wait for initialization** (first launch may take 5-10 seconds to load Whisper model)
+4. **Wait for initialization** (first launch may take a few seconds to resolve and load the local Whisper model)
 
 You'll see the CodeScribe icon appear in your menu bar. It starts black (idle).
 

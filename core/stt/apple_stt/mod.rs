@@ -5,8 +5,6 @@
 //! Runtime fallback is handled in `core/stt/mod.rs`.
 //!
 //! Bridge protocol: JSON request on stdin, JSON response on stdout.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::fs;
 use std::io::{Read as _, Write};
@@ -140,23 +138,16 @@ pub(crate) fn is_runtime_available() -> bool {
     }
 }
 
-/// Transcribe long audio using SpeechAnalyzer bridge.
-pub(crate) fn transcribe_long(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<String> {
-    Ok(transcribe_long_with_segments(audio, sample_rate, language)?.text)
-}
-
 /// Transcribe a single chunk (same implementation as long for this backend).
+// FORGOTTEN-GEM(vc-prune 2026-06-10): parked sync transcription contract —
+// see core/stt/mod.rs::candle_transcribe_chunk for the cluster rationale.
 #[allow(dead_code)]
 pub(crate) fn transcribe_chunk(
     audio: &[f32],
     sample_rate: u32,
     language: Option<&str>,
 ) -> Result<String> {
-    transcribe_long(audio, sample_rate, language)
+    Ok(transcribe_long_with_segments(audio, sample_rate, language)?.text)
 }
 
 /// Transcribe audio with optional segment timestamps.
@@ -169,6 +160,7 @@ pub(crate) fn transcribe_long_with_segments(
 }
 
 /// "Try" variant kept for scheduler API symmetry.
+#[allow(dead_code)]
 pub(crate) fn try_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
@@ -221,6 +213,7 @@ fn transcribe_via_bridge(
     Ok(RawTranscript {
         text: response.text.trim().to_string(),
         segments,
+        ..Default::default()
     })
 }
 

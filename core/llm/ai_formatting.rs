@@ -32,11 +32,21 @@ use super::responses_streaming_manager::{ResponsesStreamingManager, StreamCallba
 /// HTTP client for AI providers
 static AI_CLIENT: OnceLock<Client> = OnceLock::new();
 
+/// Non-assistive formatting skips only extremely short transcripts.
+/// Short-but-real utterances still flow through AI formatting; the controller
+/// owns the separate quality-gate logic for that 10-23 char window.
+const NON_ASSISTIVE_AI_SKIP_CHARS: usize = 10;
+
+fn should_skip_ai_formatting(text: &str, assistive: bool) -> bool {
+    !assistive && text.chars().count() < NON_ASSISTIVE_AI_SKIP_CHARS
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiFormatStatus {
     Applied,
     Failed,
     Skipped,
+    AiNoop,
 }
 
 pub type AiStreamCallback = Arc<dyn Fn(&str) + Send + Sync>;
@@ -71,11 +81,24 @@ struct MemoryMessage {
 static OLLAMA_MEMORY: OnceLock<RwLock<Vec<MemoryMessage>>> = OnceLock::new();
 const MAX_OLLAMA_MEMORY_CHARS: usize = 4000;
 
-const DEFAULT_AI_MAX_RETRIES: u32 = 3;
-const DEFAULT_AI_RETRY_DELAY_MS: u64 = 2000;
-const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 30_000;
+// Retry count is "extra attempts after the first request". Default 0 keeps
+// daily-driver formatting fail-fast instead of multiplying deterministic
+// provider/parser failures into long cascades.
+const DEFAULT_AI_MAX_RETRIES: u32 = 0;
+const DEFAULT_AI_RETRY_DELAY_MS: u64 = 500;
+// Bumped from 30s → 90s (2026-05-13). Operator observed
+// "Agent SSE inter-chunk timeout after 30s" mid-stream from chat overlay
+// during longer responses (multi-paragraph PL text with code blocks).
+// LLM backends ('programmer' model on api.libraxis.cloud) emit tokens
+// in bursts with 5-15s pauses for reasoning/tool-call hops; 30s budget
+// was too tight and triggered "Agent runtime unavailable. Using legacy
+// formatter" fallback mid-response, breaking the assistant UX. 90s
+// keeps streams alive across realistic backend hiccups without making
+// stalled requests linger forever. Env override `CODESCRIBE_AI_*_MS`
+// still wins for power users (operator can lower for fast models).
+const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_AI_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
@@ -130,6 +153,14 @@ fn env_u64(key: &str, default: u64) -> u64 {
 
 fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
     Duration::from_millis(env_u64(key, default_ms))
+}
+
+fn should_retry_provider_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    !(message.contains("No text content in SSE stream")
+        || message.contains("No text content in response")
+        || message.contains("SSE error internal_error")
+        || message.contains("SSE error bad_request"))
 }
 
 fn ollama_memory() -> &'static RwLock<Vec<MemoryMessage>> {
@@ -578,19 +609,21 @@ fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
     let mut assistant_parts = Vec::new();
     let mut reasoning_parts = Vec::new();
 
-    for item in output.iter().filter(|o| o.item_type == "message") {
+    for item in output {
         let Some(parts) = item.content.as_ref() else {
             continue;
         };
+        let is_message = item.item_type == "message";
+        let is_reasoning = item.item_type == "reasoning";
 
         for part in parts {
             match part.part_type.as_str() {
-                "output_text" | "text" => {
+                "output_text" | "text" if is_message => {
                     if let Some(text) = part_text(part) {
                         assistant_parts.push(text.to_string());
                     }
                 }
-                "reasoning_summary_text" => {
+                "reasoning_summary_text" if is_message || is_reasoning => {
                     if let Some(text) = part_text(part) {
                         reasoning_parts.push(text.to_string());
                     }
@@ -616,14 +649,10 @@ fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
 // No token limits - let the API decide. Tokens are cheap, lost notes are not.
 
 /// Check if output is effectively the same as input (raw-like)
-/// Returns true if normalized content (lowercase, alphanumeric only) matches.
+/// Returns true only for whitespace-only echoes. Punctuation and capitalization
+/// changes are meaningful formatting work and must not be collapsed into AiNoop.
 fn is_effectively_same(input: &str, output: &str) -> bool {
-    let normalize = |s: &str| -> String {
-        s.chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(|c| c.to_lowercase())
-            .collect()
-    };
+    let normalize = |s: &str| -> String { s.split_whitespace().collect::<Vec<_>>().join(" ") };
     normalize(input) == normalize(output)
 }
 
@@ -819,8 +848,9 @@ pub async fn format_text_with_status_channels(
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
 ) -> AiFormatResult {
-    // Skip very short texts (but not in assistive mode - user might say "help")
-    if text.len() < 10 && !assistive {
+    // Skip short non-assistive texts. The controller quality gate starts at 24 chars,
+    // so formatting anything shorter would create an unguarded rewrite zone.
+    if should_skip_ai_formatting(text, assistive) {
         return AiFormatResult {
             text: text.to_string(),
             reasoning_text: None,
@@ -920,6 +950,7 @@ pub async fn format_text_with_status_channels(
             initial_response_timeout: retry_policy.attempt_timeout,
             inter_chunk_timeout: retry_policy.inter_chunk_timeout,
         };
+        let mut retryable_error = true;
         let result_opt = if streaming_enabled && endpoint_format != EndpointFormat::OllamaChat {
             match call_provider_once(
                 endpoint_format,
@@ -933,6 +964,7 @@ pub async fn format_text_with_status_channels(
             {
                 Ok(output) => Some(output),
                 Err(e) => {
+                    retryable_error = should_retry_provider_error(&e);
                     warn!(
                         "LLM {} attempt {}/{} failed: {}",
                         route,
@@ -964,6 +996,7 @@ pub async fn format_text_with_status_channels(
             {
                 Ok(Ok(output)) => Some(output),
                 Ok(Err(e)) => {
+                    retryable_error = should_retry_provider_error(&e);
                     warn!(
                         "LLM {} attempt {}/{} failed: {}",
                         route,
@@ -1009,12 +1042,10 @@ pub async fn format_text_with_status_channels(
             }
 
             // Analyze result quality
-            let cleaned_trim = cleaned.trim();
-            let formatted_trim = formatted.trim();
             let content_match = is_effectively_same(&cleaned, &formatted);
 
             let mut should_retry = false;
-            let mut raw_like = content_match;
+            let raw_like = content_match;
 
             if assistive {
                 // Assistive should change/expand content
@@ -1025,17 +1056,14 @@ pub async fn format_text_with_status_channels(
                 }
             } else {
                 // Formatting should preserve content but add structure
-                // If output is identical to input
-                if cleaned_trim == formatted_trim {
-                    // Check if input was arguably already formatted (has punctuation)
-                    let input_has_punct = cleaned_trim.ends_with('.')
-                        || cleaned_trim.ends_with('?')
-                        || cleaned_trim.ends_with('!');
-                    if !input_has_punct {
-                        warn!("Formatting mode returned raw echo");
-                        should_retry = true;
-                        raw_like = true;
-                    }
+                // If output matches input (effectively same), it's a no-op
+                if content_match {
+                    warn!("Formatting mode returned AI No-op (raw echo)");
+                    return AiFormatResult {
+                        text: cleaned,
+                        reasoning_text,
+                        status: AiFormatStatus::AiNoop,
+                    };
                 }
             }
 
@@ -1071,6 +1099,9 @@ pub async fn format_text_with_status_channels(
                 reasoning_text,
                 status: AiFormatStatus::Applied,
             };
+        } else if !retryable_error {
+            warn!("Provider returned deterministic empty-content error; skipping retries");
+            break;
         }
     }
 
@@ -1486,5 +1517,60 @@ mod tests {
             remove_simple_repetitions("normalny tekst bez powtórzeń"),
             "normalny tekst bez powtórzeń"
         );
+    }
+
+    #[test]
+    fn test_short_non_assistive_text_is_skipped() {
+        assert!(should_skip_ai_formatting("krótki", false));
+        assert!(should_skip_ai_formatting("123456789", false));
+    }
+
+    #[test]
+    fn test_assistive_short_text_is_not_skipped() {
+        assert!(!should_skip_ai_formatting("Pomóż mi", true));
+    }
+
+    #[test]
+    fn test_non_assistive_text_at_threshold_is_not_skipped() {
+        let text = "1234567890";
+        assert_eq!(text.chars().count(), NON_ASSISTIVE_AI_SKIP_CHARS);
+        assert!(!should_skip_ai_formatting(text, false));
+    }
+
+    #[test]
+    fn test_effectively_same_ignores_whitespace_only() {
+        assert!(is_effectively_same("raw   one two", "raw one two"));
+        assert!(is_effectively_same("raw one two\n", "raw one two"));
+    }
+
+    #[test]
+    fn test_effectively_same_preserves_formatting_changes() {
+        assert!(!is_effectively_same("raw one two", "RAW ONE TWO."));
+        assert!(!is_effectively_same("to jest test", "To jest test"));
+    }
+
+    #[test]
+    fn default_retry_policy_is_single_attempt() {
+        assert_eq!(DEFAULT_AI_MAX_RETRIES, 0);
+        assert_eq!(DEFAULT_AI_RETRY_DELAY_MS, 500);
+    }
+
+    #[test]
+    fn empty_content_provider_errors_are_not_retryable() {
+        assert!(!should_retry_provider_error(&anyhow::anyhow!(
+            "No text content in SSE stream"
+        )));
+        assert!(!should_retry_provider_error(&anyhow::anyhow!(
+            "No text content in response (id: resp_1)"
+        )));
+        assert!(!should_retry_provider_error(&anyhow::anyhow!(
+            "SSE error internal_error: backend failed"
+        )));
+        assert!(!should_retry_provider_error(&anyhow::anyhow!(
+            "SSE error bad_request: invalid input"
+        )));
+        assert!(should_retry_provider_error(&anyhow::anyhow!(
+            "SSE stream inter-chunk timeout"
+        )));
     }
 }

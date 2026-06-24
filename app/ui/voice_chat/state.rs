@@ -2,7 +2,7 @@
 //!
 //! Contains overlay state, configuration, and message types.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
@@ -10,6 +10,7 @@ use std::time::{Instant, SystemTime};
 use codescribe_core::attachment::Attachment;
 
 use crate::ui::shared::status::UiStatus;
+use crate::ui_helpers::{BubbleMeasureCache, RenderMode};
 
 /// Type alias for voice chat send callback
 pub type VoiceChatSendCallback = Arc<dyn Fn(String) + Send + Sync>;
@@ -41,6 +42,9 @@ pub enum ChatRole {
     User,
     Assistant,
     System,
+    /// Live reasoning summary streamed from the agent (its own lane, rendered
+    /// as a collapsible "thinking" entry — NOT mixed into the assistant text).
+    Reasoning,
 }
 
 /// A single chat message
@@ -49,16 +53,17 @@ pub struct ChatMessage {
     pub role: ChatRole,
     pub text: String,
     pub is_streaming: bool,
+    pub is_collapsed: bool,
     pub is_error: bool,
     pub timestamp: SystemTime,
     pub mode: Option<String>,
+    pub is_pending_followup: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Drawer,
     Agent,
-    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +104,9 @@ pub struct DrawerEntry {
     pub path: PathBuf,
     pub timestamp: SystemTime,
     pub mode: TranscriptionMode,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub total_tokens: Option<u64>,
     pub preview: String,
     pub search_corpus: String,
     pub is_ai_formatted: bool,
@@ -143,12 +151,22 @@ pub struct VoiceChatOverlayState {
     pub agent_scroll_view: Option<usize>,
     pub agent_container: Option<usize>,
     pub agent_bubble_views: Vec<(usize, usize)>,
+    pub agent_bubble_click_recognizers: Vec<(usize, usize)>,
+    /// Explicit per-message render overrides. Missing entries use the raw Markdown default.
+    pub message_render_modes: HashMap<usize, RenderMode>,
+    /// Cached document stack height for amortized streaming layout updates.
+    pub cached_agent_stack_height: Option<f64>,
+    /// Per-bubble text-height measurement cache. Avoids re-running AppKit's
+    /// `__NSStringDrawingEngine` for unchanged bubbles on every chat-view
+    /// rebuild (the main-thread hang on large transcripts).
+    pub bubble_measure_cache: BubbleMeasureCache,
     pub agent_input_bar: Option<usize>,
     pub agent_input_scroll_view: Option<usize>,
     pub agent_input_text_view: Option<usize>,
     pub agent_input_field: Option<usize>,
     pub agent_attach_button: Option<usize>,
     pub agent_send_button: Option<usize>,
+    pub agent_latest_button: Option<usize>,
     /// Attachments (files, images, URLs, GitHub blobs) for Agent chat context.
     pub attachments: Vec<Attachment>,
     /// Fingerprint of the last attachment set sent to the assistant.
@@ -158,7 +176,7 @@ pub struct VoiceChatOverlayState {
 
     // Active tab
     pub active_tab: Tab,
-    /// Requested tab to apply after overlay is created (used for routing Settings from tray).
+    /// Requested tab to apply after overlay is created.
     pub pending_tab: Option<Tab>,
 
     // Chat state
@@ -167,8 +185,20 @@ pub struct VoiceChatOverlayState {
     pub active_user_stream_index: Option<usize>,
     /// Active streaming assistant message index (if any).
     pub active_assistant_stream_index: Option<usize>,
+    /// Active streaming reasoning-summary message index (if any).
+    pub active_reasoning_stream_index: Option<usize>,
     pub manual_draft: String,
+    /// Manual prompts sent from the Agent input, newest at the end.
+    pub prompt_history: Vec<String>,
+    /// Cursor into `prompt_history` while navigating with up/down arrows.
+    /// `None` means the editable draft is live rather than a recalled prompt.
+    pub prompt_history_cursor: Option<usize>,
     pub is_sending: bool,
+    /// True while the agent is reasoning after a voice transcript was handed off / sent.
+    /// Used to show "Thinking..." / reasoning indicator in the Agent tab.
+    pub is_agent_thinking: bool,
+    /// True when the user is pinned to the bottom of the agent transcript.
+    pub scroll_pinned: bool,
     pub auto_send_enabled: bool,
     /// Last status text provided by caller before runtime-health decoration is applied.
     pub status_base_text: String,
@@ -231,12 +261,17 @@ impl Default for VoiceChatOverlayState {
             agent_scroll_view: None,
             agent_container: None,
             agent_bubble_views: Vec::new(),
+            agent_bubble_click_recognizers: Vec::new(),
+            message_render_modes: HashMap::new(),
+            cached_agent_stack_height: None,
+            bubble_measure_cache: BubbleMeasureCache::new(),
             agent_input_bar: None,
             agent_input_scroll_view: None,
             agent_input_text_view: None,
             agent_input_field: None,
             agent_attach_button: None,
             agent_send_button: None,
+            agent_latest_button: None,
             attachments: Vec::new(),
             attachments_last_sent: None,
             attachment_chip_strip: None,
@@ -245,8 +280,13 @@ impl Default for VoiceChatOverlayState {
             messages: Vec::new(),
             active_user_stream_index: None,
             active_assistant_stream_index: None,
+            active_reasoning_stream_index: None,
             manual_draft: String::new(),
+            prompt_history: Vec::new(),
+            prompt_history_cursor: None,
             is_sending: false,
+            is_agent_thinking: false,
+            scroll_pinned: true,
             auto_send_enabled: true,
             status_base_text: "Ready".to_string(),
             status_text: "Ready".to_string(),

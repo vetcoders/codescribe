@@ -14,6 +14,32 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
+struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn unset(key: &'static str) -> Self {
+        let prev = std::env::var(key).ok();
+        // SAFETY: this guard is used by a serial test and restores the
+        // process-global env var before returning.
+        unsafe { std::env::remove_var(key) };
+        Self { key, prev }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            // SAFETY: see EnvVarGuard::unset.
+            Some(value) => unsafe { std::env::set_var(self.key, value) },
+            // SAFETY: see EnvVarGuard::unset.
+            None => unsafe { std::env::remove_var(self.key) },
+        }
+    }
+}
+
 /// Test atomic flag mechanism used for VAD signaling
 ///
 /// This validates the cross-thread communication pattern:
@@ -166,9 +192,11 @@ fn test_vad_flag_persistence() {
 
 /// Test RecorderConfig VAD defaults
 #[test]
+#[serial_test::serial]
 fn test_recorder_vad_config_defaults() {
     use codescribe::RecorderConfig;
 
+    let _auto_silence = EnvVarGuard::unset("AUTO_SILENCE");
     let config = RecorderConfig::default();
 
     // VAD should be enabled by default
