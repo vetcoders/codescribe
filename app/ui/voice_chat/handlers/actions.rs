@@ -239,6 +239,16 @@ pub extern "C" fn on_commit_message(_this: &Object, _cmd: Sel, _sender: Id) {
     info!("Draft message committed");
 }
 
+pub extern "C" fn on_commit_pending_followup(_this: &Object, _cmd: Sel, _sender: Id) {
+    crate::ui::voice_chat::api::commit_pending_followup_message_impl();
+    info!("Pending follow-up sent");
+}
+
+pub extern "C" fn on_edit_pending_followup(_this: &Object, _cmd: Sel, _sender: Id) {
+    crate::ui::voice_chat::api::edit_pending_followup_message_impl();
+    info!("Pending follow-up moved to draft");
+}
+
 pub extern "C" fn on_discard_message(_this: &Object, _cmd: Sel, _sender: Id) {
     discard_last_message_impl();
     info!("Draft message discarded");
@@ -284,6 +294,13 @@ pub extern "C" fn on_do_command_by_selector(
             return true;
         }
         return false; // default NSTextView paste
+    }
+
+    if selector == sel!(moveUp:) {
+        return crate::ui::voice_chat::api::recall_previous_prompt();
+    }
+    if selector == sel!(moveDown:) {
+        return crate::ui::voice_chat::api::recall_next_prompt();
     }
 
     if selector == sel!(insertNewline:) {

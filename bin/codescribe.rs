@@ -553,14 +553,7 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
 }
 
 async fn run_daemon() -> Result<()> {
-    use anyhow::Context;
-    use codescribe::config::{Config, UserSettings};
-    use codescribe::controller::RecordingController;
-    use codescribe::os::hotkeys::HotkeyEvent;
-    use codescribe::{ipc, tray};
-    use crossbeam_channel::unbounded;
-    use std::sync::Arc;
-    use tokio::runtime::Handle;
+    use codescribe::tray;
 
     eprintln!("CodeScribe daemon starting...");
 
@@ -580,8 +573,33 @@ async fn run_daemon() -> Result<()> {
             .unwrap_or_else(|_| "unknown".into()),
     );
 
+    tray::run_with_startup(None, || {
+        tokio::spawn(async {
+            if let Err(e) = initialize_daemon_runtime().await {
+                tracing::error!("CodeScribe startup failed: {e:?}");
+                let _ = codescribe::tray::update_tray_status(codescribe::tray::TrayStatus::Error);
+                #[cfg(target_os = "macos")]
+                codescribe::os::notifications::notify("CodeScribe startup failed", &format!("{e}"));
+            }
+        });
+    })?;
+
+    Ok(())
+}
+
+async fn initialize_daemon_runtime() -> Result<()> {
+    use anyhow::Context;
+    use codescribe::config::{Config, UserSettings};
+    use codescribe::controller::RecordingController;
+    use codescribe::os::hotkeys::HotkeyEvent;
+    use codescribe::{ipc, tray};
+    use crossbeam_channel::unbounded;
+    use std::sync::Arc;
+    use tokio::runtime::Handle;
+
     let config = Config::load();
     let _user_settings = UserSettings::load();
+    let menu_rx = tray::menu_event_receiver()?;
     let _ = codescribe::qube_lifecycle::start_if_enabled();
 
     #[cfg(target_os = "macos")]
@@ -618,7 +636,6 @@ async fn run_daemon() -> Result<()> {
         }
     });
 
-    let menu_rx = tray::menu_event_receiver()?;
     let menu_controller = Arc::clone(&controller);
     let menu_handle = Handle::current();
     std::thread::spawn(move || {
@@ -722,7 +739,8 @@ async fn run_daemon() -> Result<()> {
         }
     });
 
-    tray::run_with_hotkeys(None)?;
+    let _ = tray::update_tray_status(tray::TrayStatus::Idle);
+    info!("CodeScribe daemon ready");
 
     Ok(())
 }

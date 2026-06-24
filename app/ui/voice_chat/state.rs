@@ -57,6 +57,7 @@ pub struct ChatMessage {
     pub is_error: bool,
     pub timestamp: SystemTime,
     pub mode: Option<String>,
+    pub is_pending_followup: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +188,11 @@ pub struct VoiceChatOverlayState {
     /// Active streaming reasoning-summary message index (if any).
     pub active_reasoning_stream_index: Option<usize>,
     pub manual_draft: String,
+    /// Manual prompts sent from the Agent input, newest at the end.
+    pub prompt_history: Vec<String>,
+    /// Cursor into `prompt_history` while navigating with up/down arrows.
+    /// `None` means the editable draft is live rather than a recalled prompt.
+    pub prompt_history_cursor: Option<usize>,
     pub is_sending: bool,
     /// True while the agent is reasoning after a voice transcript was handed off / sent.
     /// Used to show "Thinking..." / reasoning indicator in the Agent tab.
@@ -276,6 +282,8 @@ impl Default for VoiceChatOverlayState {
             active_assistant_stream_index: None,
             active_reasoning_stream_index: None,
             manual_draft: String::new(),
+            prompt_history: Vec::new(),
+            prompt_history_cursor: None,
             is_sending: false,
             is_agent_thinking: false,
             scroll_pinned: true,

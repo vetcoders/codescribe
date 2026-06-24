@@ -977,7 +977,7 @@ mod tests {
             agent_enter_sends: Some(false),
             whisper_model: Some("whisper-large-v3-turbo".to_string()),
             llm_endpoint: Some("https://api.example/v1/responses".to_string()),
-            llm_model: Some("programmer".to_string()),
+            llm_model: Some("gpt-4.1".to_string()),
             ..Default::default()
         };
         settings.save().expect("save settings");
@@ -994,7 +994,7 @@ mod tests {
             loaded.llm_endpoint.as_deref(),
             Some("https://api.example/v1/responses")
         );
-        assert_eq!(loaded.llm_model.as_deref(), Some("programmer"));
+        assert_eq!(loaded.llm_model.as_deref(), Some("gpt-4.1"));
     }
 
     #[test]

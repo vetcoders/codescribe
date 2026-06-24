@@ -79,11 +79,8 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
         let settings_snapshot = UserSettings::load();
         let mut mode_binding_labels: [Option<usize>; 3] = [None; 3];
         for (mode, tag) in mode_specs {
-            let change_button_w = 96.0;
             let disable_button_w = 72.0;
-            let button_gap = 8.0;
-            let change_x = pad + content_w - change_button_w;
-            let disable_x = change_x - button_gap - disable_button_w;
+            let disable_x = pad + content_w - disable_button_w;
             let binding_right_x = disable_x - 8.0;
 
             let row_title = create_label(LabelConfig {
@@ -120,18 +117,6 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
             let _: () = msg_send![disable_button, setTag: tag + MODE_DISABLE_TAG_OFFSET];
             button_set_action(disable_button, action_handler, sel!(onModeBindingChange:));
             add_subview(container, disable_button);
-
-            let change_button = create_button(
-                CGRect::new(
-                    &CGPoint::new(change_x, y - 2.0),
-                    &CGSize::new(change_button_w, 24.0),
-                ),
-                "\u{2328} Customize",
-                button_style::GLASS,
-            );
-            let _: () = msg_send![change_button, setTag: tag];
-            button_set_action(change_button, action_handler, sel!(onModeBindingChange:));
-            add_subview(container, change_button);
 
             y -= 24.0;
 
@@ -173,7 +158,7 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
 
         let recorder_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Shortcut recorder: click [⌨ Customize], press Fn/Ctrl/Option. Esc cancels."
+            text: "Mode shortcuts are fixed presets for now. Use Disable to turn a mode off."
                 .to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
@@ -362,7 +347,7 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
 
         let provider_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(pad, y), &CGSize::new(content_w, 16.0)),
-            text: "Formatting and Assistive use separate endpoint/model/key routes.".to_string(),
+            text: "OpenAI Responses is the default. Formatting and Assistive can still use separate keys, models, or endpoints.".to_string(),
             font_size: ui_tokens::MICRO_FONT_SIZE,
             text_color: secondary,
             ..Default::default()
@@ -373,13 +358,13 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
         let llm_endpoint_val = std::env::var("LLM_FORMATTING_ENDPOINT")
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .unwrap_or_default();
+            .unwrap_or_else(codescribe_core::config::default_llm_endpoint);
         let llm_endpoint_field = create_text_input(
             CGRect::new(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Formatting endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
+            "Formatting endpoint (OpenAI Responses)",
             &llm_endpoint_val,
         );
         style_paper_input(llm_endpoint_field);
@@ -396,13 +381,13 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
         let llm_model_val = std::env::var("LLM_FORMATTING_MODEL")
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .unwrap_or_default();
+            .unwrap_or_else(codescribe_core::config::default_formatting_model);
         let llm_model_field = create_text_input(
             CGRect::new(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Formatting model (e.g. programmer)",
+            "Formatting model (gpt-4.1)",
             &llm_model_val,
         );
         style_paper_input(llm_model_field);
@@ -417,7 +402,7 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Formatting API key (stored in Keychain)",
+            "Formatting OpenAI API key (stored in Keychain)",
         );
         style_paper_input(llm_key_field);
         let _: () = msg_send![llm_key_field, setFont: mono_font_input];
@@ -451,13 +436,16 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
         state.llm_key_status_label = Some(llm_status_label as usize);
         y -= 16.0 + gap;
 
-        let assist_endpoint_val = std::env::var("LLM_ASSISTIVE_ENDPOINT").unwrap_or_default();
+        let assist_endpoint_val = std::env::var("LLM_ASSISTIVE_ENDPOINT")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(codescribe_core::config::default_llm_endpoint);
         let assist_endpoint_field = create_text_input(
             CGRect::new(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Assistive endpoint (e.g. https://api.libraxis.cloud/v1/responses)",
+            "Assistive endpoint (OpenAI Responses)",
             &assist_endpoint_val,
         );
         style_paper_input(assist_endpoint_field);
@@ -471,13 +459,16 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
         state.assistive_endpoint_field = Some(assist_endpoint_field as usize);
         y -= SETTINGS_INPUT_HEIGHT + gap;
 
-        let assist_model_val = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_default();
+        let assist_model_val = std::env::var("LLM_ASSISTIVE_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(codescribe_core::config::default_assistive_model);
         let assist_model_field = create_text_input(
             CGRect::new(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Assistive model (e.g. programmer)",
+            "Assistive model (gpt-5.5)",
             &assist_model_val,
         );
         style_paper_input(assist_model_field);
@@ -496,7 +487,7 @@ pub(super) unsafe fn build_modes_shortcuts_tab(
                 &CGPoint::new(pad, y),
                 &CGSize::new(content_w, SETTINGS_INPUT_HEIGHT),
             ),
-            "Assistive API key (stored in Keychain)",
+            "Assistive OpenAI API key (stored in Keychain)",
         );
         style_paper_input(assist_key_field);
         let _: () = msg_send![assist_key_field, setFont: mono_font_input];

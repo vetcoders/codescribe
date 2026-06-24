@@ -178,20 +178,39 @@ pub(crate) fn open_permission_settings(kind: PermissionKind) {
     permissions::open_privacy_settings(permission_settings_deeplink(kind));
 }
 
+pub(super) fn should_open_settings_after_failed_request(
+    kind: PermissionKind,
+    granted: bool,
+) -> bool {
+    !granted && kind != PermissionKind::FullDiskAccess
+}
+
 pub(crate) fn request_permission(kind: PermissionKind) -> bool {
     match kind {
         PermissionKind::Microphone => {
             let result = permissions::request_microphone();
-            if !result {
+            if should_open_settings_after_failed_request(kind, result) {
                 open_permission_settings(kind);
             }
             result
         }
-        PermissionKind::Accessibility => permissions::request_accessibility(),
-        PermissionKind::InputMonitoring => permissions::request_input_monitoring(),
+        PermissionKind::Accessibility => {
+            let result = permissions::request_accessibility();
+            if should_open_settings_after_failed_request(kind, result) {
+                open_permission_settings(kind);
+            }
+            result
+        }
+        PermissionKind::InputMonitoring => {
+            let result = permissions::request_input_monitoring();
+            if should_open_settings_after_failed_request(kind, result) {
+                open_permission_settings(kind);
+            }
+            result
+        }
         PermissionKind::ScreenRecording => {
             let result = permissions::request_screen_recording();
-            if !result {
+            if should_open_settings_after_failed_request(kind, result) {
                 open_permission_settings(kind);
             }
             result

@@ -212,6 +212,14 @@ pub fn action_handler_class() -> *const Class {
                 on_commit_message as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
+                sel!(onCommitPendingFollowup:),
+                on_commit_pending_followup as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onEditPendingFollowup:),
+                on_edit_pending_followup as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
                 sel!(onDiscardMessage:),
                 on_discard_message as extern "C" fn(&Object, Sel, Id),
             );

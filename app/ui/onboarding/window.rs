@@ -395,14 +395,15 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
 
         let api_key_field = create_secure_text_input(
             CGRect::new(&CGPoint::new(0.0, 46.0), &CGSize::new(380.0, 28.0)),
-            "Enter your LLM API key",
+            "Put your OpenAI API key",
         );
         add_subview(api_view, api_key_field);
         ui.api_key_field = Some(api_key_field as usize);
 
         let api_hint = create_label(LabelConfig {
             frame: CGRect::new(&CGPoint::new(0.0, 8.0), &CGSize::new(380.0, 30.0)),
-            text: "Stored securely in macOS Keychain.".to_string(),
+            text: "Stored securely in macOS Keychain and used for Formatting plus Assistive."
+                .to_string(),
             font_size: 11.0,
             text_color: color_secondary_label(),
             ..Default::default()

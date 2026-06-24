@@ -12,8 +12,10 @@ use std::sync::Mutex;
 use tracing::warn;
 
 use crate::config::Config;
+use crate::os::permissions::PermissionStatus;
 
-use super::steps::TOTAL_STEPS;
+use super::permission_flow::permission_status;
+use super::steps::{PermissionKind, STEP_FLOW, TOTAL_STEPS, WizardStep};
 
 fn setup_done_path() -> PathBuf {
     Config::config_dir().join("setup_done")
@@ -54,6 +56,101 @@ pub(super) fn save_onboarding_progress(step_index: usize) {
 
 fn clear_onboarding_progress() {
     let _ = fs::remove_file(onboarding_progress_path());
+}
+
+const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 4] = [
+    PermissionKind::Microphone,
+    PermissionKind::Accessibility,
+    PermissionKind::InputMonitoring,
+    PermissionKind::ScreenRecording,
+];
+
+fn permission_step_index(kind: PermissionKind) -> Option<usize> {
+    STEP_FLOW
+        .iter()
+        .position(|step| *step == WizardStep::Permission(kind))
+}
+
+fn current_runtime_is_app_bundle() -> bool {
+    std::env::current_exe()
+        .map(|path| executable_is_app_bundle(&path))
+        .unwrap_or(false)
+}
+
+fn executable_is_app_bundle(path: &std::path::Path) -> bool {
+    path.to_string_lossy().contains(".app/Contents/MacOS/")
+}
+
+fn permission_status_from_snapshot(
+    kind: PermissionKind,
+    microphone: PermissionStatus,
+    accessibility: PermissionStatus,
+    input_monitoring: PermissionStatus,
+    screen_recording: PermissionStatus,
+) -> PermissionStatus {
+    match kind {
+        PermissionKind::Microphone => microphone,
+        PermissionKind::Accessibility => accessibility,
+        PermissionKind::InputMonitoring => input_monitoring,
+        PermissionKind::ScreenRecording => screen_recording,
+        PermissionKind::FullDiskAccess => PermissionStatus::Granted,
+    }
+}
+
+pub(super) fn setup_done_refresh_target(
+    setup_done_exists: bool,
+    app_bundle_runtime: bool,
+    microphone: PermissionStatus,
+    accessibility: PermissionStatus,
+    input_monitoring: PermissionStatus,
+    screen_recording: PermissionStatus,
+) -> Option<usize> {
+    if !setup_done_exists || !app_bundle_runtime {
+        return None;
+    }
+
+    REQUIRED_SETUP_PERMISSIONS
+        .into_iter()
+        .find(|kind| {
+            permission_status_from_snapshot(
+                *kind,
+                microphone,
+                accessibility,
+                input_monitoring,
+                screen_recording,
+            ) != PermissionStatus::Granted
+        })
+        .and_then(permission_step_index)
+}
+
+fn invalidate_setup_done_if_permissions_missing() {
+    let setup_done = setup_done_path();
+    if !setup_done.exists() {
+        return;
+    }
+
+    let Some(resume_step) = setup_done_refresh_target(
+        true,
+        current_runtime_is_app_bundle(),
+        permission_status(PermissionKind::Microphone),
+        permission_status(PermissionKind::Accessibility),
+        permission_status(PermissionKind::InputMonitoring),
+        permission_status(PermissionKind::ScreenRecording),
+    ) else {
+        return;
+    };
+
+    match fs::remove_file(&setup_done) {
+        Ok(()) => {
+            save_onboarding_progress(resume_step);
+            warn!(
+                "Onboarding: removed stale setup_done because required permissions are missing; resuming at step {resume_step}"
+            );
+        }
+        Err(error) => warn!(
+            "Onboarding: failed to remove stale setup_done despite missing required permissions: {error}"
+        ),
+    }
 }
 
 /// Best-effort liveness probe for a PID via `kill(pid, 0)`.
@@ -192,6 +289,7 @@ fn migrate_legacy_setup_done_marker() {
 
 pub fn should_show_onboarding() -> bool {
     migrate_legacy_setup_done_marker();
+    invalidate_setup_done_if_permissions_missing();
     !setup_done_path().exists()
 }
 

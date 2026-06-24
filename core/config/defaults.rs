@@ -2,6 +2,31 @@
 //!
 //! These are used by serde for deserialization defaults.
 
+pub const DEFAULT_OPENAI_RESPONSES_ENDPOINT: &str = "https://api.openai.com/v1/responses";
+pub const DEFAULT_LLM_MODEL: &str = DEFAULT_FORMATTING_MODEL;
+pub const DEFAULT_FORMATTING_MODEL: &str = "gpt-4.1";
+pub const DEFAULT_ASSISTIVE_MODEL: &str = "gpt-5.5";
+
+pub fn default_llm_endpoint() -> String {
+    DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string()
+}
+
+pub fn default_llm_endpoint_option() -> Option<String> {
+    Some(default_llm_endpoint())
+}
+
+pub fn default_llm_model() -> String {
+    DEFAULT_LLM_MODEL.to_string()
+}
+
+pub fn default_formatting_model() -> String {
+    DEFAULT_FORMATTING_MODEL.to_string()
+}
+
+pub fn default_assistive_model() -> String {
+    DEFAULT_ASSISTIVE_MODEL.to_string()
+}
+
 pub fn default_hold_start_delay_ms() -> u64 {
     800
 }

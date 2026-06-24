@@ -715,6 +715,19 @@ mod tests {
     }
 
     #[test]
+    fn test_lexicon_rewrites_loctree_compound_variants() {
+        let mut processor = StreamPostProcessor::new();
+        let output = processor
+            .process("Bede nagrywal cos o locktree i nagrywanie o loktree.")
+            .expect("expected output");
+
+        assert_eq!(
+            output,
+            "Bede nagrywal cos o loctree i nagrywanie o loctree."
+        );
+    }
+
+    #[test]
     fn test_cleanup_and_whitespace() {
         let mut processor = StreamPostProcessor::new();
         let input = "To jest to jest to jest   bardzo  wazny \n test systemu.";

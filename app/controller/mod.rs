@@ -72,7 +72,8 @@ use codescribe_core::tts::AudioPlayer;
 // UI state for conversation mode
 use crate::ui::voice_chat::ConversationModeState;
 use codescribe_core::pipeline::contracts::{
-    FinalPassDisposition, TranscriptionConfidenceFlag, TranscriptionVerdict,
+    FileTranscriptionOptions, FinalPassDisposition, TranscriptionConfidenceFlag,
+    TranscriptionVerdict,
 };
 
 use helpers::{
@@ -3303,7 +3304,7 @@ impl RecordingController {
 
             let phase3 = std::time::Instant::now();
             info!(
-                "stop_toggle_inner: PHASE 3 — process_stopped_recording (Whisper final-pass + post-process + paste/handoff decision)"
+                "stop_toggle_inner: PHASE 3 — process_stopped_recording (truth selection + post-process + paste/handoff decision)"
             );
             let r = self
                 .process_stopped_recording(
@@ -3643,7 +3644,7 @@ impl RecordingController {
                     crate::whisper::transcribe_file_verdict(
                         &wav_path,
                         lang.as_deref(),
-                        codescribe_core::pipeline::contracts::FileTranscriptionOptions::default(),
+                        FileTranscriptionOptions::default(),
                     )
                 })
                 .await

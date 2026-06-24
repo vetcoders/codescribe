@@ -403,6 +403,9 @@ mod macos {
                 );
             } else {
                 unsafe {
+                    // SAFETY: `tap` is loaded from `RuntimeControl.tap` after a null check.
+                    // We only ask CoreGraphics to re-enable the live event tap; ownership,
+                    // invalidation, and release remain with the runtime control teardown path.
                     CGEventTapEnable(tap, true);
                 }
                 tracing::warn!(

@@ -20,7 +20,7 @@ use codescribe_core::vad;
 
 use crate::config::Config;
 use crate::tray::state::NOTES_MENU_ITEMS;
-use crate::tray::types::{MenuIds, NotesMenuItems};
+use crate::tray::types::{MenuIds, NotesMenuItems, TrayStatus};
 
 // Thread-local storage for menu items that need dynamic updates
 thread_local! {
@@ -34,14 +34,14 @@ thread_local! {
 /// Build the tray menu
 ///
 /// Note: Settings opens the persistent Settings window.
-pub fn build_menu() -> Result<(Menu, MenuIds)> {
+pub fn build_menu(initial_status: TrayStatus) -> Result<(Menu, MenuIds)> {
     let menu = Menu::new();
     ROOT_MENU.with(|cell| {
         *cell.borrow_mut() = Some(menu.clone());
     });
 
     // 1. Status line (disabled, dynamic text)
-    let status_item = MenuItem::new("Status: Idle", false, None);
+    let status_item = MenuItem::new(initial_status.menu_label(), false, None);
     menu.append(&status_item)?;
 
     // Store for dynamic updates
@@ -287,7 +287,7 @@ pub fn update_onboarding_item() {
 mod tests {
     fn menu_labels_for_test() -> Vec<String> {
         vec![
-            "Status: Idle".to_string(),
+            "Status: Starting...".to_string(),
             "Show Agent".to_string(),
             "Open history...".to_string(),
             "Copy last transcript".to_string(),

@@ -667,6 +667,70 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
 }
 
 #[test]
+fn test_adjudicate_recording_truth_prefers_local_final_pass_over_streaming_preview() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "czysty final pass",
+            82.0,
+            Some(-0.22),
+            false,
+        )),
+        "powtarzajacy sie streaming preview".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("czysty final pass"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass)
+    );
+    assert_eq!(verdict.fallback_class, None);
+    assert!(verdict.confidence_flags.is_empty());
+    assert_eq!(verdict.commit_trigger, None);
+    assert_eq!(verdict.display_status, "Final-pass local");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_marks_raw_streaming_preview_as_degraded_fallback() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        None,
+        "toggle transcript".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("toggle transcript"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::StreamingFallback)
+    );
+    assert_eq!(
+        verdict.fallback_class,
+        Some(RecordingFallbackClass::Degraded)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::LocalFinalPassUnavailable)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::UnverifiedStream)
+    );
+    assert_eq!(
+        verdict.commit_trigger.as_deref(),
+        Some("streaming_preview_used_as_verdict")
+    );
+    assert_eq!(verdict.display_status, "Streaming fallback");
+}
+
+#[test]
 fn test_adjudicate_recording_truth_uses_typed_cloud_primary_verdict() {
     let verdict = adjudicate_recording_truth(
         false,

@@ -48,17 +48,12 @@ pub unsafe fn present_shared_shell_panel(window: Id) {
         if let Some(ns_app) = Class::get("NSApplication") {
             let shared_app: Id = msg_send![ns_app, sharedApplication];
             if !shared_app.is_null() {
-                let supports_activate: bool =
-                    msg_send![shared_app, respondsToSelector: sel!(activate)];
-                if supports_activate {
-                    let _: () = msg_send![shared_app, activate];
-                } else {
-                    let _: () = msg_send![shared_app, activateIgnoringOtherApps: true];
-                }
+                let _: () = msg_send![shared_app, activateIgnoringOtherApps: true];
             }
         }
         let nil: *mut Object = std::ptr::null_mut();
         let _: () = msg_send![window, makeKeyAndOrderFront: nil];
+        let _: () = msg_send![window, makeMainWindow];
         let _: () = msg_send![window, orderFrontRegardless];
     }
 }

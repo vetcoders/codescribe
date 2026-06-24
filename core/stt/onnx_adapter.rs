@@ -762,23 +762,37 @@ fn build_whisper_config(config_json: &serde_json::Value) -> WhisperConfig {
 /// vocab, the second axis is the sequence length). Shape values originate from
 /// the ONNX model and must not be trusted to panic-index.
 fn last_position_logits(shape: &[i64], data: &[f32]) -> Result<Vec<f32>> {
-    let vocab_size = *shape
+    let raw_vocab_size = *shape
         .last()
-        .ok_or_else(|| anyhow!("decoder logits tensor has empty shape"))?
-        as usize;
+        .ok_or_else(|| anyhow!("decoder logits tensor has empty shape"))?;
     ensure!(
         shape.len() >= 2,
         "decoder logits tensor has rank {} (expected >= 2): {:?}",
         shape.len(),
         shape
     );
-    ensure!(vocab_size > 0, "decoder logits vocab dimension is 0");
-    let out_seq_len = shape[1] as usize;
-    let last_index = out_seq_len
-        .checked_sub(1)
-        .ok_or_else(|| anyhow!("decoder logits seq_len is 0"))?;
-    let last_pos_offset = last_index * vocab_size;
-    let range = last_pos_offset..last_pos_offset + vocab_size;
+    ensure!(
+        raw_vocab_size > 0,
+        "decoder logits vocab dimension must be positive, got {}",
+        raw_vocab_size
+    );
+    let vocab_size = raw_vocab_size as usize;
+
+    let raw_out_seq_len = shape[1];
+    ensure!(
+        raw_out_seq_len > 0,
+        "decoder logits seq_len must be positive, got {}",
+        raw_out_seq_len
+    );
+    let out_seq_len = raw_out_seq_len as usize;
+    let last_index = out_seq_len - 1;
+    let last_pos_offset = last_index
+        .checked_mul(vocab_size)
+        .ok_or_else(|| anyhow!("decoder logits offset overflow"))?;
+    let range_end = last_pos_offset
+        .checked_add(vocab_size)
+        .ok_or_else(|| anyhow!("decoder logits range overflow"))?;
+    let range = last_pos_offset..range_end;
     let last_logits = data.get(range.clone()).ok_or_else(|| {
         anyhow!(
             "decoder logits slice {:?} out of bounds (data len {}, shape {:?})",
@@ -942,8 +956,12 @@ mod tests {
         assert!(last_position_logits(&[], &[0.0f32; 4]).is_err());
         // seq_len == 0 → Err (no underflow on (out_seq_len - 1)).
         assert!(last_position_logits(&[1, 0, 3], &[0.0f32; 0]).is_err());
+        // seq_len < 0 → Err, not usize wraparound.
+        assert!(last_position_logits(&[1, -1, 3], &[0.0f32; 0]).is_err());
         // vocab == 0 → Err.
         assert!(last_position_logits(&[1, 2, 0], &[0.0f32; 4]).is_err());
+        // vocab < 0 → Err, not usize wraparound.
+        assert!(last_position_logits(&[1, 2, -1], &[0.0f32; 4]).is_err());
         // Shape claims more than data holds → Err (slice OOB), not panic.
         assert!(last_position_logits(&[1, 2, 3], &[0.0f32; 2]).is_err());
     }
