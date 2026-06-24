@@ -429,6 +429,87 @@ async fn stream_final_text_to_chat_locally(text: &str) {
     }
 }
 
+/// Title-case a `snake_case` / `kebab-case` identifier into readable words.
+/// `brave_web_search` -> `Brave Web Search`.
+fn prettify_identifier(s: &str) -> String {
+    let cleaned = s.replace(['_', '-'], " ");
+    let mut out = String::with_capacity(cleaned.len());
+    for (i, word) in cleaned.split_whitespace().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    if out.is_empty() { s.to_string() } else { out }
+}
+
+/// Map a raw tool identifier (often `mcp__<server>__<tool>`) to a concise,
+/// human-readable label for the conversation timeline.
+///
+/// Collapsible Tool Evidence: raw MCP wire names like
+/// `mcp__brave-search__brave_web_search` are transport noise in a conversation —
+/// the user wants to read "Web search", not the addressing scheme. This is a pure
+/// function so the mapping is unit-testable without a running UI.
+pub(crate) fn friendly_tool_name(raw: &str) -> String {
+    match raw {
+        "mcp__brave-search__brave_web_search" | "brave_web_search" => return "Web search".into(),
+        "mcp__brave-search__brave_local_search" | "brave_local_search" => {
+            return "Local search".into();
+        }
+        "mcp__brave-search__brave_news_search" | "brave_news_search" => {
+            return "News search".into();
+        }
+        "mcp__brave-search__brave_image_search" | "brave_image_search" => {
+            return "Image search".into();
+        }
+        "mcp__brave-search__brave_video_search" | "brave_video_search" => {
+            return "Video search".into();
+        }
+        "mcp__brave-search__brave_summarizer" | "brave_summarizer" => return "Summarize".into(),
+        _ => {}
+    }
+    if let Some(rest) = raw.strip_prefix("mcp__") {
+        let mut parts = rest.splitn(2, "__");
+        let server = parts.next().unwrap_or("");
+        let tool = parts.next().unwrap_or(server);
+        let tool_pretty = prettify_identifier(tool);
+        if server.is_empty() || tool == server {
+            return tool_pretty;
+        }
+        return format!("{tool_pretty} · {}", prettify_identifier(server));
+    }
+    prettify_identifier(raw)
+}
+
+/// Status-pill copy while a tool is running. Conversation timeline stays for
+/// conversation; transient activity lives in the status pill.
+pub(crate) fn tool_running_status(friendly: &str) -> String {
+    let lower = friendly.to_lowercase();
+    if lower.contains("web search") {
+        "Searching web…".to_string()
+    } else if lower.contains("search") {
+        "Searching…".to_string()
+    } else {
+        format!("Running {friendly}…")
+    }
+}
+
+/// Compact one-line evidence entry for a completed tool call. Replaces the old
+/// pair of raw "Tool call started/finished: mcp__…" cards with a single readable
+/// line. The full raw name + summary still goes to the debug log.
+pub(crate) fn tool_evidence_line(friendly: &str, summary: &str) -> String {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        format!("{friendly} completed")
+    } else {
+        format!("{friendly} completed · {summary}")
+    }
+}
+
 async fn apply_agent_ui_event(event: AgentUiEvent, overlay_state: &mut AgentUiOverlayState) {
     match event {
         AgentUiEvent::TextDelta(delta) => {
@@ -461,15 +542,22 @@ async fn apply_agent_ui_event(event: AgentUiEvent, overlay_state: &mut AgentUiOv
             crate::ui::voice_chat::append_voice_chat_reasoning_delta(&delta);
         }
         AgentUiEvent::ToolExecuting { name, .. } => {
-            crate::ui::voice_chat::update_voice_chat_status(&format!("Tool running: {name}"));
-            crate::ui::voice_chat::add_voice_chat_system_message(&format!(
-                "Tool call started: {name}"
-            ));
+            // Collapsible Tool Evidence: no per-start chat card. The status pill
+            // communicates activity; the timeline stays for conversation. The raw
+            // wire name is debug-only.
+            let friendly = friendly_tool_name(&name);
+            debug!("Tool executing: {name} -> {friendly}");
+            crate::ui::voice_chat::update_voice_chat_status(&tool_running_status(&friendly));
         }
         AgentUiEvent::ToolResult { name, summary, .. } => {
-            crate::ui::voice_chat::update_voice_chat_status("Thinking... (70%)");
-            crate::ui::voice_chat::add_voice_chat_system_message(&format!(
-                "Tool call finished: {name} ({summary})"
+            // One compact, human-readable evidence line per completed call instead
+            // of the raw "Tool call finished: mcp__…" card. Raw name + full summary
+            // are kept in the debug log (raw tool output is debug, not chat).
+            let friendly = friendly_tool_name(&name);
+            debug!("Tool result: {name} -> {friendly} | raw summary: {summary}");
+            crate::ui::voice_chat::update_voice_chat_status("Thinking…");
+            crate::ui::voice_chat::add_voice_chat_system_message(&tool_evidence_line(
+                &friendly, &summary,
             ));
         }
         AgentUiEvent::Done => {}
@@ -1092,6 +1180,56 @@ mod tests {
 
         assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 4));
         assert_eq!(chunks.concat(), "Zażółć gęślą jaźń");
+    }
+
+    // ── Collapsible Tool Evidence: friendly tool-name mapping ───────────────
+
+    #[test]
+    fn friendly_tool_name_maps_known_brave_tools() {
+        assert_eq!(
+            friendly_tool_name("mcp__brave-search__brave_web_search"),
+            "Web search"
+        );
+        assert_eq!(friendly_tool_name("brave_web_search"), "Web search");
+        assert_eq!(
+            friendly_tool_name("mcp__brave-search__brave_news_search"),
+            "News search"
+        );
+    }
+
+    #[test]
+    fn friendly_tool_name_prettifies_unknown_mcp_tools() {
+        // Unknown mcp__server__tool falls back to "<Tool> · <Server>" — never the
+        // raw wire name in the conversation timeline.
+        assert_eq!(
+            friendly_tool_name("mcp__github__create_issue"),
+            "Create Issue · Github"
+        );
+        // Bare snake_case identifier is title-cased.
+        assert_eq!(friendly_tool_name("read_file"), "Read File");
+        // The raw mcp__ wire form must never survive verbatim.
+        assert!(!friendly_tool_name("mcp__github__create_issue").contains("mcp__"));
+    }
+
+    #[test]
+    fn tool_running_status_is_human_readable() {
+        assert_eq!(tool_running_status("Web search"), "Searching web…");
+        assert_eq!(tool_running_status("Local search"), "Searching…");
+        assert_eq!(
+            tool_running_status("Create Issue · Github"),
+            "Running Create Issue · Github…"
+        );
+    }
+
+    #[test]
+    fn tool_evidence_line_is_compact() {
+        assert_eq!(
+            tool_evidence_line("Web search", "10 results"),
+            "Web search completed · 10 results"
+        );
+        assert_eq!(tool_evidence_line("Summarize", ""), "Summarize completed");
+        // No raw transport noise leaks into the evidence line.
+        assert!(!tool_evidence_line("Web search", "10 results").contains("mcp__"));
     }
 
     struct NoopTestProvider;
