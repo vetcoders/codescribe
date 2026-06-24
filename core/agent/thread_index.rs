@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::thread_store::{Thread, ThreadMessage};
 
@@ -250,35 +251,35 @@ fn build_search_text(
     latest_note: Option<&str>,
     latest_message: Option<&str>,
 ) -> String {
-    const MAX_SEARCH_TEXT_CHARS: usize = 16_384;
+    const MAX_SEARCH_TEXT_BYTES: usize = 16_384;
     let mut out = String::with_capacity(1024);
-    append_search_chunk(&mut out, &thread.title, MAX_SEARCH_TEXT_CHARS);
-    append_search_chunk(&mut out, &thread.mode, MAX_SEARCH_TEXT_CHARS);
-    append_search_chunk(&mut out, &thread.tags.join(" "), MAX_SEARCH_TEXT_CHARS);
+    append_search_chunk(&mut out, &thread.title, MAX_SEARCH_TEXT_BYTES);
+    append_search_chunk(&mut out, &thread.mode, MAX_SEARCH_TEXT_BYTES);
+    append_search_chunk(&mut out, &thread.tags.join(" "), MAX_SEARCH_TEXT_BYTES);
 
     if let Some(summary) = &thread.summary {
-        append_search_chunk(&mut out, summary, MAX_SEARCH_TEXT_CHARS);
+        append_search_chunk(&mut out, summary, MAX_SEARCH_TEXT_BYTES);
     }
 
     if let Some(note) = latest_note {
-        append_search_chunk(&mut out, note, MAX_SEARCH_TEXT_CHARS);
+        append_search_chunk(&mut out, note, MAX_SEARCH_TEXT_BYTES);
     }
     if let Some(message) = latest_message {
-        append_search_chunk(&mut out, message, MAX_SEARCH_TEXT_CHARS);
+        append_search_chunk(&mut out, message, MAX_SEARCH_TEXT_BYTES);
     }
 
     for note in &thread.notes {
-        append_search_chunk(&mut out, &note.text, MAX_SEARCH_TEXT_CHARS);
-        if out.len() >= MAX_SEARCH_TEXT_CHARS {
+        append_search_chunk(&mut out, &note.text, MAX_SEARCH_TEXT_BYTES);
+        if out.len() >= MAX_SEARCH_TEXT_BYTES {
             break;
         }
     }
-    if out.len() < MAX_SEARCH_TEXT_CHARS {
+    if out.len() < MAX_SEARCH_TEXT_BYTES {
         for message in &thread.messages {
             if let Some(text) = thread_message_preview_text(message) {
-                append_search_chunk(&mut out, &text, MAX_SEARCH_TEXT_CHARS);
+                append_search_chunk(&mut out, &text, MAX_SEARCH_TEXT_BYTES);
             }
-            if out.len() >= MAX_SEARCH_TEXT_CHARS {
+            if out.len() >= MAX_SEARCH_TEXT_BYTES {
                 break;
             }
         }
@@ -291,19 +292,20 @@ fn append_search_chunk(out: &mut String, value: &str, max_len: usize) {
     if value.is_empty() || out.len() >= max_len {
         return;
     }
-    if !out.is_empty() {
-        out.push(' ');
-    }
     let normalized = normalize_snippet(value);
     if normalized.is_empty() {
         return;
     }
-    let remaining = max_len.saturating_sub(out.len());
-    if normalized.len() <= remaining {
-        out.push_str(&normalized);
-    } else {
-        out.push_str(&normalized[..remaining]);
+    let separator_len = usize::from(!out.is_empty());
+    let remaining = max_len.saturating_sub(out.len() + separator_len);
+    let prefix_len = grapheme_prefix_len(&normalized, remaining);
+    if prefix_len == 0 {
+        return;
     }
+    if separator_len > 0 {
+        out.push(' ');
+    }
+    out.push_str(&normalized[..prefix_len]);
 }
 
 fn normalize_snippet(value: &str) -> String {
@@ -312,6 +314,21 @@ fn normalize_snippet(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase()
+}
+
+fn grapheme_prefix_len(value: &str, max_len: usize) -> usize {
+    if value.len() <= max_len {
+        return value.len();
+    }
+    let mut boundary = 0;
+    for (idx, grapheme) in value.grapheme_indices(true) {
+        let end = idx + grapheme.len();
+        if end > max_len {
+            break;
+        }
+        boundary = end;
+    }
+    boundary
 }
 
 fn thread_message_preview_text(message: &ThreadMessage) -> Option<String> {
@@ -567,6 +584,42 @@ mod tests {
         assert_eq!(note_results[0].id, "t_2026-02-23_note_search");
 
         Ok(())
+    }
+
+    #[test]
+    fn append_search_chunk_respects_grapheme_boundary_at_limit() {
+        let mut out = "x".repeat(16_382);
+        append_search_chunk(&mut out, "ęcho", 16_384);
+        assert_eq!(out.len(), 16_382);
+
+        let mut out = "x".repeat(16_381);
+        append_search_chunk(&mut out, "ęcho", 16_384);
+        assert_eq!(out.len(), 16_384);
+        assert!(out.ends_with(" ę"));
+
+        let mut out = "x".repeat(16_364);
+        append_search_chunk(&mut out, "zażółć gęślą jaźń też", 16_384);
+        assert!(out.ends_with(" zażółć gęślą"));
+
+        let zalgo = "A͙̒̍͢l̠̗̅ͩ͜t̷̝͖̐ͤ͜h͓̉͠o̵̯ͨͭů̷͈͚ͤg̸̺͚ͯͩ͡ȟ̶̩ 𝙻̥͐͏͖̓𝚘̸̙̗ͥͮ͝𝚌͍̈͢𝚝̴̱͑ͤ𝚛̸͍͔ͣ́𝚎̳́҉̙̎͢𝚎̥̄͏";
+        let first_grapheme_len = zalgo.graphemes(true).next().expect("grapheme").len();
+
+        let mut out = String::new();
+        append_search_chunk(&mut out, zalgo, first_grapheme_len - 1);
+        assert!(out.is_empty());
+
+        append_search_chunk(&mut out, zalgo, first_grapheme_len);
+        assert_eq!(out, "a͙̒̍͢");
+
+        let zero_width_payload = format!(
+            "{}{}",
+            "gаdz𝒊оlоrt",
+            "\u{200b}\u{200c}\u{200d}".repeat(10_000)
+        );
+        let mut out = String::new();
+        append_search_chunk(&mut out, &zero_width_payload, 16_384);
+        assert!(out.starts_with("gаdz𝒊оlоrt"));
+        assert!(out.len() <= 16_384);
     }
 
     #[test]

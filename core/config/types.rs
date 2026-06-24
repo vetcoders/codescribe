@@ -395,7 +395,8 @@ pub struct Config {
     /// Cloud STT endpoint used when cloud is selected as the committed verdict path.
     pub stt_endpoint: Option<String>,
 
-    /// Full LLM endpoint URL (e.g., https://api.libraxis.cloud/v1/responses)
+    /// Full LLM endpoint URL (default: https://api.openai.com/v1/responses)
+    #[serde(default = "default_llm_endpoint_option")]
     pub llm_endpoint: Option<String>,
 
     /// API key for cloud LLM providers
@@ -463,7 +464,7 @@ impl Default for Config {
             use_local_stt: true,
             local_model: default_local_model(),
             stt_endpoint: None,
-            llm_endpoint: None,
+            llm_endpoint: Some(default_llm_endpoint()),
             llm_api_key: None,
             stt_api_key: None,
             restore_clipboard: default_restore_clipboard(),
@@ -500,6 +501,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::{Config, ShortcutBinding};
+    use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
 
     #[test]
     fn shortcut_binding_parser_rejects_legacy_aliases() {
@@ -519,6 +521,14 @@ mod tests {
         assert!(
             !Config::default().hold_exclusive,
             "Config default must keep hold modifiers enabled (hold_exclusive=false)"
+        );
+    }
+
+    #[test]
+    fn default_config_uses_openai_responses_endpoint() {
+        assert_eq!(
+            Config::default().llm_endpoint.as_deref(),
+            Some(DEFAULT_OPENAI_RESPONSES_ENDPOINT)
         );
     }
 }

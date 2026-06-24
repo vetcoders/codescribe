@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing tag to publish (for example v0.8.0)
+        description: Existing tag to publish (for example v0.12.2)
         required: true
 
 permissions:
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   dmg:
-    name: Build and publish DMG
+    name: Build, notarize, and publish DMG
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +24,55 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build DMG artifact
-        run: make dmg
+      - name: Validate signing secrets
+        env:
+          CODESIGN_CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
+          CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+          CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.CODESCRIBE_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          test -n "$CODESIGN_CERTIFICATE_BASE64" || { echo "Missing CODESIGN_CERTIFICATE_BASE64"; exit 1; }
+          test -n "$CODESIGN_CERTIFICATE_PASSWORD" || { echo "Missing CODESIGN_CERTIFICATE_PASSWORD"; exit 1; }
+          test -n "$CODESCRIBE_CODESIGN_IDENTITY" || { echo "Missing CODESCRIBE_CODESIGN_IDENTITY"; exit 1; }
+          test -n "$APPLE_ID" || { echo "Missing APPLE_ID"; exit 1; }
+          test -n "$APPLE_TEAM_ID" || { echo "Missing APPLE_TEAM_ID"; exit 1; }
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD" || { echo "Missing APPLE_APP_SPECIFIC_PASSWORD"; exit 1; }
+
+      - name: Import Developer ID certificate
+        env:
+          CODESIGN_CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
+          CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/codesign.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/codesign.keychain-db"
+          echo "$CODESIGN_CERTIFICATE_BASE64" | base64 -D > "$CERT_PATH"
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CODESIGN_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed s/\"//g)
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Configure Apple notarization profile
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials "CodeScribeNotary" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD"
+
+      - name: Build signed and notarized DMG artifacts
+        env:
+          CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.CODESCRIBE_CODESIGN_IDENTITY }}
+          CODESCRIBE_BUNDLE_ID: ${{ vars.CODESCRIBE_BUNDLE_ID || 'com.vetcoders.codescribe' }}
+          NOTARY_PROFILE: CodeScribeNotary
+        run: make release-dmgs
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2

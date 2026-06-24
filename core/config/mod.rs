@@ -26,6 +26,11 @@ pub mod prompts;
 pub mod settings;
 mod types;
 
+pub use defaults::{
+    DEFAULT_ASSISTIVE_MODEL, DEFAULT_FORMATTING_MODEL, DEFAULT_LLM_MODEL,
+    DEFAULT_OPENAI_RESPONSES_ENDPOINT, default_assistive_model, default_formatting_model,
+    default_llm_endpoint, default_llm_endpoint_option, default_llm_model,
+};
 // Re-export types
 pub use types::{
     Config, ModeBinding, OverlayPositionMode, ShortcutBinding, TranscriptSendMode, WorkMode,

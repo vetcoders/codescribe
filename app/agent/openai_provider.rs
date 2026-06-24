@@ -58,7 +58,7 @@ impl OpenAiProvider {
     pub fn from_env() -> Result<Self> {
         let endpoint = get_env_non_empty("LLM_ASSISTIVE_ENDPOINT", "LLM endpoint (assistive)")?;
         let default_model = get_env_non_empty("LLM_ASSISTIVE_MODEL", "LLM model (assistive)")?;
-        let api_key = get_env_non_empty("LLM_ASSISTIVE_API_KEY", "LLM API key (assistive)")?;
+        let api_key = get_env_non_empty("LLM_ASSISTIVE_API_KEY", "OpenAI API key (assistive)")?;
 
         let use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);
@@ -769,7 +769,7 @@ mod tests {
             client: Client::new(),
             endpoint: format!("{}/v1/responses", server.url()),
             api_key: "test-key".to_string(),
-            default_model: "programmer".to_string(),
+            default_model: "gpt-5.5".to_string(),
             use_previous_response_id: false,
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout: Duration::from_secs(1),
@@ -811,7 +811,7 @@ mod tests {
             client: Client::new(),
             endpoint: "http://unused.invalid/v1/responses".to_string(),
             api_key: "test-key".to_string(),
-            default_model: "programmer".to_string(),
+            default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
@@ -844,7 +844,7 @@ mod tests {
             client: Client::new(),
             endpoint: "http://unused.invalid/v1/responses".to_string(),
             api_key: "test-key".to_string(),
-            default_model: "programmer".to_string(),
+            default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
@@ -922,7 +922,7 @@ mod tests {
             client: Client::new(),
             endpoint: "http://unused.invalid/v1/responses".to_string(),
             api_key: "test-key".to_string(),
-            default_model: "programmer".to_string(),
+            default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
@@ -1098,7 +1098,7 @@ mod tests {
             client: Client::new(),
             endpoint: format!("{}/v1/responses", server.url()),
             api_key: "test-key".to_string(),
-            default_model: "programmer".to_string(),
+            default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(2),

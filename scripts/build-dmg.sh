@@ -14,13 +14,13 @@ IDENTITY="${CODESCRIBE_CODESIGN_IDENTITY:-}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
 
 VERSION=$(awk -F '"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT_DIR/Cargo.toml" 2>/dev/null || echo "0.0.0")
-DMG_NAME="CodeScribe_${VERSION}.dmg"
-DMG_PATH="$ROOT_DIR/$DMG_NAME"
 APP_PATH="$ROOT_DIR/bundle/${APP_NAME}.app"
 
 SIGN=0
 NOTARIZE=0
 NO_EMBED=0
+EMBED_WHISPER=0
+DMG_SUFFIX=""
 
 usage() {
   cat <<EOF
@@ -31,6 +31,8 @@ Options:
   --notarize          Notarize the DMG (requires NOTARY_PROFILE)
   --identity <name>   Override codesign identity
   --entitlements <p>  Entitlements plist path (default: $ENTITLEMENTS)
+  --embed-whisper     Embed the Whisper model in the app bundle
+  --dmg-suffix <s>    Append suffix before .dmg (for example: _full)
   --no-embed          Disable all model embedding (CODESCRIBE_NO_EMBED=1)
 EOF
 }
@@ -41,11 +43,21 @@ while [[ $# -gt 0 ]]; do
     --notarize) NOTARIZE=1; shift 1;;
     --identity) IDENTITY="$2"; shift 2;;
     --entitlements) ENTITLEMENTS="$2"; shift 2;;
+    --embed-whisper) EMBED_WHISPER=1; shift 1;;
+    --dmg-suffix) DMG_SUFFIX="$2"; shift 2;;
     --no-embed) NO_EMBED=1; shift 1;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1;;
   esac
 done
+
+if [[ "$NO_EMBED" -eq 1 && "$EMBED_WHISPER" -eq 1 ]]; then
+  echo "ERROR: --no-embed and --embed-whisper cannot be used together" >&2
+  exit 1
+fi
+
+DMG_NAME="CodeScribe_${VERSION}${DMG_SUFFIX}.dmg"
+DMG_PATH="$ROOT_DIR/$DMG_NAME"
 
 BUILD_ENV=(env)
 # All `-u` (unset) flags MUST precede any name=value assignments: BSD/macOS
@@ -53,17 +65,27 @@ BUILD_ENV=(env)
 # interleaved `-u` would be treated as the utility name (env: -u: No such file).
 BUILD_ENV+=(-u CODESCRIBE_EMBED_TTS)
 if [[ "$NO_EMBED" -eq 1 ]]; then
-  BUILD_ENV+=(CODESCRIBE_NO_EMBED=1)
+  BUILD_ENV+=(-u CODESCRIBE_EMBED_WHISPER CODESCRIBE_NO_EMBED=1)
 else
-  # Distribution DMG must be self-contained: Whisper embed is opt-in since
-  # 2026-06-10 (default builds resolve from HF cache at runtime).
-  BUILD_ENV+=(-u CODESCRIBE_NO_EMBED CODESCRIBE_EMBED_WHISPER=1)
+  BUILD_ENV+=(-u CODESCRIBE_NO_EMBED)
+  if [[ "$EMBED_WHISPER" -eq 1 ]]; then
+    BUILD_ENV+=(CODESCRIBE_EMBED_WHISPER=1)
+  else
+    BUILD_ENV+=(-u CODESCRIBE_EMBED_WHISPER)
+  fi
 fi
 
 echo "=== Build DMG ==="
 echo "App: $APP_NAME"
 echo "Bundle ID: $BUNDLE_ID"
 echo "Version: $VERSION"
+if [[ "$NO_EMBED" -eq 1 ]]; then
+  echo "Models: runtime assets only (CODESCRIBE_NO_EMBED=1)"
+elif [[ "$EMBED_WHISPER" -eq 1 ]]; then
+  echo "Models: embedded Silero + embedder + Whisper"
+else
+  echo "Models: embedded Silero + embedder; Whisper resolves from cache/download"
+fi
 echo "DMG: $DMG_PATH"
 
 (

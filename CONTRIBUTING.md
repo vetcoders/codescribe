@@ -1,6 +1,6 @@
 # Contributing to CodeScribe
 
-CodeScribe is a native macOS Rust application. This repo is not a Python service and it is not a generic cross-platform template. Contribute against the current runtime truth.
+CodeScribe is a native macOS Rust application for dictation and assistive voice workflows. Contributions should be based on the current macOS runtime surface and the documented release path.
 
 ## Ground Rules
 
@@ -28,7 +28,6 @@ Useful commands:
 
 ```bash
 make build
-make release
 make install
 make install-app
 codescribe --version
@@ -43,7 +42,7 @@ Run these before opening a PR:
 cargo fmt --all
 cargo clippy -- -D warnings
 cargo test
-semgrep --config auto --error --quiet
+make semgrep
 ```
 
 When touching a focused subsystem, run the most relevant targeted tests too. Examples:
@@ -62,7 +61,7 @@ Current workflows in this repo:
 3. `release.yml`
 4. `pages.yml`
 
-Do not reference deleted pipelines from older repo eras.
+Use the current workflows as the source of truth for CI and release behavior.
 
 ## What Good Changes Look Like
 
@@ -77,7 +76,7 @@ Do not reference deleted pipelines from older repo eras.
 - [ ] `cargo fmt --all` passes
 - [ ] `cargo clippy -- -D warnings` passes
 - [ ] `cargo test` passes
-- [ ] `semgrep --config auto --error --quiet` passes
+- [ ] `make semgrep` passes
 - [ ] PR description explains user impact and runtime impact
 - [ ] Docs/settings/install surface were updated if behavior changed
 - [ ] Screenshots or runtime notes are attached for visible UI changes
@@ -86,8 +85,9 @@ Do not reference deleted pipelines from older repo eras.
 
 - `make install-app` builds and installs the macOS `.app`
 - release DMGs are produced by the release workflow on version tags
+- public release DMGs must be Developer ID signed and notarized before announcement
 - source install is still the guaranteed path from inside this repo
 
 ## Getting Help
 
-Open a draft PR or issue if the code shape is unclear. If the repo lies, fix the docs with the code instead of leaving a note for “later”.
+Open a draft PR or issue if the expected behavior or code ownership is unclear. Documentation changes should land with behavior changes whenever the public surface changes.

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -17,6 +18,14 @@ use crate::agent::ToolResultContent;
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
+const FALLBACK_PATHS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpConfigFile {
@@ -143,10 +152,13 @@ struct StdioConnection {
 
 impl StdioConnection {
     async fn spawn(config: &McpServerConfig, response_timeout: Duration) -> Result<Self> {
-        let mut command = Command::new(&config.command);
+        let effective_path = effective_mcp_path(config.env.get("PATH").map(String::as_str));
+        let resolved_command = resolve_command(&config.command, &effective_path);
+        let mut command = Command::new(&resolved_command);
         command
             .args(&config.args)
             .envs(&config.env)
+            .env("PATH", &effective_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -155,7 +167,11 @@ impl StdioConnection {
             // Give the most common failure a concrete, actionable reason instead
             // of a generic spawn error — this string surfaces in the Engine tab.
             if err.kind() == std::io::ErrorKind::NotFound {
-                anyhow::anyhow!("command not found: '{}'", config.command)
+                anyhow::anyhow!(
+                    "command not found: '{}' (searched PATH: {})",
+                    config.command,
+                    effective_path.to_string_lossy()
+                )
             } else {
                 anyhow::Error::new(err)
                     .context(format!("Failed to spawn MCP server '{}'", config.command))
@@ -278,6 +294,71 @@ impl StdioConnection {
     }
 }
 
+fn effective_mcp_path(config_path: Option<&str>) -> OsString {
+    let mut entries = Vec::new();
+
+    if let Some(path) = config_path {
+        push_path_entries(&mut entries, OsStr::new(path));
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        push_path_entries(&mut entries, &path);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        push_unique_path(&mut entries, home.join(".cargo").join("bin"));
+        push_unique_path(&mut entries, home.join(".local").join("bin"));
+    }
+    for path in FALLBACK_PATHS {
+        push_unique_path(&mut entries, PathBuf::from(path));
+    }
+
+    std::env::join_paths(entries).unwrap_or_else(|_| {
+        OsString::from("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+    })
+}
+
+fn resolve_command(command: &str, effective_path: &OsStr) -> OsString {
+    if command.contains('/') {
+        return OsString::from(command);
+    }
+
+    for dir in std::env::split_paths(effective_path) {
+        let candidate = dir.join(command);
+        if is_executable_file(&candidate) {
+            return candidate.into_os_string();
+        }
+    }
+
+    OsString::from(command)
+}
+
+fn push_path_entries(entries: &mut Vec<PathBuf>, path: &OsStr) {
+    for entry in std::env::split_paths(path) {
+        push_unique_path(entries, entry);
+    }
+}
+
+fn push_unique_path(entries: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.as_os_str().is_empty() || entries.iter().any(|existing| existing == &path) {
+        return;
+    }
+    entries.push(path);
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    path.metadata()
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
 #[derive(Debug, Deserialize)]
 struct ToolsListResult {
     #[serde(default)]
@@ -350,12 +431,14 @@ fn default_input_schema() -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
     use std::time::Duration;
 
     use serde_json::json;
+    use tempfile::TempDir;
 
-    use super::{McpClient, McpServerConfig};
+    use super::{McpClient, McpServerConfig, effective_mcp_path, resolve_command};
     use crate::agent::ToolResultContent;
 
     fn mock_server(mode: &str) -> McpServerConfig {
@@ -467,6 +550,54 @@ mod tests {
             error.to_string().contains("command not found"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn mcp_effective_path_includes_gui_missing_user_bins() {
+        let path = effective_mcp_path(None);
+        let path_string = path.to_string_lossy();
+
+        assert!(
+            path_string.contains("/opt/homebrew/bin"),
+            "expected Homebrew fallback in PATH, got {path_string}"
+        );
+        assert!(
+            path_string.contains("/usr/bin"),
+            "expected system fallback in PATH, got {path_string}"
+        );
+
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            assert!(
+                path_string.contains(&home.join(".cargo/bin").to_string_lossy().to_string()),
+                "expected cargo bin fallback in PATH, got {path_string}"
+            );
+            assert!(
+                path_string.contains(&home.join(".local/bin").to_string_lossy().to_string()),
+                "expected local bin fallback in PATH, got {path_string}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_resolves_bare_command_from_config_path() {
+        let temp = TempDir::new().expect("tempdir");
+        let command_path = temp.path().join("codescribe-test-mcp");
+        fs::write(&command_path, "#!/bin/sh\nexit 0\n").expect("write executable");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&command_path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&command_path, perms).expect("chmod");
+        }
+
+        let temp_path = temp.path().to_string_lossy().to_string();
+        let effective_path = effective_mcp_path(Some(&temp_path));
+        let resolved = resolve_command("codescribe-test-mcp", &effective_path);
+
+        assert_eq!(PathBuf::from(resolved), command_path);
     }
 
     #[tokio::test]

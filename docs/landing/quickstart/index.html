@@ -188,13 +188,12 @@
         <p>
           This page is the public install path. No hidden markdown, no broken
           internal repo links. Install, grant the required macOS permissions,
-          pick your transcription backend, and get to the first solid transcript.
+          pick your transcription backend, and get to the first solid
+          transcript.
         </p>
         <div class="cta-row">
-          <a
-            class="cta primary"
-            href="https://github.com/VetCoders/CodeScribe/releases"
-            >Download release DMG</a
+          <a class="cta primary" href="https://github.com/VetCoders/CodeScribe"
+            >Install from source</a
           >
           <a
             class="cta secondary"
@@ -210,16 +209,18 @@
           <div class="step">
             <h3>Release DMG</h3>
             <p>
-              Use the latest GitHub Release if you want the fastest install path.
-              Drag <code>CodeScribe.app</code> into <code>/Applications</code>.
+              Use a GitHub Release only after current <code>v0.12.x</code>
+              standard and full DMGs exist and are signed, notarized, and
+              smoke-tested. Until then, source install is the honest public
+              path.
             </p>
           </div>
           <div class="step">
             <h3>Build from source</h3>
-            <p>
-              If you are working from the repo, the supported local install path is:
-            </p>
-            <pre><code>make install-app</code></pre>
+            <p>The supported local install path is:</p>
+            <pre><code>git clone https://github.com/VetCoders/CodeScribe.git
+cd CodeScribe
+make install-app</code></pre>
           </div>
         </div>
       </section>
@@ -232,7 +233,8 @@
           <li>Input Monitoring</li>
         </ul>
         <p>
-          Without these, global hotkeys and live dictation preview will not be truthful.
+          Without these, global hotkeys and live dictation preview will not be
+          truthful.
         </p>
       </section>
 
@@ -242,23 +244,23 @@
           <div class="step">
             <h3>Transcription overlay ON</h3>
             <p>
-              Use this for low-latency live preview. Partial transcript updates are
-              shown during capture and tuned from Settings → Transcription.
+              Use this for low-latency live preview. Partial transcript updates
+              are shown during capture and tuned from Settings → Transcription.
             </p>
           </div>
           <div class="step">
             <h3>Transcription overlay OFF</h3>
             <p>
-              Use this for a quieter, more buffered runtime profile when live overlay
-              is not needed and you want lower local load.
+              Use this for a quieter, more buffered runtime profile when live
+              overlay is not needed and you want lower local load.
             </p>
           </div>
           <div class="step">
             <h3>Backend selection</h3>
             <p>
               Settings → Transcription lets you choose between local Whisper and
-              Cloud STT. Cloud in the current build is a post-capture/final path,
-              not live cloud overlay streaming.
+              Cloud STT. Cloud in the current build is a post-capture/final
+              path, not live cloud overlay streaming.
             </p>
           </div>
         </div>
@@ -271,15 +273,18 @@
           <li>Confirm your preferred backend in Transcription.</li>
           <li>Check overlay state in Audio &amp; Input.</li>
           <li>Use the default Dictation hotkey: hold <code>Fn/Globe</code>.</li>
-          <li>Speak, release, and verify the transcript lands in the frontmost app.</li>
+          <li>
+            Speak, release, and verify the transcript lands in the frontmost
+            app.
+          </li>
         </ul>
       </section>
 
       <section class="section">
         <h2>Need deeper docs?</h2>
         <p>
-          The repo README remains the canonical deep reference for configuration,
-          architecture, CLI usage, and development flow.
+          The repo README remains the canonical deep reference for
+          configuration, architecture, CLI usage, and development flow.
         </p>
         <div class="cta-row">
           <a

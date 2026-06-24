@@ -19,7 +19,11 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
     assert!(formatting.contains("TRANSCRIPTION FORMATTER"));
 
     let assistive = prompts::get_assistive_prompt();
-    assert!(assistive.contains("Jesteś asystentem tekstowym"));
+    assert!(assistive.contains("You are a text assistant"));
+    assert!(assistive.contains("ASSISTIVE TEXT EDITING BEHAVIOR"));
+    assert!(assistive.contains("speech -> intent -> location -> patch -> style"));
+    assert!(assistive.contains("zero-width"));
+    assert!(assistive.contains("Reply in the language of the user instruction"));
 
     // Files should exist under CODESCRIBE_DATA_DIR/prompts/...
     let formatting_path = prompts::get_formatting_prompt_path();
