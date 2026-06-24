@@ -650,10 +650,39 @@ fn is_hotkey_start_event(event: &HotkeyInput) -> bool {
     )
 }
 
-fn should_block_hotkey_during_agent_send(current_state: State, event: &HotkeyInput) -> bool {
+/// An assistive *start* hotkey — FN+Shift hold-down, an assistive toggle press,
+/// or any start event flagged `assistive` (Chat / Selection / assistive toggle).
+/// These are the "Talk Anytime" inputs the user fires to add a new voice intent
+/// while Emil/the agent is still answering.
+fn is_assistive_start_event(event: &HotkeyInput) -> bool {
+    is_hotkey_start_event(event) && event.assistive
+}
+
+/// Block a *new* hotkey start while a previously-dispatched agent turn is still
+/// streaming. This fires only at `State::Idle` — the controller has already
+/// returned the mic/transcription pipeline; the agent is answering in the
+/// background (a detached `tokio::spawn`, see `setup_voice_chat_send_callback`).
+///
+/// Exception — **Assistive Talk Anytime**: assistive start events are allowed
+/// through so the user can record a *new* voice intent while the agent answers.
+/// The resulting utterance is captured into the existing pending-follow-up
+/// buffer (`should_capture_pending_followup` → `get_or_create_pending_followup_index`),
+/// not dropped — the living intent grows instead of being ignored. Non-assistive
+/// (raw) dictation starts stay blocked: barging a raw transcript into a live
+/// agent turn is never wanted, and blocking preserves the single-pipeline
+/// guarantee for the dictation path.
+///
+/// `agent_send_in_flight` is passed in (rather than read from the global) so the
+/// decision is a pure function and unit-testable without touching shared state.
+fn should_block_hotkey_during_agent_send(
+    current_state: State,
+    event: &HotkeyInput,
+    agent_send_in_flight: bool,
+) -> bool {
     current_state == State::Idle
+        && agent_send_in_flight
         && is_hotkey_start_event(event)
-        && helpers::is_agent_send_in_flight()
+        && !is_assistive_start_event(event)
 }
 
 fn present_agent_send_hotkey_block() {
@@ -1824,7 +1853,11 @@ impl RecordingController {
             current_state
         );
 
-        if should_block_hotkey_during_agent_send(current_state, &event) {
+        if should_block_hotkey_during_agent_send(
+            current_state,
+            &event,
+            helpers::is_agent_send_in_flight(),
+        ) {
             present_agent_send_hotkey_block();
             return Ok(());
         }
@@ -1967,7 +2000,19 @@ impl RecordingController {
             );
         }
 
-        // Ignore all hotkeys when busy
+        // Ignore all hotkeys when busy. `State::Busy` covers the active audio
+        // pipeline: recorder drain → transcription → (for the hold/toggle
+        // dictation path) the final assistive agent turn, which is awaited while
+        // `serial_lock` is held. Letting a second start through here would race a
+        // live audio/transcription pipeline, so it stays blocked unconditionally
+        // (acceptance: "non-assistive busy/audio/transcription paths remain
+        // protected; do not run two audio pipelines concurrently").
+        //
+        // Assistive "Talk Anytime" is handled one gate up, at the `Idle` agent-
+        // send gate (`should_block_hotkey_during_agent_send`): once a turn is
+        // dispatched in the background the controller returns to `Idle` and the
+        // mic is free, which is the only state where overlapping a new recording
+        // is safe.
         if current_state == State::Busy {
             info!("App busy; ignoring hotkey event");
             return Ok(());
