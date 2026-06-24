@@ -87,7 +87,8 @@ HotkeyInput { key_type: Hold, action: Up,   hold_mode: <current> }   // Release
 
 **Trigger:** Double-tap Option key within `DOUBLE_TAP_INTERVAL_MS` (default **200ms**, range 100–450ms)
 **Behavior:** First tap starts recording, second tap toggles send/stop
-**VAD:** ENABLED – auto‑sends on `TOGGLE_SILENCE_SEC` of silence (default 5s) without stopping recording
+**VAD:** ENABLED – finalized utterances append to the active draft; `TOGGLE_SILENCE_SEC` of silence
+(default 5s) sends the accumulated draft without stopping recording
 
 | Mode binding                  | Keys                            | Mode             |
 | ---------------------------- | ------------------------------- | ---------------- |

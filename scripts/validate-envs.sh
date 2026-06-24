@@ -144,7 +144,7 @@ if [[ $CHECK_EXAMPLE -eq 1 || -n "$EMIT_ENV_PATH" ]]; then
         exit 1
     fi
 
-    EXAMPLE_VARS=$(grep -E '^[A-Z_][A-Z0-9_]*=' "$ENV_EXAMPLE" | sed 's/=.*//' | sort -u)
+    EXAMPLE_VARS=$(grep -E '^[A-Z_][A-Z0-9_]*=' "$ENV_EXAMPLE" | sed 's/=.*//' | sort -u || true)
     UNREGISTERED_EXAMPLE=""
     for var in $EXAMPLE_VARS; do
         if ! echo "$REGISTERED" | grep -qx "$var"; then
@@ -164,7 +164,7 @@ if [[ $CHECK_EXAMPLE -eq 1 || -n "$EMIT_ENV_PATH" ]]; then
 
     if [[ -n "$EMIT_ENV_PATH" ]]; then
         mkdir -p "$(dirname "$EMIT_ENV_PATH")" 2>/dev/null || true
-        grep -E '^[A-Z_][A-Z0-9_]*=' "$ENV_EXAMPLE" > "$EMIT_ENV_PATH"
+        grep -E '^[A-Z_][A-Z0-9_]*=' "$ENV_EXAMPLE" > "$EMIT_ENV_PATH" || true
         echo "🧪 E2E env written: $EMIT_ENV_PATH"
     fi
 fi

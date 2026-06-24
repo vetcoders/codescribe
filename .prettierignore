@@ -4,11 +4,16 @@
 **/.codex.json
 **/.codex.md
 **/.codescribe/**
+**/.ai-agents/**
+**/.gemini/**
+**/.junie/**
 **/.mypy_cache/**
 **/agents/**
 **/.ai-archive/**
 **/.ai-context/**
 **/.loctree/**
+**/.vibecrafted/**
+**/.vscode/**
 **/.pytest_cache/**
 **/.venv/**
 **/.DS_Store
@@ -16,6 +21,7 @@
 **/CodeScribe_memory_*.md
 **/node_modules/**
 **/target/**
+**/target-noembed/**
 **/dist/**
 **/bundle/**
 **/models/**

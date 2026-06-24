@@ -6,8 +6,6 @@
 //! - Language model inference via Helium
 //! - Turn-taking and interruption
 //! - Context management
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

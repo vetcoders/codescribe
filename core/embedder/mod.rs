@@ -21,8 +21,6 @@
 //! // Similarity
 //! let sim = embedder::similarity(&vec_a, &vec_b);  // f32 cosine similarity
 //! ```
-//!
-//! Created by M&K (c)2026 VetCoders
 
 pub mod embedded;
 pub mod engine;

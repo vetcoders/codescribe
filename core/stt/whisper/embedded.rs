@@ -5,8 +5,6 @@
 //! build is produced with `CODESCRIBE_NO_EMBED=1` or without a complete model
 //! snapshot, the payload is intentionally absent and runtime lookup must take
 //! over.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 #[cfg(embed_model)]
 mod data {

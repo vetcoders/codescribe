@@ -1,8 +1,6 @@
 //! Self-improving quality loop for batch transcription evaluation.
 //!
 //! Flow: batch -> report -> regression analysis -> tuning updates -> re-run later.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
@@ -1257,6 +1255,7 @@ mod tests {
             local_model: None,
             whisper_language: None,
             metrics_reference: "corpus".into(),
+            local_transcription: "local_whisper".into(),
         }
     }
 

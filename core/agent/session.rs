@@ -5,11 +5,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::{
-    AgentEvent, AgentProvider, AgentUiEvent, ContentBlock, Message, Role, StreamOptions,
-    ToolDefinition, ToolRegistry, ToolResultContent,
+    AgentAssetStore, AgentEvent, AgentProvider, AgentUiEvent, ContentBlock, Message, Role,
+    StreamOptions, ToolDefinition, ToolRegistry, ToolResultContent,
 };
 
 const DEFAULT_MAX_ITERATIONS: usize = 25;
@@ -68,6 +68,11 @@ impl AgentSession {
         &self.messages
     }
 
+    pub fn restore_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+        self.thread_id = None;
+    }
+
     async fn stream_with_retry(
         &self,
         tool_definitions: &[ToolDefinition],
@@ -75,9 +80,40 @@ impl AgentSession {
     ) -> Result<Receiver<AgentEvent>> {
         let mut attempt = 1usize;
         loop {
+            if let Some((initial_timeout, inter_chunk_timeout)) = self.provider.stream_timeouts() {
+                info!(
+                    "Agent send attempt {}/{} (provider={}, timeout={}s, inter_chunk_timeout={}s)",
+                    attempt,
+                    AGENT_STREAM_START_RETRY_MAX_ATTEMPTS,
+                    self.provider.name(),
+                    initial_timeout.as_secs(),
+                    inter_chunk_timeout.as_secs()
+                );
+            } else {
+                info!(
+                    "Agent send attempt {}/{} (provider={}, timeout=unknown)",
+                    attempt,
+                    AGENT_STREAM_START_RETRY_MAX_ATTEMPTS,
+                    self.provider.name()
+                );
+            }
+
+            // Operator's spec 2026-05-26 (4th iteration of same architectural
+            // insight): retry attempts must NOT resend prior context. Each retry
+            // pass after the first signals provider to clear any stored chain
+            // (previous_response_id) BEFORE building the request — fresh start,
+            // no context bloat from the failed prior attempt.
+            let attempt_options: StreamOptions = if attempt > 1 {
+                let mut opts = options.clone();
+                opts.reset_chain = true;
+                opts
+            } else {
+                options.clone()
+            };
+
             match self
                 .provider
-                .stream(&self.messages, tool_definitions, options)
+                .stream(&self.messages, tool_definitions, &attempt_options)
                 .await
             {
                 Ok(rx) => return Ok(rx),
@@ -85,7 +121,7 @@ impl AgentSession {
                     let is_transient = is_transient_stream_start_error(&error);
                     if is_transient && attempt < AGENT_STREAM_START_RETRY_MAX_ATTEMPTS {
                         warn!(
-                            "Agent stream start failed (provider={}, attempt={}/{}): {}. Retrying in {:?}",
+                            "Agent stream start failed (provider={}, attempt={}/{}): {}. Retrying in {:?} (next attempt will reset chain)",
                             self.provider.name(),
                             attempt,
                             AGENT_STREAM_START_RETRY_MAX_ATTEMPTS,
@@ -196,10 +232,47 @@ impl AgentSession {
                         });
                         entry.arguments = Some(arguments);
                     }
-                    AgentEvent::ResponseDone { response_id } => {
-                        self.thread_id = response_id;
+                    AgentEvent::ResponseDone { response_id, clean } => {
+                        // Only adopt the provider thread id on a clean terminal.
+                        // A dirty terminal (EOF/timeout, failed/incomplete) must
+                        // not persist a poisoned chain id; clearing it forces the
+                        // next turn to full-replay from local history (P1.6).
+                        if clean {
+                            self.thread_id = response_id;
+                        } else {
+                            if let Some(id) = response_id {
+                                warn!(
+                                    "Agent dirty terminal: discarding response id {} and resetting chain (provider={})",
+                                    id,
+                                    self.provider.name()
+                                );
+                            }
+                            self.thread_id = None;
+                        }
                     }
                     AgentEvent::Error(message) => {
+                        // P2.13: reset the chain BEFORE returning. A provider
+                        // Error (e.g. a failed/incomplete/cancelled terminal
+                        // mapped to Error) must never leave `thread_id` pointing
+                        // at a poisoned response. The parser also emits a dirty
+                        // `ResponseDone { clean: false }` ahead of this Error so
+                        // both the session chain (here) and the provider chain
+                        // (`previous_response_id`) reset through the P1.6 path;
+                        // clearing here too is the belt-and-suspenders guard that
+                        // stays correct even if a provider surfaces an Error
+                        // without a preceding dirty terminal.
+                        if self.thread_id.is_some() {
+                            warn!(
+                                "Agent provider error: resetting chain (clearing thread_id) before returning (provider={})",
+                                self.provider.name()
+                            );
+                            self.thread_id = None;
+                        }
+                        warn!(
+                            "Agent provider stream error (provider={}): {}",
+                            self.provider.name(),
+                            message
+                        );
                         send_ui_event(&self.ui_tx, AgentUiEvent::Error(message.clone())).await;
                         return Err(anyhow::anyhow!("Provider stream error: {message}"));
                     }
@@ -314,7 +387,15 @@ impl AgentSession {
                             content_blocks.push(ContentBlock::Text(text))
                         }
                         ToolResultContent::Image { data, media_type } => {
-                            content_blocks.push(self.provider.build_image_block(&data, &media_type))
+                            match AgentAssetStore::save_image(&data, &media_type) {
+                                Ok(asset) => content_blocks.push(ContentBlock::ImageAsset(asset)),
+                                Err(error) => content_blocks.push(ContentBlock::Text(format!(
+                                    "Image result could not be stored as an asset: {error}"
+                                ))),
+                            }
+                        }
+                        ToolResultContent::ImageAsset(asset) => {
+                            content_blocks.push(ContentBlock::ImageAsset(asset))
                         }
                         ToolResultContent::Error(message) => {
                             content_blocks.push(ContentBlock::Text(message))
@@ -351,7 +432,12 @@ impl AgentSession {
 async fn send_ui_event(tx: &Sender<AgentUiEvent>, event: AgentUiEvent) {
     if tx.send(event).await.is_err() {
         debug!("Dropping UI event because receiver is closed");
+        return;
     }
+
+    // Let the controller's select! drain UI events between immediately-ready
+    // provider chunks, preserving live rendering instead of end-of-stream dumps.
+    tokio::task::yield_now().await;
 }
 
 fn is_transient_stream_start_error(error: &anyhow::Error) -> bool {
@@ -389,7 +475,7 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
                     first_text = Some(text.trim().to_string());
                 }
             }
-            ToolResultContent::Image { .. } => image_count += 1,
+            ToolResultContent::Image { .. } | ToolResultContent::ImageAsset(_) => image_count += 1,
             ToolResultContent::Error(_) => error_count += 1,
         }
     }
@@ -460,6 +546,7 @@ mod tests {
             .expect("test stream channel should accept tool call");
             tx.send(AgentEvent::ResponseDone {
                 response_id: Some("resp_loop".to_string()),
+                clean: true,
             })
             .await
             .expect("test stream channel should accept completion event");
@@ -581,6 +668,7 @@ mod tests {
                 .expect("test stream channel should accept completion text");
             tx.send(AgentEvent::ResponseDone {
                 response_id: Some("resp_retry_success".to_string()),
+                clean: true,
             })
             .await
             .expect("test stream channel should accept completion event");
@@ -659,6 +747,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn restore_messages_seeds_history_and_clears_provider_thread_id() {
+        let (ui_tx, _ui_rx) = mpsc::channel(4);
+        let mut session = AgentSession::new(
+            Box::new(ScriptedProvider::new(Vec::new())),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        );
+        session.thread_id = Some("resp_old".to_string());
+
+        let restored = vec![
+            Message::new(Role::User, vec![ContentBlock::Text("First".to_string())]),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("Second".to_string())],
+            ),
+        ];
+        session.restore_messages(restored.clone());
+
+        assert_eq!(session.messages(), restored.as_slice());
+        assert_eq!(session.thread_id(), None);
+    }
+
     #[tokio::test]
     async fn stops_when_iteration_limit_is_reached() {
         let mut registry = ToolRegistry::new();
@@ -688,6 +799,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await;
@@ -707,6 +819,7 @@ mod tests {
             AgentEvent::TextDone("Hello from agent".to_string()),
             AgentEvent::ResponseDone {
                 response_id: Some("resp_success_1".to_string()),
+                clean: true,
             },
         ]]);
         let (ui_tx, mut ui_rx) = mpsc::channel(16);
@@ -722,6 +835,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await
@@ -752,6 +866,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_yields_after_text_delta_before_finishing_buffered_stream() {
+        let provider = ScriptedProvider::new(vec![vec![
+            AgentEvent::TextDelta("Hel".to_string()),
+            AgentEvent::TextDelta("lo".to_string()),
+            AgentEvent::TextDone("Hello".to_string()),
+            AgentEvent::ResponseDone {
+                response_id: Some("resp_buffered".to_string()),
+                clean: true,
+            },
+        ]]);
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
+        let mut session =
+            AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+
+        let options = StreamOptions {
+            model: "gpt-test".to_string(),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            reset_chain: false,
+        };
+        let send_future = session.send("buffered stream".to_string(), Vec::new(), &options);
+        tokio::pin!(send_future);
+
+        tokio::select! {
+            biased;
+            result = &mut send_future => {
+                panic!("send completed before UI could drain first delta: {result:?}");
+            }
+            maybe_event = ui_rx.recv() => {
+                assert_eq!(maybe_event, Some(AgentUiEvent::TextDelta("Hel".to_string())));
+            }
+        }
+
+        send_future
+            .await
+            .expect("agent session should complete after yielding first delta");
+    }
+
+    #[tokio::test]
     async fn send_executes_buffered_tool_call_and_handles_tool_failure_fallback() {
         let provider = ScriptedProvider::new(vec![
             vec![
@@ -765,12 +919,14 @@ mod tests {
                 },
                 AgentEvent::ResponseDone {
                     response_id: Some("resp_after_tool".to_string()),
+                    clean: true,
                 },
             ],
             vec![
                 AgentEvent::TextDone("Recovered after tool fallback".to_string()),
                 AgentEvent::ResponseDone {
                     response_id: Some("resp_final".to_string()),
+                    clean: true,
                 },
             ],
         ]);
@@ -789,6 +945,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await
@@ -889,6 +1046,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await
@@ -912,6 +1070,125 @@ mod tests {
         );
     }
 
+    /// P2.13 end-to-end: a failed/incomplete/cancelled terminal reaches the
+    /// session as a dirty `ResponseDone { clean: false }` followed by an
+    /// `Error`. The session MUST clear `thread_id` (chain reset) before
+    /// returning the error, so the next turn full-replays instead of resuming a
+    /// poisoned response chain. A follow-up clean send then adopts a fresh id.
+    #[tokio::test]
+    async fn dirty_terminal_then_error_resets_thread_id_and_next_turn_replays() {
+        let provider = ScriptedProvider::new(vec![
+            // Turn 1: failed terminal -> dirty ResponseDone, then Error.
+            vec![
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_failed".to_string()),
+                    clean: false,
+                },
+                AgentEvent::Error("Agent response failed: server_error: boom".to_string()),
+            ],
+            // Turn 2: clean success -> fresh chain id adopted.
+            vec![
+                AgentEvent::TextDone("Recovered next turn".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_recovered".to_string()),
+                    clean: true,
+                },
+            ],
+        ]);
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(32);
+        let mut session =
+            AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+        // Pre-poison the chain as if a prior clean turn had advanced it.
+        session.thread_id = Some("resp_poisoned".to_string());
+
+        let options = StreamOptions {
+            model: "gpt-test".to_string(),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            reset_chain: false,
+        };
+
+        let error = session
+            .send("trigger failed terminal".to_string(), Vec::new(), &options)
+            .await
+            .expect_err("failed terminal must surface an error");
+        assert!(
+            error.to_string().contains("Provider stream error"),
+            "expected provider stream error, got: {error}"
+        );
+
+        // Chain reset: the poisoned id must be gone after the dirty terminal.
+        assert_eq!(
+            session.thread_id(),
+            None,
+            "dirty terminal + error must reset the chain (thread_id == None)"
+        );
+
+        // Next turn succeeds and adopts a fresh id (proving the chain recovered
+        // rather than staying stuck on the poisoned id).
+        session
+            .send("next turn".to_string(), Vec::new(), &options)
+            .await
+            .expect("recovered turn should complete");
+        assert_eq!(
+            session.thread_id(),
+            Some("resp_recovered"),
+            "a subsequent clean turn must adopt a fresh chain id"
+        );
+
+        let mut ui_events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            ui_events.push(event);
+        }
+        assert!(
+            ui_events.iter().any(|event| matches!(
+                event,
+                AgentUiEvent::Error(message) if message.contains("server_error")
+            )),
+            "expected provider Error surfaced to UI, got {ui_events:?}"
+        );
+    }
+
+    /// P2.13 belt-and-suspenders: even if a provider surfaces a bare `Error`
+    /// WITHOUT a preceding dirty `ResponseDone`, the session must still reset the
+    /// chain before returning, so a pre-existing `thread_id` cannot poison the
+    /// next turn.
+    #[tokio::test]
+    async fn bare_error_without_dirty_terminal_still_resets_thread_id() {
+        let provider = ScriptedProvider::new(vec![vec![AgentEvent::Error(
+            "Agent response was cancelled before completion".to_string(),
+        )]]);
+
+        let (ui_tx, mut _ui_rx) = mpsc::channel(16);
+        let mut session =
+            AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+        session.thread_id = Some("resp_poisoned".to_string());
+
+        let error = session
+            .send(
+                "bare error".to_string(),
+                Vec::new(),
+                &StreamOptions {
+                    model: "gpt-test".to_string(),
+                    system_prompt: None,
+                    max_tokens: None,
+                    temperature: None,
+                    reset_chain: false,
+                },
+            )
+            .await
+            .expect_err("bare error must surface");
+        assert!(error.to_string().contains("Provider stream error"));
+
+        assert_eq!(
+            session.thread_id(),
+            None,
+            "a bare Error must still clear the chain (belt-and-suspenders)"
+        );
+    }
+
     #[tokio::test]
     async fn send_does_not_retry_non_transient_stream_start_failure() {
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -932,6 +1209,7 @@ mod tests {
                     system_prompt: None,
                     max_tokens: None,
                     temperature: None,
+                    reset_chain: false,
                 },
             )
             .await

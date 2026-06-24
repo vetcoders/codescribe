@@ -2,8 +2,6 @@
 //!
 //! Custom implementation using ort runtime directly.
 //! Model: silero_vad.onnx v6 from https://github.com/snakers4/silero-vad
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::{Path, PathBuf};
 
@@ -59,6 +57,9 @@ impl Resampler {
         }
 
         let output_len = (samples.len() as f32 * self.ratio) as usize;
+        // Reuse the persistent scratch buffer (no per-call Vec allocation), then
+        // hand ownership to the caller via mem::take. The next call re-reserves
+        // into a fresh empty buffer, so no clone is paid on this hot path.
         self.buffer.clear();
         self.buffer.reserve(output_len);
 
@@ -76,7 +77,7 @@ impl Resampler {
             self.buffer.push(sample);
         }
 
-        self.buffer.clone()
+        std::mem::take(&mut self.buffer)
     }
 }
 
@@ -250,8 +251,6 @@ impl SileroVad {
 /// - Properly accumulates resampled samples across calls (no lost sub-chunks)
 /// - Starts with last_prob = 0.0 (no phantom speech on first frame)
 /// - Is locally owned, not a global singleton
-///
-/// Created by M&K (c)2026 VetCoders
 pub struct AccumulatingVad {
     vad: SileroVad,
     resampler: Option<Resampler>,
@@ -388,6 +387,41 @@ mod tests {
         // Should become ~160 samples at 16kHz
         let output = resampler.resample(&input);
         assert!((output.len() as i32 - 160).abs() <= 1);
+    }
+
+    #[test]
+    fn resample_value_parity_and_repeatable() {
+        // Reference linear interpolation (matches the pre-optimization math).
+        fn reference(samples: &[f32], ratio: f32) -> Vec<f32> {
+            if (ratio - 1.0).abs() < 0.001 {
+                return samples.to_vec();
+            }
+            let output_len = (samples.len() as f32 * ratio) as usize;
+            let mut out = Vec::with_capacity(output_len);
+            for i in 0..output_len {
+                let src_idx = i as f32 / ratio;
+                let idx0 = src_idx.floor() as usize;
+                let idx1 = (idx0 + 1).min(samples.len().saturating_sub(1));
+                let frac = src_idx - idx0 as f32;
+                let sample = if idx0 < samples.len() {
+                    samples[idx0] * (1.0 - frac) + samples.get(idx1).copied().unwrap_or(0.0) * frac
+                } else {
+                    0.0
+                };
+                out.push(sample);
+            }
+            out
+        }
+
+        let mut resampler = Resampler::new(48000);
+        let ratio = VAD_SAMPLE_RATE as f32 / 48000.0;
+        let input: Vec<f32> = (0..480).map(|i| (i as f32 * 0.013).sin()).collect();
+
+        // mem::take must not corrupt repeated calls; values match the reference.
+        for _ in 0..3 {
+            let out = resampler.resample(&input);
+            assert_eq!(out, reference(&input, ratio), "resample value parity");
+        }
     }
 
     #[test]

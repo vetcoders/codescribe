@@ -1,6 +1,4 @@
 //! Configuration for Moshi conversation engine.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::path::PathBuf;
 

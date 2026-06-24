@@ -1,5 +1,10 @@
 # ⌜ CodeScribe ⌟
 
+[![Version](https://img.shields.io/badge/version-0.12.2-6a9bcc)](Cargo.toml)
+[![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
+[![CI](https://github.com/VetCoders/CodeScribe/actions/workflows/rust.yml/badge.svg)](https://github.com/VetCoders/CodeScribe/actions/workflows/rust.yml)
+[![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2FCodeScribe-788c5d)](https://vetcoders.github.io/CodeScribe/)
+
 **Native macOS tray dictation and assistive voice overlay with local Whisper live preview, optional cloud final transcript paths, and quality tooling.**
 
 ## Overview
@@ -9,8 +14,8 @@ transcription while you speak, and pastes or routes the final result into the fo
 in this repo is a tray app with three explicit surfaces: onboarding, settings, and overlays.
 
 Local Whisper is the low-latency path. Cloud STT is optional and currently used as a post-capture transcript backend,
-not as live cloud preview. AI formatting and assistive mode use OpenAI-compatible Responses API endpoints configured in
-Settings or `~/.codescribe/.env`.
+not as live cloud preview. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default,
+configured in Onboarding, Settings, or `~/.codescribe/.env`.
 
 ```mermaid
 flowchart TB
@@ -58,43 +63,47 @@ flowchart TB
 
 > **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
 
-> **Status:** current release (see `Cargo.toml`) ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
+> **Status:** current source version is `0.12.2` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/BACKLOG.md`](docs/BACKLOG.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
-## API Provider
+## OpenAI Provider
 
-CodeScribe uses **OpenAI-compatible Responses API** (`/v1/responses`) endpoints for AI formatting and assistive mode.
+CodeScribe uses **OpenAI Responses API** (`/v1/responses`) by default for AI formatting and assistive mode.
 
-### Multi-Provider Setup (Recommended)
+### Default Setup
 
-Use different providers for different modes — e.g., cheaper model for formatting, powerful model for assistive:
+Put your OpenAI API key in Onboarding or Settings. CodeScribe stores it in macOS Keychain and applies it to both AI modes:
 
 ```env
 # ~/.codescribe/.env
 
 # Shared defaults
 LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1-mini
+LLM_MODEL=gpt-4.1
 LLM_API_KEY=sk-proj-xxx
 
-# Formatting mode overrides (Formatting mode / cleanup pass)
-LLM_FORMATTING_ENDPOINT=https://api.libraxis.cloud/v1/responses
-LLM_FORMATTING_MODEL=gpt-4.1-mini
-LLM_FORMATTING_API_KEY=vista-xxx
+# Formatting mode / cleanup pass
+LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
+LLM_FORMATTING_MODEL=gpt-4.1
+LLM_FORMATTING_API_KEY=sk-proj-xxx
 
-# Assistive mode overrides (Assistive mode / agent chat)
+# Assistive mode / agent chat
 LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
-LLM_ASSISTIVE_MODEL=gpt-4.1
+LLM_ASSISTIVE_MODEL=gpt-5.5
 LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 ```
 
 > **Note:** All requests use `previous_response_id` for conversation chaining. Context persists across transcriptions.
 
+### MCP Extension Path
+
+CodeScribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps the free product useful with user-owned tools today, while leaving room for first-party Pro integrations such as AICX and Loctree later.
+
 ## Features
 
 - **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
-- **Embedded-first Whisper** — Builds embed the Whisper payload by default whenever the model is available at build time. Runtime resolution from `CODESCRIBE_MODEL_PATH`, `~/.codescribe/models`, repo-local `models/`, or the Hugging Face cache remains available for `CODESCRIBE_NO_EMBED=1` builds and recovery fallback.
+- **Two DMG variants** — The standard DMG embeds Silero VAD + MiniLM support assets and resolves Whisper from cache/download. The `_full` DMG embeds Silero + MiniLM + Whisper for users who prefer one larger download.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
@@ -104,7 +113,8 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
 - **Global Hotkeys** — Hold Fn (default) or double‑tap Option to record
-- **Provider Separation** — Different LLM providers for formatting vs assistive mode
+- **OpenAI Responses by default** — Formatting uses `gpt-4.1`; Assistive uses `gpt-5.5`
+- **Custom MCP Servers** — Add your own MCP tools through `~/.codescribe/mcp.json`
 - **AI Formatting** — Optional post-processing via Responses API
 - **Slug Filenames** — Transcripts named with first 3 words for easy identification
 
@@ -138,7 +148,10 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 git clone https://github.com/VetCoders/CodeScribe.git
 cd CodeScribe
 
-# Install CLI (embedded-first Whisper + support assets — single-binary distribution)
+# Install the hook runner once (required for local commit/push gates)
+pipx install pre-commit
+
+# Install CLI + repo-local git hooks
 make install
 
 # Verify installation
@@ -147,22 +160,22 @@ codescribe --version
 
 ### Install via Release DMG
 
-Tagged builds can publish a signed-or-ad-hoc DMG through GitHub Releases:
+Tagged builds publish DMGs through GitHub Releases:
 
 1. Open [Releases](https://github.com/VetCoders/CodeScribe/releases)
-2. Download `CodeScribe_<version>.dmg`
+2. Download `CodeScribe_<version>.dmg` for the standard build, or `CodeScribe_<version>_full.dmg` for the larger build with embedded Whisper.
 3. Drag `CodeScribe.app` into `Applications`
 
-> **Current truth:** source install is the guaranteed path inside this repo. The release workflow lives in `.github/workflows/release.yml` and publishes DMGs on `v*` tags.
+> **Current truth:** source install is the guaranteed path inside this repo until a current `v0.12.x` GitHub Release exists. Public release DMGs must be Developer ID signed and notarized; the release workflow is wired to fail if the required Apple signing/notary secrets are missing.
 
 ### Build Options
 
 ```bash
-make build              # Debug build (embedded-first Whisper with runtime fallback)
-make release            # Release build (embedded-first Whisper + embedded support assets)
-make install            # Install CLI with embedded-first Whisper; runtime fallback stays available
+make build              # Debug build
+make release            # Release build with embedded Silero + embedder; Whisper from cache/download
+make install            # Install CLI + repo-local git hooks
 make install-app        # Build + install macOS .app (auto-downloads models if missing)
-make install-no-embed   # Install without optional embedding (runtime lookup required)
+make install-no-embed   # Install without optional embedding + repo-local git hooks
 ```
 
 ## Quick Start
@@ -269,12 +282,12 @@ TOGGLE_SILENCE_SEC=5.0               # Auto-send after silence in toggle modes
 # AI Formatting
 AI_FORMATTING_ENABLED=1              # 1=format via LLM, 0=raw transcript
 
-# LLM Provider (shared defaults)
+# OpenAI Responses provider (shared defaults)
 LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1-mini
+LLM_MODEL=gpt-4.1
 LLM_API_KEY=sk-proj-xxx
 
-# Provider separation (optional)
+# Mode-specific overrides (optional)
 # LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=
 # LLM_ASSISTIVE_{ENDPOINT,MODEL,API_KEY}=
 
@@ -338,16 +351,14 @@ CodeScribe uses **whisper-large-v3-turbo-mlx-q8**:
 
 ### Runtime Whisper (Current)
 
-Whisper is embedded by default when the model snapshot is available at build time.
-Runtime resolves the model from the locations below only when embedding is disabled
-with `CODESCRIBE_NO_EMBED=1` or the build falls back because the snapshot is missing:
+The standard build embeds Silero VAD and MiniLM semantic support assets, then resolves Whisper at runtime from the locations below. The full release DMG embeds the same support assets plus Whisper by building with `CODESCRIBE_EMBED_WHISPER=1`.
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
 3. `./models/whisper-large-v3-turbo-mlx-q8/`
 4. Hugging Face cache snapshots for `LibraxisAI/whisper-large-v3-turbo-mlx-q8`
 
-MiniLM semantic gating and Silero VAD still ship as embedded support assets in the default release path.
+`CODESCRIBE_NO_EMBED=1` remains a development/recovery path and disables optional embedded support assets too; it is not the public standard DMG mode.
 
 Model files required:
 
@@ -399,9 +410,10 @@ make format         # cargo fmt
 
 ```
 make build            # Debug build
-make release          # Release build (embedded-first Whisper + embedded support assets)
-make install          # Install CLI with embedded-first Whisper
+make release          # Release build with embedded support assets; Whisper from cache/download
+make install          # Install CLI
 make install-no-embed # Install without optional embedding
+make release-dmgs     # Build both signed + notarized release DMGs
 make config           # Edit ~/.codescribe/.env
 make start            # Start as daemon
 make stop             # Stop running instance
@@ -436,11 +448,22 @@ Grant permissions in System Settings > Privacy & Security when prompted.
 - Preserve the explicit split between onboarding, settings, dictation overlay, and assistive overlay.
 - Ship the macOS distribution path cleanly: bundle, sign, and notarize the DMG story.
 
-See [`docs/BACKLOG.md`](docs/BACKLOG.md) for the working backlog and [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md) for longer-range ideas that are not part of the current shipped surface.
+See [`docs/BACKLOG.md`](docs/BACKLOG.md) for the working backlog, [`docs/PUBLIC_RELEASE_CHECKLIST.md`](docs/PUBLIC_RELEASE_CHECKLIST.md) for the public launch gate, and [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md) for longer-range ideas that are not part of the current shipped surface.
 
 ## License
 
-Apache License 2.0
+CodeScribe is licensed under the Functional Source License 1.1, ALv2 Future
+License (FSL-1.1-ALv2).
+
+This is a Fair Source / source-available license while the current FSL terms
+apply. You may read, fork, build, and modify the source for permitted purposes
+including personal use, education, research, and professional services.
+Competing Use is not permitted: do not make CodeScribe available as a
+commercial product or service that substitutes for CodeScribe.
+
+Each released version automatically converts to Apache-2.0 two years after the
+date we make that version available. See [`LICENSE`](LICENSE) and
+<https://fsl.software> for the full terms.
 
 ---
 

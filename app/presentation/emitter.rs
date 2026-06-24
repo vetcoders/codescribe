@@ -6,8 +6,6 @@
 //! Uses an ordered mpsc channel to guarantee that target updates and finish
 //! arrive in the exact order they were emitted,
 //! eliminating the fire-and-forget tokio::spawn ordering race.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::sync::Arc;
 
@@ -156,6 +154,8 @@ pub struct PresentationEmitter {
     utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// Optional callback for VAD stop detection.
     vad_start_callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Optional callback for VAD end/silence boundary detection.
+    vad_end_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     vad_start_emitted: std::sync::atomic::AtomicBool,
     /// Source-of-truth transcript state: committed utterances + active preview tail.
     session_state: std::sync::Mutex<SessionTranscriptState>,
@@ -226,6 +226,7 @@ impl PresentationEmitter {
             cmd_handle,
             utterance_callback: None,
             vad_start_callback: None,
+            vad_end_callback: None,
             vad_start_emitted: std::sync::atomic::AtomicBool::new(false),
             session_state: std::sync::Mutex::new(SessionTranscriptState::default()),
             last_dispatched_utterance_id: std::sync::atomic::AtomicU64::new(0),
@@ -243,6 +244,10 @@ impl PresentationEmitter {
 
     pub fn set_vad_start_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
         self.vad_start_callback = cb;
+    }
+
+    pub fn set_vad_end_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
+        self.vad_end_callback = cb;
     }
 
     /// Signal the emitter to finish and wait for both the command worker
@@ -309,6 +314,13 @@ impl EventSink for PresentationEmitter {
                     cb();
                 }
             }
+            EngineEvent::VadEnd { .. } => {
+                self.vad_start_emitted
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                if let Some(cb) = &self.vad_end_callback {
+                    cb();
+                }
+            }
             EngineEvent::Preview { text, .. } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -368,10 +380,23 @@ impl EventSink for PresentationEmitter {
                     cb(payload);
                 }
                 if matches!(self.delta_render_mode, DeltaRenderMode::SessionRendered) {
-                    let rendered = {
+                    let (rendered, committed_len) = {
                         let state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.rendered_text()
+                        (state.rendered_text(), state.committed.len())
                     };
+                    // Diagnostic (ADR 2026-05-28 Faza 1 append regression): the emitter
+                    // cadence is unit-proven cumulative (session_rendered_accumulates_across_
+                    // multiple_utterances), so if a LIVE hands-off session still shows replace,
+                    // the cause is upstream — either UtteranceFinal never reaching here during
+                    // continuous speech, or the emitter being recreated mid-session. This
+                    // per-utterance (low-frequency) info! confirms at runtime whether
+                    // `committed` actually grows. info! so it survives release tracing level.
+                    info!(
+                        utterance_id = *utterance_id,
+                        committed_utterances = committed_len,
+                        rendered_chars = rendered.chars().count(),
+                        "PresentationEmitter: utterance committed (session-rendered, cumulative)"
+                    );
                     self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 }
             }
@@ -402,7 +427,7 @@ impl EventSink for PresentationEmitter {
                 partial_runs_total,
                 trigger_utterance_count,
                 trigger_speech_count,
-                trigger_watchdog_count,
+                trigger_timer_count,
                 partial_stale_count,
                 partial_coalesced_count,
                 partial_dropped_count,
@@ -418,7 +443,7 @@ impl EventSink for PresentationEmitter {
                     partial_runs_total,
                     trigger_utterance_count,
                     trigger_speech_count,
-                    trigger_watchdog_count,
+                    trigger_timer_count,
                     partial_stale_count,
                     partial_coalesced_count,
                     partial_dropped_count,
@@ -441,7 +466,6 @@ impl EventSink for PresentationEmitter {
             EngineEvent::Warning { code, message } => {
                 tracing::warn!("Engine warning [{}]: {}", code, message);
             }
-            _ => {}
         }
     }
 }
@@ -593,6 +617,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_rendered_accumulates_across_multiple_utterances() {
+        // ADR 2026-05-28 Faza 1: hands-off long-form must build ONE continuous
+        // transcript — every finalized utterance APPENDS, never replaces. This drives
+        // a realistic multi-utterance cadence (Preview -> UtteranceFinal x3, plus a
+        // trailing live preview) through the default SessionRendered mode and asserts
+        // the rendered buffer is cumulative. Guards the operator-reported regression
+        // "UI nie dodaje tekstu na końcu ogona" (replace instead of append).
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        let finalize = |id: u64, text: &str| EngineEvent::UtteranceFinal {
+            utterance_id: id,
+            text: text.to_string(),
+            raw_text: text.to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        };
+
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "Pierwsze".to_string(),
+        });
+        emitter.on_event(&finalize(1, "Pierwsze zdanie."));
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 2,
+            text: "drugie".to_string(),
+        });
+        emitter.on_event(&finalize(2, "drugie zdanie."));
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 3,
+            text: "trzecie na żywo".to_string(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let snapshot = transcript.lock().await.clone();
+        assert!(
+            snapshot.contains("Pierwsze zdanie.")
+                && snapshot.contains("drugie zdanie.")
+                && snapshot.contains("trzecie na żywo"),
+            "session-rendered must accumulate every utterance (append, not replace), got: {snapshot:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn utterance_callback_falls_back_to_last_preview_and_dedupes() {
         let transcript = Arc::new(Mutex::new(String::new()));
         let mut emitter = PresentationEmitter::new(transcript, None, None);
@@ -714,7 +788,7 @@ mod tests {
             partial_runs_total: 0,
             trigger_utterance_count: 0,
             trigger_speech_count: 0,
-            trigger_watchdog_count: 0,
+            trigger_timer_count: 0,
             partial_stale_count: 0,
             partial_coalesced_count: 0,
             partial_dropped_count: 0,

@@ -24,8 +24,6 @@
 //! - `engine` - The TtsEngine implementation with CSM + Mimi
 //! - `audio_output` - Audio playback and WAV export
 //! - `embedded` - Compile-time model embedding (release builds)
-//!
-//! Created by M&K (c)2026 VetCoders
 
 pub mod audio_output;
 pub mod embedded;
@@ -41,6 +39,3 @@ pub use singleton::{get_model_path, init, is_initialized, play, synthesize, synt
 
 /// Default sample rate for CSM output (24kHz)
 pub const SAMPLE_RATE: u32 = 24000;
-
-/// Default speaker index (0 = first voice in model)
-pub const DEFAULT_SPEAKER: usize = 0;

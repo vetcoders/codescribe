@@ -193,6 +193,23 @@ pub struct RecorderDiagnostics {
     pub duration_sec: f32,
 }
 
+/// Outcome of a non-stopping buffer snapshot. Recording stream remains active.
+///
+/// Caller stores `end_offset` and passes it as `from_offset` in the next
+/// `snapshot_wav` call to get the *next* segment without overlap.
+#[derive(Debug, Clone)]
+pub struct SnapshotResult {
+    /// Temp WAV file path containing the segment's samples.
+    pub wav_path: PathBuf,
+    /// Sample-index marking the end of the snapshot (exclusive). Use as
+    /// `from_offset` for the next call.
+    pub end_offset: usize,
+    /// Number of samples copied into the snapshot.
+    pub sample_count: usize,
+    /// Audio duration of the snapshot in seconds.
+    pub duration_sec: f32,
+}
+
 // --- audio buffer ---
 
 type AudioBuffer = Arc<Mutex<Vec<i16>>>;
@@ -613,6 +630,65 @@ impl Recorder {
             .clear();
 
         Ok(Some(temp_path))
+    }
+
+    /// Snapshot a slice of the recording buffer to a WAV file WITHOUT stopping
+    /// the recorder.
+    ///
+    /// The recording stream remains active, the VAD worker keeps running, and
+    /// the underlying buffer is **not** cleared. `from_offset` is a sample index
+    /// (not byte offset). Returns `Ok(None)` if there are no new samples since
+    /// `from_offset` (caller should treat this as a graceful no-op).
+    ///
+    /// Callers persist the returned `end_offset` and pass it as `from_offset`
+    /// in the next snapshot call to obtain the *next* non-overlapping segment.
+    pub async fn snapshot_wav(&self, from_offset: usize) -> Result<Option<SnapshotResult>> {
+        // Read slice under lock (cheap memcpy), drop lock before WAV write.
+        let (slice, end_offset) = {
+            let buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            let total = buf.len();
+            if from_offset >= total {
+                return Ok(None);
+            }
+            let slice: Vec<i16> = buf[from_offset..total].to_vec();
+            (slice, total)
+        };
+
+        let sample_count = slice.len();
+        let duration_sec = sample_count as f32 / self.actual_sample_rate as f32;
+
+        let temp_path = std::env::temp_dir().join(format!(
+            "codescribe_segment_{}.wav",
+            chrono::Utc::now().timestamp_millis()
+        ));
+
+        write_wav_file(
+            &temp_path,
+            &slice,
+            self.actual_sample_rate,
+            self.config.channels,
+        )?;
+
+        info!(
+            "Segment snapshot: {} samples ({:.2}s) saved to {:?}",
+            sample_count, duration_sec, temp_path
+        );
+
+        Ok(Some(SnapshotResult {
+            wav_path: temp_path,
+            end_offset,
+            sample_count,
+            duration_sec,
+        }))
+    }
+
+    /// Current sample count in the buffer.
+    ///
+    /// Use as `from_offset` for the next `snapshot_wav` call when you want to
+    /// start a fresh segment without saving anything yet. Returns 0 on poisoned
+    /// lock (recoverable).
+    pub fn current_sample_offset(&self) -> usize {
+        self.buffer.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

@@ -22,8 +22,6 @@
 //!
 //! `extract_speech()` uses a per-thread cache to avoid reloading the ONNX
 //! model on every call. The cache is invalidated when sample rate changes.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 pub mod config;
 pub mod discriminator;
@@ -171,6 +169,13 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
         }
     };
 
+    // Reset once at the start of this extraction: the VAD is reused from a
+    // thread-local cache and may carry Silero state/accumulator from a previous,
+    // unrelated utterance. Within this call we keep the state CONTINUOUS across
+    // windows (Silero v6 is stateful) instead of cold-starting each 500ms window,
+    // which previously truncated speech onsets.
+    vad.reset();
+
     let threshold = vad.threshold();
     let mut speech_samples = Vec::with_capacity(samples.len() / 2);
     let mut speech_windows = 0usize;
@@ -193,8 +198,8 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
             break;
         }
 
-        // Reset between windows for independent measurement
-        vad.reset();
+        // No per-window reset: Silero state is carried across windows so speech
+        // onsets spanning a window boundary are not lost (see reset() above).
         let prob = vad.feed(window);
         total_windows += 1;
         probabilities.push(prob);
@@ -299,6 +304,20 @@ mod tests {
             Some("vad_invalid_sample_rate")
         );
         assert!(stats.probabilities.is_empty());
+    }
+
+    #[test]
+    fn multi_window_extraction_runs_with_continuous_state() {
+        // 1.5s at 16kHz => 3 windows of EXTRACT_WINDOW_MS (500ms). With the
+        // per-window reset removed, Silero state must flow across all windows
+        // without panic and every window must still be measured.
+        let window_size = (SAMPLE_RATE * EXTRACT_WINDOW_MS / 1000) as usize;
+        let samples = vec![0.0f32; window_size * 3];
+        let (_speech, stats) = extract_speech(&samples, SAMPLE_RATE);
+        assert_eq!(stats.total_windows, 3, "all full windows measured");
+        assert_eq!(stats.probabilities.len(), 3);
+        // Silence input must not be misclassified as speech.
+        assert_eq!(stats.speech_windows, 0);
     }
 
     #[test]

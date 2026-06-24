@@ -5,13 +5,6 @@
 mod server;
 
 pub use server::run_server;
-// Re-export types from core
-pub use codescribe_core::ipc::{AppStatus, IpcCommand, IpcResponse};
-
-use std::path::PathBuf;
-
-use crate::config::Config;
-
-pub fn socket_path() -> PathBuf {
-    Config::config_dir().join("ipc").join("codescribe.sock")
-}
+// Re-export types and the socket path from core: the server must bind exactly
+// the path core's IpcClient connects to, so the computation lives once, in core.
+pub use codescribe_core::ipc::{AppStatus, IpcCommand, IpcResponse, socket_path};

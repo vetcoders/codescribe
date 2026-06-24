@@ -4,8 +4,6 @@
 //! Debug builds: Empty slices, use CODESCRIBE_TTS_PATH
 //!
 //! Model bytes are loaded DIRECTLY to GPU - zero disk I/O, zero temp files.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 #[cfg(embed_tts)]
 mod data {

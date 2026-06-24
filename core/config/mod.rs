@@ -26,6 +26,11 @@ pub mod prompts;
 pub mod settings;
 mod types;
 
+pub use defaults::{
+    DEFAULT_ASSISTIVE_MODEL, DEFAULT_FORMATTING_MODEL, DEFAULT_LLM_MODEL,
+    DEFAULT_OPENAI_RESPONSES_ENDPOINT, default_assistive_model, default_formatting_model,
+    default_llm_endpoint, default_llm_endpoint_option, default_llm_model,
+};
 // Re-export types
 pub use types::{
     Config, ModeBinding, OverlayPositionMode, ShortcutBinding, TranscriptSendMode, WorkMode,
@@ -45,12 +50,14 @@ pub use prompts::{
 mod tests {
     use super::models;
     use super::*;
+    use serial_test::serial;
     #[test]
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.whisper_language, Language::Polish); // Polish is default
         assert_eq!(config.ai_max_tokens, 0); // 0 = no limit (API decides)
         assert!(!config.ai_formatting_enabled);
+        assert!(!config.transcript_tagging_enabled);
         assert_eq!(config.double_tap_interval_ms, 200);
         assert_eq!(config.toggle_silence_sec, 5.0);
         assert!(config.show_dock_icon);
@@ -70,6 +77,35 @@ mod tests {
             unsafe { std::env::set_var("SHOW_DOCK_ICON", value) };
         } else {
             unsafe { std::env::remove_var("SHOW_DOCK_ICON") };
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_transcript_tagging_env_override_applies() {
+        let previous_enabled = std::env::var("CODESCRIBE_TRANSCRIPT_TAGGING").ok();
+        let previous_template = std::env::var("CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE").ok();
+        unsafe {
+            std::env::set_var("CODESCRIBE_TRANSCRIPT_TAGGING", "1");
+            std::env::set_var(
+                "CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE",
+                "[{mode}/{lang}] {text}",
+            );
+        }
+
+        let config = Config::load();
+        assert!(config.transcript_tagging_enabled);
+        assert_eq!(config.transcript_tag_template, "[{mode}/{lang}] {text}");
+
+        match previous_enabled {
+            Some(value) => unsafe { std::env::set_var("CODESCRIBE_TRANSCRIPT_TAGGING", value) },
+            None => unsafe { std::env::remove_var("CODESCRIBE_TRANSCRIPT_TAGGING") },
+        }
+        match previous_template {
+            Some(value) => unsafe {
+                std::env::set_var("CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE", value)
+            },
+            None => unsafe { std::env::remove_var("CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE") },
         }
     }
 
@@ -108,7 +144,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_dir() {
+        // #[serial]: reads the global CODESCRIBE_DATA_DIR env var, which the
+        // setup_isolated_data_dir() tests mutate — without serialization this races
+        // and flakes (config_dir() vs env::var() observing different values).
         let dir = Config::config_dir();
         if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
             assert_eq!(dir, std::path::PathBuf::from(custom));

@@ -2,15 +2,13 @@
 //!
 //! Usage:
 //!   cargo run --bin qube-report -- --date 2026-01-17 --limit 5
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
 
 use codescribe::config::Config;
-use codescribe::qube_report::{MetricsReference, QualityReportConfig, run};
+use codescribe::qube_report::{LocalTranscriptionMode, MetricsReference, QualityReportConfig, run};
 
 #[derive(Parser)]
 #[command(name = "qube-report")]
@@ -110,6 +108,7 @@ async fn main() -> Result<()> {
             ReferenceSourceArg::Corpus => MetricsReference::Corpus,
             ReferenceSourceArg::Cloud => MetricsReference::Cloud,
         },
+        local_transcription: LocalTranscriptionMode::LocalWhisper,
     };
 
     let out = run(report_config).await?;

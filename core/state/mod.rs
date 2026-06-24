@@ -4,8 +4,6 @@
 //!
 //! - `conversation` - Voice Chat session tracking (previous_response_id)
 //! - `history` - Transcript history management (~/.codescribe/transcriptions/)
-//!
-//! Created by M&K (c)2026 VetCoders
 
 pub mod conversation;
 pub mod history;

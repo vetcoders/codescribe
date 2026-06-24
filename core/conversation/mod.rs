@@ -40,8 +40,6 @@
 //! - `ConversationEngine` - Main engine for full-duplex conversation
 //! - `ConversationContext` - Manages conversation history and state
 //! - `TurnManager` - Handles turn-taking and interruption
-//!
-//! Created by M&K (c)2026 VetCoders
 
 pub mod config;
 pub mod context;

@@ -1,23 +1,24 @@
 # CodeScribe License Notes
 
-CodeScribe is distributed under the **BSD 4-Clause License (Original BSD)**. The clause that
-usually raises questions is the _advertising clause_:
+CodeScribe is distributed under the **Functional Source License 1.1, ALv2 Future
+License (FSL-1.1-ALv2)**.
 
-> "All advertising materials mentioning features or use of this software must display the
-> acknowledgement: This product includes software developed by Loctree."
+This is a Fair Source / source-available license while the current FSL terms
+apply. You may read, fork, build, and modify the source for permitted purposes
+including personal use, education, research, and professional services.
 
 What this means in practice:
 
-| Scenario                                                             | Requirement                                                                        |
-| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| README / documentation inside this repo                              | already satisfied (see README §License).                                           |
-| Public marketing site, blog post, product page mentioning CodeScribe | include the acknowledgement sentence verbatim.                                     |
-| Binary redistributions (DMG, PKG)                                    | include the acknowledgement in the splash / "About" dialog or accompanying README. |
-| Internal deployments (no external advertising)                       | no additional action beyond keeping the LICENSE file intact.                       |
+| Scenario                                                                      | Status                                                                                      |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Personal use, education, research, and internal evaluation                     | permitted under FSL-1.1-ALv2.                                                               |
+| Professional services delivered to a licensee using CodeScribe under the terms | permitted under FSL-1.1-ALv2.                                                               |
+| Commercial product or service that substitutes for CodeScribe                  | not permitted as Competing Use while the FSL terms apply.                                    |
+| Future use of each released version                                           | automatically available under Apache-2.0 two years after that version is made available.     |
 
-If you fork CodeScribe and redistribute it, you must keep the LICENSE file and the acknowledgement
-sentence wherever you describe the fork. If you embed CodeScribe inside another product, place the
-acknowledgement next to other third‑party credits.
+If you fork or redistribute CodeScribe for a permitted purpose, keep the
+`LICENSE` file or a link to the license terms with your copy, modifications, or
+derivatives.
 
-For questions about alternative licensing please reach out Loctree team
-at [contact@loctree.io](mailto:contact@loctree.io).
+For the full license text, see [`../LICENSE`](../LICENSE) and
+<https://fsl.software>.

@@ -2,21 +2,37 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Hardened runtime entitlements for CodeScribe distribution outside the App Store -->
+    <!-- Hardened runtime entitlements for CodeScribe distribution outside the App Store. -->
+    <!--                                                                                  -->
+    <!-- SINGLE SOURCE OF TRUTH: this is the only entitlements file. It is referenced by  -->
+    <!-- the codesign step in Makefile (CODESCRIBE_ENTITLEMENTS, install-app target) and  -->
+    <!-- scripts/build-dmg.sh. Do not add a second copy under bundle/ (that duplicate was -->
+    <!-- dead code with 0 references and was removed).                                    -->
+    <!--                                                                                  -->
+    <!-- DO NOT flip the hardened-runtime relaxations below back to <false/>: they are    -->
+    <!-- REQUIRED by the embedded ML dylibs (Whisper STT + MiniLM embeddings) that ship   -->
+    <!-- inside the bundle. Tightening them WILL break model loading at launch. Any change -->
+    <!-- here must be verified by an operator-side launch test (app starts + STT/embed    -->
+    <!-- models load) before merging. App Sandbox is intentionally NOT enabled (this app  -->
+    <!-- is distributed outside the Mac App Store).                                        -->
 
     <!-- Allow audio input device access (microphone for speech recording) -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
 
-    <!-- Allow unsigned executable memory (required for JIT compilation in some ML frameworks) -->
+    <!-- REQUIRED by embedded ML dylibs (Whisper/MiniLM): unsigned executable memory for -->
+    <!-- JIT/codegen used by the ML runtime. Do not set <false/> without a launch test. -->
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
 
-    <!-- Allow DYLD environment variables (may be needed for Python runtime) -->
+    <!-- REQUIRED by embedded ML dylibs: DYLD environment variables for runtime/library -->
+    <!-- path resolution. Do not set <false/> without a launch test. -->
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
 
-    <!-- Disable library validation (allows loading of unsigned frameworks/dylibs) -->
+    <!-- REQUIRED by embedded ML dylibs: library validation disabled so the bundled -->
+    <!-- Whisper/MiniLM frameworks (signed under a different team/ad-hoc) can load. -->
+    <!-- Do not set <false/> without a launch test. -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
 

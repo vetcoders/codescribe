@@ -218,17 +218,13 @@ fn main() -> Result<()> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--text" | "-t" => {
-                if i + 1 < args.len() {
-                    text = Some(args[i + 1].clone());
-                    i += 1;
-                }
+            "--text" | "-t" if i + 1 < args.len() => {
+                text = Some(args[i + 1].clone());
+                i += 1;
             }
-            "--lang" | "-l" => {
-                if i + 1 < args.len() {
-                    language = args[i + 1].clone();
-                    i += 1;
-                }
+            "--lang" | "-l" if i + 1 < args.len() => {
+                language = args[i + 1].clone();
+                i += 1;
             }
             "--no-play" => play_audio = false,
             "--interactive" | "-i" => interactive = true,

@@ -6,8 +6,6 @@
 //! Supports two loading modes:
 //! - `new(path)` - load from filesystem (development, external models)
 //! - `from_embedded()` - load from binary-embedded bytes (production, zero I/O)
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::{Context, Result, anyhow, ensure};
 use std::collections::HashMap;
@@ -44,6 +42,34 @@ use super::params::DecodingParams;
 
 /// Callback for streaming chunk results (called after each chunk is transcribed)
 pub type ChunkCallback<'a> = &'a dyn Fn(&str);
+
+/// Average decoder tokens per spoken word (BPE subwords + punctuation). Used to
+/// convert the words-per-second cap into a token budget for the runaway
+/// watchdog. Conservative (higher = looser budget).
+const RUNAWAY_TOKENS_PER_WORD: f32 = 2.0;
+
+/// Safety margin on the runaway token budget so legitimate fast/long speech is
+/// never cut: the watchdog only fires well past any plausible real word rate.
+const RUNAWAY_BUDGET_MARGIN: f32 = 2.0;
+
+/// Minimum token budget for the runaway watchdog regardless of audio length, so
+/// very short chunks still get enough headroom to emit normal short utterances.
+const RUNAWAY_MIN_BUDGET: usize = 64;
+
+/// Token budget for the in-loop runaway watchdog given the chunk audio length.
+///
+/// Derived from the shared words-per-second cap
+/// (`quality_gate::MAX_WORDS_PER_SEC`) times tokens-per-word and a generous
+/// safety margin. When generated tokens exceed this budget the decode loop bails
+/// instead of paying the full O(n^2)/O(n^3) cost of a runaway hallucination.
+fn runaway_token_budget(audio_sec: f32) -> usize {
+    let raw = (crate::pipeline::streaming::quality_gate::MAX_WORDS_PER_SEC
+        * audio_sec.max(0.0)
+        * RUNAWAY_TOKENS_PER_WORD
+        * RUNAWAY_BUDGET_MARGIN)
+        .ceil();
+    (raw as usize).max(RUNAWAY_MIN_BUDGET)
+}
 
 fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option<FinalPassVerdict> {
     match options.final_pass {
@@ -915,11 +941,29 @@ impl LocalWhisperEngine {
             .max_target_positions
             .saturating_sub(tokens.len());
         let ngram_size = self.decoding_params.no_repeat_ngram_size;
+        let mut ngram_blocker = NgramBlocker::new(ngram_size);
+
+        // Runaway watchdog: cap generated tokens at a generous multiple of the
+        // plausible word rate for this chunk's audio length, so a hallucinating
+        // decode bails early instead of grinding to max_new_tokens at O(n^2) cost.
+        let audio_sec = samples_16k.len() as f32 / whisper::SAMPLE_RATE as f32;
+        let runaway_budget = runaway_token_budget(audio_sec);
+        let mut runaway_tripped = false;
 
         let mut sum_logprob = 0.0f32;
         let mut token_count = 0usize;
 
         for step in 0..max_new_tokens {
+            if all_tokens.len() >= runaway_budget {
+                tracing::warn!(
+                    "Runaway watchdog tripped: {} tokens for {:.2}s audio (budget {})",
+                    all_tokens.len(),
+                    audio_sec,
+                    runaway_budget
+                );
+                runaway_tripped = true;
+                break;
+            }
             let token_tensor = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
             let hidden = self
                 .model
@@ -962,24 +1006,14 @@ impl LocalWhisperEngine {
                 }
             }
 
-            // Apply no_repeat_ngram blocking (faster-whisper style)
-            // Block tokens that would create a repeated n-gram
-            // Need at least ngram_size tokens to have a potential repeat
-            if ngram_size > 0 && all_tokens.len() >= ngram_size {
-                // Look at last (ngram_size - 1) tokens as prefix
-                let prefix_start = all_tokens.len() + 1 - ngram_size;
-                let prefix = &all_tokens[prefix_start..];
-
-                // Find all earlier positions where this (n-1)-gram occurred
-                let search_end = all_tokens.len() - ngram_size + 1;
-                for i in 0..search_end {
-                    if all_tokens[i..i + ngram_size - 1] == *prefix {
-                        // Block the token that followed this n-gram
-                        let blocked_token = all_tokens[i + ngram_size - 1] as usize;
-                        if blocked_token < logits_vec.len() {
-                            logits_vec[blocked_token] = f32::NEG_INFINITY;
-                        }
-                    }
+            // Apply no_repeat_ngram blocking (faster-whisper style).
+            // Block tokens that would create a repeated n-gram. Uses an
+            // incremental lookup (see NgramBlocker) instead of a full O(n) scan
+            // of all_tokens per step.
+            for &blocked_token in ngram_blocker.blocked_tokens(&all_tokens) {
+                let idx = blocked_token as usize;
+                if idx < logits_vec.len() {
+                    logits_vec[idx] = f32::NEG_INFINITY;
                 }
             }
 
@@ -1065,6 +1099,18 @@ impl LocalWhisperEngine {
 
             tokens.push(best_token);
             all_tokens.push(best_token);
+            ngram_blocker.observe(&all_tokens);
+        }
+
+        // Runaway decode: drop the transcript rather than emit a hallucinated
+        // wall of text. Mirrors the post-hoc quality gate's dropped contract.
+        if runaway_tripped {
+            let avg_logprob = (token_count > 0).then(|| sum_logprob / token_count as f32);
+            return Ok(RawTranscript {
+                avg_logprob,
+                quality_gate_dropped: true,
+                ..Default::default()
+            });
         }
 
         let (text, segments) = if timestamps_enabled {
@@ -1368,6 +1414,70 @@ fn map_tensor_name(name: &str) -> String {
     new_name
 }
 
+/// Incremental no-repeat n-gram blocker.
+///
+/// Replaces the per-step O(n) full scan of `all_tokens` (which made the decode
+/// loop O(n^2) in blocking cost) with an O(1)-amortized map from each completed
+/// `(ngram_size - 1)`-gram to the set of tokens that have followed it. After
+/// every emitted token the new trailing window is recorded; before each step the
+/// current tail's `(ngram_size - 1)`-gram is looked up to find tokens to block.
+///
+/// Behavior is identical to the previous full-scan: it blocks exactly the tokens
+/// that ever followed the current `(ngram_size - 1)`-gram tail elsewhere in the
+/// generated sequence. `ngram_size == 0` disables blocking; sequences shorter
+/// than `ngram_size` produce no blocks.
+struct NgramBlocker {
+    ngram_size: usize,
+    // (n-1)-gram window -> tokens observed immediately after it.
+    seen: HashMap<Vec<u32>, Vec<u32>>,
+    emitted: usize,
+}
+
+impl NgramBlocker {
+    fn new(ngram_size: usize) -> Self {
+        Self {
+            ngram_size,
+            seen: HashMap::new(),
+            emitted: 0,
+        }
+    }
+
+    /// Tokens to block given the full generated sequence so far. Mirrors the
+    /// prefix = last (n-1) tokens lookup of the original scan.
+    fn blocked_tokens(&self, all_tokens: &[u32]) -> &[u32] {
+        if self.ngram_size == 0 || all_tokens.len() < self.ngram_size {
+            return &[];
+        }
+        let prefix = &all_tokens[all_tokens.len() + 1 - self.ngram_size..];
+        self.seen.get(prefix).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Record the newly completed (n-1)-gram windows after `all_tokens` grew by
+    /// one. Must be called after each push to `all_tokens`.
+    fn observe(&mut self, all_tokens: &[u32]) {
+        // A successor at position `len-1` completes the window
+        // all_tokens[len-1-(n-1) .. len-1] -> all_tokens[len-1].
+        if self.ngram_size == 0 {
+            self.emitted = all_tokens.len();
+            return;
+        }
+        // Catch up if observe was skipped (defensive; loop calls every push).
+        let win = self.ngram_size - 1;
+        while self.emitted < all_tokens.len() {
+            let succ_pos = self.emitted;
+            if succ_pos >= win {
+                let key = all_tokens[succ_pos - win..succ_pos].to_vec();
+                let succ = all_tokens[succ_pos];
+                let entry = self.seen.entry(key).or_default();
+                if !entry.contains(&succ) {
+                    entry.push(succ);
+                }
+            }
+            self.emitted += 1;
+        }
+    }
+}
+
 fn compression_ratio(text: &str) -> f32 {
     let original_len = text.len();
     if original_len == 0 {
@@ -1656,6 +1766,103 @@ mod dedup_tests {
         let input = "który zajmuje który zajmuje 56 GB. 56 GB. test test";
         let expected = "który zajmuje 56 GB. test";
         assert_eq!(dedup_repetitions(input), expected);
+    }
+
+    /// Reference implementation: the original full-scan n-gram block, used only
+    /// to prove the incremental NgramBlocker produces an identical block set.
+    fn reference_blocked(ngram_size: usize, all_tokens: &[u32]) -> Vec<u32> {
+        let mut blocked = Vec::new();
+        if ngram_size > 0 && all_tokens.len() >= ngram_size {
+            let prefix_start = all_tokens.len() + 1 - ngram_size;
+            let prefix = &all_tokens[prefix_start..];
+            let search_end = all_tokens.len() - ngram_size + 1;
+            for i in 0..search_end {
+                if all_tokens[i..i + ngram_size - 1] == *prefix {
+                    blocked.push(all_tokens[i + ngram_size - 1]);
+                }
+            }
+        }
+        blocked
+    }
+
+    fn assert_ngram_parity(ngram_size: usize, seq: &[u32]) {
+        let mut blocker = NgramBlocker::new(ngram_size);
+        let mut all: Vec<u32> = Vec::new();
+        for &t in seq {
+            // Lookup happens against the sequence as it stood before pushing t.
+            // Compare as sets: blocking a token is idempotent, so duplicate
+            // hits in the reference scan and the deduped incremental list have
+            // identical effect on the logits.
+            let mut inc: Vec<u32> = blocker.blocked_tokens(&all).to_vec();
+            let mut refr = reference_blocked(ngram_size, &all);
+            inc.sort_unstable();
+            inc.dedup();
+            refr.sort_unstable();
+            refr.dedup();
+            assert_eq!(
+                inc,
+                refr,
+                "block-set mismatch (n={ngram_size}) at len {}: inc={inc:?} ref={refr:?}",
+                all.len()
+            );
+            all.push(t);
+            blocker.observe(&all);
+        }
+    }
+
+    #[test]
+    fn runaway_watchdog_bails() {
+        // 1s of audio with 5 words/s cap, 2 tokens/word, 2x margin => 20 tokens,
+        // but RUNAWAY_MIN_BUDGET (64) floors it for short chunks.
+        assert_eq!(runaway_token_budget(1.0), RUNAWAY_MIN_BUDGET);
+
+        // 10s of audio: 5 * 10 * 2 * 2 = 200 tokens budget.
+        assert_eq!(runaway_token_budget(10.0), 200);
+
+        // The loop bails when generated tokens reach the budget, well before
+        // max_new_tokens (448). Simulate the in-loop guard for a runaway decode.
+        let audio_sec = 10.0;
+        let budget = runaway_token_budget(audio_sec);
+        let max_new_tokens = 448usize; // model max_target_positions ceiling
+        let mut generated = 0usize;
+        for _ in 0..max_new_tokens {
+            if generated >= budget {
+                break;
+            }
+            generated += 1; // pretend every step emits a non-EOT token
+        }
+        assert_eq!(generated, budget);
+        assert!(
+            generated < max_new_tokens,
+            "watchdog must bail before max_new_tokens"
+        );
+
+        // Budget is conservative: a normal 10s utterance at a realistic ~2.5
+        // words/s, 2 tokens/word = ~50 tokens, far below the 200 budget.
+        let normal_tokens = (2.5f32 * 10.0 * 2.0) as usize;
+        assert!(
+            normal_tokens < budget,
+            "normal speech ({normal_tokens}) must not trip budget ({budget})"
+        );
+
+        // Zero / negative audio_sec is clamped and floored, never panics.
+        assert_eq!(runaway_token_budget(0.0), RUNAWAY_MIN_BUDGET);
+        assert_eq!(runaway_token_budget(-5.0), RUNAWAY_MIN_BUDGET);
+    }
+
+    #[test]
+    fn ngram_block_parity() {
+        // Repetition-heavy synthetic sequence exercises the block path.
+        let seq = [5u32, 6, 7, 5, 6, 7, 5, 6, 7, 8, 9, 8, 9, 8, 9, 8];
+        for n in [0usize, 1, 2, 3, 5] {
+            assert_ngram_parity(n, &seq);
+        }
+        // Sequence shorter than n -> no blocks.
+        assert_ngram_parity(5, &[1, 2, 3]);
+        // Empty.
+        assert_ngram_parity(3, &[]);
+        // Single distinct token repeated (worst case for ngram_size==1).
+        assert_ngram_parity(1, &[42, 42, 42, 42]);
     }
 
     #[test]

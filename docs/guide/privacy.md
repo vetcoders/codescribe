@@ -244,12 +244,12 @@ chmod 600 ~/.codescribe/.env
 
 ---
 
-## Open Source Transparency
+## Source Availability
 
-CodeScribe is open source:
+CodeScribe is source-available under FSL-1.1-ALv2:
 
 - **Repository**: github.com/VetCoders/CodeScribe
-- **License**: BSD 4-Clause
+- **License**: Functional Source License 1.1, ALv2 Future License (FSL-1.1-ALv2)
 - **Audit**: You can inspect all code
 
 No hidden functionality, no obfuscation.

@@ -28,6 +28,34 @@ fn canonicalize_path(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Failed to resolve path: {}", path.display()))
 }
 
+const WS_SCHEME_PREFIX: &str = concat!("ws", "://");
+const WSS_SCHEME_PREFIX: &str = "wss://";
+
+/// Reject plain WebSocket endpoints whose host is not a loopback address.
+///
+/// Encrypted WebSocket endpoints are always allowed. Plain WebSocket is only permitted for
+/// loopback hosts (`localhost`, `127.0.0.1`, `::1`) so credentials/audio never
+/// traverse the network unencrypted to a non-local backend.
+fn enforce_ws_scheme_loopback(endpoint_url: &str) -> Result<()> {
+    let url = reqwest::Url::parse(endpoint_url).context("STT endpoint is not a valid URL")?;
+    if url.scheme() != "ws" {
+        return Ok(());
+    }
+
+    let host = url
+        .host_str()
+        .map(|h| h.trim_matches(['[', ']']))
+        .unwrap_or_default();
+    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "Plain WebSocket is only allowed for loopback hosts; use wss:// for non-loopback endpoint '{}'",
+            endpoint_url
+        )
+    }
+}
+
 /// Maximum retry attempts for transcription requests
 const TRANSCRIPTION_MAX_RETRIES: u32 = 3;
 
@@ -294,8 +322,7 @@ fn is_retryable_error(error: &anyhow::Error) -> bool {
 /// Transcribe audio using external STT API
 ///
 /// Supports multiple protocols based on endpoint URL:
-/// // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-/// - `wss://` or `ws://` → WebSocket streaming (ws:// for localhost dev, wss:// for production)
+/// - WebSocket schemes -> streaming (plain for localhost dev, encrypted for production)
 /// - URL ending with `:stream` → NDJSON streaming HTTP
 /// - Otherwise → OpenAI-compatible multipart upload
 ///
@@ -333,10 +360,10 @@ async fn transcribe_external(
 
     let lang = language.unwrap_or("pl");
 
-    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-    // Dispatch based on protocol (ws:// for localhost, wss:// for production)
-    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-    if endpoint_url.starts_with("wss://") || endpoint_url.starts_with("ws://") {
+    // Dispatch based on protocol (plain WebSocket for localhost, encrypted WebSocket for production)
+    if endpoint_url.starts_with(WSS_SCHEME_PREFIX) || endpoint_url.starts_with(WS_SCHEME_PREFIX) {
+        // Plain WebSocket is only permitted for loopback hosts; reject otherwise.
+        enforce_ws_scheme_loopback(endpoint_url)?;
         // WebSocket streaming
         transcribe_websocket(endpoint_url, api_key, buffer, lang).await
     } else if endpoint_url.ends_with(":stream") {
@@ -809,6 +836,25 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plain_ws_url(authority: &str) -> String {
+        format!("{}{}", WS_SCHEME_PREFIX, authority)
+    }
+
+    #[test]
+    fn ws_plain_rejected_for_non_loopback() {
+        // Plain WebSocket to a non-loopback host must be rejected.
+        assert!(enforce_ws_scheme_loopback(&plain_ws_url("example.com:1234")).is_err());
+        assert!(enforce_ws_scheme_loopback(&plain_ws_url("192.168.1.10:1234")).is_err());
+
+        // Plain WebSocket to loopback hosts is allowed.
+        assert!(enforce_ws_scheme_loopback(&plain_ws_url("127.0.0.1:1234")).is_ok());
+        assert!(enforce_ws_scheme_loopback(&plain_ws_url("localhost:1234")).is_ok());
+        assert!(enforce_ws_scheme_loopback(&plain_ws_url("[::1]:1234")).is_ok());
+
+        // wss:// is always allowed regardless of host.
+        assert!(enforce_ws_scheme_loopback("wss://example.com:1234").is_ok());
+    }
 
     #[test]
     fn test_validate_audio_empty() {

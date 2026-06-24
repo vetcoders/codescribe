@@ -19,6 +19,16 @@ pub enum AgentEvent {
     },
     ResponseDone {
         response_id: Option<String>,
+        /// True only when the provider terminated the response on a clean
+        /// terminal signal (`[DONE]`, `response.completed`, or a
+        /// `response.done` whose status is `completed`). A synthetic
+        /// ResponseDone emitted after an EOF/timeout, or one derived from a
+        /// `failed`/`incomplete`/`cancelled` terminal, carries `clean=false`.
+        ///
+        /// Downstream uses this to decide whether the chain
+        /// (`previous_response_id`) may advance (clean) or must be reset so the
+        /// next turn replays from local history (dirty).
+        clean: bool,
     },
     Error(String),
 }

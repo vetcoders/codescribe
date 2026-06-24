@@ -233,6 +233,41 @@ fn simulate_cmd_v() -> Result<()> {
     Ok(())
 }
 
+/// Reads `NSPasteboard.generalPasteboard.changeCount`.
+///
+/// The change count is a monotonically increasing token that bumps every time
+/// the pasteboard is written to, regardless of *what* was written. Comparing it
+/// across a synthetic Cmd+C is a content-agnostic way to detect whether the copy
+/// actually wrote anything — it eliminates the false-negative where a selection
+/// happens to equal the previous clipboard text, and the false-positive where
+/// the previous clipboard held a non-text payload (e.g. an image) and stale text
+/// gets mistaken for "the selection".
+///
+/// Returns `None` when the AppKit binding is unavailable (non-macOS, or class
+/// lookup fails) so callers can fall back to content comparison.
+#[cfg(target_os = "macos")]
+pub(crate) fn pasteboard_change_count() -> Option<i64> {
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+
+    // SAFETY: NSPasteboard.generalPasteboard returns a shared singleton and
+    // changeCount is a simple integer accessor; no ownership transfer occurs.
+    unsafe {
+        let cls = Class::get("NSPasteboard")?;
+        let pasteboard: *mut objc::runtime::Object = msg_send![cls, generalPasteboard];
+        if pasteboard.is_null() {
+            return None;
+        }
+        let count: i64 = msg_send![pasteboard, changeCount];
+        Some(count)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn pasteboard_change_count() -> Option<i64> {
+    None
+}
+
 /// Simulates Cmd+C keystroke using CGEvent
 ///
 /// Used for best-effort selection capture (clipboard snapshot+restore).
@@ -271,6 +306,20 @@ fn simulate_right_arrow() -> Result<()> {
 ///
 /// # Errors
 /// Returns error if clipboard or keyboard simulation fails
+///
+/// # Focus / scope note (E: focus-confirm)
+/// This module only sets the clipboard and posts the synthetic Cmd+V; it does
+/// NOT activate or focus-confirm a target window. The "Cmd+C robustness" work
+/// (cut E: `changeCount` + `wait_for_frontmost_app` focus-confirm backoff,
+/// commit 65e713a) hardened the *selection capture* path (Cmd+C) in
+/// `crate::os::selection`. The *paste* path (Cmd+V) that activates a target app
+/// before pasting lives in `app/controller/mod.rs`
+/// (`paste_overlay_text_with_target`) and still uses a fixed `sleep(80ms)`
+/// after `activate_target_app` — it has the same activation→focus race but is
+/// owned by a different module, so E does not rewire it here. The reusable
+/// `crate::os::selection::wait_for_frontmost_app` (now `pub(crate)`) is the
+/// intended drop-in replacement for that fixed sleep in a controller-owned
+/// follow-up.
 pub fn paste(text: &str) -> Result<()> {
     if text.is_empty() {
         warn!("Paste called with empty text");
@@ -416,14 +465,10 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    // Note: These tests require real clipboard access which may crash in CI
-    // environments without a proper display server. Run manually:
-    // cargo test --lib -- clipboard --ignored
-
     #[test]
     #[serial]
-    #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_set_and_get_clipboard() {
+        let _guard = ClipboardTestGuard::capture();
         let test_text = "Test clipboard content";
         set_clipboard(test_text).expect("Failed to set clipboard");
 
@@ -434,6 +479,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_empty_clipboard_warning() {
+        let _guard = ClipboardTestGuard::capture();
         // Should not panic, just log warning
         let result = set_clipboard("");
         assert!(result.is_ok());
@@ -441,8 +487,8 @@ mod tests {
 
     #[test]
     #[serial]
-    #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_clipboard_snapshot_capture() {
+        let _guard = ClipboardTestGuard::capture();
         // Set some text
         set_clipboard("Test snapshot content").expect("Failed to set clipboard");
 
@@ -457,8 +503,8 @@ mod tests {
 
     #[test]
     #[serial]
-    #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_clipboard_snapshot_restore() {
+        let _guard = ClipboardTestGuard::capture();
         // Set original content
         let original = "Original clipboard text";
         set_clipboard(original).expect("Failed to set clipboard");
@@ -479,12 +525,28 @@ mod tests {
 
     #[test]
     #[serial]
-    #[ignore = "Requires real clipboard access - run with --ignored"]
     fn test_copy_alias() {
+        let _guard = ClipboardTestGuard::capture();
         let test_text = "Copy alias test";
         copy(test_text).expect("Failed to copy");
 
         let retrieved = get_clipboard().expect("Failed to get clipboard");
         assert_eq!(retrieved, test_text);
+    }
+
+    struct ClipboardTestGuard(Option<ClipboardSnapshot>);
+
+    impl ClipboardTestGuard {
+        fn capture() -> Self {
+            Self(ClipboardSnapshot::capture().ok())
+        }
+    }
+
+    impl Drop for ClipboardTestGuard {
+        fn drop(&mut self) {
+            if let Some(snapshot) = &self.0 {
+                let _ = snapshot.restore();
+            }
+        }
     }
 }

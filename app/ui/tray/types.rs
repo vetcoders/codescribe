@@ -7,11 +7,13 @@ use muda::{CheckMenuItem, MenuId};
 use tracing::debug;
 use tray_icon::Icon;
 
-use crate::tray::icons::{create_fallback_icon, load_custom_icon};
+use crate::tray::icons::{create_fallback_icon, load_custom_icon_with_glyph};
 
 /// Status of the CodeScribe system, reflected in tray icon
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayStatus {
+    /// App process is visible, but runtime initialization is still in progress.
+    Starting,
     /// Idle, waiting for activation
     Idle,
     /// Actively listening/recording
@@ -22,37 +24,55 @@ pub enum TrayStatus {
     Success,
     /// Error state - backend not available
     Error,
+    /// System thermal pressure is high enough to throttle STT.
+    Thermal,
+    /// A hotkey gesture was detected but blocked before dispatch.
+    HotkeyConflict,
 }
 
 impl TrayStatus {
     /// Get the human-readable tooltip for this status
     pub fn tooltip(&self) -> String {
         match self {
+            TrayStatus::Starting => "CodeScribe - Starting...".to_string(),
             TrayStatus::Idle => "CodeScribe - Ready".to_string(),
             TrayStatus::Listening => "CodeScribe - Recording...".to_string(),
             TrayStatus::Thinking => "CodeScribe - Processing...".to_string(),
             TrayStatus::Success => "CodeScribe - Done!".to_string(),
             TrayStatus::Error => "CodeScribe - Backend unavailable!".to_string(),
+            TrayStatus::Thermal => "CodeScribe - Thermal throttling".to_string(),
+            TrayStatus::HotkeyConflict => "CodeScribe - Hotkey conflict".to_string(),
         }
     }
 
     /// Get the status line text for the menu
     pub fn menu_label(&self) -> &'static str {
         match self {
+            TrayStatus::Starting => "Status: Starting...",
             TrayStatus::Idle => "Status: Idle",
             TrayStatus::Listening => "Status: Recording...",
             TrayStatus::Thinking => "Status: Processing...",
             TrayStatus::Success => "Status: Done!",
             TrayStatus::Error => "Status: Error",
+            TrayStatus::Thermal => "Status: Thermal throttling",
+            TrayStatus::HotkeyConflict => "Status: Hotkey conflict",
         }
     }
 
     /// Create an icon from this status using the custom CodeScribe logo
     /// Falls back to simple circle if custom icon fails
     pub fn to_icon(self) -> Result<Icon> {
-        load_custom_icon(self).or_else(|e| {
+        self.to_icon_with_glyph(true)
+    }
+
+    /// Create an icon with the status glyph explicitly visible/hidden.
+    ///
+    /// Used by the startup blink loop: non-startup statuses keep the glyph on,
+    /// while `Starting` alternates it so "not ready yet" is visible in the menu bar.
+    pub fn to_icon_with_glyph(self, show_status_glyph: bool) -> Result<Icon> {
+        load_custom_icon_with_glyph(self, show_status_glyph).or_else(|e| {
             debug!("Custom icon failed, using fallback: {}", e);
-            create_fallback_icon(self)
+            create_fallback_icon(self, show_status_glyph)
         })
     }
 }

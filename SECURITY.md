@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-CodeScribe follows rolling support for the latest stable release.
+CodeScribe follows rolling support for the latest stable source and public release line.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.8.x   | Yes       |
-| < 0.8.0 | No        |
+| 0.12.x  | Yes       |
+| < 0.12  | No        |
 
 ## Reporting a Vulnerability
 

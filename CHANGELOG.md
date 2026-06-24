@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Public release hygiene** — release packaging, repository metadata, and public-facing docs are being aligned for a current `v0.12.x` public release.
+- **Dual DMG release variants** — release automation now builds a standard notarized DMG with embedded Silero + embedder and runtime Whisper cache/download, plus a `_full` notarized DMG with Whisper embedded.
+
+## [0.12.2] - 2026-06-22
+
+> Public-readiness patch line for the assistive/dictation stack. This release keeps the `0.12.x` product shape but hardens the user-visible paths that made private builds feel finished while public releases lagged behind.
+
+### Added
+
+- **Tray startup readiness** — the tray now surfaces startup readiness instead of silently appearing idle while core runtime checks are still settling.
+- **Pending follow-up preservation** — voice follow-ups survive finalization instead of being dropped as the recording state clears.
+
+### Changed
+
+- **Voice chat drawer I/O** — card disk operations moved off the main thread to reduce AppKit stalls in the assistant drawer.
+- **Onboarding focus behavior** — onboarding stays visible without relying on always-on-top window behavior, and it refreshes when permission state drifts.
+
+### Fixed
+
+- **Assistive message duplication** — the first assistant message renders once instead of double-sending or double-rendering.
+- **Raw recording final-pass truth** — raw stops require the correct final-pass behavior instead of silently mixing paths.
+- **Dictation lexicon** — preserves Loctree/Vibecrafted vocabulary during dictation cleanup.
+- **Settings shortcut copy** — removed fake shortcut customization affordances that did not map to runtime behavior.
+
+## [0.12.1] - 2026-06-13
+
+> Patch release for the editable overlay and assistive transcript handoff.
+
+### Added
+
+- **Editable dictation overlay output** — overlay results can be edited before downstream actions.
+- **Audio archive as m4a blobs** — recordings can be retained in a smaller archive format.
+- **Native `transcribe_audio` agent tool** — assistant tooling can transcribe an audio file through the same core STT path.
+
+### Fixed
+
+- **Toggle-to-voice-chat handoff** — finalized utterances append into the voice chat session instead of losing most of the spoken session.
+- **Overlay button routing** — each overlay action maps to its own command path.
+- **Drawer/settings layout clipping** — drawer rows and settings sections were tightened to avoid clipped content.
+
+## [0.12.0] - 2026-06-12
+
+> Minor release for public-source licensing, MCP bridge work, and the modern assistive UI surface.
+
+### Added
+
+- **Stdio MCP tool bridge** — CodeScribe can load configured MCP tools and report MCP status honestly.
+- **Thread search agent tool** — assistant tooling can search saved thread history.
+- **Creator taxonomy shell and preview timing presets** — settings gained richer controls for creator workflows and live-preview cadence.
+
+### Changed
+
+- **License** — relicensed the public CodeScribe release surface from Apache-2.0 to FSL-1.1-ALv2 to support public availability while protecting against commercial repackaging; each version converts to Apache-2.0 after 2 years.
+- **Voice chat UI** — modernized drawer rows, preserved raw markdown bubbles by default, and reduced streaming render cost.
+- **UI module shape** — decomposed large settings, voice chat, onboarding, overlay, pipeline, hotkey, and shared-helper surfaces into responsibility modules.
+
+### Fixed
+
+- **Screenshot/asset safety** — agent screenshots are stored as bounded image assets instead of oversized inline payloads.
+- **Overlay editability** — format results remain editable and pasteable through the overlay action contract.
+
+## [0.11.2] - 2026-05-28
+
+> Stabilization line for the hands-off transcript path and assistive runtime.
+
+### Added
+
+- **Thermal STT governor** — local transcription can back off under thermal pressure.
+- **Build hash telemetry** — About/version surfaces include a short build hash for support and release diagnosis.
+
+### Fixed
+
+- **Hands-off continuous session** — toggle dictation is one continuous session: append utterances, retain audio, and send one assistant message.
+- **Toggle-stop watchdog** — added protection against stuck toggle-stop states.
+- **Chat overlay input stability** — restored interactive overlay behavior after floating-window focus regressions.
+- **Agent stream and SSE robustness** — improved event parsing, retry behavior, and chain reset diagnostics.
+
 ## [0.10.0] - 2026-05-06
 
 > Minor release. Embedded VAD contract hardened (zero-IO production path), legacy path-based VAD API hidden, several deprecated transcription/quality surfaces removed. Includes onboarding TOCTOU fix and AppKit overlay teardown contract completion.
@@ -28,20 +109,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **TOCTOU lock in onboarding** — replaced check-then-create file lock with `flock(2)` to prevent racing first-run setups across simultaneously launched CodeScribe instances.
 - **NSGlassEffectView retain balance** — UI overlay now autoreleases the glass effect view to balance its explicit retain on construction; prevents a steady leak of glass overlays under heavy use on macOS 26+.
 - **ObjC release contract on overlay teardown** — completed the `release` pairing for all overlay subviews so teardown does not leak under ARC-incompatible call paths.
-
-## [Unreleased]
-
-### Fixed
-
-- **Config loader test parity verified** — both `test_load_prefers_settings_json_over_promoted_env_file_values` and `test_runtime_env_does_not_persist_into_settings_during_migration` pass on this commit; closes the L1 marble flag carried from `0.9.2`.
-- **Quality daemon autostart now matches runtime truth** — `QUBE_DAEMON_AUTOSTART=1` now starts bundled `qube-daemon --daemon` on CodeScribe launch when the binary is installed. Settings/docs copy was aligned so missing binaries fall back to explicit launchd/shell workflows instead of implying silent automation.
-
-### Planned
-
-- **Setup Assistant convergence** — current runtime already ships resumable onboarding via `setup_done` + `onboarding_progress` plus tray-level `Continue Onboarding...`. This item now tracks only a future unification into an always-available Setup Assistant backed by `settings.json`, not a missing first-run flow.
-- **Sparkle auto-update infrastructure** — replace manual DMG drag-drop with in-place updates via `appcast.xml` hosted on `dragon:8077`. Zero TCC re-grant after first install. Target: 0.9.3 milestone — "last manual install" for all consumers.
-- **0.9.3 truth-gaps research follow-through** — implement remaining research-syntethesis items: Q5 stream_postprocess guardrail integration in app, Q11 `UnverifiedStream` typed flag, Q13 `transcribe_cloud → CloudTranscriptionVerdict` typed verdict, Q17 `qube_report → transcribe_long_with_segments` migration, Q15 overlay sticky `hide_transcription_overlay()` in `stop_toggle_recording`.
-- **Focus Ring Polish** — removed default macOS focus rings from settings buttons for a cleaner UI _(carried over from pre-0.9.0 backlog)_.
 
 ## [v0.9.2] – 2026-04-18
 
@@ -341,7 +408,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI & types** – Type checking and CI improvements.
 - **Menu robustness** – Tray menu stability fixes.
 
-[unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.9.2...HEAD
+[unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/VetCoders/CodeScribe/compare/v0.12.1...v0.12.2
+[0.12.1]: https://github.com/VetCoders/CodeScribe/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/VetCoders/CodeScribe/compare/v0.11.2...v0.12.0
+[0.11.2]: https://github.com/VetCoders/CodeScribe/compare/v0.10.0...v0.11.2
+[0.10.0]: https://github.com/VetCoders/CodeScribe/compare/v0.9.2...v0.10.0
 [v0.9.2]: https://github.com/VetCoders/CodeScribe/compare/v0.9.1...v0.9.2
 [v0.9.1]: https://github.com/VetCoders/CodeScribe/compare/v0.9.0...v0.9.1
 [v0.9.0]: https://github.com/VetCoders/CodeScribe/compare/v0.8.0...v0.9.0

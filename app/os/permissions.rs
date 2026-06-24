@@ -620,6 +620,11 @@ pub fn diagnostics_report() -> String {
     if let Ok(val) = std::env::var("CODESCRIBE_STREAM_CHUNK_SEC") {
         let _ = writeln!(&mut out, "CODESCRIBE_STREAM_CHUNK_SEC: {val}");
     }
+    let _ = writeln!(
+        &mut out,
+        "thermal.level: {:?}",
+        crate::os::thermal::current_thermal_level()
+    );
 
     // Best-effort codesign info (helps debug TCC resets).
     #[cfg(target_os = "macos")]

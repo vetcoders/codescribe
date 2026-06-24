@@ -3,11 +3,11 @@ name = "codescribe-core"
 version.workspace = true
 edition.workspace = true
 authors = ["VetCoders <hello@vetcoders.io>"]
-license = "Apache-2.0"
+license = "FSL-1.1-ALv2"
 description = "Core library for CodeScribe (audio, STT, quality pipeline)"
 repository = "https://github.com/VetCoders/CodeScribe"
-homepage = "https://github.com/VetCoders/CodeScribe"
-documentation = "https://github.com/VetCoders/CodeScribe/tree/main/docs"
+homepage = "https://vetcoders.github.io/CodeScribe/"
+documentation = "https://vetcoders.github.io/CodeScribe/quickstart/"
 keywords = ["speech-to-text", "whisper", "audio", "transcription", "stt"]
 categories = ["multimedia::audio", "multimedia::encoding"]
 
@@ -58,6 +58,7 @@ symphonia = { version = "0.5", features = ["all", "mp3", "pcm", "isomp4", "alac"
 
 # Text/embeddings
 regex = "1"
+unicode-segmentation = "1"
 
 # Config/paths
 directories = "6"

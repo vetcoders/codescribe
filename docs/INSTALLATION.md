@@ -7,7 +7,7 @@ This document describes the installation methods, configuration paths, and how t
 ### Method 1: CLI Install (Recommended for Development)
 
 ```bash
-# Install CLI (embedded-first Whisper + embedded support assets)
+# Install CLI (embedded Silero + embedder; Whisper from cache/download)
 make install
 ```
 
@@ -40,10 +40,10 @@ This matters because macOS TCC permissions are far more stable with a persistent
 make dmg-signed       # Build signed DMG
 make notarize         # Notarize with Apple (requires Developer ID)
 # or one-shot:
-# make release-full    # Build + sign + notarize
+# make release-dmgs    # Build + sign + notarize standard and full DMGs
 ```
 
-**Result**: `CodeScribe_X.Y.Z.dmg` ready for distribution.
+**Result**: `CodeScribe_X.Y.Z.dmg` and `CodeScribe_X.Y.Z_full.dmg` ready for distribution. The standard DMG embeds Silero + embedder and resolves Whisper from cache/download. The full DMG embeds Silero + embedder + Whisper.
 
 ## Configuration
 
@@ -108,10 +108,10 @@ TOGGLE_SILENCE_SEC=5.0
 # AI Formatting
 AI_FORMATTING_ENABLED=1
 LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1-mini
+LLM_MODEL=gpt-4.1
 LLM_API_KEY=sk-xxx
 
-# Optional: Separate providers for modes
+# Optional: Mode-specific OpenAI overrides
 LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=...
 LLM_ASSISTIVE_{ENDPOINT,MODEL,API_KEY}=...
 ```

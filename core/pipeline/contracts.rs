@@ -647,7 +647,7 @@ pub enum EngineEvent {
         /// Partial-pass runs triggered by speech-duration threshold.
         trigger_speech_count: u64,
         /// Partial-pass runs triggered by watchdog fallback.
-        trigger_watchdog_count: u64,
+        trigger_timer_count: u64,
         /// Refinement results suppressed by stale-guard checks.
         partial_stale_count: u64,
         /// Tracked refine runs superseded by newer partial-pass requests.
@@ -927,7 +927,7 @@ mod tests {
             partial_runs_total: 7,
             trigger_utterance_count: 4,
             trigger_speech_count: 2,
-            trigger_watchdog_count: 1,
+            trigger_timer_count: 1,
             partial_stale_count: 3,
             partial_coalesced_count: 2,
             partial_dropped_count: 1,
@@ -936,14 +936,14 @@ mod tests {
             total_utterances,
             hallucination_drops,
             partial_runs_total,
-            trigger_watchdog_count,
+            trigger_timer_count,
             ..
         } = event
         {
             assert_eq!(total_utterances, 10);
             assert_eq!(hallucination_drops, 3);
             assert_eq!(partial_runs_total, 7);
-            assert_eq!(trigger_watchdog_count, 1);
+            assert_eq!(trigger_timer_count, 1);
         } else {
             panic!("Expected Stats variant");
         }

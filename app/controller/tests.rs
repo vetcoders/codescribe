@@ -11,6 +11,117 @@ async fn test_initial_state() {
 }
 
 #[tokio::test]
+async fn test_last_segment_audio_offset_initialized_to_zero() {
+    // commit_segment relies on this starting at 0 — the first segment of a
+    // toggle session clips from sample 0. start_toggle_recording then resets
+    // it to 0 again (defensive against leaking offset across sessions).
+    let controller = RecordingController::new();
+    assert_eq!(
+        controller
+            .last_segment_audio_offset
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "last_segment_audio_offset must start at 0 — commit_segment first-call \
+         contract requires snapshot from buffer start of the active toggle session"
+    );
+}
+
+#[tokio::test]
+async fn test_last_segment_audio_offset_atomic_advance_and_reset() {
+    // Smoke for the atomic ops that commit_segment + start_toggle_recording use.
+    // commit_segment: load(SeqCst) → snapshot → store(end_offset, SeqCst).
+    // start_toggle_recording: store(0, SeqCst).
+    use std::sync::atomic::Ordering;
+    let controller = RecordingController::new();
+
+    controller
+        .last_segment_audio_offset
+        .store(48000, Ordering::SeqCst);
+    assert_eq!(
+        controller.last_segment_audio_offset.load(Ordering::SeqCst),
+        48000
+    );
+
+    // Simulate start_toggle_recording's reset on new session.
+    controller
+        .last_segment_audio_offset
+        .store(0, Ordering::SeqCst);
+    assert_eq!(
+        controller.last_segment_audio_offset.load(Ordering::SeqCst),
+        0
+    );
+}
+
+#[test]
+fn test_renamed_request_recording_stop_is_callable() {
+    // Compile-time guard that the rename `request_recording_commit` →
+    // `request_recording_stop` shipped intact. If anyone re-renames or
+    // removes the function this test stops compiling. Body doesn't have to
+    // execute (OVERLAY_CONTROLLER won't be registered in tests, so the call
+    // gates out early with a warn!) — we just need the symbol to resolve.
+    let _: fn() = request_recording_stop;
+    let _: fn() = request_segment_commit;
+    let _: fn() = request_segment_commit_and_augment;
+}
+
+#[test]
+fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
+    assert_eq!(effective_hold_start_delay_ms(200, false), 200);
+    assert_eq!(effective_hold_start_delay_ms(200, true), 400);
+    assert_eq!(effective_hold_start_delay_ms(800, true), 800);
+}
+
+#[test]
+fn test_toggle_stop_watchdog_allows_default_ai_attempt_budget() {
+    assert!(
+        toggle_stop_adjudicate_timeout() >= Duration::from_secs(90),
+        "toggle stop watchdog must not fire before the default AI attempt/inter-chunk budget"
+    );
+}
+
+#[test]
+fn test_overlay_format_result_marks_failed_formatting_raw() {
+    let out = overlay_format_result_text(
+        "raw transcript",
+        crate::ai_formatting::AiFormatResult {
+            text: "raw transcript".to_string(),
+            reasoning_text: None,
+            status: crate::ai_formatting::AiFormatStatus::Failed,
+        },
+    );
+
+    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
+}
+
+#[test]
+fn test_overlay_format_result_marks_empty_formatting_output() {
+    let out = overlay_format_result_text(
+        "raw transcript",
+        crate::ai_formatting::AiFormatResult {
+            text: "   ".to_string(),
+            reasoning_text: None,
+            status: crate::ai_formatting::AiFormatStatus::Applied,
+        },
+    );
+
+    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
+}
+
+#[test]
+fn test_overlay_format_result_keeps_applied_formatting() {
+    let out = overlay_format_result_text(
+        "raw transcript",
+        crate::ai_formatting::AiFormatResult {
+            text: "Formatted transcript.".to_string(),
+            reasoning_text: None,
+            status: crate::ai_formatting::AiFormatStatus::Applied,
+        },
+    );
+
+    assert_eq!(out, "Formatted transcript.");
+}
+
+#[tokio::test]
 #[serial]
 async fn test_hold_down_schedules_delayed_start() {
     let controller = RecordingController::new();
@@ -35,6 +146,30 @@ async fn test_hold_down_schedules_delayed_start() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Should now be REC_HOLD
+    assert_eq!(controller.current_state().await, State::RecHold);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
+    let controller = RecordingController::new();
+    controller.config.write().await.hold_start_delay_ms = 200;
+
+    let event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+
+    controller.handle_hotkey_event(event).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(controller.current_state().await, State::Idle);
+
+    tokio::time::sleep(Duration::from_millis(220)).await;
     assert_eq!(controller.current_state().await, State::RecHold);
 }
 
@@ -77,6 +212,37 @@ async fn test_hold_up_before_delay_cancels() {
 
 #[tokio::test]
 #[serial]
+async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
+    let controller = RecordingController::new();
+    controller.config.write().await.hold_start_delay_ms = 200;
+
+    let down_event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+    controller.handle_hotkey_event(down_event).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let up_event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Up,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+    controller.handle_hotkey_event(up_event).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert_eq!(controller.current_state().await, State::Idle);
+}
+
+#[tokio::test]
+#[serial]
 async fn test_toggle_starts_immediately() {
     let controller = RecordingController::new();
 
@@ -96,6 +262,7 @@ async fn test_toggle_starts_immediately() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_busy_state_ignores_hotkeys() {
     let controller = RecordingController::new();
 
@@ -170,6 +337,7 @@ async fn test_is_recording_states() {
 // - Toggle (no force_ai) → respects AI_FORMATTING_ENABLED setting
 
 #[tokio::test]
+#[serial]
 async fn test_hold_down_sets_force_raw_mode() {
     let controller = RecordingController::new();
 
@@ -309,6 +477,31 @@ fn test_should_use_toggle_adjudicated_stop_only_for_raw_toggle_when_enabled() {
 }
 
 #[test]
+fn test_transcript_delivery_wrap_is_default_off() {
+    let config = Config::default();
+
+    assert_eq!(
+        maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
+        "literal transcript"
+    );
+}
+
+#[test]
+fn test_transcript_delivery_wrap_uses_config_when_enabled() {
+    let config = Config {
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        ..Config::default()
+    };
+
+    assert_eq!(
+        maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
+        "<codescribe mode=\"dictation\" lang=\"pl\">\nliteral transcript\n</codescribe>"
+    );
+}
+
+#[test]
 fn test_toggle_stop_event_preserves_active_session_identity() {
     let right_option_stop = HotkeyInput {
         key_type: HotkeyType::Toggle,
@@ -326,6 +519,32 @@ fn test_toggle_stop_event_preserves_active_session_identity() {
         should_apply_incoming_mode_flags(State::Idle, &right_option_stop),
         "The same key still defines a new session when no toggle session is active"
     );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_agent_send_in_flight_blocks_new_hotkey_starts() {
+    let controller = RecordingController::new();
+    helpers::set_agent_send_in_flight_for_test(true);
+
+    let selection_hold = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Selection,
+        force_raw: false,
+        force_ai: false,
+    };
+
+    controller
+        .handle_hotkey_event(selection_hold)
+        .await
+        .expect("agent-busy hotkey block should be non-fatal");
+
+    assert_eq!(controller.current_state().await, State::Idle);
+    assert_eq!(*controller.hold_mode.read().await, HoldMode::Raw);
+    assert!(!*controller.assistive_mode.read().await);
+    helpers::set_agent_send_in_flight_for_test(false);
 }
 
 fn make_final_pass_verdict(
@@ -439,6 +658,70 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
         verdict
             .confidence_flags
             .contains(&TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict)
+    );
+    assert_eq!(
+        verdict.commit_trigger.as_deref(),
+        Some("streaming_preview_used_as_verdict")
+    );
+    assert_eq!(verdict.display_status, "Streaming fallback");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_prefers_local_final_pass_over_streaming_preview() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "czysty final pass",
+            82.0,
+            Some(-0.22),
+            false,
+        )),
+        "powtarzajacy sie streaming preview".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("czysty final pass"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass)
+    );
+    assert_eq!(verdict.fallback_class, None);
+    assert!(verdict.confidence_flags.is_empty());
+    assert_eq!(verdict.commit_trigger, None);
+    assert_eq!(verdict.display_status, "Final-pass local");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_marks_raw_streaming_preview_as_degraded_fallback() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        None,
+        "toggle transcript".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("toggle transcript"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::StreamingFallback)
+    );
+    assert_eq!(
+        verdict.fallback_class,
+        Some(RecordingFallbackClass::Degraded)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::LocalFinalPassUnavailable)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::UnverifiedStream)
     );
     assert_eq!(
         verdict.commit_trigger.as_deref(),
@@ -762,6 +1045,7 @@ fn test_truth_display_status_defaults_to_ready_when_no_signals() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_toggle_press_does_not_set_force_raw_mode() {
     let controller = RecordingController::new();
 
@@ -788,6 +1072,7 @@ async fn test_toggle_press_does_not_set_force_raw_mode() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_toggle_press_sets_force_ai_mode() {
     let controller = RecordingController::new();
 
@@ -837,6 +1122,7 @@ async fn test_left_double_option_does_not_switch_to_assistive_routing() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hold_with_shift_sets_assistive_not_force_raw() {
     let controller = RecordingController::new();
 
@@ -863,6 +1149,7 @@ async fn test_hold_with_shift_sets_assistive_not_force_raw() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
     let controller = RecordingController::new();
 
@@ -905,6 +1192,7 @@ async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_hold_up_preserves_mode_flags_when_idle() {
     let controller = RecordingController::new();
 
@@ -996,6 +1284,7 @@ async fn test_reset_clears_all_mode_flags() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_mode_matrix_coverage() {
     // This test documents all possible mode combinations:
     //
@@ -1257,14 +1546,12 @@ fn test_quality_gate_catches_short_ai_rewrites_in_danger_zone() {
 #[test]
 fn test_delta_first_guards_block_full_rewrite_in_live_stream() {
     assert!(!should_allow_full_user_bubble_rewrite(false, false, true));
-    assert!(!should_allow_full_assistant_rewrite(false, true));
     assert!(!should_apply_transcription_action_contract(false, true));
 }
 
 #[test]
 fn test_delta_first_guards_allow_full_rewrite_offline() {
     assert!(should_allow_full_user_bubble_rewrite(false, false, false));
-    assert!(should_allow_full_assistant_rewrite(false, false));
     assert!(should_apply_transcription_action_contract(false, false));
 }
 
@@ -1425,4 +1712,47 @@ async fn test_reset_session_after_start_failure_clears_transient_state() {
             .load(std::sync::atomic::Ordering::SeqCst)
     );
     assert!(!is_assistive_session());
+}
+
+/// Regression guard for the toggle-stop self-deadlock (root cause behind
+/// commit 91b2346's watchdog).
+///
+/// Reproduces the exact lock pattern that hung `stop_toggle_and_adjudicate_inner`
+/// on operator's daily-driver: in Rust 2024 edition, the temporary
+/// `RwLockReadGuard` produced by an `if let Some(x) = lock.read().await.clone()`
+/// scrutinee lives until the end of the if-let block, so the task awaiting
+/// `lock.write()` inside the body deadlocks on its own read guard. The fix is to
+/// materialize the snapshot into a `let` binding first; the guard then drops at
+/// the semicolon and the subsequent `.write().await` resolves immediately.
+///
+/// If anyone reverts the snapshot pattern back to an inline `read().await.clone()`
+/// scrutinee, this test times out in 2s and fails — well under the 45s watchdog
+/// so the regression surfaces in CI/local test runs, not after a stuck recording.
+#[tokio::test]
+async fn rwlock_session_id_read_then_write_does_not_self_deadlock() {
+    use tokio::sync::RwLock;
+
+    let lock = RwLock::new(Some("session-xyz".to_string()));
+
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        let snapshot = lock.read().await.clone();
+        if let Some(current) = snapshot {
+            *lock.write().await = Some(format!("{current}:stopping"));
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "session_id read-snapshot + write pattern self-deadlocked — if the inline \
+         `if let Some(x) = lock.read().await.clone() {{ ... lock.write().await ... }}` \
+         pattern returned, the Rust 2024 if-let temporary scope extension is back. \
+         See commit fixing fix/toggle-stuck-watchdog."
+    );
+
+    assert_eq!(
+        *lock.read().await,
+        Some("session-xyz:stopping".to_string()),
+        "expected the write to land after the read guard dropped"
+    );
 }

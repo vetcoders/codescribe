@@ -4,7 +4,6 @@
 
 use anyhow::Result;
 use image::{GenericImageView, imageops::FilterType};
-use std::sync::atomic::{AtomicBool, Ordering};
 use tray_icon::Icon;
 
 use crate::tray::types::TrayStatus;
@@ -24,16 +23,8 @@ const ICON_BYTES: &[u8] = include_bytes!("../../../assets/icon.png");
 /// Menu bar icon size (44x44 for Retina, 22x22 logical)
 const ICON_SIZE: u32 = 44;
 
-/// Global flag for status glyph visibility
-static SHOW_STATUS_GLYPH: AtomicBool = AtomicBool::new(true);
-
-/// Get whether the status glyph is currently enabled
-fn is_status_glyph_enabled() -> bool {
-    SHOW_STATUS_GLYPH.load(Ordering::SeqCst)
-}
-
-/// Load the custom CodeScribe icon, optionally tinted by status
-pub fn load_custom_icon(status: TrayStatus) -> Result<Icon> {
+/// Load the custom CodeScribe icon with explicit status glyph visibility.
+pub fn load_custom_icon_with_glyph(status: TrayStatus, show_status_glyph: bool) -> Result<Icon> {
     let img = image::load_from_memory(ICON_BYTES)
         .map_err(|e| anyhow::anyhow!("Failed to load icon: {}", e))?;
 
@@ -46,7 +37,7 @@ pub fn load_custom_icon(status: TrayStatus) -> Result<Icon> {
     // Status is shown only via the glyph color
 
     // Draw status glyph if enabled (larger colored dot in bottom-right corner)
-    if is_status_glyph_enabled() {
+    if show_status_glyph {
         draw_status_glyph(&mut rgba, width, height, status);
     }
 
@@ -66,11 +57,14 @@ fn draw_status_glyph(rgba: &mut [u8], width: u32, height: u32, status: TrayStatu
     // - Red: Recording/Listening, Error (X shape)
     // - Orange: Processing/Thinking
     let color = match status {
-        TrayStatus::Idle => (80u8, 200, 100),   // Green - ready
-        TrayStatus::Listening => (255, 70, 70), // Red - recording
-        TrayStatus::Thinking => (255, 165, 0),  // Orange - processing
-        TrayStatus::Success => (80, 220, 100),  // Bright green - done
-        TrayStatus::Error => (255, 50, 50),     // Bright red - error
+        TrayStatus::Starting => (80u8, 220, 100), // Blinking green - starting
+        TrayStatus::Idle => (80u8, 200, 100),     // Green - ready
+        TrayStatus::Listening => (255, 70, 70),   // Red - recording
+        TrayStatus::Thinking => (255, 165, 0),    // Orange - processing
+        TrayStatus::Success => (80, 220, 100),    // Bright green - done
+        TrayStatus::Error => (255, 50, 50),       // Bright red - error
+        TrayStatus::Thermal => (255, 210, 40),    // Yellow - thermal pressure
+        TrayStatus::HotkeyConflict => (180, 95, 255), // Violet - shortcut conflict
     };
 
     let params = GlyphParams {
@@ -146,20 +140,28 @@ fn draw_circle_glyph(rgba: &mut [u8], width: u32, height: u32, params: &GlyphPar
 }
 
 /// Create a simple colored circle icon as fallback
-pub fn create_fallback_icon(status: TrayStatus) -> Result<Icon> {
+pub fn create_fallback_icon(status: TrayStatus, show_status_glyph: bool) -> Result<Icon> {
     const SIZE: u32 = 22;
     const RADIUS: i32 = 10;
     const CENTER: i32 = 11;
 
     let (r, g, b) = match status {
-        TrayStatus::Idle => (100u8, 100, 100),  // Gray
-        TrayStatus::Listening => (220, 60, 60), // Red
-        TrayStatus::Thinking => (60, 130, 220), // Blue
-        TrayStatus::Success => (60, 200, 100),  // Green
-        TrayStatus::Error => (255, 50, 50),     // Bright red
+        TrayStatus::Starting => (60u8, 200, 100),     // Green
+        TrayStatus::Idle => (100u8, 100, 100),        // Gray
+        TrayStatus::Listening => (220, 60, 60),       // Red
+        TrayStatus::Thinking => (60, 130, 220),       // Blue
+        TrayStatus::Success => (60, 200, 100),        // Green
+        TrayStatus::Error => (255, 50, 50),           // Bright red
+        TrayStatus::Thermal => (255, 210, 40),        // Yellow
+        TrayStatus::HotkeyConflict => (180, 95, 255), // Violet
     };
 
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
+
+    if !show_status_glyph {
+        return Icon::from_rgba(rgba, SIZE, SIZE)
+            .map_err(|e| anyhow::anyhow!("Failed to create fallback icon: {}", e));
+    }
 
     for y in 0..SIZE as i32 {
         for x in 0..SIZE as i32 {

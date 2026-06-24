@@ -1,9 +1,9 @@
 use std::process::Command;
 
 fn main() {
-    // Git commit hash
+    // Git commit hash (8 chars — build identity for the About dialog + log telemetry)
     let commit = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
+        .args(["rev-parse", "--short=8", "HEAD"])
         .output()
         .ok()
         .and_then(|o| {

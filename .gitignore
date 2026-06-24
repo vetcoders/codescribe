@@ -12,6 +12,10 @@ __pycache__/
 *.pyc
 .venv/
 .env
+.env.*
+!.env.example
+!.env.debug.example
+!.env*.example
 .pids/
 .ruff_cache/
 .mypy_cache/
@@ -19,47 +23,35 @@ __pycache__/
 .coverage
 htmlcov/
 logs/
-codescribe-core/models/
 output.log
 
 # IDEs
 .idea/
 .vscode/
 .DS_Store
+*.save
 
 # Temp
 tmp/
 temp/
 
 # Local assets not tracked
-src/codescribe/assets/lab/
-!src/codescribe/assets/lab/app.js
-!src/codescribe/assets/lab/styles.css
-!src/codescribe/assets/lab/components/
-!src/codescribe/assets/lab/controllers/
-!src/codescribe/assets/lab/hooks/
-!src/codescribe/assets/lab/lib/
 /.archive
 /.codescribe
 /.codex
 /.gemini
 /extracted_frames
-/server/CodeScribe.egg-info
 /.gemini-clipboard
-/CodeScribe.egg-info
 .codescribe.lock
 /.fastembed_cache
 CLAUDE.md
-/codescribe-rs/target
 /.loctree
 /.ai-agents
-/codescribe-rs/.loctree
 .output.txt
 .ai-agents/
 .loctree/
 CONFIG_AUDIT.md
 /target
-/src/CodeScribe.egg-info
 /.claude
 nohup.out
 nohup.out.backup
@@ -91,3 +83,4 @@ docs/runtime-diagnosis.md
 AGENTS.md
 /.vibecrafted
 /*test*.rs
+*.zip

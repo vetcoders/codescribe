@@ -254,6 +254,48 @@ reload = "restart"
 category = "stt"
 description = "STT engine: candle (default), onnx, or apple (SpeechAnalyzer on macOS 26+)"
 
+[vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Enable thermal-aware STT scheduling backoff"
+
+[vars.CODESCRIBE_STT_MIN_INFER_INTERVAL_MS]
+default = "180"
+type = "int"
+reload = "restart"
+category = "stt"
+description = "Minimum interval between live STT inference jobs in milliseconds"
+
+[vars.CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS]
+default = "350"
+type = "int"
+reload = "restart"
+category = "stt"
+description = "Minimum interval between committed STT inference jobs in milliseconds"
+
+[vars.CODESCRIBE_STT_THERMAL_FAIR_MULT]
+default = "1.0"
+type = "float"
+reload = "restart"
+category = "stt"
+description = "Thermal multiplier for fair system thermal pressure"
+
+[vars.CODESCRIBE_STT_THERMAL_SERIOUS_MULT]
+default = "2.0"
+type = "float"
+reload = "restart"
+category = "stt"
+description = "Thermal multiplier for serious system thermal pressure"
+
+[vars.CODESCRIBE_STT_THERMAL_CRITICAL_MULT]
+default = "4.0"
+type = "float"
+reload = "restart"
+category = "stt"
+description = "Thermal multiplier for critical system thermal pressure"
+
 [vars.CODESCRIBE_APPLE_STT_BRIDGE]
 default = "codescribe-stt-bridge"
 type = "string"
@@ -395,6 +437,20 @@ type = "bool"
 reload = "restart"
 category = "llm"
 description = "Enable AI formatting of transcripts"
+
+[vars.CODESCRIBE_TRANSCRIPT_TAGGING]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "llm"
+description = "Override settings.json to wrap pasted dictation transcripts in an epistemic CodeScribe tag"
+
+[vars.CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE]
+default = "<codescribe mode=\"{mode}\" lang=\"{lang}\">\\n{text}\\n</codescribe>"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Template for transcript tagging; supports {text}, {mode}, and {lang} placeholders"
 
 [vars.AI_MAX_TOKENS]
 default = "0"
@@ -833,6 +889,13 @@ type = "bool"
 reload = "rebuild"
 category = "build"
 description = "Skip embedding Whisper model in binary"
+
+[vars.CODESCRIBE_EMBED_WHISPER]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "build"
+description = "Opt-in: embed Whisper model in binary (distribution builds); default loads from HF cache at runtime"
 
 [vars.CODESCRIBE_EMBED_TTS]
 default = "0"

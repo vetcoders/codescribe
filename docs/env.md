@@ -30,7 +30,7 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 **Hotkeys / UI / zachowanie podstawowe**
 
 - mode bindings (`Dictation`, `Formatting`, `Assistive`) – konfigurowane w `settings.json` przez GUI
-- `HOLD_EXCLUSIVE` – domyślnie `1` (RESTART NEEDED)
+- `HOLD_EXCLUSIVE` – domyślnie `0` (RESTART NEEDED) — `1` robi Fn-hold RAW-only i wyłącza modyfikatory Fn+Shift→Chat / Fn+Cmd→Selection
 - `HOLD_START_DELAY_MS` – domyślnie `800` (RESTART NEEDED)
 - `DOUBLE_TAP_INTERVAL_MS` – domyślnie `200` (RESTART NEEDED)
 - `TOGGLE_SILENCE_SEC` – domyślnie `5.0` (RESTART NEEDED)
@@ -247,17 +247,18 @@ i runtime nie może znaleźć Whispera przez cache / config:
 Makefile **automatycznie** ładuje `~/.codescribe/.env` przy uruchamianiu testów.
 
 **Domyślnie** testy używają Twojej referencji z `~/.codescribe/.env`.
-Jeśli chcesz **lokalnie** (Ollama), uruchom:
+Jeśli chcesz wymusić lokalny test LLM (diagnostycznie), uruchom:
 
 ```
 TEST_USE_LOCAL_LLM=1 make test
 ```
 
-Lokalny endpoint (Ollama):
+Domyślny endpoint aplikacji:
 
 ```
-http://localhost:11434/v1/responses
-model: gpt-oss:120b-cloud
+https://api.openai.com/v1/responses
+formatting model: gpt-4.1
+assistive model: gpt-5.5
 ```
 
 Jeśli chcesz tylko SSE / streaming:
@@ -297,7 +298,7 @@ USE_LOCAL_STT=1
 ```
 AI_FORMATTING_ENABLED=1
 LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1-mini
+LLM_MODEL=gpt-4.1
 LLM_API_KEY=sk-...
 ```
 

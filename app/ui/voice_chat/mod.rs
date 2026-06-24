@@ -12,22 +12,24 @@ mod state;
 // Re-export public API
 pub use api::{
     add_voice_chat_error_message, add_voice_chat_system_message, add_voice_chat_user_message,
-    append_voice_chat_assistant_delta, append_voice_chat_user_delta, clear_voice_chat_text,
-    dispatch_voice_chat_send, filter_drawer, finalize_voice_chat_assistant_message,
+    append_voice_chat_assistant_delta, append_voice_chat_reasoning_delta,
+    append_voice_chat_user_delta, append_voice_chat_user_utterance, clear_voice_chat_text,
+    commit_last_user_message, commit_pending_followup_message, dispatch_voice_chat_send,
+    edit_pending_followup_message, filter_drawer, finalize_voice_chat_assistant_message,
     finalize_voice_chat_user_message, handoff_transcript_to_chat, hide_voice_chat_overlay,
     is_auto_send_enabled, is_conversation_active, is_voice_chat_overlay_visible, refresh_drawer,
-    reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_runtime_degraded,
-    set_voice_chat_send_callback, set_voice_chat_sending, set_voice_chat_target_app,
-    set_voice_chat_text, set_voice_chat_user_text, show_agent_tab, show_drawer_tab,
-    update_conversation_state, update_drawer_after_save, update_voice_chat_context_summary,
-    update_voice_chat_status,
+    reset_voice_chat_activity, send_voice_chat_draft, set_voice_chat_agent_thinking,
+    set_voice_chat_runtime_degraded, set_voice_chat_send_callback, set_voice_chat_sending,
+    set_voice_chat_target_app, set_voice_chat_text, set_voice_chat_user_text, show_agent_tab,
+    show_drawer_tab, update_conversation_state, update_drawer_after_save,
+    update_voice_chat_context_summary, update_voice_chat_status,
 };
 pub use state::{ConversationModeState, VoiceChatOverlayConfig};
 
 use codescribe_core::config::{Config, OverlayPositionMode};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use dispatch::Queue;
-use objc::runtime::{Class, Object};
+use objc::runtime::Class;
 use objc::{msg_send, sel, sel_impl};
 use objc2_app_kit::{NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState};
 use std::thread;
@@ -38,24 +40,25 @@ use crate::config::ShortcutBinding;
 use crate::os::hotkeys::ModeHotkeyBindings;
 
 use crate::ui_helpers::{
-    LabelConfig, add_subview, agent_chat_shell_frame, agent_chat_shell_panel_policy,
+    LabelConfig, NSEdgeInsets, add_subview, agent_chat_shell_frame, agent_chat_shell_panel_policy,
     apply_shared_shell_panel_policy, apply_tafla_surface, button_set_action, button_style,
-    chat_header_layout, chat_input_row_layout, color_clear, color_secondary_label, create_button,
+    chat_header_layout, chat_input_row_layout, color_secondary_label, create_button,
     create_flipped_vertical_stack_view, create_glass_effect_view_with, create_label,
-    create_scrollable_text_view, create_vertical_stack_view, layout_region_frame_for_view,
-    main_screen_visible_frame, ns_string, present_shared_shell_panel, set_button_symbol,
-    set_focus_ring, set_glass_effect_content_view, set_hidden, set_tooltip,
+    create_scrollable_text_view_with_class, create_vertical_stack_view,
+    layout_region_frame_for_view, main_screen_visible_frame, ns_string, present_shared_shell_panel,
+    set_button_symbol, set_focus_ring, set_glass_effect_content_view, set_hidden, set_tooltip,
     style_toolbar_icon_button, ui_colors, ui_tokens, window_set_alpha,
 };
 
 use api::update_active_tab_impl;
 use handlers::{
-    action_handler_class, drop_target_view_class, overlay_window_class, window_delegate_class,
+    action_handler_class, agent_input_text_view_class, drop_target_view_class,
+    overlay_window_class, window_delegate_class,
 };
 use state::{OVERLAY_STATE, Tab};
 
 // Type alias for Objective-C object pointers
-pub type Id = *mut Object;
+pub use crate::ui_helpers::Id;
 
 // NSViewAutoresizingMaskOptions (bitmask)
 const NSVIEW_MIN_X_MARGIN: isize = 1;
@@ -64,6 +67,32 @@ const NSVIEW_MAX_X_MARGIN: isize = 4;
 const NSVIEW_MIN_Y_MARGIN: isize = 8;
 const NSVIEW_HEIGHT_SIZABLE: isize = 16;
 const NSVIEW_MAX_Y_MARGIN: isize = 32;
+
+fn chat_content_height_under_header(
+    content_height: f64,
+    footer_height: f64,
+    content_gap: f64,
+) -> f64 {
+    (content_height - footer_height - content_gap).max(0.0)
+}
+
+fn chat_scroll_inset_above_input(input_height: f64, inner_pad: f64, content_gap: f64) -> f64 {
+    (input_height + inner_pad + content_gap).max(0.0)
+}
+
+fn latest_pill_frame(
+    content_width: f64,
+    footer_inset: f64,
+    input_height: f64,
+    content_gap: f64,
+    extra_above_input: f64,
+) -> CGRect {
+    let width = 96.0;
+    let height = 28.0;
+    let x = ((content_width - width) / 2.0).max(0.0);
+    let y = footer_inset + input_height + content_gap.max(6.0) + extra_above_input;
+    CGRect::new(&CGPoint::new(x, y), &CGSize::new(width, height))
+}
 
 pub(super) fn shortcuts_lines(bindings: ModeHotkeyBindings) -> (String, String) {
     let hold_line = match bindings.dictation {
@@ -269,12 +298,15 @@ fn show_voice_chat_overlay_impl() {
         let content_pad = ui_tokens::EDGE_PADDING;
 
         let header_height = ui_tokens::HEADER_HEIGHT_COMPACT;
-        let footer_height = ui_tokens::FOOTER_HEIGHT;
+        // Slim, brand-only footer: the transcript filter lives in the sidebar
+        // column, so the chat pane (and the scroll-under-input effect) reaches
+        // almost to the window edge instead of dying on a 40pt dead strip.
+        let footer_height = ui_tokens::CHAT_FOOTER_HEIGHT;
         // Start compact; grows dynamically as the user types/pastes more content.
         // Agent input starts compact and can grow with content (see `resize_agent_input_locked`).
         let agent_input_height = ui_tokens::AGENT_INPUT_HEIGHT;
 
-        // Header container on the single root glass (no glass-on-glass dome).
+        // Header is an overlay: messages scroll underneath and the header blur remains clickable.
         let header_frame = CGRect::new(
             &CGPoint::new(
                 content_bounds.origin.x,
@@ -282,17 +314,21 @@ fn show_voice_chat_overlay_impl() {
             ),
             &CGSize::new(content_bounds.size.width.max(0.0), header_height),
         );
-        let header_bg: Id = msg_send![Class::get("NSView").unwrap(), alloc];
-        let header_bg: Id = msg_send![header_bg, initWithFrame: header_frame];
-        let _: () = msg_send![header_bg, setWantsLayer: true];
+        let header_bg: Id = create_glass_effect_view_with(
+            header_frame,
+            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectBlendingMode::WithinWindow,
+            NSVisualEffectState::Active,
+        );
         let _: () = msg_send![
             header_bg,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MIN_Y_MARGIN
         ];
         let header_layer: Id = msg_send![header_bg, layer];
         if !header_layer.is_null() {
-            let clear_cg: Id = msg_send![color_clear(), CGColor];
-            let _: () = msg_send![header_layer, setBackgroundColor: clear_cg];
+            let header_bg_color = ui_colors::surface_glass();
+            let cg_header_bg: Id = msg_send![header_bg_color, CGColor];
+            let _: () = msg_send![header_layer, setBackgroundColor: cg_header_bg];
         }
         let header_separator: Id = msg_send![Class::get("NSView").unwrap(), alloc];
         let header_separator: Id = msg_send![
@@ -599,8 +635,11 @@ fn show_voice_chat_overlay_impl() {
             ),
             &CGSize::new(
                 (content_bounds.size.width - content_pad * 2.0).max(0.0),
-                (content_bounds.size.height - header_height - footer_height - content_gap * 2.0)
-                    .max(0.0),
+                chat_content_height_under_header(
+                    content_bounds.size.height,
+                    footer_height,
+                    content_gap,
+                ),
             ),
         );
 
@@ -716,11 +755,16 @@ fn show_voice_chat_overlay_impl() {
         add_subview(header_bg, header_controls);
 
         let inner_pad = ui_tokens::EDGE_PADDING_TIGHT;
+        // The transcript filter sits at the bottom of the sidebar column (it
+        // filters the drawer, and its width tracks the split divider); the
+        // drawer scroll starts above it.
+        let search_field_height = 24.0;
+        let drawer_bottom_inset = inner_pad + search_field_height + 8.0;
         let drawer_frame = CGRect::new(
-            &CGPoint::new(inner_pad, inner_pad),
+            &CGPoint::new(inner_pad, drawer_bottom_inset),
             &CGSize::new(
                 (content_frame.size.width - inner_pad * 2.0).max(0.0),
-                (content_frame.size.height - inner_pad * 2.0).max(0.0),
+                (content_frame.size.height - drawer_bottom_inset - inner_pad).max(0.0),
             ),
         );
 
@@ -762,14 +806,17 @@ fn show_voice_chat_overlay_impl() {
         ];
         add_subview(sidebar_view, drawer_edge_effect);
 
-        // Agent scroll view + stack
-        let agent_scroll_frame_bottom = agent_input_height + inner_pad + content_gap;
+        // Agent scroll view + stack — full-bleed to the pane bottom so messages
+        // scroll beneath the floating input bar; the bottom content inset keeps
+        // the last bubble clear of it (mirrors the header inset above).
+        let agent_scroll_inset_bottom =
+            chat_scroll_inset_above_input(agent_input_height, inner_pad, content_gap);
         let agent_scroll_frame_top = (content_frame.size.height - inner_pad).max(0.0);
         let agent_scroll_frame = CGRect::new(
-            &CGPoint::new(inner_pad, agent_scroll_frame_bottom),
+            &CGPoint::new(inner_pad, 0.0),
             &CGSize::new(
                 (content_frame.size.width - inner_pad * 2.0).max(0.0),
-                (agent_scroll_frame_top - agent_scroll_frame_bottom).max(0.0),
+                agent_scroll_frame_top,
             ),
         );
         let agent_scroll: Id = msg_send![ns_scroll, alloc];
@@ -780,6 +827,13 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![agent_scroll, setAutohidesScrollers: true];
         // NSScrollerStyleOverlay == 1
         let _: () = msg_send![agent_scroll, setScrollerStyle: 1_isize];
+        let agent_insets = NSEdgeInsets {
+            top: header_height,
+            left: 0.0,
+            bottom: agent_scroll_inset_bottom,
+            right: 0.0,
+        };
+        let _: () = msg_send![agent_scroll, setContentInsets: agent_insets];
         let _: () = msg_send![
             agent_scroll,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
@@ -794,12 +848,23 @@ fn show_voice_chat_overlay_impl() {
         // Same rule: keep the document view width-resizable, but let its height expand to content.
         let _: () = msg_send![agent_container, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE];
         let _: () = msg_send![agent_scroll, setDocumentView: agent_container];
+        if let Some(notification_center) = Class::get("NSNotificationCenter") {
+            let center: Id = msg_send![notification_center, defaultCenter];
+            let live_scroll = ns_string("NSScrollViewDidLiveScrollNotification");
+            let _: () = msg_send![
+                center,
+                addObserver: action_handler
+                selector: sel!(onAgentScrollLive:)
+                name: live_scroll
+                object: agent_scroll
+            ];
+        }
         add_subview(content_view, agent_scroll);
 
-        // Drawer footer (search)
-        let search_x = content_frame.origin.x;
-        let search_w = content_frame.size.width.max(160.0);
-        let footer_base_y = content_bounds.origin.y;
+        // Drawer footer (search) — lives inside the sidebar column so its
+        // width tracks the split divider and it collapses with the drawer.
+        let search_x = inner_pad;
+        let search_w = (sidebar_frame.size.width - inner_pad * 2.0).max(160.0);
 
         // Search label removed: NSSearchField.setPlaceholderString("Filter transcripts")
         // on the field below already renders the same text; the redundant label
@@ -808,8 +873,8 @@ fn show_voice_chat_overlay_impl() {
         let ns_search = Class::get("NSSearchField").unwrap();
         let search_field: Id = msg_send![ns_search, alloc];
         let search_frame = CGRect::new(
-            &CGPoint::new(search_x, footer_base_y + 12.0),
-            &CGSize::new(search_w, 24.0),
+            &CGPoint::new(search_x, inner_pad),
+            &CGSize::new(search_w, search_field_height),
         );
         let search_field: Id = msg_send![search_field, initWithFrame: search_frame];
         let placeholder = ns_string("Filter transcripts");
@@ -835,7 +900,7 @@ fn show_voice_chat_overlay_impl() {
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN
         ];
         set_focus_ring(search_field);
-        add_subview(glass_content_view, search_field);
+        add_subview(sidebar_view, search_field);
 
         let footer_brand_w = ui_tokens::CHAT_TITLE_LABEL_WIDTH;
         let footer_brand_h = 16.0;
@@ -878,6 +943,22 @@ fn show_voice_chat_overlay_impl() {
         let _: () = msg_send![input_bar, setWantsLayer: true];
         let _: () =
             msg_send![input_bar, setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_MAX_Y_MARGIN];
+        // Glass backing so messages scrolling beneath stay readable through the
+        // blur; the bar layer's masksToBounds clips it to the tafla corners.
+        let input_glass = create_glass_effect_view_with(
+            CGRect::new(
+                &CGPoint::new(0.0, 0.0),
+                &CGSize::new(input_frame.size.width, agent_input_height),
+            ),
+            NSVisualEffectMaterial::HUDWindow,
+            NSVisualEffectBlendingMode::WithinWindow,
+            NSVisualEffectState::Active,
+        );
+        let _: () = msg_send![
+            input_glass,
+            setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
+        ];
+        let _: () = msg_send![input_bar, addSubview: input_glass];
         let drag_types: Id = msg_send![ns_mut_array, array];
         let _: () = msg_send![drag_types, addObject: ns_string("public.file-url")];
         let _: () = msg_send![drag_types, addObject: ns_string("NSFilenamesPboardType")];
@@ -906,8 +987,11 @@ fn show_voice_chat_overlay_impl() {
             &CGPoint::new(input_row.text_x, input_row.text_y),
             &CGSize::new(input_row.text_width, input_row.text_height),
         );
-        let (agent_input_scroll, agent_input_text_view) =
-            create_scrollable_text_view(text_area_frame, true);
+        let (agent_input_scroll, agent_input_text_view) = create_scrollable_text_view_with_class(
+            text_area_frame,
+            true,
+            &*agent_input_text_view_class(),
+        );
         let _: () = msg_send![
             agent_input_scroll,
             setAutoresizingMask: NSVIEW_WIDTH_SIZABLE | NSVIEW_HEIGHT_SIZABLE
@@ -974,6 +1058,39 @@ fn show_voice_chat_overlay_impl() {
         ];
         let _: () = msg_send![input_bar, addSubview: agent_send_button];
 
+        let latest_button = create_button(
+            latest_pill_frame(
+                content_frame.size.width,
+                ui_tokens::FOOTER_INSET,
+                agent_input_height,
+                ui_tokens::CONTENT_GAP,
+                0.0,
+            ),
+            "↓ Latest",
+            button_style::ROUNDED,
+        );
+        let _: () = msg_send![latest_button, setWantsLayer: true];
+        let latest_layer: Id = msg_send![latest_button, layer];
+        if !latest_layer.is_null() {
+            let color = ui_colors::input_bar_bg();
+            let cg_color: Id = msg_send![color, CGColor];
+            let _: () = msg_send![latest_layer, setBackgroundColor: cg_color];
+            let border = ui_colors::input_bar_border();
+            let cg_border: Id = msg_send![border, CGColor];
+            let _: () = msg_send![latest_layer, setBorderColor: cg_border];
+            let _: () = msg_send![latest_layer, setBorderWidth: ui_tokens::SURFACE_BORDER_WIDTH];
+            apply_tafla_surface(latest_layer, false);
+            let _: () = msg_send![latest_layer, setMasksToBounds: true];
+        }
+        button_set_action(latest_button, action_handler, sel!(onLatestMessage:));
+        set_tooltip(latest_button, "Jump to latest message");
+        let _: () = msg_send![
+            latest_button,
+            setAutoresizingMask: NSVIEW_MIN_X_MARGIN | NSVIEW_MAX_X_MARGIN | NSVIEW_MAX_Y_MARGIN
+        ];
+        set_hidden(latest_button, true);
+        add_subview(content_view, latest_button);
+
         // Attachment chip strip (horizontal, above input bar, hidden when empty).
         let chip_strip_height = 36.0f64;
         let chip_strip_y = ui_tokens::FOOTER_INSET + agent_input_height + ui_tokens::CONTENT_GAP;
@@ -1014,6 +1131,7 @@ fn show_voice_chat_overlay_impl() {
         // Initial visibility
         set_hidden(agent_scroll, true);
         set_hidden(input_bar, true);
+        set_hidden(latest_button, true);
         set_hidden(title_label, true);
 
         // Phase 3 — store widget pointers into state (short lock scope).
@@ -1049,6 +1167,7 @@ fn show_voice_chat_overlay_impl() {
             state.agent_input_field = None;
             state.agent_attach_button = Some(agent_attach_button as usize);
             state.agent_send_button = Some(agent_send_button as usize);
+            state.agent_latest_button = Some(latest_button as usize);
             state.attachment_chip_strip = Some(chip_scroll as usize);
             state.action_handler = Some(action_handler as usize);
             // Restore persisted zoom level from settings.json.
@@ -1175,5 +1294,72 @@ mod tests {
         });
         assert!(hold.contains("Ctrl+Option"));
         assert!(toggle.contains("Right"));
+    }
+
+    #[test]
+    fn chat_content_extends_under_header() {
+        let content_height = 720.0;
+        let footer_height = 64.0;
+        let content_gap = 10.0;
+        let header_height = 54.0;
+
+        let under_header =
+            chat_content_height_under_header(content_height, footer_height, content_gap);
+        let old_below_header =
+            (content_height - header_height - footer_height - content_gap * 2.0).max(0.0);
+
+        assert_eq!(under_header, 646.0);
+        assert_eq!(under_header - old_below_header, header_height + content_gap);
+    }
+
+    #[test]
+    fn chat_scroll_extends_under_input_bar() {
+        let agent_input_height = 44.0;
+        let inner_pad = 12.0;
+        let content_gap = 10.0;
+
+        let inset = chat_scroll_inset_above_input(agent_input_height, inner_pad, content_gap);
+        let old_frame_bottom = agent_input_height + inner_pad + content_gap;
+
+        // The frame now starts at the pane bottom (y = 0); the bottom inset
+        // equals the old frame bottom, so messages gained exactly that much
+        // scroll-under room without losing clearance above the input bar.
+        assert_eq!(inset, 66.0);
+        assert_eq!(inset, old_frame_bottom);
+        assert_eq!(chat_scroll_inset_above_input(-100.0, 12.0, 10.0), 0.0);
+    }
+
+    #[test]
+    fn chat_pane_bottom_band_is_slim() {
+        // The dead strip below the chat pane (footer + gap) must stay a slim
+        // watermark line, not the full drawer footer — otherwise content
+        // scrolling under the input bar clips visibly far above the window
+        // edge (Image #6/#7).
+        let band = crate::ui_helpers::ui_tokens::CHAT_FOOTER_HEIGHT
+            + crate::ui_helpers::ui_tokens::CONTENT_GAP;
+        assert!(band <= 24.0, "bottom band grew back to {band}pt");
+        let chat_footer = crate::ui_helpers::ui_tokens::CHAT_FOOTER_HEIGHT;
+        let footer = crate::ui_helpers::ui_tokens::FOOTER_HEIGHT;
+        assert!(
+            chat_footer < footer,
+            "chat footer {chat_footer}pt must stay slimmer than drawer footer {footer}pt"
+        );
+
+        // Pane height gained exactly the footer slimming delta.
+        let tall = chat_content_height_under_header(
+            720.0,
+            crate::ui_helpers::ui_tokens::FOOTER_HEIGHT,
+            crate::ui_helpers::ui_tokens::CONTENT_GAP,
+        );
+        let slim = chat_content_height_under_header(
+            720.0,
+            crate::ui_helpers::ui_tokens::CHAT_FOOTER_HEIGHT,
+            crate::ui_helpers::ui_tokens::CONTENT_GAP,
+        );
+        assert_eq!(
+            slim - tall,
+            crate::ui_helpers::ui_tokens::FOOTER_HEIGHT
+                - crate::ui_helpers::ui_tokens::CHAT_FOOTER_HEIGHT
+        );
     }
 }

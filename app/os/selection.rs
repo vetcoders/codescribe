@@ -97,6 +97,14 @@ fn env_u64(key: &str, default: u64) -> u64 {
 /// - `ASSISTIVE_CONTEXT_COPY_DELAY_MS` (default: 150)
 /// - `ASSISTIVE_CONTEXT_COPY_FALLBACK` (default: auto) - enable Cmd+C fallback when AX selection is unavailable
 pub fn capture_assistive_context() -> AssistiveContext {
+    capture_assistive_context_with_prior_frontmost(None)
+}
+
+/// Capture assistive context while preferring the app that was frontmost before
+/// CodeScribe UI could activate.
+pub fn capture_assistive_context_with_prior_frontmost(
+    prior_frontmost_app: Option<String>,
+) -> AssistiveContext {
     // Unit tests should not trigger osascript / clipboard / event simulation.
     if cfg!(test) {
         return AssistiveContext::default();
@@ -110,40 +118,23 @@ pub fn capture_assistive_context() -> AssistiveContext {
     let include_app = env_flag("ASSISTIVE_CONTEXT_INCLUDE_APP", true);
     let copy_delay_ms = env_u64("ASSISTIVE_CONTEXT_COPY_DELAY_MS", 150);
 
-    let frontmost_app = if include_app {
+    let current_frontmost_app = if include_app {
         frontmost_app_name()
     } else {
         None
     };
-
-    // Avoid capturing from ourselves (frontmost can temporarily become CodeScribe)
-    if matches!(
-        frontmost_app.as_deref(),
-        Some("CodeScribe") | Some("codescribe")
-    ) {
-        debug!("Assistive context: frontmost is CodeScribe, skipping selection capture");
-        return AssistiveContext {
-            frontmost_app,
-            selected_text: None,
-        };
-    }
-
-    let selected_text =
-        selected_text_from_frontmost(max_chars, copy_delay_ms, frontmost_app.as_deref());
-
-    debug!(
-        "Assistive context captured (app_present={}, selected_chars={})",
-        frontmost_app.is_some(),
-        selected_text
-            .as_ref()
-            .map(|s| s.chars().count())
-            .unwrap_or(0)
-    );
-
-    AssistiveContext {
-        frontmost_app,
-        selected_text,
-    }
+    capture_assistive_context_from_parts(
+        current_frontmost_app,
+        prior_frontmost_app,
+        |frontmost_app, should_restore_prior_app| {
+            capture_selected_text_with_effective_frontmost(
+                max_chars,
+                copy_delay_ms,
+                frontmost_app,
+                should_restore_prior_app,
+            )
+        },
+    )
 }
 
 /// Capture only the frontmost app name (no selection, no clipboard).
@@ -151,6 +142,14 @@ pub fn capture_assistive_context() -> AssistiveContext {
 /// This is used to make paste actions (⇲) target the right app even when we're not in Assistive
 /// selection mode.
 pub fn capture_frontmost_app_only() -> AssistiveContext {
+    capture_frontmost_app_only_with_prior_frontmost(None)
+}
+
+/// Capture only the frontmost app name, using a pre-overlay app if CodeScribe is
+/// currently frontmost.
+pub fn capture_frontmost_app_only_with_prior_frontmost(
+    prior_frontmost_app: Option<String>,
+) -> AssistiveContext {
     if cfg!(test) {
         return AssistiveContext::default();
     }
@@ -160,11 +159,13 @@ pub fn capture_frontmost_app_only() -> AssistiveContext {
     }
 
     let include_app = env_flag("ASSISTIVE_CONTEXT_INCLUDE_APP", true);
-    let frontmost_app = if include_app {
+    let current_frontmost_app = if include_app {
         frontmost_app_name()
     } else {
         None
     };
+    let (frontmost_app, _) =
+        resolve_effective_frontmost_app(current_frontmost_app, prior_frontmost_app);
 
     AssistiveContext {
         frontmost_app,
@@ -192,8 +193,12 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
             if out.status.success() {
                 true
             } else {
-                debug!(
-                    "App activation failed for '{}': exit={:?}",
+                // A non-zero exit here is the signature of a silent Automation
+                // TCC denial (errAEEventNotPermitted, -1743) as well as a
+                // missing target app. Surface it at warn so the cause is not
+                // lost in debug noise.
+                warn!(
+                    "App activation failed for '{}': exit={:?} (possible Automation TCC denial)",
                     app_name,
                     out.status.code()
                 );
@@ -201,7 +206,7 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
             }
         }
         Err(e) => {
-            debug!("App activation failed for '{}': {}", app_name, e);
+            warn!("App activation failed for '{}': {}", app_name, e);
             false
         }
     }
@@ -210,6 +215,216 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
 #[cfg(not(target_os = "macos"))]
 pub fn activate_app_by_name(_app_name: &str) -> bool {
     false
+}
+
+/// Localized name of the app currently owning focus, via
+/// `NSWorkspace.frontmostApplication.localizedName`.
+///
+/// This is the runtime-truth signal for "is the right window focused yet?",
+/// unlike the `System Events` osascript query which is slower and rides the
+/// Automation TCC path. Returns `None` when AppKit is unavailable or there is
+/// no frontmost app.
+#[cfg(target_os = "macos")]
+fn nsworkspace_frontmost_app_name() -> Option<String> {
+    use objc::runtime::{Class, Object};
+    use objc::{msg_send, sel, sel_impl};
+
+    // SAFETY: sharedWorkspace/frontmostApplication return shared, autoreleased
+    // singletons we only read from; localizedName/UTF8String are pure accessors.
+    unsafe {
+        let cls = Class::get("NSWorkspace")?;
+        let workspace: *mut Object = msg_send![cls, sharedWorkspace];
+        if workspace.is_null() {
+            return None;
+        }
+        let app: *mut Object = msg_send![workspace, frontmostApplication];
+        if app.is_null() {
+            return None;
+        }
+        let name: *mut Object = msg_send![app, localizedName];
+        if name.is_null() {
+            return None;
+        }
+        let name_cstr: *const std::ffi::c_char = msg_send![name, UTF8String];
+        if name_cstr.is_null() {
+            return None;
+        }
+        let name_str = std::ffi::CStr::from_ptr(name_cstr)
+            .to_string_lossy()
+            .into_owned();
+        (!name_str.trim().is_empty()).then_some(name_str)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn nsworkspace_frontmost_app_name() -> Option<String> {
+    None
+}
+
+/// Poll until `expected_app` owns focus (or the deadline elapses), using a
+/// bounded exponential backoff.
+///
+/// Replaces the previous fixed `sleep(80ms)` after `activate`: under a CPU spike
+/// 80ms is not enough for the activation to land and the synthetic Cmd+C lands
+/// in the wrong window. Here we confirm focus before returning, capped by
+/// `budget` so a stuck activation can never wedge the capture path.
+///
+/// Returns `true` once the frontmost app matches `expected_app`. Returns `false`
+/// on timeout. If the runtime focus signal is unavailable (`None`), we cannot
+/// confirm and fall through after the budget so the caller may still attempt the
+/// copy (best-effort, never break recording).
+///
+/// This is the shared focus-confirm primitive. It already backs the Cmd+C
+/// selection-capture path (`capture_selected_text_with_effective_frontmost`).
+/// The Cmd+V *paste* path has the same activation→focus race but lives in
+/// `app/controller/mod.rs` (`paste_overlay_text_with_target`) and still uses a
+/// fixed `sleep(80ms)` after `activate_target_app`. It is exposed `pub(crate)`
+/// so that paste path can reuse this confirm instead of the fixed sleep; that
+/// rewire is deferred to a controller-owned follow-up (single-file ownership:
+/// the sleep is not in this module). See the scope note on
+/// `crate::os::clipboard::paste` / `paste_text_smart`.
+#[cfg(target_os = "macos")]
+pub(crate) fn wait_for_frontmost_app(expected_app: &str, budget: Duration) -> bool {
+    let expected = expected_app.trim();
+    if expected.is_empty() {
+        return false;
+    }
+
+    let deadline = std::time::Instant::now() + budget;
+    let mut backoff = Duration::from_millis(5);
+    let max_backoff = Duration::from_millis(40);
+
+    loop {
+        if let Some(current) = nsworkspace_frontmost_app_name()
+            && current.trim().eq_ignore_ascii_case(expected)
+        {
+            return true;
+        }
+
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+
+        let remaining = deadline - now;
+        std::thread::sleep(backoff.min(remaining));
+        backoff = (backoff * 2).min(max_backoff);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn wait_for_frontmost_app(_expected_app: &str, _budget: Duration) -> bool {
+    false
+}
+
+fn normalized_app_name(app_name: Option<String>) -> Option<String> {
+    app_name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+fn is_codescribe_app(app_name: &str) -> bool {
+    app_name.trim().eq_ignore_ascii_case("codescribe")
+}
+
+fn resolve_effective_frontmost_app(
+    current_frontmost_app: Option<String>,
+    prior_frontmost_app: Option<String>,
+) -> (Option<String>, bool) {
+    let current_frontmost_app = normalized_app_name(current_frontmost_app);
+    let prior_frontmost_app =
+        normalized_app_name(prior_frontmost_app).filter(|app_name| !is_codescribe_app(app_name));
+
+    let should_use_prior = match (
+        current_frontmost_app.as_deref(),
+        prior_frontmost_app.as_deref(),
+    ) {
+        (Some(current), Some(_)) if is_codescribe_app(current) => true,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+
+    if should_use_prior {
+        (prior_frontmost_app, true)
+    } else {
+        (current_frontmost_app, false)
+    }
+}
+
+fn capture_assistive_context_from_parts(
+    current_frontmost_app: Option<String>,
+    prior_frontmost_app: Option<String>,
+    selected_text_reader: impl FnOnce(Option<&str>, bool) -> Option<String>,
+) -> AssistiveContext {
+    let (frontmost_app, should_restore_prior_app) =
+        resolve_effective_frontmost_app(current_frontmost_app, prior_frontmost_app);
+
+    // Avoid capturing from ourselves (frontmost can temporarily become CodeScribe)
+    if frontmost_app.as_deref().is_some_and(is_codescribe_app) {
+        debug!("Assistive context: frontmost is CodeScribe, skipping selection capture");
+        return AssistiveContext {
+            frontmost_app,
+            selected_text: None,
+        };
+    }
+
+    let selected_text = selected_text_reader(frontmost_app.as_deref(), should_restore_prior_app);
+
+    debug!(
+        "Assistive context captured (app_present={}, selected_chars={})",
+        frontmost_app.is_some(),
+        selected_text
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0)
+    );
+
+    AssistiveContext {
+        frontmost_app,
+        selected_text,
+    }
+}
+
+/// Decide whether a synthetic Cmd+C actually wrote to the pasteboard, given the
+/// `changeCount` sampled before and after.
+///
+/// - Both samples present: the copy landed iff the count moved (authoritative,
+///   content-agnostic).
+/// - Either sample absent (AppKit binding unavailable): we cannot decide here, so
+///   report `true` and let the caller fall back to content comparison.
+fn copy_landed_by_change_count(prev: Option<i64>, post: Option<i64>) -> bool {
+    match (prev, post) {
+        (Some(prev), Some(post)) => post != prev,
+        _ => true,
+    }
+}
+
+fn capture_selected_text_with_effective_frontmost(
+    max_chars: usize,
+    copy_delay_ms: u64,
+    frontmost_app: Option<&str>,
+    should_restore_prior_app: bool,
+) -> Option<String> {
+    if should_restore_prior_app && let Some(app_name) = frontmost_app {
+        if activate_app_by_name(app_name) {
+            // Confirm focus actually landed on the target before capturing,
+            // instead of a fixed sleep that is too short under a CPU spike and
+            // lets the synthetic Cmd+C hit the wrong window. Budget is bounded
+            // by copy_delay_ms (cap 200ms) so a stuck activation cannot wedge
+            // the capture path.
+            let budget = Duration::from_millis(copy_delay_ms.clamp(80, 200));
+            if !wait_for_frontmost_app(app_name, budget) {
+                debug!(
+                    "Assistive context: focus did not confirm on '{}' within {:?}; proceeding best-effort",
+                    app_name, budget
+                );
+            }
+        } else {
+            debug!("Assistive context: prior app activation failed before selection capture");
+        }
+    }
+
+    selected_text_from_frontmost(max_chars, copy_delay_ms, frontmost_app)
 }
 
 /// Build the LLM input for assistive mode, including optional selection context.
@@ -224,9 +439,13 @@ pub fn build_assistive_input(user_voice_text: &str, ctx: &AssistiveContext) -> S
     out.push_str(instruction);
     out.push_str("\n>\n\n");
 
-    out.push_str("ZAZNACZONY_TEKST:\n<<<\n");
-    out.push_str(selected_text);
-    out.push_str("\n>\n");
+    if !selected_text.is_empty() {
+        out.push_str("ZAZNACZONY_TEKST:\n<<<\n");
+        out.push_str(selected_text);
+        out.push_str("\n>\n");
+    } else {
+        out.push_str("ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n");
+    }
 
     if !frontmost_app.is_empty() {
         out.push_str("\nKONTEKST:\n- frontmost_app: ");
@@ -248,9 +467,20 @@ fn frontmost_app_name() -> Option<String> {
             r#"tell application "System Events" to name of first application process whose frontmost is true"#,
         ])
         .output()
+        .map_err(|e| {
+            warn!("frontmost_app_name: failed to run osascript: {}", e);
+            e
+        })
         .ok()?;
 
     if !output.status.success() {
+        // System Events query failing here typically means a silent Automation
+        // TCC denial (errAEEventNotPermitted, -1743). Log at warn so the cause
+        // of a missing frontmost app is observable.
+        warn!(
+            "frontmost_app_name: System Events query failed: exit={:?} (possible Automation TCC denial)",
+            output.status.code()
+        );
         return None;
     }
 
@@ -261,23 +491,6 @@ fn frontmost_app_name() -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 fn frontmost_app_name() -> Option<String> {
     None
-}
-
-#[cfg(target_os = "macos")]
-fn prefer_copy_fallback_for_app(frontmost_app: Option<&str>) -> bool {
-    let app = frontmost_app.unwrap_or("").trim().to_lowercase();
-    matches!(
-        app.as_str(),
-        "safari"
-            | "google chrome"
-            | "google chrome beta"
-            | "arc"
-            | "brave browser"
-            | "firefox"
-            | "microsoft edge"
-            | "orion"
-            | "vivaldi"
-    )
 }
 
 #[cfg(target_os = "macos")]
@@ -295,24 +508,33 @@ fn selected_text_from_frontmost(
         return Some(selected);
     }
 
-    // Cmd+C fallback is enabled by default for web browsers where AX selection is unreliable
-    // (notably Safari). The explicit env flag still overrides this behavior.
-    // We snapshot+restore to avoid clipboard pollution and treat "unchanged clipboard" as no selection.
-    let fallback_default = prefer_copy_fallback_for_app(frontmost_app);
-    if !env_flag("ASSISTIVE_CONTEXT_COPY_FALLBACK", fallback_default) {
-        if matches!(sel_len, Some(0)) {
-            debug!("Assistive context: selection length is 0; Cmd+C fallback disabled");
-        }
+    // AX returned no selection. Fall back to a synthetic Cmd+C for ANY app — terminals
+    // (Ghostty, iTerm2, Terminal), Electron apps, and anything else that does not expose
+    // AXSelectedText. Native AppKit apps never reach here because the AX path above returns
+    // early. The clipboard is snapshotted and restored below, and an unchanged clipboard is
+    // treated as "no selection", so this stays clean and avoids false positives. Set
+    // ASSISTIVE_CONTEXT_COPY_FALLBACK=0 to disable the fallback entirely.
+    if !env_flag("ASSISTIVE_CONTEXT_COPY_FALLBACK", true) {
+        debug!(
+            "Assistive context: AX gave no selection for {:?}; Cmd+C fallback disabled by env",
+            frontmost_app
+        );
         return None;
     }
-    if matches!(sel_len, Some(0)) {
-        debug!("Assistive context: AX range length=0; trying Cmd+C fallback");
-    }
+    debug!(
+        "Assistive context: AX gave no selection for {:?} (range len={:?}); trying Cmd+C fallback",
+        frontmost_app, sel_len
+    );
 
     // Fallback: snapshot clipboard + Cmd+C + restore.
-    // This can fail in some apps and can mis-detect "no selection" when clipboard doesn't change.
+    // We detect whether the copy actually happened with NSPasteboard.changeCount
+    // (content-agnostic): it bumps iff something was written. This avoids the
+    // false-negative where the selection equals the previous clipboard text, and
+    // the false-positive where the previous clipboard held a non-text payload
+    // (e.g. an image) and stale text would otherwise be mistaken for a selection.
     let snapshot = ClipboardSnapshot::capture().ok();
     let prev_text = snapshot.as_ref().and_then(|s| s.text.clone());
+    let prev_change_count = clipboard::pasteboard_change_count();
 
     if let Err(e) = clipboard::simulate_cmd_c() {
         warn!("Assistive context: failed to simulate Cmd+C: {}", e);
@@ -320,6 +542,19 @@ fn selected_text_from_frontmost(
     }
 
     std::thread::sleep(Duration::from_millis(copy_delay_ms));
+
+    let post_change_count = clipboard::pasteboard_change_count();
+    let copy_landed = copy_landed_by_change_count(prev_change_count, post_change_count);
+
+    if !copy_landed {
+        debug!(
+            "Assistive context: pasteboard changeCount unchanged ({:?}); treating as no selection",
+            prev_change_count
+        );
+        // Nothing was copied, so the clipboard already holds prior content;
+        // no restore needed.
+        return None;
+    }
 
     let mut copied = match clipboard::get_clipboard() {
         Ok(t) => t,
@@ -340,11 +575,17 @@ fn selected_text_from_frontmost(
         return None;
     }
 
-    // If clipboard didn't change, treat as "no selection" to avoid leaking arbitrary clipboard data.
-    if let Some(prev) = prev_text
+    // changeCount is the authoritative detector. Only when it is unavailable do
+    // we fall back to content comparison: if the clipboard text is unchanged,
+    // treat it as "no selection" to avoid leaking arbitrary clipboard data.
+    let change_count_authoritative = prev_change_count.is_some() && post_change_count.is_some();
+    if !change_count_authoritative
+        && let Some(prev) = prev_text
         && copied == prev.trim()
     {
-        debug!("Assistive context: clipboard unchanged; treating as no selection");
+        debug!(
+            "Assistive context: clipboard unchanged (changeCount unavailable); treating as no selection"
+        );
         return None;
     }
 
@@ -370,6 +611,82 @@ fn selected_text_from_frontmost(
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn effective_frontmost_prefers_prior_when_codescribe_is_current() {
+        let (app, should_restore) = resolve_effective_frontmost_app(
+            Some("CodeScribe".to_string()),
+            Some("Terminal".to_string()),
+        );
+
+        assert_eq!(app.as_deref(), Some("Terminal"));
+        assert!(should_restore);
+    }
+
+    #[test]
+    fn assistive_capture_uses_prior_frontmost_after_overlay_activation() {
+        let ctx = capture_assistive_context_from_parts(
+            Some("CodeScribe".to_string()),
+            Some("Terminal".to_string()),
+            |frontmost_app, should_restore_prior_app| {
+                assert_eq!(frontmost_app, Some("Terminal"));
+                assert!(should_restore_prior_app);
+                Some("selected terminal text".to_string())
+            },
+        );
+
+        assert_eq!(ctx.frontmost_app.as_deref(), Some("Terminal"));
+        assert_eq!(ctx.selected_text.as_deref(), Some("selected terminal text"));
+        let input = build_assistive_input("opisz zaznaczenie", &ctx);
+        assert!(input.contains("selected terminal text"));
+    }
+
+    #[test]
+    fn assistive_input_handles_missing_selection_without_empty_context_block() {
+        let ctx = AssistiveContext {
+            frontmost_app: Some("GitHub Desktop".to_string()),
+            selected_text: None,
+        };
+
+        let input = build_assistive_input("kontynuuj bez selekcji", &ctx);
+
+        assert!(input.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+        assert!(input.contains("kontynuuj bez selekcji"));
+        assert!(input.contains("ZAZNACZONY_TEKST: brak dostępnego zaznaczenia."));
+        assert!(!input.contains("ZAZNACZONY_TEKST:\n<<<\n\n>"));
+        assert!(input.contains("frontmost_app: GitHub Desktop"));
+    }
+
+    #[test]
+    fn copy_landed_when_change_count_increments() {
+        // Authoritative: count moved => copy landed.
+        assert!(copy_landed_by_change_count(Some(7), Some(8)));
+        // Count went backwards/changed in any direction still counts as a write.
+        assert!(copy_landed_by_change_count(Some(8), Some(3)));
+    }
+
+    #[test]
+    fn copy_not_landed_when_change_count_unchanged() {
+        // Selection equals previous clipboard, or copy hit a no-op: count stable.
+        assert!(!copy_landed_by_change_count(Some(42), Some(42)));
+    }
+
+    #[test]
+    fn copy_landed_falls_back_when_change_count_unavailable() {
+        // Binding unavailable on either side => defer to content comparison.
+        assert!(copy_landed_by_change_count(None, Some(5)));
+        assert!(copy_landed_by_change_count(Some(5), None));
+        assert!(copy_landed_by_change_count(None, None));
+    }
+
+    #[test]
+    fn effective_frontmost_preserves_codescribe_guard_without_prior_app() {
+        let (app, should_restore) =
+            resolve_effective_frontmost_app(Some("CodeScribe".to_string()), None);
+
+        assert_eq!(app.as_deref(), Some("CodeScribe"));
+        assert!(!should_restore);
+    }
 
     #[test]
     #[serial]

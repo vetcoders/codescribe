@@ -30,8 +30,6 @@
 //! - **audio** - Recording and audio loading
 //! - **config** - User configuration
 //! - **ai_formatting** - Post-processing with LLMs
-//!
-//! Created by M&K (c)2026 VetCoders
 
 // ═══════════════════════════════════════════════════════════
 // Core modules (namespaced)
@@ -49,10 +47,12 @@ pub mod embedder;
 mod hf_cache;
 pub mod ipc;
 pub mod llm;
+pub mod mcp;
 pub mod pipeline;
 pub mod quality;
 pub mod state;
 pub mod stt;
+pub mod transcript_tagging;
 pub mod tts;
 pub mod util;
 pub mod vad;

@@ -1,7 +1,7 @@
 //! Simple transcript history manager for CodeScribe
 //!
 //! Saves transcripts and audio to ~/.codescribe/transcriptions/YYYY-MM-DD/
-//! Files are paired: HHMMSS_slug_kind.wav + HHMMSS_slug_kind.txt with matching timestamps.
+//! Files are paired: HHMMSS_slug_kind.m4a + HHMMSS_slug_kind.txt with matching timestamps.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
@@ -12,6 +12,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, error, info, warn};
+
+const AUDIO_ARCHIVE_EXTENSIONS: &[&str] = &["m4a", "wav"];
 
 /// A single history entry
 #[derive(Debug, Clone)]
@@ -175,17 +177,19 @@ fn choose_unique_base(
     dir: &Path,
     base: &str,
     old_txt: Option<&Path>,
-    old_wav: Option<&Path>,
+    old_audio: Option<&Path>,
     check_txt: bool,
 ) -> String {
     let mut candidate = base.to_string();
     for i in 0..=10_000 {
         let txt_path = dir.join(format!("{}.txt", candidate));
-        let wav_path = dir.join(format!("{}.wav", candidate));
         let txt_conflict = check_txt && txt_path.exists() && (old_txt != Some(txt_path.as_path()));
-        let wav_conflict = wav_path.exists() && (old_wav != Some(wav_path.as_path()));
+        let audio_conflict = AUDIO_ARCHIVE_EXTENSIONS.iter().any(|ext| {
+            let audio_path = dir.join(format!("{}.{}", candidate, ext));
+            audio_path.exists() && (old_audio != Some(audio_path.as_path()))
+        });
 
-        if !txt_conflict && !wav_conflict {
+        if !txt_conflict && !audio_conflict {
             return candidate;
         }
 
@@ -193,6 +197,27 @@ fn choose_unique_base(
     }
 
     base.to_string()
+}
+
+fn existing_audio_for_stem(dir: &Path, stem: &str) -> Option<PathBuf> {
+    AUDIO_ARCHIVE_EXTENSIONS
+        .iter()
+        .map(|ext| dir.join(format!("{stem}.{ext}")))
+        .find(|path| path.exists())
+}
+
+fn unique_audio_path(dir: &Path, base: &str, extension: &str) -> PathBuf {
+    let mut candidate = base.to_string();
+    for i in 0..=10_000 {
+        let has_audio_conflict = AUDIO_ARCHIVE_EXTENSIONS
+            .iter()
+            .any(|ext| dir.join(format!("{}.{}", candidate, ext)).exists());
+        if !has_audio_conflict {
+            return dir.join(format!("{}.{}", candidate, extension));
+        }
+        candidate = format!("{}_{}", base, i + 1);
+    }
+    dir.join(format!("{}.{}", base, extension))
 }
 
 /// Get the transcriptions base directory
@@ -500,7 +525,7 @@ pub fn migrate_transcriptions(
         }
 
         let mut txt_files = Vec::new();
-        let mut wav_files = Vec::new();
+        let mut audio_files = Vec::new();
         let entries = match fs::read_dir(&day_path) {
             Ok(entries) => entries,
             Err(e) => {
@@ -514,7 +539,7 @@ pub fn migrate_transcriptions(
             let path = entry.path();
             match path.extension().and_then(|s| s.to_str()) {
                 Some("txt") => txt_files.push(path),
-                Some("wav") => wav_files.push(path),
+                Some("wav" | "m4a") => audio_files.push(path),
                 _ => {}
             }
         }
@@ -555,17 +580,11 @@ pub fn migrate_transcriptions(
                 _ => base,
             };
 
-            let old_audio = dir.join(format!("{}.wav", stem));
-            let old_audio = if old_audio.exists() {
-                Some(old_audio)
-            } else {
-                None
-            };
+            let old_audio = existing_audio_for_stem(&dir, &stem);
 
             let unique_base =
                 choose_unique_base(&dir, &base, Some(&txt_path), old_audio.as_deref(), true);
             let new_txt_path = dir.join(format!("{}.txt", unique_base));
-            let new_wav_path = dir.join(format!("{}.wav", unique_base));
 
             if new_txt_path != txt_path {
                 info!(
@@ -585,15 +604,20 @@ pub fn migrate_transcriptions(
             }
 
             if let Some(old_audio_path) = old_audio {
-                if new_wav_path != old_audio_path {
+                let audio_ext = old_audio_path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("wav");
+                let new_audio_path = dir.join(format!("{}.{}", unique_base, audio_ext));
+                if new_audio_path != old_audio_path {
                     info!(
                         "{} audio: {} -> {}",
                         if dry_run { "Would rename" } else { "Renaming" },
                         old_audio_path.display(),
-                        new_wav_path.display()
+                        new_audio_path.display()
                     );
                     if !dry_run {
-                        if let Err(e) = fs::rename(&old_audio_path, &new_wav_path) {
+                        if let Err(e) = fs::rename(&old_audio_path, &new_audio_path) {
                             warn!("Failed to rename audio {}: {}", old_audio_path.display(), e);
                             report.errors += 1;
                         } else {
@@ -605,23 +629,23 @@ pub fn migrate_transcriptions(
                 } else {
                     report.skipped += 1;
                 }
-                handled_audio.insert(new_wav_path);
+                handled_audio.insert(new_audio_path);
             }
         }
 
-        for wav_path in wav_files {
-            if handled_audio.contains(&wav_path) {
+        for audio_path in audio_files {
+            if handled_audio.contains(&audio_path) {
                 continue;
             }
 
-            let dir = wav_path
+            let dir = audio_path
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| day_path.clone());
-            let stem = match wav_path.file_stem().and_then(|s| s.to_str()) {
+            let stem = match audio_path.file_stem().and_then(|s| s.to_str()) {
                 Some(stem) => stem.to_string(),
                 None => {
-                    warn!("Skipping non-UTF8 audio name: {}", wav_path.display());
+                    warn!("Skipping non-UTF8 audio name: {}", audio_path.display());
                     report.skipped += 1;
                     continue;
                 }
@@ -630,7 +654,7 @@ pub fn migrate_transcriptions(
             let (kind, base_stem, index) = split_kind_and_index(&stem, assume_kind);
             let (time_base_opt, slug_hint) = split_time_and_slug(&base_stem);
             let time_base = time_base_opt
-                .or_else(|| time_base_from_metadata(&wav_path))
+                .or_else(|| time_base_from_metadata(&audio_path))
                 .unwrap_or_else(|| Local::now().format("%H%M%S").to_string());
 
             let slug = slug_hint.as_deref().map(slug_from_hint).unwrap_or_default();
@@ -640,19 +664,23 @@ pub fn migrate_transcriptions(
                 _ => base,
             };
 
-            let unique_base = choose_unique_base(&dir, &base, None, Some(&wav_path), false);
-            let new_wav_path = dir.join(format!("{}.wav", unique_base));
+            let unique_base = choose_unique_base(&dir, &base, None, Some(&audio_path), false);
+            let audio_ext = audio_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("wav");
+            let new_audio_path = dir.join(format!("{}.{}", unique_base, audio_ext));
 
-            if new_wav_path != wav_path {
+            if new_audio_path != audio_path {
                 info!(
                     "{} orphan audio: {} -> {}",
                     if dry_run { "Would rename" } else { "Renaming" },
-                    wav_path.display(),
-                    new_wav_path.display()
+                    audio_path.display(),
+                    new_audio_path.display()
                 );
                 if !dry_run {
-                    if let Err(e) = fs::rename(&wav_path, &new_wav_path) {
-                        warn!("Failed to rename audio {}: {}", wav_path.display(), e);
+                    if let Err(e) = fs::rename(&audio_path, &new_audio_path) {
+                        warn!("Failed to rename audio {}: {}", audio_path.display(), e);
                         report.errors += 1;
                     } else {
                         report.renamed_audio += 1;
@@ -669,9 +697,10 @@ pub fn migrate_transcriptions(
     Ok(report)
 }
 
-/// Save audio file to transcriptions folder with the given timestamp and optional slug
+/// Save audio file to transcriptions folder with the given timestamp and optional slug.
 ///
-/// Creates a paired file alongside the transcript (e.g., 143052_czesc-jak_raw.wav pairs with 143052_czesc-jak_raw.txt)
+/// Creates an optimized m4a archive alongside the transcript
+/// (e.g., 143052_czesc-jak_raw.m4a pairs with 143052_czesc-jak_raw.txt).
 ///
 /// # Arguments
 /// * `src_path` - Path to the source WAV file (typically a temp file)
@@ -696,29 +725,42 @@ pub fn save_audio(
     // Get transcriptions directory for this date
     let dest_dir = transcriptions_dir(&timestamp);
 
-    // Create filename with HHMMSS_slug_kind.wav format (matching transcript naming)
+    // Create filename with HHMMSS_slug_kind.m4a format (matching transcript naming)
     let time_base = timestamp.format("%H%M%S").to_string();
     let slug = transcript_text.map(|t| make_slug(t, 3)).unwrap_or_default();
     let base = build_base_name(&time_base, &slug, kind);
-    let mut dest_path = dest_dir.join(format!("{}.wav", base));
-    if dest_path.exists() {
-        for i in 1..=10_000 {
-            let candidate = dest_dir.join(format!("{}_{}.wav", base, i));
-            if !candidate.exists() {
-                dest_path = candidate;
-                break;
-            }
-        }
-    }
+    let dest_path = unique_audio_path(&dest_dir, &base, "m4a");
 
-    match fs::copy(src_path, &dest_path) {
-        Ok(_) => {
-            info!("Audio saved: {}", dest_path.display());
+    match crate::audio::archive::encode_wav_to_m4a(src_path, &dest_path) {
+        Ok(()) => {
+            info!("Audio archived as m4a: {}", dest_path.display());
             Some(dest_path)
         }
         Err(e) => {
-            error!("Failed to save audio to {}: {}", dest_path.display(), e);
-            None
+            let _ = fs::remove_file(&dest_path);
+            warn!(
+                "Failed to encode m4a archive {}; falling back to wav copy: {}",
+                dest_path.display(),
+                e
+            );
+            let fallback_path = unique_audio_path(&dest_dir, &base, "wav");
+            match fs::copy(src_path, &fallback_path) {
+                Ok(_) => {
+                    info!(
+                        "Audio archived as wav fallback: {}",
+                        fallback_path.display()
+                    );
+                    Some(fallback_path)
+                }
+                Err(copy_err) => {
+                    error!(
+                        "Failed to save audio fallback to {}: {}",
+                        fallback_path.display(),
+                        copy_err
+                    );
+                    None
+                }
+            }
         }
     }
 }
@@ -762,6 +804,25 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    fn write_pcm16_sine_wav(path: &Path, sample_rate: u32, seconds: u32) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).expect("create wav fixture");
+        let total_samples = sample_rate as usize * seconds as usize;
+        for i in 0..total_samples {
+            let t = i as f32 / sample_rate as f32;
+            let tone = (2.0 * std::f32::consts::PI * 440.0 * t).sin()
+                + 0.35 * (2.0 * std::f32::consts::PI * 880.0 * t).sin();
+            let sample = (tone * 12_000.0).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            writer.write_sample(sample).expect("write wav sample");
+        }
+        writer.finalize().expect("finalize wav fixture");
+    }
 
     struct EnvGuard {
         key: &'static str,
@@ -944,5 +1005,47 @@ mod tests {
         let copyable = latest_copyable_entry().expect("latest copyable entry");
         assert_eq!(copyable.path, raw.path);
         assert_eq!(copyable.kind, TranscriptKind::Raw);
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    fn test_save_audio_archives_m4a_smaller_and_decodable() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let src_wav = tmp.path().join("source.wav");
+        write_pcm16_sine_wav(&src_wav, 16_000, 5);
+        let wav_size = fs::metadata(&src_wav).expect("wav metadata").len();
+
+        let saved = save_audio(
+            &src_wav,
+            Local::now(),
+            Some("archive verifier speech"),
+            TranscriptKind::Raw,
+        )
+        .expect("archive audio");
+
+        assert_eq!(saved.extension().and_then(|ext| ext.to_str()), Some("m4a"));
+        assert!(saved.exists(), "archive file should exist");
+
+        let m4a_size = fs::metadata(&saved).expect("m4a metadata").len();
+        assert!(
+            m4a_size < wav_size,
+            "m4a archive should be smaller than source wav (m4a={m4a_size}, wav={wav_size})"
+        );
+
+        let (decoded, decoded_rate) =
+            crate::audio::load_audio_file(&saved).expect("decode archived m4a");
+        assert!(decoded_rate > 0, "decoded sample rate should be known");
+        assert!(
+            !decoded.is_empty(),
+            "decoded archive should produce PCM samples"
+        );
+
+        let decoded_sec = decoded.len() as f32 / decoded_rate as f32;
+        assert!(
+            (4.0..=6.0).contains(&decoded_sec),
+            "decoded archive duration should stay near source duration, got {decoded_sec:.2}s"
+        );
     }
 }

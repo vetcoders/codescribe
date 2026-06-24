@@ -96,23 +96,27 @@ impl DeltaSinkAdapter {
 
 impl EventSink for DeltaSinkAdapter {
     fn on_event(&self, event: &EngineEvent) {
+        // Poison-recovery on the real-time delta path: if a prior panic poisoned
+        // `last_text`, recover the inner guard (`into_inner`) and keep emitting
+        // deltas instead of cascading a single panic into a silent poison of
+        // every subsequent lock on this hot path.
         match event {
             EngineEvent::Preview { text, .. } => {
-                let mut last = self.last_text.lock().unwrap();
+                let mut last = self.last_text.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(delta) = TranscriptDelta::from_diff(&last, text) {
                     self.inner.apply(&delta);
                     *last = text.clone();
                 }
             }
             EngineEvent::Correction { text, .. } => {
-                let mut last = self.last_text.lock().unwrap();
+                let mut last = self.last_text.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(delta) = TranscriptDelta::from_diff(&last, text) {
                     self.inner.apply(&delta);
                     *last = text.clone();
                 }
             }
             EngineEvent::UtteranceFinal { text, .. } => {
-                let mut last = self.last_text.lock().unwrap();
+                let mut last = self.last_text.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(delta) = TranscriptDelta::from_diff(&last, text) {
                     self.inner.apply(&delta);
                 }
@@ -120,7 +124,7 @@ impl EventSink for DeltaSinkAdapter {
                 *last = String::new();
             }
             EngineEvent::NoSpeech { .. } => {
-                let mut last = self.last_text.lock().unwrap();
+                let mut last = self.last_text.lock().unwrap_or_else(|e| e.into_inner());
                 *last = String::new();
             }
             _ => {}
@@ -379,7 +383,7 @@ mod tests {
             partial_runs_total: 0,
             trigger_utterance_count: 0,
             trigger_speech_count: 0,
-            trigger_watchdog_count: 0,
+            trigger_timer_count: 0,
             partial_stale_count: 0,
             partial_coalesced_count: 0,
             partial_dropped_count: 0,

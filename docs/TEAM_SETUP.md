@@ -102,22 +102,22 @@ USE_LOCAL_STT=1
 # Whisper
 WHISPER_LANGUAGE=pl
 
-# AI formatting (optional) - separate providers for formatting vs assistive
+# AI formatting (optional) - OpenAI Responses by default
 AI_FORMATTING_ENABLED=1
 
-# Formatting mode (fast, cheap) - used by RAW / formatting paths
-LLM_FORMATTING_ENDPOINT=https://api.libraxis.cloud/v1/responses
-LLM_FORMATTING_MODEL=gpt-5-mini
+# Formatting mode - used by cleanup/formatting paths
+LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
+LLM_FORMATTING_MODEL=gpt-4.1
 LLM_FORMATTING_API_KEY=sk-xxx
 
-# Assistive mode (smart) - for Fn+Shift (chat) and assistive toggle
-LLM_ASSISTIVE_ENDPOINT=https://api.libraxis.cloud/v1/responses
-LLM_ASSISTIVE_MODEL=gpt-5.2
+# Assistive mode - dictation-driven agent
+LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
+LLM_ASSISTIVE_MODEL=gpt-5.5
 LLM_ASSISTIVE_API_KEY=sk-xxx
 
 # Shared fallback (if mode-specific not set)
 LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1-mini
+LLM_MODEL=gpt-4.1
 LLM_API_KEY=sk-proj-xxx
 ```
 

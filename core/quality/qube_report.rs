@@ -2,8 +2,6 @@
 //!
 //! Flow: batch WAV -> single-pass transcription (raw + postprocess) -> AI formatting + cloud ref
 //! -> metrics -> artifacts + HTML/JSON/MD reports.
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
@@ -43,6 +41,7 @@ pub struct QualityReportConfig {
     pub debug_mode: bool,
     pub copy_audio: bool,
     pub metrics_reference: MetricsReference,
+    pub local_transcription: LocalTranscriptionMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +58,22 @@ impl MetricsReference {
             MetricsReference::Corpus => "corpus",
             MetricsReference::Cloud => "cloud",
             MetricsReference::AiFormatted => "ai",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalTranscriptionMode {
+    LocalWhisper,
+    CodeScribeIpc,
+}
+
+impl LocalTranscriptionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalWhisper => "local_whisper",
+            Self::CodeScribeIpc => "codescribe_ipc",
         }
     }
 }
@@ -81,6 +96,7 @@ pub struct ReportEnvironment {
     pub local_model: Option<String>,
     pub whisper_language: Option<String>,
     pub metrics_reference: String,
+    pub local_transcription: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -236,7 +252,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     let now: DateTime<Local> = Local::now();
     let generated_at = now.to_rfc3339();
 
-    let env_snapshot = snapshot_environment(config.metrics_reference);
+    let env_snapshot = snapshot_environment(config.metrics_reference, config.local_transcription);
 
     let config_root = Config::config_dir();
     let input_root = resolve_input_root(&config.input_dir, &config_root)?;
@@ -254,7 +270,12 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     fs::create_dir_all(&artifacts_dir)?;
     fs::create_dir_all(&audio_dir)?;
 
-    crate::stt::init_active_engine().context("Failed to init active STT engine via core::stt")?;
+    if config.local_transcription == LocalTranscriptionMode::LocalWhisper {
+        crate::stt::init_active_engine()
+            .context("Failed to init active STT engine via core::stt")?;
+    } else {
+        info!("Local Whisper init skipped: quality report uses CodeScribe IPC transcription");
+    }
 
     // Resume: skip pairs that already have artifacts.
     //
@@ -451,18 +472,8 @@ async fn process_pair(
     let duration_secs = samples.len() as f32 / sample_rate as f32;
     let (_speech_only, vad_stats) = crate::vad::extract_speech(&samples, sample_rate);
 
-    // Single-pass transcription: engine handles 25s/5s chunking internally
-    let raw_transcript = match crate::stt::transcribe_long_with_segments(
-        &samples,
-        sample_rate,
-        config.language.as_deref(),
-    ) {
-        Ok(transcript) => Some(transcript),
-        Err(e) => {
-            errors.push(format!("Raw transcription failed: {}", e));
-            None
-        }
-    };
+    let raw_transcript =
+        transcribe_raw_for_report(&audio_canon, &samples, sample_rate, config, &mut errors).await;
     let raw_semantics = classify_raw_semantics(
         raw_transcript.as_ref(),
         vad_stats.no_speech_reason.as_deref(),
@@ -1378,7 +1389,64 @@ fn render_ingest_jsonl(report: &QualityReport, artifacts_dir: &Path) -> Result<S
     Ok(out)
 }
 
-fn snapshot_environment(metrics_reference: MetricsReference) -> ReportEnvironment {
+async fn transcribe_raw_for_report(
+    audio_path: &Path,
+    samples: &[f32],
+    sample_rate: u32,
+    config: &QualityReportConfig,
+    errors: &mut Vec<String>,
+) -> Option<RawTranscript> {
+    match config.local_transcription {
+        LocalTranscriptionMode::LocalWhisper => {
+            // Single-pass transcription: engine handles 25s/5s chunking internally.
+            match crate::stt::transcribe_long_with_segments(
+                samples,
+                sample_rate,
+                config.language.as_deref(),
+            ) {
+                Ok(transcript) => Some(transcript),
+                Err(e) => {
+                    errors.push(format!("Raw transcription failed: {}", e));
+                    None
+                }
+            }
+        }
+        LocalTranscriptionMode::CodeScribeIpc => {
+            match crate::ipc::transcribe_file(audio_path).await {
+                Ok(text) => {
+                    let text = text.trim().to_string();
+                    if text.is_empty() {
+                        errors.push(
+                            "Raw transcription skipped: CodeScribe IPC returned empty transcript"
+                                .into(),
+                        );
+                        None
+                    } else {
+                        Some(RawTranscript {
+                            text,
+                            segments: Vec::new(),
+                            avg_logprob: None,
+                            compression_ratio: None,
+                            quality_gate_dropped: false,
+                        })
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!(
+                        "Raw transcription skipped: CodeScribe IPC unavailable/degraded: {}",
+                        e
+                    ));
+                    None
+                }
+            }
+        }
+    }
+}
+
+fn snapshot_environment(
+    metrics_reference: MetricsReference,
+    local_transcription: LocalTranscriptionMode,
+) -> ReportEnvironment {
     let config = Config::load();
     ReportEnvironment {
         stt_endpoint: config.stt_endpoint.clone(),
@@ -1395,6 +1463,7 @@ fn snapshot_environment(metrics_reference: MetricsReference) -> ReportEnvironmen
         local_model: Some(config.local_model),
         whisper_language: Some(config.whisper_language.as_str().to_string()),
         metrics_reference: metrics_reference.as_str().to_string(),
+        local_transcription: local_transcription.as_str().to_string(),
     }
 }
 
@@ -1783,6 +1852,41 @@ mod tests {
 
         config.stt_api_key = Some("   ".into());
         assert_eq!(cloud_reference_credentials(&config), None);
+    }
+
+    #[tokio::test]
+    async fn codescribe_ipc_transcription_failure_is_degraded_not_local_fallback() {
+        let temp = tempfile::tempdir().expect("create temp dir for ipc fallback test");
+        let config = QualityReportConfig {
+            input_dir: temp.path().join("input"),
+            output_dir: temp.path().join("output"),
+            date_filter: None,
+            limit: 0,
+            language: Some("pl".to_string()),
+            skip_cloud: true,
+            cloud_concurrency: 1,
+            skip_formatting: true,
+            debug_mode: false,
+            copy_audio: false,
+            metrics_reference: MetricsReference::Corpus,
+            local_transcription: LocalTranscriptionMode::CodeScribeIpc,
+        };
+        let mut errors = Vec::new();
+        let missing_audio = temp.path().join("missing.wav");
+
+        let transcript =
+            transcribe_raw_for_report(&missing_audio, &[], 16_000, &config, &mut errors).await;
+
+        assert!(
+            transcript.is_none(),
+            "IPC failure must not fall back to in-daemon local Whisper"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.starts_with("Raw transcription skipped: CodeScribe IPC")),
+            "expected degraded IPC error, got: {errors:?}"
+        );
     }
 
     #[test]

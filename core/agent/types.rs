@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Provider-agnostic message role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +20,7 @@ pub enum ContentBlock {
         data: Vec<u8>,
         media_type: String,
     },
+    ImageAsset(ImageAsset),
     ToolUse {
         id: String,
         name: String,
@@ -29,6 +31,14 @@ pub enum ContentBlock {
         content: Vec<ContentBlock>,
         is_error: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAsset {
+    pub asset_id: String,
+    pub path: PathBuf,
+    pub media_type: String,
+    pub size_bytes: u64,
 }
 
 /// Canonical message used by the agent session regardless of provider.

@@ -6,24 +6,25 @@ use std::sync::Once;
 use crate::ui_helpers::ns_string;
 
 use super::{
-    TAB_AI_PROMPTS, TAB_AUDIO_INPUT, TAB_DIAGNOSTICS, TAB_MODES_SHORTCUTS, TAB_TRANSCRIPTION,
-    handle_hotkey_done, handle_settings_window_closed, handle_show_overlay, handle_test_mic,
+    TAB_AUDIO, TAB_CREATOR, TAB_ENGINE, TAB_KEYS, TAB_USER, TAB_VOICE_LAB, handle_hotkey_done,
+    handle_settings_window_closed, handle_show_overlay, handle_test_mic,
     on_assistive_endpoint_changed, on_assistive_key_changed, on_assistive_model_changed,
     on_beep_toggled, on_clear_assistive_key, on_clear_llm_key, on_copy_diagnostics,
     on_delay_changed, on_diagnostics_refresh, on_double_tap_interval_changed,
     on_enter_send_toggled, on_formatting_level_changed, on_formatting_toggled, on_language_changed,
     on_llm_endpoint_changed, on_llm_key_changed, on_llm_model_changed, on_mode_binding_change,
     on_open_qube_report, on_open_system_settings, on_permission_action,
-    on_preview_buffer_delay_changed, on_preview_emit_words_max_changed,
-    on_preview_interim_cadence_changed, on_preview_typing_cps_changed, on_prompt_load,
-    on_prompt_reset, on_prompt_save, on_prompt_type_changed, on_quality_refresh,
-    on_qube_daemon_toggled, on_refresh_permissions, on_save_api_settings,
-    on_show_dock_icon_toggled, on_show_hotkey_conflicts, on_stt_endpoint_changed,
-    on_stt_key_changed, on_stt_provider_changed, on_transcription_overlay_toggled,
-    on_ultra_quality_toggled, on_volume_changed, switch_tab,
+    on_preview_advanced_toggled, on_preview_buffer_delay_changed,
+    on_preview_emit_words_max_changed, on_preview_interim_cadence_changed,
+    on_preview_preset_changed, on_preview_typing_cps_changed, on_prompt_load, on_prompt_reset,
+    on_prompt_save, on_prompt_type_changed, on_quality_refresh, on_qube_daemon_toggled,
+    on_refresh_permissions, on_save_api_settings, on_show_dock_icon_toggled,
+    on_show_hotkey_conflicts, on_stt_endpoint_changed, on_stt_key_changed, on_stt_provider_changed,
+    on_transcript_tagging_toggled, on_transcription_overlay_toggled, on_ultra_quality_toggled,
+    on_volume_changed, switch_tab,
 };
 
-pub type Id = *mut Object;
+pub use crate::ui_helpers::Id;
 
 static ACTION_HANDLER_INIT: Once = Once::new();
 static mut ACTION_HANDLER_CLASS: *const Class = std::ptr::null();
@@ -43,7 +44,7 @@ pub fn action_handler_class() -> *const Class {
             let mut decl = ClassDecl::new("SettingsWindowActionHandler", superclass)
                 .expect("Failed to declare handler class");
 
-            // Transcription tab actions
+            // Creator tab actions
             decl.add_method(
                 sel!(onTestMic:),
                 on_test_mic as extern "C" fn(&Object, Sel, Id),
@@ -59,24 +60,28 @@ pub fn action_handler_class() -> *const Class {
 
             // Tab switching
             decl.add_method(
-                sel!(onTabTranscription:),
-                on_tab_transcription as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabCreator:),
+                on_tab_creator as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabModesShortcuts:),
-                on_tab_modes_shortcuts as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabKeys:),
+                on_tab_keys as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabAiPrompts:),
-                on_tab_ai_prompts as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabAudio:),
+                on_tab_audio as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabAudioInput:),
-                on_tab_audio_input as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabVoiceLab:),
+                on_tab_voice_lab as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
-                sel!(onTabDiagnostics:),
-                on_tab_diagnostics as extern "C" fn(&Object, Sel, Id),
+                sel!(onTabEngine:),
+                on_tab_engine as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onTabUser:),
+                on_tab_user as extern "C" fn(&Object, Sel, Id),
             );
             // Keys tab actions
             decl.add_method(
@@ -96,6 +101,10 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onFormattingToggled:),
                 on_formatting_toggled as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onTranscriptTaggingToggled:),
+                on_transcript_tagging_toggled as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onFormattingLevelChanged:),
@@ -169,6 +178,14 @@ pub fn action_handler_class() -> *const Class {
             decl.add_method(
                 sel!(onPreviewBufferDelayChanged:),
                 on_preview_buffer_delay_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPreviewPresetChanged:),
+                on_preview_preset_changed as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
+                sel!(onPreviewAdvancedToggled:),
+                on_preview_advanced_toggled as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
                 sel!(onPreviewTypingCpsChanged:),
@@ -335,24 +352,28 @@ extern "C" fn on_hotkey_done_action(_this: &Object, _sel: Sel, _sender: Id) {
     handle_hotkey_done();
 }
 
-extern "C" fn on_tab_transcription(_this: &Object, _sel: Sel, _sender: Id) {
-    switch_tab(TAB_TRANSCRIPTION);
+extern "C" fn on_tab_creator(_this: &Object, _sel: Sel, _sender: Id) {
+    switch_tab(TAB_CREATOR);
 }
 
-extern "C" fn on_tab_modes_shortcuts(_this: &Object, _sel: Sel, _sender: Id) {
-    switch_tab(TAB_MODES_SHORTCUTS);
+extern "C" fn on_tab_keys(_this: &Object, _sel: Sel, _sender: Id) {
+    switch_tab(TAB_KEYS);
 }
 
-extern "C" fn on_tab_ai_prompts(_this: &Object, _sel: Sel, _sender: Id) {
-    switch_tab(TAB_AI_PROMPTS);
+extern "C" fn on_tab_audio(_this: &Object, _sel: Sel, _sender: Id) {
+    switch_tab(TAB_AUDIO);
 }
 
-extern "C" fn on_tab_audio_input(_this: &Object, _sel: Sel, _sender: Id) {
-    switch_tab(TAB_AUDIO_INPUT);
+extern "C" fn on_tab_voice_lab(_this: &Object, _sel: Sel, _sender: Id) {
+    switch_tab(TAB_VOICE_LAB);
 }
 
-extern "C" fn on_tab_diagnostics(_this: &Object, _sel: Sel, _sender: Id) {
-    switch_tab(TAB_DIAGNOSTICS);
+extern "C" fn on_tab_engine(_this: &Object, _sel: Sel, _sender: Id) {
+    switch_tab(TAB_ENGINE);
+}
+
+extern "C" fn on_tab_user(_this: &Object, _sel: Sel, _sender: Id) {
+    switch_tab(TAB_USER);
 }
 
 extern "C" fn on_window_will_close(_this: &Object, _sel: Sel, _notification: Id) {
@@ -405,11 +426,12 @@ mod tests {
             "SettingsWindowActionHandler class should be registered"
         );
 
-        assert_selector_registered(class, sel!(onTabTranscription:), "onTabTranscription:");
-        assert_selector_registered(class, sel!(onTabModesShortcuts:), "onTabModesShortcuts:");
-        assert_selector_registered(class, sel!(onTabAiPrompts:), "onTabAiPrompts:");
-        assert_selector_registered(class, sel!(onTabAudioInput:), "onTabAudioInput:");
-        assert_selector_registered(class, sel!(onTabDiagnostics:), "onTabDiagnostics:");
+        assert_selector_registered(class, sel!(onTabCreator:), "onTabCreator:");
+        assert_selector_registered(class, sel!(onTabKeys:), "onTabKeys:");
+        assert_selector_registered(class, sel!(onTabAudio:), "onTabAudio:");
+        assert_selector_registered(class, sel!(onTabVoiceLab:), "onTabVoiceLab:");
+        assert_selector_registered(class, sel!(onTabEngine:), "onTabEngine:");
+        assert_selector_registered(class, sel!(onTabUser:), "onTabUser:");
         assert_selector_registered(class, sel!(onSaveApiSettings:), "onSaveApiSettings:");
         assert_selector_registered(class, sel!(onPromptSave:), "onPromptSave:");
         assert_selector_registered(class, sel!(onQualityRefresh:), "onQualityRefresh:");
@@ -423,6 +445,16 @@ mod tests {
             class,
             sel!(onPreviewBufferDelayChanged:),
             "onPreviewBufferDelayChanged:",
+        );
+        assert_selector_registered(
+            class,
+            sel!(onPreviewPresetChanged:),
+            "onPreviewPresetChanged:",
+        );
+        assert_selector_registered(
+            class,
+            sel!(onPreviewAdvancedToggled:),
+            "onPreviewAdvancedToggled:",
         );
         assert_selector_registered(
             class,

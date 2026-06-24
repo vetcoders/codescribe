@@ -3,15 +3,17 @@
 //! Exports embedded model data and configuration.
 //! Generates embedded_tts_data.rs / embedded_embedder_data.rs / embedded_vad_data.rs in OUT_DIR.
 //!
-//! Whisper embedding is enabled by default when the model is available at build time.
+//! Whisper embedding is OPT-IN via CODESCRIBE_EMBED_WHISPER=1 (distribution builds).
+//! Default builds resolve Whisper from the HF cache at runtime
+//! (`resolve_runtime_whisper_model_path`) — the model is held in memory for the
+//! session anyway, so baking ~1GB into every artifact only multiplied target/
+//! into tens of GB for zero runtime win (2026-06-10 policy, operator-decided).
 //! Release builds still embed Silero VAD + MiniLM embedder by default.
-//! Opt-out with CODESCRIBE_NO_EMBED=1 to skip optional embedding (except Silero).
+//! Opt-out of all optional embedding with CODESCRIBE_NO_EMBED=1 (except Silero).
 //! TTS requires opt-in via CODESCRIBE_EMBED_TTS.
 //!
 //! ⚠ Embedded Whisper materially increases artifact size.
 //!   TTS can still increase artifact size significantly — test before shipping!
-//!
-//! Created by M&K (c)2026 VetCoders
 
 use std::env;
 use std::fs;
@@ -36,6 +38,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_MODEL_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_WHISPER");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_TTS");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBEDDER_REPO");
@@ -88,9 +91,10 @@ fn main() {
             println!("cargo:rerun-if-changed={}", weights_path.display());
         }
 
-        // Whisper model embedding (default unless explicitly disabled).
+        // Whisper model embedding (OPT-IN: distribution builds only).
+        let embed_whisper_requested = env_flag("CODESCRIBE_EMBED_WHISPER", false);
         let whisper_dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
-        let whisper_embedded = !no_embed && model_exists;
+        let whisper_embedded = embed_whisper_requested && !no_embed && model_exists;
         if whisper_embedded {
             println!(
                 "cargo:warning=Embedding Whisper model from: {}",
@@ -111,7 +115,7 @@ fn main() {
             fs::write(&whisper_dest_path, whisper_content)
                 .expect("Failed to write embedded_model_data.rs");
             println!("cargo:rustc-cfg=embed_model");
-        } else if !no_embed && !model_exists {
+        } else if embed_whisper_requested && !no_embed && !model_exists {
             println!(
                 "cargo:warning=Whisper model not found for embedding: {}",
                 model_path.display()
@@ -265,10 +269,12 @@ fn main() {
             "embedded"
         } else if qube_context {
             "not_used"
-        } else if no_embed {
-            "runtime_load_from_cache"
-        } else {
+        } else if embed_whisper_requested && !no_embed {
+            // Embed was explicitly requested but the snapshot is incomplete.
             "missing_at_build_time"
+        } else {
+            // Default policy (2026-06-10): resolve from the HF cache at runtime.
+            "runtime_load_from_cache"
         };
         let embedder_summary = if qube_context {
             "not_used"

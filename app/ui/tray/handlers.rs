@@ -239,9 +239,10 @@ fn handle_show_about() {
     #[cfg(target_os = "macos")]
     {
         let version = env!("CARGO_PKG_VERSION");
+        let build = env!("CODESCRIBE_BUILD_COMMIT");
         let message = format!(
-            "CodeScribe v{}\n\nSpeech-to-text for macOS\n\nCreated by M&K (c)2026 VetCoders",
-            version
+            "CodeScribe v{} ({})\n\nSpeech-to-text for macOS\n\n𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI",
+            version, build
         );
 
         // Use osascript for native dialog

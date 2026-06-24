@@ -136,7 +136,7 @@ pub enum EngineEventWire {
         partial_runs_total: u64,
         trigger_utterance_count: u64,
         trigger_speech_count: u64,
-        trigger_watchdog_count: u64,
+        trigger_timer_count: u64,
         partial_stale_count: u64,
         partial_coalesced_count: u64,
         partial_dropped_count: u64,
@@ -213,7 +213,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 partial_runs_total,
                 trigger_utterance_count,
                 trigger_speech_count,
-                trigger_watchdog_count,
+                trigger_timer_count,
                 partial_stale_count,
                 partial_coalesced_count,
                 partial_dropped_count,
@@ -227,7 +227,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 partial_runs_total: *partial_runs_total,
                 trigger_utterance_count: *trigger_utterance_count,
                 trigger_speech_count: *trigger_speech_count,
-                trigger_watchdog_count: *trigger_watchdog_count,
+                trigger_timer_count: *trigger_timer_count,
                 partial_stale_count: *partial_stale_count,
                 partial_coalesced_count: *partial_coalesced_count,
                 partial_dropped_count: *partial_dropped_count,
@@ -355,7 +355,7 @@ mod tests {
             partial_runs_total: 7,
             trigger_utterance_count: 8,
             trigger_speech_count: 9,
-            trigger_watchdog_count: 10,
+            trigger_timer_count: 10,
             partial_stale_count: 11,
             partial_coalesced_count: 12,
             partial_dropped_count: 13,
@@ -369,7 +369,7 @@ mod tests {
             Some(7)
         );
         assert_eq!(
-            obj.get("trigger_watchdog_count").and_then(Value::as_u64),
+            obj.get("trigger_timer_count").and_then(Value::as_u64),
             Some(10)
         );
         assert_eq!(

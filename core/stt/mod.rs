@@ -97,6 +97,12 @@ fn run_apple_or_whisper<T>(
     }
 }
 
+// FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
+// the whole synchronous one-shot transcription contract (transcribe_chunk /
+// try_transcribe_long_with_segments across whisper/apple/onnx providers) is
+// parked: runtime uses the scheduler+streaming path. Kept as the documented
+// provider contract for CLI/batch revival; operator decides revive-or-delete.
+#[allow(dead_code)]
 fn candle_transcribe_chunk(
     audio: &[f32],
     sample_rate: u32,
@@ -121,6 +127,7 @@ fn candle_transcribe_long_with_segments(
     guard.transcribe_long_with_language_segments(audio, sample_rate, language)
 }
 
+#[allow(dead_code)]
 fn candle_try_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
@@ -145,6 +152,7 @@ pub(crate) fn init_active_engine() -> anyhow::Result<()> {
 }
 
 /// Transcribe a single chunk (blocking lock on whichever engine is active).
+// FORGOTTEN-GEM(vc-prune 2026-06-10): see candle_transcribe_chunk note above.
 #[allow(dead_code)]
 pub(crate) fn transcribe_chunk(
     audio: &[f32],
