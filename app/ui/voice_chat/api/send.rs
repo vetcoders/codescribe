@@ -131,6 +131,10 @@ pub fn clear_voice_chat_text_impl() {
         state.active_user_stream_index = None;
         state.active_assistant_stream_index = None;
         state.active_reasoning_stream_index = None;
+        // Grouped tool evidence is keyed by message index; a cleared transcript
+        // must drop it so stale indices never alias fresh messages.
+        state.active_tool_activity_index = None;
+        state.tool_activity_groups.clear();
         state.manual_draft.clear();
         state.prompt_history_cursor = None;
         state.is_sending = false;

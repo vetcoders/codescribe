@@ -89,6 +89,7 @@ fn add_voice_chat_error_message_impl(text: &str) {
     state.active_assistant_stream_index = None;
     state.active_reasoning_stream_index = None;
     clear_agent_thinking_state(&mut state);
+    close_tool_activity_turn(&mut state);
     let mode = message_mode_label(&state);
     state.messages.push(ChatMessage {
         role: ChatRole::System,
@@ -128,6 +129,140 @@ fn add_voice_chat_system_message_impl(text: &str) {
         is_pending_followup: false,
     });
     update_chat_view_with_state(&mut state, true);
+}
+
+/// Record a "tool started" event into the current assistant turn's grouped Tool
+/// Activity block.
+///
+/// Grouped Tool Activity: tool calls belong to the turn, not between the words.
+/// Instead of pushing a standalone card per tool, every tool event of one turn
+/// folds into a single evidence block so the assistant answer streams as one
+/// uninterrupted message. `raw_name` is debug-only; `display_name` is the
+/// human-readable label shown in the timeline.
+pub fn record_tool_executing(raw_name: &str, display_name: &str, id: &str) {
+    let raw = raw_name.to_string();
+    let display = display_name.to_string();
+    let id = id.to_string();
+    Queue::main().exec_async(move || {
+        run_when_overlay_unlocked(move || record_tool_executing_impl(&raw, &display, &id));
+    });
+}
+
+fn record_tool_executing_impl(raw_name: &str, display_name: &str, id: &str) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_agent_tab_visible(&mut state);
+    let idx = ensure_tool_activity_block(&mut state);
+    if let Some(group) = state.tool_activity_groups.get_mut(&idx) {
+        group.mark_running(id, raw_name, display_name);
+    }
+    refresh_tool_activity_message(&mut state, idx);
+    update_chat_view_with_state(&mut state, true);
+}
+
+/// Record a "tool completed/failed" event into the current turn's grouped Tool
+/// Activity block. `summary` is the compact result text (or failure reason);
+/// `is_error` flips the entry to a compact `· failed · <reason>` line. The full
+/// payload stays in the debug log, never in the conversation timeline.
+pub fn record_tool_result(
+    raw_name: &str,
+    display_name: &str,
+    id: &str,
+    summary: &str,
+    is_error: bool,
+) {
+    let raw = raw_name.to_string();
+    let display = display_name.to_string();
+    let id = id.to_string();
+    let summary = summary.to_string();
+    Queue::main().exec_async(move || {
+        run_when_overlay_unlocked(move || {
+            record_tool_result_impl(&raw, &display, &id, &summary, is_error)
+        });
+    });
+}
+
+fn record_tool_result_impl(
+    raw_name: &str,
+    display_name: &str,
+    id: &str,
+    summary: &str,
+    is_error: bool,
+) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_agent_tab_visible(&mut state);
+    let idx = ensure_tool_activity_block(&mut state);
+    if let Some(group) = state.tool_activity_groups.get_mut(&idx) {
+        group.mark_result(id, raw_name, display_name, summary, is_error);
+    }
+    refresh_tool_activity_message(&mut state, idx);
+    update_chat_view_with_state(&mut state, true);
+}
+
+/// Return the current turn's Tool Activity message index, creating the block (a
+/// single `ToolActivity` message + its empty group) if this turn has none yet.
+///
+/// One block per turn: `active_tool_activity_index` is reset to `None` when the
+/// assistant message finalizes, so the next turn's first tool event opens a new
+/// block. The block is a separate message from the assistant answer, so folding
+/// tools into it never splits the streamed answer.
+pub fn ensure_tool_activity_block(state: &mut VoiceChatOverlayState) -> usize {
+    if let Some(idx) = state.active_tool_activity_index
+        && state
+            .messages
+            .get(idx)
+            .map(|msg| msg.role == ChatRole::ToolActivity)
+            .unwrap_or(false)
+    {
+        return idx;
+    }
+
+    let mode = message_mode_label(state);
+    state.messages.push(ChatMessage {
+        role: ChatRole::ToolActivity,
+        text: String::new(),
+        is_streaming: false,
+        // Expanded by default: the per-tool lines are already compact, and
+        // failures stay visible without a click. Clicking collapses to header.
+        is_collapsed: false,
+        is_error: false,
+        timestamp: SystemTime::now(),
+        mode: Some(mode),
+        is_pending_followup: false,
+    });
+    let idx = state.messages.len() - 1;
+    state
+        .tool_activity_groups
+        .insert(idx, ToolActivityGroup::default());
+    state.active_tool_activity_index = Some(idx);
+    idx
+}
+
+/// Recompute a Tool Activity block's cached `text` from its group, honoring the
+/// block's collapsed state. The group is the source of truth; `text` is the
+/// rendered cache the bubble layer reads.
+pub fn refresh_tool_activity_message(state: &mut VoiceChatOverlayState, idx: usize) {
+    let collapsed = state
+        .messages
+        .get(idx)
+        .map(|msg| msg.is_collapsed)
+        .unwrap_or(false);
+    let Some(text) = state
+        .tool_activity_groups
+        .get(&idx)
+        .map(|group| group.render(collapsed))
+    else {
+        return;
+    };
+    if let Some(msg) = state.messages.get_mut(idx) {
+        msg.text = text;
+    }
+}
+
+/// Close the current turn's Tool Activity block. The block message + its group
+/// stay in the log (rendered as finished); only the "open" pointer resets so the
+/// next assistant turn starts a fresh block.
+pub fn close_tool_activity_turn(state: &mut VoiceChatOverlayState) {
+    state.active_tool_activity_index = None;
 }
 
 /// Add a user message to the chat
@@ -232,6 +367,13 @@ pub fn handle_message_bubble_click_from_recognizer(sender: Id) {
     match message.role {
         ChatRole::Reasoning => {
             message.is_collapsed = !message.is_collapsed;
+            update_chat_view_with_state(&mut state, false);
+        }
+        ChatRole::ToolActivity => {
+            // Toggle compact header-only ↔ expanded per-tool lines, then
+            // re-render the cached block text from its group.
+            message.is_collapsed = !message.is_collapsed;
+            refresh_tool_activity_message(&mut state, index);
             update_chat_view_with_state(&mut state, false);
         }
         ChatRole::Assistant if !message.text.is_empty() => {
@@ -560,7 +702,7 @@ pub fn message_render_role(message: &ChatMessage) -> BubbleRole {
     match message.role {
         ChatRole::User => BubbleRole::User,
         ChatRole::Assistant => BubbleRole::Assistant,
-        ChatRole::System | ChatRole::Reasoning => BubbleRole::System,
+        ChatRole::System | ChatRole::Reasoning | ChatRole::ToolActivity => BubbleRole::System,
     }
 }
 
@@ -603,6 +745,7 @@ pub fn message_role_label(role: ChatRole) -> &'static str {
         ChatRole::Assistant => "Assistant",
         ChatRole::System => "System",
         ChatRole::Reasoning => "Reasoning",
+        ChatRole::ToolActivity => "Tool activity",
     }
 }
 
@@ -973,6 +1116,7 @@ pub fn finalize_assistant_message_impl(text: &str, is_error: bool) {
         msg.is_error = is_error;
     }
     clear_agent_thinking_state(&mut state);
+    close_tool_activity_turn(&mut state);
     state.is_sending = false;
     update_chat_view_with_state(&mut state, true);
     update_send_button_with_state(&mut state);
@@ -992,6 +1136,7 @@ pub fn finalize_assistant_message_state_only_impl(is_error: bool) {
         last.is_error = is_error;
     }
     clear_agent_thinking_state(&mut state);
+    close_tool_activity_turn(&mut state);
     state.is_sending = false;
     update_chat_view_with_state(&mut state, true);
     update_send_button_with_state(&mut state);
@@ -1073,7 +1218,7 @@ pub fn active_stream_index_mut(
         ChatRole::User => Some(&mut state.active_user_stream_index),
         ChatRole::Assistant => Some(&mut state.active_assistant_stream_index),
         ChatRole::Reasoning => Some(&mut state.active_reasoning_stream_index),
-        ChatRole::System => None,
+        ChatRole::System | ChatRole::ToolActivity => None,
     }
 }
 
@@ -1082,7 +1227,7 @@ pub fn active_stream_index(state: &VoiceChatOverlayState, role: ChatRole) -> Opt
         ChatRole::User => state.active_user_stream_index,
         ChatRole::Assistant => state.active_assistant_stream_index,
         ChatRole::Reasoning => state.active_reasoning_stream_index,
-        ChatRole::System => None,
+        ChatRole::System | ChatRole::ToolActivity => None,
     }
 }
 
@@ -1226,7 +1371,10 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
                 copy_action_target: state.action_handler.map(|p| p as Id),
                 measure_cache: Some(measure_cache_ptr),
             });
-            if matches!(message_role, ChatRole::Assistant | ChatRole::Reasoning) {
+            if matches!(
+                message_role,
+                ChatRole::Assistant | ChatRole::Reasoning | ChatRole::ToolActivity
+            ) {
                 attach_message_bubble_click_recognizer(state, bubble, index);
             }
             stack_view_add(container, bubble);

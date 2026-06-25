@@ -498,18 +498,6 @@ pub(crate) fn tool_running_status(friendly: &str) -> String {
     }
 }
 
-/// Compact one-line evidence entry for a completed tool call. Replaces the old
-/// pair of raw "Tool call started/finished: mcp__…" cards with a single readable
-/// line. The full raw name + summary still goes to the debug log.
-pub(crate) fn tool_evidence_line(friendly: &str, summary: &str) -> String {
-    let summary = summary.trim();
-    if summary.is_empty() {
-        format!("{friendly} completed")
-    } else {
-        format!("{friendly} completed · {summary}")
-    }
-}
-
 async fn apply_agent_ui_event(event: AgentUiEvent, overlay_state: &mut AgentUiOverlayState) {
     match event {
         AgentUiEvent::TextDelta(delta) => {
@@ -541,24 +529,32 @@ async fn apply_agent_ui_event(event: AgentUiEvent, overlay_state: &mut AgentUiOv
             // (this is what left the overlay silent). Reuses the proven append path.
             crate::ui::voice_chat::append_voice_chat_reasoning_delta(&delta);
         }
-        AgentUiEvent::ToolExecuting { name, .. } => {
-            // Collapsible Tool Evidence: no per-start chat card. The status pill
-            // communicates activity; the timeline stays for conversation. The raw
+        AgentUiEvent::ToolExecuting { name, id } => {
+            // Grouped Tool Activity: no per-start chat card. The status pill
+            // communicates live activity; the timeline stays for conversation.
+            // The tool is folded into this turn's single evidence block. The raw
             // wire name is debug-only.
             let friendly = friendly_tool_name(&name);
             debug!("Tool executing: {name} -> {friendly}");
             crate::ui::voice_chat::update_voice_chat_status(&tool_running_status(&friendly));
+            crate::ui::voice_chat::record_tool_executing(&name, &friendly, &id);
         }
-        AgentUiEvent::ToolResult { name, summary, .. } => {
-            // One compact, human-readable evidence line per completed call instead
-            // of the raw "Tool call finished: mcp__…" card. Raw name + full summary
-            // are kept in the debug log (raw tool output is debug, not chat).
+        AgentUiEvent::ToolResult {
+            name,
+            id,
+            summary,
+            is_error,
+        } => {
+            // Fold the completed/failed call into this turn's grouped evidence
+            // block instead of pushing a standalone System card between answer
+            // chunks. Raw name + full summary stay in the debug log (raw tool
+            // output is debug, not chat).
             let friendly = friendly_tool_name(&name);
-            debug!("Tool result: {name} -> {friendly} | raw summary: {summary}");
+            debug!(
+                "Tool result: {name} -> {friendly} | is_error={is_error} | raw summary: {summary}"
+            );
             crate::ui::voice_chat::update_voice_chat_status("Thinking…");
-            crate::ui::voice_chat::add_voice_chat_system_message(&tool_evidence_line(
-                &friendly, &summary,
-            ));
+            crate::ui::voice_chat::record_tool_result(&name, &friendly, &id, &summary, is_error);
         }
         AgentUiEvent::Done => {}
         AgentUiEvent::Error(message) => {
@@ -1219,17 +1215,6 @@ mod tests {
             tool_running_status("Create Issue · Github"),
             "Running Create Issue · Github…"
         );
-    }
-
-    #[test]
-    fn tool_evidence_line_is_compact() {
-        assert_eq!(
-            tool_evidence_line("Web search", "10 results"),
-            "Web search completed · 10 results"
-        );
-        assert_eq!(tool_evidence_line("Summarize", ""), "Summarize completed");
-        // No raw transport noise leaks into the evidence line.
-        assert!(!tool_evidence_line("Web search", "10 results").contains("mcp__"));
     }
 
     struct NoopTestProvider;
