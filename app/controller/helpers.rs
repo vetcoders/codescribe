@@ -470,6 +470,19 @@ pub(crate) fn friendly_tool_name(raw: &str) -> String {
             return "Video search".into();
         }
         "mcp__brave-search__brave_summarizer" | "brave_summarizer" => return "Summarize".into(),
+        // Structural / intent / fleet MCP surfaces the operator named explicitly:
+        // the generic `mcp__` fallback would read "Context · Loctree mcp", which is
+        // both reversed and noisy. Pin the exact human labels here.
+        "mcp__loctree-mcp__context" => return "Loctree context".into(),
+        "mcp__loctree-mcp__find" => return "Loctree occurrences/find".into(),
+        "mcp__aicx-mcp__aicx_intents" => return "AICX intents".into(),
+        "mcp__vibecrafted-mcp__vc_run_observe" => return "Vibecrafted observe".into(),
+        // Native (non-mcp) tools: the bare snake_case prettifies to a reversed,
+        // verbose label ("Read Clipboard"); the operator wants noun-first copy.
+        "read_clipboard" => return "Clipboard read".into(),
+        "write_clipboard" => return "Clipboard write".into(),
+        "take_screenshot" => return "Screenshot".into(),
+        "transcribe_audio" => return "Audio transcription".into(),
         _ => {}
     }
     if let Some(rest) = raw.strip_prefix("mcp__") {
@@ -1205,6 +1218,56 @@ mod tests {
         assert_eq!(friendly_tool_name("read_file"), "Read File");
         // The raw mcp__ wire form must never survive verbatim.
         assert!(!friendly_tool_name("mcp__github__create_issue").contains("mcp__"));
+    }
+
+    #[test]
+    fn friendly_tool_name_honors_operator_label_table() {
+        // The operator's explicit raw→label table. Before this mapping these all
+        // fell into the generic `mcp__` / prettify fallback and read reversed or
+        // noisy (e.g. "Context · Loctree mcp", "Read Clipboard").
+        assert_eq!(
+            friendly_tool_name("mcp__loctree-mcp__context"),
+            "Loctree context"
+        );
+        assert_eq!(
+            friendly_tool_name("mcp__loctree-mcp__find"),
+            "Loctree occurrences/find"
+        );
+        assert_eq!(
+            friendly_tool_name("mcp__aicx-mcp__aicx_intents"),
+            "AICX intents"
+        );
+        assert_eq!(
+            friendly_tool_name("mcp__vibecrafted-mcp__vc_run_observe"),
+            "Vibecrafted observe"
+        );
+        assert_eq!(friendly_tool_name("read_clipboard"), "Clipboard read");
+        assert_eq!(friendly_tool_name("write_clipboard"), "Clipboard write");
+        assert_eq!(friendly_tool_name("take_screenshot"), "Screenshot");
+        assert_eq!(
+            friendly_tool_name("transcribe_audio"),
+            "Audio transcription"
+        );
+    }
+
+    #[test]
+    fn regression_sequence_raw_names_produce_expected_runtime_labels() {
+        // Operator regression scenario: the grouped block must show exactly these
+        // labels at runtime — not just in the pure-module test that hardcodes the
+        // display_name. This proves the controller maps the raw wire names the same
+        // way the timeline expects.
+        assert_eq!(
+            friendly_tool_name("mcp__brave-search__brave_web_search"),
+            "Web search"
+        );
+        assert_eq!(
+            friendly_tool_name("mcp__loctree-mcp__context"),
+            "Loctree context"
+        );
+        assert_eq!(
+            friendly_tool_name("mcp__aicx-mcp__aicx_intents"),
+            "AICX intents"
+        );
     }
 
     #[test]
