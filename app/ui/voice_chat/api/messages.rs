@@ -532,8 +532,70 @@ pub fn finalize_streaming_reasoning(state: &mut VoiceChatOverlayState) {
     state.active_reasoning_stream_index = None;
 }
 
+/// Hard cap on characters rendered/measured per bubble. A backstop against
+/// pathological payloads (e.g. a pasted base64 blob) freezing the UI.
+const MAX_BUBBLE_DISPLAY_CHARS: usize = 20_000;
+
+/// Longest run of non-whitespace characters allowed before we inject a break.
+/// CoreText's OpenType shaping (`CTLineCreateWithAttributedString`) spins on the
+/// main thread for very long unbroken runs (a 12.7k-char base64 line hung the
+/// app), so we break them so the typesetter can wrap instead.
+const MAX_UNBROKEN_RUN: usize = 200;
+
+fn has_long_unbroken_run(text: &str, max_run: usize) -> bool {
+    let mut run = 0usize;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            run = 0;
+        } else {
+            run += 1;
+            if run > max_run {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn break_long_runs(text: &str, max_run: usize) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / max_run.max(1) + 1);
+    let mut run = 0usize;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            run = 0;
+            out.push(ch);
+        } else {
+            if run >= max_run {
+                out.push('\n');
+                run = 0;
+            }
+            out.push(ch);
+            run += 1;
+        }
+    }
+    out
+}
+
+/// Make any bubble text safe to render: cap total length and break unbroken runs
+/// so CoreText never spins on the main thread. Normal messages pass through
+/// unchanged.
+pub fn cap_bubble_display_text(text: &str) -> String {
+    let capped = if text.chars().count() > MAX_BUBBLE_DISPLAY_CHARS {
+        let mut t: String = text.chars().take(MAX_BUBBLE_DISPLAY_CHARS).collect();
+        t.push_str("\n… (truncated for display; full text preserved in the thread)");
+        t
+    } else {
+        text.to_string()
+    };
+    if has_long_unbroken_run(&capped, MAX_UNBROKEN_RUN) {
+        break_long_runs(&capped, MAX_UNBROKEN_RUN)
+    } else {
+        capped
+    }
+}
+
 pub fn display_text_for_message(message: &ChatMessage) -> String {
-    if message.role == ChatRole::Reasoning && message.is_collapsed {
+    let raw = if message.role == ChatRole::Reasoning && message.is_collapsed {
         reasoning_summary_header(message)
     } else if message.is_streaming && message.text.is_empty() {
         "• • •".to_string()
@@ -541,15 +603,17 @@ pub fn display_text_for_message(message: &ChatMessage) -> String {
         format!("{} …", message.text)
     } else {
         message.text.clone()
-    }
+    };
+    cap_bubble_display_text(&raw)
 }
 
 pub fn bubble_text_for_message(message: &ChatMessage) -> String {
-    if message.role == ChatRole::Reasoning && message.is_collapsed {
+    let raw = if message.role == ChatRole::Reasoning && message.is_collapsed {
         reasoning_summary_header(message)
     } else {
         message.text.clone()
-    }
+    };
+    cap_bubble_display_text(&raw)
 }
 
 pub fn bubble_streaming_for_message(message: &ChatMessage) -> bool {
@@ -1263,5 +1327,48 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
                 scroll_agent_to_bottom(None, Some(scroll_view_ptr));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bubble_display_tests {
+    use super::{
+        MAX_BUBBLE_DISPLAY_CHARS, MAX_UNBROKEN_RUN, break_long_runs, cap_bubble_display_text,
+        has_long_unbroken_run,
+    };
+
+    #[test]
+    fn normal_text_passes_through_unchanged() {
+        let text = "A normal multi-line message.\nSecond line with spaces.";
+        assert_eq!(cap_bubble_display_text(text), text);
+    }
+
+    #[test]
+    fn detects_and_breaks_long_unbroken_run() {
+        // Simulates a pasted base64 blob: one very long run with no whitespace.
+        let blob = "a".repeat(12_776);
+        assert!(has_long_unbroken_run(&blob, MAX_UNBROKEN_RUN));
+
+        let broken = break_long_runs(&blob, MAX_UNBROKEN_RUN);
+        // No remaining run exceeds the cap → CoreText can wrap instead of spinning.
+        assert!(!has_long_unbroken_run(&broken, MAX_UNBROKEN_RUN));
+        // Content preserved (only newlines injected).
+        assert_eq!(broken.chars().filter(|c| *c == 'a').count(), 12_776);
+    }
+
+    #[test]
+    fn caps_total_length() {
+        let huge = "x".repeat(MAX_BUBBLE_DISPLAY_CHARS * 2);
+        let capped = cap_bubble_display_text(&huge);
+        assert!(capped.contains("truncated for display"));
+        // Capped well below the original length.
+        assert!(capped.chars().count() < MAX_BUBBLE_DISPLAY_CHARS + 4_000);
+    }
+
+    #[test]
+    fn whitespace_resets_run_counter() {
+        // Many short words separated by spaces must not be flagged.
+        let text = "word ".repeat(5_000);
+        assert!(!has_long_unbroken_run(&text, MAX_UNBROKEN_RUN));
     }
 }
