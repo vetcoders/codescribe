@@ -1098,15 +1098,24 @@ Tools (optional): `brew install poppler ocrmypdf tesseract-lang`.)\n",
         let _ = (&mut f).take(MAX_FILE_BYTES as u64).read_to_end(&mut buf);
 
         let Ok(mut s) = String::from_utf8(buf) else {
-            let is_image = matches!(
-                ext.as_str(),
-                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff"
-            );
-            if is_image {
-                out.push_str("(image detected; will be sent as vision input)\n");
-                image_paths.push(display.to_string());
+            // Only claim "will be sent as vision input" for images the model can
+            // actually receive: a vision-supported format within the byte cap.
+            // Anything else gets an honest message and is NOT added to the image
+            // paths list, so the agent send path never sees an unsendable image.
+            if codescribe_core::attachment::image_media_type(path).is_some() {
+                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                if size > codescribe_core::attachment::MAX_VISION_IMAGE_BYTES {
+                    out.push_str(&format!(
+                        "(image too large for vision input: {} bytes > {} max; not sent)\n",
+                        size,
+                        codescribe_core::attachment::MAX_VISION_IMAGE_BYTES
+                    ));
+                } else {
+                    out.push_str("(image detected; will be sent as vision input)\n");
+                    image_paths.push(display.to_string());
+                }
             } else {
-                out.push_str("(skipped: not UTF-8 text)\n");
+                out.push_str("(skipped: unsupported image format or not UTF-8 text)\n");
             }
             continue;
         };

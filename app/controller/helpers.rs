@@ -8,13 +8,13 @@ use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::{Config, default_assistive_model};
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ContentBlock, Message, Role, StreamOptions, Thread, ThreadMessage,
-    ThreadStore, ToolRegistry,
+    AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, Role, StreamOptions,
+    Thread, ThreadMessage, ThreadStore, ToolRegistry,
 };
 use serde_json::json;
 
@@ -680,6 +680,70 @@ fn agent_send_error_is_transient(error: &anyhow::Error) -> bool {
     .any(|pattern| message.contains(pattern))
 }
 
+/// Maximum number of image attachments forwarded to the model per message.
+/// Matches the legacy (`ai_formatting`) cap so both send paths behave alike.
+const MAX_AGENT_VISION_IMAGES: usize = 4;
+
+/// Split an outgoing payload into its visible text and the loaded image
+/// attachments referenced by the `ATTACHMENTS (image paths)` marker.
+///
+/// This is the fix for the attachment pipeline: the voice-chat send path appends
+/// image paths to the payload as *text* (`build_attachments_block`). Without this
+/// step the agent path forwarded them as plain text and the model never received
+/// real vision input. Here we strip the marker block from the text and load each
+/// image as bytes so `AgentSession::send` can emit proper `input_image` blocks.
+///
+/// Returns `(cleaned_text, loaded_images, dropped_names)`. `dropped_names` lists
+/// images that could not be forwarded (missing/unreadable/too large) so the
+/// caller can surface a visible attachment error instead of silently continuing.
+fn build_image_attachments_from_text(text: &str) -> (String, Vec<ImageAttachment>, Vec<String>) {
+    let (cleaned, mut paths) = codescribe_core::attachment::parse_image_attachment_block(text);
+
+    if paths.is_empty() {
+        return (cleaned, Vec::new(), Vec::new());
+    }
+
+    let mut dropped: Vec<String> = Vec::new();
+
+    if paths.len() > MAX_AGENT_VISION_IMAGES {
+        for extra in &paths[MAX_AGENT_VISION_IMAGES..] {
+            dropped.push(file_label(extra));
+        }
+        warn!(
+            "Too many image attachments ({}); forwarding first {} as vision input",
+            paths.len(),
+            MAX_AGENT_VISION_IMAGES
+        );
+        paths.truncate(MAX_AGENT_VISION_IMAGES);
+    }
+
+    let mut attachments = Vec::with_capacity(paths.len());
+    for path in &paths {
+        match codescribe_core::attachment::load_image_for_vision(
+            path,
+            codescribe_core::attachment::MAX_VISION_IMAGE_BYTES,
+        ) {
+            Some((data, media_type)) => attachments.push(ImageAttachment { data, media_type }),
+            None => {
+                warn!(
+                    "Dropping image attachment (unsupported, unreadable, or too large): {}",
+                    path.display()
+                );
+                dropped.push(file_label(path));
+            }
+        }
+    }
+
+    (cleaned, attachments, dropped)
+}
+
+/// Short, user-facing label for an attachment path (file name, path fallback).
+fn file_label(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
 async fn run_agent_send_path(
     runtime_state: &mut AgentRuntimeState,
     runtime_generation: u64,
@@ -706,7 +770,22 @@ async fn run_agent_send_path(
 
     let send_result = {
         let (session, ui_rx) = (&mut runtime.session, &mut runtime.ui_rx);
-        let send_future = session.send(text, Vec::new(), &stream_options);
+        let (user_text, image_attachments, dropped_images) =
+            build_image_attachments_from_text(&text);
+        if !image_attachments.is_empty() {
+            info!(
+                "Agent send: forwarding {} image(s) as vision input",
+                image_attachments.len()
+            );
+        }
+        if !dropped_images.is_empty() {
+            crate::ui::voice_chat::add_voice_chat_system_message(&format!(
+                "⚠️ Could not attach {} image(s) as vision input: {}",
+                dropped_images.len(),
+                dropped_images.join(", ")
+            ));
+        }
+        let send_future = session.send(user_text, image_attachments, &stream_options);
         tokio::pin!(send_future);
 
         let result = loop {
@@ -1643,5 +1722,63 @@ mod tests {
         assert_eq!(runtime_state.runtime_generation, 12);
         assert!(runtime_state.runtime_degraded);
         assert!(runtime_state.runtime.is_none());
+    }
+
+    #[test]
+    fn test_build_image_attachments_passthrough_without_marker() {
+        let text = "plain message, no attachments";
+        let (cleaned, images, dropped) = build_image_attachments_from_text(text);
+        assert_eq!(cleaned, text);
+        assert!(images.is_empty());
+        assert!(dropped.is_empty());
+    }
+
+    #[test]
+    fn test_build_image_attachments_loads_real_image_and_reports_dropped() {
+        let dir = std::env::temp_dir().join(format!("cs_helpers_vision_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let img = dir.join("shot.png");
+        std::fs::write(&img, b"\x89PNG\r\n\x1a\nfake").unwrap();
+        let missing = dir.join("gone.png");
+
+        let text = format!(
+            "describe these\n\n---\nATTACHMENTS (image paths)\n- {}\n- {}\n",
+            img.display(),
+            missing.display()
+        );
+        let (cleaned, images, dropped) = build_image_attachments_from_text(&text);
+
+        // Marker block and raw paths are gone from the model-visible text.
+        assert!(!cleaned.contains("ATTACHMENTS (image paths)"));
+        assert!(!cleaned.contains(&img.display().to_string()));
+        assert!(cleaned.contains("describe these"));
+
+        // Only the readable image becomes a real vision attachment; the missing
+        // one is reported as dropped (visible error), never forwarded as text.
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].media_type, "image/png");
+        assert!(!images[0].data.is_empty());
+        assert_eq!(dropped, vec!["gone.png".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_build_image_attachments_caps_and_reports_overflow() {
+        let dir = std::env::temp_dir().join(format!("cs_helpers_cap_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut lines = String::from("multi\n\nATTACHMENTS (image paths)\n");
+        for i in 0..(MAX_AGENT_VISION_IMAGES + 2) {
+            let p = dir.join(format!("img{i}.png"));
+            std::fs::write(&p, b"\x89PNG\r\n\x1a\nfake").unwrap();
+            lines.push_str(&format!("- {}\n", p.display()));
+        }
+        let (_cleaned, images, dropped) = build_image_attachments_from_text(&lines);
+
+        // Cap honored, overflow surfaced (not silently dropped).
+        assert_eq!(images.len(), MAX_AGENT_VISION_IMAGES);
+        assert_eq!(dropped.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
