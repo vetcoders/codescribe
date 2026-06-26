@@ -229,6 +229,257 @@ impl ToolActivityGroup {
         }
         out
     }
+
+    /// Roll the turn's entries up by **source** (the system behind the wire
+    /// name), preserving first-seen order. Two Loctree calls become one
+    /// `Loctree` row; counts and the richest result text are folded in.
+    fn source_summaries(&self) -> Vec<SourceSummary> {
+        let mut out: Vec<SourceSummary> = Vec::new();
+        for entry in &self.entries {
+            let source = source_label(&entry.raw_name, &entry.display_name);
+            let slot = match out.iter_mut().find(|s| s.source == source) {
+                Some(slot) => slot,
+                None => {
+                    out.push(SourceSummary {
+                        source,
+                        completed: 0,
+                        failed: 0,
+                        running: 0,
+                        best_count: None,
+                        best_summary: String::new(),
+                        first_error: String::new(),
+                    });
+                    out.last_mut().expect("just pushed a source slot")
+                }
+            };
+            match entry.status {
+                ToolStatus::Completed => {
+                    slot.completed += 1;
+                    if let Some(count) = entry.result_count {
+                        slot.best_count = Some(slot.best_count.map_or(count, |c| c.max(count)));
+                    }
+                    let summary = entry.summary.trim();
+                    if summary.chars().count() > slot.best_summary.chars().count() {
+                        slot.best_summary = summary.to_string();
+                    }
+                }
+                ToolStatus::Failed => {
+                    slot.failed += 1;
+                    let error = entry.error.trim();
+                    if slot.first_error.is_empty() && !error.is_empty() {
+                        slot.first_error = error.to_string();
+                    }
+                }
+                ToolStatus::Running => slot.running += 1,
+            }
+        }
+        out
+    }
+
+    /// The default operator-facing evidence block for one assistant turn.
+    ///
+    /// `What I checked · N tools[ · M warning(s)]`, then one compact line per
+    /// source (`- Source: detail.`), then a `Key finding:` verdict when one can
+    /// be extracted. Deterministic and self-contained — it echoes the results it
+    /// already has, never fabricates prose, and never lets a raw `mcp__` wire
+    /// name reach the rendered text. This is layer 3 of the product layering
+    /// (raw payload = debug, technical list = [`render`], summary = default).
+    pub fn evidence_summary(&self) -> String {
+        let summaries = self.source_summaries();
+        if summaries.is_empty() {
+            return "What I checked".to_string();
+        }
+        let tools = summaries.len();
+        let warnings: usize = summaries.iter().map(|s| s.failed).sum();
+        let tool_noun = if tools == 1 { "tool" } else { "tools" };
+        let mut header = format!("What I checked · {tools} {tool_noun}");
+        if warnings > 0 {
+            let warn_noun = if warnings == 1 { "warning" } else { "warnings" };
+            header.push_str(&format!(" · {warnings} {warn_noun}"));
+        }
+        let mut out = header;
+        for summary in &summaries {
+            out.push('\n');
+            out.push_str(&format!(
+                "- {}: {}",
+                summary.source,
+                finish_clause(&source_detail(summary))
+            ));
+        }
+        if let Some(key) = evidence_key_finding(&summaries) {
+            out.push('\n');
+            out.push_str(&format!("Key finding: {key}"));
+        }
+        out
+    }
+}
+
+// ---- Evidence Summary helpers (deterministic, no LLM) -------------------------
+//
+// The summary groups calls by SOURCE — the system behind the wire name — so it
+// answers "which sources did I consult", not "how many wire calls fired". These
+// are pure, module-local, and unit-testable. Kept separate from
+// `friendly_tool_name` (controller/helpers.rs): that table yields the *specific*
+// per-call label ("Loctree context"); this yields the *coarse* system heading
+// ("Loctree"). Different granularity, not a duplicate path.
+
+/// One source's rolled-up evidence within a turn.
+#[derive(Debug, Clone)]
+struct SourceSummary {
+    source: String,
+    completed: usize,
+    failed: usize,
+    running: usize,
+    best_count: Option<usize>,
+    best_summary: String,
+    first_error: String,
+}
+
+/// Coarse source/system a tool call belongs to. Keyed on the wire `raw_name`
+/// (the stable system identity); `display_name` is the fallback for native
+/// tools that have no `mcp__server__tool` shape. Never emits a raw `mcp__` name.
+fn source_label(raw_name: &str, display_name: &str) -> String {
+    if let Some(rest) = raw_name.strip_prefix("mcp__") {
+        let server = rest.split("__").next().unwrap_or("");
+        return match server {
+            "brave-search" => "Web search".to_string(),
+            "loctree-mcp" => "Loctree".to_string(),
+            "aicx-mcp" => "AICX".to_string(),
+            "vibecrafted-mcp" => "Vibecrafted".to_string(),
+            "" => fallback_source(display_name),
+            other => prettify_source(other),
+        };
+    }
+    match raw_name {
+        "read_clipboard" | "write_clipboard" => "Clipboard".to_string(),
+        "take_screenshot" => "Screenshot".to_string(),
+        "transcribe_audio" => "Audio".to_string(),
+        _ => fallback_source(display_name),
+    }
+}
+
+/// Use the already-friendly display name when no source mapping applies, so the
+/// line still reads cleanly instead of falling back to a wire token.
+fn fallback_source(display_name: &str) -> String {
+    let trimmed = display_name.trim();
+    if trimmed.is_empty() {
+        "Tool".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Prettify an unknown MCP server segment (`some-server` → `Some server`) so the
+/// summary stays readable without leaking the `mcp__` addressing scheme.
+fn prettify_source(server: &str) -> String {
+    let cleaned: String = server
+        .chars()
+        .map(|c| if c == '-' || c == '_' { ' ' } else { c })
+        .collect();
+    let mut chars = cleaned.trim().chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => "Tool".to_string(),
+    }
+}
+
+/// Default action verb for a source when a completed call left no result text,
+/// so the line reads as an action ("Loctree: scanned code surfaces") rather than
+/// a bare "completed".
+fn source_action(source: &str) -> &'static str {
+    match source {
+        "Web search" => "searched the web",
+        "Loctree" => "scanned code surfaces",
+        "AICX" => "checked intent history",
+        "Vibecrafted" => "verified run status",
+        "Clipboard" => "read the clipboard",
+        "Screenshot" => "captured the screen",
+        "Audio" => "transcribed audio",
+        _ => "checked",
+    }
+}
+
+/// Compact result phrase for one source line. Leads with a failure when the
+/// source only failed; otherwise leads with the real result (count or richest
+/// summary, or the action verb) and appends running/warning counts.
+fn source_detail(summary: &SourceSummary) -> String {
+    if summary.failed > 0 && summary.completed == 0 && summary.running == 0 {
+        return if summary.first_error.is_empty() {
+            "failed".to_string()
+        } else {
+            format!("failed — {}", clamp_suffix(&summary.first_error))
+        };
+    }
+
+    let mut detail = if let Some(count) = summary.best_count {
+        count_phrase(count)
+    } else if !summary.best_summary.is_empty() {
+        clamp_suffix(&summary.best_summary)
+    } else {
+        source_action(&summary.source).to_string()
+    };
+    if summary.running > 0 {
+        detail.push_str(&format!(" · {} running", summary.running));
+    }
+    if summary.failed > 0 {
+        let noun = if summary.failed == 1 {
+            "warning"
+        } else {
+            "warnings"
+        };
+        detail.push_str(&format!(" · {} {noun}", summary.failed));
+    }
+    detail
+}
+
+/// `N result` / `N results`.
+fn count_phrase(count: usize) -> String {
+    let noun = if count == 1 { "result" } else { "results" };
+    format!("{count} {noun}")
+}
+
+/// Deterministic single-line verdict: failures dominate; otherwise echo the most
+/// informative completed result. `None` when there is nothing notable to report.
+fn evidence_key_finding(summaries: &[SourceSummary]) -> Option<String> {
+    if let Some(failed) = summaries.iter().find(|s| s.failed > 0) {
+        return Some(if failed.first_error.is_empty() {
+            format!("{} check failed.", failed.source)
+        } else {
+            format!(
+                "{} check failed: {}",
+                failed.source,
+                finish_clause(&clamp_suffix(&failed.first_error))
+            )
+        });
+    }
+
+    let richest = summaries
+        .iter()
+        .filter(|s| !s.best_summary.is_empty() || s.best_count.is_some())
+        .max_by_key(|s| s.best_summary.chars().count())?;
+    let detail = if richest.best_summary.is_empty() {
+        match richest.best_count {
+            Some(count) => count_phrase(count),
+            None => return None,
+        }
+    } else {
+        clamp_suffix(&richest.best_summary)
+    };
+    Some(format!("{} — {}", richest.source, finish_clause(&detail)))
+}
+
+/// Append a sentence period unless the clause already ends in terminal
+/// punctuation (including the ellipsis a clamp may add).
+fn finish_clause(text: &str) -> String {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.ends_with(['.', '!', '?', '…']) {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.")
+    }
 }
 
 #[cfg(test)]
@@ -374,5 +625,149 @@ mod tests {
             "failed line must stay compact: {line}"
         );
         assert!(line.ends_with('…'), "clamped suffix is elided");
+    }
+
+    // ---- Evidence Summary (default operator-facing block) ----------------
+
+    #[test]
+    fn evidence_summary_has_semantic_heading_and_one_line_per_source() {
+        let group = group_from_regression();
+        let expected = "What I checked · 3 tools · 1 warning\n\
+             - Web search: 10 results.\n\
+             - Loctree: scanned code surfaces.\n\
+             - AICX: failed — empty index.\n\
+             Key finding: AICX check failed: empty index.";
+        assert_eq!(group.evidence_summary(), expected);
+    }
+
+    #[test]
+    fn evidence_summary_collapses_repeat_calls_to_one_source() {
+        // Two Loctree calls in a turn must read as ONE "Loctree" source, not two
+        // rows — the summary answers "which sources", not "how many wire calls".
+        let mut group = ToolActivityGroup::default();
+        group.mark_result(
+            "c1",
+            "mcp__loctree-mcp__context",
+            "Loctree context",
+            "scanned voice_chat",
+            false,
+        );
+        group.mark_result(
+            "c2",
+            "mcp__loctree-mcp__find",
+            "Loctree occurrences/find",
+            "clipboard 230 occurrences, schowek 4 occurrences",
+            false,
+        );
+        let summary = group.evidence_summary();
+        assert_eq!(
+            summary,
+            "What I checked · 1 tool\n\
+             - Loctree: clipboard 230 occurrences, schowek 4 occurrences.\n\
+             Key finding: Loctree — clipboard 230 occurrences, schowek 4 occurrences."
+        );
+        assert_eq!(
+            summary.matches("- Loctree:").count(),
+            1,
+            "two Loctree calls fold into one source line"
+        );
+    }
+
+    #[test]
+    fn evidence_summary_regression_scenario_three_distinct_sources() {
+        // The operator's suggested regression event sequence.
+        let mut group = ToolActivityGroup::default();
+        group.mark_running("c1", "mcp__brave-search__brave_web_search", "Web search");
+        group.mark_result(
+            "c1",
+            "mcp__brave-search__brave_web_search",
+            "Web search",
+            "10 results",
+            false,
+        );
+        group.mark_running("c2", "mcp__loctree-mcp__find", "Loctree occurrences/find");
+        group.mark_result(
+            "c2",
+            "mcp__loctree-mcp__find",
+            "Loctree occurrences/find",
+            "clipboard 230 occurrences, schowek 4 occurrences",
+            false,
+        );
+        group.mark_running(
+            "c3",
+            "mcp__vibecrafted-mcp__vc_run_observe",
+            "Vibecrafted observe",
+        );
+        group.mark_result(
+            "c3",
+            "mcp__vibecrafted-mcp__vc_run_observe",
+            "Vibecrafted observe",
+            "run completed",
+            false,
+        );
+        assert_eq!(
+            group.evidence_summary(),
+            "What I checked · 3 tools\n\
+             - Web search: 10 results.\n\
+             - Loctree: clipboard 230 occurrences, schowek 4 occurrences.\n\
+             - Vibecrafted: run completed.\n\
+             Key finding: Loctree — clipboard 230 occurrences, schowek 4 occurrences."
+        );
+    }
+
+    #[test]
+    fn evidence_summary_singular_nouns_for_one_tool_one_warning() {
+        let mut group = ToolActivityGroup::default();
+        group.mark_result(
+            "c1",
+            "mcp__aicx-mcp__aicx_intents",
+            "AICX intents",
+            "boom",
+            true,
+        );
+        assert_eq!(
+            group.evidence_summary(),
+            "What I checked · 1 tool · 1 warning\n\
+             - AICX: failed — boom.\n\
+             Key finding: AICX check failed: boom."
+        );
+    }
+
+    #[test]
+    fn evidence_summary_never_leaks_raw_wire_names() {
+        let group = group_from_regression();
+        assert!(
+            !group.evidence_summary().contains("mcp__"),
+            "raw MCP names must never reach the evidence summary"
+        );
+    }
+
+    #[test]
+    fn evidence_summary_failed_line_is_clamped_not_a_stack_dump() {
+        let mut group = ToolActivityGroup::default();
+        let huge = "panic at line 42: ".repeat(40);
+        group.mark_result("c1", "mcp__x__y", "Tool", &huge, true);
+        let summary = group.evidence_summary();
+        for line in summary.lines() {
+            assert!(
+                line.chars().count() < 160,
+                "no line may become a stack dump: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_summary_unknown_server_prettifies_without_wire_scheme() {
+        let mut group = ToolActivityGroup::default();
+        group.mark_result(
+            "c1",
+            "mcp__some-other-server__do_thing",
+            "Do thing · Some other server",
+            "ok",
+            false,
+        );
+        let summary = group.evidence_summary();
+        assert!(summary.contains("- Some other server: ok."));
+        assert!(!summary.contains("mcp__"));
     }
 }

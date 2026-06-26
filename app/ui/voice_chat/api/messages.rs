@@ -221,8 +221,9 @@ pub fn ensure_tool_activity_block(state: &mut VoiceChatOverlayState) -> usize {
         role: ChatRole::ToolActivity,
         text: String::new(),
         is_streaming: false,
-        // Expanded by default: the per-tool lines are already compact, and
-        // failures stay visible without a click. Clicking collapses to header.
+        // Evidence Summary by default (`is_collapsed = false`): the operator sees
+        // what was checked and what mattered, with failures surfaced as warnings.
+        // Clicking expands to the technical per-tool list.
         is_collapsed: false,
         is_error: false,
         timestamp: SystemTime::now(),
@@ -237,20 +238,27 @@ pub fn ensure_tool_activity_block(state: &mut VoiceChatOverlayState) -> usize {
     idx
 }
 
-/// Recompute a Tool Activity block's cached `text` from its group, honoring the
-/// block's collapsed state. The group is the source of truth; `text` is the
-/// rendered cache the bubble layer reads.
+/// Recompute a Tool Activity block's cached `text` from its group. The group is
+/// the source of truth; `text` is the rendered cache the bubble layer reads.
+///
+/// Layering: the **default** primary block is the semantic Evidence Summary
+/// (`What I checked · …` — what was checked, which sources, the key result,
+/// failures). Clicking the block (`is_collapsed = true`) expands it to the
+/// **technical** per-tool list (`render`). The raw tool payload stays in the
+/// debug log and never reaches either view.
 pub fn refresh_tool_activity_message(state: &mut VoiceChatOverlayState, idx: usize) {
-    let collapsed = state
+    let show_technical_details = state
         .messages
         .get(idx)
         .map(|msg| msg.is_collapsed)
         .unwrap_or(false);
-    let Some(text) = state
-        .tool_activity_groups
-        .get(&idx)
-        .map(|group| group.render(collapsed))
-    else {
+    let Some(text) = state.tool_activity_groups.get(&idx).map(|group| {
+        if show_technical_details {
+            group.render(false)
+        } else {
+            group.evidence_summary()
+        }
+    }) else {
         return;
     };
     if let Some(msg) = state.messages.get_mut(idx) {
@@ -370,7 +378,7 @@ pub fn handle_message_bubble_click_from_recognizer(sender: Id) {
             update_chat_view_with_state(&mut state, false);
         }
         ChatRole::ToolActivity => {
-            // Toggle compact header-only ↔ expanded per-tool lines, then
+            // Toggle Evidence Summary (default) ↔ technical per-tool list, then
             // re-render the cached block text from its group.
             message.is_collapsed = !message.is_collapsed;
             refresh_tool_activity_message(&mut state, index);

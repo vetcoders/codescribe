@@ -1352,8 +1352,28 @@ fn turn_with_three_tools_renders_one_grouped_block() {
         .filter(|m| m.role == ChatRole::ToolActivity)
         .collect();
     assert_eq!(blocks.len(), 1, "all turn tools collapse into one block");
+    // Default primary view is the semantic Evidence Summary: what was checked,
+    // which sources, the key result, with failures surfaced as warnings.
     assert_eq!(
         blocks[0].text,
+        "What I checked · 3 tools · 1 warning\n\
+         - Web search: 10 results.\n\
+         - Loctree: scanned code surfaces.\n\
+         - AICX: failed — empty index.\n\
+         Key finding: AICX check failed: empty index."
+    );
+
+    // Expanding the block (a click flips `is_collapsed`) reveals the technical
+    // per-tool list as the layer-2 detail view.
+    let block_idx = state
+        .messages
+        .iter()
+        .position(|m| m.role == ChatRole::ToolActivity)
+        .expect("one tool-activity block");
+    state.messages[block_idx].is_collapsed = true;
+    refresh_tool_activity_message(&mut state, block_idx);
+    assert_eq!(
+        state.messages[block_idx].text,
         "Tool activity · 3 calls · 1 failed\n\
          - Web search · completed · 10 results\n\
          - Loctree context · completed\n\
@@ -1419,7 +1439,7 @@ fn block_is_reused_within_a_turn_and_reopened_next_turn() {
 }
 
 #[test]
-fn collapse_toggle_rerenders_block_header_only() {
+fn toggle_switches_between_evidence_summary_and_technical_list() {
     let mut state = VoiceChatOverlayState::default();
     feed_tool_result(
         &mut state,
@@ -1431,11 +1451,25 @@ fn collapse_toggle_rerenders_block_header_only() {
     );
     let idx = state.active_tool_activity_index.expect("block open");
 
-    // Expanded by default: header + lines.
-    assert!(state.messages[idx].text.contains('\n'));
+    // Default: the Evidence Summary is the primary view.
+    assert_eq!(
+        state.messages[idx].text,
+        "What I checked · 1 tool\n- Loctree: scanned code surfaces."
+    );
 
-    // Collapse → header only.
+    // Click → technical per-tool list.
     state.messages[idx].is_collapsed = true;
     refresh_tool_activity_message(&mut state, idx);
-    assert_eq!(state.messages[idx].text, "Tool activity · 1 call completed");
+    assert_eq!(
+        state.messages[idx].text,
+        "Tool activity · 1 call completed\n- Loctree context · completed"
+    );
+
+    // Click again → back to the Evidence Summary.
+    state.messages[idx].is_collapsed = false;
+    refresh_tool_activity_message(&mut state, idx);
+    assert_eq!(
+        state.messages[idx].text,
+        "What I checked · 1 tool\n- Loctree: scanned code surfaces."
+    );
 }
