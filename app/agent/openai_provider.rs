@@ -9,7 +9,7 @@ use reqwest::Client;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
-use tracing::info;
+use tracing::{info, warn};
 
 use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
@@ -376,6 +376,16 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                     }
                 }
                 ContentBlock::Image { data, media_type } => {
+                    // Images restored from the thread store carry no bytes
+                    // (persisted with `data_omitted`). Emitting an empty data URL
+                    // makes the provider reject the whole request
+                    // ("empty base64-encoded bytes"), so skip empty images.
+                    if data.is_empty() {
+                        warn!(
+                            "Skipping image content block with no bytes (likely restored from history)"
+                        );
+                        continue;
+                    }
                     content.push(json!({
                         "type": "input_image",
                         "image_url": to_data_uri(data, media_type)

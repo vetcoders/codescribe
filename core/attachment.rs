@@ -298,6 +298,13 @@ pub fn load_image_for_vision(path: &Path, max_bytes: u64) -> Option<(Vec<u8>, St
     }
 
     match std::fs::read(path) {
+        Ok(bytes) if bytes.is_empty() => {
+            // An empty/zero-byte file would encode to an empty base64 string,
+            // which providers reject ("empty base64-encoded bytes") and which
+            // fails the whole request. Drop it instead.
+            warn!("Skipping image attachment (empty file): {}", path.display());
+            None
+        }
         Ok(bytes) => Some((bytes, media_type.to_string())),
         Err(e) => {
             warn!("Failed to read image attachment {}: {}", path.display(), e);
@@ -627,6 +634,12 @@ mod tests {
         let txt = dir.join("note.txt");
         std::fs::write(&txt, b"hello").unwrap();
         assert!(load_image_for_vision(&txt, MAX_VISION_IMAGE_BYTES).is_none());
+
+        // Empty (0-byte) image → rejected: an empty base64 payload would make
+        // the provider reject the whole request.
+        let empty = dir.join("empty.png");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(load_image_for_vision(&empty, MAX_VISION_IMAGE_BYTES).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
