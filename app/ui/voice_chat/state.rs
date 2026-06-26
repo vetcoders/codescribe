@@ -176,6 +176,9 @@ pub struct VoiceChatOverlayState {
     pub attachments: Vec<Attachment>,
     /// Fingerprint of the last attachment set sent to the assistant.
     pub attachments_last_sent: Option<u64>,
+    /// Attachments cleared from the input after the most recent send, kept so the
+    /// user can re-attach them ("Re-attach previous") instead of re-picking.
+    pub last_sent_attachments: Vec<Attachment>,
     /// Chip strip scroll view (horizontal list of attachment chips above input bar).
     pub attachment_chip_strip: Option<usize>,
 
@@ -287,6 +290,7 @@ impl Default for VoiceChatOverlayState {
             agent_latest_button: None,
             attachments: Vec::new(),
             attachments_last_sent: None,
+            last_sent_attachments: Vec::new(),
             attachment_chip_strip: None,
             active_tab: Tab::Drawer,
             pending_tab: None,

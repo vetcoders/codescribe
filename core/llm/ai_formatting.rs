@@ -22,7 +22,6 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
@@ -448,92 +447,23 @@ enum InputContent {
     Image { image_url: String },
 }
 
-fn image_mime_from_path(path: &std::path::Path) -> Option<&'static str> {
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "webp" => Some("image/webp"),
-        "gif" => Some("image/gif"),
-        "bmp" => Some("image/bmp"),
-        "tif" | "tiff" => Some("image/tiff"),
-        _ => None,
-    }
-}
-
-fn strip_image_attachments(user_message: &str) -> (String, Vec<PathBuf>) {
-    let mut out_lines: Vec<String> = Vec::new();
-    let mut image_paths: Vec<PathBuf> = Vec::new();
-    let mut in_block = false;
-
-    for line in user_message.lines() {
-        let trimmed = line.trim();
-
-        if trimmed == "ATTACHMENTS (image paths)" {
-            // Drop a preceding separator if present to avoid leaving a dangling "---".
-            if out_lines
-                .last()
-                .is_some_and(|l| l.trim() == "---" || l.trim() == "—")
-            {
-                out_lines.pop();
-            }
-            in_block = true;
-            continue;
-        }
-
-        if in_block {
-            if trimmed.is_empty() {
-                in_block = false;
-                continue;
-            }
-            if let Some(rest) = trimmed.strip_prefix("- ") {
-                let p = rest.trim();
-                if !p.is_empty() {
-                    image_paths.push(PathBuf::from(p));
-                }
-                continue;
-            }
-            // Unexpected line → end block, keep the line.
-            in_block = false;
-            out_lines.push(line.to_string());
-            continue;
-        }
-
-        out_lines.push(line.to_string());
-    }
-
-    (out_lines.join("\n"), image_paths)
-}
-
-fn encode_image_as_data_url(path: &PathBuf) -> Option<String> {
+fn encode_image_as_data_url(path: &std::path::Path) -> Option<String> {
     use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
-    const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024; // 8MB per image
-
-    let mime = image_mime_from_path(path)?;
-
-    let meta = std::fs::metadata(path).ok()?;
-    if meta.len() > MAX_IMAGE_BYTES {
-        warn!(
-            "Skipping image attachment (too large, {} bytes): {}",
-            meta.len(),
-            path.display()
-        );
-        return None;
-    }
-
-    let bytes = std::fs::read(path).ok()?;
+    // Marker parsing, MIME mapping and the size cap are shared with the agent
+    // send path via `crate::attachment` so both routes honor one contract.
+    let (bytes, mime) =
+        crate::attachment::load_image_for_vision(path, crate::attachment::MAX_VISION_IMAGE_BYTES)?;
     let b64 = BASE64.encode(bytes);
     Some(format!("data:{mime};base64,{b64}"))
 }
 
 fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
-    const MAX_IMAGES: usize = 4;
+    // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
+    const MAX_IMAGES: usize = 16;
 
-    let (mut cleaned, mut image_paths) = strip_image_attachments(user_message);
+    let (mut cleaned, mut image_paths) =
+        crate::attachment::parse_image_attachment_block(user_message);
     if image_paths.len() > MAX_IMAGES {
         warn!(
             "Too many image attachments ({}); keeping first {}",

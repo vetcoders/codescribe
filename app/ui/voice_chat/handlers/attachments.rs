@@ -252,6 +252,31 @@ pub extern "C" fn on_attach_clear(_this: &Object, _cmd: Sel, _sender: Id) {
     };
     update_attach_button_ui(btn_ptr, count, names);
 }
+
+/// Restore the attachments cleared by the previous send so the user can resend
+/// them without re-picking each file. Duplicates (same path) are skipped.
+pub extern "C" fn on_attach_reattach(_this: &Object, _cmd: Sel, _sender: Id) {
+    let (btn_ptr, count, names) = {
+        let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.last_sent_attachments.is_empty() {
+            return;
+        }
+        for attachment in state.last_sent_attachments.clone() {
+            if !state.attachments.iter().any(|a| a.path == attachment.path) {
+                state.attachments.push(attachment);
+            }
+        }
+        state.attachments_last_sent = None;
+        render_attachment_chips(&mut state);
+        let names: Vec<String> = state
+            .attachments
+            .iter()
+            .map(|a| a.display_name.clone())
+            .collect();
+        (state.agent_attach_button, state.attachments.len(), names)
+    };
+    update_attach_button_ui(btn_ptr, count, names);
+}
 // ═══════════════════════════════════════════════════════════
 // Attachment Chip Handlers
 // ═══════════════════════════════════════════════════════════
