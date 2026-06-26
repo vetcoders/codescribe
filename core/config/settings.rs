@@ -82,6 +82,10 @@ pub struct UserSettings {
     pub qube_daemon_autostart: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_enter_sends: Option<bool>,
+    /// First-run operating lane chosen during onboarding ("basic" | "agentic").
+    /// `None` means "not yet chosen" — callers treat that as the safe Basic lane.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onboarding_mode: Option<String>,
 
     // ── Voice Lab survivors (user-facing UX knobs) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,6 +282,8 @@ struct SystemV2 {
     start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     qube_daemon_autostart: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    onboarding_mode: Option<String>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -325,6 +331,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "START_AT_LOGIN",
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
+    "ONBOARDING_MODE",
     // Voice Lab survivors
     "CODESCRIBE_BUFFER_DELAY_MS",
     "CODESCRIBE_TYPING_CPS",
@@ -410,6 +417,7 @@ impl UserSettings {
             system: Some(SystemV2 {
                 start_at_login: self.start_at_login,
                 qube_daemon_autostart: self.qube_daemon_autostart,
+                onboarding_mode: self.onboarding_mode.clone(),
             }),
         }
     }
@@ -527,6 +535,7 @@ impl UserSettings {
             quick_notes_save_only: v2.features.as_ref().and_then(|f| f.quick_notes_save_only),
             start_at_login: v2.system.as_ref().and_then(|s| s.start_at_login),
             qube_daemon_autostart: v2.system.as_ref().and_then(|s| s.qube_daemon_autostart),
+            onboarding_mode: v2.system.as_ref().and_then(|s| s.onboarding_mode.clone()),
             agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
             buffer_delay_ms: v2
                 .speech
@@ -793,6 +802,7 @@ impl UserSettings {
             "AUDIO_INPUT_DEVICE" => self.audio_input_device = Some(value.to_owned()),
             "SOUND_NAME" => self.sound_name = Some(value.to_owned()),
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
+            "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;
@@ -1041,6 +1051,39 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_onboarding_mode_persists_in_v2_system_section() {
+        // Ghosting guard (W1-C1): onboarding_mode must survive the flat ->
+        // SettingsV2 -> flat round-trip and land in the V2 `system` section.
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("ONBOARDING_MODE", "agentic");
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.onboarding_mode.as_deref(), Some("agentic"));
+
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read persisted settings"))
+                .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("system")
+                .and_then(|v| v.get("onboarding_mode"))
+                .and_then(|v| v.as_str()),
+            Some("agentic")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_onboarding_mode_defaults_to_none_when_unset() {
+        let _tmp = setup_isolated_data_dir();
+        let settings = UserSettings::default();
+        assert_eq!(settings.onboarding_mode, None);
     }
 
     #[test]

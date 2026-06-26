@@ -1,7 +1,7 @@
 use serial_test::serial;
 use tempfile::TempDir;
 
-use crate::config::Config;
+use crate::config::{Config, UserSettings};
 use crate::os::permissions::PermissionStatus;
 
 use super::permission_flow::{
@@ -13,6 +13,7 @@ use super::session::{
     setup_done_refresh_target,
 };
 use super::should_show_onboarding;
+use super::state::{OnboardingModeChoice, initial_onboarding_mode_choice};
 use super::steps::{PermissionKind, PermissionRecoveryStrategy, WizardStep, step_for_index};
 
 fn setup_test_env() -> TempDir {
@@ -52,6 +53,50 @@ fn onboarding_progress_round_trips_for_resume() {
     save_onboarding_progress(3);
 
     assert_eq!(load_onboarding_progress(), 3);
+}
+
+#[test]
+#[serial]
+fn onboarding_mode_defaults_to_basic_on_fresh_install() {
+    let _tmp = setup_test_env();
+    assert_eq!(
+        initial_onboarding_mode_choice(),
+        OnboardingModeChoice::Basic
+    );
+}
+
+#[test]
+#[serial]
+fn onboarding_mode_round_trips_persisted_agentic_choice() {
+    let _tmp = setup_test_env();
+
+    let settings = UserSettings {
+        onboarding_mode: Some(OnboardingModeChoice::Agentic.value().to_string()),
+        ..Default::default()
+    };
+    settings.save().expect("persist agentic onboarding mode");
+
+    assert_eq!(
+        initial_onboarding_mode_choice(),
+        OnboardingModeChoice::Agentic
+    );
+}
+
+#[test]
+fn onboarding_mode_value_round_trips_through_token() {
+    assert_eq!(
+        OnboardingModeChoice::from_value(OnboardingModeChoice::Basic.value()),
+        OnboardingModeChoice::Basic
+    );
+    assert_eq!(
+        OnboardingModeChoice::from_value(OnboardingModeChoice::Agentic.value()),
+        OnboardingModeChoice::Agentic
+    );
+    // Unknown / forward-version tokens fall back to the safe Basic lane.
+    assert_eq!(
+        OnboardingModeChoice::from_value("orchestrator-9000"),
+        OnboardingModeChoice::Basic
+    );
 }
 
 fn assert_resume_permission(step: Option<usize>, expected: PermissionKind) {

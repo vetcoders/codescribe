@@ -50,6 +50,47 @@ impl HotkeyModeChoice {
     }
 }
 
+/// First-run operating lane the user picks during onboarding.
+///
+/// `Basic` keeps CodeScribe a plain dictation tool; `Agentic` opts into the
+/// dictation-driven orchestration runtime (which a later cut gates on the
+/// Vibecrafted + MCP substrate). `Basic` is the safe default so a fresh
+/// install never lands in the agentic lane by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum OnboardingModeChoice {
+    #[default]
+    Basic,
+    Agentic,
+}
+
+impl OnboardingModeChoice {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Basic => "Basic",
+            Self::Agentic => "Agentic",
+        }
+    }
+
+    /// Stable token persisted in settings.json. Kept distinct from [`label`]
+    /// so display copy can change without breaking persisted values.
+    pub(super) fn value(self) -> &'static str {
+        match self {
+            Self::Basic => "basic",
+            Self::Agentic => "agentic",
+        }
+    }
+
+    /// Decode a persisted token. Unknown values fall back to `Basic` — the
+    /// safe default — so a corrupt or forward-version setting can never force
+    /// the agentic lane.
+    pub(super) fn from_value(value: &str) -> Self {
+        match value {
+            "agentic" => Self::Agentic,
+            _ => Self::Basic,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct UiRefs {
     pub(super) sidebar_step_labels: [Option<usize>; TOTAL_STEPS],
@@ -84,6 +125,7 @@ pub(super) struct OnboardingState {
     pub(super) step_index: usize,
     pub(super) language: LanguageChoice,
     pub(super) hotkey_mode: HotkeyModeChoice,
+    pub(super) onboarding_mode: OnboardingModeChoice,
     pub(super) requested_permissions: [bool; 5],
     pub(super) permission_states: [PermissionUiStatus; 5],
     pub(super) scheduled_auto_advance_step: Option<usize>,
@@ -102,6 +144,7 @@ impl Default for OnboardingState {
             step_index: 0,
             language: LanguageChoice::default(),
             hotkey_mode: HotkeyModeChoice::default(),
+            onboarding_mode: OnboardingModeChoice::default(),
             requested_permissions: [false; 5],
             permission_states: [PermissionUiStatus::NotDetermined; 5],
             scheduled_auto_advance_step: None,
@@ -158,4 +201,13 @@ pub(super) fn initial_hotkey_choice() -> HotkeyModeChoice {
         (false, true) => HotkeyModeChoice::Toggle,
         (false, false) => HotkeyModeChoice::Both,
     }
+}
+
+pub(super) fn initial_onboarding_mode_choice() -> OnboardingModeChoice {
+    let settings = UserSettings::load();
+    settings
+        .onboarding_mode
+        .as_deref()
+        .map(OnboardingModeChoice::from_value)
+        .unwrap_or_default()
 }

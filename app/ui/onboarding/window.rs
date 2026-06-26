@@ -23,7 +23,7 @@ use super::render::render_current_step;
 use super::session::{load_onboarding_progress, release_onboarding_lock, save_onboarding_progress};
 use super::state::{
     ONBOARDING_STATE, OnboardingState, UiRefs, initial_hotkey_choice, initial_language_choice,
-    mode_api_key_configured,
+    initial_onboarding_mode_choice, mode_api_key_configured,
 };
 use super::steps::TOTAL_STEPS;
 use super::widgets::{configure_label, create_radio_button, system_secondary_color};
@@ -167,6 +167,7 @@ fn show_onboarding_wizard_impl() -> bool {
                 step_index: resume_step,
                 language: initial_language_choice(),
                 hotkey_mode: initial_hotkey_choice(),
+                onboarding_mode: initial_onboarding_mode_choice(),
                 requested_permissions: [false; 5],
                 permission_states: [super::permission_flow::PermissionUiStatus::NotDetermined; 5],
                 scheduled_auto_advance_step: None,

@@ -464,8 +464,31 @@ fn save_hotkey_mode() {
     info!("Onboarding: hotkey mode set to {}", mode.label());
 }
 
+/// Persist the selected first-run operating lane (Basic / Agentic) into
+/// settings.json, mirroring [`save_language_choice`]. No wizard step mutates
+/// the lane yet, so a completed onboarding records the safe Basic default; a
+/// later readiness-UI cut will set `state.onboarding_mode` before finish.
+fn save_onboarding_mode() {
+    let mode = {
+        let state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.onboarding_mode
+    };
+
+    let mut settings = UserSettings::load();
+    settings.onboarding_mode = Some(mode.value().to_string());
+    if let Err(e) = settings.save() {
+        warn!(
+            "Onboarding: failed to persist onboarding mode {}: {e}",
+            mode.value()
+        );
+    }
+
+    info!("Onboarding: mode set to {}", mode.label());
+}
+
 pub(super) fn finish_onboarding(completed: bool) {
     if completed {
+        save_onboarding_mode();
         reconcile_runtime_after_onboarding_completion();
         mark_onboarding_done();
     }
