@@ -681,8 +681,10 @@ fn agent_send_error_is_transient(error: &anyhow::Error) -> bool {
 }
 
 /// Maximum number of image attachments forwarded to the model per message.
-/// Matches the legacy (`ai_formatting`) cap so both send paths behave alike.
-const MAX_AGENT_VISION_IMAGES: usize = 4;
+/// Kept in sync with the legacy (`ai_formatting`) cap so both send paths behave
+/// alike. Sized for real multi-image use (e.g. comparing several wireframes);
+/// vision-capable backends accept far more, images are size-capped individually.
+const MAX_AGENT_VISION_IMAGES: usize = 16;
 
 /// Split an outgoing payload into its visible text and the loaded image
 /// attachments referenced by the `ATTACHMENTS (image paths)` marker.

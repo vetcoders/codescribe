@@ -459,7 +459,8 @@ fn encode_image_as_data_url(path: &std::path::Path) -> Option<String> {
 }
 
 fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
-    const MAX_IMAGES: usize = 4;
+    // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
+    const MAX_IMAGES: usize = 16;
 
     let (mut cleaned, mut image_paths) =
         crate::attachment::parse_image_attachment_block(user_message);
