@@ -110,11 +110,13 @@ fn env_ignores_legacy_llm_host() {
     let _g2 = EnvGuard::set("OLLAMA_HOST", "http://ollama-host");
     let _g3 = EnvGuard::unset("LLM_ENDPOINT");
 
-    let mut cfg = Config::default();
     // Isolate the env loader contract: the runtime default endpoint is covered
     // by Config::load()/Config::default() tests, while legacy host envs should
     // not populate an otherwise-empty llm_endpoint.
-    cfg.llm_endpoint = None;
+    let mut cfg = Config {
+        llm_endpoint: None,
+        ..Config::default()
+    };
     cfg.load_from_env();
 
     assert!(cfg.llm_endpoint.is_none());
