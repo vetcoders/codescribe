@@ -22,11 +22,55 @@ use super::permission_flow::{
 };
 use super::render::render_current_step;
 use super::session::{mark_onboarding_done, release_onboarding_lock, save_onboarding_progress};
-use super::state::{HotkeyModeChoice, ONBOARDING_STATE};
-use super::steps::{PermissionKind, TOTAL_STEPS, WizardStep, step_for_index};
+use super::state::{HotkeyModeChoice, ONBOARDING_STATE, OnboardingModeChoice};
+use super::steps::{PermissionKind, STEP_FLOW, TOTAL_STEPS, WizardStep, step_for_index};
 use super::widgets::{get_text_field_string, system_green_color, system_red_color};
 
-const FULL_DISK_STEP_INDEX: usize = 5;
+/// Resolve the flow index of the Full Disk Access step from the canonical
+/// [`STEP_FLOW`] rather than hardcoding it — inserting steps ahead of it (the
+/// Mode step) must not silently break the polling-reset guards below.
+fn full_disk_step_index() -> usize {
+    STEP_FLOW
+        .iter()
+        .position(|step| *step == WizardStep::Permission(PermissionKind::FullDiskAccess))
+        .unwrap_or(0)
+}
+
+/// Whether `step` is part of the active flow for the chosen operating lane.
+///
+/// The Agentic readiness verdict is only meaningful in the Agentic lane; in the
+/// Basic lane it is skipped entirely so a fresh install never blocks on
+/// Vibecrafted/MCP prerequisites it does not need. Every other step is shared.
+pub(super) fn step_is_visible(step: WizardStep, mode: OnboardingModeChoice) -> bool {
+    match step {
+        WizardStep::AgenticReadiness => mode == OnboardingModeChoice::Agentic,
+        _ => true,
+    }
+}
+
+/// Next flow index visible in the given lane, skipping mode-hidden steps.
+pub(super) fn next_visible_step(index: usize, mode: OnboardingModeChoice) -> Option<usize> {
+    let mut candidate = index + 1;
+    while candidate < TOTAL_STEPS {
+        if step_is_visible(step_for_index(candidate), mode) {
+            return Some(candidate);
+        }
+        candidate += 1;
+    }
+    None
+}
+
+/// Previous flow index visible in the given lane, skipping mode-hidden steps.
+pub(super) fn prev_visible_step(index: usize, mode: OnboardingModeChoice) -> Option<usize> {
+    let mut candidate = index;
+    while candidate > 0 {
+        candidate -= 1;
+        if step_is_visible(step_for_index(candidate), mode) {
+            return Some(candidate);
+        }
+    }
+    None
+}
 
 pub(super) fn handle_primary_action() {
     let step = {
@@ -36,6 +80,12 @@ pub(super) fn handle_primary_action() {
 
     match step {
         WizardStep::Welcome => advance_step(),
+        WizardStep::Mode => {
+            // Persist the lane on confirm so a mid-wizard quit or resume already
+            // records the user's choice; finish_onboarding re-saves defensively.
+            save_onboarding_mode();
+            advance_step();
+        }
         WizardStep::Permission(kind) => handle_permission_primary(kind),
         WizardStep::Language => {
             save_language_choice();
@@ -50,6 +100,7 @@ pub(super) fn handle_primary_action() {
             save_hotkey_mode();
             advance_step();
         }
+        WizardStep::AgenticReadiness => advance_step(),
         WizardStep::Done => finish_onboarding(true),
     }
 }
@@ -173,14 +224,15 @@ fn handle_permission_primary(kind: PermissionKind) {
 }
 
 fn advance_step() {
+    let full_disk = full_disk_step_index();
     let mut should_render = false;
     let mut new_step = None;
     {
         let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if state.step_index + 1 < TOTAL_STEPS {
-            state.step_index += 1;
+        if let Some(next) = next_visible_step(state.step_index, state.onboarding_mode) {
+            state.step_index = next;
             state.scheduled_auto_advance_step = None;
-            if state.step_index != FULL_DISK_STEP_INDEX {
+            if state.step_index != full_disk {
                 state.full_disk_polling = false;
             }
             new_step = Some(state.step_index);
@@ -197,14 +249,15 @@ fn advance_step() {
 }
 
 fn retreat_step() {
+    let full_disk = full_disk_step_index();
     let mut should_render = false;
     let mut new_step = None;
     {
         let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if state.step_index > 0 {
-            state.step_index -= 1;
+        if let Some(prev) = prev_visible_step(state.step_index, state.onboarding_mode) {
+            state.step_index = prev;
             state.scheduled_auto_advance_step = None;
-            if state.step_index != FULL_DISK_STEP_INDEX {
+            if state.step_index != full_disk {
                 state.full_disk_polling = false;
             }
             new_step = Some(state.step_index);
@@ -327,7 +380,7 @@ fn start_full_disk_polling() {
                     render_current_step();
                 }
                 if should_schedule {
-                    maybe_schedule_auto_advance(FULL_DISK_STEP_INDEX);
+                    maybe_schedule_auto_advance(full_disk_step_index());
                 }
             });
         }
@@ -464,8 +517,31 @@ fn save_hotkey_mode() {
     info!("Onboarding: hotkey mode set to {}", mode.label());
 }
 
+/// Persist the selected first-run operating lane (Basic / Agentic) into
+/// settings.json, mirroring [`save_language_choice`]. Called both when the user
+/// confirms the Mode step and again from [`finish_onboarding`] so the safe Basic
+/// default is recorded even if the lane step is somehow bypassed.
+fn save_onboarding_mode() {
+    let mode = {
+        let state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.onboarding_mode
+    };
+
+    let mut settings = UserSettings::load();
+    settings.onboarding_mode = Some(mode.value().to_string());
+    if let Err(e) = settings.save() {
+        warn!(
+            "Onboarding: failed to persist onboarding mode {}: {e}",
+            mode.value()
+        );
+    }
+
+    info!("Onboarding: mode set to {}", mode.label());
+}
+
 pub(super) fn finish_onboarding(completed: bool) {
     if completed {
+        save_onboarding_mode();
         reconcile_runtime_after_onboarding_completion();
         mark_onboarding_done();
     }

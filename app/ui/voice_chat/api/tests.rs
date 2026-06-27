@@ -1230,3 +1230,246 @@ fn assistive_followup_edit_moves_pending_text_to_draft_without_send() {
     let mut cb = SEND_CALLBACK.lock().unwrap_or_else(|e| e.into_inner());
     *cb = None;
 }
+
+// ── Grouped Tool Activity ────────────────────────────────────────────────
+// State-level accumulation + summary rendering. Exercises the pure grouping
+// helpers (`ensure_tool_activity_block` / `refresh_tool_activity_message` /
+// `close_tool_activity_turn`) directly on a windowless state, so no AppKit
+// view build runs — the assertion is purely on the message model.
+
+fn push_chat_message(
+    state: &mut VoiceChatOverlayState,
+    role: ChatRole,
+    text: &str,
+    streaming: bool,
+) {
+    state.messages.push(ChatMessage {
+        role,
+        text: text.to_string(),
+        is_streaming: streaming,
+        is_collapsed: false,
+        is_error: false,
+        timestamp: SystemTime::now(),
+        mode: Some("AI".to_string()),
+        is_pending_followup: false,
+    });
+}
+
+fn feed_tool_running(state: &mut VoiceChatOverlayState, id: &str, raw: &str, display: &str) {
+    let idx = ensure_tool_activity_block(state);
+    state
+        .tool_activity_groups
+        .get_mut(&idx)
+        .expect("group exists for the open block")
+        .mark_running(id, raw, display);
+    refresh_tool_activity_message(state, idx);
+}
+
+fn feed_tool_result(
+    state: &mut VoiceChatOverlayState,
+    id: &str,
+    raw: &str,
+    display: &str,
+    summary: &str,
+    is_error: bool,
+) {
+    let idx = ensure_tool_activity_block(state);
+    state
+        .tool_activity_groups
+        .get_mut(&idx)
+        .expect("group exists for the open block")
+        .mark_result(id, raw, display, summary, is_error);
+    refresh_tool_activity_message(state, idx);
+}
+
+#[test]
+fn turn_with_three_tools_renders_one_grouped_block() {
+    // Operator regression sequence. Assistant text chunks (1 & 5) and tool
+    // events (2,3,4,6,7,8) interleave on the wire; the model must produce ONE
+    // assistant message and ONE tool-activity block — never per-tool cards.
+    let mut state = VoiceChatOverlayState::default();
+    push_chat_message(&mut state, ChatRole::User, "Co tam?", false);
+    // 1. assistant answer starts (single streaming bubble for the whole turn)
+    push_chat_message(
+        &mut state,
+        ChatRole::Assistant,
+        "Sprawdzam… Wynik jest taki…",
+        true,
+    );
+
+    // 2-3. brave search start + result
+    feed_tool_running(
+        &mut state,
+        "c1",
+        "mcp__brave-search__brave_web_search",
+        "Web search",
+    );
+    feed_tool_result(
+        &mut state,
+        "c1",
+        "mcp__brave-search__brave_web_search",
+        "Web search",
+        "10 results",
+        false,
+    );
+    // 4. loctree start (result arrives later, after more assistant text)
+    feed_tool_running(
+        &mut state,
+        "c2",
+        "mcp__loctree-mcp__context",
+        "Loctree context",
+    );
+    // 7. aicx start
+    feed_tool_running(
+        &mut state,
+        "c3",
+        "mcp__aicx-mcp__aicx_intents",
+        "AICX intents",
+    );
+    // 6. loctree result
+    feed_tool_result(
+        &mut state,
+        "c2",
+        "mcp__loctree-mcp__context",
+        "Loctree context",
+        "",
+        false,
+    );
+    // 8. aicx failed
+    feed_tool_result(
+        &mut state,
+        "c3",
+        "mcp__aicx-mcp__aicx_intents",
+        "AICX intents",
+        "empty index",
+        true,
+    );
+
+    // Exactly one tool-activity block for the turn.
+    let blocks: Vec<&ChatMessage> = state
+        .messages
+        .iter()
+        .filter(|m| m.role == ChatRole::ToolActivity)
+        .collect();
+    assert_eq!(blocks.len(), 1, "all turn tools collapse into one block");
+    // Default primary view is the semantic Evidence Summary: what was checked,
+    // which sources, the key result, with failures surfaced as warnings.
+    assert_eq!(
+        blocks[0].text,
+        "What I checked · 3 tools · 1 warning\n\
+         - Web search: 10 results.\n\
+         - Loctree: scanned code surfaces.\n\
+         - AICX: failed — empty index.\n\
+         Key finding: AICX check failed: empty index."
+    );
+
+    // Expanding the block (a click flips `is_collapsed`) reveals the technical
+    // per-tool list as the layer-2 detail view.
+    let block_idx = state
+        .messages
+        .iter()
+        .position(|m| m.role == ChatRole::ToolActivity)
+        .expect("one tool-activity block");
+    state.messages[block_idx].is_collapsed = true;
+    refresh_tool_activity_message(&mut state, block_idx);
+    assert_eq!(
+        state.messages[block_idx].text,
+        "Tool activity · 3 calls · 1 failed\n\
+         - Web search · completed · 10 results\n\
+         - Loctree context · completed\n\
+         - AICX intents · failed · empty index"
+    );
+
+    // The assistant answer stays a single, uninterrupted message.
+    let assistant_count = state
+        .messages
+        .iter()
+        .filter(|m| m.role == ChatRole::Assistant)
+        .count();
+    assert_eq!(assistant_count, 1, "answer is not split by tool cards");
+
+    // No raw MCP wire name leaks into the primary timeline.
+    assert!(
+        state.messages.iter().all(|m| !m.text.contains("mcp__")),
+        "raw MCP names must never reach the timeline"
+    );
+}
+
+#[test]
+fn block_is_reused_within_a_turn_and_reopened_next_turn() {
+    let mut state = VoiceChatOverlayState::default();
+
+    feed_tool_running(
+        &mut state,
+        "a",
+        "mcp__loctree-mcp__find",
+        "Loctree occurrences/find",
+    );
+    let first_idx = state
+        .active_tool_activity_index
+        .expect("first turn opened a block");
+    // Same turn: a second tool reuses the same block index.
+    feed_tool_running(&mut state, "b", "read_clipboard", "Clipboard read");
+    assert_eq!(state.active_tool_activity_index, Some(first_idx));
+    assert_eq!(
+        state
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::ToolActivity)
+            .count(),
+        1
+    );
+
+    // Turn boundary: assistant finalized → pointer closes.
+    close_tool_activity_turn(&mut state);
+    assert_eq!(state.active_tool_activity_index, None);
+
+    // Next turn's first tool opens a brand-new block.
+    feed_tool_running(&mut state, "c", "take_screenshot", "Screenshot");
+    assert_ne!(state.active_tool_activity_index, Some(first_idx));
+    assert_eq!(
+        state
+            .messages
+            .iter()
+            .filter(|m| m.role == ChatRole::ToolActivity)
+            .count(),
+        2,
+        "each turn renders its own block"
+    );
+}
+
+#[test]
+fn toggle_switches_between_evidence_summary_and_technical_list() {
+    let mut state = VoiceChatOverlayState::default();
+    feed_tool_result(
+        &mut state,
+        "a",
+        "mcp__loctree-mcp__context",
+        "Loctree context",
+        "",
+        false,
+    );
+    let idx = state.active_tool_activity_index.expect("block open");
+
+    // Default: the Evidence Summary is the primary view.
+    assert_eq!(
+        state.messages[idx].text,
+        "What I checked · 1 tool\n- Loctree: scanned code surfaces."
+    );
+
+    // Click → technical per-tool list.
+    state.messages[idx].is_collapsed = true;
+    refresh_tool_activity_message(&mut state, idx);
+    assert_eq!(
+        state.messages[idx].text,
+        "Tool activity · 1 call completed\n- Loctree context · completed"
+    );
+
+    // Click again → back to the Evidence Summary.
+    state.messages[idx].is_collapsed = false;
+    refresh_tool_activity_message(&mut state, idx);
+    assert_eq!(
+        state.messages[idx].text,
+        "What I checked · 1 tool\n- Loctree: scanned code surfaces."
+    );
+}

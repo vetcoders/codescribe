@@ -23,7 +23,7 @@ use super::render::render_current_step;
 use super::session::{load_onboarding_progress, release_onboarding_lock, save_onboarding_progress};
 use super::state::{
     ONBOARDING_STATE, OnboardingState, UiRefs, initial_hotkey_choice, initial_language_choice,
-    mode_api_key_configured,
+    initial_onboarding_mode_choice, mode_api_key_configured,
 };
 use super::steps::TOTAL_STEPS;
 use super::widgets::{configure_label, create_radio_button, system_secondary_color};
@@ -167,6 +167,7 @@ fn show_onboarding_wizard_impl() -> bool {
                 step_index: resume_step,
                 language: initial_language_choice(),
                 hotkey_mode: initial_hotkey_choice(),
+                onboarding_mode: initial_onboarding_mode_choice(),
                 requested_permissions: [false; 5],
                 permission_states: [super::permission_flow::PermissionUiStatus::NotDetermined; 5],
                 scheduled_auto_advance_step: None,
@@ -351,6 +352,40 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         add_subview(root, instruction_label);
         ui.instruction_label = Some(instruction_label as usize);
 
+        // Operating-lane chooser (Basic vs Agentic). Mirrors the hotkey radio
+        // group: short descriptive titles, fuller framing in the step
+        // description. Tags map to OnboardingModeChoice in `onModeSelected:`.
+        let mode_view: Id = msg_send![ns_view, alloc];
+        let mode_view: Id = msg_send![
+            mode_view,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(content_center - 200.0, 196.0),
+                &CGSize::new(400.0, 96.0)
+            )
+        ];
+        add_subview(root, mode_view);
+        ui.mode_view = Some(mode_view as usize);
+
+        let mode_basic = create_radio_button(
+            CGRect::new(&CGPoint::new(0.0, 56.0), &CGSize::new(390.0, 26.0)),
+            "Basic — local dictation and overlays",
+            true,
+        );
+        let _: () = msg_send![mode_basic, setTag: 0_isize];
+        button_set_action(mode_basic, action_handler, sel!(onModeSelected:));
+        add_subview(mode_view, mode_basic);
+        ui.mode_basic_radio = Some(mode_basic as usize);
+
+        let mode_agentic = create_radio_button(
+            CGRect::new(&CGPoint::new(0.0, 20.0), &CGSize::new(390.0, 26.0)),
+            "Agentic — orchestrate agents via Vibecrafted + MCP",
+            false,
+        );
+        let _: () = msg_send![mode_agentic, setTag: 1_isize];
+        button_set_action(mode_agentic, action_handler, sel!(onModeSelected:));
+        add_subview(mode_view, mode_agentic);
+        ui.mode_agentic_radio = Some(mode_agentic as usize);
+
         let language_view: Id = msg_send![ns_view, alloc];
         let language_view: Id = msg_send![
             language_view,
@@ -494,6 +529,56 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
         configure_label(summary_config, false, true);
         add_subview(summary_view, summary_config);
         ui.summary_config_label = Some(summary_config as usize);
+
+        // Agentic readiness table (Agentic lane only). One wrapping label per
+        // McpStatusRow: verdict + Vibecrafted / AICX / Loctree / PRView. Compact
+        // rows by design (see W1-C3 recovery hint) — each row keeps the probe's
+        // full actionable value text so prerequisites never collapse into one
+        // generic error. Render fills text + tone color per step.
+        const READINESS_HEIGHT: f64 = 280.0;
+        let readiness_view: Id = msg_send![ns_view, alloc];
+        let readiness_view: Id = msg_send![
+            readiness_view,
+            initWithFrame: CGRect::new(
+                &CGPoint::new(content_left, 56.0),
+                &CGSize::new(content_width, READINESS_HEIGHT)
+            )
+        ];
+        add_subview(root, readiness_view);
+        ui.readiness_view = Some(readiness_view as usize);
+
+        let readiness_heading = create_label(LabelConfig {
+            frame: CGRect::new(
+                &CGPoint::new(0.0, READINESS_HEIGHT - 26.0),
+                &CGSize::new(content_width, 22.0),
+            ),
+            text: "Agentic runtime readiness".to_string(),
+            font_size: 14.0,
+            bold: true,
+            text_color: color_label(),
+            ..Default::default()
+        });
+        configure_label(readiness_heading, false, false);
+        add_subview(readiness_view, readiness_heading);
+        ui.readiness_heading_label = Some(readiness_heading as usize);
+
+        let mut readiness_rows: [Option<usize>; 5] = [None; 5];
+        let readiness_row_gap = 48.0;
+        let readiness_first_top = READINESS_HEIGHT - 34.0 - readiness_row_gap;
+        for (idx, slot) in readiness_rows.iter_mut().enumerate() {
+            let y = readiness_first_top - (idx as f64 * readiness_row_gap);
+            let label = create_label(LabelConfig {
+                frame: CGRect::new(&CGPoint::new(0.0, y), &CGSize::new(content_width, 44.0)),
+                text: String::new(),
+                font_size: 12.0,
+                text_color: color_secondary_label(),
+                ..Default::default()
+            });
+            configure_label(label, false, true);
+            add_subview(readiness_view, label);
+            *slot = Some(label as usize);
+        }
+        ui.readiness_row_labels = readiness_rows;
 
         let primary_w = 132.0;
         let skip_w = 106.0;

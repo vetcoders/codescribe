@@ -417,6 +417,333 @@ pub mod ui_colors {
     }
 }
 
+// ============================================================================
+// Light Mode Semantic Contrast
+// ============================================================================
+//
+// The existing `ui_colors` surfaces are vibrancy-derived (controlBackgroundColor
+// + alpha over a HUDWindow material). That material reads *dark regardless of the
+// system appearance*, so in Light Mode the conversation body is dark while
+// `labelColor` is near-black → dark text on a dark surface (the reported bug).
+//
+// This module provides DETERMINISTIC, appearance-resolved tokens for text-bearing
+// regions: blur/vibrancy must never decide text contrast. Tokens are plain data
+// (hex), so the WCAG contrast contract is proven by pure unit tests without a
+// running UI. The NSColor accessors are thin wrappers that pick the palette from
+// the live `NSAppearance`.
+
+pub mod contrast {
+    use super::Id;
+    use super::color_rgba;
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+
+    /// One semantic color: 24-bit RGB plus an alpha (for surfaces meant to sit on
+    /// `window_background`). Text tokens are fully opaque (`alpha == 1.0`).
+    #[derive(Clone, Copy, Debug)]
+    pub struct Token {
+        pub rgb: u32,
+        pub alpha: f64,
+    }
+
+    impl Token {
+        const fn opaque(rgb: u32) -> Self {
+            Token { rgb, alpha: 1.0 }
+        }
+        const fn with_alpha(rgb: u32, alpha: f64) -> Self {
+            Token { rgb, alpha }
+        }
+        /// Split into linear-space-free sRGB components in 0.0..=1.0.
+        pub fn srgb(self) -> (f64, f64, f64) {
+            let r = ((self.rgb >> 16) & 0xFF) as f64 / 255.0;
+            let g = ((self.rgb >> 8) & 0xFF) as f64 / 255.0;
+            let b = (self.rgb & 0xFF) as f64 / 255.0;
+            (r, g, b)
+        }
+    }
+
+    /// The full deterministic palette for one appearance.
+    #[derive(Clone, Copy, Debug)]
+    pub struct Palette {
+        pub window_background: Token,
+        pub conversation_surface: Token,
+        pub message_surface: Token,
+        pub message_border: Token,
+        pub primary_text: Token,
+        pub secondary_text: Token,
+        pub muted_text: Token,
+        pub input_background: Token,
+        pub input_border: Token,
+        pub input_text: Token,
+        pub placeholder_text: Token,
+        pub toolbar_background: Token,
+        pub toolbar_icon: Token,
+        pub toolbar_icon_muted: Token,
+        pub accent_purple: Token,
+        pub accent_warm: Token,
+    }
+
+    /// Light Mode: light readable surfaces, dark text. Values are the operator's
+    /// canonical token table.
+    pub const LIGHT: Palette = Palette {
+        window_background: Token::opaque(0xF6F3EE),
+        conversation_surface: Token::with_alpha(0xFFFFFF, 0.902), // #FFFFFFE6
+        message_surface: Token::opaque(0xFFFFFF),
+        message_border: Token::opaque(0xD8D2C8),
+        primary_text: Token::opaque(0x1C1B18),
+        secondary_text: Token::opaque(0x5F5A52),
+        muted_text: Token::opaque(0x7A746C),
+        input_background: Token::with_alpha(0xFFFFFF, 0.949), // #FFFFFFF2
+        input_border: Token::opaque(0xD0CBC2),
+        input_text: Token::opaque(0x1C1B18),
+        placeholder_text: Token::opaque(0x756F67),
+        toolbar_background: Token::with_alpha(0xF3EFE8, 0.902), // #F3EFE8E6
+        toolbar_icon: Token::opaque(0x38342F),
+        toolbar_icon_muted: Token::opaque(0x6E675F),
+        accent_purple: Token::opaque(0x9B4DAD),
+        accent_warm: Token::opaque(0xC96F4A),
+    };
+
+    /// Dark Mode: dark readable surfaces, light text.
+    pub const DARK: Palette = Palette {
+        window_background: Token::opaque(0x191919),
+        conversation_surface: Token::with_alpha(0x202020, 0.949), // #202020F2
+        message_surface: Token::opaque(0x252525),
+        message_border: Token::opaque(0x3A3A3A),
+        primary_text: Token::opaque(0xF3F0EA),
+        secondary_text: Token::opaque(0xC8C1B8),
+        muted_text: Token::opaque(0x918A82),
+        input_background: Token::opaque(0x2B2B2B),
+        input_border: Token::opaque(0x444444),
+        input_text: Token::opaque(0xF3F0EA),
+        placeholder_text: Token::opaque(0xAAA39B),
+        toolbar_background: Token::with_alpha(0x202020, 0.902), // #202020E6
+        toolbar_icon: Token::opaque(0xD8D3CC),
+        toolbar_icon_muted: Token::opaque(0x8E8880),
+        accent_purple: Token::opaque(0xD26BE8),
+        accent_warm: Token::opaque(0xE08A64),
+    };
+
+    /// Is the application currently rendering in a Dark appearance?
+    ///
+    /// Reads `NSApplication.effectiveAppearance.name` and checks for "Dark"
+    /// (covers `NSAppearanceNameDarkAqua` and the vibrant-dark variants). Falls
+    /// back to Light when AppKit is unavailable (e.g. headless test process).
+    pub fn is_dark_appearance() -> bool {
+        unsafe {
+            let Some(app_cls) = Class::get("NSApplication") else {
+                return false;
+            };
+            let app: Id = msg_send![app_cls, sharedApplication];
+            if app.is_null() {
+                return false;
+            }
+            let appearance: Id = msg_send![app, effectiveAppearance];
+            if appearance.is_null() {
+                return false;
+            }
+            let name: Id = msg_send![appearance, name];
+            if name.is_null() {
+                return false;
+            }
+            let utf8: *const std::os::raw::c_char = msg_send![name, UTF8String];
+            if utf8.is_null() {
+                return false;
+            }
+            std::ffi::CStr::from_ptr(utf8)
+                .to_string_lossy()
+                .contains("Dark")
+        }
+    }
+
+    /// The palette resolved against the live system appearance.
+    pub fn palette() -> Palette {
+        if is_dark_appearance() { DARK } else { LIGHT }
+    }
+
+    fn ns_color(token: Token) -> Id {
+        let (r, g, b) = token.srgb();
+        color_rgba(r, g, b, token.alpha)
+    }
+
+    // Deterministic NSColor accessors for text-bearing regions. These do NOT
+    // depend on vibrancy — they are exact, appearance-resolved colors.
+    pub fn primary_text() -> Id {
+        ns_color(palette().primary_text)
+    }
+    pub fn secondary_text() -> Id {
+        ns_color(palette().secondary_text)
+    }
+    pub fn muted_text() -> Id {
+        ns_color(palette().muted_text)
+    }
+    pub fn conversation_surface() -> Id {
+        ns_color(palette().conversation_surface)
+    }
+    pub fn message_surface() -> Id {
+        ns_color(palette().message_surface)
+    }
+    pub fn message_border() -> Id {
+        ns_color(palette().message_border)
+    }
+    pub fn input_background() -> Id {
+        ns_color(palette().input_background)
+    }
+    pub fn input_border() -> Id {
+        ns_color(palette().input_border)
+    }
+    pub fn input_text() -> Id {
+        ns_color(palette().input_text)
+    }
+    pub fn placeholder_text() -> Id {
+        ns_color(palette().placeholder_text)
+    }
+    pub fn toolbar_icon() -> Id {
+        ns_color(palette().toolbar_icon)
+    }
+    pub fn toolbar_icon_muted() -> Id {
+        ns_color(palette().toolbar_icon_muted)
+    }
+
+    // ── WCAG contrast math (pure; the proof that the tokens are readable) ──────
+
+    fn linearize(c: f64) -> f64 {
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance((r, g, b): (f64, f64, f64)) -> f64 {
+        0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)
+    }
+
+    /// Composite a (possibly translucent) token over an opaque background.
+    pub fn composite_over(fg: Token, bg: Token) -> (f64, f64, f64) {
+        let (fr, fg_, fb) = fg.srgb();
+        let (br, bg_, bb) = bg.srgb();
+        let a = fg.alpha;
+        (
+            fr * a + br * (1.0 - a),
+            fg_ * a + bg_ * (1.0 - a),
+            fb * a + bb * (1.0 - a),
+        )
+    }
+
+    /// WCAG 2.x contrast ratio between two opaque sRGB colors (1.0..=21.0).
+    pub fn contrast_ratio(fg: (f64, f64, f64), bg: (f64, f64, f64)) -> f64 {
+        let l1 = relative_luminance(fg);
+        let l2 = relative_luminance(bg);
+        let (hi, lo) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// Contrast of an opaque text token placed on a surface token that is itself
+    /// composited over `window_background`.
+    pub fn text_on_surface(text: Token, surface: Token, window: Token) -> f64 {
+        let surface_rgb = composite_over(surface, window);
+        contrast_ratio(text.srgb(), surface_rgb)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        // Acceptance contract (operator):
+        //   primary / secondary / input text >= 4.5:1
+        //   muted / placeholder / toolbar icon >= 3:1
+        fn assert_palette_contrast(p: Palette, label: &str) {
+            let win = p.window_background;
+
+            let primary = text_on_surface(p.primary_text, p.conversation_surface, win);
+            assert!(
+                primary >= 4.5,
+                "{label}: primary text on conversation surface = {primary:.2}:1 (< 4.5)"
+            );
+
+            let primary_msg = text_on_surface(p.primary_text, p.message_surface, win);
+            assert!(
+                primary_msg >= 4.5,
+                "{label}: primary text on message surface = {primary_msg:.2}:1 (< 4.5)"
+            );
+
+            let secondary = text_on_surface(p.secondary_text, p.message_surface, win);
+            assert!(
+                secondary >= 4.5,
+                "{label}: secondary text on message surface = {secondary:.2}:1 (< 4.5)"
+            );
+
+            let input = text_on_surface(p.input_text, p.input_background, win);
+            assert!(
+                input >= 4.5,
+                "{label}: input text on input background = {input:.2}:1 (< 4.5)"
+            );
+
+            let muted = text_on_surface(p.muted_text, p.message_surface, win);
+            assert!(
+                muted >= 3.0,
+                "{label}: muted text on message surface = {muted:.2}:1 (< 3.0)"
+            );
+
+            let placeholder = text_on_surface(p.placeholder_text, p.input_background, win);
+            assert!(
+                placeholder >= 3.0,
+                "{label}: placeholder on input background = {placeholder:.2}:1 (< 3.0)"
+            );
+
+            let icon = text_on_surface(p.toolbar_icon, p.toolbar_background, win);
+            assert!(
+                icon >= 3.0,
+                "{label}: toolbar icon on toolbar background = {icon:.2}:1 (< 3.0)"
+            );
+
+            let icon_muted = text_on_surface(p.toolbar_icon_muted, p.toolbar_background, win);
+            assert!(
+                icon_muted >= 3.0,
+                "{label}: muted toolbar icon on toolbar background = {icon_muted:.2}:1 (< 3.0)"
+            );
+        }
+
+        #[test]
+        fn light_palette_meets_wcag_contract() {
+            assert_palette_contrast(LIGHT, "Light");
+        }
+
+        #[test]
+        fn dark_palette_meets_wcag_contract() {
+            assert_palette_contrast(DARK, "Dark");
+        }
+
+        #[test]
+        fn light_is_light_dark_is_dark() {
+            // The whole point: Light Mode uses a light surface + dark text;
+            // Dark Mode the inverse. Guard against accidentally swapping tables.
+            let light_surface = relative_luminance(LIGHT.message_surface.srgb());
+            let light_text = relative_luminance(LIGHT.primary_text.srgb());
+            assert!(
+                light_surface > light_text,
+                "Light Mode surface must be lighter than its text"
+            );
+
+            let dark_surface = relative_luminance(DARK.message_surface.srgb());
+            let dark_text = relative_luminance(DARK.primary_text.srgb());
+            assert!(
+                dark_text > dark_surface,
+                "Dark Mode text must be lighter than its surface"
+            );
+        }
+
+        #[test]
+        fn contrast_ratio_extremes_are_correct() {
+            let white = (1.0, 1.0, 1.0);
+            let black = (0.0, 0.0, 0.0);
+            assert!((contrast_ratio(white, black) - 21.0).abs() < 0.01);
+            assert!((contrast_ratio(white, white) - 1.0).abs() < 0.0001);
+        }
+    }
+}
+
 /// Apply Tafla surface treatment to a CALayer: corner radius + optional border.
 /// Shadows off by default — Tafla is flat pane, not bubble soup.
 ///

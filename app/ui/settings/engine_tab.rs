@@ -398,14 +398,46 @@ fn build_mcp_section(container: Id, y: &mut f64, pad: f64, content_w: f64) {
         secondary,
     );
 
+    let tone_color = |tone: McpRowTone| match tone {
+        McpRowTone::Good => ui_colors::status_granted(),
+        McpRowTone::Warn => ui_colors::status_warning(),
+        McpRowTone::Bad => ui_colors::bubble_error_text(),
+        McpRowTone::Neutral => secondary,
+    };
+
     for row in status.summary_rows() {
-        let color = match row.tone {
-            McpRowTone::Good => ui_colors::status_granted(),
-            McpRowTone::Warn => ui_colors::status_warning(),
-            McpRowTone::Bad => ui_colors::bubble_error_text(),
-            McpRowTone::Neutral => secondary,
-        };
-        add_engine_metric_row(container, y, pad, content_w, &row.label, &row.value, color);
+        add_engine_metric_row(
+            container,
+            y,
+            pad,
+            content_w,
+            &row.label,
+            &row.value,
+            tone_color(row.tone),
+        );
+    }
+
+    // Agentic lane adds a stricter readiness verdict (Vibecrafted / AICX /
+    // Loctree / PRView). Basic mode keeps the neutral config probe above and
+    // never sees this block. The persisted token is the source of truth; an
+    // unknown/absent value decodes to the safe Basic lane.
+    let agentic = crate::config::UserSettings::load()
+        .onboarding_mode
+        .as_deref()
+        == Some("agentic");
+    if agentic {
+        let readiness = crate::agent::tools::mcp::probe_agentic_readiness();
+        for row in readiness.summary_rows() {
+            add_engine_metric_row(
+                container,
+                y,
+                pad,
+                content_w,
+                &row.label,
+                &row.value,
+                tone_color(row.tone),
+            );
+        }
     }
 
     // SAFETY: Settings AppKit main-thread build path.

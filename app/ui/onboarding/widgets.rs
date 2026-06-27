@@ -8,7 +8,7 @@ use objc::{msg_send, sel, sel_impl};
 use crate::ui::shared::helpers::{ns_string, set_hidden, set_text_field_string};
 
 use super::Id;
-use super::state::{HotkeyModeChoice, LanguageChoice, UiRefs};
+use super::state::{HotkeyModeChoice, LanguageChoice, OnboardingModeChoice, UiRefs};
 
 pub(super) fn configure_label(label: Id, centered: bool, multiline: bool) {
     unsafe {
@@ -84,6 +84,17 @@ pub(super) fn sync_language_radios(ui: UiRefs, language: LanguageChoice) {
     }
 }
 
+pub(super) fn sync_mode_radios(ui: UiRefs, mode: OnboardingModeChoice) {
+    unsafe {
+        if let Some(basic) = ui.mode_basic_radio {
+            let _: () = msg_send![basic as Id, setState: if mode == OnboardingModeChoice::Basic { 1_isize } else { 0_isize }];
+        }
+        if let Some(agentic) = ui.mode_agentic_radio {
+            let _: () = msg_send![agentic as Id, setState: if mode == OnboardingModeChoice::Agentic { 1_isize } else { 0_isize }];
+        }
+    }
+}
+
 pub(super) fn sync_hotkey_radios(ui: UiRefs, mode: HotkeyModeChoice) {
     unsafe {
         if let Some(hold) = ui.hotkey_hold_radio {
@@ -109,6 +120,13 @@ pub(super) fn system_red_color() -> Id {
     unsafe {
         let ns_color = Class::get("NSColor").unwrap();
         msg_send![ns_color, systemRedColor]
+    }
+}
+
+pub(super) fn system_orange_color() -> Id {
+    unsafe {
+        let ns_color = Class::get("NSColor").unwrap();
+        msg_send![ns_color, systemOrangeColor]
     }
 }
 

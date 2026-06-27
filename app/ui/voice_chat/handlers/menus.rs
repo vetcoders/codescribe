@@ -44,24 +44,39 @@ pub extern "C" fn on_attach_menu(this: &Object, _cmd: Sel, sender: Id) {
         let _: () = msg_send![url, setTarget: target];
         let _: () = msg_send![menu, addItem: url];
 
-        let count = {
+        let (count, reattach_count) = {
             let state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
-            state.attachments.len()
+            (state.attachments.len(), state.last_sent_attachments.len())
         };
-        if count > 0 {
+        if count > 0 || reattach_count > 0 {
             let sep: Id = msg_send![ns_menu_item, separatorItem];
             let _: () = msg_send![menu, addItem: sep];
 
-            let clear_title = format!("Clear attachments ({})", count);
-            let clear: Id = msg_send![ns_menu_item, alloc];
-            let clear: Id = msg_send![
-                clear,
-                initWithTitle: ns_string(&clear_title)
-                action: sel!(onAttachClear:)
-                keyEquivalent: ns_string("")
-            ];
-            let _: () = msg_send![clear, setTarget: target];
-            let _: () = msg_send![menu, addItem: clear];
+            if reattach_count > 0 {
+                let reattach_title = format!("Re-attach previous ({})", reattach_count);
+                let reattach: Id = msg_send![ns_menu_item, alloc];
+                let reattach: Id = msg_send![
+                    reattach,
+                    initWithTitle: ns_string(&reattach_title)
+                    action: sel!(onAttachReattach:)
+                    keyEquivalent: ns_string("")
+                ];
+                let _: () = msg_send![reattach, setTarget: target];
+                let _: () = msg_send![menu, addItem: reattach];
+            }
+
+            if count > 0 {
+                let clear_title = format!("Clear attachments ({})", count);
+                let clear: Id = msg_send![ns_menu_item, alloc];
+                let clear: Id = msg_send![
+                    clear,
+                    initWithTitle: ns_string(&clear_title)
+                    action: sel!(onAttachClear:)
+                    keyEquivalent: ns_string("")
+                ];
+                let _: () = msg_send![clear, setTarget: target];
+                let _: () = msg_send![menu, addItem: clear];
+            }
         }
 
         // Pop up anchored at the button.

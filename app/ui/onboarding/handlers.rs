@@ -13,7 +13,9 @@ use super::actions::{
 };
 use super::render::render_current_step;
 use super::session::release_onboarding_lock;
-use super::state::{HotkeyModeChoice, LanguageChoice, ONBOARDING_STATE, UiRefs};
+use super::state::{
+    HotkeyModeChoice, LanguageChoice, ONBOARDING_STATE, OnboardingModeChoice, UiRefs,
+};
 
 static ACTION_HANDLER_CLASS: OnceLock<&'static Class> = OnceLock::new();
 static WINDOW_DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
@@ -35,6 +37,10 @@ pub(super) fn action_handler_class() -> &'static Class {
         decl.add_method(
             sel!(onSkipAction:),
             on_skip_action as extern "C" fn(&Object, Sel, Id),
+        );
+        decl.add_method(
+            sel!(onModeSelected:),
+            on_mode_selected as extern "C" fn(&Object, Sel, Id),
         );
         decl.add_method(
             sel!(onLanguageSelected:),
@@ -76,6 +82,19 @@ extern "C" fn on_back_action(_this: &Object, _sel: Sel, _sender: Id) {
 
 extern "C" fn on_skip_action(_this: &Object, _sel: Sel, _sender: Id) {
     handle_skip_action();
+}
+
+extern "C" fn on_mode_selected(_this: &Object, _sel: Sel, sender: Id) {
+    unsafe {
+        let tag: isize = msg_send![sender, tag];
+        let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.onboarding_mode = if tag == 1 {
+            OnboardingModeChoice::Agentic
+        } else {
+            OnboardingModeChoice::Basic
+        };
+    }
+    render_current_step();
 }
 
 extern "C" fn on_language_selected(_this: &Object, _sel: Sel, sender: Id) {

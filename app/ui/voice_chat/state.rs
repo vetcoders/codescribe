@@ -9,6 +9,7 @@ use std::time::{Instant, SystemTime};
 
 use codescribe_core::attachment::Attachment;
 
+use super::tool_activity::ToolActivityGroup;
 use crate::ui::shared::status::UiStatus;
 use crate::ui_helpers::{BubbleMeasureCache, RenderMode};
 
@@ -45,6 +46,10 @@ pub enum ChatRole {
     /// Live reasoning summary streamed from the agent (its own lane, rendered
     /// as a collapsible "thinking" entry — NOT mixed into the assistant text).
     Reasoning,
+    /// Grouped tool evidence for one assistant turn (its own lane, rendered as a
+    /// single compact/collapsible block — NEVER interleaved between answer
+    /// chunks). Backed by a [`ToolActivityGroup`] keyed by message index.
+    ToolActivity,
 }
 
 /// A single chat message
@@ -171,6 +176,9 @@ pub struct VoiceChatOverlayState {
     pub attachments: Vec<Attachment>,
     /// Fingerprint of the last attachment set sent to the assistant.
     pub attachments_last_sent: Option<u64>,
+    /// Attachments cleared from the input after the most recent send, kept so the
+    /// user can re-attach them ("Re-attach previous") instead of re-picking.
+    pub last_sent_attachments: Vec<Attachment>,
     /// Chip strip scroll view (horizontal list of attachment chips above input bar).
     pub attachment_chip_strip: Option<usize>,
 
@@ -187,6 +195,14 @@ pub struct VoiceChatOverlayState {
     pub active_assistant_stream_index: Option<usize>,
     /// Active streaming reasoning-summary message index (if any).
     pub active_reasoning_stream_index: Option<usize>,
+    /// Message index of the current assistant turn's grouped tool-activity block
+    /// (if one is open). `None` between turns — the next tool event opens a fresh
+    /// block so each turn renders exactly one evidence block.
+    pub active_tool_activity_index: Option<usize>,
+    /// Grouped tool evidence per turn, keyed by the `ToolActivity` message index
+    /// (parallel to `message_render_modes`). The block message's `text` is a
+    /// rendered cache of its group; the group is the source of truth.
+    pub tool_activity_groups: HashMap<usize, ToolActivityGroup>,
     pub manual_draft: String,
     /// Manual prompts sent from the Agent input, newest at the end.
     pub prompt_history: Vec<String>,
@@ -274,6 +290,7 @@ impl Default for VoiceChatOverlayState {
             agent_latest_button: None,
             attachments: Vec::new(),
             attachments_last_sent: None,
+            last_sent_attachments: Vec::new(),
             attachment_chip_strip: None,
             active_tab: Tab::Drawer,
             pending_tab: None,
@@ -281,6 +298,8 @@ impl Default for VoiceChatOverlayState {
             active_user_stream_index: None,
             active_assistant_stream_index: None,
             active_reasoning_stream_index: None,
+            active_tool_activity_index: None,
+            tool_activity_groups: HashMap::new(),
             manual_draft: String::new(),
             prompt_history: Vec::new(),
             prompt_history_cursor: None,

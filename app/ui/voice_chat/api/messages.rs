@@ -89,6 +89,7 @@ fn add_voice_chat_error_message_impl(text: &str) {
     state.active_assistant_stream_index = None;
     state.active_reasoning_stream_index = None;
     clear_agent_thinking_state(&mut state);
+    close_tool_activity_turn(&mut state);
     let mode = message_mode_label(&state);
     state.messages.push(ChatMessage {
         role: ChatRole::System,
@@ -128,6 +129,148 @@ fn add_voice_chat_system_message_impl(text: &str) {
         is_pending_followup: false,
     });
     update_chat_view_with_state(&mut state, true);
+}
+
+/// Record a "tool started" event into the current assistant turn's grouped Tool
+/// Activity block.
+///
+/// Grouped Tool Activity: tool calls belong to the turn, not between the words.
+/// Instead of pushing a standalone card per tool, every tool event of one turn
+/// folds into a single evidence block so the assistant answer streams as one
+/// uninterrupted message. `raw_name` is debug-only; `display_name` is the
+/// human-readable label shown in the timeline.
+pub fn record_tool_executing(raw_name: &str, display_name: &str, id: &str) {
+    let raw = raw_name.to_string();
+    let display = display_name.to_string();
+    let id = id.to_string();
+    Queue::main().exec_async(move || {
+        run_when_overlay_unlocked(move || record_tool_executing_impl(&raw, &display, &id));
+    });
+}
+
+fn record_tool_executing_impl(raw_name: &str, display_name: &str, id: &str) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_agent_tab_visible(&mut state);
+    let idx = ensure_tool_activity_block(&mut state);
+    if let Some(group) = state.tool_activity_groups.get_mut(&idx) {
+        group.mark_running(id, raw_name, display_name);
+    }
+    refresh_tool_activity_message(&mut state, idx);
+    update_chat_view_with_state(&mut state, true);
+}
+
+/// Record a "tool completed/failed" event into the current turn's grouped Tool
+/// Activity block. `summary` is the compact result text (or failure reason);
+/// `is_error` flips the entry to a compact `· failed · <reason>` line. The full
+/// payload stays in the debug log, never in the conversation timeline.
+pub fn record_tool_result(
+    raw_name: &str,
+    display_name: &str,
+    id: &str,
+    summary: &str,
+    is_error: bool,
+) {
+    let raw = raw_name.to_string();
+    let display = display_name.to_string();
+    let id = id.to_string();
+    let summary = summary.to_string();
+    Queue::main().exec_async(move || {
+        run_when_overlay_unlocked(move || {
+            record_tool_result_impl(&raw, &display, &id, &summary, is_error)
+        });
+    });
+}
+
+fn record_tool_result_impl(
+    raw_name: &str,
+    display_name: &str,
+    id: &str,
+    summary: &str,
+    is_error: bool,
+) {
+    let mut state = OVERLAY_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_agent_tab_visible(&mut state);
+    let idx = ensure_tool_activity_block(&mut state);
+    if let Some(group) = state.tool_activity_groups.get_mut(&idx) {
+        group.mark_result(id, raw_name, display_name, summary, is_error);
+    }
+    refresh_tool_activity_message(&mut state, idx);
+    update_chat_view_with_state(&mut state, true);
+}
+
+/// Return the current turn's Tool Activity message index, creating the block (a
+/// single `ToolActivity` message + its empty group) if this turn has none yet.
+///
+/// One block per turn: `active_tool_activity_index` is reset to `None` when the
+/// assistant message finalizes, so the next turn's first tool event opens a new
+/// block. The block is a separate message from the assistant answer, so folding
+/// tools into it never splits the streamed answer.
+pub fn ensure_tool_activity_block(state: &mut VoiceChatOverlayState) -> usize {
+    if let Some(idx) = state.active_tool_activity_index
+        && state
+            .messages
+            .get(idx)
+            .map(|msg| msg.role == ChatRole::ToolActivity)
+            .unwrap_or(false)
+    {
+        return idx;
+    }
+
+    let mode = message_mode_label(state);
+    state.messages.push(ChatMessage {
+        role: ChatRole::ToolActivity,
+        text: String::new(),
+        is_streaming: false,
+        // Evidence Summary by default (`is_collapsed = false`): the operator sees
+        // what was checked and what mattered, with failures surfaced as warnings.
+        // Clicking expands to the technical per-tool list.
+        is_collapsed: false,
+        is_error: false,
+        timestamp: SystemTime::now(),
+        mode: Some(mode),
+        is_pending_followup: false,
+    });
+    let idx = state.messages.len() - 1;
+    state
+        .tool_activity_groups
+        .insert(idx, ToolActivityGroup::default());
+    state.active_tool_activity_index = Some(idx);
+    idx
+}
+
+/// Recompute a Tool Activity block's cached `text` from its group. The group is
+/// the source of truth; `text` is the rendered cache the bubble layer reads.
+///
+/// Layering: the **default** primary block is the semantic Evidence Summary
+/// (`What I checked · …` — what was checked, which sources, the key result,
+/// failures). Clicking the block (`is_collapsed = true`) expands it to the
+/// **technical** per-tool list (`render`). The raw tool payload stays in the
+/// debug log and never reaches either view.
+pub fn refresh_tool_activity_message(state: &mut VoiceChatOverlayState, idx: usize) {
+    let show_technical_details = state
+        .messages
+        .get(idx)
+        .map(|msg| msg.is_collapsed)
+        .unwrap_or(false);
+    let Some(text) = state.tool_activity_groups.get(&idx).map(|group| {
+        if show_technical_details {
+            group.render(false)
+        } else {
+            group.evidence_summary()
+        }
+    }) else {
+        return;
+    };
+    if let Some(msg) = state.messages.get_mut(idx) {
+        msg.text = text;
+    }
+}
+
+/// Close the current turn's Tool Activity block. The block message + its group
+/// stay in the log (rendered as finished); only the "open" pointer resets so the
+/// next assistant turn starts a fresh block.
+pub fn close_tool_activity_turn(state: &mut VoiceChatOverlayState) {
+    state.active_tool_activity_index = None;
 }
 
 /// Add a user message to the chat
@@ -232,6 +375,13 @@ pub fn handle_message_bubble_click_from_recognizer(sender: Id) {
     match message.role {
         ChatRole::Reasoning => {
             message.is_collapsed = !message.is_collapsed;
+            update_chat_view_with_state(&mut state, false);
+        }
+        ChatRole::ToolActivity => {
+            // Toggle Evidence Summary (default) ↔ technical per-tool list, then
+            // re-render the cached block text from its group.
+            message.is_collapsed = !message.is_collapsed;
+            refresh_tool_activity_message(&mut state, index);
             update_chat_view_with_state(&mut state, false);
         }
         ChatRole::Assistant if !message.text.is_empty() => {
@@ -532,8 +682,70 @@ pub fn finalize_streaming_reasoning(state: &mut VoiceChatOverlayState) {
     state.active_reasoning_stream_index = None;
 }
 
+/// Hard cap on characters rendered/measured per bubble. A backstop against
+/// pathological payloads (e.g. a pasted base64 blob) freezing the UI.
+const MAX_BUBBLE_DISPLAY_CHARS: usize = 20_000;
+
+/// Longest run of non-whitespace characters allowed before we inject a break.
+/// CoreText's OpenType shaping (`CTLineCreateWithAttributedString`) spins on the
+/// main thread for very long unbroken runs (a 12.7k-char base64 line hung the
+/// app), so we break them so the typesetter can wrap instead.
+const MAX_UNBROKEN_RUN: usize = 200;
+
+fn has_long_unbroken_run(text: &str, max_run: usize) -> bool {
+    let mut run = 0usize;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            run = 0;
+        } else {
+            run += 1;
+            if run > max_run {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn break_long_runs(text: &str, max_run: usize) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / max_run.max(1) + 1);
+    let mut run = 0usize;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            run = 0;
+            out.push(ch);
+        } else {
+            if run >= max_run {
+                out.push('\n');
+                run = 0;
+            }
+            out.push(ch);
+            run += 1;
+        }
+    }
+    out
+}
+
+/// Make any bubble text safe to render: cap total length and break unbroken runs
+/// so CoreText never spins on the main thread. Normal messages pass through
+/// unchanged.
+pub fn cap_bubble_display_text(text: &str) -> String {
+    let capped = if text.chars().count() > MAX_BUBBLE_DISPLAY_CHARS {
+        let mut t: String = text.chars().take(MAX_BUBBLE_DISPLAY_CHARS).collect();
+        t.push_str("\n… (truncated for display; full text preserved in the thread)");
+        t
+    } else {
+        text.to_string()
+    };
+    if has_long_unbroken_run(&capped, MAX_UNBROKEN_RUN) {
+        break_long_runs(&capped, MAX_UNBROKEN_RUN)
+    } else {
+        capped
+    }
+}
+
 pub fn display_text_for_message(message: &ChatMessage) -> String {
-    if message.role == ChatRole::Reasoning && message.is_collapsed {
+    let raw = if message.role == ChatRole::Reasoning && message.is_collapsed {
         reasoning_summary_header(message)
     } else if message.is_streaming && message.text.is_empty() {
         "• • •".to_string()
@@ -541,15 +753,17 @@ pub fn display_text_for_message(message: &ChatMessage) -> String {
         format!("{} …", message.text)
     } else {
         message.text.clone()
-    }
+    };
+    cap_bubble_display_text(&raw)
 }
 
 pub fn bubble_text_for_message(message: &ChatMessage) -> String {
-    if message.role == ChatRole::Reasoning && message.is_collapsed {
+    let raw = if message.role == ChatRole::Reasoning && message.is_collapsed {
         reasoning_summary_header(message)
     } else {
         message.text.clone()
-    }
+    };
+    cap_bubble_display_text(&raw)
 }
 
 pub fn bubble_streaming_for_message(message: &ChatMessage) -> bool {
@@ -560,7 +774,7 @@ pub fn message_render_role(message: &ChatMessage) -> BubbleRole {
     match message.role {
         ChatRole::User => BubbleRole::User,
         ChatRole::Assistant => BubbleRole::Assistant,
-        ChatRole::System | ChatRole::Reasoning => BubbleRole::System,
+        ChatRole::System | ChatRole::Reasoning | ChatRole::ToolActivity => BubbleRole::System,
     }
 }
 
@@ -603,6 +817,7 @@ pub fn message_role_label(role: ChatRole) -> &'static str {
         ChatRole::Assistant => "Assistant",
         ChatRole::System => "System",
         ChatRole::Reasoning => "Reasoning",
+        ChatRole::ToolActivity => "Tool activity",
     }
 }
 
@@ -973,6 +1188,7 @@ pub fn finalize_assistant_message_impl(text: &str, is_error: bool) {
         msg.is_error = is_error;
     }
     clear_agent_thinking_state(&mut state);
+    close_tool_activity_turn(&mut state);
     state.is_sending = false;
     update_chat_view_with_state(&mut state, true);
     update_send_button_with_state(&mut state);
@@ -992,6 +1208,7 @@ pub fn finalize_assistant_message_state_only_impl(is_error: bool) {
         last.is_error = is_error;
     }
     clear_agent_thinking_state(&mut state);
+    close_tool_activity_turn(&mut state);
     state.is_sending = false;
     update_chat_view_with_state(&mut state, true);
     update_send_button_with_state(&mut state);
@@ -1073,7 +1290,7 @@ pub fn active_stream_index_mut(
         ChatRole::User => Some(&mut state.active_user_stream_index),
         ChatRole::Assistant => Some(&mut state.active_assistant_stream_index),
         ChatRole::Reasoning => Some(&mut state.active_reasoning_stream_index),
-        ChatRole::System => None,
+        ChatRole::System | ChatRole::ToolActivity => None,
     }
 }
 
@@ -1082,7 +1299,7 @@ pub fn active_stream_index(state: &VoiceChatOverlayState, role: ChatRole) -> Opt
         ChatRole::User => state.active_user_stream_index,
         ChatRole::Assistant => state.active_assistant_stream_index,
         ChatRole::Reasoning => state.active_reasoning_stream_index,
-        ChatRole::System => None,
+        ChatRole::System | ChatRole::ToolActivity => None,
     }
 }
 
@@ -1226,7 +1443,10 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
                 copy_action_target: state.action_handler.map(|p| p as Id),
                 measure_cache: Some(measure_cache_ptr),
             });
-            if matches!(message_role, ChatRole::Assistant | ChatRole::Reasoning) {
+            if matches!(
+                message_role,
+                ChatRole::Assistant | ChatRole::Reasoning | ChatRole::ToolActivity
+            ) {
                 attach_message_bubble_click_recognizer(state, bubble, index);
             }
             stack_view_add(container, bubble);
@@ -1263,5 +1483,48 @@ pub fn update_chat_view_with_state(state: &mut VoiceChatOverlayState, scroll_to_
                 scroll_agent_to_bottom(None, Some(scroll_view_ptr));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bubble_display_tests {
+    use super::{
+        MAX_BUBBLE_DISPLAY_CHARS, MAX_UNBROKEN_RUN, break_long_runs, cap_bubble_display_text,
+        has_long_unbroken_run,
+    };
+
+    #[test]
+    fn normal_text_passes_through_unchanged() {
+        let text = "A normal multi-line message.\nSecond line with spaces.";
+        assert_eq!(cap_bubble_display_text(text), text);
+    }
+
+    #[test]
+    fn detects_and_breaks_long_unbroken_run() {
+        // Simulates a pasted base64 blob: one very long run with no whitespace.
+        let blob = "a".repeat(12_776);
+        assert!(has_long_unbroken_run(&blob, MAX_UNBROKEN_RUN));
+
+        let broken = break_long_runs(&blob, MAX_UNBROKEN_RUN);
+        // No remaining run exceeds the cap → CoreText can wrap instead of spinning.
+        assert!(!has_long_unbroken_run(&broken, MAX_UNBROKEN_RUN));
+        // Content preserved (only newlines injected).
+        assert_eq!(broken.chars().filter(|c| *c == 'a').count(), 12_776);
+    }
+
+    #[test]
+    fn caps_total_length() {
+        let huge = "x".repeat(MAX_BUBBLE_DISPLAY_CHARS * 2);
+        let capped = cap_bubble_display_text(&huge);
+        assert!(capped.contains("truncated for display"));
+        // Capped well below the original length.
+        assert!(capped.chars().count() < MAX_BUBBLE_DISPLAY_CHARS + 4_000);
+    }
+
+    #[test]
+    fn whitespace_resets_run_counter() {
+        // Many short words separated by spaces must not be flagged.
+        let text = "word ".repeat(5_000);
+        assert!(!has_long_unbroken_run(&text, MAX_UNBROKEN_RUN));
     }
 }

@@ -26,6 +26,7 @@ use super::state::{
     ChatMessage, ChatRole, ConversationModeState, DrawerEntry, DrawerEntrySource, OVERLAY_STATE,
     SEND_CALLBACK, Tab, TranscriptionMode, VoiceChatOverlayState,
 };
+use super::tool_activity::ToolActivityGroup;
 use crate::ui::shared::status::{UiStatus, status_from_detail};
 use crate::ui_helpers::{
     BubbleConfig, BubbleMeasureCache, BubbleRole, LabelConfig, NSEdgeInsets, RenderMode,
