@@ -163,7 +163,7 @@ start:
 	@echo "CodeScribe started (logs: /tmp/codescribe.log)"
 
 stop:
-	@pkill -f "^codescribe$$" 2>/dev/null || true
+	@pkill -f "codescribe$$" 2>/dev/null || true
 	@rm -f ~/.codescribe/codescribe.pid 2>/dev/null || true
 	@echo "Stopped"
 
