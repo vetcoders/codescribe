@@ -118,6 +118,10 @@ pub fn action_handler_class() -> *const Class {
                 on_attach_clear as extern "C" fn(&Object, Sel, Id),
             );
             decl.add_method(
+                sel!(onAttachReattach:),
+                on_attach_reattach as extern "C" fn(&Object, Sel, Id),
+            );
+            decl.add_method(
                 sel!(onTabDrawer:),
                 on_tab_drawer as extern "C" fn(&Object, Sel, Id),
             );

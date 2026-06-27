@@ -525,6 +525,20 @@ async fn process_pair(
         None
     };
 
+    // Protected-vocabulary audit: flag operator/tool/agent names that survived
+    // the post-lexicon transcript but were dropped or mutated by the AI pass.
+    // This makes technical-name corruption visible to the operator instead of
+    // silently shipping "plausible prose" that lost the intended terms.
+    if let (Some(post_text), Some(ai_text)) = (post.as_deref(), ai_formatted.as_deref()) {
+        let lost = crate::stream_postprocess::protected_terms_lost(post_text, ai_text);
+        if !lost.is_empty() {
+            errors.push(format!(
+                "Protected terms lost in AI formatting: {}",
+                lost.join(", ")
+            ));
+        }
+    }
+
     let cloud = cloud_jobs.take_for(&id, &mut errors).await;
 
     let metrics_reference = match config.metrics_reference {

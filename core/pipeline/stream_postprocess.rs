@@ -16,6 +16,21 @@ const BUILTIN_LEXICONS: &[(&str, &str)] = &[(
     include_str!("../../assets/programming.jsonl"),
 )];
 const SEED_JSONL: &str = include_str!("../../assets/seed.jsonl");
+/// Curated operator/command vocabulary. Spoken Polish UI-command phrases and
+/// their Whisper mis-hears normalize to the canonical *code token* the codebase
+/// actually uses (e.g. "schowek"/"schowku"/"schowka"/"schopku" -> "clipboard").
+/// Loaded rules-only via `load_seed_jsonl` (seed format gives whole-word +
+/// case control), so these common words never enter `protected_canonicals` and
+/// never trip the downstream loss-detection gate. Canonicals were confirmed
+/// real and high-frequency via `loct occurrences` before being chosen.
+const OPERATOR_VOCAB_JSONL: &str = include_str!("../../assets/operator_vocabulary.jsonl");
+/// Curated proper-noun / operator-vocabulary lexicon. Unlike the generic
+/// programming/seed sources, entries here are case-normalizing: a variant that
+/// differs from the canonical only by casing (e.g. "aicx" -> "AICX") still
+/// produces a rewrite rule. The list is hand-vetted so capitalization is always
+/// correct for these terms — generic English words (rust, rest, diesel) are NOT
+/// in this file, so they never get capitalized.
+const PROTECTED_TERMS_JSONL: &str = include_str!("../../assets/protected_terms.jsonl");
 
 const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.93;
 const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
@@ -87,6 +102,10 @@ struct Lexicon {
     custom_rules: Vec<LexiconRule>,
     custom_path: PathBuf,
     custom_mtime: Option<SystemTime>,
+    /// Canonical forms of curated protected terms (proper nouns, operator
+    /// vocabulary). Used by `protected_terms_lost` to flag when an LLM or other
+    /// downstream pass silently drops or mutates a protected term.
+    protected_canonicals: Vec<String>,
 }
 
 static GLOBAL_LEXICON: LazyLock<RwLock<Lexicon>> = LazyLock::new(|| {
@@ -114,6 +133,21 @@ impl Lexicon {
         let seed_count = load_seed_jsonl(SEED_JSONL, "seed", &mut builtin_rules);
         let seed_ms = t_seed.elapsed().as_millis();
 
+        // Operator/command vocabulary: spoken Polish UI commands + their
+        // mis-hears normalize to the canonical code token. Seed format (rules
+        // only) keeps these common words out of `protected_canonicals`.
+        let operator_count = load_seed_jsonl(OPERATOR_VOCAB_JSONL, "operator", &mut builtin_rules);
+
+        // Protected terms load LAST among builtin sources so their brand casing
+        // wins over any generic earlier rule that produced a lower-cased form.
+        let mut protected_canonicals = Vec::new();
+        let protected_count = load_protected_jsonl(
+            PROTECTED_TERMS_JSONL,
+            "protected",
+            &mut builtin_rules,
+            &mut protected_canonicals,
+        );
+
         let custom_path = Config::config_dir().join("lexicon.custom.jsonl");
         let custom_mtime = fs::metadata(&custom_path)
             .ok()
@@ -131,13 +165,16 @@ impl Lexicon {
 
         if total > 0 {
             info!(
-                "Loaded {} lexicon rules in {}ms (legacy={} in {}ms, seed={} in {}ms, custom={} in {}ms, custom_path={})",
+                "Loaded {} lexicon rules in {}ms (legacy={} in {}ms, seed={} in {}ms, operator={}, protected={} terms={}, custom={} in {}ms, custom_path={})",
                 total,
                 total_ms,
                 legacy_count,
                 legacy_ms,
                 seed_count,
                 seed_ms,
+                operator_count,
+                protected_count,
+                protected_canonicals.len(),
                 custom_count,
                 custom_ms,
                 custom_path.display(),
@@ -154,6 +191,7 @@ impl Lexicon {
             custom_rules,
             custom_path,
             custom_mtime,
+            protected_canonicals,
         }
     }
 
@@ -224,6 +262,51 @@ fn apply_global_lexicon(text: &str) -> String {
     lexicon.apply(text)
 }
 
+/// Deterministically apply the global lexicon (builtin + seed + protected +
+/// custom) to `text`, hot-reloading the custom file if it changed.
+///
+/// This is the single deterministic protected-vocabulary pass. It is safe to run
+/// at any layer (it only rewrites registered mispronunciations to their
+/// canonical form) and is idempotent for canonical output. Use it to re-assert
+/// operator vocabulary AFTER a non-deterministic stage such as an LLM
+/// formatting/assistive pass, which can otherwise silently corrupt proper nouns
+/// (e.g. "Loctree" -> "Luxury").
+pub fn apply_lexicon(text: &str) -> String {
+    maybe_reload_global_lexicon();
+    apply_global_lexicon(text)
+}
+
+/// Whole-word, case-insensitive containment check for a (possibly multi-word)
+/// term. Mirrors the lexicon's own matching: internal whitespace is treated
+/// flexibly so "Fn Shift" matches across variable spacing.
+fn contains_term_ci(haystack: &str, term: &str) -> bool {
+    build_word_regex(term)
+        .map(|re| re.is_match(haystack))
+        .unwrap_or(false)
+}
+
+/// Report curated protected terms that were present in `before` but are missing
+/// from `after` — i.e. silently dropped or mutated by a downstream stage
+/// (typically an LLM formatting/assistive pass). Returns canonical forms in a
+/// stable, deduplicated order so the quality loop and operator can see exactly
+/// which operator vocabulary was lost.
+pub fn protected_terms_lost(before: &str, after: &str) -> Vec<String> {
+    let canonicals = {
+        let lexicon = GLOBAL_LEXICON
+            .read()
+            .expect("global lexicon read lock poisoned");
+        lexicon.protected_canonicals.clone()
+    };
+
+    let mut lost = Vec::new();
+    for term in canonicals {
+        if contains_term_ci(before, &term) && !contains_term_ci(after, &term) {
+            lost.push(term);
+        }
+    }
+    lost
+}
+
 fn load_legacy_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) -> usize {
     let mut added = 0usize;
     for (idx, line) in source.lines().enumerate() {
@@ -254,6 +337,69 @@ fn load_legacy_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) ->
 
         for mis in all_mis.iter() {
             if mis.eq_ignore_ascii_case(&entry.term) {
+                continue;
+            }
+
+            if let Some(pattern) = build_word_regex(mis) {
+                rules.push(LexiconRule {
+                    pattern,
+                    replacement: entry.term.clone(),
+                });
+                added += 1;
+            }
+        }
+    }
+
+    added
+}
+
+/// Load curated protected-term entries (legacy `term`+`mispronunciations` shape).
+///
+/// Differs from [`load_legacy_jsonl`] in two deliberate ways:
+/// 1. A variant is skipped only when it is *exactly* equal to the canonical, so
+///    case-only variants ("aicx" -> "AICX") still produce a normalization rule.
+///    This is safe ONLY because the source file is hand-vetted to proper nouns.
+/// 2. Each canonical is recorded in `canonicals` so the quality loop can detect
+///    when a protected term is lost downstream (e.g. by an LLM rewrite).
+fn load_protected_jsonl(
+    source: &str,
+    label: &str,
+    rules: &mut Vec<LexiconRule>,
+    canonicals: &mut Vec<String>,
+) -> usize {
+    let mut added = 0usize;
+    for (idx, line) in source.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let entry: LegacyEntry = match serde_json::from_str(line) {
+            Ok(entry) => entry,
+            Err(e) => {
+                warn!(
+                    "Protected lexicon line {} ({}) failed to parse: {}",
+                    idx + 1,
+                    label,
+                    e
+                );
+                continue;
+            }
+        };
+
+        if !canonicals.iter().any(|c| c == &entry.term) {
+            canonicals.push(entry.term.clone());
+        }
+
+        let mut all_mis = entry.mispronunciations;
+        if let Some(extras) = entry.extras {
+            all_mis.extend(extras.mispronunciations);
+        }
+
+        for mis in all_mis.iter() {
+            // Skip only exact duplicates; case-only differences are intentional
+            // normalization rules (the whole point of this curated source).
+            if mis == &entry.term {
                 continue;
             }
 
@@ -723,7 +869,7 @@ mod tests {
 
         assert_eq!(
             output,
-            "Bede nagrywal cos o loctree i nagrywanie o loctree."
+            "Bede nagrywal cos o Loctree i nagrywanie o Loctree."
         );
     }
 
@@ -787,6 +933,7 @@ mod tests {
             custom_mtime: std::fs::metadata(&custom_path)
                 .ok()
                 .and_then(|m| m.modified().ok()),
+            protected_canonicals: Vec::new(),
         };
 
         // No rules yet
@@ -828,6 +975,7 @@ mod tests {
             custom_rules: Vec::new(),
             custom_path: custom_path.clone(),
             custom_mtime: None, // Force initial load
+            protected_canonicals: Vec::new(),
         };
 
         // First reload loads the rule
@@ -864,6 +1012,7 @@ mod tests {
             custom_mtime: std::fs::metadata(&custom_path)
                 .ok()
                 .and_then(|m| m.modified().ok()),
+            protected_canonicals: Vec::new(),
         };
 
         // Write custom rule
@@ -954,5 +1103,138 @@ mod tests {
             "Expected >5000 rules with extras fix, got {}",
             lexicon.rule_count()
         );
+    }
+
+    /// Build a hermetic builtin-only lexicon (programming + seed + protected),
+    /// with NO operator custom file, so protected-term regression assertions are
+    /// deterministic regardless of the host's ~/.codescribe/lexicon.custom.jsonl.
+    fn builtin_only_lexicon() -> Lexicon {
+        let mut rules = Vec::new();
+        for (label, source) in BUILTIN_LEXICONS {
+            load_legacy_jsonl(source, label, &mut rules);
+        }
+        load_seed_jsonl(SEED_JSONL, "seed", &mut rules);
+        load_seed_jsonl(OPERATOR_VOCAB_JSONL, "operator", &mut rules);
+        let mut canonicals = Vec::new();
+        load_protected_jsonl(
+            PROTECTED_TERMS_JSONL,
+            "protected",
+            &mut rules,
+            &mut canonicals,
+        );
+        Lexicon {
+            builtin_rules: rules,
+            custom_rules: Vec::new(),
+            custom_path: PathBuf::from("/nonexistent/lexicon.custom.jsonl"),
+            custom_mtime: None,
+            protected_canonicals: canonicals,
+        }
+    }
+
+    #[test]
+    fn test_protected_terms_loctree_not_luxury() {
+        let lex = builtin_only_lexicon();
+        // The reported regression: Whisper/LLM emits the acoustic homophone
+        // "Luxury" for the product name. The lexicon must restore "Loctree".
+        assert_eq!(
+            lex.apply("Odpalam luxury na repo"),
+            "Odpalam Loctree na repo"
+        );
+        assert_eq!(lex.apply("locktree i loktree"), "Loctree i Loctree");
+        // Canonical already correct stays correct.
+        assert_eq!(lex.apply("Loctree daje sight"), "Loctree daje sight");
+    }
+
+    #[test]
+    fn test_protected_terms_preserve_brand_casing() {
+        let lex = builtin_only_lexicon();
+        assert_eq!(lex.apply("vibe crafted"), "Vibecrafted");
+        assert_eq!(lex.apply("code scribe"), "CodeScribe");
+        assert_eq!(lex.apply("vet coders"), "VetCoders");
+        // Case-only normalization (curated protected source only).
+        assert_eq!(lex.apply("mam aicx w repo"), "mam AICX w repo");
+        assert_eq!(lex.apply("przez mcp"), "przez MCP");
+        assert_eq!(lex.apply("a i c x"), "AICX");
+        assert_eq!(lex.apply("m c p"), "MCP");
+        assert_eq!(lex.apply("github"), "GitHub");
+        assert_eq!(lex.apply("git hub"), "GitHub");
+    }
+
+    #[test]
+    fn test_protected_terms_multiword_phrases() {
+        let lex = builtin_only_lexicon();
+        assert_eq!(lex.apply("fn shift"), "Fn Shift");
+        assert_eq!(lex.apply("fun shift"), "Fn Shift");
+        assert_eq!(lex.apply("living intent queue"), "Living Intent Queue");
+        assert_eq!(
+            lex.apply("assistive talk anytime"),
+            "Assistive Talk Anytime"
+        );
+        // Already-correct phrases are preserved verbatim.
+        assert_eq!(
+            lex.apply("Collapsible Tool Evidence"),
+            "Collapsible Tool Evidence"
+        );
+    }
+
+    #[test]
+    fn test_protected_terms_do_not_overcorrect_ordinary_language() {
+        let lex = builtin_only_lexicon();
+        // "rest", "harmony", "diesel" exist as case-only variants in
+        // programming.jsonl but the legacy loader skips case-equal variants, so
+        // ordinary English/Polish must pass through untouched.
+        let sentence = "I need some rest in harmony near the diesel engine";
+        assert_eq!(lex.apply(sentence), sentence);
+        let pl = "To jest zwykłe zdanie bez żadnych nazw własnych";
+        assert_eq!(lex.apply(pl), pl);
+    }
+
+    #[test]
+    fn test_polish_ui_command_phrase_preservation() {
+        // Regression class: Polish UI command phrases (and their Whisper
+        // mis-hears) must normalize to the canonical code token, never leak the
+        // garbage mutant. The reported goblin: "schowku" -> "schopku".
+        let lex = builtin_only_lexicon();
+        // The reported mutant and the whole "schowek" inflection family collapse
+        // to the invariant code token (clipboard never inflects in Polish).
+        assert_eq!(lex.apply("wrzuć do schopku"), "wrzuć do clipboard");
+        assert_eq!(lex.apply("otwórz schowek"), "otwórz clipboard");
+        assert_eq!(lex.apply("wrzuć do schowka"), "wrzuć do clipboard");
+        assert_eq!(lex.apply("zajrzyj do schowku"), "zajrzyj do clipboard");
+        // Other operator commands normalize to their code token.
+        assert_eq!(lex.apply("zrób skrinszot"), "zrób screenshot");
+        assert_eq!(lex.apply("zrób zrzut ekranu"), "zrób screenshot");
+        assert_eq!(lex.apply("wklej to"), "paste to");
+        assert_eq!(lex.apply("pokaż zaznaczenie"), "pokaż selection");
+        assert_eq!(lex.apply("zapisz transkrypt"), "zapisz transcript");
+        // Ordinary text without command vocabulary is untouched.
+        let plain = "To jest zwykłe zdanie o kotach i psach";
+        assert_eq!(lex.apply(plain), plain);
+    }
+
+    #[test]
+    fn test_protected_terms_lost_detects_corruption() {
+        // Uses the GLOBAL lexicon; builtin protected canonicals (Loctree,
+        // CodeScribe, MCP, ...) are always present regardless of custom file.
+        let lost = protected_terms_lost("I run Loctree through MCP", "I run Luxury through MCP");
+        assert_eq!(lost, vec!["Loctree".to_string()]);
+
+        // Nothing lost when the term survives.
+        let none = protected_terms_lost("CodeScribe is great", "CodeScribe is wonderful");
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn test_apply_lexicon_is_idempotent_on_canonical() {
+        // Re-applying after an LLM pass must reach a fixed point (no oscillation /
+        // corruption). Uses the GLOBAL lexicon, so we only assert robustness
+        // properties that an operator custom file cannot flip: the pass converges
+        // and Loctree/AICX/MCP (which no builtin/operator rule downgrades) survive.
+        let once = apply_lexicon("Loctree, AICX and MCP keep working");
+        let twice = apply_lexicon(&once);
+        assert_eq!(once, twice, "lexicon apply must be idempotent on canonical");
+        assert!(once.contains("Loctree"));
+        assert!(once.contains("AICX"));
+        assert!(once.contains("MCP"));
     }
 }

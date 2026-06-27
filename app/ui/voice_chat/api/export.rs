@@ -67,6 +67,7 @@ pub fn chat_markdown_from_messages(messages: &[ChatMessage], assistant_only: boo
             ChatRole::Assistant => "Assistant",
             ChatRole::System => "System",
             ChatRole::Reasoning => "Reasoning",
+            ChatRole::ToolActivity => "Tool activity",
         };
         out.push_str(&format!("## {}\n\n", role));
         out.push_str(msg.text.trim_end());

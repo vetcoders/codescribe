@@ -1,9 +1,10 @@
 use serial_test::serial;
 use tempfile::TempDir;
 
-use crate::config::Config;
+use crate::config::{Config, UserSettings};
 use crate::os::permissions::PermissionStatus;
 
+use super::actions::{next_visible_step, prev_visible_step, step_is_visible};
 use super::permission_flow::{
     PermissionUiStatus, should_open_settings_after_failed_request,
     should_refresh_hotkey_runtime_after_grant, should_wait_for_restart,
@@ -13,7 +14,10 @@ use super::session::{
     setup_done_refresh_target,
 };
 use super::should_show_onboarding;
-use super::steps::{PermissionKind, PermissionRecoveryStrategy, WizardStep, step_for_index};
+use super::state::{OnboardingModeChoice, initial_onboarding_mode_choice};
+use super::steps::{
+    PermissionKind, PermissionRecoveryStrategy, STEP_FLOW, WizardStep, step_for_index,
+};
 
 fn setup_test_env() -> TempDir {
     let tmp = TempDir::new().expect("tempdir");
@@ -52,6 +56,149 @@ fn onboarding_progress_round_trips_for_resume() {
     save_onboarding_progress(3);
 
     assert_eq!(load_onboarding_progress(), 3);
+}
+
+#[test]
+#[serial]
+fn onboarding_mode_defaults_to_basic_on_fresh_install() {
+    let _tmp = setup_test_env();
+    assert_eq!(
+        initial_onboarding_mode_choice(),
+        OnboardingModeChoice::Basic
+    );
+}
+
+#[test]
+#[serial]
+fn onboarding_mode_round_trips_persisted_agentic_choice() {
+    let _tmp = setup_test_env();
+
+    let settings = UserSettings {
+        onboarding_mode: Some(OnboardingModeChoice::Agentic.value().to_string()),
+        ..Default::default()
+    };
+    settings.save().expect("persist agentic onboarding mode");
+
+    assert_eq!(
+        initial_onboarding_mode_choice(),
+        OnboardingModeChoice::Agentic
+    );
+}
+
+#[test]
+fn onboarding_mode_value_round_trips_through_token() {
+    assert_eq!(
+        OnboardingModeChoice::from_value(OnboardingModeChoice::Basic.value()),
+        OnboardingModeChoice::Basic
+    );
+    assert_eq!(
+        OnboardingModeChoice::from_value(OnboardingModeChoice::Agentic.value()),
+        OnboardingModeChoice::Agentic
+    );
+    // Unknown / forward-version tokens fall back to the safe Basic lane.
+    assert_eq!(
+        OnboardingModeChoice::from_value("orchestrator-9000"),
+        OnboardingModeChoice::Basic
+    );
+}
+
+fn index_of(target: WizardStep) -> usize {
+    STEP_FLOW
+        .iter()
+        .position(|step| *step == target)
+        .expect("step present in canonical flow")
+}
+
+/// Walk the wizard forward from Welcome through every lane-visible step.
+fn walk_forward(mode: OnboardingModeChoice) -> Vec<WizardStep> {
+    let mut visited = vec![step_for_index(0)];
+    let mut idx = 0;
+    while let Some(next) = next_visible_step(idx, mode) {
+        visited.push(step_for_index(next));
+        idx = next;
+    }
+    visited
+}
+
+#[test]
+fn mode_step_immediately_follows_welcome() {
+    for mode in [OnboardingModeChoice::Basic, OnboardingModeChoice::Agentic] {
+        assert_eq!(
+            next_visible_step(0, mode).map(step_for_index),
+            Some(WizardStep::Mode),
+            "the lane chooser must be the first step after Welcome in {mode:?}"
+        );
+    }
+}
+
+#[test]
+fn step_visibility_gates_only_readiness_on_lane() {
+    assert!(step_is_visible(
+        WizardStep::AgenticReadiness,
+        OnboardingModeChoice::Agentic
+    ));
+    assert!(!step_is_visible(
+        WizardStep::AgenticReadiness,
+        OnboardingModeChoice::Basic
+    ));
+
+    // Every shared step stays visible in both lanes — only readiness is gated.
+    for step in [
+        WizardStep::Welcome,
+        WizardStep::Mode,
+        WizardStep::Permission(PermissionKind::Microphone),
+        WizardStep::Language,
+        WizardStep::ApiKey,
+        WizardStep::HotkeyMode,
+        WizardStep::Done,
+    ] {
+        assert!(step_is_visible(step, OnboardingModeChoice::Basic));
+        assert!(step_is_visible(step, OnboardingModeChoice::Agentic));
+    }
+}
+
+#[test]
+fn basic_lane_flow_skips_agentic_readiness() {
+    let steps = walk_forward(OnboardingModeChoice::Basic);
+    assert!(steps.contains(&WizardStep::Mode));
+    assert!(
+        !steps.contains(&WizardStep::AgenticReadiness),
+        "Basic lane must not route through the agentic readiness step: {steps:?}"
+    );
+    assert_eq!(steps.last(), Some(&WizardStep::Done));
+}
+
+#[test]
+fn agentic_lane_flow_includes_readiness_before_done() {
+    let steps = walk_forward(OnboardingModeChoice::Agentic);
+    assert!(steps.contains(&WizardStep::Mode));
+    let readiness_pos = steps
+        .iter()
+        .position(|step| *step == WizardStep::AgenticReadiness);
+    let done_pos = steps.iter().position(|step| *step == WizardStep::Done);
+    assert!(
+        readiness_pos.is_some(),
+        "Agentic lane must surface the readiness step: {steps:?}"
+    );
+    assert!(
+        readiness_pos < done_pos,
+        "readiness must precede Done in the agentic lane: {steps:?}"
+    );
+}
+
+#[test]
+fn back_navigation_respects_lane_visibility() {
+    let done = index_of(WizardStep::Done);
+    // Going Back from Done lands on HotkeyMode in Basic (readiness skipped) and
+    // on the readiness step in Agentic.
+    assert_eq!(
+        prev_visible_step(done, OnboardingModeChoice::Basic).map(step_for_index),
+        Some(WizardStep::HotkeyMode)
+    );
+    assert_eq!(
+        prev_visible_step(done, OnboardingModeChoice::Agentic).map(step_for_index),
+        Some(WizardStep::AgenticReadiness)
+    );
 }
 
 fn assert_resume_permission(step: Option<usize>, expected: PermissionKind) {

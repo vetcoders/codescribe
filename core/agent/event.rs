@@ -47,6 +47,10 @@ pub enum AgentUiEvent {
         name: String,
         id: String,
         summary: String,
+        /// True when the tool dispatch returned an error result. Carried so the
+        /// UI can render a failed tool compactly (`· failed · <reason>`) without
+        /// string-sniffing the summary. The reason already lives in `summary`.
+        is_error: bool,
     },
     Done,
     Error(String),

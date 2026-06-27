@@ -90,15 +90,24 @@ impl PermissionKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardStep {
     Welcome,
+    /// First-run operating-lane choice (Basic vs Agentic). Placed right after
+    /// Welcome so the lane framing is set before the rest of the wizard.
+    Mode,
     Permission(PermissionKind),
     Language,
     ApiKey,
     HotkeyMode,
+    /// Agentic-only readiness verdict (Vibecrafted / AICX / Loctree / PRView).
+    /// Present in the fixed flow but navigated *around* in the Basic lane — see
+    /// `actions::step_is_visible`. Keeping it in the array (rather than a
+    /// mode-dependent flow) preserves stable, resume-safe step indices.
+    AgenticReadiness,
     Done,
 }
 
-pub const STEP_FLOW: [WizardStep; 10] = [
+pub const STEP_FLOW: [WizardStep; 12] = [
     WizardStep::Welcome,
+    WizardStep::Mode,
     WizardStep::Permission(PermissionKind::Microphone),
     WizardStep::Permission(PermissionKind::Accessibility),
     WizardStep::Permission(PermissionKind::InputMonitoring),
@@ -107,6 +116,7 @@ pub const STEP_FLOW: [WizardStep; 10] = [
     WizardStep::Language,
     WizardStep::ApiKey,
     WizardStep::HotkeyMode,
+    WizardStep::AgenticReadiness,
     WizardStep::Done,
 ];
 

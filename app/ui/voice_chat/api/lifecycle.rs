@@ -197,6 +197,9 @@ pub fn clear_overlay_state(state: &mut VoiceChatOverlayState) {
     state.active_user_stream_index = None;
     state.active_assistant_stream_index = None;
     state.active_reasoning_stream_index = None;
+    // Close any open tool-activity turn; the block messages persist with the
+    // transcript and re-render from their groups (keyed by message index).
+    state.active_tool_activity_index = None;
     state.is_sending = false;
     state.scroll_pinned = true;
     state.manual_draft.clear();

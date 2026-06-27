@@ -414,6 +414,7 @@ impl AgentSession {
                         name: tool_name,
                         id: call_id,
                         summary,
+                        is_error,
                     },
                 )
                 .await;
@@ -465,6 +466,7 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
     const SUMMARY_MAX_CHARS: usize = 120;
 
     let mut first_text: Option<String> = None;
+    let mut first_error: Option<String> = None;
     let mut image_count = 0usize;
     let mut error_count = 0usize;
 
@@ -476,7 +478,12 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
                 }
             }
             ToolResultContent::Image { .. } | ToolResultContent::ImageAsset(_) => image_count += 1,
-            ToolResultContent::Error(_) => error_count += 1,
+            ToolResultContent::Error(message) => {
+                error_count += 1;
+                if first_error.is_none() {
+                    first_error = Some(message.trim().to_string());
+                }
+            }
         }
     }
 
@@ -491,8 +498,14 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
         return format!("{image_count} image result(s)");
     }
 
-    if error_count > 0 {
-        return format!("{error_count} error result(s)");
+    // Surface the real failure reason (e.g. "empty index") so the grouped Tool
+    // Activity block can show it compactly. Fall back to a count when the error
+    // carries no message. The full payload still goes to the debug log.
+    if let Some(error) = first_error {
+        if error.is_empty() {
+            return format!("{error_count} error result(s)");
+        }
+        return truncate_summary(&error, SUMMARY_MAX_CHARS);
     }
 
     "No tool output".to_string()
@@ -1006,13 +1019,28 @@ mod tests {
             }),
             "expected ToolExecuting event, got {ui_events:?}"
         );
+        let tool_result_event = ui_events
+            .iter()
+            .find_map(|event| match event {
+                AgentUiEvent::ToolResult {
+                    name,
+                    id,
+                    summary,
+                    is_error,
+                } => Some((name.clone(), id.clone(), summary.clone(), *is_error)),
+                _ => None,
+            })
+            .expect("expected a ToolResult UI event");
+        assert_eq!(tool_result_event.0, "missing_tool");
+        assert_eq!(tool_result_event.1, "call_missing");
         assert!(
-            ui_events.contains(&AgentUiEvent::ToolResult {
-                name: "missing_tool".to_string(),
-                id: "call_missing".to_string(),
-                summary: "1 error result(s)".to_string(),
-            }),
-            "expected ToolResult fallback summary, got {ui_events:?}"
+            tool_result_event.3,
+            "missing tool dispatch must flag the UI event as an error, got {ui_events:?}"
+        );
+        assert!(
+            tool_result_event.2.contains("not registered"),
+            "expected the failure reason to reach the UI summary, got {:?}",
+            tool_result_event.2
         );
         assert!(
             ui_events
