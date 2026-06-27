@@ -1539,3 +1539,44 @@ pub fn create_pending_followup_action_bar(action_handler: Option<usize>) -> Id {
         bar
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::build_attachments_block;
+
+    /// Review-hygiene contract: a readable image is announced as vision input,
+    /// but a missing/unreadable image path must NEVER claim to be vision input.
+    /// Guards the acceptance criterion that an unsendable path can't masquerade
+    /// as `(image detected; will be sent as vision input)`.
+    #[test]
+    fn readable_image_is_announced_missing_image_is_not() {
+        let dir = std::env::temp_dir().join(format!("cs_send_attach_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        // A real, readable image: PNG magic bytes are non-UTF-8, so it lands in
+        // the image branch and (within the byte cap) is announced as vision input.
+        let ok_png = dir.join("ok.png");
+        std::fs::write(&ok_png, b"\x89PNG\r\n\x1a\nfake").unwrap();
+
+        // A path that does not exist: `File::open` fails before any vision claim.
+        let missing_png = dir.join("missing.png");
+
+        let block = build_attachments_block(&[ok_png.clone(), missing_png.clone()]);
+
+        // Readable image is announced exactly once.
+        assert_eq!(
+            block
+                .matches("(image detected; will be sent as vision input)")
+                .count(),
+            1,
+            "only the readable image may claim vision input: {block}"
+        );
+        // Missing image is reported as unopenable, never as valid vision input.
+        assert!(
+            block.contains("(failed to open)"),
+            "missing image should report failed to open: {block}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
