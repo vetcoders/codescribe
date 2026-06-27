@@ -52,7 +52,7 @@ is a question of **which product** goes to the store.
 |---------|--------------------------|-----------------|-----|
 | **Sandbox** | `scripts/entitlements.plist` explicitly **disables** App Sandbox (documented as "outside Mac App Store") | `app-sandbox = true` mandatory | **P0** |
 | **Entitlements** | `disable-library-validation`, `allow-unsigned-executable-memory`, `allow-dyld-environment-variables` — all required by embedded Whisper/MiniLM dylibs | Sandboxed apps must team-sign nested code; `disable-library-validation` conflicts | **P0/uncertain** |
-| **Privacy manifest** | none (`PrivacyInfo.xcprivacy` absent); app uses `std::fs::metadata().modified()` → **FileTimestamp** required-reason category | `PrivacyInfo.xcprivacy` with declared reasons | **P0** |
+| **Privacy manifest** | none (`PrivacyInfo.xcprivacy` absent); app reads file mtimes via `std::fs` `metadata().modified()` in `core/state/history.rs`, `core/hf_cache.rs`, `core/attachment.rs` → **FileTimestamp** required-reason category, reason code **C617.1** (metadata of files in the app's own containers) | `PrivacyInfo.xcprivacy` declaring `NSPrivacyAccessedAPICategoryFileTimestamp` / `C617.1` | **P0** (draft template: `scripts/PrivacyInfo.xcprivacy.template`) |
 | **App Privacy Details** | only a written `docs/guide/privacy.md`; no App Store Connect record | Nutrition-label questionnaire completed | **P1** (process, blocked on having an app record) |
 | **Purpose strings** | Mic, Accessibility, Input Monitoring, Screen Capture, Apple Events — generated in `Makefile` bundle target (lines 127–131) | Mic + Input Monitoring OK; Accessibility/Apple Events review-risky | **P1** |
 | **Basic vs Agentic** | Onboarding has Basic (safe default) + Agentic lanes; Agentic probes MCP readiness | Agentic capabilities are sandbox-incompatible | **architecture** |
@@ -115,9 +115,37 @@ the store) and off (for the agent). Do not attempt one binary for both.
 
 ---
 
+## Research verification — live Apple sources (2026-06-27)
+
+The constraints above were re-checked against live Apple/official sources during
+an ERi (Examine → Research → Implement) pass. Each core claim held; precision was
+added where the first draft was coarse.
+
+| Claim | Verdict (live) | Source |
+|-------|----------------|--------|
+| App Sandbox (`com.apple.security.app-sandbox = true`) is required for every Mac App Store app; builds without it are rejected at submission | **Confirmed** | [App Sandbox Entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.app-sandbox); rejection text on [Apple Developer Forums 41400](https://developer.apple.com/forums/thread/41400) |
+| MAS lane needs an **Apple Distribution** signing identity + a **3rd Party Mac Developer Installer** `.pkg` via `productbuild`, uploaded with **Transporter** to App Store Connect — distinct from Developer ID + `notarytool` (outside-store lane; `altool` retired 2023-11-01) | **Confirmed** | [Notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution), [Distributing software on macOS](https://developer.apple.com/macos/distribution/), [Uploading macOS Builds to App Store Connect (Xojo, 2025)](https://blog.xojo.com/2025/01/14/uploading-macos-builds-to-app-store-connect/) |
+| **App Privacy Details** ("nutrition labels") are mandatory to submit new apps/updates, apply to macOS, and require declaring **Audio Data** with purpose + linkage + tracking answers | **Confirmed** | [App Privacy Details](https://developer.apple.com/app-store/app-privacy-details/) |
+| **Privacy manifest** (`PrivacyInfo.xcprivacy`) with **required-reason API** declarations is enforced since **2024-05-01**; apps without it are rejected | **Confirmed** | [Privacy updates for App Store submissions](https://developer.apple.com/news/?id=3d8a9yyh), [Reminder: starts May 1](https://developer.apple.com/news/?id=pvszzano) |
+| CodeScribe's `metadata().modified()` usage maps to **FileTimestamp** category, reason code **C617.1** (metadata of files in the app's own containers); `DDA9.1` is the alternate (show timestamps to the user, no off-device send) | **Confirmed + made precise** | [NSPrivacyAccessedAPIType](https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype) |
+
+**Honest nuance:** the hardest-edged 2024-05-01 gate is scoped most strictly to
+*third-party SDKs on Apple's commonly-used list*, but the required-reason
+*declaration* obligation also covers an app's own first-party usage of those
+APIs. CodeScribe uses a FileTimestamp API directly, so the manifest is required
+regardless of SDKs.
+
+**Still uncertain (needs a real `productbuild` + App Store Connect upload to
+settle):** whether `disable-library-validation` (required today by the embedded
+Whisper/MiniLM dylibs) can coexist with a sandboxed MAS build, and whether
+Input-Monitoring listen-only hotkeys survive App Review in practice. Do not
+assert either way from documentation alone.
+
 ## What this repo change does and does NOT do
 
-- **Adds** this document and `scripts/appstore-preflight.sh` (read-only check).
+- **Adds** this document, `scripts/appstore-preflight.sh` (read-only check), and
+  `scripts/PrivacyInfo.xcprivacy.template` (a clearly-marked DRAFT manifest, not
+  wired into any build — a guardrail/starting point for the future Basic SKU).
 - **Does not** enable the sandbox, change entitlements, alter signing, touch the
   `Makefile`, or modify any PR36 work. Those are deliberate follow-ups, gated on
   the operator's decision to actually stand up a second SKU.
