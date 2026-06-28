@@ -251,12 +251,12 @@ mod tests {
 
     #[test]
     fn test_parse_github_url_blob() {
-        let gh = parse_github_ref("https://github.com/VetCoders/CodeScribe/blob/main/src/lib.rs");
+        let gh = parse_github_ref("https://github.com/vetcoders/codescribe/blob/main/src/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "VetCoders".into(),
-                repo: "CodeScribe".into(),
+                owner: "Vetcoders".into(),
+                repo: "Codescribe".into(),
                 git_ref: "main".into(),
                 path: "src/lib.rs".into(),
             })
@@ -281,12 +281,12 @@ mod tests {
 
     #[test]
     fn test_parse_github_spec_full() {
-        let gh = parse_github_ref("VetCoders/CodeScribe@fix/multiple-fixes:core/lib.rs");
+        let gh = parse_github_ref("Vetcoders/Codescribe@fix/multiple-fixes:core/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "VetCoders".into(),
-                repo: "CodeScribe".into(),
+                owner: "Vetcoders".into(),
+                repo: "Codescribe".into(),
                 git_ref: "fix/multiple-fixes".into(),
                 path: "core/lib.rs".into(),
             })
@@ -295,12 +295,12 @@ mod tests {
 
     #[test]
     fn test_parse_github_spec_default_ref() {
-        let gh = parse_github_ref("VetCoders/CodeScribe:core/lib.rs");
+        let gh = parse_github_ref("Vetcoders/Codescribe:core/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "VetCoders".into(),
-                repo: "CodeScribe".into(),
+                owner: "Vetcoders".into(),
+                repo: "Codescribe".into(),
                 git_ref: "main".into(),
                 path: "core/lib.rs".into(),
             })
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_percent_encode_param_safe() {
-        assert_eq!(percent_encode_param("VetCoders"), "VetCoders");
+        assert_eq!(percent_encode_param("Vetcoders"), "Vetcoders");
         assert_eq!(percent_encode_param("my-repo_v2"), "my-repo_v2");
     }
 

@@ -61,13 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Stdio MCP tool bridge** — CodeScribe can load configured MCP tools and report MCP status honestly.
+- **Stdio MCP tool bridge** — Codescribe can load configured MCP tools and report MCP status honestly.
 - **Thread search agent tool** — assistant tooling can search saved thread history.
 - **Creator taxonomy shell and preview timing presets** — settings gained richer controls for creator workflows and live-preview cadence.
 
 ### Changed
 
-- **License** — relicensed the public CodeScribe release surface from Apache-2.0 to FSL-1.1-ALv2 to support public availability while protecting against commercial repackaging; each version converts to Apache-2.0 after 2 years.
+- **License** — relicensed the public codescribe release surface from Apache-2.0 to FSL-1.1-ALv2 to support public availability while protecting against commercial repackaging; each version converts to Apache-2.0 after 2 years.
 - **Voice chat UI** — modernized drawer rows, preserved raw markdown bubbles by default, and reduced streaming render cost.
 - **UI module shape** — decomposed large settings, voice chat, onboarding, overlay, pipeline, hotkey, and shared-helper surfaces into responsibility modules.
 
@@ -112,7 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **TOCTOU lock in onboarding** — replaced check-then-create file lock with `flock(2)` to prevent racing first-run setups across simultaneously launched CodeScribe instances.
+- **TOCTOU lock in onboarding** — replaced check-then-create file lock with `flock(2)` to prevent racing first-run setups across simultaneously launched codescribe instances.
 - **NSGlassEffectView retain balance** — UI overlay now autoreleases the glass effect view to balance its explicit retain on construction; prevents a steady leak of glass overlays under heavy use on macOS 26+.
 - **ObjC release contract on overlay teardown** — completed the `release` pairing for all overlay subviews so teardown does not leak under ARC-incompatible call paths.
 
@@ -122,18 +122,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Typed transcription flags + toggle adjudication** ([091dd67](https://github.com/VetCoders/CodeScribe/commit/091dd67)) — `TranscriptionConfidenceFlag` enum extended; `Vec<String>` confidence flags converted to typed `Vec<TranscriptionConfidenceFlag>` across `RecordingTruthVerdict` boundary. Toggle mode now adjudicates session truth via the same final-pass pipeline as hold mode (no more 80% speech loss in long toggle sessions). Closes Marbles_truth_plan **L9** + research **Q10/LIE A/Q7**.
-- **`final-pass` env toggle for runtime experimentation** ([42a09e7](https://github.com/VetCoders/CodeScribe/commit/42a09e7)) — `CODESCRIBE_LOCAL_STT_FINAL_PASS=0|1` (default `1`) lets ops disable the saved-WAV adjudicator without rebuild. `Vec::contains` cleanup on flag iteration.
-- **Centralized env handling + embedded-Whisper documentation** ([fb30db2](https://github.com/VetCoders/CodeScribe/commit/fb30db2)) — env-var loading consolidated in one path; README + `.env.example` updated to declare embedded-first Whisper as canonical and `CODESCRIBE_NO_EMBED=1` as opt-out.
+- **Typed transcription flags + toggle adjudication** ([091dd67](https://github.com/vetcoders/codescribe/commit/091dd67)) — `TranscriptionConfidenceFlag` enum extended; `Vec<String>` confidence flags converted to typed `Vec<TranscriptionConfidenceFlag>` across `RecordingTruthVerdict` boundary. Toggle mode now adjudicates session truth via the same final-pass pipeline as hold mode (no more 80% speech loss in long toggle sessions). Closes Marbles_truth_plan **L9** + research **Q10/LIE A/Q7**.
+- **`final-pass` env toggle for runtime experimentation** ([42a09e7](https://github.com/vetcoders/codescribe/commit/42a09e7)) — `CODESCRIBE_LOCAL_STT_FINAL_PASS=0|1` (default `1`) lets ops disable the saved-WAV adjudicator without rebuild. `Vec::contains` cleanup on flag iteration.
+- **Centralized env handling + embedded-Whisper documentation** ([fb30db2](https://github.com/vetcoders/codescribe/commit/fb30db2)) — env-var loading consolidated in one path; README + `.env.example` updated to declare embedded-first Whisper as canonical and `CODESCRIBE_NO_EMBED=1` as opt-out.
 
 ### Changed
 
-- **Config loader rewrite** ([0a9bd99](https://github.com/VetCoders/CodeScribe/commit/0a9bd99)) — `core/config/{loader,migrate,mod}.rs` substantively refactored to enforce priority `settings.json > promoted env > defaults`. Lays infrastructure for upcoming Settings Creator. **Test parity** (verified `0.9.3`): both `test_load_prefers_settings_json_over_promoted_env_file_values` and `test_runtime_env_does_not_persist_into_settings_during_migration` pass on this commit. The L1 marble that flagged them was already converged by `0a9bd99` (inject_file_env_for_runtime skips promoted keys) and `43d67d1` (migrate_if_needed early-returns when `.env` snapshot is absent or empty); the CHANGELOG-as-shipped lagged the actual fix state. Functional impact: none.
+- **Config loader rewrite** ([0a9bd99](https://github.com/vetcoders/codescribe/commit/0a9bd99)) — `core/config/{loader,migrate,mod}.rs` substantively refactored to enforce priority `settings.json > promoted env > defaults`. Lays infrastructure for upcoming Settings Creator. **Test parity** (verified `0.9.3`): both `test_load_prefers_settings_json_over_promoted_env_file_values` and `test_runtime_env_does_not_persist_into_settings_during_migration` pass on this commit. The L1 marble that flagged them was already converged by `0a9bd99` (inject_file_env_for_runtime skips promoted keys) and `43d67d1` (migrate_if_needed early-returns when `.env` snapshot is absent or empty); the CHANGELOG-as-shipped lagged the actual fix state. Functional impact: none.
 - **Sort + collapsible match hygiene** (clippy) — `sort_by(|a,b| b.x.cmp(&a.x))` → `sort_by_key(|b| std::cmp::Reverse(b.x))` across `core/agent/thread_index.rs`, `core/quality/qube_daemon.rs`, `app/ui/shared/helpers.rs`, `app/ui/voice_chat/api.rs`. Collapsible `match` → guard pattern in `core/agent/thread_index.rs`, `app/controller/helpers.rs`, `app/ui/voice_chat/api.rs`. Zero behavior change, idiomatic Rust 2024.
 
 ### Fixed
 
-- **Short-text formatting truth guard** ([ab9a9c6](https://github.com/VetCoders/CodeScribe/commit/ab9a9c6) — L1 marble) — non-assistive AI formatting now hard-skips only inputs `<10` chars; `AiNoop` detection narrowed to whitespace-only echoes. Punctuation and capitalization changes are preserved as legitimate formatting work. Short `FormattedTranscript` outputs in the 10–23 char band re-entered the controller quality gate (previously bypassed). Closes regression in `e2e_prompts_and_history`.
+- **Short-text formatting truth guard** ([ab9a9c6](https://github.com/vetcoders/codescribe/commit/ab9a9c6) — L1 marble) — non-assistive AI formatting now hard-skips only inputs `<10` chars; `AiNoop` detection narrowed to whitespace-only echoes. Punctuation and capitalization changes are preserved as legitimate formatting work. Short `FormattedTranscript` outputs in the 10–23 char band re-entered the controller quality gate (previously bypassed). Closes regression in `e2e_prompts_and_history`.
 
 ### Internal
 
@@ -146,11 +146,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Silero VAD embedded path** ([8b0e278](https://github.com/VetCoders/CodeScribe/commit/8b0e278)) — Silero ONNX model was embedded in the binary via `include_bytes!`, but runtime called `Session::commit_from_file(path)` against `~/.codescribe/models/silero_vad.onnx` which doesn't exist on fresh machines. Result: every recording on freshly-installed `0.9.0` DMG returned `vad_no_speech_detected`, regardless of audio content. Fix: new `SileroVad::new_embedded(config)` and `AccumulatingVad::with_config_embedded` use `Session::builder().commit_from_memory(embedded::MODEL)` (ort 2.0.0-rc.11 API). `core/audio/chunker.rs::init_silero_vad` rewired to embedded path; legacy `SileroVad::new(model_path, ...)` kept as dev/test override only. Verified empirically against Dragon `Sesja 1` recording (53-char Polish transcript with 57% speech detected vs prior 0% speech under `0.9.0`).
+- **Silero VAD embedded path** ([8b0e278](https://github.com/vetcoders/codescribe/commit/8b0e278)) — Silero ONNX model was embedded in the binary via `include_bytes!`, but runtime called `Session::commit_from_file(path)` against `~/.codescribe/models/silero_vad.onnx` which doesn't exist on fresh machines. Result: every recording on freshly-installed `0.9.0` DMG returned `vad_no_speech_detected`, regardless of audio content. Fix: new `SileroVad::new_embedded(config)` and `AccumulatingVad::with_config_embedded` use `Session::builder().commit_from_memory(embedded::MODEL)` (ort 2.0.0-rc.11 API). `core/audio/chunker.rs::init_silero_vad` rewired to embedded path; legacy `SileroVad::new(model_path, ...)` kept as dev/test override only. Verified empirically against a real-device `Sesja 1` recording (53-char Polish transcript with 57% speech detected vs prior 0% speech under `0.9.0`).
 
 ### Changed
 
-- **Slim DMG via build-pipeline split** — `Makefile` target `release` split into `release-codescribe` (embedded Whisper + MiniLM + Silero) and `release-qube` (`CODESCRIBE_NO_EMBED=1`, isolated `target-noembed/` directory). `qube-daemon` and `qube-report` binaries shrank from ~1.3 GB each (each had its own `include_bytes!()` baked-in models — Cargo doesn't deduplicate `__DATA` segments across workspace binaries) to **24 MB each**, resolving runtime models from HF cache instead. Bundle dropped from **4.0 GB → 1.4 GB**, signed+notarized DMG from **3.7 GB → 1.2 GB** (~67% reduction). `qube-*` binaries continue to function as VetCoders-internal CLI tools without per-binary model embedding overhead.
+- **Slim DMG via build-pipeline split** — `Makefile` target `release` split into `release-codescribe` (embedded Whisper + MiniLM + Silero) and `release-qube` (`CODESCRIBE_NO_EMBED=1`, isolated `target-noembed/` directory). `qube-daemon` and `qube-report` binaries shrank from ~1.3 GB each (each had its own `include_bytes!()` baked-in models — Cargo doesn't deduplicate `__DATA` segments across workspace binaries) to **24 MB each**, resolving runtime models from HF cache instead. Bundle dropped from **4.0 GB → 1.4 GB**, signed+notarized DMG from **3.7 GB → 1.2 GB** (~67% reduction). `qube-*` binaries continue to function as vetcoders-internal CLI tools without per-binary model embedding overhead.
 - **`.gitignore`** — added `target-noembed/` (build-pipeline-split workspace artifact directory).
 
 ### Internal
@@ -338,63 +338,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Native desktop UI (Tauri + Leptos)** – Introduced the (now legacy) Tauri frontend with a
-  three-tab interface (Voice Lab, Teacher, Settings). ([a275ae8](https://github.com/VetCoders/CodeScribe/commit/a275ae8),
-  [7aa0754](https://github.com/VetCoders/CodeScribe/commit/7aa0754))
+  three-tab interface (Voice Lab, Teacher, Settings). ([a275ae8](https://github.com/vetcoders/codescribe/commit/a275ae8),
+  [7aa0754](https://github.com/vetcoders/codescribe/commit/7aa0754))
 - **Pure Rust local Whisper STT (Metal GPU)** – Added local Whisper inference via
   `candle-transformers` (Metal acceleration), with long-audio chunking + language detection.
-  ([268f5d0](https://github.com/VetCoders/CodeScribe/commit/268f5d0),
-  [69ed294](https://github.com/VetCoders/CodeScribe/commit/69ed294))
+  ([268f5d0](https://github.com/vetcoders/codescribe/commit/268f5d0),
+  [69ed294](https://github.com/vetcoders/codescribe/commit/69ed294))
 - **Whisper decoding controls** – Added `DecodingParams` (mlx_whisper-compatible) including
-  n-gram blocking and streaming callback support. ([69574fb](https://github.com/VetCoders/CodeScribe/commit/69574fb),
-  [cc0d8aa](https://github.com/VetCoders/CodeScribe/commit/cc0d8aa))
+  n-gram blocking and streaming callback support. ([69574fb](https://github.com/vetcoders/codescribe/commit/69574fb),
+  [cc0d8aa](https://github.com/vetcoders/codescribe/commit/cc0d8aa))
 - **CLI transcription + E2E pipeline tests** – Added file transcription flows and a comprehensive
-  end-to-end pipeline test suite. ([d7bdb4b](https://github.com/VetCoders/CodeScribe/commit/d7bdb4b),
-  [d46c62c](https://github.com/VetCoders/CodeScribe/commit/d46c62c))
-- **Config convenience** – Added `--config` flag to open/create the config file. ([535270c](https://github.com/VetCoders/CodeScribe/commit/535270c))
+  end-to-end pipeline test suite. ([d7bdb4b](https://github.com/vetcoders/codescribe/commit/d7bdb4b),
+  [d46c62c](https://github.com/vetcoders/codescribe/commit/d46c62c))
+- **Config convenience** – Added `--config` flag to open/create the config file. ([535270c](https://github.com/vetcoders/codescribe/commit/535270c))
 - **UX updates** – Added badge modes + Dock icon behavior and tightened environment/API key
-  requirements. ([7946c17](https://github.com/VetCoders/CodeScribe/commit/7946c17))
+  requirements. ([7946c17](https://github.com/vetcoders/codescribe/commit/7946c17))
 
 ### Changed
 
 - **License** – Switched the project license to Apache 2.0 and added release scripts/docs.
-  ([e0e7ec1](https://github.com/VetCoders/CodeScribe/commit/e0e7ec1))
+  ([e0e7ec1](https://github.com/vetcoders/codescribe/commit/e0e7ec1))
 - **Backend architecture** – Removed the Python backend and updated the Rust CI pipeline to match.
-  ([5c65481](https://github.com/VetCoders/CodeScribe/commit/5c65481))
+  ([5c65481](https://github.com/vetcoders/codescribe/commit/5c65481))
 - **AI formatting pipeline** – Improved configuration, workflows, and Harmony support; refined
-  formatting behavior and defaults. ([e11400c](https://github.com/VetCoders/CodeScribe/commit/e11400c),
-  [8a3157f](https://github.com/VetCoders/CodeScribe/commit/8a3157f),
-  [d46c62c](https://github.com/VetCoders/CodeScribe/commit/d46c62c))
+  formatting behavior and defaults. ([e11400c](https://github.com/vetcoders/codescribe/commit/e11400c),
+  [8a3157f](https://github.com/vetcoders/codescribe/commit/8a3157f),
+  [d46c62c](https://github.com/vetcoders/codescribe/commit/d46c62c))
 - **Tray menu + local STT integration** – Refactored tray menu plumbing while integrating the local
-  Whisper engine and improving related behavior. ([16021b1](https://github.com/VetCoders/CodeScribe/commit/16021b1))
+  Whisper engine and improving related behavior. ([16021b1](https://github.com/vetcoders/codescribe/commit/16021b1))
 - **Local model packaging/loading** – Bundled a default model and updated model loading logic.
-  ([13378fe](https://github.com/VetCoders/CodeScribe/commit/13378fe))
+  ([13378fe](https://github.com/vetcoders/codescribe/commit/13378fe))
 - **Cloud/STT provider work** – Refactored lab assets and migrated cloud provider integration.
-  ([8392cb9](https://github.com/VetCoders/CodeScribe/commit/8392cb9))
+  ([8392cb9](https://github.com/vetcoders/codescribe/commit/8392cb9))
 - **Configuration consolidation** – Deduplicated configuration to a single source of truth.
-  ([217a336](https://github.com/VetCoders/CodeScribe/commit/217a336))
+  ([217a336](https://github.com/vetcoders/codescribe/commit/217a336))
 - **Error handling/refactors** – Refactored Whisper engine imports and adopted `anyhow`.
-  ([b9ac5d9](https://github.com/VetCoders/CodeScribe/commit/b9ac5d9))
+  ([b9ac5d9](https://github.com/vetcoders/codescribe/commit/b9ac5d9))
 - **Repository maintenance** – Restructured the repo and added conversation session tracking.
-  ([07fe69f](https://github.com/VetCoders/CodeScribe/commit/07fe69f))
+  ([07fe69f](https://github.com/vetcoders/codescribe/commit/07fe69f))
 - **Developer ergonomics** – Applied `cargo fmt`-driven formatting fixes.
-  ([f8e04ef](https://github.com/VetCoders/CodeScribe/commit/f8e04ef))
+  ([f8e04ef](https://github.com/vetcoders/codescribe/commit/f8e04ef))
 
 ### Fixed
 
 - **Stability** – Handled poisoned mutexes via `into_inner()` fallback to avoid cascading failures
-  after panics. ([b7591ab](https://github.com/VetCoders/CodeScribe/commit/b7591ab))
+  after panics. ([b7591ab](https://github.com/vetcoders/codescribe/commit/b7591ab))
 - **Backend cleanup** – Ensured backend processes are killed on all known ports.
-  ([417b002](https://github.com/VetCoders/CodeScribe/commit/417b002))
+  ([417b002](https://github.com/vetcoders/codescribe/commit/417b002))
 
 ### Removed
 
 - **Cleanup** – Removed unused and deprecated code to keep the build clean.
-  ([68469dc](https://github.com/VetCoders/CodeScribe/commit/68469dc))
+  ([68469dc](https://github.com/vetcoders/codescribe/commit/68469dc))
 
 ### Changed (Internal)
 
 - **Foundations** – Landed the initial Rust-based architecture groundwork.
-  ([5a17c3a](https://github.com/VetCoders/CodeScribe/commit/5a17c3a))
+  ([5a17c3a](https://github.com/vetcoders/codescribe/commit/5a17c3a))
 
 ## v0.4.3 – 2025-11-21
 
@@ -414,19 +414,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI & types** – Type checking and CI improvements.
 - **Menu robustness** – Tray menu stability fixes.
 
-[unreleased]: https://github.com/VetCoders/CodeScribe/compare/v0.12.2...HEAD
-[0.12.2]: https://github.com/VetCoders/CodeScribe/compare/v0.12.1...v0.12.2
-[0.12.1]: https://github.com/VetCoders/CodeScribe/compare/v0.12.0...v0.12.1
-[0.12.0]: https://github.com/VetCoders/CodeScribe/compare/v0.11.2...v0.12.0
-[0.11.2]: https://github.com/VetCoders/CodeScribe/compare/v0.10.0...v0.11.2
-[0.10.0]: https://github.com/VetCoders/CodeScribe/compare/v0.9.2...v0.10.0
-[v0.9.2]: https://github.com/VetCoders/CodeScribe/compare/v0.9.1...v0.9.2
-[v0.9.1]: https://github.com/VetCoders/CodeScribe/compare/v0.9.0...v0.9.1
-[v0.9.0]: https://github.com/VetCoders/CodeScribe/compare/v0.8.0...v0.9.0
-[v0.7.14]: https://github.com/VetCoders/CodeScribe/compare/v0.7.2-dev...v0.7.14
-[v0.7.2-dev]: https://github.com/VetCoders/CodeScribe/compare/v0.7.0...v0.7.2-dev
-[v0.7.0]: https://github.com/VetCoders/CodeScribe/compare/v0.6.3...v0.7.0
-[v0.6.3]: https://github.com/VetCoders/CodeScribe/compare/v0.6.2...v0.6.3
-[v0.6.2]: https://github.com/VetCoders/CodeScribe/compare/v0.6.1...v0.6.2
-[v0.6.1]: https://github.com/VetCoders/CodeScribe/compare/v0.6.0...v0.6.1
-[v0.6.0]: https://github.com/VetCoders/CodeScribe/compare/19e05ad...v0.6.0
+[unreleased]: https://github.com/vetcoders/codescribe/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/vetcoders/codescribe/compare/v0.12.1...v0.12.2
+[0.12.1]: https://github.com/vetcoders/codescribe/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/vetcoders/codescribe/compare/v0.11.2...v0.12.0
+[0.11.2]: https://github.com/vetcoders/codescribe/compare/v0.10.0...v0.11.2
+[0.10.0]: https://github.com/vetcoders/codescribe/compare/v0.9.2...v0.10.0
+[v0.9.2]: https://github.com/vetcoders/codescribe/compare/v0.9.1...v0.9.2
+[v0.9.1]: https://github.com/vetcoders/codescribe/compare/v0.9.0...v0.9.1
+[v0.9.0]: https://github.com/vetcoders/codescribe/compare/v0.8.0...v0.9.0
+[v0.7.14]: https://github.com/vetcoders/codescribe/compare/v0.7.2-dev...v0.7.14
+[v0.7.2-dev]: https://github.com/vetcoders/codescribe/compare/v0.7.0...v0.7.2-dev
+[v0.7.0]: https://github.com/vetcoders/codescribe/compare/v0.6.3...v0.7.0
+[v0.6.3]: https://github.com/vetcoders/codescribe/compare/v0.6.2...v0.6.3
+[v0.6.2]: https://github.com/vetcoders/codescribe/compare/v0.6.1...v0.6.2
+[v0.6.1]: https://github.com/vetcoders/codescribe/compare/v0.6.0...v0.6.1
+[v0.6.0]: https://github.com/vetcoders/codescribe/compare/19e05ad...v0.6.0

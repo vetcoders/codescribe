@@ -1,5 +1,5 @@
 #!/bin/bash
-# CodeScribe Model Download Script
+# Codescribe Model Download Script
 # Downloads whisper-large-v3-turbo-mlx-q8 from HuggingFace
 #
 # Prerequisites:
@@ -10,7 +10,7 @@
 #   HF_TOKEN=hf_xxx ./scripts/download-model.sh
 #   ./scripts/download-model.sh  # Uses cached token from `hf auth login`
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -euo pipefail
 
@@ -36,7 +36,7 @@ fi
 MODEL_NAME="${MODEL_REPO##*/}"
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  CodeScribe Model Download"
+echo "  Codescribe Model Download"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Model:  ${MODEL_NAME}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
@@ -80,5 +80,5 @@ echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Location: HF cache (use: hf cache ls)"
 echo ""
-echo "  Model ready for use with CodeScribe."
+echo "  Model ready for use with Codescribe."
 echo "───────────────────────────────────────────────────────────"

@@ -1,5 +1,5 @@
 # Rust Code Quality CI
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 #
 # NOTE: Full build requires macOS with Swift 6.0 (CoreML, Metal).
 # GitHub runners have Swift 5.10, so we only run format checks here.

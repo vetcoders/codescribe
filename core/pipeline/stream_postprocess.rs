@@ -1149,8 +1149,8 @@ mod tests {
     fn test_protected_terms_preserve_brand_casing() {
         let lex = builtin_only_lexicon();
         assert_eq!(lex.apply("vibe crafted"), "Vibecrafted");
-        assert_eq!(lex.apply("code scribe"), "CodeScribe");
-        assert_eq!(lex.apply("vet coders"), "VetCoders");
+        assert_eq!(lex.apply("code scribe"), "Codescribe");
+        assert_eq!(lex.apply("vet coders"), "Vetcoders");
         // Case-only normalization (curated protected source only).
         assert_eq!(lex.apply("mam aicx w repo"), "mam AICX w repo");
         assert_eq!(lex.apply("przez mcp"), "przez MCP");
@@ -1215,12 +1215,12 @@ mod tests {
     #[test]
     fn test_protected_terms_lost_detects_corruption() {
         // Uses the GLOBAL lexicon; builtin protected canonicals (Loctree,
-        // CodeScribe, MCP, ...) are always present regardless of custom file.
+        // Codescribe, MCP, ...) are always present regardless of custom file.
         let lost = protected_terms_lost("I run Loctree through MCP", "I run Luxury through MCP");
         assert_eq!(lost, vec!["Loctree".to_string()]);
 
         // Nothing lost when the term survives.
-        let none = protected_terms_lost("CodeScribe is great", "CodeScribe is wonderful");
+        let none = protected_terms_lost("Codescribe is great", "Codescribe is wonderful");
         assert!(none.is_empty());
     }
 

@@ -228,24 +228,24 @@ pub(super) fn permission_instruction_text(
         PermissionRecoveryStrategy::AppRestartRequired => {
             if should_wait_for_restart(kind, status, requested) {
                 Some(
-                    "Permission granted. Restart CodeScribe to activate it. On relaunch onboarding will resume here automatically.",
+                    "Permission granted. Restart Codescribe to activate it. On relaunch onboarding will resume here automatically.",
                 )
             } else if status == PermissionUiStatus::Granted {
                 None
             } else if kind == PermissionKind::FullDiskAccess {
                 Some(
-                    "After enabling CodeScribe in System Settings > Privacy & Security > Full Disk Access, restart CodeScribe. On relaunch onboarding will resume here automatically.",
+                    "After enabling Codescribe in System Settings > Privacy & Security > Full Disk Access, restart Codescribe. On relaunch onboarding will resume here automatically.",
                 )
             } else {
                 Some(
-                    "Enable this in System Settings, then restart CodeScribe. On relaunch onboarding will resume here automatically.",
+                    "Enable this in System Settings, then restart Codescribe. On relaunch onboarding will resume here automatically.",
                 )
             }
         }
         PermissionRecoveryStrategy::LiveReinitialize => {
             if status == PermissionUiStatus::Denied {
                 Some(
-                    "Enable this in System Settings. CodeScribe will reconnect global hotkeys live once Accessibility and Input Monitoring are both granted.",
+                    "Enable this in System Settings. Codescribe will reconnect global hotkeys live once Accessibility and Input Monitoring are both granted.",
                 )
             } else {
                 None
@@ -254,7 +254,7 @@ pub(super) fn permission_instruction_text(
         PermissionRecoveryStrategy::LiveRecheck => {
             if status == PermissionUiStatus::Denied {
                 Some(
-                    "This permission is required to continue onboarding. Enable it in System Settings, then click Try Again. CodeScribe rechecks microphone access live.",
+                    "This permission is required to continue onboarding. Enable it in System Settings, then click Try Again. Codescribe rechecks microphone access live.",
                 )
             } else {
                 None

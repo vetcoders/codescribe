@@ -8,7 +8,7 @@
 //! Run with:
 //!   cargo test --test e2e_vad_auto_stop
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

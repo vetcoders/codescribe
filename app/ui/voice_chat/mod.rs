@@ -247,7 +247,7 @@ fn show_voice_chat_overlay_impl() {
             defer: false
         ];
 
-        let _: () = msg_send![window, setTitle: ns_string("CodeScribe")];
+        let _: () = msg_send![window, setTitle: ns_string("Codescribe")];
         apply_shared_shell_panel_policy(window, &shell_policy);
 
         let delegate_class = window_delegate_class();
@@ -915,7 +915,7 @@ fn show_voice_chat_overlay_impl() {
         );
         let title_label = create_label(LabelConfig {
             frame: footer_brand_frame,
-            text: "CodeScribe".to_string(),
+            text: "Codescribe".to_string(),
             font_size: ui_tokens::SMALL_FONT_SIZE,
             bold: true,
             text_color: color_secondary_label(),

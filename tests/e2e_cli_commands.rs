@@ -11,7 +11,7 @@
 //! For transcription tests (requires model):
 //!   CODESCRIBE_E2E_STT=1 cargo test --test e2e_cli_commands
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use std::path::PathBuf;
 use std::process::Command;

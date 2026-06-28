@@ -1,11 +1,11 @@
 #!/bin/bash
-# CodeScribe Silero VAD Download Script
+# Codescribe Silero VAD Download Script
 # Downloads silero-vad ONNX model from HuggingFace
 #
 # Usage:
 #   ./scripts/download-silero-vad.sh
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ set -euo pipefail
 MODEL_REPO="snakers4/silero-vad"
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  CodeScribe Silero VAD Download"
+echo "  Codescribe Silero VAD Download"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Model:  ${MODEL_REPO}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
@@ -41,5 +41,5 @@ echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Location: HF cache (use: hf cache ls)"
 echo ""
-echo "  Model ready for use with CodeScribe VAD."
+echo "  Model ready for use with Codescribe VAD."
 echo "───────────────────────────────────────────────────────────"

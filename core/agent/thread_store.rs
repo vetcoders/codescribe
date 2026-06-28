@@ -242,10 +242,10 @@ fn app_data_dir() -> PathBuf {
     }
 
     BaseDirs::new()
-        .map(|dirs| dirs.data_dir().join("CodeScribe"))
+        .map(|dirs| dirs.data_dir().join("Codescribe"))
         .unwrap_or_else(|| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            PathBuf::from(home).join("Library/Application Support/CodeScribe")
+            PathBuf::from(home).join("Library/Application Support/Codescribe")
         })
 }
 

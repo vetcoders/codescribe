@@ -22,7 +22,7 @@ Last run: **3 P0 blockers, 6 P1 warnings**.
 
 ## Why this matters
 
-CodeScribe's product direction is a **dictation-driven orchestration agent**, not
+Codescribe's product direction is a **dictation-driven orchestration agent**, not
 a dictation toy. The Agentic mode spawns MCP servers, shells out to external
 binaries (Vibecrafted), reads broad file context, controls other apps, and uses
 global hotkeys. Those capabilities are the product — and they are exactly what
@@ -127,12 +127,12 @@ added where the first draft was coarse.
 | MAS lane needs an **Apple Distribution** signing identity + a **3rd Party Mac Developer Installer** `.pkg` via `productbuild`, uploaded with **Transporter** to App Store Connect — distinct from Developer ID + `notarytool` (outside-store lane; `altool` retired 2023-11-01) | **Confirmed** | [Notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution), [Distributing software on macOS](https://developer.apple.com/macos/distribution/), [Uploading macOS Builds to App Store Connect (Xojo, 2025)](https://blog.xojo.com/2025/01/14/uploading-macos-builds-to-app-store-connect/) |
 | **App Privacy Details** ("nutrition labels") are mandatory to submit new apps/updates, apply to macOS, and require declaring **Audio Data** with purpose + linkage + tracking answers | **Confirmed** | [App Privacy Details](https://developer.apple.com/app-store/app-privacy-details/) |
 | **Privacy manifest** (`PrivacyInfo.xcprivacy`) with **required-reason API** declarations is enforced since **2024-05-01**; apps without it are rejected | **Confirmed** | [Privacy updates for App Store submissions](https://developer.apple.com/news/?id=3d8a9yyh), [Reminder: starts May 1](https://developer.apple.com/news/?id=pvszzano) |
-| CodeScribe's `metadata().modified()` usage maps to **FileTimestamp** category, reason code **C617.1** (metadata of files in the app's own containers); `DDA9.1` is the alternate (show timestamps to the user, no off-device send) | **Confirmed + made precise** | [NSPrivacyAccessedAPIType](https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype) |
+| Codescribe's `metadata().modified()` usage maps to **FileTimestamp** category, reason code **C617.1** (metadata of files in the app's own containers); `DDA9.1` is the alternate (show timestamps to the user, no off-device send) | **Confirmed + made precise** | [NSPrivacyAccessedAPIType](https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype) |
 
 **Honest nuance:** the hardest-edged 2024-05-01 gate is scoped most strictly to
 *third-party SDKs on Apple's commonly-used list*, but the required-reason
 *declaration* obligation also covers an app's own first-party usage of those
-APIs. CodeScribe uses a FileTimestamp API directly, so the manifest is required
+APIs. Codescribe uses a FileTimestamp API directly, so the manifest is required
 regardless of SDKs.
 
 **Still uncertain (needs a real `productbuild` + App Store Connect upload to
@@ -155,7 +155,7 @@ assert either way from documentation alone.
 ## ERi re-fire — board decision: App Store is the first-choice lane (2026-06-27)
 
 The operator has made a **board-level product decision**: the Mac App Store is
-now the **first-choice distribution lane** for CodeScribe. That does not reverse
+now the **first-choice distribution lane** for codescribe. That does not reverse
 the technical verdict above — a single binary still cannot be both sandboxed (for
 the store) and un-sandboxed (for the agent). What it changes is the *action*: stop
 treating the Basic MAS SKU as a "maybe later" and treat it as the **primary lane
@@ -187,7 +187,7 @@ loads under the sandbox.
 Listen-only **Input Monitoring** (`CGEventTap` via `CGPreflightListenEventAccess` /
 `CGRequestListenEventAccess`) **is available to sandboxed Mac App Store apps**. It
 uses the runtime *Input Monitoring* privilege, not the Accessibility privilege that
-the sandbox blocks. CodeScribe already detects hotkeys with `CGEventTap` (not the
+the sandbox blocks. Codescribe already detects hotkeys with `CGEventTap` (not the
 Accessibility-bound `NSEvent` monitor), so **hotkey detection carries into the
 Basic SKU unchanged**. What does *not* carry is *controlling other apps* (paste,
 focus-restore) — that needs Accessibility / Apple Events, which stay in the
@@ -199,7 +199,7 @@ Developer ID SKU.
 
 The 2024-05-01 gate began with third-party SDKs, but Apple has stated the
 required-reason obligation **will expand to the entire app binary**, and since
-**2025-02-12** a new privacy-impacting SDK must ship a manifest. CodeScribe uses a
+**2025-02-12** a new privacy-impacting SDK must ship a manifest. Codescribe uses a
 FileTimestamp API directly in first-party code, so `PrivacyInfo.xcprivacy` is
 required regardless of SDKs — do not defer it.
 
@@ -233,16 +233,16 @@ Apple Distribution identity and a sandboxed build profile that do not exist yet)
 codesign --force --options runtime \
   --entitlements scripts/entitlements.appstore-basic.plist \
   --sign "Apple Distribution: <Team Name> (<TEAMID>)" \
-  CodeScribe.app/Contents/MacOS/<each-nested-dylib>     # then the .app last
+  Codescribe.app/Contents/MacOS/<each-nested-dylib>     # then the .app last
 
 # 2. Build the installer package for the store:
-productbuild --component CodeScribe.app /Applications \
+productbuild --component codescribe.app /Applications \
   --sign "3rd Party Mac Developer Installer: <Team Name> (<TEAMID>)" \
-  CodeScribe.pkg
+  Codescribe.pkg
 
 # 3. Validate + upload to App Store Connect (Transporter app or notarytool's
 #    successor for store delivery; altool was retired 2023-11-01):
-xcrun altool --validate-app -f CodeScribe.pkg -t macos ...   # or Transporter.app
+xcrun altool --validate-app -f codescribe.pkg -t macos ...   # or Transporter.app
 
 # 4. In App Store Connect: complete App Privacy Details ("nutrition labels"):
 #    Audio Data -> purpose "App Functionality", NOT linked to identity, NOT tracking.

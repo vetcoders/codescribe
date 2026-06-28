@@ -7,7 +7,7 @@
 #
 # Model: Silero VAD v5 (ONNX) from https://github.com/snakers4/silero-vad
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -e
 

@@ -1,6 +1,6 @@
-# Contributing to CodeScribe
+# Contributing to codescribe
 
-CodeScribe is a native macOS Rust application for dictation and assistive voice workflows. Contributions should be based on the current macOS runtime surface and the documented release path.
+Codescribe is a native macOS Rust application for dictation and assistive voice workflows. Contributions should be based on the current macOS runtime surface and the documented release path.
 
 ## Ground Rules
 

@@ -146,7 +146,7 @@ fn is_test_env() -> bool {
     std::env::var("CODESCRIBE_DATA_DIR").is_ok()
 }
 
-/// Saves a secret to the macOS Keychain under the CodeScribe service.
+/// Saves a secret to the macOS Keychain under the Codescribe service.
 /// In test environments, sets the env var directly instead of touching Keychain.
 pub fn save_key(account: &str, secret: &str) -> Result<()> {
     if is_test_env() {

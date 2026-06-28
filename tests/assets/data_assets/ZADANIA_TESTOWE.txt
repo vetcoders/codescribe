@@ -2,7 +2,7 @@
 
 ## I. HUMAN SAID:
 
-No to dobra. Teraz generalnie powiem parę słów, korzystając z surowej transkrypcji przez CodeScribe.
+No to dobra. Teraz generalnie powiem parę słów, korzystając z surowej transkrypcji przez Codescribe.
 
 Mamy już pierwsze słowo do analizy, wobec czego chcę, żebyś wziął ten plik WAV i puścił go na nasz endpoint, bo muszę mieć pewność, czy leksykon działa, więc po prostu meta mówię z dupy.
 
@@ -51,5 +51,5 @@ Korzystam z Rust, korzystam z Rust w wersji Toolchain 2024. W tym momencie.
 ## BONUS - terminy z nagrania które już przetestowaliśmy
 - loctree (Whisper: "Locktree", "Log3")
 - Rust (Whisper: "Roosta", "Ruska")
-- CodeScribe (Whisper: "code scribe")
+- Codescribe (Whisper: "code scribe")
 - Toolchain 2024

@@ -1379,8 +1379,8 @@ fn flipped_stack_view_class() -> &'static Class {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| unsafe {
         let superclass = Class::get("NSStackView").expect("NSStackView class missing");
-        let mut decl = ClassDecl::new("CodeScribeFlippedStackView", superclass)
-            .expect("CodeScribeFlippedStackView already defined");
+        let mut decl = ClassDecl::new("CodescribeFlippedStackView", superclass)
+            .expect("CodescribeFlippedStackView already defined");
         decl.add_method(
             sel!(isFlipped),
             is_flipped as extern "C" fn(&Object, Sel) -> bool,
@@ -1400,8 +1400,8 @@ fn bubble_container_view_class() -> &'static Class {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| unsafe {
         let superclass = Class::get("NSView").expect("NSView class missing");
-        let mut decl = ClassDecl::new("CodeScribeBubbleContainerView", superclass)
-            .expect("CodeScribeBubbleContainerView already defined");
+        let mut decl = ClassDecl::new("CodescribeBubbleContainerView", superclass)
+            .expect("CodescribeBubbleContainerView already defined");
         decl.add_method(
             sel!(isFlipped),
             is_flipped as extern "C" fn(&Object, Sel) -> bool,
@@ -1495,8 +1495,8 @@ fn bubble_text_field_class() -> &'static Class {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| unsafe {
         let superclass = Class::get("NSTextField").expect("NSTextField class missing");
-        let mut decl = ClassDecl::new("CodeScribeBubbleTextField", superclass)
-            .expect("CodeScribeBubbleTextField already defined");
+        let mut decl = ClassDecl::new("CodescribeBubbleTextField", superclass)
+            .expect("CodescribeBubbleTextField already defined");
         decl.add_method(
             sel!(scrollWheel:),
             bubble_text_scroll_wheel as extern "C" fn(&Object, Sel, Id),

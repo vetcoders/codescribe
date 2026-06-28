@@ -22,7 +22,7 @@ See the ADR for the full contract.
 
 ## TL;DR
 
-CodeScribe’s Whisper layer power-ups:
+Codescribe’s Whisper layer power-ups:
 
 1. **Embedded-first Whisper model** (`whisper-large-v3-turbo-mlx-q8` by default)
    - build policy embeds Whisper whenever the model is available at build time
@@ -191,5 +191,4 @@ get hallucinations and low confidence (classic “gibberish” pattern).
 
 ---
 
-**Made with (งಠ_ಠ)ง by the ⌜ CodeScribe ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026
-Maciej & Monika + Klaudiusz (AI) + Junie (AI)**
+**Made with (งಠ_ಠ)ง by the ⌜ Codescribe ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026**

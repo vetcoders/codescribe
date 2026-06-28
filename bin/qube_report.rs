@@ -13,7 +13,7 @@ use codescribe::qube_report::{LocalTranscriptionMode, MetricsReference, QualityR
 #[derive(Parser)]
 #[command(name = "qube-report")]
 #[command(version)]
-#[command(about = "Generate a quality report for CodeScribe transcriptions")]
+#[command(about = "Generate a quality report for Codescribe transcriptions")]
 struct Args {
     /// Input directory with date subfolders containing WAV+TXT pairs
     #[arg(long)]

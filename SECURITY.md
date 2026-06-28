@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-CodeScribe follows rolling support for the latest stable source and public release line.
+Codescribe follows rolling support for the latest stable source and public release line.
 
 | Version | Supported |
 | ------- | --------- |

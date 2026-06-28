@@ -7,7 +7,7 @@
 
 ## Context
 
-CodeScribe shipped with Whisper-first live transcription. The benchmark of 7 STT stacks on a 711.5 s
+Codescribe shipped with Whisper-first live transcription. The benchmark of 7 STT stacks on a 711.5 s
 Polish screencast (`~/.codescribe/bench-stt-2026-05-26/`) made two truths simultaneously visible:
 
 1. **Apple Dictation** wins on **live UX** — partial deltas land in the overlay before whole words are
@@ -133,7 +133,7 @@ flowchart TB
 - Runs after Layer 1 settles for a given utterance (small debounce, e.g. 300 ms).
 - Two sub-passes:
   - **Lexicon** — applies the project lexicon (compatible with `stt-engine`'s 12597-rule
-    `/audio/lexicon/refresh` corpus, or a local subset shipped with CodeScribe). Word-level
+    `/audio/lexicon/refresh` corpus, or a local subset shipped with codescribe). Word-level
     substitutions, casing fixes, code-term canonicalisation.
   - **Small LLM** — single inline call (~600-char chunks) against a small/cheap model
     (`Bielik-11B` via libraxis cluster, or local `mlx-batch-svetliq`). Two responsibilities:
@@ -179,7 +179,7 @@ landing on `main`.
      `InsertAnnotation { position, text }`, and `Backspace { count }` (legacy `TranscriptDelta`).
    - Rationale: the user invested attention in what they read. Wiping and retyping breaks
      trust, breaks copy-paste mid-flow, and breaks the "petarda" promise that made them adopt
-     CodeScribe instead of Apple Dictation alone. Operator's words: *"tracimy twarz"*.
+     Codescribe instead of Apple Dictation alone. Operator's words: *"tracimy twarz"*.
 
 2. **Layer 0 owns the first commit.** No later layer is allowed to render text before Layer 0 has
    committed an utterance. If Layer 0 is unavailable (no Apple Speech permission, no macOS Speech
@@ -193,7 +193,7 @@ landing on `main`.
 4. **Full WAV always retained until session end.** Recorder must not drop the persistent WAV
    while any layer can still consume it. Cleanup is at `SessionFinalised` + grace window.
 
-5. **No layer reaches outside CodeScribe.** Layer 1 may call out to mlx-audio / OpenAI / libraxis
+5. **No layer reaches outside codescribe.** Layer 1 may call out to mlx-audio / OpenAI / libraxis
    for the Whisper pass; Layer 2 may call the LLM endpoint configured in Settings. But the
    orchestrator owns those calls — no layer hits the network on its own.
 
@@ -293,7 +293,7 @@ Four phases. Each ships as an independent machete cut behind a feature flag
   to the active field happens once, at session end, after Layer 4 has committed.
 - **Not rewriting Whisper from scratch.** This ADR keeps Candle/mlx-audio/OpenAI as
   interchangeable Layer 1 backends; the choice is configuration, not code.
-- **Not replacing Apple Dictation system-wide.** CodeScribe's overlay is a parallel surface, not a
+- **Not replacing Apple Dictation system-wide.** Codescribe's overlay is a parallel surface, not a
   Dictation replacement. Apple's framework is one of the engines we orchestrate, not a competitor.
 - **Not building bilingual auto-detect.** Layer 0 dominant-language detection follows
   `SFSpeechRecognizer.locale`; Layer 1 fills mixed-language tokens regardless. No language router.
@@ -316,7 +316,7 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 - `ReplaceRange` events change the sink contract; legacy sinks that didn't expect them must be
   audited (the codebase has 3 main sinks: overlay, IPC broadcast, telemetry — all Option-guarded).
 - Layer 2's LLM call adds latency (~200–800 ms per utterance via libraxis). Default is OFF; user
-  opts in via Settings. Local Bielik can run alongside CodeScribe to remove the latency cost
+  opts in via Settings. Local Bielik can run alongside codescribe to remove the latency cost
   but adds RAM pressure.
 - Layer 4 + Layer 1 + Layer 2 all want the same audio window — the orchestrator must own
   a single audio cursor, not three independent readers.
@@ -336,7 +336,7 @@ Four phases. Each ships as an independent machete cut behind a feature flag
   (network for cloud-augmented recognition, model swap), do we promote Whisper for the next
   utterance only, or commit to Whisper-primary for the rest of the session?
 - **Lexicon source of truth.** libraxis's 12597-rule lexicon lives server-side. Bundling a subset
-  with CodeScribe (under user control) vs. always calling out — what is the privacy default?
+  with codescribe (under user control) vs. always calling out — what is the privacy default?
 - **LLM model for Layer 2.** Bielik-11B is the strongest small Polish model today, but it's 11 B
   params — RAM cost on user machines is real. Smaller fallback (Qwen3-4B?) for resource-constrained
   installs?
@@ -361,4 +361,4 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 
 ---
 
-_𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI_
+_𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by vetcoders (c)2024-2026 LibraxisAI_

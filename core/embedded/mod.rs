@@ -1,6 +1,6 @@
 //! Embedded asset registry: shared abstraction over compiled-in model blobs.
 //!
-//! CodeScribe ships up to four independent model assets that may be embedded
+//! Codescribe ships up to four independent model assets that may be embedded
 //! into the binary at build time: Whisper STT, MiniLM text embedder, Silero
 //! VAD, and CSM-1B TTS. Each asset has its own payload shape (Whisper carries
 //! mel filters; TTS carries Mimi codec + voice tokens; VAD is a single

@@ -1,4 +1,4 @@
-//! Simple transcript history manager for CodeScribe
+//! Simple transcript history manager for Codescribe
 //!
 //! Saves transcripts and audio to ~/.codescribe/transcriptions/YYYY-MM-DD/
 //! Files are paired: HHMMSS_slug_kind.m4a + HHMMSS_slug_kind.txt with matching timestamps.

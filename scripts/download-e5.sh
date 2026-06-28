@@ -1,5 +1,5 @@
 #!/bin/bash
-# CodeScribe E5 Embedder Download Script
+# Codescribe E5 Embedder Download Script
 # Downloads multilingual-e5-large from HuggingFace
 #
 # Prerequisites:
@@ -10,7 +10,7 @@
 #   HF_TOKEN=hf_xxx ./scripts/download-e5.sh
 #   ./scripts/download-e5.sh  # Uses cached token from `hf auth login`
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -euo pipefail
 
@@ -20,7 +20,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODEL_REPO="intfloat/multilingual-e5-large"
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  CodeScribe E5 Embedder Download"
+echo "  Codescribe E5 Embedder Download"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Model:  ${MODEL_REPO}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
@@ -65,5 +65,5 @@ echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Location: HF cache (use: hf cache ls)"
 echo ""
-echo "  Model ready for use with CodeScribe."
+echo "  Model ready for use with Codescribe."
 echo "───────────────────────────────────────────────────────────"

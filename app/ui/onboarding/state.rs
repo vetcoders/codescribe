@@ -55,7 +55,7 @@ impl HotkeyModeChoice {
 
 /// First-run operating lane the user picks during onboarding.
 ///
-/// `Basic` keeps CodeScribe a plain dictation tool; `Agentic` opts into the
+/// `Basic` keeps Codescribe a plain dictation tool; `Agentic` opts into the
 /// dictation-driven orchestration runtime (which a later cut gates on the
 /// Vibecrafted + MCP substrate). `Basic` is the safe default so a fresh
 /// install never lands in the agentic lane by accident.

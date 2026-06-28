@@ -177,7 +177,7 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
 /// server name that satisfies it.
 ///
 /// Repo truth (loctree literal scan, 2026-06-26): these three server names are
-/// the only first-party agentic surfaces referenced anywhere in CodeScribe
+/// the only first-party agentic surfaces referenced anywhere in Codescribe
 /// (`app/controller/helpers.rs`, `app/ui/voice_chat/tool_activity.rs`). PRView
 /// is deliberately absent here — it has no known MCP server name or local
 /// command in repo truth and is handled separately by `classify_prview`.
@@ -277,7 +277,7 @@ fn classify_prereq(
 /// Classify PRView readiness as a **required** agentic prerequisite.
 ///
 /// Repo truth (loctree literal scan, 2026-06-26): there is NO `prview` MCP
-/// server name and no local prview command anywhere in CodeScribe. We refuse to
+/// server name and no local prview command anywhere in Codescribe. We refuse to
 /// invent a binary name. If a user has manually wired a server whose name
 /// contains "prview" we honour that real config; otherwise we report the exact
 /// evidence — missing integration — and never fake green readiness.
@@ -861,7 +861,7 @@ mod tests {
                 "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
                 "aicx-mcp": { "command": "aicx-mcp", "enabled": true },
                 "loctree-mcp": { "command": "loctree-mcp", "enabled": true },
-                "vista-prview": { "command": "vista-prview", "enabled": true }
+                "codescribe-prview": { "command": "codescribe-prview", "enabled": true }
             }
         });
         fs::write(&path, config.to_string()).expect("write config");
@@ -891,7 +891,7 @@ mod tests {
         let prview = find_row(&report, "PRView integration:");
         assert_eq!(prview.tone, McpRowTone::Warn);
         assert!(
-            prview.value.contains("configured") && prview.value.contains("vista-prview"),
+            prview.value.contains("configured") && prview.value.contains("codescribe-prview"),
             "PRView-like server should satisfy the prerequisite, got: {}",
             prview.value
         );
@@ -908,7 +908,7 @@ mod tests {
                 "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
                 "aicx-mcp": { "command": "aicx-mcp", "enabled": true },
                 "loctree-mcp": { "command": "loctree-mcp", "enabled": true },
-                "vista-prview": { "command": "vista-prview", "enabled": false }
+                "codescribe-prview": { "command": "codescribe-prview", "enabled": false }
             }
         });
         fs::write(&path, config.to_string()).expect("write config");

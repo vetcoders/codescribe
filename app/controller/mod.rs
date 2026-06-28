@@ -1,6 +1,6 @@
 //! Recording pipeline state machine controller
 //!
-//! This module implements the core hotkey-driven state machine for CodeScribe.
+//! This module implements the core hotkey-driven state machine for Codescribe.
 //! It manages recording lifecycle, state transitions, and interaction with the
 //! transcription backend.
 //!
@@ -1185,7 +1185,7 @@ pub struct RecordingController {
     /// may steal focus and destroy the user's selection context.
     assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
     /// App that was frontmost when the user initiated a hold session, before
-    /// CodeScribe badge/overlay UI can become frontmost.
+    /// Codescribe badge/overlay UI can become frontmost.
     pre_overlay_frontmost_app: Arc<RwLock<Option<String>>>,
     /// True when we opened the unified overlay solely to show a raw transcription preview.
     ///
@@ -3279,7 +3279,7 @@ impl RecordingController {
         // in a 45s timeout, but until now we couldn't tell WHICH await hung.
         // Operator reported "hands-off, double option, który potrafi wywołać
         // nagrywanie, ale nie potrafi zakończyć nagrywania" — confirmed in
-        // /Users/maciejgad/.codescribe/logs/codescribe.log @ 2026-05-13 23:03:22 PDT
+        // ~/.codescribe/logs/codescribe.log @ 2026-05-13 23:03:22 PDT
         // where "Stopping toggle recording with final-pass adjudication" was
         // followed by 41s of silence before watchdog forced recovery.
         // These per-phase elapsed logs will identify the exact hang point next
@@ -4411,7 +4411,7 @@ impl RecordingController {
                     info!("Quick note saved: {}", path.display());
                     #[cfg(target_os = "macos")]
                     crate::os::notifications::notify(
-                        "CodeScribe",
+                        "Codescribe",
                         &format!(
                             "Saved note: {}",
                             path.file_name().and_then(|s| s.to_str()).unwrap_or("note")

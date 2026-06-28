@@ -354,17 +354,17 @@ mod tests {
 
     #[test]
     fn qube_daemon_candidate_uses_sibling_binary() {
-        let current_exe = PathBuf::from("/Applications/CodeScribe.app/Contents/MacOS/codescribe");
+        let current_exe = PathBuf::from("/Applications/Codescribe.app/Contents/MacOS/codescribe");
         assert_eq!(
             qube_daemon_candidate_for_exe(&current_exe),
-            PathBuf::from("/Applications/CodeScribe.app/Contents/MacOS/qube-daemon")
+            PathBuf::from("/Applications/Codescribe.app/Contents/MacOS/qube-daemon")
         );
     }
 
     #[test]
     fn resolve_qube_daemon_executable_prefers_sibling_binary() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
-        let macos_dir = tmp.path().join("CodeScribe.app/Contents/MacOS");
+        let macos_dir = tmp.path().join("Codescribe.app/Contents/MacOS");
         std::fs::create_dir_all(&macos_dir).expect("create bundle dir");
         let current_exe = macos_dir.join("codescribe");
         let sibling = macos_dir.join("qube-daemon");

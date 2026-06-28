@@ -18,7 +18,7 @@
 **/.venv/**
 **/.DS_Store
 **/claude_memory_*.md
-**/CodeScribe_memory_*.md
+**/Codescribe_memory_*.md
 **/node_modules/**
 **/target/**
 **/target-noembed/**

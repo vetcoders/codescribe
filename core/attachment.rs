@@ -1,4 +1,4 @@
-//! Attachment model and on-disk store for CodeScribe.
+//! Attachment model and on-disk store for Codescribe.
 //!
 //! Provides a thin wrapper around file paths with metadata (kind, source,
 //! display name) used by the Agent chat UI and LLM context pipeline.

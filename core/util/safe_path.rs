@@ -6,7 +6,7 @@
 //!
 //! # Security Model
 //!
-//! CodeScribe is a desktop app, not a web server. Paths come from:
+//! Codescribe is a desktop app, not a web server. Paths come from:
 //! - Local audio recordings (temp files created by app - trusted)
 //! - CLI arguments (user's own files on their system - trusted)
 //! - Config files (user's own config - trusted)

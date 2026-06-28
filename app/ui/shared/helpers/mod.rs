@@ -1,4 +1,4 @@
-//! Native AppKit UI helpers for CodeScribe
+//! Native AppKit UI helpers for Codescribe
 //!
 //! Reduces msg_send! boilerplate by providing high-level functions for common UI patterns.
 //! These helpers wrap Objective-C calls in safe, reusable Rust functions.

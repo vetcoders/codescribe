@@ -101,7 +101,7 @@ fn thermal_observer_class() -> *const Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
     *CLASS.get_or_init(|| {
         let superclass = Class::get("NSObject").expect("NSObject class missing");
-        let mut decl = ClassDecl::new("CodeScribeThermalObserver", superclass).expect("class decl");
+        let mut decl = ClassDecl::new("CodescribeThermalObserver", superclass).expect("class decl");
         unsafe {
             decl.add_method(
                 sel!(thermalStateDidChange:),

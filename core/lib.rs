@@ -1,4 +1,4 @@
-//! CodeScribe Core - speech, transcription, and assistive runtime primitives.
+//! Codescribe Core - speech, transcription, and assistive runtime primitives.
 //!
 //! ## Quick Start
 //!

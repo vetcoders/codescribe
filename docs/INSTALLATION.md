@@ -1,4 +1,4 @@
-# CodeScribe Installation and Launch Guide
+# Codescribe Installation and Launch Guide
 
 This document describes the installation methods, configuration paths, and how the application locates its resources.
 
@@ -18,8 +18,8 @@ make install
 ### Method 2: App Bundle (For Distribution)
 
 ```bash
-make bundle           # Creates bundle/CodeScribe.app
-make install-app      # Copies to /Applications/CodeScribe.app (auto-caches models)
+make bundle           # Creates bundle/Codescribe.app
+make install-app      # Copies to /Applications/Codescribe.app (auto-caches models)
 ```
 
 **Result**: Standard macOS .app bundle in `/Applications/`.
@@ -43,7 +43,7 @@ make notarize         # Notarize with Apple (requires Developer ID)
 # make release-dmgs    # Build + sign + notarize standard and full DMGs
 ```
 
-**Result**: `CodeScribe_X.Y.Z.dmg` and `CodeScribe_X.Y.Z_full.dmg` ready for distribution. The standard DMG embeds Silero + embedder and resolves Whisper from cache/download. The full DMG embeds Silero + embedder + Whisper.
+**Result**: `Codescribe_X.Y.Z.dmg` and `Codescribe_X.Y.Z_full.dmg` ready for distribution. The standard DMG embeds Silero + embedder and resolves Whisper from cache/download. The full DMG embeds Silero + embedder + Whisper.
 
 ## Configuration
 
@@ -52,7 +52,7 @@ make notarize         # Notarize with Apple (requires Developer ID)
 Configuration is **tiered**:
 
 ```
-~/Library/Application Support/CodeScribe/
+~/Library/Application Support/Codescribe/
 ├── settings.json     # GUI-managed settings (regular-user tier)
 └── ...               # app data
 
@@ -119,7 +119,7 @@ LLM_ASSISTIVE_{ENDPOINT,MODEL,API_KEY}=...
 ## Bundle Structure
 
 ```
-CodeScribe.app/
+Codescribe.app/
 └── Contents/
     ├── Info.plist           # Bundle metadata (icon, identifier, version)
     ├── MacOS/
@@ -191,7 +191,7 @@ Grant in **System Settings > Privacy & Security**:
 
 - **CLI mode**: `set_dock_icon()` should set it programmatically
 - **Bundle mode**: Check that `Info.plist` exists and has `CFBundleIconFile`
-- **Verify**: `plutil -lint /Applications/CodeScribe.app/Contents/Info.plist`
+- **Verify**: `plutil -lint /Applications/Codescribe.app/Contents/Info.plist`
 
 ### Empty Tray Icon
 
@@ -212,4 +212,4 @@ Grant in **System Settings > Privacy & Security**:
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

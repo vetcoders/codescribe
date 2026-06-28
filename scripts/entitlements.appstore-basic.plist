@@ -55,10 +55,10 @@
       CGRequestListenEventAccess uses the runtime Input Monitoring privilege
       (System Settings > Privacy & Security > Input Monitoring), which IS
       available to sandboxed Mac App Store apps. No sandbox entitlement key is
-      required for it; the user grants it at runtime. (CodeScribe already uses
+      required for it; the user grants it at runtime. (Codescribe already uses
       CGEventTap, not the Accessibility-bound NSEvent monitor.)
 
-  Created by M&K (c)2026 VetCoders
+  Created by Vetcoders (c)2026
   ===========================================================================
 -->
 <dict>

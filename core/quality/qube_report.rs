@@ -66,14 +66,14 @@ impl MetricsReference {
 #[serde(rename_all = "snake_case")]
 pub enum LocalTranscriptionMode {
     LocalWhisper,
-    CodeScribeIpc,
+    CodescribeIpc,
 }
 
 impl LocalTranscriptionMode {
     fn as_str(self) -> &'static str {
         match self {
             Self::LocalWhisper => "local_whisper",
-            Self::CodeScribeIpc => "codescribe_ipc",
+            Self::CodescribeIpc => "codescribe_ipc",
         }
     }
 }
@@ -274,7 +274,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
         crate::stt::init_active_engine()
             .context("Failed to init active STT engine via core::stt")?;
     } else {
-        info!("Local Whisper init skipped: quality report uses CodeScribe IPC transcription");
+        info!("Local Whisper init skipped: quality report uses Codescribe IPC transcription");
     }
 
     // Resume: skip pairs that already have artifacts.
@@ -733,7 +733,7 @@ fn write_report_files(
 
 fn render_markdown(report: &QualityReport) -> String {
     let mut out = String::new();
-    out.push_str("# CodeScribe Quality Report\n\n");
+    out.push_str("# Codescribe Quality Report\n\n");
     out.push_str(&format!("Generated: {}\n\n", report.generated_at));
     out.push_str(&format!(
         "Metrics reference: {}\n\n",
@@ -792,7 +792,7 @@ fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
     let mut body = String::new();
 
     body.push_str(&format!(
-        "<h1>CodeScribe Quality Report</h1><p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • quality_gate_dropped={} • no_speech_detected={}</p>",
+        "<h1>Codescribe Quality Report</h1><p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • quality_gate_dropped={} • no_speech_detected={}</p>",
         html_escape(&report.generated_at),
         html_escape(&report.environment.metrics_reference),
         report.summary.raw_text_committed,
@@ -952,7 +952,7 @@ fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>CodeScribe Quality Report</title>
+<title>Codescribe Quality Report</title>
 <style>
 body {{ font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 24px; color: #111; }}
 h1 {{ margin-bottom: 8px; }}
@@ -1425,13 +1425,13 @@ async fn transcribe_raw_for_report(
                 }
             }
         }
-        LocalTranscriptionMode::CodeScribeIpc => {
+        LocalTranscriptionMode::CodescribeIpc => {
             match crate::ipc::transcribe_file(audio_path).await {
                 Ok(text) => {
                     let text = text.trim().to_string();
                     if text.is_empty() {
                         errors.push(
-                            "Raw transcription skipped: CodeScribe IPC returned empty transcript"
+                            "Raw transcription skipped: Codescribe IPC returned empty transcript"
                                 .into(),
                         );
                         None
@@ -1447,7 +1447,7 @@ async fn transcribe_raw_for_report(
                 }
                 Err(e) => {
                     errors.push(format!(
-                        "Raw transcription skipped: CodeScribe IPC unavailable/degraded: {}",
+                        "Raw transcription skipped: Codescribe IPC unavailable/degraded: {}",
                         e
                     ));
                     None
@@ -1883,7 +1883,7 @@ mod tests {
             debug_mode: false,
             copy_audio: false,
             metrics_reference: MetricsReference::Corpus,
-            local_transcription: LocalTranscriptionMode::CodeScribeIpc,
+            local_transcription: LocalTranscriptionMode::CodescribeIpc,
         };
         let mut errors = Vec::new();
         let missing_audio = temp.path().join("missing.wav");
@@ -1898,7 +1898,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|error| error.starts_with("Raw transcription skipped: CodeScribe IPC")),
+                .any(|error| error.starts_with("Raw transcription skipped: Codescribe IPC")),
             "expected degraded IPC error, got: {errors:?}"
         );
     }

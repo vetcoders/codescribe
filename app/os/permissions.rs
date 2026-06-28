@@ -257,7 +257,7 @@ fn wait_for_microphone_resolution(callback_rx: Receiver<bool>) -> bool {
                 }
 
                 warn!(
-                    "Microphone permission denied. Enable CodeScribe in System Settings > Privacy & Security > Microphone."
+                    "Microphone permission denied. Enable Codescribe in System Settings > Privacy & Security > Microphone."
                 );
                 return false;
             }
@@ -268,7 +268,7 @@ fn wait_for_microphone_resolution(callback_rx: Receiver<bool>) -> bool {
                 }
                 PermissionStatus::Denied => {
                     warn!(
-                        "Microphone permission is denied/restricted. Enable CodeScribe in System Settings > Privacy & Security > Microphone."
+                        "Microphone permission is denied/restricted. Enable Codescribe in System Settings > Privacy & Security > Microphone."
                     );
                     return false;
                 }
@@ -485,14 +485,14 @@ pub fn check_all_permissions() {
                 "Microphone permission: Not determined (macOS prompt may appear on first recording attempt)."
             );
             info!(
-                "If recording does not start, open System Settings > Privacy & Security > Microphone and enable CodeScribe."
+                "If recording does not start, open System Settings > Privacy & Security > Microphone and enable Codescribe."
             );
         }
         PermissionStatus::Denied => {
             warn!("Microphone permission: DENIED - Recording will not work!");
             warn!("Grant access in: System Settings > Privacy & Security > Microphone");
             warn!(
-                "After enabling access, retry recording or reopen Setup so CodeScribe can recheck live."
+                "After enabling access, retry recording or reopen Setup so Codescribe can recheck live."
             );
         }
     }
@@ -518,7 +518,7 @@ pub fn request_all_permissions() {
 
     if check_microphone() != PermissionStatus::Granted {
         info!(
-            "Microphone permission not granted yet; CodeScribe will request it when recording starts. If no prompt appears, open System Settings > Privacy & Security > Microphone."
+            "Microphone permission not granted yet; Codescribe will request it when recording starts. If no prompt appears, open System Settings > Privacy & Security > Microphone."
         );
     }
 }
@@ -527,7 +527,7 @@ pub fn diagnostics_report() -> String {
     use std::fmt::Write;
 
     let mut out = String::new();
-    let _ = writeln!(&mut out, "CodeScribe diagnostics");
+    let _ = writeln!(&mut out, "Codescribe diagnostics");
     let _ = writeln!(&mut out, "pid: {}", std::process::id());
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
@@ -672,7 +672,7 @@ pub fn diagnostics_report() -> String {
 fn current_bundle_identifier() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
     // If running from an .app bundle, Info.plist is usually at ../Info.plist.
-    // Example: .../CodeScribe.app/Contents/MacOS/codescribe
+    // Example: .../Codescribe.app/Contents/MacOS/codescribe
     let info_plist = exe
         .parent()
         .and_then(|p| p.parent())

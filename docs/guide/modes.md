@@ -1,6 +1,6 @@
 # Recording Modes
 
-CodeScribe exposes **three work modes**. Each mode has **one shortcut binding** you can customize (or disable) in **Settings → Modes & Shortcuts**.
+Codescribe exposes **three work modes**. Each mode has **one shortcut binding** you can customize (or disable) in **Settings → Modes & Shortcuts**.
 
 ---
 
@@ -103,4 +103,4 @@ Use the built‑in conflict detector if macOS already uses the same shortcut.
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

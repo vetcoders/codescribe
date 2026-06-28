@@ -6,7 +6,7 @@
 //! Optional:
 //!   CODESCRIBE_E2E_MIC_LANGUAGE=en
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use std::sync::Arc;
 use std::time::Duration;

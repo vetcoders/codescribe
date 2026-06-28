@@ -5,7 +5,7 @@
 //! To run full streaming tests (requires model):
 //!   CODESCRIBE_E2E_STT=1 cargo test --test e2e_streaming_chunks
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use std::path::PathBuf;
 use std::sync::Arc;

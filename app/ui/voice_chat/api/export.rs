@@ -47,7 +47,7 @@ pub fn save_chat_markdown_to_history(assistant_only: bool) -> Option<PathBuf> {
 pub fn chat_markdown_from_messages(messages: &[ChatMessage], assistant_only: bool) -> String {
     let exported_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let mut out = String::new();
-    out.push_str("# CodeScribe Chat Export\n\n");
+    out.push_str("# Codescribe Chat Export\n\n");
     out.push_str(&format!("- exported_at: {}\n", exported_at));
     out.push_str(&format!(
         "- scope: {}\n\n",

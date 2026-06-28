@@ -1,5 +1,5 @@
 #!/bin/bash
-# CodeScribe Embedder Download Script
+# Codescribe Embedder Download Script
 # Downloads paraphrase-multilingual-MiniLM-L12-v2 (or override) from HuggingFace
 #
 # Prerequisites:
@@ -9,7 +9,7 @@
 #   HF_TOKEN=hf_xxx ./scripts/download-embedder.sh
 #   CODESCRIBE_EMBEDDER_REPO=your/repo ./scripts/download-embedder.sh
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ MODEL_REPO="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-multili
 MODEL_NAME="${MODEL_REPO##*/}"
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  CodeScribe Embedder Download"
+echo "  Codescribe Embedder Download"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Model:  ${MODEL_NAME}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
@@ -63,5 +63,5 @@ echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Location: HF cache (use: hf cache ls)"
 echo ""
-echo "  Embedder ready for use with CodeScribe."
+echo "  Embedder ready for use with Codescribe."
 echo "───────────────────────────────────────────────────────────"

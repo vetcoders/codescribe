@@ -31,7 +31,7 @@ Assistive mode uses the **Assistive AI** provider (Settings → AI & Prompts) an
 
 ### Selected Text Behavior
 
-If CodeScribe can capture your selection, Assistive is instructed to operate **only on that selected text**. If no selection is captured, it behaves like normal chat.
+If codescribe can capture your selection, Assistive is instructed to operate **only on that selected text**. If no selection is captured, it behaves like normal chat.
 
 ---
 
@@ -49,4 +49,4 @@ Use **New thread** in the overlay to start a fresh conversation. This resets UI 
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

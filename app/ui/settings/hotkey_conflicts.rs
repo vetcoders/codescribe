@@ -46,7 +46,7 @@ pub(super) fn hotkey_conflict_details_text(
     }
 
     let mut lines = vec![
-        "CodeScribe detected shortcuts that may overlap current mode bindings:".to_string(),
+        "Codescribe detected shortcuts that may overlap current mode bindings:".to_string(),
         String::new(),
     ];
     for (index, conflict) in conflicts.iter().enumerate() {

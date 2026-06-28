@@ -262,7 +262,7 @@ pub fn handle_card_edit(index: usize) {
     }
 
     // UX: briefly hide the overlay so the editor is visible immediately.
-    // Then only bring it back if CodeScribe is still the active app.
+    // Then only bring it back if Codescribe is still the active app.
     #[cfg(target_os = "macos")]
     if let Some(window_usize) = window_usize {
         unsafe {
@@ -294,7 +294,7 @@ pub fn handle_card_edit(index: usize) {
                     active
                 };
 
-                // Restore floating level and show only if CodeScribe is active.
+                // Restore floating level and show only if Codescribe is active.
                 unsafe {
                     let window = window_usize as Id;
                     let _: () = msg_send![
@@ -462,7 +462,7 @@ pub fn drawer_entry_matches_query(entry: &DrawerEntry, query_lower: &str) -> boo
     }
     // Path pollution guard: do NOT push entry.path (absolute) into the haystack.
     // Every ThreadStore entry lives under `~/.codescribe/` or `~/Library/Application
-    // Support/CodeScribe/`, so any query overlapping the app data dir name (e.g.
+    // Support/Codescribe/`, so any query overlapping the app data dir name (e.g.
     // "codescribe", "thread", "users") would match all entries via leaked path
     // components. Operator flagged 2026-05-24 ("threadstore, wyszukiwanie codescribe
     // nie odfiltrowuje nic"). Keep file_name (local, useful for legacy file dates)
@@ -957,8 +957,8 @@ fn drawer_row_view_class() -> &'static Class {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| unsafe {
         let superclass = Class::get("NSView").expect("NSView class missing");
-        let mut decl = objc::declare::ClassDecl::new("CodeScribeDrawerRowView", superclass)
-            .expect("CodeScribeDrawerRowView already defined");
+        let mut decl = objc::declare::ClassDecl::new("CodescribeDrawerRowView", superclass)
+            .expect("CodescribeDrawerRowView already defined");
         decl.add_method(
             sel!(mouseEntered:),
             drawer_row_mouse_entered as extern "C" fn(&Object, Sel, Id),

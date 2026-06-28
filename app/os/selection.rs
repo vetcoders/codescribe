@@ -101,7 +101,7 @@ pub fn capture_assistive_context() -> AssistiveContext {
 }
 
 /// Capture assistive context while preferring the app that was frontmost before
-/// CodeScribe UI could activate.
+/// Codescribe UI could activate.
 pub fn capture_assistive_context_with_prior_frontmost(
     prior_frontmost_app: Option<String>,
 ) -> AssistiveContext {
@@ -145,7 +145,7 @@ pub fn capture_frontmost_app_only() -> AssistiveContext {
     capture_frontmost_app_only_with_prior_frontmost(None)
 }
 
-/// Capture only the frontmost app name, using a pre-overlay app if CodeScribe is
+/// Capture only the frontmost app name, using a pre-overlay app if Codescribe is
 /// currently frontmost.
 pub fn capture_frontmost_app_only_with_prior_frontmost(
     prior_frontmost_app: Option<String>,
@@ -175,7 +175,7 @@ pub fn capture_frontmost_app_only_with_prior_frontmost(
 
 /// Best-effort app activation by localized app name.
 ///
-/// Used to recover focus before synthetic paste when frontmost temporarily flips to CodeScribe.
+/// Used to recover focus before synthetic paste when frontmost temporarily flips to Codescribe.
 #[cfg(target_os = "macos")]
 pub fn activate_app_by_name(app_name: &str) -> bool {
     use std::process::Command;
@@ -359,9 +359,9 @@ fn capture_assistive_context_from_parts(
     let (frontmost_app, should_restore_prior_app) =
         resolve_effective_frontmost_app(current_frontmost_app, prior_frontmost_app);
 
-    // Avoid capturing from ourselves (frontmost can temporarily become CodeScribe)
+    // Avoid capturing from ourselves (frontmost can temporarily become Codescribe)
     if frontmost_app.as_deref().is_some_and(is_codescribe_app) {
-        debug!("Assistive context: frontmost is CodeScribe, skipping selection capture");
+        debug!("Assistive context: frontmost is Codescribe, skipping selection capture");
         return AssistiveContext {
             frontmost_app,
             selected_text: None,
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn effective_frontmost_prefers_prior_when_codescribe_is_current() {
         let (app, should_restore) = resolve_effective_frontmost_app(
-            Some("CodeScribe".to_string()),
+            Some("Codescribe".to_string()),
             Some("Terminal".to_string()),
         );
 
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn assistive_capture_uses_prior_frontmost_after_overlay_activation() {
         let ctx = capture_assistive_context_from_parts(
-            Some("CodeScribe".to_string()),
+            Some("Codescribe".to_string()),
             Some("Terminal".to_string()),
             |frontmost_app, should_restore_prior_app| {
                 assert_eq!(frontmost_app, Some("Terminal"));
@@ -682,9 +682,9 @@ mod tests {
     #[test]
     fn effective_frontmost_preserves_codescribe_guard_without_prior_app() {
         let (app, should_restore) =
-            resolve_effective_frontmost_app(Some("CodeScribe".to_string()), None);
+            resolve_effective_frontmost_app(Some("Codescribe".to_string()), None);
 
-        assert_eq!(app.as_deref(), Some("CodeScribe"));
+        assert_eq!(app.as_deref(), Some("Codescribe"));
         assert!(!should_restore);
     }
 
@@ -711,7 +711,7 @@ mod tests {
         clear_recent_assistive_context_for_tests();
 
         let ctx = AssistiveContext {
-            frontmost_app: Some("CodeScribe".to_string()),
+            frontmost_app: Some("Codescribe".to_string()),
             selected_text: Some("old".to_string()),
         };
         store_recent_assistive_context(&ctx);

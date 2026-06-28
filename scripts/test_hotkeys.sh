@@ -3,11 +3,11 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Test script for dual hotkey modes in CodeScribe
+# Test script for dual hotkey modes in Codescribe
 # This script helps verify CTRL vs CTRL+SHIFT functionality
 
 echo "================================================"
-echo "CodeScribe Dual Hotkey Mode Test"
+echo "Codescribe Dual Hotkey Mode Test"
 echo "================================================"
 echo ""
 echo "Current configuration:"
@@ -38,7 +38,7 @@ echo "   - Both modes should only apply light_plus baseline"
 echo "   - No AI processing, just basic cleanup"
 echo ""
 echo "================================================"
-echo "Starting CodeScribe with debug logging..."
+echo "Starting Codescribe with debug logging..."
 echo ""
 
 # Enable debug logging

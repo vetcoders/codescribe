@@ -70,7 +70,7 @@ pub(super) unsafe fn build_ai_prompts_tab(
                 title: "Show Dock icon",
                 checked: _config.show_dock_icon,
                 action: sel!(onShowDockIconToggled:),
-                description: Some("Keep CodeScribe in the Dock after windows close."),
+                description: Some("Keep Codescribe in the Dock after windows close."),
                 tag: None,
                 gap,
             },
@@ -95,7 +95,7 @@ pub(super) unsafe fn build_ai_prompts_tab(
                 checked: quality_on,
                 action: sel!(onQubeDaemonToggled:),
                 description: Some(
-                    "Starts bundled `qube-daemon --daemon` immediately and on next CodeScribe launch when the binary is installed.",
+                    "Starts bundled `qube-daemon --daemon` immediately and on next Codescribe launch when the binary is installed.",
                 ),
                 tag: None,
                 gap,

@@ -5,7 +5,7 @@
 #
 # Downloads to HuggingFace cache (hf download)
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -e
 

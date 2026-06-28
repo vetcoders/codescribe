@@ -104,7 +104,7 @@ fn show_onboarding_wizard_impl() -> bool {
             defer: false
         ];
 
-        let _: () = msg_send![window, setTitle: ns_string("Welcome to CodeScribe")];
+        let _: () = msg_send![window, setTitle: ns_string("Welcome to Codescribe")];
         let _: () = msg_send![window, setTitleVisibility: 1_isize]; // NSWindowTitleHidden
         let _: () = msg_send![window, setTitlebarAppearsTransparent: true];
         let _: () = msg_send![window, setOpaque: false];
