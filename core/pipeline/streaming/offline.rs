@@ -2,12 +2,12 @@
 //! session path; compiled only for tests and the `offline_eval` feature
 //! (the module is cfg-gated in `mod.rs`).
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use tracing::{debug, info};
 
 use crate::pipeline::dedup::dedup_chunk_overlap;
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
-use crate::stt::whisper::singleton::engine as get_engine;
+use crate::stt::whisper::singleton::transcribe_chunk;
 
 use super::tuning::{env_bool_default, env_f32};
 
@@ -53,11 +53,9 @@ pub fn transcribe_streaming_samples(
         effective_audio_sec
     );
 
-    let engine_mutex = get_engine()?;
-    let mut engine = engine_mutex
-        .lock()
-        .map_err(|e| anyhow!("Lock error: {}", e))?;
-
+    // Per-chunk engine acquisition via the singleton: chunks are independent
+    // (overlap dedup happens on the text below), and routing through the
+    // singleton keeps the idle-unload/reload bookkeeping consistent.
     let mut out = String::new();
     let mut offset = 0usize;
     let mut chunks_processed = 0usize;
@@ -68,7 +66,7 @@ pub fn transcribe_streaming_samples(
         let chunk = &samples[offset..end];
         let chunk_sec = chunk.len() as f32 / sample_rate as f32;
         let t_chunk = std::time::Instant::now();
-        let text = engine.transcribe_with_language(chunk, sample_rate, language)?;
+        let text = transcribe_chunk(chunk, sample_rate, language)?;
         let chunk_ms = t_chunk.elapsed().as_millis();
         chunks_processed += 1;
 
