@@ -42,7 +42,7 @@
 {"term": "Tauri", "mispronunciations": ["taurii", "tałri", "taury", "taury real"], "category": "tech"}
 {"term": "Tokio", "mispronunciations": ["tokijo", "tokjo"], "category": "rust"}
 {"term": "TypeScript", "mispronunciations": ["tajpskrypt", "type script"], "category": "tech"}
-{"term": "VistaScribe", "mispronunciations": ["wistaszkrajb", "vista scribe", "wissie skype", "wissie scribe", "vista skribe", "vista skrajb"], "category": "project"}
+{"term": "CodeScribe", "mispronunciations": ["kod skrajb", "kołdskrajb", "code scribe", "kod skrybe", "code skrajb", "kod skrajb"], "category": "project"}
 {"term": "Vite", "mispronunciations": ["vajt", "vit", "fajt"], "category": "tooling"}
 {"term": "WebSocket", "mispronunciations": ["websoket", "web socket"], "category": "tech"}
 {"term": "YAML", "mispronunciations": ["jamel", "jaml"], "category": "data"}

@@ -3287,7 +3287,7 @@ impl RecordingController {
         // in a 45s timeout, but until now we couldn't tell WHICH await hung.
         // Operator reported "hands-off, double option, który potrafi wywołać
         // nagrywanie, ale nie potrafi zakończyć nagrywania" — confirmed in
-        // /Users/maciejgad/.codescribe/logs/codescribe.log @ 2026-05-13 23:03:22 PDT
+        // ~/.codescribe/logs/codescribe.log @ 2026-05-13 23:03:22 PDT
         // where "Stopping toggle recording with final-pass adjudication" was
         // followed by 41s of silence before watchdog forced recovery.
         // These per-phase elapsed logs will identify the exact hang point next

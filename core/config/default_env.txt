@@ -86,8 +86,8 @@ DUMP_AUDIO_LOGS=1
 QUICK_NOTES_ENABLED=0
 # If enabled, Quick Notes becomes "save-only" (no auto-paste).
 QUICK_NOTES_SAVE_ONLY=0
-# Optional override for notes directory (Vista-friendly):
-# CODESCRIBE_NOTES_DIR=~/Git/vista/notes
+# Optional override for notes directory:
+# CODESCRIBE_NOTES_DIR=~/Documents/notes
 
 # === Clipboard ===
 RESTORE_CLIPBOARD=1

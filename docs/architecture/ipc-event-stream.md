@@ -1,6 +1,7 @@
 # IPC Event Stream Contract
 
-This document defines the runtime and IPC event contract used by Vista Desktop.
+This document defines the runtime and IPC event contract used by host applications
+that embed the CodeScribe engine.
 
 ## Contract Authority
 
@@ -161,6 +162,6 @@ For old integrations that still depend on legacy callbacks or worker symbols:
 
 Recommended policy:
 
-1. Keep old fields for at least one Vista release cycle.
-2. Gate new behavior behind tolerant parsing on the Vista side.
+1. Keep old fields for at least one host release cycle.
+2. Gate new behavior behind tolerant parsing on the consumer side.
 3. Document every wire change in this file and changelog.

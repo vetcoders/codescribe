@@ -154,7 +154,7 @@ make test-sse    # SSE streaming tests (requires ~/.codescribe/.env)
 
 Clippy and tests run **locally** via pre-commit hooks or `make check`.
 
-For full CI, configure a self-hosted macOS runner (Dragon recommended).
+For full CI, configure a self-hosted macOS runner (a high-RAM Apple Silicon workstation recommended).
 
 ## Troubleshooting
 
