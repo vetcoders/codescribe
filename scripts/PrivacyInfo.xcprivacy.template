@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  ===========================================================================
+  DRAFT TEMPLATE — NOT WIRED INTO ANY BUILD. Do not treat as "done".
+  ===========================================================================
+
+  This is a starting point for the privacy manifest of the FUTURE Mac App
+  Store "Basic" SKU (sandbox-clean dictation app). It is intentionally NOT
+  referenced by the Makefile bundle target, scripts/build-dmg.sh, or any
+  signing step — the current shipping lane is Developer ID + notarization,
+  which does NOT require a privacy manifest.
+
+  To activate for a real MAS build:
+    1. Stand up the sandboxed "Basic" build profile (see docs/APP_STORE_READINESS.md).
+    2. Copy this to PrivacyInfo.xcprivacy inside the .app bundle
+       (Contents/Resources/PrivacyInfo.xcprivacy) and add it to the bundle
+       target so codesign covers it.
+    3. Re-verify every NSPrivacyAccessedAPITypeReasons entry against the app's
+       ACTUAL required-reason API usage at that time — do not trust this draft.
+    4. Complete the App Privacy Details ("nutrition labels") questionnaire in
+       App Store Connect (that is separate from this file — see below).
+
+  WHY FileTimestamp / C617.1 is here:
+    CodeScribe reads file modification times via std::fs metadata().modified()
+    in core/state/history.rs, core/hf_cache.rs, and core/attachment.rs — all
+    accessing metadata of files inside the app's own directories. Apple's
+    required-reason category for that is NSPrivacyAccessedAPICategoryFileTimestamp
+    with reason code C617.1 ("access file metadata ... within the app container,
+    app group container, or the app's CloudKit container").
+    Source: https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitype
+
+  NOTE on Audio Data:
+    The microphone/voice "Audio Data" disclosure is an App Privacy Details
+    ("nutrition label") item completed in App Store Connect, NOT a field in
+    this manifest. For the on-device Basic SKU, audio never leaves the device:
+    declare Audio Data -> purpose "App Functionality", NOT linked to identity,
+    NOT used for tracking.
+    Source: https://developer.apple.com/app-store/app-privacy-details/
+
+  Created by M&K (c)2026 VetCoders
+  ===========================================================================
+-->
+<dict>
+    <!-- This app does not track users across apps/websites owned by others. -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+
+    <!--
+      Data-type collection (Audio Data, etc.) is declared in App Store Connect's
+      App Privacy Details, not here. Left empty for the on-device Basic SKU;
+      revisit if a bundled third-party SDK collects data.
+    -->
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+
+    <!-- Required-reason API declarations (mandatory since 2024-05-01). -->
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <!-- C617.1: access file metadata within the app's own containers. -->
+                <string>C617.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
