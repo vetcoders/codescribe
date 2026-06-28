@@ -46,7 +46,7 @@ const NSTRACKING_MOUSE_ENTERED_AND_EXITED: u64 = 1 << 0;
 const NSTRACKING_ACTIVE_ALWAYS: u64 = 1 << 7;
 const NSTRACKING_IN_VISIBLE_RECT: u64 = 1 << 9;
 
-const OVERLAY_HEADER_LABEL: &str = "CodeScribe - Dictation Overlay";
+const OVERLAY_HEADER_LABEL: &str = "Codescribe - Dictation Overlay";
 
 static OVERLAY_WINDOW_INIT: std::sync::Once = std::sync::Once::new();
 static mut OVERLAY_WINDOW_CLASS: *const Class = std::ptr::null();
@@ -68,7 +68,7 @@ pub(super) fn overlay_window_class() -> *const Class {
         OVERLAY_WINDOW_INIT.call_once(|| {
             let superclass = Class::get("NSWindow").expect("NSWindow class missing");
             let mut decl =
-                objc::declare::ClassDecl::new("CodeScribeDictationOverlayWindow", superclass)
+                objc::declare::ClassDecl::new("CodescribeDictationOverlayWindow", superclass)
                     .expect("Failed to declare dictation overlay window class");
             decl.add_method(
                 sel!(canBecomeKeyWindow),

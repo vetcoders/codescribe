@@ -10,7 +10,7 @@
 #   --format 0|1                        # enable/disable formatting
 #   --llm-id <path|hf-repo>
 #   --active                            # use uv --active (silences VIRTUAL_ENV warning)
-#   --daemon [--log FILE]               # run tray/backend in background (default log: CodeScribe.log)
+#   --daemon [--log FILE]               # run tray/backend in background (default log: Codescribe.log)
 #   --with-backend                      # start backend alongside tray (same as --mode both)
 #   --no-models                         # skip model downloader
 #   --dev | --verbose                   # enable DEV diagnostics, debug logs; run in foreground
@@ -54,8 +54,8 @@ mkdir -p "$PID_DIR"
 # Known ports/patterns we manage (clean stop + guard before each start)
 PORT_GUARD_PORTS=(8237 7237 6237 5237)
 PROCESS_PATTERNS=(
-  "CodeScribeTray"
-  "CodeScribeServer"
+  "CodescribeTray"
+  "CodescribeServer"
   "python -m codescribe.main"
   "python -m codescribe.codescribe_server"
 )
@@ -118,7 +118,7 @@ LLM_ID="${LLM_ID:-}"
 UV_ACTIVE=0
 # Default: run in background with logging (nohup + disown)
 DAEMON=1
-LOG_FILE="$LOG_DIR/CodeScribe.log"
+LOG_FILE="$LOG_DIR/Codescribe.log"
 SKIP_MODELS=0
 PERSIST_ENVS=()
 WITH_BACKEND=0
@@ -203,7 +203,7 @@ ensure_processes_stopped() {
   local leftovers
   leftovers=$(collect_running_processes || true)
   if [[ -n "$leftovers" ]]; then
-    echo "[!] Could not stop existing CodeScribe processes:" >&2
+    echo "[!] Could not stop existing Codescribe processes:" >&2
     while IFS='|' read -r pid cmd; do
       [[ -z "$pid" ]] && continue
       echo "    pid $pid → ${cmd:-unknown}" >&2
@@ -257,7 +257,7 @@ ensure_ports_available() {
   fi
   while IFS=$'\t' read -r port pid cmd; do
     [[ -z "$port" ]] && continue
-    if [[ "$cmd" == *"CodeScribe"* || "$cmd" == *"codescribe"* ]]; then
+    if [[ "$cmd" == *"Codescribe"* || "$cmd" == *"codescribe"* ]]; then
       graceful_kill "$pid" "port-$port"
     fi
   done <<<"$snapshot"
@@ -266,7 +266,7 @@ ensure_ports_available() {
   if [[ -z "$snapshot" ]]; then
     return 0
   fi
-  echo "[!] Required CodeScribe ports are already in use:" >&2
+  echo "[!] Required Codescribe ports are already in use:" >&2
   while IFS=$'\t' read -r port pid cmd; do
     [[ -z "$port" ]] && continue
     echo "    port $port ← pid $pid (${cmd:-unknown})" >&2
@@ -327,7 +327,7 @@ lower_users() {
 if [[ "$FRESH" -eq 1 ]]; then
   APP_SUPP_DIR="$HOME/.codescribe"
   LA_PLIST="$HOME/Library/LaunchAgents/com.codescribe.tray.plist"
-  APP_LOG="$HOME/Library/Logs/CodeScribe.app.log"
+  APP_LOG="$HOME/Library/Logs/Codescribe.app.log"
   echo "==> Fresh cleanup plan (keeps .env & models):"
   echo "    - remove .pids/*.pid"
   echo "    - remove logs/*.log"
@@ -513,7 +513,7 @@ fi
 ensure_clean_start "$NEEDS_BACKEND"
 
 if [[ "${MODE}" == "backend" ]]; then
-  echo "Starting CodeScribeServer (HTTP API)"
+  echo "Starting CodescribeServer (HTTP API)"
   if [[ "$DAEMON" -eq 1 ]]; then
     echo "==> Daemon mode: log → $SERVER_OUT"
     nohup env "${ENVVARS[@]}" \
@@ -521,7 +521,7 @@ if [[ "${MODE}" == "backend" ]]; then
     server_pid=$!
     disown "$server_pid" || true
     write_pid server "$server_pid"
-    echo "CodeScribeServer pid: $server_pid (log: $SERVER_OUT)"
+    echo "CodescribeServer pid: $server_pid (log: $SERVER_OUT)"
     sleep 1
     if [[ -f "$LOG_DIR/codescribe-server.port" ]]; then
       port_msg=$(cat "$LOG_DIR/codescribe-server.port")
@@ -541,13 +541,13 @@ echo "Starting the tray application"
 
 # If mode is both or --with-backend, start backend in background first
 if [[ "$MODE" == "both" || "$WITH_BACKEND" -eq 1 ]]; then
-  echo "==> Launching CodeScribeServer in the background"
+  echo "==> Launching CodescribeServer in the background"
   nohup env "${ENVVARS[@]}" \
     uv run ${UV_ACTIVE:+--active} python -m codescribe.codescribe_server start >> "$SERVER_OUT" 2>> "$SERVER_ERR" &
   back_pid=$!
   disown "$back_pid" || true
   write_pid server "$back_pid"
-  echo "CodeScribeServer pid: $back_pid (log: $SERVER_OUT)"
+  echo "CodescribeServer pid: $back_pid (log: $SERVER_OUT)"
   sleep 1
   if [[ -f "$LOG_DIR/codescribe-server.port" ]]; then
     port_msg=$(cat "$LOG_DIR/codescribe-server.port")

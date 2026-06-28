@@ -65,7 +65,7 @@ nohup.out.backup
 *codex*
 /agents
 
-# CodeScribe
+# Codescribe
 .codescribe/state/
 codescribe_memory_*.md
 codescribe_memory_*.json

@@ -2,12 +2,12 @@
 name = "codescribe-core"
 version.workspace = true
 edition.workspace = true
-authors = ["VetCoders <hello@vetcoders.io>"]
+authors = ["Vetcoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"
-description = "Core library for CodeScribe (audio, STT, quality pipeline)"
-repository = "https://github.com/VetCoders/CodeScribe"
-homepage = "https://vetcoders.github.io/CodeScribe/"
-documentation = "https://vetcoders.github.io/CodeScribe/quickstart/"
+description = "Core library for Codescribe (audio, STT, quality pipeline)"
+repository = "https://github.com/vetcoders/codescribe"
+homepage = "https://vetcoders.github.io/codescribe/"
+documentation = "https://vetcoders.github.io/codescribe/quickstart/"
 keywords = ["speech-to-text", "whisper", "audio", "transcription", "stt"]
 categories = ["multimedia::audio", "multimedia::encoding"]
 

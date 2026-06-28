@@ -15,9 +15,9 @@
 
 ### Option 1: Direct Download (Preferred for end users once a release is published)
 
-1. Go to [Releases](https://github.com/VetCoders/CodeScribe/releases)
-2. Download `CodeScribe-x.x.x.dmg`
-3. Open DMG, drag CodeScribe to Applications
+1. Go to [Releases](https://github.com/vetcoders/codescribe/releases)
+2. Download `Codescribe-x.x.x.dmg`
+3. Open DMG, drag codescribe to Applications
 4. Eject DMG
 
 > If Releases is empty, use the source path below. The repository now ships a release workflow, but not every branch has a published tag yet.
@@ -25,10 +25,10 @@
 ### Option 2: Build from Source
 
 ```bash
-git clone https://github.com/VetCoders/CodeScribe.git
-cd CodeScribe
+git clone https://github.com/vetcoders/codescribe.git
+cd codescribe
 make install          # Install CLI to ~/.cargo/bin and ensure runtime model/cache availability
-make bundle           # Optional: create bundle/CodeScribe.app
+make bundle           # Optional: create bundle/Codescribe.app
 make install-app      # Optional: copy app to /Applications
 ```
 
@@ -36,18 +36,18 @@ make install-app      # Optional: copy app to /Applications
 
 ## First Launch
 
-1. **Open CodeScribe** from Applications or Spotlight
+1. **Open codescribe** from Applications or Spotlight
 2. **Grant Microphone access** when prompted
 3. **Grant Accessibility access** in System Settings → Privacy & Security → Accessibility
 4. **Wait for initialization** (first launch may take a few seconds to resolve and load the local Whisper model)
 
-You'll see the CodeScribe icon appear in your menu bar. It starts black (idle).
+You'll see the codescribe icon appear in your menu bar. It starts black (idle).
 
 ---
 
 ## Required Permissions
 
-CodeScribe needs these permissions to function:
+Codescribe needs these permissions to function:
 
 | Permission           | Why                        | How to Grant                                            |
 | -------------------- | -------------------------- | ------------------------------------------------------- |
@@ -55,7 +55,7 @@ CodeScribe needs these permissions to function:
 | **Accessibility**    | Global hotkeys, paste text | System Settings → Privacy & Security → Accessibility    |
 | **Input Monitoring** | Detect modifier keys       | System Settings → Privacy & Security → Input Monitoring |
 
-> **Tip**: If hotkeys don't work, check that CodeScribe is enabled in all three permission categories.
+> **Tip**: If hotkeys don't work, check that codescribe is enabled in all three permission categories.
 
 ---
 
@@ -70,7 +70,7 @@ codescribe --version
 Expected output:
 
 ```
-CodeScribe 0.7.x
+Codescribe 0.7.x
 ```
 
 Test transcription:
@@ -84,7 +84,7 @@ codescribe transcribe --record 5
 
 ## Configuration Location
 
-CodeScribe stores configuration in:
+Codescribe stores configuration in:
 
 ```
 ~/.codescribe/
@@ -116,9 +116,9 @@ Download new version from Releases and replace the old app.
 
 ### Manual
 
-1. Delete `/Applications/CodeScribe.app`
+1. Delete `/Applications/Codescribe.app`
 2. Optionally remove config: `rm -rf ~/.codescribe`
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

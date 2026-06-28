@@ -1,6 +1,6 @@
 //! Icon management and status glyph rendering for tray icon
 //!
-//! Handles loading the CodeScribe logo and drawing status indicators.
+//! Handles loading the Codescribe logo and drawing status indicators.
 
 use anyhow::Result;
 use image::{GenericImageView, imageops::FilterType};
@@ -16,14 +16,14 @@ struct GlyphParams {
     color: (u8, u8, u8),
 }
 
-/// Embedded CodeScribe logo icon (resized for menu bar)
+/// Embedded Codescribe logo icon (resized for menu bar)
 /// Place icon.png in codescribe-rs/assets/ directory
 const ICON_BYTES: &[u8] = include_bytes!("../../../assets/icon.png");
 
 /// Menu bar icon size (44x44 for Retina, 22x22 logical)
 const ICON_SIZE: u32 = 44;
 
-/// Load the custom CodeScribe icon with explicit status glyph visibility.
+/// Load the custom Codescribe icon with explicit status glyph visibility.
 pub fn load_custom_icon_with_glyph(status: TrayStatus, show_status_glyph: bool) -> Result<Icon> {
     let img = image::load_from_memory(ICON_BYTES)
         .map_err(|e| anyhow::anyhow!("Failed to load icon: {}", e))?;

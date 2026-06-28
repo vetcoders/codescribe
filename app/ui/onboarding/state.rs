@@ -12,6 +12,7 @@ use super::steps::TOTAL_STEPS;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum LanguageChoice {
     #[default]
+    Auto,
     English,
     Polish,
 }
@@ -19,6 +20,7 @@ pub(super) enum LanguageChoice {
 impl LanguageChoice {
     pub(super) fn label(self) -> &'static str {
         match self {
+            Self::Auto => "Auto-detect / multilingual",
             Self::English => "English",
             Self::Polish => "Polish",
         }
@@ -26,6 +28,7 @@ impl LanguageChoice {
 
     pub(super) fn value(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::English => "en",
             Self::Polish => "pl",
         }
@@ -52,7 +55,7 @@ impl HotkeyModeChoice {
 
 /// First-run operating lane the user picks during onboarding.
 ///
-/// `Basic` keeps CodeScribe a plain dictation tool; `Agentic` opts into the
+/// `Basic` keeps Codescribe a plain dictation tool; `Agentic` opts into the
 /// dictation-driven orchestration runtime (which a later cut gates on the
 /// Vibecrafted + MCP substrate). `Basic` is the safe default so a fresh
 /// install never lands in the agentic lane by accident.
@@ -110,6 +113,7 @@ pub(super) struct UiRefs {
     pub(super) readiness_heading_label: Option<usize>,
     pub(super) readiness_row_labels: [Option<usize>; 5],
     pub(super) language_view: Option<usize>,
+    pub(super) language_auto_radio: Option<usize>,
     pub(super) language_en_radio: Option<usize>,
     pub(super) language_pl_radio: Option<usize>,
     pub(super) api_view: Option<usize>,
@@ -179,7 +183,8 @@ pub(super) fn initial_language_choice() -> LanguageChoice {
     let settings = UserSettings::load();
     match settings.whisper_language.as_deref() {
         Some("pl") => LanguageChoice::Polish,
-        _ => LanguageChoice::English,
+        Some("en") => LanguageChoice::English,
+        _ => LanguageChoice::Auto,
     }
 }
 

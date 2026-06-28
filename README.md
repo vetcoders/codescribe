@@ -1,15 +1,15 @@
-# ⌜ CodeScribe ⌟
+# ⌜ Codescribe ⌟
 
 [![Version](https://img.shields.io/badge/version-0.12.2-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
-[![CI](https://github.com/VetCoders/CodeScribe/actions/workflows/rust.yml/badge.svg)](https://github.com/VetCoders/CodeScribe/actions/workflows/rust.yml)
-[![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2FCodeScribe-788c5d)](https://vetcoders.github.io/CodeScribe/)
+[![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
+[![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
 
 **Native macOS tray dictation and assistive voice overlay with local Whisper live preview, optional cloud final transcript paths, and quality tooling.**
 
 ## Overview
 
-CodeScribe is a native macOS menu-bar application that captures audio through global hotkeys, shows live local
+Codescribe is a native macOS menu-bar application that captures audio through global hotkeys, shows live local
 transcription while you speak, and pastes or routes the final result into the focused application. The shipped product
 in this repo is a tray app with three explicit surfaces: onboarding, settings, and overlays.
 
@@ -22,7 +22,7 @@ flowchart TB
     classDef default fill:#fff,stroke:#333,stroke-width:1px;
     classDef box fill:#fafafa,stroke:#666,stroke-width:1px,stroke-dasharray: 0;
 
-    subgraph APP[CodeScribe Runtime]
+    subgraph APP[Codescribe Runtime]
         direction LR
         TRAY[Tray + Hotkeys]
         ONB[Onboarding]
@@ -65,15 +65,15 @@ flowchart TB
 
 > **Status:** current source version is `0.12.2` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
 
-See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/BACKLOG.md`](docs/BACKLOG.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
 ## OpenAI Provider
 
-CodeScribe uses **OpenAI Responses API** (`/v1/responses`) by default for AI formatting and assistive mode.
+Codescribe uses **OpenAI Responses API** (`/v1/responses`) by default for AI formatting and assistive mode.
 
 ### Default Setup
 
-Put your OpenAI API key in Onboarding or Settings. CodeScribe stores it in macOS Keychain and applies it to both AI modes:
+Put your OpenAI API key in Onboarding or Settings. Codescribe stores it in macOS Keychain and applies it to both AI modes:
 
 ```env
 # ~/.codescribe/.env
@@ -98,7 +98,7 @@ LLM_ASSISTIVE_API_KEY=sk-proj-xxx
 
 ### MCP Extension Path
 
-CodeScribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps the free product useful with user-owned tools today, while leaving room for first-party Pro integrations such as AICX and Loctree later.
+Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps the free product useful with user-owned tools today, while leaving room for first-party Pro integrations such as AICX and Loctree later.
 
 ## Features
 
@@ -145,8 +145,8 @@ CodeScribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 
 ```bash
 # Clone the repository
-git clone https://github.com/VetCoders/CodeScribe.git
-cd CodeScribe
+git clone https://github.com/vetcoders/codescribe.git
+cd codescribe
 
 # Install the hook runner once (required for local commit/push gates)
 pipx install pre-commit
@@ -162,9 +162,9 @@ codescribe --version
 
 Tagged builds publish DMGs through GitHub Releases:
 
-1. Open [Releases](https://github.com/VetCoders/CodeScribe/releases)
-2. Download `CodeScribe_<version>.dmg` for the standard build, or `CodeScribe_<version>_full.dmg` for the larger build with embedded Whisper.
-3. Drag `CodeScribe.app` into `Applications`
+1. Open [Releases](https://github.com/vetcoders/codescribe/releases)
+2. Download `Codescribe_<version>.dmg` for the standard build, or `Codescribe_<version>_full.dmg` for the larger build with embedded Whisper.
+3. Drag `Codescribe.app` into `Applications`
 
 > **Current truth:** source install is the guaranteed path inside this repo until a current `v0.12.x` GitHub Release exists. Public release DMGs must be Developer ID signed and notarized; the release workflow is wired to fail if the required Apple signing/notary secrets are missing.
 
@@ -207,7 +207,7 @@ Hotkeys are configured in **Settings → Modes & Shortcuts**. Double‑tap modes
 
 ## Settings & Secrets
 
-- GUI settings: `~/Library/Application Support/CodeScribe/settings.json`
+- GUI settings: `~/Library/Application Support/Codescribe/settings.json`
 - API keys: macOS Keychain (`com.vetcoders.codescribe`)
 - Power‑user overrides: `~/.codescribe/.env`
 
@@ -254,7 +254,7 @@ pipeline, while overlays/chat bubbles still receive only backspace-encoded
 | **Formatting**        | Double‑tap `Left Option`  | AI formatting pass, auto‑paste             |
 | **Assistive (Agent)** | Double‑tap `Right Option` | Agent chat with optional selection context |
 
-See [`docs/BACKLOG.md`](docs/BACKLOG.md) for detailed mode descriptions and future enhancements (VAD, Overlay).
+See [`docs/guide/modes.md`](docs/guide/modes.md) for detailed mode descriptions.
 
 ## Configuration
 
@@ -342,7 +342,7 @@ Options:
 
 ## Model
 
-CodeScribe uses **whisper-large-v3-turbo-mlx-q8**:
+Codescribe uses **whisper-large-v3-turbo-mlx-q8**:
 
 - 4-layer turbo architecture (vs 32 layers in full model)
 - Q8 quantization (~894MB weights)
@@ -351,7 +351,7 @@ CodeScribe uses **whisper-large-v3-turbo-mlx-q8**:
 
 ### Runtime Whisper (Current)
 
-The standard build embeds Silero VAD and MiniLM semantic support assets, then resolves Whisper at runtime from the locations below. The full release DMG embeds the same support assets plus Whisper by building with `CODESCRIBE_EMBED_WHISPER=1`.
+User-delivery builds (`make release`, `make install`, the release DMG) embed everything by default: Silero VAD, the MiniLM semantic embedder, and Whisper (`CODESCRIBE_EMBED_WHISPER=1`). The fast developer build (`make build` / raw `cargo build`) stays lean and resolves Whisper at runtime from the locations below; that same resolution order is the fallback whenever a build is not embedded.
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
@@ -370,7 +370,7 @@ Model files required:
 ## Architecture
 
 ```text
-CodeScribe/
+Codescribe/
 ├── core/                      # Portable pipeline, STT, config, quality
 ├── app/                       # macOS app shell
 │   ├── controller/            # Recording/transcription orchestration
@@ -390,8 +390,8 @@ CodeScribe/
 
 ```bash
 # Clone and setup
-git clone https://github.com/VetCoders/CodeScribe.git
-cd CodeScribe
+git clone https://github.com/vetcoders/codescribe.git
+cd codescribe
 
 # Development build with explicit runtime Whisper fallback
 CODESCRIBE_MODEL_PATH=./models/whisper-large-v3-turbo-mlx-q8 cargo run
@@ -434,7 +434,7 @@ make download-model   # Download Whisper model
 
 ## Permissions
 
-CodeScribe requires macOS permissions for:
+Codescribe requires macOS permissions for:
 
 - **Microphone** — Audio recording
 - **Accessibility** — Global hotkey detection
@@ -448,18 +448,18 @@ Grant permissions in System Settings > Privacy & Security when prompted.
 - Preserve the explicit split between onboarding, settings, dictation overlay, and assistive overlay.
 - Ship the macOS distribution path cleanly: bundle, sign, and notarize the DMG story.
 
-See [`docs/BACKLOG.md`](docs/BACKLOG.md) for the working backlog, [`docs/PUBLIC_RELEASE_CHECKLIST.md`](docs/PUBLIC_RELEASE_CHECKLIST.md) for the public launch gate, and [`docs/ARCHITECTURE_VISION.md`](docs/ARCHITECTURE_VISION.md) for longer-range ideas that are not part of the current shipped surface.
+See [`docs/PUBLIC_RELEASE_CHECKLIST.md`](docs/PUBLIC_RELEASE_CHECKLIST.md) for the public launch gate.
 
 ## License
 
-CodeScribe is licensed under the Functional Source License 1.1, ALv2 Future
+Codescribe is licensed under the Functional Source License 1.1, ALv2 Future
 License (FSL-1.1-ALv2).
 
 This is a Fair Source / source-available license while the current FSL terms
 apply. You may read, fork, build, and modify the source for permitted purposes
 including personal use, education, research, and professional services.
-Competing Use is not permitted: do not make CodeScribe available as a
-commercial product or service that substitutes for CodeScribe.
+Competing Use is not permitted: do not make codescribe available as a
+commercial product or service that substitutes for codescribe.
 
 Each released version automatically converts to Apache-2.0 two years after the
 date we make that version available. See [`LICENSE`](LICENSE) and
@@ -467,5 +467,4 @@ date we make that version available. See [`LICENSE`](LICENSE) and
 
 ---
 
-**Made with (งಠ_ಠ)ง by the ⌜ VetCoders ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026
-Maciej & Monika + Klaudiusz (AI) + Junie (AI)**
+**Made with (งಠ_ಠ)ง by the ⌜ Vetcoders ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026**

@@ -263,4 +263,4 @@ FSL-1.1-ALv2 (same as parent project)
 
 ---
 
-Created by M&K (c)2025 The LibraxisAI Team
+Created by vetcoders (c)2025

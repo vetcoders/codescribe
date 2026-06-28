@@ -1,5 +1,5 @@
 //!
-//! Build script for CodeScribe
+//! Build script for Codescribe
 //! Exports embedded model data and configuration.
 //! Generates embedded_tts_data.rs / embedded_embedder_data.rs / embedded_vad_data.rs in OUT_DIR.
 //!

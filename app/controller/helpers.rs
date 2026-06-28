@@ -622,11 +622,11 @@ fn derive_thread_title(messages: &[Message]) -> String {
         .iter()
         .find(|message| message.role == Role::User)
         .and_then(extract_text_from_message)
-        .unwrap_or_else(|| "CodeScribe Agent Chat".to_string());
+        .unwrap_or_else(|| "Codescribe Agent Chat".to_string());
 
     let mut title = candidate.chars().take(72).collect::<String>();
     if title.is_empty() {
-        title = "CodeScribe Agent Chat".to_string();
+        title = "Codescribe Agent Chat".to_string();
     }
     title
 }
@@ -666,7 +666,7 @@ fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
             id: runtime.thread_store_id.clone(),
             created_at: now,
             updated_at: now,
-            title: "CodeScribe Agent Chat".to_string(),
+            title: "Codescribe Agent Chat".to_string(),
             mode: "assistive".to_string(),
             tags: vec!["agent".to_string(), "overlay".to_string()],
             notes: Vec::new(),
@@ -709,7 +709,7 @@ fn persist_legacy_assistive_thread(user_text: &str, assistant_text: &str) -> Res
 
     let mut title = user_text.chars().take(72).collect::<String>();
     if title.is_empty() {
-        title = "CodeScribe Agent Chat".to_string();
+        title = "Codescribe Agent Chat".to_string();
     }
     let mut summary = assistant_text.chars().take(240).collect::<String>();
     if summary.is_empty() {
@@ -977,7 +977,7 @@ async fn run_legacy_send_path(
 
     let result = crate::ai_formatting::format_text_with_status_channels(
         text,
-        Some(whisper_language.as_str()),
+        whisper_language.whisper_hint(),
         true,
         delta_callback,
         None,

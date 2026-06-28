@@ -11,11 +11,14 @@ async fn main() -> Result<()> {
     // Model path: ~/.codescribe/models/ (unified standard)
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let model_path = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8");
+    // Supply your own sample files via env vars (or edit the placeholder paths below).
     let audio_medium = PathBuf::from(
-        "/Users/maciejgad/hosted/vista/api-test-suite/test-files/audio-real-medium.m4a",
+        std::env::var("CODESCRIBE_E2E_AUDIO_MEDIUM")
+            .unwrap_or_else(|_| "./test-files/audio-real-medium.m4a".to_string()),
     );
     let audio_short = PathBuf::from(
-        "/Users/maciejgad/hosted/vista/api-test-suite/test-files/audio-real-short.m4a",
+        std::env::var("CODESCRIBE_E2E_AUDIO_SHORT")
+            .unwrap_or_else(|_| "./test-files/audio-real-short.m4a".to_string()),
     );
 
     let language = std::env::var("CODESCRIBE_E2E_LANG").ok();

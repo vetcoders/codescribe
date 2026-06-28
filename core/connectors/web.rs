@@ -147,7 +147,7 @@ fn ssrf_safe_client() -> reqwest::Client {
                         attempt.follow()
                     }
                 }))
-                .user_agent("CodeScribe/1.0 (speech-to-text assistant)")
+                .user_agent("Codescribe/1.0 (speech-to-text assistant)")
                 .build()
                 .expect("Failed to build SSRF-safe HTTP client")
         })

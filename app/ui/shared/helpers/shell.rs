@@ -31,7 +31,7 @@ pub unsafe fn window_show(window: Id) {
     }
 }
 
-/// Present a first-class CodeScribe panel like a normal AppKit window.
+/// Present a first-class Codescribe panel like a normal AppKit window.
 ///
 /// Unlike overlay-only `orderFrontRegardless`, this makes the window key and
 /// activates the app so text fields, scroll views, and standard controls behave
@@ -130,7 +130,7 @@ pub unsafe fn window_set_alpha(window: Id, alpha: f64) {
     }
 }
 
-/// Shared AppKit shell policy for first-class CodeScribe panels.
+/// Shared AppKit shell policy for first-class Codescribe panels.
 ///
 /// The intent is to keep chat, Settings, and Onboarding in one explicit
 /// window-policy matrix while callers continue to own their content trees.

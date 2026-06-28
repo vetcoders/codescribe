@@ -6,7 +6,7 @@
 //!   cargo run --release --example roundtrip_live
 //!   cargo run --release --example roundtrip_live -- --text "Hello world"
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use anyhow::Result;
 use std::io::{self, Write};

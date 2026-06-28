@@ -1,4 +1,4 @@
-# CodeScribe - Team Setup (Pure Rust Era)
+# Codescribe - Team Setup (Pure Rust Era)
 
 ## Quick Start
 
@@ -11,8 +11,8 @@
 
 ```bash
 # Clone
-git clone git@github.com:VetCoders/CodeScribe.git
-cd CodeScribe
+git clone git@github.com:Vetcoders/Codescribe.git
+cd codescribe
 
 # Build and run CLI
 cargo build --release -p codescribe
@@ -154,7 +154,7 @@ make test-sse    # SSE streaming tests (requires ~/.codescribe/.env)
 
 Clippy and tests run **locally** via pre-commit hooks or `make check`.
 
-For full CI, configure a self-hosted macOS runner (Dragon recommended).
+For full CI, configure a self-hosted macOS runner (a high-RAM Apple Silicon workstation recommended).
 
 ## Troubleshooting
 
@@ -176,4 +176,4 @@ For full CI, configure a self-hosted macOS runner (Dragon recommended).
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

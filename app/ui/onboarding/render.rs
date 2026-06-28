@@ -90,7 +90,7 @@ pub(super) fn render_current_step() {
     match step {
         WizardStep::Welcome => {
             set_text_if_present(ui.icon_label, "WELCOME");
-            set_text_if_present(ui.title_label, "Welcome to CodeScribe");
+            set_text_if_present(ui.title_label, "Welcome to Codescribe");
             set_text_if_present(
                 ui.description_label,
                 "We will wire permissions, choose your transcript defaults, and show how live preview, committed verdict, and AI help stay honest from first launch.",
@@ -102,7 +102,7 @@ pub(super) fn render_current_step() {
             set_text_if_present(ui.title_label, "Choose Your Lane");
             set_text_if_present(
                 ui.description_label,
-                "Basic keeps CodeScribe a local dictation tool. Agentic turns dictation into agent orchestration through Vibecrafted and MCP, with a readiness check next. You can switch later in Settings.",
+                "Basic keeps Codescribe a local dictation tool. Agentic turns dictation into agent orchestration through Vibecrafted and MCP, with a readiness check next. You can switch later in Settings.",
             );
             set_hidden_if_present(ui.mode_view, false);
             set_button_title_if_present(ui.primary_button, "Continue");
@@ -165,7 +165,7 @@ pub(super) fn render_current_step() {
             set_text_if_present(ui.title_label, "Choose Language");
             set_text_if_present(
                 ui.description_label,
-                "Select the default transcript language. Live preview stays provisional, and the committed verdict will use this language unless you change it later in Settings.",
+                "Use Auto for multilingual dictation. Pick Polish or English only when you want to force Whisper into one language.",
             );
             set_hidden_if_present(ui.language_view, false);
             set_button_title_if_present(ui.primary_button, "Continue");
@@ -218,7 +218,7 @@ pub(super) fn render_current_step() {
             set_hidden_if_present(ui.summary_view, false);
             set_hidden_if_present(ui.skip_button, true);
             update_summary_view(ui, permissions, language, api_key_configured, hotkey_mode);
-            set_button_title_if_present(ui.primary_button, "Start CodeScribe");
+            set_button_title_if_present(ui.primary_button, "Start Codescribe");
         }
     }
 }
@@ -324,7 +324,7 @@ fn update_summary_view(
     set_text_if_present(
         ui.summary_config_label,
         &format!(
-            "Language: {}\nOpenAI: {}\nMode profile: {}\nTruth model: Live preview stays local and provisional. CodeScribe only commits a final verdict after capture, and degraded fallback blocks silent auto-paste.",
+            "Language: {}\nOpenAI: {}\nMode profile: {}\nTruth model: Live preview stays local and provisional. Codescribe only commits a final verdict after capture, and degraded fallback blocks silent auto-paste.",
             language.label(),
             api_status,
             hotkey_mode.label()

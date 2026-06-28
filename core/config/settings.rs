@@ -592,16 +592,16 @@ impl UserSettings {
     /// Returns the settings directory.
     ///
     /// Respects `CODESCRIBE_DATA_DIR` for test isolation; otherwise uses
-    /// `~/Library/Application Support/CodeScribe/`.
+    /// `~/Library/Application Support/Codescribe/`.
     pub fn settings_dir() -> PathBuf {
         let dir = if let Ok(test_dir) = std::env::var("CODESCRIBE_DATA_DIR") {
             PathBuf::from(test_dir)
         } else {
             BaseDirs::new()
-                .map(|b| b.data_dir().join("CodeScribe"))
+                .map(|b| b.data_dir().join("Codescribe"))
                 .unwrap_or_else(|| {
                     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    PathBuf::from(home).join("Library/Application Support/CodeScribe")
+                    PathBuf::from(home).join("Library/Application Support/Codescribe")
                 })
         };
 

@@ -1,7 +1,7 @@
-//! CodeScribe CLI - Local speech-to-text transcription
+//! Codescribe CLI - Local speech-to-text transcription
 //!
 //! Lightweight CLI for direct audio file transcription.
-//! For the tray app + overlay, use CodeScribe.app.
+//! For the tray app + overlay, use Codescribe.app.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -16,13 +16,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
-/// CodeScribe CLI - Local speech-to-text transcription
+/// Codescribe CLI - Local speech-to-text transcription
 ///
-/// For the full app with tray icon and hotkeys, run CodeScribe.app
+/// For the full app with tray icon and hotkeys, run Codescribe.app
 #[derive(Parser)]
 #[command(name = "codescribe")]
 #[command(version)]
-#[command(author = "VetCoders <hello@vetcoders.io>")]
+#[command(author = "Vetcoders <hello@vetcoders.io>")]
 #[command(about = "Local speech-to-text transcription", long_about = None)]
 struct Cli {
     /// Open config file in editor (creates default if missing)
@@ -102,7 +102,7 @@ enum MigrateKind {
 
 // Cap the multi-thread tokio runtime worker count. Default is one worker per
 // CPU core — on M3 Pro (11 cores) that spawns ~11 workers, each idle in
-// `__psynch_cvwait` consuming kernel resources + scheduler overhead. CodeScribe
+// `__psynch_cvwait` consuming kernel resources + scheduler overhead. Codescribe
 // is not compute-parallel (whisper runs on Metal device, audio on cpal thread,
 // LLM is single SSE stream); 4 workers cover IPC server + HTTP client + LLM
 // stream + occasional background tasks with headroom. Confirmed empirically:
@@ -116,7 +116,7 @@ async fn main() -> Result<()> {
     // Build identity — first line in ~/.codescribe/logs/codescribe.log so every session
     // is unambiguously tied to a build. The 8-char commit matches the About dialog.
     tracing::info!(
-        "CodeScribe v{} build {} ({})",
+        "Codescribe v{} build {} ({})",
         env!("CARGO_PKG_VERSION"),
         env!("CODESCRIBE_BUILD_COMMIT"),
         env!("CODESCRIBE_RUSTC_VERSION"),
@@ -349,7 +349,7 @@ async fn handle_transcribe_file(
         anyhow::bail!("File not found: {}", file.display());
     }
 
-    eprintln!("CodeScribe Local Transcription");
+    eprintln!("Codescribe Local Transcription");
     eprintln!("Audio: {}", file.display());
 
     // Initialize Whisper
@@ -490,7 +490,7 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
     let language =
         language.or_else(|| codescribe_core::config::UserSettings::load().whisper_language);
 
-    eprintln!("CodeScribe Live Transcription");
+    eprintln!("Codescribe Live Transcription");
     eprintln!("Press Ctrl+C to stop.");
 
     whisper::init()?;
@@ -555,11 +555,11 @@ async fn handle_transcribe_live(language: Option<String>) -> Result<()> {
 async fn run_daemon() -> Result<()> {
     use codescribe::tray;
 
-    eprintln!("CodeScribe daemon starting...");
+    eprintln!("Codescribe daemon starting...");
 
     // ── Build metadata ──
     info!(
-        "CodeScribe {} | build={} | profile={} | rustc={} | exe={}",
+        "Codescribe {} | build={} | profile={} | rustc={} | exe={}",
         env!("CARGO_PKG_VERSION"),
         option_env!("CODESCRIBE_BUILD_COMMIT").unwrap_or("dev"),
         if cfg!(debug_assertions) {
@@ -576,10 +576,10 @@ async fn run_daemon() -> Result<()> {
     tray::run_with_startup(None, || {
         tokio::spawn(async {
             if let Err(e) = initialize_daemon_runtime().await {
-                tracing::error!("CodeScribe startup failed: {e:?}");
+                tracing::error!("Codescribe startup failed: {e:?}");
                 let _ = codescribe::tray::update_tray_status(codescribe::tray::TrayStatus::Error);
                 #[cfg(target_os = "macos")]
-                codescribe::os::notifications::notify("CodeScribe startup failed", &format!("{e}"));
+                codescribe::os::notifications::notify("Codescribe startup failed", &format!("{e}"));
             }
         });
     })?;
@@ -664,7 +664,7 @@ async fn initialize_daemon_runtime() -> Result<()> {
                                 #[cfg(target_os = "macos")]
                                 {
                                     codescribe::os::notifications::notify(
-                                        "CodeScribe",
+                                        "Codescribe",
                                         "Silero VAD is ready",
                                     );
                                 }
@@ -674,7 +674,7 @@ async fn initialize_daemon_runtime() -> Result<()> {
                                 #[cfg(target_os = "macos")]
                                 {
                                     codescribe::os::notifications::notify(
-                                        "CodeScribe",
+                                        "Codescribe",
                                         &format!("Silero VAD download failed: {e}"),
                                     );
                                 }
@@ -710,7 +710,7 @@ async fn initialize_daemon_runtime() -> Result<()> {
 
     if let Err(e) = hotkeys::install_global_hotkey_manager(tx) {
         eprintln!(
-            "Hotkeys waiting on permissions ({}). Grant Accessibility + Input Monitoring and CodeScribe will reinitialize them live.",
+            "Hotkeys waiting on permissions ({}). Grant Accessibility + Input Monitoring and Codescribe will reinitialize them live.",
             e
         );
     }
@@ -740,7 +740,7 @@ async fn initialize_daemon_runtime() -> Result<()> {
     });
 
     let _ = tray::update_tray_status(tray::TrayStatus::Idle);
-    info!("CodeScribe daemon ready");
+    info!("Codescribe daemon ready");
 
     Ok(())
 }
@@ -962,7 +962,7 @@ async fn dispatch_hotkey_event(
             tracing::warn!("Hotkey double-tap blocked: {}", body);
             let _ =
                 codescribe::tray::update_tray_status(codescribe::tray::TrayStatus::HotkeyConflict);
-            codescribe::os::notifications::notify("CodeScribe hotkey conflict", &body);
+            codescribe::os::notifications::notify("Codescribe hotkey conflict", &body);
         }
     }
 

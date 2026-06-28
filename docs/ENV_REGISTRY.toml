@@ -1,6 +1,6 @@
 # ENV_REGISTRY.toml - Central registry of all environment variables
 #
-# SINGLE SOURCE OF TRUTH for CodeScribe environment configuration.
+# SINGLE SOURCE OF TRUTH for Codescribe environment configuration.
 # This file is validated by pre-commit hooks - any new env var MUST be added here.
 #
 # Schema per variable:
@@ -12,7 +12,7 @@
 #   description = "..."         # Human-readable description
 #   deprecated = "NEW_VAR"      # If deprecated, points to replacement
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 [meta]
 version = "1.0.0"
@@ -212,11 +212,11 @@ category = "stt"
 description = "Whisper model id for cloud/multipart STT"
 
 [vars.WHISPER_LANGUAGE]
-default = "pl"
+default = "auto"
 type = "string"
-reload = "restart"
+reload = "hot"
 category = "stt"
-description = "Whisper transcription language code"
+description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
 
 [vars.CODESCRIBE_WHISPER_INITIAL_PROMPT]
 default = ""
@@ -457,7 +457,7 @@ default = "0"
 type = "bool"
 reload = "hot"
 category = "llm"
-description = "Override settings.json to wrap pasted dictation transcripts in an epistemic CodeScribe tag"
+description = "Override settings.json to wrap pasted dictation transcripts in an epistemic Codescribe tag"
 
 [vars.CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE]
 default = "<codescribe mode=\"{mode}\" lang=\"{lang}\">\\n{text}\\n</codescribe>"
@@ -707,7 +707,7 @@ default = "0"
 type = "bool"
 reload = "restart"
 category = "ui"
-description = "Start CodeScribe at login"
+description = "Start Codescribe at login"
 
 [vars.HOLD_INDICATOR]
 default = "1"

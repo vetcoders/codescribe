@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Hardened runtime entitlements for CodeScribe distribution outside the App Store. -->
+    <!-- Hardened runtime entitlements for Codescribe distribution outside the App Store. -->
     <!--                                                                                  -->
     <!-- SINGLE SOURCE OF TRUTH: this is the only entitlements file. It is referenced by  -->
     <!-- the codesign step in Makefile (CODESCRIBE_ENTITLEMENTS, install-app target) and  -->

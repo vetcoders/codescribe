@@ -1,6 +1,6 @@
-# CodeScribe — Konfiguracja środowiska (ENV)
+# Codescribe — Konfiguracja środowiska (ENV)
 
-Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez CodeScribe. Układ jest „dla weterynarza”:
+Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez codescribe. Układ jest „dla weterynarza”:
 
 1. co jest domyślne,
 2. co jest wymagane,
@@ -15,7 +15,7 @@ Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez Code
 
 > Źródło prawdy: zmienne używane w kodzie (runtime + build + testy). Nie ma tu żadnych „nowych” envów.
 >
-> **Uwaga:** GUI zapisuje „regularne” ustawienia do `~/Library/Application Support/CodeScribe/settings.json`,
+> **Uwaga:** GUI zapisuje „regularne” ustawienia do `~/Library/Application Support/Codescribe/settings.json`,
 > a sekrety trafiają do **macOS Keychain**. `.env` jest tylko dla power‑userów i override’ów.
 >
 > **Hotkeys truth:** per-mode bindings żyją już tylko w `settings.json` (`Settings → Modes & Shortcuts`).
@@ -159,10 +159,12 @@ i runtime nie może znaleźć Whispera przez cache / config:
 ### Transkrypcja (local/cloud)
 
 - `USE_LOCAL_STT` (RESTART NEEDED)
-- `LOCAL_MODEL`, `WHISPER_MODEL`, `WHISPER_LANGUAGE` (RESTART NEEDED)
+- `LOCAL_MODEL`, `WHISPER_MODEL` (RESTART NEEDED)
+- `WHISPER_LANGUAGE` (HOT RELOADED; default `auto`; applies to the next capture. `auto` leaves language detection to Whisper for mixed-language dictation.)
 - `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
+- `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
 
 ### Streaming / VAD / buffer
 
@@ -178,6 +180,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `CODESCRIBE_STREAM_SIMILARITY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_NOVELTY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_DISABLE_EMBEDDINGS` (HOT RELOADED)
+- `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności embedder MiniLM jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
 
 ### LLM (formatting/assistive)
 
@@ -289,8 +292,8 @@ make test-sse
 
 ```
 USE_LOCAL_STT=1
-# (optional) język:
-# WHISPER_LANGUAGE=pl
+# (optional) język/hint; auto is the default for mixed-language dictation:
+# WHISPER_LANGUAGE=auto
 ```
 
 **2) Local + AI formatting**

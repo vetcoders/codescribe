@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Common issues and solutions for CodeScribe.
+Common issues and solutions for codescribe.
 
 ---
 
@@ -10,14 +10,14 @@ Common issues and solutions for CodeScribe.
 
 1. ✅ Check Accessibility permission is enabled
 2. ✅ Check Microphone permission is enabled
-3. ✅ Restart CodeScribe
+3. ✅ Restart codescribe
 4. ✅ Check menu bar icon is visible (not hidden by notch)
 
 ---
 
 ## Startup Issues
 
-### CodeScribe doesn't launch
+### Codescribe doesn't launch
 
 **Symptoms**: Nothing happens when opening the app.
 
@@ -61,18 +61,18 @@ Common issues and solutions for CodeScribe.
 1. **Check Accessibility**:
 
    - System Settings → Privacy & Security → Accessibility
-   - Ensure CodeScribe is in the list and enabled
+   - Ensure codescribe is in the list and enabled
    - If present but not working, remove and re-add
 
 2. **Check Input Monitoring**:
 
    - System Settings → Privacy & Security → Input Monitoring
-   - Enable CodeScribe
+   - Enable codescribe
 
 3. **Restart after permission change**:
    ```bash
    pkill -9 codescribe
-   open -a CodeScribe
+   open -a codescribe
    ```
 
 ### Microphone not recording
@@ -84,7 +84,7 @@ Common issues and solutions for CodeScribe.
 1. **Check Microphone permission**:
 
    - System Settings → Privacy & Security → Microphone
-   - Enable CodeScribe
+   - Enable codescribe
 
 2. **Check audio input**:
 
@@ -147,7 +147,7 @@ Common issues and solutions for CodeScribe.
 
 3. **Repetition loops** ("word, word, word..."):
    - This is a known Whisper issue
-   - CodeScribe auto-detects and cleans these
+   - Codescribe auto-detects and cleans these
    - If persistent, try shorter recordings
 
 ### Mixed language issues
@@ -224,17 +224,17 @@ Common issues and solutions for CodeScribe.
 
 1. This is normal during transcription
 2. Should drop after recording stops
-3. If persistent, restart CodeScribe
+3. If persistent, restart codescribe
 
 ### Memory usage
 
-**Symptoms**: CodeScribe using several GB of RAM.
+**Symptoms**: Codescribe using several GB of RAM.
 
 **Normal**: Whisper model needs ~2GB.
 
 **If excessive (>4GB)**:
 
-1. Restart CodeScribe
+1. Restart codescribe
 2. Check for memory leaks with Activity Monitor
 3. Report issue with `codescribe -v` logs
 
@@ -269,7 +269,7 @@ codescribe -v
 
 | Error                          | Cause               | Fix                      |
 | ------------------------------ | ------------------- | ------------------------ |
-| `Failed to initialize Whisper` | Model not found     | Reinstall CodeScribe     |
+| `Failed to initialize Whisper` | Model not found     | Reinstall codescribe     |
 | `Microphone access denied`     | Permission missing  | Grant in System Settings |
 | `Backend unavailable`          | Health check failed | Check LLM configuration  |
 | `Empty transcript`             | No audio captured   | Check microphone         |
@@ -281,7 +281,7 @@ codescribe -v
 If all else fails, complete reset:
 
 ```bash
-# Stop CodeScribe
+# Stop codescribe
 pkill -9 codescribe
 
 # Backup config
@@ -295,7 +295,7 @@ codescribe --config
 rm -rf ~/.codescribe/logs/*
 
 # Restart
-open -a CodeScribe
+open -a codescribe
 ```
 
 ---
@@ -305,17 +305,17 @@ open -a CodeScribe
 If troubleshooting doesn't solve your issue:
 
 1. **Collect logs**: `codescribe -v 2>&1 | tee debug.log`
-2. **Note your setup**: macOS version, chip type, CodeScribe version
-3. **Open issue**: [GitHub Issues](https://github.com/VetCoders/CodeScribe/issues)
+2. **Note your setup**: macOS version, chip type, Codescribe version
+3. **Open issue**: [GitHub Issues](https://github.com/vetcoders/codescribe/issues)
 
 Include in your report:
 
 - macOS version (System Settings → General → About)
 - Chip (M1/M2/M3/Intel)
-- CodeScribe version (`codescribe --version`)
+- Codescribe version (`codescribe --version`)
 - Relevant log output
 - Steps to reproduce
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

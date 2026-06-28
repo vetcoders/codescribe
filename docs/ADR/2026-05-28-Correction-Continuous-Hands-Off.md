@@ -23,7 +23,7 @@ Oba problemy istnieją równolegle. Nie da się dobrze rozwiązać drugiego, dop
 
 ## Pierwotna intencja (udokumentowana)
 
-Z dokumentacji projektu ze stycznia 2026 (kiedy apka nazywała się VistaScribe):
+Z dokumentacji projektu ze stycznia 2026 (pod wcześniejszą nazwą):
 
 > Hands-off mode allows you to dictate without holding any keys. **This is ideal for longer dictation sessions**.
 

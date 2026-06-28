@@ -1,13 +1,13 @@
 // codescribe-stt-bridge.swift
 //
-// SpeechAnalyzer bridge for CodeScribe:
+// SpeechAnalyzer bridge for Codescribe:
 // - Reads one JSON request from stdin
 // - Emits one JSON response to stdout
 //
 // Build example:
 //   swiftc -O -o codescribe-stt-bridge core/stt/apple_stt/codescribe-stt-bridge.swift
 //
-// Created by M&K (c)2026 VetCoders
+// Created by Vetcoders (c)2026
 
 import AVFoundation
 import Dispatch

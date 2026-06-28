@@ -7,7 +7,7 @@
 //! Run with:
 //!   cargo test --test e2e_settings_lifecycle
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use codescribe::config::{Config, ShortcutBinding, UserSettings, WorkMode};
 use serial_test::serial;
@@ -229,7 +229,7 @@ fn test_settings_use_local_stt_false_roundtrips_through_config_load() {
 fn test_settings_language_persistence() {
     let _tmp = setup_test_env();
 
-    for lang in ["pl", "en"] {
+    for lang in ["auto", "pl", "en"] {
         let config = Config::load();
         config.save_to_env("WHISPER_LANGUAGE", lang).expect("save");
         let reloaded = Config::load();

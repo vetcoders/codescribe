@@ -1,6 +1,6 @@
 # Apple SpeechAnalyzer STT Bridge
 
-This directory contains the Apple STT backend for CodeScribe:
+This directory contains the Apple STT backend for codescribe:
 
 - `mod.rs` — Rust `TranscriptionAdapter` implementation + subprocess bridge client.
 - `codescribe-stt-bridge.swift` — Swift bridge executable using `SpeechAnalyzer` / `SpeechTranscriber`.
@@ -31,4 +31,4 @@ export CODESCRIBE_APPLE_STT_BRIDGE=/absolute/path/to/codescribe-stt-bridge
 - `CODESCRIBE_APPLE_STT_LOCALE=pl-PL` (optional; defaults to `pl-PL`)
 - `CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD=1` (allow asset install via `AssetInventory`)
 
-On unsupported hosts (non-macOS or macOS < 26), CodeScribe logs a warning and falls back to Candle Whisper.
+On unsupported hosts (non-macOS or macOS < 26), Codescribe logs a warning and falls back to Candle Whisper.

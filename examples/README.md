@@ -1,6 +1,6 @@
-# CodeScribe Examples
+# Codescribe Examples
 
-This directory contains practical examples demonstrating how to use the CodeScribe audio recording module.
+This directory contains practical examples demonstrating how to use the codescribe audio recording module.
 
 ## Available Examples
 
@@ -51,4 +51,4 @@ VAD internals are hardcoded in `core/vad/config.rs` (Silero defaults).
 
 ---
 
-Created by M&K (c)2025 The LibraxisAI Team
+Created by vetcoders (c)2025

@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a reproducible defect in CodeScribe
+about: Report a reproducible defect in codescribe
 title: "[bug] "
 labels: ["bug", "triage"]
 assignees: []
@@ -12,7 +12,7 @@ Describe the defect in one or two sentences.
 
 ## Environment
 
-- CodeScribe version:
+- Codescribe version:
 - macOS version:
 - Device (Apple Silicon model):
 - Install mode (`make install`, `.app`, other):

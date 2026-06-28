@@ -1,5 +1,5 @@
 #!/bin/bash
-# CodeScribe — Mac App Store (MAS) readiness preflight
+# Codescribe — Mac App Store (MAS) readiness preflight
 #
 # READ-ONLY. Inspects the repo for state that is known-incompatible with Mac App
 # Store distribution and reports each item as a blocker (P0), a warning (P1), or
@@ -16,7 +16,7 @@
 #
 # Exit code: 0 = no P0 blockers found, 1 = at least one P0 blocker.
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -uo pipefail
 
@@ -41,7 +41,7 @@ warn()    { yellow "  [P1] $1"; P1=$((P1 + 1)); }
 ok()      { green "  [OK] $1"; }
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  CodeScribe — Mac App Store readiness preflight (read-only)"
+echo "  Codescribe — Mac App Store readiness preflight (read-only)"
 echo "═══════════════════════════════════════════════════════════"
 
 # 1. App Sandbox — REQUIRED for MAS, intentionally absent today.

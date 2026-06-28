@@ -1,6 +1,6 @@
 # Public Release Checklist
 
-CodeScribe is close enough to go public only when the public surfaces tell the same truth as the code.
+Codescribe is close enough to go public only when the public surfaces tell the same truth as the code.
 
 Current source version: `0.12.2`
 
@@ -9,7 +9,7 @@ Current source version: `0.12.2`
 - [x] GitHub repository visibility is intentionally changed from private to public.
 - [x] GitHub repository description matches the product:
       `Native macOS tray dictation and assistive voice overlay with local Whisper live preview.`
-- [x] GitHub repository homepage points to `https://vetcoders.github.io/CodeScribe/`.
+- [x] GitHub repository homepage points to `https://vetcoders.github.io/codescribe/`.
 - [x] GitHub topics include launch metadata for macOS dictation, speech-to-text, Whisper, Rust, and voice-agent positioning.
 - [ ] GitHub license display is checked after public visibility. If GitHub still reports Apache-2.0, the README and release notes must explicitly state that the active license is `FSL-1.1-ALv2`.
 - [ ] GitHub Actions release secrets are configured:
@@ -24,8 +24,8 @@ Current source version: `0.12.2`
 - [ ] The hardened release workflow in this branch has landed on `main`; do not tag from the old `main` workflow that still builds an ad-hoc `make dmg` artifact.
 - [ ] Tag `v0.12.2` is created only after the release notes and signing secrets are ready.
 - [ ] The `Release DMG` workflow produces both release variants:
-  - `CodeScribe_0.12.2.dmg` with embedded Silero + embedder and runtime Whisper cache/download.
-  - `CodeScribe_0.12.2_full.dmg` with embedded Silero + embedder + Whisper.
+  - `Codescribe_0.12.2.dmg` with embedded Silero + embedder and runtime Whisper cache/download.
+  - `Codescribe_0.12.2_full.dmg` with embedded Silero + embedder + Whisper.
 - [ ] Both DMGs are Developer ID signed, notarized, stapled, and pass Gatekeeper on a machine outside the developer environment.
 - [ ] Landing page primary CTA does not promise a DMG until a current notarized DMG exists.
 - [ ] README install section names source install as the guaranteed path until the current DMG is verified.

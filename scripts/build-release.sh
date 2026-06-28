@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build CodeScribe CLI release bundle
-# Created by M&K (c)2026 VetCoders
+# Build Codescribe CLI release bundle
+# Created by Vetcoders (c)2026
 
 set -e
 
-echo "=== Building CodeScribe Release ==="
+echo "=== Building Codescribe Release ==="
 
 # Get target triple
 TARGET=$(rustc -vV | grep host | cut -d' ' -f2)

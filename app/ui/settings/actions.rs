@@ -37,13 +37,15 @@ pub(super) extern "C" fn on_language_changed(_this: &Object, _cmd: objc::runtime
     unsafe {
         let idx: isize = msg_send![sender, indexOfSelectedItem];
         let lang = match idx {
-            0 => "pl",
-            1 => "en",
-            _ => "pl",
+            0 => "auto",
+            1 => "pl",
+            2 => "en",
+            _ => "auto",
         };
         info!("Settings: language -> {}", lang);
         let config = Config::load();
         let _ = config.save_to_env("WHISPER_LANGUAGE", lang);
+        sync_runtime_config_via_ipc();
     }
 }
 

@@ -78,7 +78,7 @@ pub enum DoubleTapBlockReason {
 impl DoubleTapBlockReason {
     pub fn message(self) -> &'static str {
         match self {
-            Self::BindingDisabled => "that gesture is not assigned to a CodeScribe mode",
+            Self::BindingDisabled => "that gesture is not assigned to a Codescribe mode",
             Self::ModifierComboActive => "another modifier or hold gesture is active",
         }
     }

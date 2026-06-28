@@ -914,7 +914,7 @@ impl Config {
             {
                 output_lines.push(String::new()); // blank line before new section
             }
-            output_lines.push("# Added by CodeScribe".to_string());
+            output_lines.push("# Added by Codescribe".to_string());
 
             let mut keys: Vec<_> = remaining_vars.keys().collect();
             keys.sort();

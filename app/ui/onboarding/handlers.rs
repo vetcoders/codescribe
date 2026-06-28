@@ -23,7 +23,7 @@ static WINDOW_DELEGATE_CLASS: OnceLock<&'static Class> = OnceLock::new();
 pub(super) fn action_handler_class() -> &'static Class {
     ACTION_HANDLER_CLASS.get_or_init(|| unsafe {
         let superclass = Class::get("NSObject").expect("NSObject class missing");
-        let mut decl = ClassDecl::new("CodeScribeOnboardingActionHandler", superclass)
+        let mut decl = ClassDecl::new("CodescribeOnboardingActionHandler", superclass)
             .expect("Failed to create onboarding action handler class");
 
         decl.add_method(
@@ -58,7 +58,7 @@ pub(super) fn action_handler_class() -> &'static Class {
 pub(super) fn window_delegate_class() -> &'static Class {
     WINDOW_DELEGATE_CLASS.get_or_init(|| unsafe {
         let superclass = Class::get("NSObject").expect("NSObject class missing");
-        let mut decl = ClassDecl::new("CodeScribeOnboardingWindowDelegate", superclass)
+        let mut decl = ClassDecl::new("CodescribeOnboardingWindowDelegate", superclass)
             .expect("Failed to create onboarding window delegate class");
         decl.add_method(
             sel!(windowShouldClose:),
@@ -101,10 +101,10 @@ extern "C" fn on_language_selected(_this: &Object, _sel: Sel, sender: Id) {
     unsafe {
         let tag: isize = msg_send![sender, tag];
         let mut state = ONBOARDING_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        state.language = if tag == 1 {
-            LanguageChoice::Polish
-        } else {
-            LanguageChoice::English
+        state.language = match tag {
+            1 => LanguageChoice::English,
+            2 => LanguageChoice::Polish,
+            _ => LanguageChoice::Auto,
         };
     }
     render_current_step();

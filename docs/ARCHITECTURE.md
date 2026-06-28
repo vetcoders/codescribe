@@ -1,6 +1,6 @@
-# CodeScribe Architecture
+# Codescribe Architecture
 
-> Created by M&K (c)2026 VetCoders
+> Created by vetcoders (c)2026
 >
 > **2026-05-26:** transcription pipeline is now layered. See
 > [ADR — Layered Incremental Transcription Pipeline](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md)
@@ -106,7 +106,7 @@ flowchart TB
 ## File Structure
 
 ```
-CodeScribe/
+Codescribe/
 ├── core/                         # Core library (portable, no macOS deps)
 │   ├── stt/whisper/              # Embedded Whisper engine
 │   ├── audio/                    # Recorder + StreamingRecorder
@@ -156,10 +156,7 @@ CodeScribe/
 │   │   └── privacy.md
 │   ├── ARCHITECTURE.md           # This file
 │   ├── WHISPER_LIVE.md           # Streaming transcription
-│   ├── TEAM_SETUP.md             # Developer setup
-│   └── future/                   # Aspirational docs
-│       ├── ARCHITECTURE_VISION.md
-│       └── FEASIBILITY_ANALYSIS.md
+│   └── TEAM_SETUP.md             # Developer setup
 │
 └── tests/                        # Integration tests
 ```
@@ -235,7 +232,7 @@ match (hotkey, flags) {
 | IPC server (runtime interface)               | ✅     |
 | Stream postprocess (semantic gating)         | ✅     |
 | Quality loop + report                        | ✅     |
-| CodeScribe Core separation                   | ✅     |
+| Codescribe Core separation                   | ✅     |
 | VAD (auto-stop on silence)                   | ✅     |
 | Transcription overlay                        | ✅     |
 | Tauri GUI (future)                           | 📋     |
@@ -257,9 +254,7 @@ model:
 - [`guide/README.md`](guide/README.md) — User documentation
 - [`WHISPER_LIVE.md`](WHISPER_LIVE.md) — Runtime Whisper + streaming transcription
 - [`TEAM_SETUP.md`](TEAM_SETUP.md) — Developer setup guide
-- [`BACKLOG.md`](BACKLOG.md) — Feature backlog
-- [`future/ARCHITECTURE_VISION.md`](future/ARCHITECTURE_VISION.md) — Libraxis Qube Protocol vision
 
 ---
 
-**Made with ⌜ CodeScribe ⌟ by Maciej & Monika + Klaudiusz (AI) (c) 2024-2026**
+**Made with ⌜ Codescribe ⌟ by vetcoders (c) 2024-2026**

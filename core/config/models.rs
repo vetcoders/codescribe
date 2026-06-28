@@ -365,7 +365,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let hf_cache = temp_dir.path().join("hf-cache");
         let snapshot = hf_cache
-            .join("models--VetCoders--custom-whisper")
+            .join("models--Vetcoders--custom-whisper")
             .join("snapshots")
             .join("abc123");
 
@@ -379,7 +379,7 @@ mod tests {
         let _hf_cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &hf_cache);
 
         let resolved =
-            resolve_runtime_whisper_model_path(Some("VetCoders/custom-whisper")).unwrap();
+            resolve_runtime_whisper_model_path(Some("Vetcoders/custom-whisper")).unwrap();
         assert_eq!(resolved, snapshot);
     }
 
