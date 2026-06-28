@@ -6,7 +6,7 @@ use codescribe_core::{audio, stt::whisper, vad};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// Transcribe an existing local audio file through CodeScribe's shared Whisper
+/// Transcribe an existing local audio file through Codescribe's shared Whisper
 /// singleton. Non-embedded builds need the normal runtime model fallback to be
 /// available, typically via `CODESCRIBE_MODEL_PATH`.
 pub fn register(registry: &mut ToolRegistry) {

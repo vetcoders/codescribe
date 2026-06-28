@@ -1,4 +1,4 @@
-//! Type definitions for CodeScribe configuration.
+//! Type definitions for Codescribe configuration.
 //!
 //! Contains all enums and the main Config struct.
 
@@ -247,7 +247,7 @@ impl FromStr for OverlayPositionMode {
     }
 }
 
-/// CodeScribe configuration structure.
+/// Codescribe configuration structure.
 ///
 /// This struct contains all configuration options for the app.
 /// Values are loaded from .env file (single source of truth).

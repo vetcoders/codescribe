@@ -1,4 +1,4 @@
-//! Default value functions for CodeScribe configuration.
+//! Default value functions for Codescribe configuration.
 //!
 //! These are used by serde for deserialization defaults.
 

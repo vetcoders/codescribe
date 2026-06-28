@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
     let audio_file = audio_file.ok_or_else(|| anyhow::anyhow!("No audio file specified"))?;
 
     println!("═══════════════════════════════════════════════════════════");
-    println!("  CodeScribe Full Pipeline Demo");
+    println!("  Codescribe Full Pipeline Demo");
     println!("═══════════════════════════════════════════════════════════");
     println!("  Audio: {}", audio_file.display());
     println!("  Model: {}", model.display());

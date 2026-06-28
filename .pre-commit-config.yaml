@@ -1,8 +1,8 @@
-# Pre-commit hooks for CodeScribe (Pure Rust)
+# Pre-commit hooks for Codescribe (Pure Rust)
 # Install: pipx install pre-commit && pre-commit install --hook-type pre-commit --hook-type pre-push
 # Run: pre-commit run --all-files
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 minimum_pre_commit_version: "3.5.0"
 

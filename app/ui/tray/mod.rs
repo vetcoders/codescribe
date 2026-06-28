@@ -1,4 +1,4 @@
-//! System tray icon and menu for CodeScribe
+//! System tray icon and menu for Codescribe
 //!
 //! Provides visual status feedback and menu controls via macOS menu bar icon.
 //! Uses tao event loop for proper macOS integration.
@@ -301,18 +301,18 @@ mod tests {
 
     #[test]
     fn test_status_tooltips() {
-        assert_eq!(TrayStatus::Starting.tooltip(), "CodeScribe - Starting...");
-        assert_eq!(TrayStatus::Idle.tooltip(), "CodeScribe - Ready");
-        assert_eq!(TrayStatus::Listening.tooltip(), "CodeScribe - Recording...");
-        assert_eq!(TrayStatus::Thinking.tooltip(), "CodeScribe - Processing...");
-        assert_eq!(TrayStatus::Success.tooltip(), "CodeScribe - Done!");
+        assert_eq!(TrayStatus::Starting.tooltip(), "Codescribe - Starting...");
+        assert_eq!(TrayStatus::Idle.tooltip(), "Codescribe - Ready");
+        assert_eq!(TrayStatus::Listening.tooltip(), "Codescribe - Recording...");
+        assert_eq!(TrayStatus::Thinking.tooltip(), "Codescribe - Processing...");
+        assert_eq!(TrayStatus::Success.tooltip(), "Codescribe - Done!");
         assert_eq!(
             TrayStatus::Thermal.tooltip(),
-            "CodeScribe - Thermal throttling"
+            "Codescribe - Thermal throttling"
         );
         assert_eq!(
             TrayStatus::HotkeyConflict.tooltip(),
-            "CodeScribe - Hotkey conflict"
+            "Codescribe - Hotkey conflict"
         );
     }
 

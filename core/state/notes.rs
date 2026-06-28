@@ -5,7 +5,7 @@
 //! - Default location: `~/.codescribe/notes/YYYY-MM-DD.md`
 //! - Override location: `CODESCRIBE_NOTES_DIR=/some/path`
 //!
-//! The host app (CodeScribe/Vista) decides UX and trigger; this module is just persistence.
+//! The host app (Codescribe) decides UX and trigger; this module is just persistence.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};

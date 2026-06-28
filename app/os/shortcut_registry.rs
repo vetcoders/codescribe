@@ -1,4 +1,4 @@
-//! macOS keyboard shortcut registry conflict checks for CodeScribe hotkeys.
+//! macOS keyboard shortcut registry conflict checks for Codescribe hotkeys.
 //!
 //! Reads the system SymbolicHotkeys registry and reports potential collisions
 //! with our modifier-only gestures (Fn/Ctrl/Option).
@@ -55,7 +55,7 @@ pub fn fn_tap_intercept_note(settings: &UserSettings) -> Option<&'static str> {
     }
 
     fn_tap_symbols_enabled().then_some(
-        "Fn/Globe tap is configured by macOS. CodeScribe Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
+        "Fn/Globe tap is configured by macOS. Codescribe Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
     )
 }
 
@@ -226,7 +226,7 @@ fn gesture_conflicts_with_symbolic(gesture: HotkeyGesture, signature: SymbolicSi
     match gesture {
         HotkeyGesture::HoldFn => {
             // macOS symbolic IDs 160 and 164 are tap/double-tap Globe/Fn actions
-            // (Emoji & Symbols / Dictation). CodeScribe's HoldFn binding listens
+            // (Emoji & Symbols / Dictation). Codescribe's HoldFn binding listens
             // for a held modifier gesture, so reporting those tap-only shortcuts as
             // "Hold Fn" conflicts is noisy and misleading.
             signature.id != 160

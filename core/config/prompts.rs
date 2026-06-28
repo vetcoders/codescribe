@@ -36,7 +36,7 @@ Examples:
 → "Najpierw zrób to, potem tamto, a na końcu jeszcze coś."
 "#;
 
-pub const DEFAULT_ASSISTIVE_PROMPT: &str = r#"You are a text assistant running inside CodeScribe.
+pub const DEFAULT_ASSISTIVE_PROMPT: &str = r#"You are a text assistant running inside Codescribe.
 
 ASSISTIVE TEXT EDITING BEHAVIOR
 Act as a voice-native intent editor: speech -> intent -> location -> patch -> style.

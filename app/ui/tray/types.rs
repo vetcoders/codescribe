@@ -9,7 +9,7 @@ use tray_icon::Icon;
 
 use crate::tray::icons::{create_fallback_icon, load_custom_icon_with_glyph};
 
-/// Status of the CodeScribe system, reflected in tray icon
+/// Status of the Codescribe system, reflected in tray icon
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayStatus {
     /// App process is visible, but runtime initialization is still in progress.
@@ -34,14 +34,14 @@ impl TrayStatus {
     /// Get the human-readable tooltip for this status
     pub fn tooltip(&self) -> String {
         match self {
-            TrayStatus::Starting => "CodeScribe - Starting...".to_string(),
-            TrayStatus::Idle => "CodeScribe - Ready".to_string(),
-            TrayStatus::Listening => "CodeScribe - Recording...".to_string(),
-            TrayStatus::Thinking => "CodeScribe - Processing...".to_string(),
-            TrayStatus::Success => "CodeScribe - Done!".to_string(),
-            TrayStatus::Error => "CodeScribe - Backend unavailable!".to_string(),
-            TrayStatus::Thermal => "CodeScribe - Thermal throttling".to_string(),
-            TrayStatus::HotkeyConflict => "CodeScribe - Hotkey conflict".to_string(),
+            TrayStatus::Starting => "Codescribe - Starting...".to_string(),
+            TrayStatus::Idle => "Codescribe - Ready".to_string(),
+            TrayStatus::Listening => "Codescribe - Recording...".to_string(),
+            TrayStatus::Thinking => "Codescribe - Processing...".to_string(),
+            TrayStatus::Success => "Codescribe - Done!".to_string(),
+            TrayStatus::Error => "Codescribe - Backend unavailable!".to_string(),
+            TrayStatus::Thermal => "Codescribe - Thermal throttling".to_string(),
+            TrayStatus::HotkeyConflict => "Codescribe - Hotkey conflict".to_string(),
         }
     }
 
@@ -59,7 +59,7 @@ impl TrayStatus {
         }
     }
 
-    /// Create an icon from this status using the custom CodeScribe logo
+    /// Create an icon from this status using the custom Codescribe logo
     /// Falls back to simple circle if custom icon fails
     pub fn to_icon(self) -> Result<Icon> {
         self.to_icon_with_glyph(true)

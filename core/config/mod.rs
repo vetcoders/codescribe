@@ -1,4 +1,4 @@
-//! Configuration module for CodeScribe Rust app.
+//! Configuration module for Codescribe Rust app.
 //!
 //! Manages persistent settings with a tiered truth model:
 //! 1. Code defaults define zero-state runtime behaviour
@@ -6,7 +6,7 @@
 //! 3. `.env` is optional and only used for env-managed / developer overrides
 //!
 //! Runtime/user settings are stored under:
-//! - `~/Library/Application Support/CodeScribe/settings.json` on macOS
+//! - `~/Library/Application Support/Codescribe/settings.json` on macOS
 //! - `~/.codescribe/.env` only when an optional power-user env file exists
 //!
 //! ## Module Structure

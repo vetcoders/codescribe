@@ -286,7 +286,7 @@ fn write_analysis_files(output_dir: &Path, analysis: &LoopAnalysis) -> Result<()
 
 fn render_analysis_markdown(analysis: &LoopAnalysis) -> String {
     let mut out = String::new();
-    out.push_str("# CodeScribe Quality Loop Analysis\n\n");
+    out.push_str("# Codescribe Quality Loop Analysis\n\n");
     out.push_str(&format!("Generated: {}\n\n", analysis.generated_at));
     out.push_str(&format!("- Current report: {}\n", analysis.current_report));
     if let Some(baseline) = &analysis.baseline_report {
@@ -1359,7 +1359,7 @@ mod tests {
 
     #[test]
     fn test_normalize_tokens_punctuation_to_space() {
-        let tokens = normalize_tokens("CodeScribe's test-case, version 2.0!");
+        let tokens = normalize_tokens("Codescribe's test-case, version 2.0!");
         assert_eq!(
             tokens,
             vec!["codescribe", "s", "test", "case", "version", "2", "0"]
@@ -1784,7 +1784,7 @@ mod tests {
             }],
         };
         let md = render_analysis_markdown(&analysis);
-        assert!(md.contains("# CodeScribe Quality Loop Analysis"));
+        assert!(md.contains("# Codescribe Quality Loop Analysis"));
         assert!(md.contains("Baseline report"));
         assert!(md.contains("## Regressions"));
         assert!(md.contains("## Updates"));

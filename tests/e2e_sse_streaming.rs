@@ -5,7 +5,7 @@
 //!
 //! Run: make test-sse
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use codescribe::ai_formatting;
 use serial_test::serial;
@@ -89,7 +89,7 @@ async fn e2e_sse_streaming_real_formatting() {
         std::env::var("LLM_FORMATTING_MODEL").unwrap_or_default()
     );
 
-    let input = "cześć jestem klaudiusz i testuję formatowanie tekstu bez interpunkcji";
+    let input = "cześć jestem Vetcoders i testuję formatowanie tekstu bez interpunkcji";
     eprintln!("Input:  {}", input);
 
     let result = ai_formatting::format_text(input, Some("pl"), false).await;

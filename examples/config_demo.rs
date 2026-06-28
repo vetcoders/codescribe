@@ -5,7 +5,7 @@
 use codescribe::config::{Config, Language};
 
 fn main() -> anyhow::Result<()> {
-    println!("CodeScribe Config Demo\n");
+    println!("Codescribe Config Demo\n");
 
     // Load config (from .env or defaults)
     let config = Config::load();

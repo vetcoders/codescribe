@@ -265,7 +265,7 @@ async fn run_daemon(args: Args) -> Result<()> {
         // Run with today's date filter, comparing local vs cloud
         let check_args = build_daemon_check_args(&args, date_filter);
 
-        match run_single_with_transcription(&check_args, LocalTranscriptionMode::CodeScribeIpc)
+        match run_single_with_transcription(&check_args, LocalTranscriptionMode::CodescribeIpc)
             .await
         {
             Ok(()) => {
@@ -360,7 +360,7 @@ fn count_mismatches_from_latest_report(config_dir: &Path) -> usize {
 /// Send macOS notification using osascript
 fn send_macos_notification(message: &str, subtitle: &str) {
     let script = format!(
-        r#"display notification "{}" with title "CodeScribe Quality" subtitle "{}""#,
+        r#"display notification "{}" with title "Codescribe Quality" subtitle "{}""#,
         message.replace('"', r#"\""#),
         subtitle.replace('"', r#"\""#)
     );

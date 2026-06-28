@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo test --test e2e_state_machine
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use codescribe::config::{Config, Language, ShortcutBinding, UserSettings, WorkMode};
 use serial_test::serial;

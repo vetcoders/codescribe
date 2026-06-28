@@ -4,7 +4,7 @@
 //! Requires a proper app bundle — bare binaries (e.g. `~/.cargo/bin/`) get a
 //! graceful no-op with a tracing::warn instead of an ObjC exception crash.
 //!
-//! Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+//! Vibecrafted with AI Agents by Vetcoders (c)2026 Vetcoders
 
 use objc::runtime::Class;
 use objc::{msg_send, sel, sel_impl};

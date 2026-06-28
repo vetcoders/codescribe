@@ -939,7 +939,7 @@ pub fn apply_dock_icon_visibility(_show_dock_icon: bool) {}
 
 /// Install a minimal AppKit main menu with standard Edit key equivalents.
 ///
-/// CodeScribe runs as an `LSUIElement` agent app (no visible menu bar). In this mode AppKit still
+/// Codescribe runs as an `LSUIElement` agent app (no visible menu bar). In this mode AppKit still
 /// relies on the app's `mainMenu` to resolve Command-key equivalents like Cmd+C / Cmd+V for text
 /// controls (field editor). Without it, selectable text in bubbles and the Agent input field can
 /// appear "dead" for copy/paste even though typing works.
@@ -971,7 +971,7 @@ pub fn install_basic_edit_menu() {
             let app_menu: Id = msg_send![ns_menu, alloc];
             let app_menu: Id = msg_send![app_menu, init];
 
-            let quit_title = ns_string("Quit CodeScribe");
+            let quit_title = ns_string("Quit Codescribe");
             let quit_key = ns_string("q");
             let quit_item: Id = msg_send![ns_menu_item, alloc];
             let quit_item: Id =

@@ -44,8 +44,8 @@ impl IpcClient {
 
         match response {
             IpcResponse::Message(text) => Ok(text),
-            IpcResponse::Error(message) => bail!("CodeScribe IPC transcription failed: {message}"),
-            other => bail!("Unexpected CodeScribe IPC response: {other:?}"),
+            IpcResponse::Error(message) => bail!("Codescribe IPC transcription failed: {message}"),
+            other => bail!("Unexpected Codescribe IPC response: {other:?}"),
         }
     }
 
@@ -54,40 +54,40 @@ impl IpcClient {
             .await
             .with_context(|| {
                 format!(
-                    "CodeScribe IPC unavailable at {}",
+                    "Codescribe IPC unavailable at {}",
                     self.socket_path.display()
                 )
             })?;
 
         let payload =
-            serde_json::to_string(&command).context("Failed to encode CodeScribe IPC command")?;
+            serde_json::to_string(&command).context("Failed to encode Codescribe IPC command")?;
         stream
             .write_all(payload.as_bytes())
             .await
-            .context("Failed to write CodeScribe IPC command")?;
+            .context("Failed to write Codescribe IPC command")?;
         stream
             .write_all(b"\n")
             .await
-            .context("Failed to terminate CodeScribe IPC command")?;
+            .context("Failed to terminate Codescribe IPC command")?;
         stream
             .flush()
             .await
-            .context("Failed to flush CodeScribe IPC command")?;
+            .context("Failed to flush Codescribe IPC command")?;
 
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         let bytes_read = timeout(self.response_timeout, reader.read_line(&mut line))
             .await
-            .map_err(|_| anyhow!("CodeScribe IPC response timed out"))?
-            .context("Failed to read CodeScribe IPC response")?;
+            .map_err(|_| anyhow!("Codescribe IPC response timed out"))?
+            .context("Failed to read Codescribe IPC response")?;
 
         if bytes_read == 0 {
-            bail!("CodeScribe IPC closed before sending a response");
+            bail!("Codescribe IPC closed before sending a response");
         }
 
         serde_json::from_str::<IpcResponse>(&line).with_context(|| {
             format!(
-                "Malformed CodeScribe IPC response from {}",
+                "Malformed Codescribe IPC response from {}",
                 self.socket_path.display()
             )
         })
@@ -116,7 +116,7 @@ mod tests {
         let message = err.to_string();
 
         assert!(
-            message.contains("CodeScribe IPC unavailable"),
+            message.contains("Codescribe IPC unavailable"),
             "expected unavailable error, got: {message}"
         );
     }

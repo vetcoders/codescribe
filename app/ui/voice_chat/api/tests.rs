@@ -272,7 +272,7 @@ fn drawer_entry_matches_query_does_not_leak_absolute_path() {
             id: "t_2026-04-21_h15b5t".to_string(),
         },
         path: PathBuf::from(
-            "/Users/tester/Library/Application Support/CodeScribe/threads/thread_t_2026-04-21_h15b5t.json",
+            "/Users/tester/Library/Application Support/Codescribe/threads/thread_t_2026-04-21_h15b5t.json",
         ),
         timestamp: SystemTime::now(),
         mode: TranscriptionMode::Assistive,
@@ -460,7 +460,7 @@ fn drawer_entry_title_compacts_absolute_path_titles() {
         false,
     );
     entry.title =
-        Some("/Users/tester/Library/Application Support/CodeScribe/thread.json".to_string());
+        Some("/Users/tester/Library/Application Support/Codescribe/thread.json".to_string());
 
     assert_eq!(drawer_entry_title(&entry), "thread.json");
 }
