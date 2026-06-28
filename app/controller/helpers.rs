@@ -489,6 +489,18 @@ pub(crate) fn friendly_tool_name(raw: &str) -> String {
         let mut parts = rest.splitn(2, "__");
         let server = parts.next().unwrap_or("");
         let tool = parts.next().unwrap_or(server);
+        // Trailing `__` with no tool segment (e.g. `mcp__github__`) yields an
+        // empty `tool`. Without this guard the formatter below emits a dangling
+        // " · Github" — the separator with nothing in front of it. Fall back to
+        // the bare server label; if even the server is empty (`mcp__`), prettify
+        // the raw rather than returning an empty string.
+        if tool.is_empty() {
+            return if server.is_empty() {
+                prettify_identifier(raw)
+            } else {
+                prettify_identifier(server)
+            };
+        }
         let tool_pretty = prettify_identifier(tool);
         if server.is_empty() || tool == server {
             return tool_pretty;
@@ -1299,6 +1311,15 @@ mod tests {
         assert_eq!(friendly_tool_name("read_file"), "Read File");
         // The raw mcp__ wire form must never survive verbatim.
         assert!(!friendly_tool_name("mcp__github__create_issue").contains("mcp__"));
+        // Trailing `__` leaves an empty tool segment (`mcp__github__`). This must
+        // collapse to the bare server label — never a dangling " · Github" with
+        // the separator floating in front of nothing.
+        assert_eq!(friendly_tool_name("mcp__github__"), "Github");
+        assert!(!friendly_tool_name("mcp__github__").contains('·'));
+        assert!(!friendly_tool_name("mcp__github__").starts_with(' '));
+        // Fully degenerate `mcp__` (no server, no tool) must not yield an empty
+        // label either.
+        assert!(!friendly_tool_name("mcp__").is_empty());
     }
 
     #[test]
