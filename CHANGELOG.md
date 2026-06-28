@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Public release hygiene** — release packaging, repository metadata, and public-facing docs are being aligned for a current `v0.12.x` public release.
 - **Dual DMG release variants** — release automation now builds a standard notarized DMG with embedded Silero + embedder and runtime Whisper cache/download, plus a `_full` notarized DMG with Whisper embedded.
-- **Memory footprint** — idle RAM cut from ~5 GB (peak 10 GB) to ~0.8 GB. The Whisper and MiniLM embedder models now unload from the GPU after a period of inactivity and reload transparently on next use (`CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS`, `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS`, default 300s, 0 disables).
+- **Memory footprint** — idle RAM cut from ~5 GB (peak ~10 GB) to ~0.8 GB. The Whisper and MiniLM embedder models now unload from GPU/host memory after a period of inactivity and reload transparently on next use (`CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS`, `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS`, default 300s, 0 disables).
 
 ### Fixed
 

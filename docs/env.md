@@ -163,7 +163,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
-- `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED; default `300`; `0` wyłącza) — po N s bezczynności silnik Whisper jest zwalniany z GPU i ładowany ponownie przy następnym użyciu
+- `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
 
 ### Streaming / VAD / buffer
 
@@ -179,7 +179,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `CODESCRIBE_STREAM_SIMILARITY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_NOVELTY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_DISABLE_EMBEDDINGS` (HOT RELOADED)
-- `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS` (HOT RELOADED; default `300`; `0` wyłącza) — po N s bezczynności embedder MiniLM jest zwalniany z GPU i ładowany ponownie przy następnym użyciu
+- `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności embedder MiniLM jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
 
 ### LLM (formatting/assistive)
 
