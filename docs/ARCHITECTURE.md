@@ -1,6 +1,6 @@
-# CodeScribe Architecture
+# Codescribe Architecture
 
-> Created by M&K (c)2026 VetCoders
+> Created by vetcoders (c)2026
 >
 > **2026-05-26:** transcription pipeline is now layered. See
 > [ADR — Layered Incremental Transcription Pipeline](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md)
@@ -106,7 +106,7 @@ flowchart TB
 ## File Structure
 
 ```
-CodeScribe/
+Codescribe/
 ├── core/                         # Core library (portable, no macOS deps)
 │   ├── stt/whisper/              # Embedded Whisper engine
 │   ├── audio/                    # Recorder + StreamingRecorder
@@ -232,7 +232,7 @@ match (hotkey, flags) {
 | IPC server (runtime interface)               | ✅     |
 | Stream postprocess (semantic gating)         | ✅     |
 | Quality loop + report                        | ✅     |
-| CodeScribe Core separation                   | ✅     |
+| Codescribe Core separation                   | ✅     |
 | VAD (auto-stop on silence)                   | ✅     |
 | Transcription overlay                        | ✅     |
 | Tauri GUI (future)                           | 📋     |
@@ -257,4 +257,4 @@ model:
 
 ---
 
-**Made with ⌜ CodeScribe ⌟ by Maciej & Monika + Klaudiusz (AI) (c) 2024-2026**
+**Made with ⌜ Codescribe ⌟ by vetcoders (c) 2024-2026**

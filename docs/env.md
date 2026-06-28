@@ -1,6 +1,6 @@
-# CodeScribe — Konfiguracja środowiska (ENV)
+# Codescribe — Konfiguracja środowiska (ENV)
 
-Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez CodeScribe. Układ jest „dla weterynarza”:
+Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez codescribe. Układ jest „dla weterynarza”:
 
 1. co jest domyślne,
 2. co jest wymagane,
@@ -15,7 +15,7 @@ Ten dokument porządkuje **wszystkie zmienne środowiskowe** używane przez Code
 
 > Źródło prawdy: zmienne używane w kodzie (runtime + build + testy). Nie ma tu żadnych „nowych” envów.
 >
-> **Uwaga:** GUI zapisuje „regularne” ustawienia do `~/Library/Application Support/CodeScribe/settings.json`,
+> **Uwaga:** GUI zapisuje „regularne” ustawienia do `~/Library/Application Support/Codescribe/settings.json`,
 > a sekrety trafiają do **macOS Keychain**. `.env` jest tylko dla power‑userów i override’ów.
 >
 > **Hotkeys truth:** per-mode bindings żyją już tylko w `settings.json` (`Settings → Modes & Shortcuts`).

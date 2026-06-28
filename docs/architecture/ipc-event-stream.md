@@ -1,7 +1,7 @@
 # IPC Event Stream Contract
 
 This document defines the runtime and IPC event contract used by host applications
-that embed the CodeScribe engine.
+that embed the codescribe engine.
 
 ## Contract Authority
 

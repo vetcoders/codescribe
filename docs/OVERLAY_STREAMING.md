@@ -1,12 +1,12 @@
 # Streaming Pipeline: Microphone → Overlay
 
-> Complete data flow documentation for CodeScribe's real-time speech-to-text pipeline.
+> Complete data flow documentation for codescribe's real-time speech-to-text pipeline.
 >
 > **Re-framed 2026-05-26** as the rendering surface for the
 > [Layered Incremental Transcription Pipeline (ADR)](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md).
 > The overlay is now a 5-layer incremental theatre — _NEVER rewrites from zero, always patches in place._
 >
-> Created by M&K (c)2026 VetCoders
+> Created by vetcoders (c)2026
 
 ## Layered rendering model (ADR 2026-05-26)
 
@@ -395,4 +395,4 @@ Displayed text (String, visible in overlay/bubble)
 
 ---
 
-_Vibecrafted with AI Agents by VetCoders (c)2026_
+_Vibecrafted with AI Agents by vetcoders (c)2026_

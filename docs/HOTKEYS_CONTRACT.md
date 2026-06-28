@@ -1,20 +1,20 @@
 # Hotkeys Contract
 
-> Technical specification for CodeScribe hotkey system.
+> Technical specification for codescribe hotkey system.
 >
-> Created by M&K (c)2026 VetCoders
+> Created by vetcoders (c)2026
 
 ---
 
 ## Overview
 
-CodeScribe uses a low-level CGEventTap to detect modifier-only keypresses on macOS.
+Codescribe uses a low-level CGEventTap to detect modifier-only keypresses on macOS.
 This approach avoids TSMGetInputSourceProperty crashes on macOS 26.2+ (Sequoia).
 
 Canonical hotkey configuration is **mode-first**:
 
 - `Dictation`, `Formatting`, and `Assistive` each own one `ShortcutBinding`
-- bindings are persisted in `~/Library/Application Support/CodeScribe/settings.json`
+- bindings are persisted in `~/Library/Application Support/Codescribe/settings.json`
 - legacy `.env` hotkey keys such as `HOLD_MODS` / `TOGGLE_TRIGGER` are no longer part of the runtime contract
 
 ```mermaid
@@ -361,7 +361,7 @@ When `HOLD_EXCLUSIVE=true` (default):
 
 | Symptom                      | Cause                           | Fix                                                           |
 | ---------------------------- | ------------------------------- | ------------------------------------------------------------- |
-| Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable CodeScribe |
+| Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable codescribe |
 | Double-tap too sensitive     | Interval too short              | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
 | Recording won't stop (hold)  | Key stuck in system             | Release all modifiers, try again                              |
 | VAD cuts utterance too early | VAD defaults too conservative   | Tune constants in `core/vad/config.rs` and rebuild            |
@@ -380,4 +380,4 @@ When `HOLD_EXCLUSIVE=true` (default):
 
 ---
 
-_Copyright © 2024–2026 VetCoders_
+_Copyright © 2024–2026 Vetcoders_

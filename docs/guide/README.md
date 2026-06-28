@@ -1,15 +1,15 @@
-# CodeScribe User Guide
+# Codescribe User Guide
 
 > **Speech-to-text for macOS with local Whisper plus optional cloud transcript paths**
 
-CodeScribe is a native macOS menu-bar application that transcribes your speech locally using Whisper. No internet is required for the local path. Optional cloud STT and AI formatting are available when you want a different final transcript backend.
+Codescribe is a native macOS menu-bar application that transcribes your speech locally using Whisper. No internet is required for the local path. Optional cloud STT and AI formatting are available when you want a different final transcript backend.
 
 ---
 
 ## Quick Start (30 seconds)
 
-1. **Install**: download a DMG from [Releases](https://github.com/VetCoders/CodeScribe/releases), or build from source if no tagged release is published yet
-2. **Launch**: Open CodeScribe from Applications
+1. **Install**: download a DMG from [Releases](https://github.com/vetcoders/codescribe/releases), or build from source if no tagged release is published yet
+2. **Launch**: Open codescribe from Applications
 3. **Grant permissions**: Microphone + Accessibility (follow prompts)
 4. **Transcribe**: Use your **Dictation** hotkey (default: hold `Fn/Globe`), speak, release → text appears at cursor (Settings → Modes & Shortcuts)
 
@@ -68,7 +68,7 @@ That's it. You're transcribing.
 
 ## Menu Bar Icon
 
-CodeScribe lives in your menu bar. The icon color indicates status:
+Codescribe lives in your menu bar. The icon color indicates status:
 
 | Color     | Meaning                      |
 | --------- | ---------------------------- |
@@ -92,10 +92,10 @@ CodeScribe lives in your menu bar. The icon color indicates status:
 
 ## Getting Help
 
-- **GitHub Issues**: [github.com/VetCoders/CodeScribe/issues](https://github.com/VetCoders/CodeScribe/issues)
+- **GitHub Issues**: [github.com/vetcoders/codescribe/issues](https://github.com/vetcoders/codescribe/issues)
 - **Documentation**: This guide + [ARCHITECTURE.md](../ARCHITECTURE.md)
 - **Logs**: `~/.codescribe/logs/` or run `codescribe -v` for verbose output
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

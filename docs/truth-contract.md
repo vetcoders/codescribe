@@ -1,9 +1,9 @@
-# CodeScribe Truth Contract
+# Codescribe Truth Contract
 
 Data: 2026-04-21
 
 Cel:
-- CodeScribe ma zachowywać intencję użytkownika bez cichego mieszania podglądu, werdyktu i interpretacji.
+- Codescribe ma zachowywać intencję użytkownika bez cichego mieszania podglądu, werdyktu i interpretacji.
 
 ## Słownik produktu
 
@@ -55,7 +55,7 @@ Cel:
 
 ## Artefakty prawdy
 
-CodeScribe materializuje truth contract przez:
+Codescribe materializuje truth contract przez:
 
 - runtime verdicts w `core/pipeline/contracts.rs`
 - controller truth surfaces w `app/controller/*`
