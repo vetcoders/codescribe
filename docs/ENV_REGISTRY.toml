@@ -225,6 +225,13 @@ reload = "restart"
 category = "stt"
 description = "Initial prompt hint for Whisper decoding (ignored by ONNX adapter)"
 
+[vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
+default = "300"
+type = "u64"
+reload = "hot"
+category = "stt"
+description = "Unload idle Whisper engine after this many seconds (0 disables)"
+
 [vars.WHISPER_INITIAL_PROMPT]
 default = ""
 type = "string"
@@ -426,6 +433,13 @@ type = "string"
 reload = "rebuild"
 category = "embedder"
 description = "HF repo for E5 embedder (used for embedding at build/runtime)"
+
+[vars.CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS]
+default = "300"
+type = "u64"
+reload = "hot"
+category = "embedder"
+description = "Unload idle embedder engine after this many seconds (0 disables)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LLM / AI Formatting

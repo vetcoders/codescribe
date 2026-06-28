@@ -48,6 +48,7 @@ mod hf_cache;
 pub mod ipc;
 pub mod llm;
 pub mod mcp;
+pub mod memory;
 pub mod pipeline;
 pub mod quality;
 pub mod state;

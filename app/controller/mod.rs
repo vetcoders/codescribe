@@ -1632,6 +1632,12 @@ impl RecordingController {
                 crate::ui::voice_chat::update_voice_chat_status(final_status);
                 info!("Processing finished successfully. State reset to IDLE.");
 
+                // The transcription just freed large transient buffers (audio,
+                // mel, model scratch). Hand those freed-but-retained pages back
+                // to the OS now, while idle, instead of letting phys_footprint
+                // creep up across a long session.
+                codescribe_core::memory::release_freed_heap();
+
                 if let Some(reason) = outcome.no_speech_reason.as_deref() {
                     info!("NoSpeech outcome in finish_recording: reason={reason}");
                     if !assistive {

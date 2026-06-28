@@ -108,11 +108,9 @@ fn candle_transcribe_chunk(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<String> {
-    let engine = whisper::singleton::engine()?;
-    let mut guard = engine
-        .lock()
-        .map_err(|e| anyhow::anyhow!("Candle lock error: {}", e))?;
-    guard.transcribe_with_language(audio, sample_rate, language)
+    // Engine acquisition + idle-clock refresh + lazy (re)load live in the
+    // singleton now, so it can unload Whisper when idle and reload on demand.
+    whisper::singleton::transcribe_chunk(audio, sample_rate, language)
 }
 
 fn candle_transcribe_long_with_segments(
@@ -120,11 +118,7 @@ fn candle_transcribe_long_with_segments(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
-    let engine = whisper::singleton::engine()?;
-    let mut guard = engine
-        .lock()
-        .map_err(|e| anyhow::anyhow!("Candle lock error: {}", e))?;
-    guard.transcribe_long_with_language_segments(audio, sample_rate, language)
+    whisper::singleton::transcribe_with_segments(audio, sample_rate, language)
 }
 
 #[allow(dead_code)]
@@ -133,11 +127,8 @@ fn candle_try_transcribe_long_with_segments(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
-    let engine = whisper::singleton::engine()?;
-    let mut guard = engine
-        .try_lock()
-        .map_err(|_| anyhow::anyhow!("Whisper engine busy, skipping correction"))?;
-    guard.transcribe_long_with_language_segments(audio, sample_rate, language)
+    // Non-blocking acquisition: skip the correction pass if the engine is busy.
+    whisper::singleton::try_transcribe_with_segments(audio, sample_rate, language)
 }
 
 /// Initialize whichever STT engine is active by env.
