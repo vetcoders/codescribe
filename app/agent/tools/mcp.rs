@@ -861,7 +861,7 @@ mod tests {
                 "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
                 "aicx-mcp": { "command": "aicx-mcp", "enabled": true },
                 "loctree-mcp": { "command": "loctree-mcp", "enabled": true },
-                "vista-prview": { "command": "vista-prview", "enabled": true }
+                "codescribe-prview": { "command": "codescribe-prview", "enabled": true }
             }
         });
         fs::write(&path, config.to_string()).expect("write config");
@@ -891,7 +891,7 @@ mod tests {
         let prview = find_row(&report, "PRView integration:");
         assert_eq!(prview.tone, McpRowTone::Warn);
         assert!(
-            prview.value.contains("configured") && prview.value.contains("vista-prview"),
+            prview.value.contains("configured") && prview.value.contains("codescribe-prview"),
             "PRView-like server should satisfy the prerequisite, got: {}",
             prview.value
         );
@@ -908,7 +908,7 @@ mod tests {
                 "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
                 "aicx-mcp": { "command": "aicx-mcp", "enabled": true },
                 "loctree-mcp": { "command": "loctree-mcp", "enabled": true },
-                "vista-prview": { "command": "vista-prview", "enabled": false }
+                "codescribe-prview": { "command": "codescribe-prview", "enabled": false }
             }
         });
         fs::write(&path, config.to_string()).expect("write config");
