@@ -1,7 +1,7 @@
 # CodeScribe - Pure Rust Build System
 # Speech-to-text tray app for macOS
 
-.PHONY: all build release release-codescribe release-qube install install-no-embed config bundle install-app \
+.PHONY: all build release release-codescribe release-codescribe-embedded release-qube install install-no-embed config bundle install-app \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-formatting test-all \
@@ -60,13 +60,13 @@ build:
 	@echo "Building (debug)..."
 	@cargo build
 
-release-codescribe:
-	@echo "Building codescribe (release, embedded support assets; Whisper from cache/download)..."
-	@cargo build --release --bin codescribe
-
-release-codescribe-embedded:
-	@echo "Building codescribe (release, EMBEDDED Whisper — distribution)..."
+release-codescribe: ensure-models
+	@echo "Building codescribe (release, embedded models: Silero + MiniLM + Whisper)..."
 	@CODESCRIBE_EMBED_WHISPER=1 cargo build --release --bin codescribe
+
+# Compatibility alias — embedding Whisper is now the default for release-codescribe.
+# Kept so existing scripts / muscle memory keep working; NOT a separate public lane.
+release-codescribe-embedded: release-codescribe
 
 release-qube:
 	@echo "Building qube-* (release, runtime model resolve from HF cache)..."
@@ -75,16 +75,16 @@ release-qube:
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing CodeScribe (embedded support assets; Whisper from cache/download)..."
+	@echo "Installing CodeScribe (embedded models: Silero + MiniLM + Whisper)..."
 	@./scripts/ensure-models.sh
-	@cargo install --path . --force
+	@CODESCRIBE_EMBED_WHISPER=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
 	@$(MAKE) hooks
 	@echo "Installed: codescribe $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 
 install-no-embed:
-	@echo "Installing CodeScribe (runtime Whisper fallback + no optional embedded support assets)..."
+	@echo "Installing CodeScribe (DEV/RECOVERY: runtime Whisper fallback + no optional embedded support assets)..."
 	@./scripts/ensure-models.sh
 	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
@@ -376,8 +376,8 @@ help:
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'BUILD & INSTALL'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'build' 'Build debug binary'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release binary with embedded support assets; Whisper from cache/download'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI with embedded support assets'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release binary with embedded models (Silero + MiniLM + Whisper)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI with embedded models (Silero + MiniLM + Whisper)'
 	@printf '%s\n' '  make install-no-embed Install without optional embedded assets (needs CODESCRIBE_MODEL_PATH)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bundle' 'Create CodeScribe.app bundle'
@@ -386,9 +386,9 @@ help:
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RELEASE & DISTRIBUTION'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'dmg' 'Build DMG (ad-hoc signed)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'dmg-signed' 'Build DMG (Developer ID signed)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-standard' 'Build + sign + notarize standard DMG'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-full' 'Build + sign + notarize full DMG with embedded Whisper'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-dmgs' 'Build both notarized release DMGs'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-standard' 'Build + sign + notarize release DMG (embedded models)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-full' 'Compatibility alias for release-standard (embedded by default)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-dmgs' 'Build the notarized release DMG'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'notarize' 'Notarize DMG with Apple'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-model' 'Download Whisper model from HF'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-e5' 'Download E5 embedder model from HF'
@@ -437,10 +437,11 @@ dmg-signed:
 release-standard:
 	@./scripts/build-dmg.sh --sign --notarize
 
-release-full:
-	@./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full
+# Compatibility alias — the standard DMG now embeds Whisper by default, so it IS
+# the real user artifact. `_full` no longer denotes a separate "real" build.
+release-full: release-standard
 
-release-dmgs: release-standard release-full
+release-dmgs: release-standard
 
 notarize:
 	@if ls CodeScribe_*.dmg 1> /dev/null 2>&1; then \

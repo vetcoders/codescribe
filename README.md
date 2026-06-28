@@ -351,7 +351,7 @@ CodeScribe uses **whisper-large-v3-turbo-mlx-q8**:
 
 ### Runtime Whisper (Current)
 
-The standard build embeds Silero VAD and MiniLM semantic support assets, then resolves Whisper at runtime from the locations below. The full release DMG embeds the same support assets plus Whisper by building with `CODESCRIBE_EMBED_WHISPER=1`.
+User-delivery builds (`make release`, `make install`, the release DMG) embed everything by default: Silero VAD, the MiniLM semantic embedder, and Whisper (`CODESCRIBE_EMBED_WHISPER=1`). The fast developer build (`make build` / raw `cargo build`) stays lean and resolves Whisper at runtime from the locations below; that same resolution order is the fallback whenever a build is not embedded.
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`

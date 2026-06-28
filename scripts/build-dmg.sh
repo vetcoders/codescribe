@@ -19,21 +19,27 @@ APP_PATH="$ROOT_DIR/bundle/${APP_NAME}.app"
 SIGN=0
 NOTARIZE=0
 NO_EMBED=0
-EMBED_WHISPER=0
+# Embedding everything (Silero + MiniLM + Whisper) is the default for user
+# delivery. --no-embed flips this off for dev/recovery builds only.
+EMBED_WHISPER=1
+EMBED_WHISPER_EXPLICIT=0
 DMG_SUFFIX=""
 
 usage() {
   cat <<EOF
 Usage: $0 [options]
 
+Builds the real user artifact by default: embedded Silero VAD + MiniLM + Whisper.
+
 Options:
   --sign              Codesign the .app (requires Developer ID)
   --notarize          Notarize the DMG (requires NOTARY_PROFILE)
   --identity <name>   Override codesign identity
   --entitlements <p>  Entitlements plist path (default: $ENTITLEMENTS)
-  --embed-whisper     Embed the Whisper model in the app bundle
+  --embed-whisper     Compatibility no-op: Whisper is embedded by default
   --dmg-suffix <s>    Append suffix before .dmg (for example: _full)
-  --no-embed          Disable all model embedding (CODESCRIBE_NO_EMBED=1)
+  --no-embed          DEV/RECOVERY only: disable all model embedding
+                      (CODESCRIBE_NO_EMBED=1) — not the public product path
 EOF
 }
 
@@ -43,7 +49,7 @@ while [[ $# -gt 0 ]]; do
     --notarize) NOTARIZE=1; shift 1;;
     --identity) IDENTITY="$2"; shift 2;;
     --entitlements) ENTITLEMENTS="$2"; shift 2;;
-    --embed-whisper) EMBED_WHISPER=1; shift 1;;
+    --embed-whisper) EMBED_WHISPER=1; EMBED_WHISPER_EXPLICIT=1; shift 1;;
     --dmg-suffix) DMG_SUFFIX="$2"; shift 2;;
     --no-embed) NO_EMBED=1; shift 1;;
     -h|--help) usage; exit 0;;
@@ -51,9 +57,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$NO_EMBED" -eq 1 && "$EMBED_WHISPER" -eq 1 ]]; then
+if [[ "$NO_EMBED" -eq 1 && "$EMBED_WHISPER_EXPLICIT" -eq 1 ]]; then
   echo "ERROR: --no-embed and --embed-whisper cannot be used together" >&2
   exit 1
+fi
+# --no-embed (dev/recovery) wins over the embed-by-default policy.
+if [[ "$NO_EMBED" -eq 1 ]]; then
+  EMBED_WHISPER=0
 fi
 
 DMG_NAME="CodeScribe_${VERSION}${DMG_SUFFIX}.dmg"
@@ -67,12 +77,8 @@ BUILD_ENV+=(-u CODESCRIBE_EMBED_TTS)
 if [[ "$NO_EMBED" -eq 1 ]]; then
   BUILD_ENV+=(-u CODESCRIBE_EMBED_WHISPER CODESCRIBE_NO_EMBED=1)
 else
-  BUILD_ENV+=(-u CODESCRIBE_NO_EMBED)
-  if [[ "$EMBED_WHISPER" -eq 1 ]]; then
-    BUILD_ENV+=(CODESCRIBE_EMBED_WHISPER=1)
-  else
-    BUILD_ENV+=(-u CODESCRIBE_EMBED_WHISPER)
-  fi
+  # Default user-delivery path: embed Whisper alongside Silero + MiniLM.
+  BUILD_ENV+=(-u CODESCRIBE_NO_EMBED CODESCRIBE_EMBED_WHISPER=1)
 fi
 
 echo "=== Build DMG ==="
@@ -80,11 +86,9 @@ echo "App: $APP_NAME"
 echo "Bundle ID: $BUNDLE_ID"
 echo "Version: $VERSION"
 if [[ "$NO_EMBED" -eq 1 ]]; then
-  echo "Models: runtime assets only (CODESCRIBE_NO_EMBED=1)"
-elif [[ "$EMBED_WHISPER" -eq 1 ]]; then
-  echo "Models: embedded Silero + embedder + Whisper"
+  echo "Models: runtime assets only (CODESCRIBE_NO_EMBED=1) — dev/recovery build, not the public artifact"
 else
-  echo "Models: embedded Silero + embedder; Whisper resolves from cache/download"
+  echo "Models: embedded Silero + MiniLM + Whisper"
 fi
 echo "DMG: $DMG_PATH"
 
