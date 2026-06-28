@@ -5,7 +5,7 @@ members = [".", "core"]
 [workspace.package]
 version = "0.12.2"
 edition = "2024"
-authors = ["VetCoders <hello@vetcoders.io>"]
+authors = ["Vetcoders <hello@vetcoders.io>"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -21,11 +21,11 @@ name = "codescribe"
 version = "0.12.2"
 edition = "2024"
 description = "Speech-to-text tray app for macOS - Pure Rust"
-authors = ["VetCoders <hello@vetcoders.io>"]
+authors = ["Vetcoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"
-repository = "https://github.com/VetCoders/CodeScribe"
-homepage = "https://vetcoders.github.io/CodeScribe/"
-documentation = "https://vetcoders.github.io/CodeScribe/quickstart/"
+repository = "https://github.com/vetcoders/codescribe"
+homepage = "https://vetcoders.github.io/codescribe/"
+documentation = "https://vetcoders.github.io/codescribe/quickstart/"
 keywords = ["speech-to-text", "whisper", "macos", "dictation", "audio"]
 categories = ["command-line-utilities", "multimedia::audio"]
 

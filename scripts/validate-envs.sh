@@ -9,7 +9,7 @@
 #   0 - All env vars are registered
 #   1 - Found unregistered env vars (add them to docs/ENV_REGISTRY.toml)
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -euo pipefail
 

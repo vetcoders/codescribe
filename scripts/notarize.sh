@@ -1,5 +1,5 @@
 #!/bin/bash
-# CodeScribe Notarization Script
+# Codescribe Notarization Script
 # Submits app to Apple for notarization and staples the ticket
 #
 # Prerequisites:
@@ -9,10 +9,10 @@
 #       --apple-id "your@email.com" --team-id "TEAMID" --password "app-specific-pwd"
 #
 # Usage:
-#   ./scripts/notarize.sh CodeScribe-<VERSION>.dmg
-#   NOTARY_PROFILE=MyProfile ./scripts/notarize.sh CodeScribe.dmg
+#   ./scripts/notarize.sh Codescribe-<VERSION>.dmg
+#   NOTARY_PROFILE=MyProfile ./scripts/notarize.sh Codescribe.dmg
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -euo pipefail
 
@@ -22,7 +22,7 @@ cd "$PROJECT_DIR"
 
 # Configuration
 NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
-APP_NAME="${CODESCRIBE_APP_NAME:-CodeScribe}"
+APP_NAME="${CODESCRIBE_APP_NAME:-Codescribe}"
 BUNDLE_DIR="bundle/${APP_NAME}.app"
 
 # Parse arguments
@@ -48,7 +48,7 @@ if [ ! -f "$DMG_FILE" ]; then
 fi
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  CodeScribe Notarization"
+echo "  Codescribe Notarization"
 echo "═══════════════════════════════════════════════════════════"
 echo "  DMG:     ${DMG_FILE}"
 echo "  Profile: ${NOTARY_PROFILE}"

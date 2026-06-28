@@ -23,7 +23,7 @@
        App Store Connect (that is separate from this file — see below).
 
   WHY FileTimestamp / C617.1 is here:
-    CodeScribe reads file modification times via std::fs metadata().modified()
+    Codescribe reads file modification times via std::fs metadata().modified()
     in core/state/history.rs, core/hf_cache.rs, and core/attachment.rs — all
     accessing metadata of files inside the app's own directories. Apple's
     required-reason category for that is NSPrivacyAccessedAPICategoryFileTimestamp
@@ -39,7 +39,7 @@
     NOT used for tracking.
     Source: https://developer.apple.com/app-store/app-privacy-details/
 
-  Created by M&K (c)2026 VetCoders
+  Created by Vetcoders (c)2026
   ===========================================================================
 -->
 <dict>

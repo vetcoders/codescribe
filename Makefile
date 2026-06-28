@@ -1,4 +1,4 @@
-# CodeScribe - Pure Rust Build System
+# Codescribe - Pure Rust Build System
 # Speech-to-text tray app for macOS
 
 .PHONY: all build release release-codescribe release-qube install install-no-embed config bundle install-app \
@@ -22,8 +22,8 @@ CODESCRIBE_AUTO_CODESIGN_IDENTITY := $(if $(strip $(CODESCRIBE_APPLE_DEVELOPMENT
 # Example:
 #   CODESCRIBE_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" make install-app
 CODESCRIBE_CODESIGN_IDENTITY ?= $(if $(CODESCRIBE_AUTO_CODESIGN_IDENTITY),$(CODESCRIBE_AUTO_CODESIGN_IDENTITY),-)
-CODESCRIBE_APP_NAME ?= CodeScribe
-CODESCRIBE_DISPLAY_NAME ?= CodeScribe
+CODESCRIBE_APP_NAME ?= Codescribe
+CODESCRIBE_DISPLAY_NAME ?= Codescribe
 CODESCRIBE_BUNDLE_ID ?= com.codescribe.app
 CODESCRIBE_MIN_MACOS ?=
 CODESCRIBE_LSUIELEMENT ?= true
@@ -75,7 +75,7 @@ release-qube:
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing CodeScribe (embedded support assets; Whisper from cache/download)..."
+	@echo "Installing Codescribe (embedded support assets; Whisper from cache/download)..."
 	@./scripts/ensure-models.sh
 	@cargo install --path . --force
 	@mkdir -p ~/.codescribe
@@ -84,7 +84,7 @@ install:
 	@echo "Installed: codescribe $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 
 install-no-embed:
-	@echo "Installing CodeScribe (runtime Whisper fallback + no optional embedded support assets)..."
+	@echo "Installing Codescribe (runtime Whisper fallback + no optional embedded support assets)..."
 	@./scripts/ensure-models.sh
 	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
@@ -96,7 +96,7 @@ install-no-embed:
 config:
 	@mkdir -p ~/.codescribe
 	@if [ ! -f ~/.codescribe/.env ]; then \
-		cp .env.example ~/.codescribe/.env 2>/dev/null || echo "# CodeScribe Config" > ~/.codescribe/.env; \
+		cp .env.example ~/.codescribe/.env 2>/dev/null || echo "# Codescribe Config" > ~/.codescribe/.env; \
 		echo "Created ~/.codescribe/.env"; \
 	fi
 	@$(EDITOR) ~/.codescribe/.env
@@ -160,7 +160,7 @@ install-app: bundle
 
 start:
 	@nohup codescribe > /tmp/codescribe.log 2>&1 & disown
-	@echo "CodeScribe started (logs: /tmp/codescribe.log)"
+	@echo "Codescribe started (logs: /tmp/codescribe.log)"
 
 stop:
 	@pkill -x codescribe 2>/dev/null || true
@@ -172,7 +172,7 @@ restart: stop
 	@$(MAKE) start
 
 status:
-	@echo "=== CodeScribe Status ==="
+	@echo "=== Codescribe Status ==="
 	@pgrep -fl codescribe 2>/dev/null || echo "Not running"
 
 logs:
@@ -236,7 +236,7 @@ LOG=$(TEST_LOG); \
 export CODESCRIBE_DISABLE_KEYCHAIN=1; \
 echo "" >> "$$LOG"; \
 echo "╔══════════════════════════════════════════════════════════╗" | tee -a "$$LOG"; \
-echo "║  CodeScribe Test Suite — $$(date '+%Y-%m-%d %H:%M:%S')           ║" | tee -a "$$LOG"; \
+echo "║  Codescribe Test Suite — $$(date '+%Y-%m-%d %H:%M:%S')           ║" | tee -a "$$LOG"; \
 echo "╚══════════════════════════════════════════════════════════╝" | tee -a "$$LOG"; \
 open -a Console "$$LOG"
 endef
@@ -372,7 +372,7 @@ HELP_C_YELLOW := \033[33m
 HELP_C_RESET  := \033[0m
 
 help:
-	@printf '\n$(HELP_C_CYAN)%s$(HELP_C_RESET)\n' 'CodeScribe - Speech-to-text (Pure Rust)'
+	@printf '\n$(HELP_C_CYAN)%s$(HELP_C_RESET)\n' 'Codescribe - Speech-to-text (Pure Rust)'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'BUILD & INSTALL'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'build' 'Build debug binary'
@@ -380,7 +380,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI with embedded support assets'
 	@printf '%s\n' '  make install-no-embed Install without optional embedded assets (needs CODESCRIBE_MODEL_PATH)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bundle' 'Create CodeScribe.app bundle'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bundle' 'Create Codescribe.app bundle'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Install to /Applications'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RELEASE & DISTRIBUTION'
@@ -396,8 +396,8 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'ensure-models' 'Download Whisper+MiniLM if missing from cache'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RUN'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'start' 'Start CodeScribe'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'stop' 'Stop CodeScribe'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'start' 'Start Codescribe'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'stop' 'Stop Codescribe'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'restart' 'Restart'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'status' 'Show status'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'logs' 'Show logs'
@@ -443,8 +443,8 @@ release-full:
 release-dmgs: release-standard release-full
 
 notarize:
-	@if ls CodeScribe_*.dmg 1> /dev/null 2>&1; then \
-		DMG=$$(ls -t CodeScribe_*.dmg | head -1); \
+	@if ls Codescribe_*.dmg 1> /dev/null 2>&1; then \
+		DMG=$$(ls -t Codescribe_*.dmg | head -1); \
 		./scripts/notarize.sh "$$DMG"; \
 	else \
 		echo "No DMG found. Run 'make dmg-signed' first."; \

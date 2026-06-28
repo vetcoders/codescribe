@@ -1,4 +1,4 @@
-# CodeScribe Configuration
+# Codescribe Configuration
 # Generated automatically - edit with care
 
 # === Secrets ===

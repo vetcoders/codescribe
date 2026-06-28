@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build CodeScribe .app bundle + DMG with optional codesign + notarization
+# Build Codescribe .app bundle + DMG with optional codesign + notarization
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="${CODESCRIBE_APP_NAME:-CodeScribe}"
+APP_NAME="${CODESCRIBE_APP_NAME:-Codescribe}"
 DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_NAME}"
 BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.codescribe.app}"
 MIN_MACOS="${CODESCRIBE_MIN_MACOS:-}"
@@ -56,7 +56,7 @@ if [[ "$NO_EMBED" -eq 1 && "$EMBED_WHISPER" -eq 1 ]]; then
   exit 1
 fi
 
-DMG_NAME="CodeScribe_${VERSION}${DMG_SUFFIX}.dmg"
+DMG_NAME="Codescribe_${VERSION}${DMG_SUFFIX}.dmg"
 DMG_PATH="$ROOT_DIR/$DMG_NAME"
 
 BUILD_ENV=(env)

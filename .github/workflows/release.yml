@@ -62,7 +62,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          xcrun notarytool store-credentials "CodeScribeNotary" \
+          xcrun notarytool store-credentials "CodescribeNotary" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD"
@@ -71,12 +71,12 @@ jobs:
         env:
           CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.CODESCRIBE_CODESIGN_IDENTITY }}
           CODESCRIBE_BUNDLE_ID: ${{ vars.CODESCRIBE_BUNDLE_ID || 'com.vetcoders.codescribe' }}
-          NOTARY_PROFILE: CodeScribeNotary
+          NOTARY_PROFILE: CodescribeNotary
         run: make release-dmgs
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag_name || github.ref_name }}
-          files: CodeScribe_*.dmg
+          files: Codescribe_*.dmg
           generate_release_notes: true
