@@ -58,11 +58,7 @@ fn test_get_config_defaults() {
     );
 
     let config = Config::load();
-    assert_eq!(
-        config.whisper_language,
-        Language::Polish,
-        "Default language"
-    );
+    assert_eq!(config.whisper_language, Language::Auto, "Default language");
 }
 
 #[test]
@@ -173,7 +169,7 @@ fn test_empty_audio_device_uses_default() {
 
 #[test]
 #[serial]
-fn test_auto_language_maps_to_polish() {
+fn test_auto_language_maps_to_auto() {
     let _tmp = setup_test_env();
 
     unsafe {
@@ -183,8 +179,8 @@ fn test_auto_language_maps_to_polish() {
     let config = Config::load();
     assert_eq!(
         config.whisper_language,
-        Language::Polish,
-        "'auto' should map to Polish"
+        Language::Auto,
+        "'auto' should use Whisper language detection"
     );
 }
 
@@ -296,6 +292,11 @@ fn test_all_language_variants() {
     let _tmp = setup_test_env();
 
     let variants = [
+        ("auto", Language::Auto),
+        ("detect", Language::Auto),
+        ("multilingual", Language::Auto),
+        ("any", Language::Auto),
+        ("", Language::Auto),
         ("pl", Language::Polish),
         ("polish", Language::Polish),
         ("en", Language::English),

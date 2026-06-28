@@ -154,12 +154,16 @@ pub fn default_mode_bindings() -> Vec<ModeBinding> {
     ]
 }
 
-/// Language options for Whisper transcription
-/// NOTE: No "Auto" - Whisper requires explicit language for reliable transcription
+/// Language options for Whisper transcription.
+///
+/// `Auto` leaves language detection to Whisper. Use `whisper_hint()` when
+/// calling STT/formatting paths: forcing `Some("pl")`/`Some("en")` is only for
+/// explicit single-language sessions.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     #[default]
+    Auto,
     Polish,
     English,
 }
@@ -167,8 +171,25 @@ pub enum Language {
 impl Language {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::Polish => "pl",
             Self::English => "en",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Auto => "Auto-detect / multilingual",
+            Self::Polish => "Polish (pl)",
+            Self::English => "English (en)",
+        }
+    }
+
+    pub fn whisper_hint(&self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::Polish => Some("pl"),
+            Self::English => Some("en"),
         }
     }
 }
@@ -178,10 +199,9 @@ impl FromStr for Language {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "auto" | "" | "detect" | "multilingual" | "any" => Ok(Self::Auto),
             "pl" | "polish" => Ok(Self::Polish),
             "en" | "english" => Ok(Self::English),
-            // Legacy "auto" maps to Polish (default)
-            "auto" | "" => Ok(Self::Polish),
             _ => Err(format!("Unknown Language: {}", s)),
         }
     }

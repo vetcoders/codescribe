@@ -86,11 +86,14 @@ pub(super) unsafe fn build_audio_input_tab(
             CGRect::new(&CGPoint::new(pad + 134.0, y - 2.0), &CGSize::new(180.0, 24.0))
             pullsDown: false
         ];
+        let _: () =
+            msg_send![lang_popup, addItemWithTitle: ns_string("Auto-detect / multilingual")];
         let _: () = msg_send![lang_popup, addItemWithTitle: ns_string("Polish (pl)")];
         let _: () = msg_send![lang_popup, addItemWithTitle: ns_string("English (en)")];
         let lang_idx: isize = match config.whisper_language.as_str() {
-            "pl" => 0,
-            "en" => 1,
+            "auto" => 0,
+            "pl" => 1,
+            "en" => 2,
             _ => 0,
         };
         let _: () = msg_send![lang_popup, selectItemAtIndex: lang_idx];

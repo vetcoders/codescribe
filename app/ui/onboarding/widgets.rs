@@ -75,6 +75,9 @@ pub(super) fn set_label_color_if_present(ptr: Option<usize>, color: Id) {
 
 pub(super) fn sync_language_radios(ui: UiRefs, language: LanguageChoice) {
     unsafe {
+        if let Some(auto) = ui.language_auto_radio {
+            let _: () = msg_send![auto as Id, setState: if language == LanguageChoice::Auto { 1_isize } else { 0_isize }];
+        }
         if let Some(en) = ui.language_en_radio {
             let _: () = msg_send![en as Id, setState: if language == LanguageChoice::English { 1_isize } else { 0_isize }];
         }

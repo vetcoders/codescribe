@@ -157,7 +157,7 @@ fn test_whisper_language_config() {
     let _tmp = setup_test_env();
 
     let config = Config::load();
-    assert_eq!(config.whisper_language, Language::Polish);
+    assert_eq!(config.whisper_language, Language::Auto);
 
     config.save_to_env("WHISPER_LANGUAGE", "en").expect("save");
     let reloaded = Config::load();

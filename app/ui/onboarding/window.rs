@@ -391,18 +391,28 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
             language_view,
             initWithFrame: CGRect::new(
                 &CGPoint::new(content_center - 160.0, 186.0),
-                &CGSize::new(320.0, 88.0)
+                &CGSize::new(320.0, 118.0)
             )
         ];
         add_subview(root, language_view);
         ui.language_view = Some(language_view as usize);
 
+        let language_auto = create_radio_button(
+            CGRect::new(&CGPoint::new(10.0, 82.0), &CGSize::new(300.0, 24.0)),
+            "Auto-detect / multilingual",
+            true,
+        );
+        let _: () = msg_send![language_auto, setTag: 0_isize];
+        button_set_action(language_auto, action_handler, sel!(onLanguageSelected:));
+        add_subview(language_view, language_auto);
+        ui.language_auto_radio = Some(language_auto as usize);
+
         let language_en = create_radio_button(
             CGRect::new(&CGPoint::new(10.0, 52.0), &CGSize::new(300.0, 24.0)),
             "English",
-            true,
+            false,
         );
-        let _: () = msg_send![language_en, setTag: 0_isize];
+        let _: () = msg_send![language_en, setTag: 1_isize];
         button_set_action(language_en, action_handler, sel!(onLanguageSelected:));
         add_subview(language_view, language_en);
         ui.language_en_radio = Some(language_en as usize);
@@ -412,7 +422,7 @@ fn build_onboarding_ui(root: Id, action_handler: Id) -> UiRefs {
             "Polish",
             false,
         );
-        let _: () = msg_send![language_pl, setTag: 1_isize];
+        let _: () = msg_send![language_pl, setTag: 2_isize];
         button_set_action(language_pl, action_handler, sel!(onLanguageSelected:));
         add_subview(language_view, language_pl);
         ui.language_pl_radio = Some(language_pl as usize);

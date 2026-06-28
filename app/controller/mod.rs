@@ -2757,9 +2757,8 @@ impl RecordingController {
                 Arc::clone(&session_telemetry),
             );
             if !cfg!(test) {
-                let start_result = rec
-                    .start_event_session(Some(language.as_str().to_string()))
-                    .await;
+                let language_hint = language.whisper_hint().map(str::to_string);
+                let start_result = rec.start_event_session(language_hint.clone()).await;
                 if let Err(e) = start_result {
                     if Self::is_already_in_progress_error(&e) {
                         warn!("Hold-start hit stale recorder lock; forcing stop and retrying once");
@@ -2773,9 +2772,7 @@ impl RecordingController {
                             event_broadcast.clone(),
                             Arc::clone(&session_telemetry),
                         );
-                        let retry_result = rec
-                            .start_event_session(Some(language.as_str().to_string()))
-                            .await;
+                        let retry_result = rec.start_event_session(language_hint).await;
                         if let Err(retry_err) = retry_result {
                             error!("Failed to start recorder after recovery: {retry_err}");
                             Self::clear_recorder_callbacks(rec);
@@ -2988,10 +2985,9 @@ impl RecordingController {
         );
 
         // Skip actual audio stream in tests (no CoreAudio device needed)
+        let language_hint = language.whisper_hint().map(str::to_string);
         if !cfg!(test)
-            && let Err(e) = recorder
-                .start_event_session(Some(language.as_str().to_string()))
-                .await
+            && let Err(e) = recorder.start_event_session(language_hint.clone()).await
         {
             if Self::is_already_in_progress_error(&e) {
                 warn!("Toggle start hit stale recorder lock; forcing stop and retrying once");
@@ -3006,10 +3002,7 @@ impl RecordingController {
                     self.event_broadcast.clone(),
                     Arc::clone(&self.session_telemetry),
                 );
-                if let Err(retry_err) = recorder
-                    .start_event_session(Some(language.as_str().to_string()))
-                    .await
-                {
+                if let Err(retry_err) = recorder.start_event_session(language_hint).await {
                     drop(recorder_guard);
                     self.reset_session_after_start_failure("Toggle-start retry")
                         .await;
@@ -3239,10 +3232,9 @@ impl RecordingController {
     /// text with a visible marker if AI formatting is unavailable or returns empty.
     async fn format_decision_text(&self, text: String) -> String {
         let language = self.config.read().await.whisper_language;
-        let lang_str = language.as_str().to_string();
         let result = crate::ai_formatting::format_text_with_status(
             &text,
-            Some(lang_str.as_str()),
+            language.whisper_hint(),
             false,
             None,
         )
@@ -3625,7 +3617,7 @@ impl RecordingController {
 
         let config = self.config.read().await.clone();
         let language = config.whisper_language;
-        let language_opt = Some(language.as_str());
+        let language_opt = language.whisper_hint();
         let use_local_stt = config.use_local_stt;
         let raw_save_enabled = raw_save_enabled(assistive);
 
@@ -3865,7 +3857,7 @@ impl RecordingController {
         info!("Raw transcript captured ({} chars)", raw_text.len());
         let transcript_present = !raw_text.trim().is_empty();
 
-        let language_opt = Some(language.as_str().to_string());
+        let language_opt = language.whisper_hint().map(str::to_string);
         let pipeline_outcome = self
             .process_transcript_text_pipeline(types::TranscriptPipelineParams {
                 raw_text,

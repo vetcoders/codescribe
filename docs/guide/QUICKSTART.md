@@ -55,7 +55,7 @@ Recommended: configure CodeScribe in the **Settings** window.
 ### Essential Settings
 
 - **Audio & Input**
-  - Set `Whisper language` (no auto-detect; pick the language you speak)
+  - Set `Whisper language` (`Auto-detect / multilingual` is the default; pick Polish or English only to force a language)
   - Toggle **AI Formatting** for Dictation (optional)
 - **Modes & Shortcuts**
   - Dictation: hold a modifier (default: `Fn/Globe`)
@@ -118,7 +118,7 @@ make logs
 ### No transcription
 
 1. Check microphone permission
-2. Verify `WHISPER_LANGUAGE` is set (not empty!)
+2. Leave `WHISPER_LANGUAGE` unset or set it to `auto` unless you need to force `pl` or `en`
 3. Check logs: `make logs`
 
 ### Error icon appears

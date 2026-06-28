@@ -159,7 +159,8 @@ i runtime nie może znaleźć Whispera przez cache / config:
 ### Transkrypcja (local/cloud)
 
 - `USE_LOCAL_STT` (RESTART NEEDED)
-- `LOCAL_MODEL`, `WHISPER_MODEL`, `WHISPER_LANGUAGE` (RESTART NEEDED)
+- `LOCAL_MODEL`, `WHISPER_MODEL` (RESTART NEEDED)
+- `WHISPER_LANGUAGE` (HOT RELOADED; default `auto`; applies to the next capture. `auto` leaves language detection to Whisper for mixed-language dictation.)
 - `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
@@ -291,8 +292,8 @@ make test-sse
 
 ```
 USE_LOCAL_STT=1
-# (optional) język:
-# WHISPER_LANGUAGE=pl
+# (optional) język/hint; auto is the default for mixed-language dictation:
+# WHISPER_LANGUAGE=auto
 ```
 
 **2) Local + AI formatting**

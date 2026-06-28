@@ -57,8 +57,8 @@ codescribe --config
 ### Essential Settings
 
 ```env
-# Language (REQUIRED - no auto-detect!)
-WHISPER_LANGUAGE=pl                    # pl | en | de | fr | es
+# Language hint (auto-detect is the default)
+WHISPER_LANGUAGE=auto                  # auto | pl | en
 
 # Hotkeys
 HOLD_MODS=ctrl                         # ctrl | ctrl_alt | ctrl_shift
@@ -122,7 +122,7 @@ make logs
 ### No transcription
 
 1. Check microphone permission
-2. Verify `WHISPER_LANGUAGE` is set (not empty!)
+2. Leave `WHISPER_LANGUAGE` unset or set it to `auto` unless you need to force `pl` or `en`
 3. Check logs: `make logs`
 
 ### Error icon appears

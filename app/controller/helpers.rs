@@ -977,7 +977,7 @@ async fn run_legacy_send_path(
 
     let result = crate::ai_formatting::format_text_with_status_channels(
         text,
-        Some(whisper_language.as_str()),
+        whisper_language.whisper_hint(),
         true,
         delta_callback,
         None,
