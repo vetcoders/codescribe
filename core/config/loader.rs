@@ -31,6 +31,18 @@ impl Config {
     /// If the .env file doesn't exist or is malformed, returns default configuration
     /// without raising an error.
     pub fn load() -> Self {
+        Self::load_with_keychain_population(true)
+    }
+
+    /// Load runtime configuration without reading Keychain.
+    ///
+    /// This is for UI/runtime surfaces that must not trigger a macOS Keychain
+    /// password prompt as a side effect of starting local dictation.
+    pub fn load_without_keychain() -> Self {
+        Self::load_with_keychain_population(false)
+    }
+
+    fn load_with_keychain_population(populate_keychain: bool) -> Self {
         let env_path = Self::env_path();
         let mut file_env_vars: Option<HashMap<String, String>> = None;
 
@@ -56,8 +68,10 @@ impl Config {
             Self::inject_file_env_for_runtime(vars);
         }
 
-        // Load API keys from Keychain (only if not already set by .env)
-        super::keychain::populate_env_from_keychain();
+        // Load API keys from Keychain (only if not already set by .env).
+        if populate_keychain {
+            super::keychain::populate_env_from_keychain();
+        }
 
         // Load user settings from JSON
         let user_settings = super::settings::UserSettings::load();

@@ -1386,14 +1386,27 @@ impl RecordingController {
 
     /// Create a new recording controller with configuration loaded from disk
     pub fn new() -> Self {
-        let config = Config::load();
+        Self::with_config(Config::load(), "RecordingController::new")
+    }
 
+    /// Create a new recording controller without populating secrets from Keychain.
+    ///
+    /// Used by the SwiftUI redesign dictation bridge: starting local recording must
+    /// not ask for API-key access as an incidental side effect.
+    pub fn new_without_keychain() -> Self {
+        Self::with_config(
+            Config::load_without_keychain(),
+            "RecordingController::new_without_keychain",
+        )
+    }
+
+    fn with_config(config: Config, recorder_context: &str) -> Self {
         info!(
             "Initializing RecordingController (hold_delay={}ms, beep={}, language={:?})",
             config.hold_start_delay_ms, config.beep_on_start, config.whisper_language
         );
 
-        let recorder = Self::init_streaming_recorder("RecordingController::new");
+        let recorder = Self::init_streaming_recorder(recorder_context);
 
         if !cfg!(test) {
             match ModelManager::new() {

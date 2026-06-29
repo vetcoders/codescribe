@@ -8,8 +8,10 @@ import AppKit
 // renders standalone against `MockDictationEngine`.
 //
 // TRANSCRIPT MODEL (new bridge semantics):
-//   on_preview    → interim utterance, REPLACE-not-append (utterance-local).
-//   on_correction → replacement for the active or last committed utterance.
+//   on_preview    → interim utterance; replace active text or commit+append when
+//                   the stream advances to a new spoken fragment.
+//   on_correction → targeted replacement when previous_text matches; otherwise
+//                   preserve visible text and append the corrected fragment.
 //   on_final      → completed VAD-bounded utterance → commit + clear preview.
 //   on_vad_active → speech start/stop → drives the WaveformView pulse.
 //   on_no_speech / on_error → transient toast.
@@ -45,7 +47,7 @@ final class OverlayState: ObservableObject {
 
     // MARK: Published state
     @Published var mode: OverlayMode = .listening
-    @Published var preview: String = ""        // current utterance interim (replace-not-append)
+    @Published var preview: String = ""        // current utterance interim
     @Published var committedUtterances: [String] = [] // accumulated finals, one item per utterance
     @Published var formattedText: String = ""  // finalized transcript after stop
     @Published var vadActive: Bool = false     // drives the WaveformView pulse
@@ -232,8 +234,19 @@ final class OverlayState: ObservableObject {
     // MARK: Listener-driven mutations (called on the main actor by DictationListener)
 
     func applyPreview(_ text: String) {
+        let next = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !next.isEmpty else { return }
         mode = .listening
-        preview = text
+        if preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            preview = next
+            return
+        }
+        if isSamePreviewUtterance(current: preview, next: next) {
+            preview = next
+            return
+        }
+        commitPreviewIfNeeded()
+        preview = next
     }
 
     func applyCorrection(_ text: String, previousText: String) {
@@ -250,11 +263,17 @@ final class OverlayState: ObservableObject {
         }
 
         if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            preview = corrected
-        } else if !committedUtterances.isEmpty {
-            committedUtterances[committedUtterances.count - 1] = corrected
-        } else {
-            preview = corrected
+            if isSamePreviewUtterance(current: preview, next: corrected) {
+                preview = corrected
+            } else {
+                commitPreviewIfNeeded()
+                preview = corrected
+            }
+            return
+        }
+
+        if committedUtterances.last.map({ normalized($0) == normalized(corrected) }) != true {
+            committedUtterances.append(corrected)
         }
     }
 
@@ -271,9 +290,40 @@ final class OverlayState: ObservableObject {
         preview = ""
     }
 
+    private func commitPreviewIfNeeded() {
+        let active = preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !active.isEmpty else { return }
+        if committedUtterances.last.map({ normalized($0) == normalized(active) }) != true {
+            committedUtterances.append(active)
+        }
+        preview = ""
+    }
+
+    private func isSamePreviewUtterance(current: String, next: String) -> Bool {
+        let currentKey = normalized(current)
+        let nextKey = normalized(next)
+        guard !currentKey.isEmpty, !nextKey.isEmpty else { return false }
+        return nextKey.hasPrefix(currentKey)
+            || currentKey.hasPrefix(nextKey)
+            || substantialTokenOverlap(currentKey, nextKey)
+    }
+
+    private func substantialTokenOverlap(_ lhs: String, _ rhs: String) -> Bool {
+        let left = Set(lhs.split(separator: " ").map(String.init))
+        let right = Set(rhs.split(separator: " ").map(String.init))
+        guard min(left.count, right.count) >= 3 else { return false }
+        let shared = left.intersection(right).count
+        return Double(shared) / Double(min(left.count, right.count)) >= 0.65
+    }
+
     private func replacesActivePreview(previous: String, corrected: String) -> Bool {
         guard !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        if previous.isEmpty || normalized(preview) == normalized(previous) {
+        if previous.isEmpty {
+            guard isSamePreviewUtterance(current: preview, next: corrected) else { return false }
+            preview = corrected
+            return true
+        }
+        if normalized(preview) == normalized(previous) {
             preview = corrected
             return true
         }
