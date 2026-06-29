@@ -24,9 +24,13 @@ enum DictationOverlayWindow {
     static func make(state: OverlayState) -> NSPanel {
         let root = DictationOverlayView(state: state)
         let hosting = NSHostingController(rootView: root)
+        // CRITICAL: do NOT let the hosting controller resize the window to fit the
+        // (constantly animating) content — that made the panel drift in circles and
+        // dodge clicks. Fixed panel size; the content lays out inside it.
+        hosting.sizingOptions = []
 
         let panel = FloatingOverlayPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 320),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 380),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -43,7 +47,7 @@ enum DictationOverlayWindow {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = true  // draggable again (resize-drift fixed via hosting.sizingOptions)
 
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
@@ -51,8 +55,7 @@ enum DictationOverlayWindow {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        // Size the panel to the SwiftUI content's fitting size.
-        panel.setContentSize(hosting.view.fittingSize)
+        // Fixed size (set above) — do NOT resize to fittingSize each frame.
         return panel
     }
 }
