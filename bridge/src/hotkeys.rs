@@ -102,8 +102,15 @@ fn current_listener() -> Option<Arc<dyn CsTranscriptionListener>> {
 }
 
 async fn optimistically_show_overlay(event: &HotkeyEvent, controller: &RecordingController) {
-    let starts_redesign_overlay =
-        matches!(event, HotkeyEvent::ToggleNormal | HotkeyEvent::ToggleRaw);
+    let starts_redesign_overlay = matches!(
+        event,
+        HotkeyEvent::ToggleNormal
+            | HotkeyEvent::ToggleRaw
+            | HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                ..
+            }
+    );
     if !starts_redesign_overlay || controller.current_state().await != State::Idle {
         return;
     }
