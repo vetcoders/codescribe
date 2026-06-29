@@ -214,6 +214,16 @@ impl CodescribeHotkeys {
     /// dictation does not sit in the overlay's `starting` state for seconds.
     pub async fn prewarm_recording(&self) -> Result<(), CsError> {
         let _ = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+        if !codescribe::whisper::is_initialized() {
+            tokio::task::spawn_blocking(codescribe::whisper::init)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: format!("Whisper prewarm task failed: {error}"),
+                })?
+                .map_err(|error| CsError::Recording {
+                    msg: format!("Whisper prewarm failed: {error}"),
+                })?;
+        }
         Ok(())
     }
 
