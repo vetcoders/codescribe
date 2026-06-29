@@ -1,26 +1,44 @@
 //! UniFFI bridge over the LIVING codescribe engine.
 //!
 //! Strategy (Option B): do NOT re-port the engine. Wrap the real, already-working
-//! `codescribe_core::agent` + `codescribe::agent` provider/tools in a thin UniFFI
+//! `codescribe_core` + `codescribe` (provider/tools/config/stt) in a thin UniFFI
 //! surface so the new SwiftUI app can drive real streaming agent replies, STT, and
 //! config. Mirrors the UniFFI pattern proved in vista-kernel's `qube-ffi`.
+//!
+//! Layout (W3 cut #0 — split for conflict-free parallel work):
+//!   - `agent`     — CodescribeAgent + CsAgentListener (streaming chat)        [live]
+//!   - `config`    — CodescribeConfig (settings/prompts/keychain/onboarding)   [W3 #1]
+//!   - `recording` — CodescribeDictation + CsTranscriptionListener (STT)       [W3 #3]
+//!   - `threads`   — CodescribeThreads (thread persistence + history)          [W3 #5]
+//!
+//! Shared cross-slice types (`CsError`, `CsLanguage`) live here so each submodule
+//! references one canonical definition.
 
 uniffi::setup_scaffolding!();
 
-use std::sync::Arc;
+mod agent;
+mod config;
+mod recording;
+mod threads;
 
-use codescribe_core::agent::{AgentSession, AgentUiEvent, StreamOptions, ToolRegistry};
+pub use agent::{CodescribeAgent, CsAgentListener};
 
-/// Error surfaced across the FFI boundary.
+/// Error surfaced across the FFI boundary. One enum for every slice:
+/// `Agent` (chat/provider), `Config` (settings/keychain/prompt I/O),
+/// `Recording` (STT/audio).
 #[derive(uniffi::Error, Debug)]
 pub enum CsError {
     Agent { msg: String },
+    Config { msg: String },
+    Recording { msg: String },
 }
 
 impl std::fmt::Display for CsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CsError::Agent { msg } => write!(f, "{msg}"),
+            CsError::Agent { msg } | CsError::Config { msg } | CsError::Recording { msg } => {
+                write!(f, "{msg}")
+            }
         }
     }
 }
@@ -35,101 +53,46 @@ impl From<anyhow::Error> for CsError {
     }
 }
 
-/// Foreign callback trait — agent streaming events forwarded to Swift.
-/// Mirrors `AgentUiEvent`; the Swift side must hop these onto the main actor.
-#[uniffi::export(with_foreign)]
-pub trait CsAgentListener: Send + Sync {
-    fn on_text_delta(&self, delta: String);
-    fn on_text_done(&self, text: String);
-    fn on_reasoning_delta(&self, delta: String);
-    fn on_tool_executing(&self, name: String, id: String);
-    fn on_tool_result(&self, name: String, id: String, summary: String, is_error: bool);
-    fn on_done(&self);
-    fn on_error(&self, message: String);
+impl From<std::io::Error> for CsError {
+    fn from(error: std::io::Error) -> Self {
+        CsError::Config {
+            msg: error.to_string(),
+        }
+    }
 }
 
-/// Thin handle to the codescribe agent engine.
-#[derive(uniffi::Object)]
-pub struct CodescribeAgent {}
+/// Language shared across the config (whisper language setting) and recording
+/// (dictation language) surfaces. Maps 1:1 to `codescribe_core::config::Language`.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsLanguage {
+    Polish,
+    English,
+}
 
-#[uniffi::export(async_runtime = "tokio")]
-impl CodescribeAgent {
-    #[uniffi::constructor]
-    pub fn new() -> Self {
-        // Populate the process env (Keychain keys + settings.json + default LLM
-        // runtime endpoint/model) exactly like the live app's startup, so the
-        // assistive provider can be built. Idempotent; safe to call repeatedly.
-        let _ = codescribe_core::config::Config::load();
-        Self {}
-    }
-
-    /// True when the assistive LLM provider can be built from the environment
-    /// (LLM_ASSISTIVE_ENDPOINT / _MODEL / _API_KEY present). Same gate the live
-    /// app uses before agent replies are possible.
-    pub fn is_available(&self) -> bool {
-        codescribe::agent::create_default_provider().is_ok()
-    }
-
-    /// Stream one agent reply for `text`, forwarding token/reasoning/tool events to
-    /// `listener` as they arrive. Returns the final assembled assistant text.
-    ///
-    /// Full native tool set + MCP are registered, so the agent can actually act
-    /// (clipboard, selection, screenshot, filesystem, typing, github, search,
-    /// transcribe). Tools execute on demand when the model calls them.
-    pub async fn stream_reply(
-        &self,
-        text: String,
-        listener: Arc<dyn CsAgentListener>,
-    ) -> Result<String, CsError> {
-        let provider = codescribe::agent::create_default_provider()?;
-        let mut registry = ToolRegistry::new();
-        codescribe::agent::tools::register_all_tools(&mut registry);
-        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
-        let session = AgentSession::new(provider, Arc::new(registry), ui_tx);
-
-        // Drive the agent loop on a task so the channel closes when it finishes,
-        // letting the drain loop below terminate cleanly.
-        let send_handle = tokio::spawn(async move {
-            let mut session = session;
-            let options = StreamOptions {
-                model: String::new(),
-                system_prompt: None,
-                max_tokens: None,
-                temperature: None,
-                reset_chain: false,
-            };
-            session.send(text, Vec::new(), &options).await
-        });
-
-        let mut final_text = String::new();
-        while let Some(event) = ui_rx.recv().await {
-            match event {
-                AgentUiEvent::TextDelta(delta) => listener.on_text_delta(delta),
-                AgentUiEvent::TextDone(t) => {
-                    final_text = t.clone();
-                    listener.on_text_done(t);
-                }
-                AgentUiEvent::ReasoningDelta(delta) => listener.on_reasoning_delta(delta),
-                AgentUiEvent::ToolExecuting { name, id } => listener.on_tool_executing(name, id),
-                AgentUiEvent::ToolResult {
-                    name,
-                    id,
-                    summary,
-                    is_error,
-                } => listener.on_tool_result(name, id, summary, is_error),
-                AgentUiEvent::Done => listener.on_done(),
-                AgentUiEvent::Error(message) => listener.on_error(message),
-            }
+impl From<codescribe_core::config::Language> for CsLanguage {
+    fn from(language: codescribe_core::config::Language) -> Self {
+        match language {
+            codescribe_core::config::Language::Polish => CsLanguage::Polish,
+            codescribe_core::config::Language::English => CsLanguage::English,
         }
+    }
+}
 
-        match send_handle.await {
-            Ok(Ok(())) => Ok(final_text),
-            Ok(Err(error)) => Err(CsError::Agent {
-                msg: error.to_string(),
-            }),
-            Err(join_error) => Err(CsError::Agent {
-                msg: format!("agent task join error: {join_error}"),
-            }),
+impl From<CsLanguage> for codescribe_core::config::Language {
+    fn from(language: CsLanguage) -> Self {
+        match language {
+            CsLanguage::Polish => codescribe_core::config::Language::Polish,
+            CsLanguage::English => codescribe_core::config::Language::English,
+        }
+    }
+}
+
+impl CsLanguage {
+    /// Two-letter code (`"pl"` / `"en"`) as the core uses it.
+    pub fn as_code(&self) -> &'static str {
+        match self {
+            CsLanguage::Polish => "pl",
+            CsLanguage::English => "en",
         }
     }
 }
