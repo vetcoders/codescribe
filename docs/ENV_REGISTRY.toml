@@ -255,11 +255,11 @@ category = "stt"
 description = "Directory containing all models"
 
 [vars.CODESCRIBE_STT_ENGINE]
-default = "candle"
+default = "auto"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "STT engine: candle (default), onnx, or apple (SpeechAnalyzer on macOS 26+)"
+description = "STT engine: auto (Apple on supported macOS, Candle fallback), candle, onnx, or apple"
 
 [vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
 default = "1"

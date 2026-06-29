@@ -26,7 +26,7 @@ Independently, the codebase already contains the building blocks for the hybrid 
 describing for weeks:
 
 - `core/stt/apple_stt/mod.rs` — 522 LOC `AppleSpeechAnalyzerAdapter` implementing
-  `TranscriptionAdapter`, gated on `CODESCRIBE_STT_ENGINE=apple`, with graceful fallback to Candle.
+  `TranscriptionAdapter`, defaulted through `CODESCRIBE_STT_ENGINE=auto`, with graceful fallback to Candle.
 - `core/stt/whisper/*` — production Whisper path (embedded turbo-mlx-q8 + Silero VAD).
 - `core/audio/streaming_recorder.rs` — chunker emits utterance events **and** the recorder
   always tees a full WAV to disk (`wav_path: PathBuf`, `recorder.rs:203/678`). Full audio is never
@@ -105,7 +105,8 @@ flowchart TB
 ### Layer specifications
 
 **Layer 0 — Apple Live (primary live engine).**
-- Activated via `CODESCRIBE_STT_ENGINE=apple` (already wired in `core/stt/mod.rs`).
+- Activated by default through `CODESCRIBE_STT_ENGINE=auto` on supported macOS, or explicitly via
+  `CODESCRIBE_STT_ENGINE=apple`.
 - Streams partial recognition tokens to the overlay as fast as `SFSpeechRecognitionTask` emits them.
 - Runs entirely on the user's machine; no network, no cost, no recording leaves the device.
 - Owns the **first-pass UX promise:** the user sees their words appear as they speak, in the
@@ -242,7 +243,7 @@ they simply show Layer 0 output.
 
 | Capability | Today | Needed for layered model |
 | --- | --- | --- |
-| Apple Speech adapter | ✅ 522 LOC, `CODESCRIBE_STT_ENGINE=apple` | Default-on path + Settings toggle |
+| Apple Speech adapter | ✅ 522 LOC, `CODESCRIBE_STT_ENGINE=auto` default / `apple` override | Settings toggle |
 | Whisper adapter | ✅ embedded turbo / runtime fallback | Background tail-patcher entry point |
 | Full WAV tee | ✅ always written | Lifecycle hook for Layer 4 |
 | Silero VAD + discriminator | ✅ live | Paralingual classifier head (Layer 3) |

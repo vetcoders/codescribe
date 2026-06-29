@@ -9,6 +9,8 @@ use crate::pipeline::contracts::TranscriptionAdapter;
 use std::sync::OnceLock;
 use tracing::warn;
 
+const ENV_STT_ENGINE: &str = "CODESCRIBE_STT_ENGINE";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SttEngine {
     Candle,
@@ -17,23 +19,37 @@ enum SttEngine {
 }
 
 fn selected_engine() -> SttEngine {
-    match std::env::var("CODESCRIBE_STT_ENGINE")
-        .unwrap_or_else(|_| "candle".to_string())
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "onnx" => SttEngine::Onnx,
-        "apple" => SttEngine::Apple,
-        _ => SttEngine::Candle,
+    match std::env::var(ENV_STT_ENGINE) {
+        Ok(value) => requested_engine(&value).unwrap_or_else(default_engine),
+        Err(_) => default_engine(),
     }
 }
 
-/// Get the active STT adapter based on `CODESCRIBE_STT_ENGINE` env var.
+fn requested_engine(value: &str) -> Option<SttEngine> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "onnx" => SttEngine::Onnx,
+        "apple" => SttEngine::Apple,
+        "candle" | "whisper" => SttEngine::Candle,
+        "" | "auto" => return None,
+        _ => SttEngine::Candle,
+    }
+    .into()
+}
+
+fn default_engine() -> SttEngine {
+    if apple_stt::is_runtime_available() {
+        SttEngine::Apple
+    } else {
+        SttEngine::Candle
+    }
+}
+
+/// Get the active STT adapter based on `CODESCRIBE_STT_ENGINE` env var or auto policy.
 ///
 /// - `"onnx"` → initializes ONNX engine + returns `OnnxWhisperAdapter`
 /// - `"apple"` → initializes SpeechAnalyzer bridge + returns Apple adapter
-/// - anything else → `WhisperSingletonAdapter` (candle, default)
+/// - unset/`"auto"` → Apple on supported macOS, otherwise Candle
+/// - anything else → `WhisperSingletonAdapter` (candle)
 ///
 /// Apple path gracefully falls back to Candle if unavailable.
 pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
@@ -61,7 +77,7 @@ pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
 // ── Engine-level router ──────────────────────────────────────────────────────
 //
 // These functions dispatch to candle, ONNX, or Apple SpeechAnalyzer based on
-// `CODESCRIBE_STT_ENGINE`. They match the call semantics of
+// `CODESCRIBE_STT_ENGINE` plus the default auto policy. They match the call semantics of
 // `LocalWhisperEngine::transcribe_with_language` (chunk) and
 // `transcribe_long_with_language` (utterance/correction).
 //
@@ -197,5 +213,70 @@ pub(crate) fn try_transcribe_long_with_segments(
             || candle_try_transcribe_long_with_segments(audio, sample_rate, language),
         ),
         SttEngine::Candle => candle_try_transcribe_long_with_segments(audio, sample_rate, language),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn unset() -> Self {
+            let previous = std::env::var(ENV_STT_ENGINE).ok();
+            unsafe { std::env::remove_var(ENV_STT_ENGINE) };
+            Self { previous }
+        }
+
+        fn set(value: &str) -> Self {
+            let previous = std::env::var(ENV_STT_ENGINE).ok();
+            unsafe { std::env::set_var(ENV_STT_ENGINE, value) };
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.previous.as_deref() {
+                Some(value) => unsafe { std::env::set_var(ENV_STT_ENGINE, value) },
+                None => unsafe { std::env::remove_var(ENV_STT_ENGINE) },
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn selected_engine_defaults_to_platform_auto_policy() {
+        let _guard = EnvGuard::unset();
+        let expected = if apple_stt::is_runtime_available() {
+            SttEngine::Apple
+        } else {
+            SttEngine::Candle
+        };
+        assert_eq!(selected_engine(), expected);
+    }
+
+    #[test]
+    #[serial]
+    fn selected_engine_respects_explicit_overrides() {
+        let _guard = EnvGuard::set("candle");
+        assert_eq!(selected_engine(), SttEngine::Candle);
+
+        unsafe { std::env::set_var(ENV_STT_ENGINE, "onnx") };
+        assert_eq!(selected_engine(), SttEngine::Onnx);
+
+        unsafe { std::env::set_var(ENV_STT_ENGINE, "apple") };
+        assert_eq!(selected_engine(), SttEngine::Apple);
+    }
+
+    #[test]
+    #[serial]
+    fn selected_engine_auto_alias_uses_platform_default() {
+        let _guard = EnvGuard::set("auto");
+        assert_eq!(selected_engine(), default_engine());
     }
 }
