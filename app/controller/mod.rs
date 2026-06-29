@@ -1409,10 +1409,27 @@ impl RecordingController {
 
             if crate::app_automation_mode_enabled() {
                 info!("Skipping Whisper initialization in app automation mode");
-            } else if !crate::whisper::is_initialized()
-                && let Err(e) = crate::whisper::init()
-            {
-                warn!("Failed to initialize Whisper engine: {}", e);
+            } else if !crate::whisper::is_initialized() {
+                // Best-effort BACKGROUND prewarm — never block recording readiness.
+                //
+                // Product invariant: recording readiness is NOT Whisper readiness.
+                // Audio capture must start the moment the user presses record; the
+                // live pipeline and the final pass lazy-load the engine on first use
+                // (`with_engine`). A failed prewarm is a warning, not an app or
+                // recording failure. The idle-unload reaper (commit 2b8bb1f) may
+                // legitimately drop the engine later and the next call reloads it —
+                // pinning it here would undo that GPU/host-memory reclaim.
+                std::thread::Builder::new()
+                    .name("whisper-prewarm".into())
+                    .spawn(|| {
+                        if let Err(e) = crate::whisper::init() {
+                            warn!(
+                                "Whisper background prewarm failed (will lazy-load on first use): {}",
+                                e
+                            );
+                        }
+                    })
+                    .ok();
             }
         }
 

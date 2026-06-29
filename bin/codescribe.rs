@@ -663,7 +663,6 @@ async fn run_daemon() -> Result<()> {
 }
 
 async fn initialize_daemon_runtime() -> Result<()> {
-    use anyhow::Context;
     use codescribe::config::{Config, UserSettings};
     use codescribe::controller::RecordingController;
     use codescribe::os::hotkeys::HotkeyEvent;
@@ -699,9 +698,12 @@ async fn initialize_daemon_runtime() -> Result<()> {
         codescribe_core::attachment::AttachmentStore::cleanup_old(7);
     });
 
-    if !automation_mode {
-        codescribe::whisper::init().context("Failed to initialize Whisper")?;
-    }
+    // Whisper is intentionally NOT eagerly loaded on the daemon startup path:
+    // recording must not depend on model readiness, and a missing/slow model
+    // must never abort app startup. `RecordingController::new()` kicks a
+    // best-effort background prewarm, and the live + final-pass paths lazy-load
+    // the engine on first use. Idle-unload reclaim (commit 2b8bb1f) stays intact:
+    // the engine may unload after inactivity and reload lazily on the next call.
     let controller = Arc::new(RecordingController::new());
     #[cfg(target_os = "macos")]
     codescribe::controller::register_overlay_controller(Arc::clone(&controller));
