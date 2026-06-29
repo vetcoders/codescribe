@@ -279,6 +279,9 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
             };
             IpcResponse::Status(status)
         }
+        IpcCommand::GetAppAutomationState => {
+            IpcResponse::AppAutomationState(crate::ui::automation::app_automation_state())
+        }
         IpcCommand::StartRecording { assistive } => {
             if controller.is_recording().await || controller.is_busy().await {
                 return IpcResponse::Error("Recording already in progress".to_string());
@@ -306,6 +309,12 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
             match controller.stop_recording_from_external_surface().await {
                 Ok(()) => IpcResponse::Ok,
                 Err(e) => IpcResponse::Error(format!("Failed to stop recording: {}", e)),
+            }
+        }
+        IpcCommand::RunAppAutomation { action } => {
+            match crate::ui::automation::run_app_automation(action).await {
+                Ok(state) => IpcResponse::AppAutomationState(state),
+                Err(e) => IpcResponse::Error(format!("App automation failed: {}", e)),
             }
         }
         IpcCommand::Subscribe | IpcCommand::Unsubscribe => {

@@ -53,9 +53,22 @@ pub use ui::{
 pub use ui::onboarding::{should_show_onboarding, show_onboarding_wizard};
 
 #[cfg(target_os = "macos")]
+pub use ui::automation::{app_automation_state, run_app_automation};
+
+#[cfg(target_os = "macos")]
 pub use ui::tray;
 
 #[cfg(target_os = "macos")]
 pub use os::clipboard;
 #[cfg(target_os = "macos")]
 pub use os::hotkeys;
+
+pub fn app_automation_mode_enabled() -> bool {
+    std::env::var("CODESCRIBE_APP_AUTOMATION_MODE")
+        .ok()
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}

@@ -351,6 +351,13 @@ pub fn show_settings_window() {
     });
 }
 
+pub fn is_settings_window_visible() -> bool {
+    let state = SETTINGS_WINDOW_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.window.is_some()
+}
+
 fn show_settings_window_impl() {
     // Keep Settings as a standalone window.
     // It should not depend on the voice chat overlay being available.

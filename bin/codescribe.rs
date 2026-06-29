@@ -41,6 +41,12 @@ enum Commands {
     /// Run as daemon with tray icon (default when no args)
     Daemon,
 
+    /// Query or drive the native app automation surface over IPC
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
+    },
+
     /// Migrate transcript/audio filenames to ASCII + suffix naming
     MigrateHistory {
         /// Only print planned changes without renaming files
@@ -88,6 +94,52 @@ enum TranscribeMode {
     Live,
 }
 
+#[derive(Subcommand)]
+enum AppCommand {
+    /// Print the current native app automation state as JSON
+    State,
+    /// Run one native app automation action and print the resulting state as JSON
+    Action {
+        #[arg(value_enum)]
+        action: AppAutomationCliAction,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum AppAutomationCliAction {
+    ResetUi,
+    ShowSettings,
+    HideSettings,
+    ShowVoiceChat,
+    HideVoiceChat,
+    ShowTranscriptionOverlay,
+    HideTranscriptionOverlay,
+    TriggerTrayShowAgent,
+    TriggerTrayOpenSettings,
+    TriggerTrayContinueOnboarding,
+    TriggerDockReopen,
+}
+
+impl From<AppAutomationCliAction> for codescribe::ipc::AppAutomationAction {
+    fn from(value: AppAutomationCliAction) -> Self {
+        match value {
+            AppAutomationCliAction::ResetUi => Self::ResetUi,
+            AppAutomationCliAction::ShowSettings => Self::ShowSettings,
+            AppAutomationCliAction::HideSettings => Self::HideSettings,
+            AppAutomationCliAction::ShowVoiceChat => Self::ShowVoiceChat,
+            AppAutomationCliAction::HideVoiceChat => Self::HideVoiceChat,
+            AppAutomationCliAction::ShowTranscriptionOverlay => Self::ShowTranscriptionOverlay,
+            AppAutomationCliAction::HideTranscriptionOverlay => Self::HideTranscriptionOverlay,
+            AppAutomationCliAction::TriggerTrayShowAgent => Self::TriggerTrayShowAgent,
+            AppAutomationCliAction::TriggerTrayOpenSettings => Self::TriggerTrayOpenSettings,
+            AppAutomationCliAction::TriggerTrayContinueOnboarding => {
+                Self::TriggerTrayContinueOnboarding
+            }
+            AppAutomationCliAction::TriggerDockReopen => Self::TriggerDockReopen,
+        }
+    }
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum MigrateKind {
     Raw,
@@ -132,11 +184,34 @@ async fn main() -> Result<()> {
     // Handle subcommands
     match cli.command {
         Some(Commands::Transcribe(args)) => handle_transcribe_command(args).await,
+        Some(Commands::App { command }) => handle_app_command(command),
         Some(Commands::MigrateHistory {
             dry_run,
             assume_kind,
         }) => handle_migrate_history_command(dry_run, assume_kind),
         Some(Commands::Daemon) | None => run_daemon().await,
+    }
+}
+
+fn handle_app_command(command: AppCommand) -> Result<()> {
+    use anyhow::bail;
+    use codescribe::ipc::{IpcCommand, IpcResponse, send_command_blocking};
+
+    let response = match command {
+        AppCommand::State => send_command_blocking(&IpcCommand::GetAppAutomationState),
+        AppCommand::Action { action } => send_command_blocking(&IpcCommand::RunAppAutomation {
+            action: action.into(),
+        }),
+    }
+    .map_err(anyhow::Error::msg)?;
+
+    match response {
+        IpcResponse::AppAutomationState(state) => {
+            println!("{}", serde_json::to_string_pretty(&state)?);
+            Ok(())
+        }
+        IpcResponse::Error(message) => bail!(message),
+        other => bail!("Unexpected IPC response for app command: {:?}", other),
     }
 }
 
@@ -598,13 +673,23 @@ async fn initialize_daemon_runtime() -> Result<()> {
     use tokio::runtime::Handle;
 
     let config = Config::load();
+    let automation_mode = codescribe::app_automation_mode_enabled();
+    if automation_mode {
+        info!(
+            "App automation mode enabled: skipping Whisper preload, permissions bootstrap, quality daemon, and hotkey registration"
+        );
+    }
     let _user_settings = UserSettings::load();
     let menu_rx = tray::menu_event_receiver()?;
-    let _ = codescribe::qube_lifecycle::start_if_enabled();
+    if !automation_mode {
+        let _ = codescribe::qube_lifecycle::start_if_enabled();
+    }
 
     #[cfg(target_os = "macos")]
     {
-        codescribe::os::thermal::install_thermal_probe();
+        if !automation_mode {
+            codescribe::os::thermal::install_thermal_probe();
+        }
         codescribe::set_dock_icon();
         codescribe::apply_dock_icon_visibility(config.show_dock_icon);
         codescribe::install_basic_edit_menu();
@@ -614,12 +699,14 @@ async fn initialize_daemon_runtime() -> Result<()> {
         codescribe_core::attachment::AttachmentStore::cleanup_old(7);
     });
 
-    codescribe::whisper::init().context("Failed to initialize Whisper")?;
+    if !automation_mode {
+        codescribe::whisper::init().context("Failed to initialize Whisper")?;
+    }
     let controller = Arc::new(RecordingController::new());
     #[cfg(target_os = "macos")]
     codescribe::controller::register_overlay_controller(Arc::clone(&controller));
     #[cfg(target_os = "macos")]
-    {
+    if !automation_mode {
         codescribe::os::permissions::check_all_permissions();
 
         if codescribe::should_show_onboarding() {
@@ -627,7 +714,9 @@ async fn initialize_daemon_runtime() -> Result<()> {
         }
     }
 
-    sync_hotkey_config(&config);
+    if !automation_mode {
+        sync_hotkey_config(&config);
+    }
 
     let ipc_controller = Arc::clone(&controller);
     tokio::spawn(async move {
@@ -683,7 +772,9 @@ async fn initialize_daemon_runtime() -> Result<()> {
                     }
                     _ => {}
                 }
-                sync_hotkey_config(&config);
+                if !automation_mode {
+                    sync_hotkey_config(&config);
+                }
                 controller.set_config(config).await;
             });
 
@@ -708,7 +799,7 @@ async fn initialize_daemon_runtime() -> Result<()> {
         }
     });
 
-    if let Err(e) = hotkeys::install_global_hotkey_manager(tx) {
+    if !automation_mode && let Err(e) = hotkeys::install_global_hotkey_manager(tx) {
         eprintln!(
             "Hotkeys waiting on permissions ({}). Grant Accessibility + Input Monitoring and Codescribe will reinitialize them live.",
             e

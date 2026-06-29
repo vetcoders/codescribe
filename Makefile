@@ -4,7 +4,7 @@
 .PHONY: all build release release-codescribe release-codescribe-embedded release-qube install install-no-embed config bundle install-app \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
-        lint format test test-quick test-e2e test-e2e-real test-sse test-formatting test-all \
+        lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
         demo demo-raw demo-assistive check semgrep fix clean help \
         dmg dmg-signed release-standard release-full release-dmgs notarize download-model download-e5 download-embedder ensure-models \
         hooks
@@ -230,6 +230,9 @@ lint:
 	@cargo clippy --workspace -- -D warnings
 
 TEST_LOG := /tmp/codescribe-tests.log
+TEST_SSE_CARGO_JOBS ?= 2
+TEST_SSE_PROFILE ?= debug
+TEST_SSE_PROFILE_ARGS := $(if $(filter release,$(TEST_SSE_PROFILE)),--release,)
 
 define TEST_SETUP
 LOG=$(TEST_LOG); \
@@ -278,13 +281,29 @@ test-e2e-real:
 
 test-sse:
 	@$(TEST_SETUP); \
+	set -o pipefail; \
 	echo "=== SSE Streaming Tests ===" | tee -a "$$LOG"; \
+	TEST_SSE_PROFILE="$(TEST_SSE_PROFILE)" CARGO_BUILD_JOBS="$(TEST_SSE_CARGO_JOBS)" ./scripts/test-sse-preflight.sh 2>&1 | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test e2e_sse --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
-	echo "=== Responses Live Chain/Resume Tests ===" | tee -a "$$LOG"; \
-	$(ENV_LOAD); CODESCRIBE_E2E_RESPONSES=1 \
-	cargo test --test e2e_retry_responses -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	CARGO_BUILD_JOBS="$(TEST_SSE_CARGO_JOBS)" \
+	cargo test --test e2e_sse_streaming $(TEST_SSE_PROFILE_ARGS) -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	if [[ "$${CODESCRIBE_TEST_SSE_RESPONSES:-0}" == "1" ]]; then \
+	  echo "=== Responses Live Chain/Resume Tests ===" | tee -a "$$LOG"; \
+	  $(ENV_LOAD); CODESCRIBE_E2E_RESPONSES=1 CARGO_BUILD_JOBS="$(TEST_SSE_CARGO_JOBS)" \
+	  cargo test --test e2e_retry_responses -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	else \
+	  echo "Skipping Responses Live Chain/Resume Tests (set CODESCRIBE_TEST_SSE_RESPONSES=1)." | tee -a "$$LOG"; \
+	fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
+
+test-sse-release:
+	@CODESCRIBE_ALLOW_RELEASE_SSE=1 TEST_SSE_PROFILE=release $(MAKE) test-sse
+
+test-responses-live:
+	@CODESCRIBE_TEST_SSE_RESPONSES=1 $(MAKE) test-sse
+
+test-sse-heavy:
+	@CODESCRIBE_ALLOW_RELEASE_SSE=1 CODESCRIBE_TEST_SSE_RESPONSES=1 TEST_SSE_PROFILE=release $(MAKE) test-sse
 
 test-formatting:
 	@$(TEST_SETUP); \
