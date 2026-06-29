@@ -91,6 +91,7 @@ final class OverlayState: ObservableObject {
     @Published var committedUtterances: [String] = [] // accumulated finals, one item per utterance
     @Published var formattedText: String = ""  // finalized transcript after stop
     @Published var vadActive: Bool = false     // drives the WaveformView pulse
+    @Published var warmingUp: Bool = false     // true after user intent, before audio/VAD proves life
     @Published var toast: String?              // transient no-speech / error notice
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
@@ -123,9 +124,12 @@ final class OverlayState: ObservableObject {
 
     // MARK: Derived display (one source of truth for the view)
 
-    var statusText: String { mode == .listening ? "recording" : "Idle" }
+    var statusText: String {
+        guard mode == .listening else { return "Idle" }
+        return warmingUp ? "starting" : "recording"
+    }
     var statusColor: Color { mode == .listening ? CSColor.terracotta : CSColor.oliveLight }
-    var statusRippling: Bool { mode == .listening }
+    var statusRippling: Bool { mode == .listening && vadActive }
 
     var tagText: String { mode == .listening ? "DICTATION" : "FINAL" }
     var tagColor: Color { mode == .listening ? CSColor.terracottaLight : CSColor.oliveLight }
@@ -133,6 +137,7 @@ final class OverlayState: ObservableObject {
     var metaText: String { mode == .listening ? "live preview · raw" : "final · transcript" }
     var footerRight: String {
         if isFormatting { return "formatting" }
+        if mode == .listening && warmingUp { return "warming up" }
         return mode == .listening ? "vad-gated preview" : "editable"
     }
 
@@ -144,7 +149,10 @@ final class OverlayState: ObservableObject {
     }
 
     /// Text shown in the listening body, with the mock's "listening…" placeholder.
-    var listeningDisplay: String { liveText.isEmpty ? "listening…" : liveText }
+    var listeningDisplay: String {
+        if !liveText.isEmpty { return liveText }
+        return warmingUp ? "starting…" : "listening…"
+    }
 
     /// Whatever the action row should copy/send for the current state.
     var activeText: String { mode == .listening ? liveText : formattedText }
@@ -180,6 +188,7 @@ final class OverlayState: ObservableObject {
         }
         engine.setListener(listener)
         mode = .listening
+        warmingUp = true
         resetTranscript()
         formattedText = ""
         isFormatting = false
@@ -190,6 +199,7 @@ final class OverlayState: ObservableObject {
             try await engine.startRecording(language: language)
         } catch {
             recording = false
+            warmingUp = false
             errorMessage = "Couldn't start recording: \(error)"
             showToast("Couldn't start recording")
         }
@@ -218,12 +228,14 @@ final class OverlayState: ObservableObject {
             let raw = try await engine.stopRecording()
             recording = false
             vadActive = false
+            warmingUp = false
             commitPreviewIfNeeded()
             let visible = liveText
             formattedText = visible.isEmpty ? raw : visible
             mode = .formatted
         } catch {
             recording = false
+            warmingUp = false
             errorMessage = "Couldn't finalize transcript: \(error)"
             showToast("Couldn't finalize transcript")
         }
@@ -249,12 +261,25 @@ final class OverlayState: ObservableObject {
             Task { @MainActor in _ = try? await engine.stopRecording() }
         }
         vadActive = false
+        warmingUp = false
         onClose?()
+    }
+
+    func prepareForExternalStart() {
+        mode = .listening
+        warmingUp = true
+        if !recording {
+            resetTranscript()
+            formattedText = ""
+            isFormatting = false
+            errorMessage = nil
+        }
     }
 
     func handleRecordingStarted() {
         let wasRecording = recording
         mode = .listening
+        warmingUp = true
         if !wasRecording {
             resetTranscript()
             formattedText = ""
@@ -268,6 +293,7 @@ final class OverlayState: ObservableObject {
     func finishControllerRecording() {
         recording = false
         vadActive = false
+        warmingUp = false
         commitPreviewIfNeeded()
         formattedText = liveText
         mode = .formatted
@@ -279,12 +305,16 @@ final class OverlayState: ObservableObject {
         let next = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !next.isEmpty else { return }
         mode = .listening
+        warmingUp = false
         if preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             preview = next
             return
         }
-        if isSamePreviewUtterance(current: preview, next: next) {
+        if previewExtendsVisibleText(current: preview, next: next) {
             preview = next
+            return
+        }
+        if previewWouldShrinkVisibleText(current: preview, next: next) {
             return
         }
         commitPreviewIfNeeded()
@@ -296,6 +326,7 @@ final class OverlayState: ObservableObject {
         guard !corrected.isEmpty else { return }
 
         mode = .listening
+        warmingUp = false
         let previous = previousText.trimmingCharacters(in: .whitespacesAndNewlines)
         if replacesActivePreview(previous: previous, corrected: corrected) {
             return
@@ -305,8 +336,10 @@ final class OverlayState: ObservableObject {
         }
 
         if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if isSamePreviewUtterance(current: preview, next: corrected) {
+            if previewExtendsVisibleText(current: preview, next: corrected) {
                 preview = corrected
+            } else if previewWouldShrinkVisibleText(current: preview, next: corrected) {
+                return
             } else {
                 commitPreviewIfNeeded()
                 preview = corrected
@@ -321,9 +354,18 @@ final class OverlayState: ObservableObject {
 
     func applyFinal(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        warmingUp = false
         if !trimmed.isEmpty {
-            if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               !isSamePreviewUtterance(current: preview, next: trimmed) {
+            if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if previewExtendsVisibleText(current: preview, next: trimmed) {
+                    appendCommittedSegment(trimmed)
+                    preview = ""
+                    return
+                }
+                if previewWouldShrinkVisibleText(current: preview, next: trimmed) {
+                    commitPreviewIfNeeded()
+                    return
+                }
                 commitPreviewIfNeeded()
             }
             appendCommittedSegment(trimmed)
@@ -358,6 +400,7 @@ final class OverlayState: ObservableObject {
     }
 
     func applySessionFinalised() {
+        warmingUp = false
         commitPreviewIfNeeded()
         formattedText = liveText
         mode = .formatted
@@ -390,27 +433,24 @@ final class OverlayState: ObservableObject {
         committedUtterances = committedSegments.map(\.renderedText)
     }
 
-    private func isSamePreviewUtterance(current: String, next: String) -> Bool {
+    private func previewExtendsVisibleText(current: String, next: String) -> Bool {
         let currentKey = normalized(current)
         let nextKey = normalized(next)
         guard !currentKey.isEmpty, !nextKey.isEmpty else { return false }
         return nextKey.hasPrefix(currentKey)
-            || currentKey.hasPrefix(nextKey)
-            || substantialTokenOverlap(currentKey, nextKey)
     }
 
-    private func substantialTokenOverlap(_ lhs: String, _ rhs: String) -> Bool {
-        let left = Set(lhs.split(separator: " ").map(String.init))
-        let right = Set(rhs.split(separator: " ").map(String.init))
-        guard min(left.count, right.count) >= 3 else { return false }
-        let shared = left.intersection(right).count
-        return Double(shared) / Double(min(left.count, right.count)) >= 0.65
+    private func previewWouldShrinkVisibleText(current: String, next: String) -> Bool {
+        let currentKey = normalized(current)
+        let nextKey = normalized(next)
+        guard !currentKey.isEmpty, !nextKey.isEmpty else { return false }
+        return currentKey.hasPrefix(nextKey)
     }
 
     private func replacesActivePreview(previous: String, corrected: String) -> Bool {
         guard !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         if previous.isEmpty {
-            guard isSamePreviewUtterance(current: preview, next: corrected) else { return false }
+            guard previewExtendsVisibleText(current: preview, next: corrected) else { return false }
             preview = corrected
             return true
         }
@@ -443,6 +483,7 @@ final class OverlayState: ObservableObject {
 
     func applyVad(_ active: Bool) {
         vadActive = active
+        if active { warmingUp = false }
     }
 
     func showToast(_ message: String) {

@@ -11,6 +11,7 @@ import AppKit
 final class TrayViewModel: ObservableObject {
     // Runtime status (drives the pill + dictation row).
     @Published var isRecording: Bool
+    @Published var isStartingDictation: Bool = false
     @Published var agentAvailable: Bool = true
 
     // Quick config toggles (reflected on disk via the engine).
@@ -26,6 +27,7 @@ final class TrayViewModel: ObservableObject {
 
     // Navigation intents — bound by App.swift to the actual window/scene opens.
     var onIntent: (TrayIntent) -> Void = { _ in }
+    var onDictationStartRequested: () -> Void = {}
 
     // App-level actions — injected by App.swift. Defaults are best-effort / no-op
     // so the screen is fully interactive in isolation and in #Preview.
@@ -54,8 +56,11 @@ final class TrayViewModel: ObservableObject {
     // MARK: - Derived status (mock copy + palette)
 
     /// Olive "Idle" when stopped, terracotta "Recording" when live.
-    var statusText: String { isRecording ? "Recording" : "Idle" }
-    var statusColor: Color { isRecording ? CSColor.terracotta : CSColor.oliveLight }
+    var statusText: String {
+        if isStartingDictation { return "Starting" }
+        return isRecording ? "Recording" : "Idle"
+    }
+    var statusColor: Color { (isRecording || isStartingDictation) ? CSColor.terracotta : CSColor.oliveLight }
 
     /// Pull prompt-free runtime flags from the engine (call on appear).
     func refreshStatus() {
@@ -76,6 +81,11 @@ final class TrayViewModel: ObservableObject {
     func toggleDictation() {
         guard let engine else { isRecording.toggle(); return }
         let wasRecording = isRecording
+        if !wasRecording {
+            isStartingDictation = true
+            isRecording = true
+            onDictationStartRequested()
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -84,6 +94,7 @@ final class TrayViewModel: ObservableObject {
             } catch {
                 // Swallow: the reconcile below reflects the real session state.
             }
+            self.isStartingDictation = false
             self.isRecording = await engine.isRecording()
         }
     }

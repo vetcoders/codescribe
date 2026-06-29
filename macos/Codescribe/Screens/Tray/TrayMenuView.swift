@@ -56,7 +56,7 @@ struct TrayMenuView: View {
             StatusPill(
                 text: viewModel.statusText,
                 color: viewModel.statusColor,
-                rippling: viewModel.isRecording
+                rippling: viewModel.isRecording && !viewModel.isStartingDictation
             )
         }
         .padding(.horizontal, 12)
@@ -79,9 +79,11 @@ struct TrayMenuView: View {
             ) { viewModel.onShowAgent() }
 
             TrayRow(
-                icon: viewModel.isRecording ? "■" : "●",
+                icon: viewModel.isRecording && !viewModel.isStartingDictation ? "■" : "●",
                 iconColor: viewModel.isRecording ? CSColor.terracotta : CSColor.oliveLight,
-                title: viewModel.isRecording ? "Stop Dictation" : "Start Dictation"
+                title: viewModel.isStartingDictation
+                    ? "Starting…"
+                    : (viewModel.isRecording ? "Stop Dictation" : "Start Dictation")
             ) { viewModel.toggleDictation() }
 
             TrayRow(icon: "🕑", title: "Open history…") { viewModel.openHistory() }

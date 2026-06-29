@@ -78,6 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        model.tray.onDictationStartRequested = { [model] in
+            model.overlay.prepareForRecordingStart()
+            model.overlay.show()
+        }
         installStatusItem()
         startHotkeys()
     }

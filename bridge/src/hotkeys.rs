@@ -132,7 +132,7 @@ fn current_listener() -> Option<Arc<dyn CsTranscriptionListener>> {
         .map(Arc::clone)
 }
 
-async fn optimistically_show_overlay(event: &HotkeyEvent, controller: &RecordingController) {
+async fn optimistically_show_overlay(event: &HotkeyEvent) {
     let starts_redesign_overlay = matches!(
         event,
         HotkeyEvent::ToggleNormal
@@ -142,8 +142,13 @@ async fn optimistically_show_overlay(event: &HotkeyEvent, controller: &Recording
                 ..
             }
     );
-    if !starts_redesign_overlay || controller.current_state().await != State::Idle {
+    if !starts_redesign_overlay {
         return;
+    }
+    if let Some(existing) = current_controller(&shared_controller()) {
+        if existing.current_state().await != State::Idle {
+            return;
+        }
     }
     if let Some(listener) = current_listener() {
         listener.on_recording_started();
@@ -177,10 +182,12 @@ impl CodescribeHotkeys {
 
         std::thread::spawn(move || {
             for event in rx {
-                let controller = ensure_controller(&controller_store, handle.clone());
-                let handle = handle.clone();
-                handle.spawn(async move {
-                    optimistically_show_overlay(&event, &controller).await;
+                let spawn_handle = handle.clone();
+                let controller_handle = handle.clone();
+                let controller_store = Arc::clone(&controller_store);
+                spawn_handle.spawn(async move {
+                    optimistically_show_overlay(&event).await;
+                    let controller = ensure_controller(&controller_store, controller_handle);
                     if let Err(error) = dispatch_hotkey_event(event, controller).await {
                         eprintln!("Hotkey event error: {error}");
                     }
@@ -200,9 +207,9 @@ impl CodescribeHotkeys {
 
     /// Start the same toggle recording flow used by the default hotkey.
     pub async fn start_recording(&self) -> Result<(), CsError> {
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
         let event = HotkeyEvent::ToggleNormal;
-        optimistically_show_overlay(&event, &controller).await;
+        optimistically_show_overlay(&event).await;
+        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
         dispatch_hotkey_event(event, controller)
             .await
             .map_err(|error| CsError::Recording {

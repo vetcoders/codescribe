@@ -44,6 +44,10 @@ final class OverlayController: ObservableObject {
 
     func toggle() { (panel?.isVisible ?? false) ? hide() : show() }
 
+    func prepareForRecordingStart() {
+        state.prepareForExternalStart()
+    }
+
     func show() {
         let panel = panel ?? DictationOverlayWindow.make(state: state)
         self.panel = panel
