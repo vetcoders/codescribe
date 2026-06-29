@@ -1,0 +1,28 @@
+name: CodescribeRedesign
+options:
+  bundleIdPrefix: com.codescribe
+  deploymentTarget:
+    macOS: "14.0"
+targets:
+  CodescribeRedesign:
+    type: application
+    platform: macOS
+    sources: [Codescribe]
+    info:
+      path: Codescribe/Info.plist
+      properties:
+        CFBundleDisplayName: codescribe redesign
+        CFBundleName: codescribe redesign
+        NSMicrophoneUsageDescription: "codescribe transcribes your speech locally with on-device Whisper."
+    settings:
+      base:
+        # Same dev identity as the prior redesign build → own TCC/keychain slot.
+        PRODUCT_BUNDLE_IDENTIFIER: com.codescribe.redesign
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "CodeScribe Dev"
+        ENABLE_HARDENED_RUNTIME: NO
+        SWIFT_VERSION: 5.0
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Bridge/codescribe_ffiFFI.h
+        # Links libcodescribe_ffi.dylib from the cargo build (codescribe/target/debug).
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
+        OTHER_LDFLAGS: "-lcodescribe_ffi"
