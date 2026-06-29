@@ -43,8 +43,8 @@ final class RealTrayEngine: TrayEngine {
     }
 
     func currentToggles() -> (showDockIcon: Bool, overlayEnabled: Bool)? {
-        let settings = config.loadSettings()
-        return (settings.showDockIcon, settings.transcriptionOverlayEnabled)
+        let toggles = config.trayToggles()
+        return (toggles.showDockIcon, toggles.transcriptionOverlayEnabled)
     }
 
     func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool) {

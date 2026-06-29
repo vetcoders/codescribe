@@ -114,6 +114,14 @@ pub struct CsConfigEntry {
     pub value: String,
 }
 
+/// Prompt-free tray subset. Reads only settings.json/defaults and does not touch
+/// Keychain-backed API keys.
+#[derive(uniffi::Record)]
+pub struct CsTrayToggles {
+    pub show_dock_icon: bool,
+    pub transcription_overlay_enabled: bool,
+}
+
 /// Thin handle to the codescribe config engine. Stateless: each method reloads
 /// or writes through the live `Config` / `UserSettings` / Keychain so Swift
 /// always sees on-disk truth.
@@ -182,6 +190,20 @@ impl CodescribeConfig {
             emit_words_max: env_parse("CODESCRIBE_EMIT_WORDS_MAX"),
             buffered_interim_sec: env_parse("CODESCRIBE_BUFFERED_INTERIM_SEC"),
             backend_max_upload_mb: env_parse("BACKEND_MAX_UPLOAD_MB"),
+        }
+    }
+
+    /// Lightweight tray-only settings read. Unlike `load_settings`, this never
+    /// calls `Config::load()` and therefore never prompts Keychain just because
+    /// the user opened the menu.
+    pub fn tray_toggles(&self) -> CsTrayToggles {
+        let settings = UserSettings::load();
+        let defaults = Config::default();
+        CsTrayToggles {
+            show_dock_icon: settings.show_dock_icon.unwrap_or(defaults.show_dock_icon),
+            transcription_overlay_enabled: settings
+                .transcription_overlay_enabled
+                .unwrap_or(defaults.transcription_overlay_enabled),
         }
     }
 

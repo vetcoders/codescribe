@@ -13,6 +13,7 @@ targets:
       properties:
         CFBundleDisplayName: codescribe redesign
         CFBundleName: codescribe redesign
+        LSUIElement: true
         NSMicrophoneUsageDescription: "codescribe transcribes your speech locally with on-device Whisper."
     settings:
       base:

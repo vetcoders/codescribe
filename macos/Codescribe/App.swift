@@ -2,40 +2,17 @@ import AppKit
 import SwiftUI
 
 // codescribe redesign — SwiftUI host (Option B), backed by the REAL codescribe engine
-// via UniFFI. WindowGroup AgentChat (renders reliably) + Settings (⌘,) + a MenuBarExtra
-// tray. Regular (dock) app so the Agent window stays reachable. NOTE: the menu-bar
-// tray icon does not reliably appear in this app yet (manual NSStatusItem stranded
-// its button window off-screen at (0,-6); SwiftUI MenuBarExtra is the current
-// attempt), so overlay access also lives in the app menu.
+// via UniFFI. AppKit owns the menu-bar status item/popover; SwiftUI owns the
+// Settings scene and the content hosted inside AppKit windows.
 @main
 struct CodescribeRedesignApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    private let model = AppModel.shared
 
     init() {
         FontLoader.register()
     }
 
     var body: some Scene {
-        WindowGroup("codescribe — Agent", id: "agent") {
-            AgentChatView(store: model.chat)
-                .frame(minWidth: 900, minHeight: 600)
-        }
-        .windowStyle(.titleBar)
-        .commands {
-            CommandMenu("Codescribe") {
-                Button("Open Dictation Overlay") {
-                    model.overlay.show()
-                }
-                .keyboardShortcut("d", modifiers: [.command, .shift])
-            }
-        }
-
-        MenuBarExtra("codescribe", systemImage: "waveform") {
-            TrayMenuView(viewModel: model.tray)
-        }
-        .menuBarExtraStyle(.window)
-
         Settings {
             SettingsView(model: SettingsViewModel(engine: RealSettingsEngine()))
         }
@@ -44,22 +21,81 @@ struct CodescribeRedesignApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let model = AppModel.shared
+    private var agentWindow: NSWindow?
+    private var statusItem: NSStatusItem!
+    private let popover = NSPopover()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let model = AppModel.shared
+        NSApp.setActivationPolicy(.accessory)
+
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 300, height: 460)
+        popover.contentViewController = NSHostingController(
+            rootView: TrayMenuView(viewModel: model.tray)
+        )
+
         model.tray.onIntent = { intent in
             switch intent {
             case .openChat:
-                NSApp.activate(ignoringOtherApps: true)
-                NSApp.windows.first { $0.title.contains("Agent") }?.makeKeyAndOrderFront(nil)
+                self.showAgent()
             case .openSettings:
+                NSApp.activate(ignoringOtherApps: true)
                 if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
                     NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
                 }
             case .openOverlay:
-                model.overlay.show()
+                self.model.overlay.show()
             }
         }
+        installStatusItem()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "codescribe")
+            image?.isTemplate = true
+            button.image = image
+            button.imagePosition = .imageOnly
+            button.title = ""
+            button.toolTip = "codescribe"
+            button.action = #selector(toggleTray)
+            button.target = self
+        }
+        statusItem = item
+    }
+
+    private func showAgent() {
+        if agentWindow == nil {
+            let hosting = NSHostingController(rootView: AgentChatView(store: model.chat))
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "codescribe — Agent"
+            window.setContentSize(NSSize(width: 1120, height: 720))
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            window.titlebarAppearsTransparent = true
+            window.isReleasedWhenClosed = false
+            window.center()
+            agentWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        agentWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private func showTray() {
+        guard let button = statusItem.button else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    @objc private func toggleTray() {
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            showTray()
+        }
+    }
 }

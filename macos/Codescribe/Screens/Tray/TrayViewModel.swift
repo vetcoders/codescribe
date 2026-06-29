@@ -11,11 +11,11 @@ import AppKit
 final class TrayViewModel: ObservableObject {
     // Runtime status (drives the pill + dictation row).
     @Published var isRecording: Bool
-    @Published var agentAvailable: Bool = false
+    @Published var agentAvailable: Bool = true
 
     // Quick config toggles (reflected on disk via the engine).
-    @Published var showDockIcon: Bool = false
-    @Published var overlayEnabled: Bool = false
+    @Published var showDockIcon: Bool = true
+    @Published var overlayEnabled: Bool = true
 
     // Disclosure state for the nested groups. Notes is expanded by default to
     // match the static mock; Diagnostics is collapsed.
@@ -58,10 +58,9 @@ final class TrayViewModel: ObservableObject {
     var statusText: String { isRecording ? "Recording" : "Idle" }
     var statusColor: Color { isRecording ? CSColor.terracotta : CSColor.oliveLight }
 
-    /// Pull the live runtime flags from the engine (call on appear).
+    /// Pull prompt-free runtime flags from the engine (call on appear).
     func refreshStatus() {
         guard let engine else { return }
-        agentAvailable = engine.isAgentAvailable()
         if let toggles = engine.currentToggles() {
             showDockIcon = toggles.showDockIcon
             overlayEnabled = toggles.overlayEnabled
