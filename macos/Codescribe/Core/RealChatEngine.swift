@@ -10,12 +10,13 @@ final class RealChatEngine: AgentChatEngine {
 
     func streamReply(
         _ text: String,
+        threadId: String,
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
         onTool: @escaping @MainActor (_ name: String, _ isError: Bool) -> Void
     ) async throws -> String {
         let listener = StreamListener(onDelta: onDelta, onReasoning: onReasoning, onTool: onTool)
-        return try await agent.streamReply(text: text, listener: listener)
+        return try await agent.streamReply(text: text, threadId: threadId, listener: listener)
     }
 }
 

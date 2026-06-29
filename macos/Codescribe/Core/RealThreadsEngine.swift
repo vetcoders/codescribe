@@ -19,6 +19,10 @@ final class RealThreadsEngine: ChatThreadsProviding {
         }
     }
 
+    func generateThreadId() -> String {
+        threads.generateThreadId()
+    }
+
     func loadMessages(backendId: String) -> [ChatMessage] {
         guard let thread = try? threads.loadThread(id: backendId) else { return [] }
         return thread.messages.compactMap { message -> ChatMessage? in

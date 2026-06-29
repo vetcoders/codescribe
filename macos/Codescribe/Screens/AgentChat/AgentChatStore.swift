@@ -43,6 +43,7 @@ protocol AgentChatEngine: AnyObject {
     /// arrive; returns the final assembled text.
     func streamReply(
         _ text: String,
+        threadId: String,
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
         onTool: @escaping @MainActor (_ name: String, _ isError: Bool) -> Void
@@ -98,6 +99,8 @@ struct ChatThread: Identifiable {
 protocol ChatThreadsProviding: AnyObject {
     func listThreads() -> [ChatThread]
     func loadMessages(backendId: String) -> [ChatMessage]
+    /// Mint a fresh ThreadStore id for a new conversation (so it persists).
+    func generateThreadId() -> String
 }
 
 // MARK: - Store
@@ -166,6 +169,19 @@ final class AgentChatStore: ObservableObject {
         threads[ti].messagesLoaded = true
     }
 
+    /// Resolve (and lazily mint) the ThreadStore id for a thread so the agent
+    /// persists the conversation under a stable id across turns + restarts.
+    private func ensureBackendId(_ threadID: UUID) -> String {
+        guard let ti = threads.firstIndex(where: { $0.id == threadID }) else {
+            return "t_\(UUID().uuidString)"
+        }
+        if let existing = threads[ti].backendId { return existing }
+        let id = threadsProvider?.generateThreadId() ?? "t_\(UUID().uuidString)"
+        threads[ti].backendId = id
+        threads[ti].messagesLoaded = true  // freshly-minted thread starts in sync
+        return id
+    }
+
     // MARK: Send (real single-shot FFI round-trip)
 
     func send() {
@@ -177,6 +193,8 @@ final class AgentChatStore: ObservableObject {
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         let assistantID = assistant.id
         append(assistant, to: threadID)
+
+        let backendId = ensureBackendId(threadID)
 
         Task { @MainActor in
             guard let engine else {
@@ -195,6 +213,7 @@ final class AgentChatStore: ObservableObject {
                 // REAL streaming: tokens land live as the agent emits them.
                 _ = try await engine.streamReply(
                     text,
+                    threadId: backendId,
                     onDelta: { [weak self] delta in
                         self?.update(assistantID, in: threadID) {
                             $0.isThinking = false
@@ -354,6 +373,7 @@ final class MockChatEngine: AgentChatEngine {
     func isAvailable() -> Bool { true }
     func streamReply(
         _ text: String,
+        threadId: String,
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
         onTool: @escaping @MainActor (_ name: String, _ isError: Bool) -> Void
