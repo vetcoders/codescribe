@@ -7,16 +7,19 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
-use futures_util::stream::FuturesOrdered;
+use futures_util::stream::{FuturesOrdered, FuturesUnordered};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
-    DropKind, EngineEvent, EventSink, TranscriptSegment, collect_confidence_flags,
+    DropKind, EngineEvent, EventSink, LayerSource, TranscriptSegment, collect_confidence_flags,
 };
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
+use crate::stt::tail_patcher::{
+    TailPatchConfig, TailPatchOutcome, compute_tail_patch, layered_phase,
+};
 use crate::vad;
 
 use super::correction::{
@@ -125,6 +128,71 @@ pub(crate) fn enqueue_pending_utterance(
     }
 }
 
+fn tail_patch_enabled() -> bool {
+    layered_phase().is_some_and(|phase| phase >= 1)
+}
+
+async fn compute_tail_patch_job(
+    utterance_id: u64,
+    committed_text: String,
+    audio: Vec<f32>,
+    sample_rate: u32,
+    language: Option<String>,
+    config: TailPatchConfig,
+) -> Result<(u64, TailPatchOutcome)> {
+    tokio::task::spawn_blocking(move || {
+        let retranscribed =
+            crate::stt::whisper_tail_patch_transcribe(&audio, sample_rate, language.as_deref())?;
+        Ok((
+            utterance_id,
+            compute_tail_patch(&committed_text, &retranscribed.text, utterance_id, &config),
+        ))
+    })
+    .await
+    .map_err(|e| anyhow!("tail patch worker task failed: {e}"))?
+}
+
+fn emit_tail_patch_result(
+    event_sink: &dyn EventSink,
+    result: Result<(u64, TailPatchOutcome)>,
+) -> u64 {
+    match result {
+        Ok((utterance_id, TailPatchOutcome::Patches(events))) => {
+            let mut emitted = 0u64;
+            for event in events {
+                if matches!(
+                    event,
+                    EngineEvent::ReplaceRange {
+                        source: LayerSource::TailPatch,
+                        ..
+                    }
+                ) {
+                    emitted = emitted.saturating_add(1);
+                }
+                event_sink.on_event(&event);
+            }
+            debug!(utterance_id, emitted, "Applied tail patch replacements");
+            emitted
+        }
+        Ok((utterance_id, TailPatchOutcome::NoChange)) => {
+            debug!(utterance_id, "Tail patch found no changes");
+            0
+        }
+        Ok((utterance_id, TailPatchOutcome::Skipped { reason })) => {
+            debug!(utterance_id, reason, "Tail patch skipped");
+            0
+        }
+        Err(e) => {
+            warn!("Tail patch failed; keeping Layer 0 committed text: {}", e);
+            event_sink.on_event(&EngineEvent::Warning {
+                code: "tail_patch_error".to_string(),
+                message: format!("{}", e),
+            });
+            0
+        }
+    }
+}
+
 // ── Unified transcription session (event-based) ─────────────────────────────
 
 /// Unified transcription session exposed as a single event-emitting pipeline.
@@ -153,6 +221,8 @@ pub(crate) async fn transcription_session(
     };
     let output_sample_rate = session.output_sample_rate();
     let stt_scheduler = SttScheduler::new();
+    let tail_patch_enabled = tail_patch_enabled();
+    let tail_patch_config = TailPatchConfig::from_env();
 
     let mut pipeline = TranscriptionPipeline::new(language);
     let mut preview_rev: u64 = 0;
@@ -162,6 +232,7 @@ pub(crate) async fn transcription_session(
     let semantic_gate_drops: u64 = 0;
     let mut filtered_empty_drops: u64 = 0;
     let mut corrections_applied: u64 = 0;
+    let mut tail_patch_replacements: u64 = 0;
     let mut partial_telemetry = PartialPassTelemetry::default();
     let mut vad_started = false;
     let mut speech_activity_observed = false;
@@ -231,6 +302,7 @@ pub(crate) async fn transcription_session(
         "Phase 1 inference pipeline configured"
     );
     let mut inference_pipeline = FuturesOrdered::new();
+    let mut tail_patch_pipeline = FuturesUnordered::new();
 
     // Phase 2 (buffered correction) — request tracked for stale guards.
     let mut correction_in_flight: Option<SttTaskHandle> = None;
@@ -316,6 +388,11 @@ pub(crate) async fn transcription_session(
                 audio,
                 inference_audio_len: inference_audio.len(),
                 is_final,
+                tail_patch_audio: if is_final && tail_patch_enabled {
+                    Some(inference_audio.clone())
+                } else {
+                    None
+                },
                 speech_vad_samples,
             };
 
@@ -378,6 +455,7 @@ pub(crate) async fn transcription_session(
             && pending_utterances.is_empty()
             && inference_pipeline.is_empty()
             && correction_in_flight.is_none()
+            && tail_patch_pipeline.is_empty()
         {
             break;
         }
@@ -734,7 +812,13 @@ pub(crate) async fn transcription_session(
             }
             // Drain the pipeline. FuturesOrdered guarantees results arrive in the order submitted.
             // This is critical for timestamp calculation and text accumulation.
-            Some((result, item)) = inference_pipeline.next() => {
+            Some(result) = tail_patch_pipeline.next() => {
+                tail_patch_replacements = tail_patch_replacements
+                    .saturating_add(emit_tail_patch_result(event_sink.as_ref(), result));
+            }
+            // Drain the pipeline. FuturesOrdered guarantees results arrive in the order submitted.
+            // This is critical for timestamp calculation and text accumulation.
+            Some((result, mut item)) = inference_pipeline.next() => {
                 // Track audio duration for timestamp computation.
                 let chunk_start_samples = utterance_audio_samples;
                 utterance_audio_samples += item.audio.len();
@@ -928,7 +1012,7 @@ pub(crate) async fn transcription_session(
                                 );
                                 event_sink.on_event(&EngineEvent::UtteranceFinal {
                                     utterance_id,
-                                    text: final_text,
+                                    text: final_text.clone(),
                                     raw_text: raw_text.clone(),
                                     start_ts: utterance_start_s,
                                     end_ts,
@@ -939,6 +1023,18 @@ pub(crate) async fn transcription_session(
                                     quality_gate_dropped,
                                     confidence_flags,
                                 });
+                                if tail_patch_enabled
+                                    && let Some(audio) = item.tail_patch_audio.take()
+                                {
+                                    tail_patch_pipeline.push(compute_tail_patch_job(
+                                        utterance_id,
+                                        final_text,
+                                        audio,
+                                        output_sample_rate,
+                                        pipeline.language.clone(),
+                                        tail_patch_config,
+                                    ));
+                                }
                             } else {
                                 utterance_segments.clear();
                             }
@@ -1113,11 +1209,12 @@ pub(crate) async fn transcription_session(
     }
 
     info!(
-        "Transcription session finished: {} utterances, {} hallucination drops, {} semantic gate drops, {} filtered empty drops, partial_runs={} (utterance={}, speech={}, watchdog={}, stale={}, coalesced={}, dropped={})",
+        "Transcription session finished: {} utterances, {} hallucination drops, {} semantic gate drops, {} filtered empty drops, {} tail patches, partial_runs={} (utterance={}, speech={}, watchdog={}, stale={}, coalesced={}, dropped={})",
         total_utterances,
         pipeline.hallucination_drops,
         semantic_gate_drops,
         filtered_empty_drops,
+        tail_patch_replacements,
         partial_telemetry.runs_total,
         partial_telemetry.trigger_utterance_count,
         partial_telemetry.trigger_speech_count,
@@ -1143,6 +1240,7 @@ struct UtteranceWorkItem {
     audio: Vec<f32>,
     inference_audio_len: usize,
     is_final: bool,
+    tail_patch_audio: Option<Vec<f32>>,
     speech_vad_samples: u64,
 }
 
@@ -1305,6 +1403,36 @@ pub async fn collect_buffered_engine_events(
 #[cfg(test)]
 mod session_tests {
     use super::*;
+
+    #[test]
+    fn tail_patch_result_emits_replace_range_events() {
+        let collector = SessionEventCollector::new();
+        let emitted = emit_tail_patch_result(
+            &collector,
+            Ok((
+                42,
+                TailPatchOutcome::Patches(vec![EngineEvent::ReplaceRange {
+                    utterance_id: 42,
+                    start: 4,
+                    end: 7,
+                    text: "kot".to_string(),
+                    source: LayerSource::TailPatch,
+                }]),
+            )),
+        );
+
+        assert_eq!(emitted, 1);
+        assert!(matches!(
+            collector.events().as_slice(),
+            [EngineEvent::ReplaceRange {
+                utterance_id: 42,
+                start: 4,
+                end: 7,
+                text,
+                source: LayerSource::TailPatch,
+            }] if text == "kot"
+        ));
+    }
 
     #[test]
     fn correction_buffer_window_cap() {

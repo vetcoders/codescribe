@@ -138,6 +138,18 @@ fn candle_transcribe_long_with_segments(
     whisper::singleton::transcribe_with_segments(audio, sample_rate, language)
 }
 
+pub(crate) fn whisper_tail_patch_transcribe(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+) -> anyhow::Result<RawTranscript> {
+    let (speech, _) = crate::vad::extract_speech(audio, sample_rate);
+    if speech.is_empty() {
+        return Ok(RawTranscript::default());
+    }
+    candle_transcribe_long_with_segments(&speech, sample_rate, language)
+}
+
 #[allow(dead_code)]
 fn candle_try_transcribe_long_with_segments(
     audio: &[f32],
