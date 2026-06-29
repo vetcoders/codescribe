@@ -3,6 +3,7 @@ import SwiftUI
 
 /// Owns the app's long-lived view-models + engines so they can reference each
 /// other (overlay → chat, tray → overlay) without @StateObject init-order pain.
+/// The menu-bar status item itself lives in the AppDelegate (proven reliable).
 @MainActor
 final class AppModel: ObservableObject {
     static let shared = AppModel()
