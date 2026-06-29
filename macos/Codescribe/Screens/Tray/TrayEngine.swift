@@ -12,7 +12,6 @@ import Foundation
 enum TrayIntent {
     case openChat      // bring up the Agent Chat window
     case openSettings  // open the Settings window
-    case openOverlay   // show the transcription overlay panel
 }
 
 /// The two fast config toggles surfaced in the tray, mapped to the core's

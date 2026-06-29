@@ -2,15 +2,15 @@ import AppKit
 import SwiftUI
 
 /// Owns the app's long-lived view-models + engines so they can reference each
-/// other (overlay → chat, tray → overlay) without @StateObject init-order pain.
+/// other without @StateObject init-order pain.
 /// The menu-bar status item itself lives in the AppDelegate (proven reliable).
 @MainActor
 final class AppModel: ObservableObject {
     static let shared = AppModel()
 
     let chat: AgentChatStore
-    let tray: TrayViewModel
     let overlay: OverlayController
+    let tray: TrayViewModel
 
     init() {
         let chat = AgentChatStore(engine: RealChatEngine(), threadsProvider: RealThreadsEngine())
@@ -20,16 +20,18 @@ final class AppModel: ObservableObject {
     }
 }
 
-/// Owns the floating dictation NSPanel + its OverlayState; shows/hides on demand.
-/// The panel auto-starts recording on appear (the product's hero flow), so it is
-/// only created/shown when the user explicitly opens it (Tray → Open Overlay).
+/// Owns the floating dictation NSPanel + its OverlayState.
+/// Recording is owned by `CodescribeHotkeys`/`RecordingController`; this panel is
+/// only the SwiftUI surface for that single controller.
 @MainActor
 final class OverlayController: ObservableObject {
     let state = OverlayState()
     private var panel: NSPanel?
 
     init(store: AgentChatStore) {
-        state.engine = RealDictationEngine()
+        state.engine = ControllerDictationEngine()
+        state.onRecordingStarted = { [weak self] in self?.show() }
+        state.onRecordingStopped = { [weak self] in self?.markStopped() }
         state.onClose = { [weak self] in self?.hide() }
         state.onSendToAgent = { [weak self, weak store] text in
             guard let store, !text.isEmpty else { return }
@@ -37,6 +39,7 @@ final class OverlayController: ObservableObject {
             store.send()
             self?.hide()
         }
+        state.attach()
     }
 
     func toggle() { (panel?.isVisible ?? false) ? hide() : show() }
@@ -46,16 +49,20 @@ final class OverlayController: ObservableObject {
         self.panel = panel
         if let screen = NSScreen.main {
             let frame = panel.frame
+            let visible = screen.visibleFrame
             panel.setFrameOrigin(NSPoint(
-                x: screen.frame.midX - frame.width / 2,
-                y: screen.frame.minY + screen.frame.height * 0.18
+                x: visible.midX - frame.width / 2,
+                y: visible.minY + visible.height * 0.22
             ))
         }
         panel.orderFrontRegardless()
     }
 
+    func markStopped() {
+        state.finishControllerRecording()
+    }
+
     func hide() {
-        state.stop()
         panel?.orderOut(nil)
     }
 }

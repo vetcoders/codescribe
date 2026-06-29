@@ -84,7 +84,6 @@ struct TrayMenuView: View {
                 title: viewModel.isRecording ? "Stop Dictation" : "Start Dictation"
             ) { viewModel.toggleDictation() }
 
-            TrayRow(icon: "◳", title: "Open Overlay") { viewModel.onOpenOverlay() }
             TrayRow(icon: "🕑", title: "Open history…") { viewModel.openHistory() }
             TrayRow(icon: "⧉", title: "Copy last transcript") {
                 viewModel.copyLastTranscript()

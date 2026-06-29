@@ -4,8 +4,8 @@ import AppKit
 // Owns the tray's state + action routing. The view is dumb: it observes this.
 //
 // Runtime reads (recording state, agent readiness, quick-toggle values, latest
-// transcript) go through the `TrayEngine` seam. Navigation (open chat / settings
-// / overlay) is emitted as `TrayIntent` through `onIntent`, which App.swift binds
+// transcript) go through the `TrayEngine` seam. Navigation (open chat / settings)
+// is emitted as `TrayIntent` through `onIntent`, which App.swift binds
 // to real window opens. Other app-level actions stay as injected closures.
 @MainActor
 final class TrayViewModel: ObservableObject {
@@ -50,7 +50,6 @@ final class TrayViewModel: ObservableObject {
 
     func onShowAgent() { onIntent(.openChat) }
     func onOpenSettings() { onIntent(.openSettings) }
-    func onOpenOverlay() { onIntent(.openOverlay) }
 
     // MARK: - Derived status (mock copy + palette)
 

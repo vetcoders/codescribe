@@ -372,7 +372,7 @@ fn test_action_contract_mode_prefers_raw_when_forced() {
     let mode = resolve_transcription_action_contract_mode(true, false, true, true);
     assert_eq!(
         mode,
-        crate::ui::overlay::TranscriptionActionContractMode::Raw
+        crate::controller::TranscriptionActionContractMode::Raw
     );
 }
 
@@ -381,7 +381,7 @@ fn test_action_contract_mode_uses_ai_format_when_force_ai_enabled() {
     let mode = resolve_transcription_action_contract_mode(false, true, false, false);
     assert_eq!(
         mode,
-        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
+        crate::controller::TranscriptionActionContractMode::AiFormat
     );
 }
 
@@ -390,7 +390,7 @@ fn test_action_contract_mode_uses_ai_format_for_toggle_ai_path() {
     let mode = resolve_transcription_action_contract_mode(false, false, true, true);
     assert_eq!(
         mode,
-        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
+        crate::controller::TranscriptionActionContractMode::AiFormat
     );
 }
 
@@ -399,7 +399,7 @@ fn test_action_contract_mode_uses_raw_for_toggle_without_ai() {
     let mode = resolve_transcription_action_contract_mode(false, false, true, false);
     assert_eq!(
         mode,
-        crate::ui::overlay::TranscriptionActionContractMode::Raw
+        crate::controller::TranscriptionActionContractMode::Raw
     );
 }
 
@@ -1500,7 +1500,7 @@ async fn test_finish_recording_resets_unconditionally_assistive() {
 async fn test_no_decision_mode_state_exists() {
     // Compile-time + runtime proof: State enum has exactly these variants.
     // There is NO "DecisionMode" variant — the paste regression was caused
-    // by `enter_decision_mode()` which has been replaced by `schedule_auto_hide()`.
+    // by the old legacy transcription overlay decision mode, which has been removed.
     let states = [State::Idle, State::RecHold, State::RecToggle];
     for state in &states {
         let controller = RecordingController::new();

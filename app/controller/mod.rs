@@ -29,7 +29,7 @@ pub(crate) use helpers::restore_agent_runtime_from_thread;
 pub use helpers::{
     is_assistive_session, is_conversation_session, set_assistive_session, set_conversation_session,
 };
-pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
+pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
 
 use crate::presentation::emitter::PresentationEmitter;
 use crate::stream_postprocess::StreamPostProcessor;
@@ -852,13 +852,13 @@ fn resolve_transcription_action_contract_mode(
     force_ai: bool,
     ai_formatting_enabled: bool,
     ai_key_available: bool,
-) -> crate::ui::overlay::TranscriptionActionContractMode {
+) -> TranscriptionActionContractMode {
     if force_raw {
-        crate::ui::overlay::TranscriptionActionContractMode::Raw
+        TranscriptionActionContractMode::Raw
     } else if force_ai || (ai_formatting_enabled && ai_key_available) {
-        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
+        TranscriptionActionContractMode::AiFormat
     } else {
-        crate::ui::overlay::TranscriptionActionContractMode::Raw
+        TranscriptionActionContractMode::Raw
     }
 }
 
@@ -1647,14 +1647,9 @@ impl RecordingController {
                         if opened {
                             crate::ui::voice_chat::hide_voice_chat_overlay();
                         }
-                        crate::ui::overlay::update_transcription_status(final_status);
-                        crate::ui::overlay::schedule_auto_hide();
                     }
                 } else if !assistive {
                     let cfg = self.config.read().await.clone();
-                    let show_decision_overlay = outcome.transcript_present
-                        && cfg.transcription_overlay_enabled
-                        && !(cfg.quick_notes_enabled && cfg.quick_notes_save_only);
 
                     let opened = self
                         .opened_voice_chat_overlay_for_transcription
@@ -1663,21 +1658,19 @@ impl RecordingController {
                         crate::ui::voice_chat::hide_voice_chat_overlay();
                     }
 
-                    if show_decision_overlay {
-                        crate::ui::overlay::update_transcription_status(final_status);
+                    if outcome.transcript_present
+                        && cfg.transcription_overlay_enabled
+                        && !(cfg.quick_notes_enabled && cfg.quick_notes_save_only)
+                    {
                         let reason = outcome
                             .commit_trigger
                             .as_deref()
                             .unwrap_or("quality_gate_clean");
                         info!("COMMIT decision: trigger={reason}");
-                        crate::ui::overlay::enter_decision_mode();
-                        crate::ui::overlay::schedule_auto_hide();
                     } else if cfg.quick_notes_enabled && cfg.quick_notes_save_only {
                         info!("COMMIT decision: skipped (quick_notes_save_only)");
-                        crate::ui::overlay::hide_transcription_overlay();
                     } else {
                         info!("COMMIT decision: skipped (quality gate clean)");
-                        crate::ui::overlay::hide_transcription_overlay();
                     }
                 }
             }
@@ -1691,7 +1684,6 @@ impl RecordingController {
                 if opened {
                     crate::ui::voice_chat::hide_voice_chat_overlay();
                 }
-                crate::ui::overlay::hide_transcription_overlay();
             }
         }
     }
@@ -1897,18 +1889,9 @@ impl RecordingController {
                             *self.force_ai_mode.write().await = event.force_ai;
 
                             if matches!(current_state, State::RecHold | State::RecToggle) {
-                                let overlay_enabled =
-                                    self.config.read().await.transcription_overlay_enabled;
                                 set_assistive_session(false);
                                 self.opened_voice_chat_overlay_for_transcription
                                     .store(false, Ordering::SeqCst);
-                                crate::ui::overlay::clear_transcription_text();
-                                if overlay_enabled {
-                                    crate::ui::overlay::show_transcription_overlay();
-                                    crate::ui::overlay::enter_recording_mode();
-                                } else {
-                                    crate::ui::overlay::hide_transcription_overlay();
-                                }
                             }
                         }
                         HoldMode::Chat => {
@@ -1938,7 +1921,6 @@ impl RecordingController {
                                         .frontmost_app,
                                 );
                                 set_assistive_session(true);
-                                crate::ui::overlay::hide_transcription_overlay();
                                 crate::ui::voice_chat::show_voice_chat_overlay();
                                 crate::ui::voice_chat::show_agent_tab();
                                 crate::ui::voice_chat::update_voice_chat_status("Listening...");
@@ -1971,7 +1953,6 @@ impl RecordingController {
                                         .frontmost_app,
                                 );
                                 set_assistive_session(true);
-                                crate::ui::overlay::hide_transcription_overlay();
                                 crate::ui::voice_chat::show_voice_chat_overlay();
                                 crate::ui::voice_chat::show_agent_tab();
                                 crate::ui::voice_chat::update_voice_chat_status("Listening...");
@@ -2853,7 +2834,6 @@ impl RecordingController {
                         .frontmost_app,
                 );
 
-                crate::ui::overlay::hide_transcription_overlay();
                 crate::ui::voice_chat::show_voice_chat_overlay();
                 crate::ui::voice_chat::show_agent_tab();
                 crate::ui::voice_chat::update_voice_chat_status("Listening...");
@@ -2872,14 +2852,6 @@ impl RecordingController {
                         .frontmost_app,
                 );
                 opened_overlay_for_transcription.store(false, Ordering::SeqCst);
-                crate::ui::overlay::clear_transcription_text();
-                if overlay_enabled {
-                    crate::ui::overlay::show_transcription_overlay();
-                    crate::ui::overlay::enter_recording_mode();
-                    crate::ui::overlay::update_transcription_status("Recording • Live preview");
-                } else {
-                    crate::ui::overlay::hide_transcription_overlay();
-                }
             }
         });
 
@@ -3071,7 +3043,6 @@ impl RecordingController {
                     .frontmost_app,
             );
 
-            crate::ui::overlay::hide_transcription_overlay();
             crate::ui::voice_chat::show_voice_chat_overlay();
             crate::ui::voice_chat::show_agent_tab();
             crate::ui::voice_chat::update_voice_chat_status("Listening...");
@@ -3091,14 +3062,6 @@ impl RecordingController {
             );
             self.opened_voice_chat_overlay_for_transcription
                 .store(false, Ordering::SeqCst);
-            crate::ui::overlay::clear_transcription_text();
-            if overlay_enabled {
-                crate::ui::overlay::show_transcription_overlay();
-                crate::ui::overlay::enter_recording_mode();
-                crate::ui::overlay::update_transcription_status("Recording • Live preview");
-            } else {
-                crate::ui::overlay::hide_transcription_overlay();
-            }
         }
 
         Ok(())
@@ -3194,9 +3157,6 @@ impl RecordingController {
 
         // Reset UI indicators
         hide_hold_badge();
-
-        // Hide transcription overlay explicitly on toggle stop
-        crate::ui::overlay::hide_transcription_overlay();
 
         // Assistive: finalize the cumulative bubble and invoke the agent ONCE with the
         // complete session message.
@@ -3326,7 +3286,6 @@ impl RecordingController {
 
         self.set_state(State::Busy).await;
         show_badge_for_mode(BadgeMode::Processing);
-        crate::ui::overlay::enter_processing_mode();
 
         let result = {
             let phase1 = std::time::Instant::now();
@@ -3416,7 +3375,6 @@ impl RecordingController {
             .store(false, Ordering::SeqCst);
         hide_hold_badge();
         crate::ui::voice_chat::update_voice_chat_status("Ready");
-        crate::ui::overlay::hide_transcription_overlay();
     }
 
     /// Save the current recording segment to disk WITHOUT stopping the recorder.
@@ -3433,97 +3391,17 @@ impl RecordingController {
     /// is unavailable (protects against overlay button race). Errors only on
     /// actual save failures (e.g. recorder buffer lock poisoned during
     /// snapshot_wav).
-    async fn commit_segment(&self, with_augment: bool) -> Result<()> {
+    async fn commit_segment(&self, _with_augment: bool) -> Result<()> {
         let current_state = self.current_state().await;
         if current_state != State::RecToggle {
             warn!(
-                "commit_segment called while state={}; ignoring (overlay button race?)",
+                "commit_segment called while state={}; ignoring (legacy overlay action)",
                 current_state
             );
             return Ok(());
         }
 
-        // Read overlay text NOW — before any async work — so we capture what was
-        // visible at click time, not at save-completion time.
-        let segment_text = crate::ui::overlay::current_segment_text();
-        if segment_text.trim().is_empty() {
-            info!("commit_segment: empty segment text; skipping save");
-            return Ok(());
-        }
-
-        // Snapshot recorder buffer slice [last_segment_audio_offset..now].
-        let from_offset = self.last_segment_audio_offset.load(Ordering::SeqCst);
-        let snapshot = {
-            let recorder_guard = self.recorder.lock().await;
-            let Some(streaming) = recorder_guard.as_ref() else {
-                warn!("commit_segment: no recorder available; skipping save");
-                return Ok(());
-            };
-            streaming
-                .recorder
-                .snapshot_wav(from_offset)
-                .await
-                .context("snapshot_wav failed")?
-        };
-
-        let Some(snapshot) = snapshot else {
-            info!("commit_segment: no new audio since last segment; skipping save");
-            return Ok(());
-        };
-
-        info!(
-            "Segment commit: {} samples ({:.2}s) from buffer offset {} to {}, with_augment={}",
-            snapshot.sample_count,
-            snapshot.duration_sec,
-            from_offset,
-            snapshot.end_offset,
-            with_augment
-        );
-
-        // Save transcript + audio + Quick Notes through existing core helpers.
-        let now = chrono::Local::now();
-        let entry = codescribe_core::state::history::save_entry_with_timestamp(
-            segment_text.as_str(),
-            Some(now),
-            codescribe_core::state::history::TranscriptKind::Raw,
-        );
-
-        if codescribe_core::state::history::save_audio(
-            &snapshot.wav_path,
-            now,
-            Some(segment_text.as_str()),
-            codescribe_core::state::history::TranscriptKind::Raw,
-        )
-        .is_none()
-        {
-            warn!(
-                "Segment audio save returned None; transcript .txt saved at {}",
-                entry.path.display()
-            );
-        }
-
-        if let Err(e) =
-            codescribe_core::state::notes::append_quick_note(segment_text.as_str(), now, None)
-        {
-            warn!("Segment Quick Notes append failed: {}", e);
-        }
-
-        // Advance the segment marker so the next commit clips from here.
-        self.last_segment_audio_offset
-            .store(snapshot.end_offset, Ordering::SeqCst);
-
-        info!("Segment transcript saved: {}", entry.path.display());
-
-        // Augment: spawn LLM handoff off-thread (no main thread block).
-        if with_augment {
-            let text_for_chat = segment_text.clone();
-            tokio::spawn(async move {
-                crate::ui::voice_chat::show_voice_chat_overlay();
-                crate::ui::voice_chat::show_agent_tab();
-                crate::ui::voice_chat::handoff_transcript_to_chat(&text_for_chat);
-            });
-        }
-
+        info!("commit_segment: legacy transcription overlay actions were removed; skipping");
         Ok(())
     }
 
@@ -3852,10 +3730,6 @@ impl RecordingController {
                     )
                 {
                     write_truth_sidecar_logged(&audio_saved_path, &truth_metadata);
-                }
-
-                if !assistive {
-                    crate::ui::overlay::update_transcription_status(&final_status);
                 }
 
                 return Ok(ProcessRecordingOutcome::no_speech(reason, final_status));
@@ -4376,26 +4250,14 @@ impl RecordingController {
             write_truth_sidecar_logged(path, &truth_metadata);
         }
 
-        if !assistive {
-            crate::ui::overlay::update_transcription_status(&final_status);
-        }
-
         if should_apply_transcription_action_contract(assistive, live_stream_session)
             && config.transcription_overlay_enabled
         {
-            let action_contract_mode = resolve_transcription_action_contract_mode(
+            let _action_contract_mode = resolve_transcription_action_contract_mode(
                 force_raw,
                 force_ai,
                 config.ai_formatting_enabled,
                 ai_key_available,
-            );
-            // Keep the ephemeral transcription overlay in sync with what we will paste/save.
-            // This makes it easier to understand differences between streaming preview and final-pass output.
-            crate::ui::overlay::set_transcription_action_contract(
-                &raw_text,
-                &final_formatted_text,
-                action_contract_mode,
-                truth_display_status.clone(),
             );
         } else if !assistive {
             debug!(

@@ -49,26 +49,16 @@ pub fn is_conversation_session() -> bool {
     IS_CONVERSATION_SESSION.load(Ordering::SeqCst)
 }
 
-fn transcription_overlay_enabled() -> bool {
-    std::env::var("TRANSCRIPTION_OVERLAY_ENABLED")
-        .ok()
-        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(true)
-}
-
 /// Route transcription delta to the active overlay.
 ///
 /// Contract:
 /// - Assistive sessions stream into Agent overlay chat bubbles.
-/// - Non-assistive sessions stream into Dictation/Transcription overlay preview.
+/// - Non-assistive sessions publish engine events over IPC/FFI for the Swift overlay.
 /// - `delta` must already follow `TranscriptDelta` backspace semantics.
 ///   This function must never receive full preview snapshots.
 pub fn route_transcription_delta(delta: &str) {
     if is_assistive_session() {
         crate::ui::voice_chat::append_voice_chat_user_delta(delta);
-    } else if transcription_overlay_enabled() {
-        // Non-assistive: live dictation preview in ephemeral overlay
-        crate::ui::overlay::append_transcription_delta(delta);
     }
 }
 

@@ -3,43 +3,41 @@ import Foundation
 // Backs the tray with the REAL codescribe core via the UniFFI bridge. It is a
 // composite over four thin handles:
 //   • CodescribeAgent    — assistive-provider readiness gate.
-//   • CodescribeDictation — start/stop/state of the streaming recorder.
+//   • CodescribeHotkeys  — shared legacy controller hotkey/recording spine.
 //   • CodescribeConfig    — quick config toggles (settings.json / .env router).
 //   • CodescribeThreads   — most-recent transcript path + text.
 //
-// The dictation handle is injectable: `start_recording` requires a registered
-// CsTranscriptionListener, which the Overlay screen owns. App.swift should pass
-// the SAME CodescribeDictation instance the overlay registered its listener on
-// so the tray toggle drives one shared session (see the wiring report).
+// Dictation deliberately routes through CodescribeHotkeys instead of
+// CodescribeDictation so tray + keyboard shortcuts share one RecordingController
+// and cannot open two independent overlays/recorders.
 final class RealTrayEngine: TrayEngine {
     private let agent: CodescribeAgent
-    private let dictation: CodescribeDictation
+    private let hotkeys: CodescribeHotkeys
     private let config: CodescribeConfig
     private let threads: CodescribeThreads
 
     init(
         agent: CodescribeAgent = CodescribeAgent(),
-        dictation: CodescribeDictation = CodescribeDictation(),
+        hotkeys: CodescribeHotkeys = CodescribeHotkeys(),
         config: CodescribeConfig = CodescribeConfig(),
         threads: CodescribeThreads = CodescribeThreads()
     ) {
         self.agent = agent
-        self.dictation = dictation
+        self.hotkeys = hotkeys
         self.config = config
         self.threads = threads
     }
 
     func isAgentAvailable() -> Bool { agent.isAvailable() }
 
-    func isRecording() async -> Bool { await dictation.isRecording() }
+    func isRecording() async -> Bool { await hotkeys.isRecording() }
 
     func startRecording() async throws {
-        // `nil` language → core auto-detects (CsLanguage.polish / .english).
-        try await dictation.startRecording(language: nil)
+        try await hotkeys.startRecording()
     }
 
     func stopRecording() async throws {
-        _ = try await dictation.stopRecording()
+        try await hotkeys.stopRecording()
     }
 
     func currentToggles() -> (showDockIcon: Bool, overlayEnabled: Bool)? {

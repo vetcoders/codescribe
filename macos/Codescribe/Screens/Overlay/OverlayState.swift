@@ -1,13 +1,11 @@
 import SwiftUI
 import AppKit
 
-// View model for the dictation overlay, rewired from the old qube-ffi bridge
-// (VistaEngine / VistaEventListener) onto the codescribe-ffi bridge
-// (CodescribeDictation / CsTranscriptionListener).
+// View model for the dictation overlay, backed by the redesign hotkey/controller
+// bridge (`CodescribeHotkeys` / `CsTranscriptionListener`).
 //
 // The view talks only to the thin `DictationEngine` protocol below, so #Preview
-// renders standalone against `MockDictationEngine`. The orchestrator injects a
-// `RealDictationEngine` (adapter over `CodescribeDictation`) in App.swift.
+// renders standalone against `MockDictationEngine`.
 //
 // TRANSCRIPT MODEL (new bridge semantics):
 //   on_preview  → interim utterance, REPLACE-not-append (utterance-local).
@@ -20,10 +18,8 @@ import AppKit
 
 // MARK: - Engine seam (orchestrator injects the real adapter in App.swift)
 
-/// Minimal slice of `CodescribeDictation` the overlay needs. The concrete
-/// `RealDictationEngine` adapter (below) forwards every member to the bridge
-/// object; `MockDictationEngine` no-ops for #Preview. Kept as a protocol so the
-/// view-model + preview compile without a live Rust core.
+/// Minimal slice of the controller-backed dictation surface the overlay needs.
+/// Kept as a protocol so the view-model + preview compile without a live Rust core.
 protocol DictationEngine: AnyObject {
     func setListener(_ listener: CsTranscriptionListener)
     func startRecording(language: CsLanguage?) async throws
@@ -31,6 +27,8 @@ protocol DictationEngine: AnyObject {
     func isRecording() async -> Bool
     func initModel() async throws
     func isModelLoaded() -> Bool
+    func isFormattingAvailable() -> Bool
+    func formatText(text: String, language: CsLanguage?) async throws -> String
     func transcribeFile(path: String) async throws -> CsTranscription
 }
 
@@ -52,6 +50,7 @@ final class OverlayState: ObservableObject {
     @Published var vadActive: Bool = false     // drives the WaveformView pulse
     @Published var toast: String?              // transient no-speech / error notice
     @Published var errorMessage: String?
+    @Published var isFormatting: Bool = false
 
     // MARK: Injected collaborators (all optional so #Preview renders standalone)
     /// The recording core. Injected by the orchestrator. Do NOT instantiate here.
@@ -61,6 +60,8 @@ final class OverlayState: ObservableObject {
     var onSendToAgent: ((String) -> Void)?
     /// Dismiss the floating window — wired by the orchestrator.
     var onClose: (() -> Void)?
+    var onRecordingStarted: (() -> Void)?
+    var onRecordingStopped: (() -> Void)?
 
     /// Strong ref so the Rust-side callback (held via the UniFFI handle map) and
     /// our hop-to-main bridge stay alive for the lifetime of the overlay.
@@ -72,6 +73,10 @@ final class OverlayState: ObservableObject {
 
     init() {}
 
+    func attach() {
+        engine?.setListener(listener)
+    }
+
     // MARK: Derived display (one source of truth for the view)
 
     var statusText: String { mode == .listening ? "recording" : "Idle" }
@@ -82,7 +87,10 @@ final class OverlayState: ObservableObject {
     var tagColor: Color { mode == .listening ? CSColor.terracottaLight : CSColor.oliveLight }
 
     var metaText: String { mode == .listening ? "live preview · raw" : "final · transcript" }
-    var footerRight: String { mode == .listening ? "vad-gated preview" : "captured" }
+    var footerRight: String {
+        if isFormatting { return "formatting" }
+        return mode == .listening ? "vad-gated preview" : "editable"
+    }
 
     /// committed finals + the current interim preview, space-joined.
     var liveText: String {
@@ -94,6 +102,13 @@ final class OverlayState: ObservableObject {
 
     /// Whatever the action row should copy/send for the current state.
     var activeText: String { mode == .listening ? liveText : formattedText }
+
+    var canFormat: Bool {
+        mode == .formatted
+            && !isFormatting
+            && engine?.isFormattingAvailable() == true
+            && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     // MARK: Recording lifecycle (engine-backed; no-op when engine is absent)
 
@@ -122,6 +137,7 @@ final class OverlayState: ObservableObject {
         preview = ""
         committed = ""
         formattedText = ""
+        isFormatting = false
         errorMessage = nil
         recording = true
         do {
@@ -131,6 +147,23 @@ final class OverlayState: ObservableObject {
             recording = false
             errorMessage = "Couldn't start recording: \(error)"
             showToast("Couldn't start recording")
+        }
+    }
+
+    func formatTranscript() {
+        guard let engine, canFormat else { return }
+        let source = formattedText
+        isFormatting = true
+        Task { @MainActor in
+            defer { self.isFormatting = false }
+            do {
+                let formatted = try await engine.formatText(text: source, language: nil)
+                self.formattedText = formatted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? source : formatted
+                self.mode = .formatted
+            } catch {
+                self.errorMessage = "Couldn't format transcript: \(error)"
+                self.showToast("Couldn't format transcript")
+            }
         }
     }
 
@@ -170,6 +203,27 @@ final class OverlayState: ObservableObject {
         }
         vadActive = false
         onClose?()
+    }
+
+    func handleRecordingStarted() {
+        let wasRecording = recording
+        mode = .listening
+        if !wasRecording {
+            preview = ""
+            committed = ""
+            formattedText = ""
+            isFormatting = false
+            errorMessage = nil
+        }
+        recording = true
+        onRecordingStarted?()
+    }
+
+    func finishControllerRecording() {
+        recording = false
+        vadActive = false
+        formattedText = liveText
+        mode = .formatted
     }
 
     // MARK: Listener-driven mutations (called on the main actor by DictationListener)
@@ -236,34 +290,36 @@ final class OverlayState: ObservableObject {
     }
 }
 
-// MARK: - Real adapter over the codescribe-ffi dictation engine
-
-/// Backs the overlay with the REAL codescribe dictation engine via the UniFFI
-/// bridge (`CodescribeDictation`). Pure forwarding; all callback hopping lives in
-/// `DictationListener`.
-final class RealDictationEngine: DictationEngine {
-    private let dictation = CodescribeDictation()
+/// Adapter for the redesign hotkey/controller path. This is the product path:
+/// one `RecordingController`, one event stream, one Swift overlay surface.
+final class ControllerDictationEngine: DictationEngine {
+    private let hotkeys = CodescribeHotkeys()
 
     func setListener(_ listener: CsTranscriptionListener) {
-        dictation.setListener(listener: listener)
+        hotkeys.setListener(listener: listener)
     }
     func startRecording(language: CsLanguage?) async throws {
-        try await dictation.startRecording(language: language)
+        try await hotkeys.startRecording()
     }
     func stopRecording() async throws -> String {
-        try await dictation.stopRecording()
+        try await hotkeys.stopRecording()
+        return ""
     }
     func isRecording() async -> Bool {
-        await dictation.isRecording()
+        await hotkeys.isRecording()
     }
-    func initModel() async throws {
-        try await dictation.initModel()
+    func initModel() async throws {}
+    func isModelLoaded() -> Bool { true }
+    func isFormattingAvailable() -> Bool {
+        hotkeys.isFormattingAvailable()
     }
-    func isModelLoaded() -> Bool {
-        dictation.isModelLoaded()
+    func formatText(text: String, language: CsLanguage?) async throws -> String {
+        try await hotkeys.formatText(text: text, language: language)
     }
     func transcribeFile(path: String) async throws -> CsTranscription {
-        try await dictation.transcribeFile(path: path)
+        throw NSError(domain: "CodescribeRedesign", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "File transcription is not available through the hotkey controller."
+        ])
     }
 }
 
@@ -279,6 +335,12 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
         self.state = state
     }
 
+    func onRecordingStarted() {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.handleRecordingStarted() } }
+    }
+    func onRecordingStopped() {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.finishControllerRecording() } }
+    }
     func onPreview(text: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyPreview(text) } }
     }
@@ -311,6 +373,8 @@ final class MockDictationEngine: DictationEngine {
     func isRecording() async -> Bool { false }
     func initModel() async throws {}
     func isModelLoaded() -> Bool { true }
+    func isFormattingAvailable() -> Bool { false }
+    func formatText(text: String, language: CsLanguage?) async throws -> String { text }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
     }

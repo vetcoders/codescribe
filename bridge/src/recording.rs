@@ -37,6 +37,8 @@ pub struct CsTranscription {
 /// The Swift side must hop these onto the main actor.
 #[uniffi::export(with_foreign)]
 pub trait CsTranscriptionListener: Send + Sync {
+    fn on_recording_started(&self);
+    fn on_recording_stopped(&self);
     fn on_preview(&self, text: String);
     fn on_final(&self, text: String);
     fn on_vad_active(&self, active: bool);
@@ -138,7 +140,9 @@ impl CodescribeDictation {
                 msg: "set_listener(...) must be called before start_recording".to_string(),
             })?;
 
-        let sink: Arc<dyn EventSink> = Arc::new(CsEventSink { listener });
+        let sink: Arc<dyn EventSink> = Arc::new(CsEventSink {
+            listener: Arc::clone(&listener),
+        });
         let mut recorder =
             StreamingRecorder::new().map_err(|e| CsError::Recording { msg: e.to_string() })?;
         recorder.set_event_sink(Some(sink));
@@ -150,6 +154,7 @@ impl CodescribeDictation {
             .map_err(|e| CsError::Recording { msg: e.to_string() })?;
 
         *self.recorder.lock().await = Some(recorder);
+        listener.on_recording_started();
         Ok(())
     }
 
@@ -167,6 +172,11 @@ impl CodescribeDictation {
             .stop()
             .await
             .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+        if let Ok(guard) = self.listener.read()
+            && let Some(listener) = guard.as_ref()
+        {
+            listener.on_recording_stopped();
+        }
         Ok(transcript)
     }
 

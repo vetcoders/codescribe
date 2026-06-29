@@ -22,3 +22,4 @@ uniffi = { version = "0.30", features = ["cli", "tokio"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 serde_json = { workspace = true }
+crossbeam-channel = "0.5"

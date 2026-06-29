@@ -7,8 +7,8 @@ import SwiftUI
 //   header      brand wordmark · status pill · mic/settings/more glyphs
 //   mode + meta tag chip (DICTATION/FINAL) · meta line
 //   body        listening = waveform + word-reveal transcript w/ caret
-//               formatted = finalized transcript paragraph
-//   action row  Copy (terracotta) · Send to Agent (outline) · Close (ghost, right)
+//               formatted = editable finalized transcript
+//   action row  recording: Finish; finalized: Copy · Format · Send to Agent · Close
 //   footer      ● local whisper (olive) · meta on the right
 //
 // A transient toast (no-speech / error) floats over the bottom edge.
@@ -44,7 +44,6 @@ struct DictationOverlayView: View {
         .animation(CSMotion.floatIn, value: state.toast)
         .onAppear {
             FontLoader.register()
-            state.start()
         }
     }
 
@@ -139,42 +138,74 @@ struct DictationOverlayView: View {
     }
 
     private var formattedBody: some View {
-        Text(state.formattedText)
+        TextEditor(text: $state.formattedText)
             .font(CSFont.ui(18, .regular))
-            .lineSpacing(11)
             .foregroundStyle(CSColor.textHigh)
-            .fixedSize(horizontal: false, vertical: true)
+            .lineSpacing(11)
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
+            .frame(minHeight: bodyMinHeight)
     }
 
     // MARK: Action row
 
     private var actionRow: some View {
         HStack(spacing: 10) {
-            Button(action: { state.copyToPasteboard() }) {
-                Text("Copy")
-                    .font(CSFont.bodyStrong)
-                    .foregroundStyle(CSColor.ink)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(CSColor.terracotta)
-                    .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
-            }
-            .buttonStyle(.plain)
+            if state.mode == .listening {
+                Button(action: { state.stop() }) {
+                    Text("Finish")
+                        .font(CSFont.bodyStrong)
+                        .foregroundStyle(CSColor.ink)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 10)
+                        .background(CSColor.terracotta)
+                        .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button(action: { state.copyToPasteboard() }) {
+                    Text("Copy")
+                        .font(CSFont.bodyStrong)
+                        .foregroundStyle(CSColor.ink)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(CSColor.terracotta)
+                        .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
+                }
+                .buttonStyle(.plain)
 
-            Button(action: { state.sendToAgent() }) {
-                Text("Send to Agent")
-                    .font(CSFont.bodyStrong)
-                    .foregroundStyle(CSColor.textBody)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(CSColor.surfaceRaised(0.04))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
-                            .strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
+                Button(action: { state.formatTranscript() }) {
+                    Text(state.isFormatting ? "Formatting..." : "Format")
+                        .font(CSFont.bodyStrong)
+                        .foregroundStyle(CSColor.textBody)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(CSColor.surfaceRaised(0.04))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
+                                .strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(!state.canFormat)
+                .opacity(state.canFormat ? 1 : 0.45)
+
+                Button(action: { state.sendToAgent() }) {
+                    Text("Send to Agent")
+                        .font(CSFont.bodyStrong)
+                        .foregroundStyle(CSColor.textBody)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(CSColor.surfaceRaised(0.04))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
+                                .strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             Spacer(minLength: 0)
 

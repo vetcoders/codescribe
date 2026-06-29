@@ -147,6 +147,12 @@ pub struct HotkeyInput {
     pub force_ai: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptionActionContractMode {
+    Raw,
+    AiFormat,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordingTranscriptSource {

@@ -1,9 +1,15 @@
 import AppKit
+import OSLog
 import SwiftUI
 
 // codescribe redesign — SwiftUI host (Option B), backed by the REAL codescribe engine
 // via UniFFI. AppKit owns the menu-bar status item/popover; SwiftUI owns the
 // Settings scene and the content hosted inside AppKit windows.
+private let appLogger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.codescribe.redesign",
+    category: "App"
+)
+
 @main
 struct CodescribeRedesignApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -25,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.codescribe.redesign"
 
     private let model = AppModel.shared
+    private let hotkeys = CodescribeHotkeys()
     private var agentWindow: NSWindow?
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
@@ -69,14 +76,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
                     NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
                 }
-            case .openOverlay:
-                self.model.overlay.show()
             }
         }
         installStatusItem()
+        startHotkeys()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        hotkeys.stop()
         DistributedNotificationCenter.default().removeObserver(self)
     }
 
@@ -130,6 +137,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showAgentFromExternalLaunch() {
         showAgent()
+    }
+
+    private func startHotkeys() {
+        Task { [hotkeys] in
+            do {
+                try await hotkeys.start()
+                appLogger.info("Codescribe hotkeys active: \(hotkeys.isActive(), privacy: .public)")
+            } catch {
+                appLogger.error("Codescribe hotkeys unavailable: \(String(describing: error), privacy: .public)")
+            }
+        }
     }
 
     private static var isDuplicateInstance: Bool {

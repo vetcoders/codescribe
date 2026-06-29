@@ -18,10 +18,12 @@ uniffi::setup_scaffolding!();
 
 mod agent;
 mod config;
+mod hotkeys;
 mod recording;
 mod threads;
 
 pub use agent::{CodescribeAgent, CsAgentListener};
+pub use hotkeys::CodescribeHotkeys;
 
 /// Error surfaced across the FFI boundary. One enum for every slice:
 /// `Agent` (chat/provider), `Config` (settings/keychain/prompt I/O),
