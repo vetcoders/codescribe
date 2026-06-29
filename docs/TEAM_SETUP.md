@@ -100,7 +100,7 @@ File: `~/.codescribe/.env`
 USE_LOCAL_STT=1
 
 # Whisper
-WHISPER_LANGUAGE=pl
+WHISPER_LANGUAGE=auto
 
 # AI formatting (optional) - OpenAI Responses by default
 AI_FORMATTING_ENABLED=1

@@ -96,7 +96,7 @@ flowchart TD
 
 ```env
 # Speech-to-Text
-WHISPER_LANGUAGE=pl              # pl | en | de | fr
+WHISPER_LANGUAGE=auto            # auto | pl | en
 USE_LOCAL_STT=1                  # 1 = keep local transcript as committed result
 
 # Hotkeys timing / behavior

@@ -1311,17 +1311,6 @@ impl RecordingController {
         }
     }
 
-    fn format_backend_recovery_message(detail: Option<&str>) -> String {
-        let mut message =
-            "Speech backend unavailable. Open Settings to verify the transcription provider, endpoint, and runtime service, then retry."
-                .to_string();
-        if let Some(detail) = detail.map(str::trim).filter(|text| !text.is_empty()) {
-            message.push_str(" Details: ");
-            message.push_str(detail);
-        }
-        message
-    }
-
     fn recording_recovery_guidance() -> String {
         let settings = crate::config::UserSettings::load();
         let dictation_binding = settings
@@ -1376,12 +1365,6 @@ impl RecordingController {
         );
         let message = Self::recording_recovery_guidance();
         Self::present_runtime_recovery_ui("Recorder unavailable", &message);
-    }
-
-    fn present_backend_unavailable(context: &str, detail: Option<&str>) {
-        warn!("{context}: backend unavailable; routing to settings recovery");
-        let message = Self::format_backend_recovery_message(detail);
-        Self::present_runtime_recovery_ui("Backend unavailable", &message);
     }
 
     /// Create a new recording controller with configuration loaded from disk
@@ -2683,38 +2666,15 @@ impl RecordingController {
                 return;
             }
 
-            // Check backend health only after the dwell time has actually elapsed.
-            // A tap or transient Ctrl bump should be a full no-op, including no
-            // backend-unavailable UI.
-            if !cfg!(test) {
-                match crate::client::check_health().await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        warn!("Whisper engine not ready");
-                        Self::present_backend_unavailable("Hold-start health check", None);
-                        return;
-                    }
-                    Err(e) => {
-                        error!("Whisper engine unavailable: {}", e);
-                        let detail = e.to_string();
-                        Self::present_backend_unavailable(
-                            "Hold-start health check",
-                            Some(detail.as_str()),
-                        );
-                        return;
-                    }
-                }
-            }
-
             if hold_start_generation.load(Ordering::SeqCst) != task_generation {
-                debug!("Hold-start cancelled: superseded generation after health check");
+                debug!("Hold-start cancelled: superseded generation before recorder start");
                 return;
             }
 
             let current_state = *state.read().await;
             if current_state != State::Idle {
                 debug!(
-                    "Hold-start cancelled after health check: state changed to {}",
+                    "Hold-start cancelled before recorder start: state changed to {}",
                     current_state
                 );
                 return;
@@ -2776,6 +2736,9 @@ impl RecordingController {
             );
             if !cfg!(test) {
                 let language_hint = language.whisper_hint().map(str::to_string);
+                // Audio-first cold start: do not preflight Whisper here. The
+                // recorder starts feedback now while STT lazy-loads behind the
+                // StreamingRecorder backlog.
                 let start_result = rec.start_event_session(language_hint.clone()).await;
                 if let Err(e) = start_result {
                     if Self::is_already_in_progress_error(&e) {
@@ -2904,27 +2867,6 @@ impl RecordingController {
 
     /// Start recording in toggle mode (immediate, no delay)
     async fn start_toggle_recording(&self, is_assistive: bool) -> Result<()> {
-        // Check backend health before starting (skip in tests: no backend available)
-        if !cfg!(test) {
-            match crate::client::check_health().await {
-                Ok(true) => {}
-                Ok(false) => {
-                    warn!("Whisper engine not ready");
-                    Self::present_backend_unavailable("Toggle-start health check", None);
-                    return Ok(());
-                }
-                Err(e) => {
-                    error!("Whisper engine unavailable: {}", e);
-                    let detail = e.to_string();
-                    Self::present_backend_unavailable(
-                        "Toggle-start health check",
-                        Some(detail.as_str()),
-                    );
-                    return Ok(());
-                }
-            }
-        }
-
         // Acquire serial lock to prevent race conditions
         let _guard = self.serial_lock.lock().await;
 
@@ -3004,6 +2946,8 @@ impl RecordingController {
 
         // Skip actual audio stream in tests (no CoreAudio device needed)
         let language_hint = language.whisper_hint().map(str::to_string);
+        // Audio-first cold start: do not preflight Whisper here. The recorder
+        // starts feedback now while STT lazy-loads behind the StreamingRecorder backlog.
         if !cfg!(test)
             && let Err(e) = recorder.start_event_session(language_hint.clone()).await
         {
