@@ -1,5 +1,5 @@
 # Pre-commit hooks for Codescribe (Pure Rust)
-# Install: pipx install pre-commit && pre-commit install --hook-type pre-commit --hook-type pre-push
+# Install: pipx install pre-commit && make hooks
 # Run: pre-commit run --all-files
 #
 # Created by Vetcoders (c)2026
@@ -62,3 +62,12 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+
+  # Commit provenance (commit-msg stage)
+  - repo: local
+    hooks:
+      - id: commit-msg-provenance
+        name: commit message provenance
+        entry: scripts/commit-msg-provenance.sh
+        language: system
+        stages: [commit-msg]

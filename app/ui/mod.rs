@@ -1,3 +1,4 @@
+pub mod automation;
 pub mod onboarding;
 pub mod settings;
 pub mod shared;

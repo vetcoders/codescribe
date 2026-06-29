@@ -208,7 +208,7 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
             let language = Config::load().whisper_language;
             let response = ai_formatting::format_text_with_status(
                 &message,
-                Some(language.as_str()),
+                language.whisper_hint(),
                 true,
                 None,
             )
@@ -257,7 +257,7 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
 
             let language = Config::load().whisper_language;
             // Single-pass: engine handles 25s/5s chunking internally
-            match whisper::transcribe(&samples, sample_rate, Some(language.as_str())) {
+            match whisper::transcribe(&samples, sample_rate, language.whisper_hint()) {
                 Ok(raw_text) => {
                     // Apply lexicon/cleanup postprocessing
                     let mut postprocessor = StreamPostProcessor::new();
@@ -278,6 +278,9 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
                 ai_formatting: Config::load().ai_formatting_enabled,
             };
             IpcResponse::Status(status)
+        }
+        IpcCommand::GetAppAutomationState => {
+            IpcResponse::AppAutomationState(crate::ui::automation::app_automation_state())
         }
         IpcCommand::StartRecording { assistive } => {
             if controller.is_recording().await || controller.is_busy().await {
@@ -306,6 +309,12 @@ async fn handle_command(cmd: IpcCommand, controller: &RecordingController) -> Ip
             match controller.stop_recording_from_external_surface().await {
                 Ok(()) => IpcResponse::Ok,
                 Err(e) => IpcResponse::Error(format!("Failed to stop recording: {}", e)),
+            }
+        }
+        IpcCommand::RunAppAutomation { action } => {
+            match crate::ui::automation::run_app_automation(action).await {
+                Ok(state) => IpcResponse::AppAutomationState(state),
+                Err(e) => IpcResponse::Error(format!("App automation failed: {}", e)),
             }
         }
         IpcCommand::Subscribe | IpcCommand::Unsubscribe => {

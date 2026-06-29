@@ -27,7 +27,7 @@
 //! Quit
 //! ```
 
-mod handlers;
+pub(crate) mod handlers;
 mod icons;
 mod menu;
 mod state;
@@ -105,6 +105,11 @@ fn shutdown_hotkeys(hotkey_manager: &mut Option<hotkeys::HotkeyManager>) {
     }
     hotkeys::shutdown_global_hotkey_manager();
     *hotkey_manager = None;
+}
+
+pub fn handle_dock_reopen() {
+    debug!("Dock icon clicked -> opening Settings window");
+    crate::ui::settings::show_settings_window();
 }
 
 /// Run the tray application with optional hotkey manager
@@ -195,8 +200,7 @@ where
 
         // Handle dock icon click (macOS Reopen event)
         if let Event::Reopen { .. } = event {
-            debug!("Dock icon clicked → opening Settings window");
-            crate::ui::settings::show_settings_window();
+            handle_dock_reopen();
             return;
         }
 

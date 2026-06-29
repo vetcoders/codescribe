@@ -229,7 +229,7 @@ fn test_settings_use_local_stt_false_roundtrips_through_config_load() {
 fn test_settings_language_persistence() {
     let _tmp = setup_test_env();
 
-    for lang in ["pl", "en"] {
+    for lang in ["auto", "pl", "en"] {
         let config = Config::load();
         config.save_to_env("WHISPER_LANGUAGE", lang).expect("save");
         let reloaded = Config::load();

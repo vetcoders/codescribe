@@ -827,6 +827,51 @@ fn test_adjudicate_recording_truth_marks_raw_streaming_preview_as_degraded_fallb
 }
 
 #[test]
+fn test_adjudicate_recording_truth_cold_whisper_empty_live_recovers_via_final_pass() {
+    // P0 decoupling contract: recording readiness != Whisper readiness.
+    //
+    // Cold-start scenario — the user pressed record and spoke while Whisper was
+    // still loading (or had been idle-unloaded). The live worker therefore
+    // produced NOTHING (its chunks dropped under backpressure during the cold
+    // load), so `streaming_text` is empty. But audio capture never blocked: the
+    // full WAV was saved, and `finish_recording` ran the final pass on it,
+    // lazy-loading the engine. The beginning the user spoke during warm-up must
+    // be recovered, not lost — the saved audio path is the authoritative truth.
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "poczatek wypowiedzi z zimnego startu",
+            79.0,
+            Some(-0.28),
+            false,
+        )),
+        // Empty live preview: cold Whisper meant no live transcript at all.
+        String::new(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(
+        verdict.raw_text.as_deref(),
+        Some("poczatek wypowiedzi z zimnego startu"),
+        "final pass on the saved WAV must recover speech spoken during Whisper warm-up"
+    );
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        "cold-start recovery is authoritative LocalFinalPass, not a degraded fallback"
+    );
+    assert_eq!(verdict.fallback_class, None);
+    assert!(
+        verdict.confidence_flags.is_empty(),
+        "a clean final-pass recovery carries no degraded/unverified flags"
+    );
+    assert_eq!(verdict.commit_trigger, None);
+    assert_eq!(verdict.display_status, "Final-pass local");
+}
+
+#[test]
 fn test_adjudicate_recording_truth_uses_typed_cloud_primary_verdict() {
     let verdict = adjudicate_recording_truth(
         false,

@@ -165,7 +165,7 @@ pub(super) fn render_current_step() {
             set_text_if_present(ui.title_label, "Choose Language");
             set_text_if_present(
                 ui.description_label,
-                "Select the default transcript language. Live preview stays provisional, and the committed verdict will use this language unless you change it later in Settings.",
+                "Use Auto for multilingual dictation. Pick Polish or English only when you want to force Whisper into one language.",
             );
             set_hidden_if_present(ui.language_view, false);
             set_button_title_if_present(ui.primary_button, "Continue");

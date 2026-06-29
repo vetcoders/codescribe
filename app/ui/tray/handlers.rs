@@ -74,9 +74,9 @@ fn resolve_menu_route(event_id: &MenuId, menu_ids: &MenuIds) -> Option<MenuRoute
 pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
     match resolve_menu_route(event_id, menu_ids) {
         Some(MenuRoute::CopyLast) => handle_copy_last(),
-        Some(MenuRoute::ShowOverlay) => crate::ui::voice_chat::show_voice_chat_overlay(),
-        Some(MenuRoute::ContinueOnboarding) => crate::ui::onboarding::show_onboarding_wizard(),
-        Some(MenuRoute::OpenSettings) => crate::ui::settings::show_settings_window(),
+        Some(MenuRoute::ShowOverlay) => handle_show_agent_action(),
+        Some(MenuRoute::ContinueOnboarding) => handle_continue_onboarding_action(),
+        Some(MenuRoute::OpenSettings) => handle_open_settings_action(),
         Some(MenuRoute::OpenHistory) => handle_open_history_folder(),
         Some(MenuRoute::CopyDiagnostics) => handle_copy_diagnostics(),
         Some(MenuRoute::Help) => handle_open_help(),
@@ -90,6 +90,18 @@ pub fn handle_menu_event(event_id: &MenuId, menu_ids: &MenuIds) {
         Some(MenuRoute::InstallSileroVad) => handle_install_silero_vad(),
         None => debug!("Unknown menu event id: {:?}", event_id),
     }
+}
+
+pub(crate) fn handle_show_agent_action() {
+    crate::ui::voice_chat::show_voice_chat_overlay();
+}
+
+pub(crate) fn handle_continue_onboarding_action() {
+    crate::ui::onboarding::show_onboarding_wizard();
+}
+
+pub(crate) fn handle_open_settings_action() {
+    crate::ui::settings::show_settings_window();
 }
 
 /// Copy last transcript to clipboard

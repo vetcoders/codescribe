@@ -844,8 +844,10 @@ impl Config {
 
     /// Parse .env file into HashMap.
     pub fn parse_env_file(path: &PathBuf) -> anyhow::Result<HashMap<String, String>> {
-        // Path comes from Config::env_path() which is hardcoded to ~/.codescribe/.env
-        // nosemgrep: tainted-path
+        // `path` is always internally derived from `Config::env_path()`
+        // (config_dir()/.env, or the `CODESCRIBE_ENV_PATH` override used by tests
+        // and power users) — never raw request or end-user input. No external
+        // path-traversal source reaches this read.
         let contents = fs::read_to_string(path)?;
         let mut vars = HashMap::new();
 

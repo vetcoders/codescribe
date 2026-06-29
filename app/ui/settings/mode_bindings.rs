@@ -295,17 +295,18 @@ pub(super) fn ensure_mode_binding_recorder_monitor() -> bool {
     unsafe {
         let ns_event = objc_class("NSEvent");
         let mask: u64 = (1_u64 << 10) | (1_u64 << 12); // keyDown + flagsChanged
-        let handler = block::ConcreteBlock::new(|event: Id| -> Id {
-            handle_mode_binding_recorder_event(event)
-        })
-        .copy();
+        let handler: block2::RcBlock<
+            dyn Fn(*mut objc2::runtime::AnyObject) -> *mut objc2::runtime::AnyObject,
+        > = block2::RcBlock::new(|event: *mut objc2::runtime::AnyObject| {
+            handle_mode_binding_recorder_event(event.cast()).cast()
+        });
         let monitor: Id =
             msg_send![ns_event, addLocalMonitorForEventsMatchingMask: mask handler: &*handler];
         if monitor.is_null() {
             warn!("Mode binding recorder: failed to install local event monitor");
             return false;
         }
-        std::mem::forget(handler);
+        let _ = block2::RcBlock::into_raw(handler);
     }
 
     let mut recorder = MODE_BINDING_RECORDER_STATE

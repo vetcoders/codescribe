@@ -42,12 +42,18 @@ pub enum IpcCommand {
 
     // Status
     GetStatus,
+    GetAppAutomationState,
 
     // Recording
     StartRecording {
         assistive: bool,
     },
     StopRecording,
+
+    // Native app automation
+    RunAppAutomation {
+        action: AppAutomationAction,
+    },
 
     // Event stream
     Subscribe,
@@ -60,6 +66,7 @@ pub enum IpcResponse {
     Prompt(String),
     Message(String),
     Status(AppStatus),
+    AppAutomationState(AppAutomationState),
     Ok,
     Error(String),
     Event(IpcEvent),
@@ -69,6 +76,31 @@ pub enum IpcResponse {
 pub struct AppStatus {
     pub state: String, // "idle", "recording", "busy"
     pub ai_formatting: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppAutomationAction {
+    ResetUi,
+    ShowSettings,
+    HideSettings,
+    ShowVoiceChat,
+    HideVoiceChat,
+    ShowTranscriptionOverlay,
+    HideTranscriptionOverlay,
+    TriggerTrayShowAgent,
+    TriggerTrayOpenSettings,
+    TriggerTrayContinueOnboarding,
+    TriggerDockReopen,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AppAutomationState {
+    pub settings_visible: bool,
+    pub voice_chat_visible: bool,
+    pub transcription_overlay_visible: bool,
+    pub setup_required: bool,
+    pub dock_icon_visible: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -572,6 +604,25 @@ mod tests {
                 err_text.contains(variant),
                 "expected error to mention rejected variant `{variant}`, got: {err_text}"
             );
+        }
+    }
+
+    #[test]
+    fn automation_action_roundtrips_in_json() {
+        let command = IpcCommand::RunAppAutomation {
+            action: AppAutomationAction::TriggerDockReopen,
+        };
+
+        let json = serde_json::to_string(&command).expect("serialize command");
+        assert!(json.contains("RunAppAutomation"));
+        assert!(json.contains("trigger_dock_reopen"));
+
+        let decoded: IpcCommand = serde_json::from_str(&json).expect("deserialize command");
+        match decoded {
+            IpcCommand::RunAppAutomation { action } => {
+                assert_eq!(action, AppAutomationAction::TriggerDockReopen);
+            }
+            other => panic!("expected RunAppAutomation, got {:?}", other),
         }
     }
 }

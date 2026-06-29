@@ -126,7 +126,7 @@ objc2-core-foundation = "0.3"
 # Legacy objc for runtime declarations (ClassDecl) and msg_send! macro
 objc = "0.2"
 # ObjC blocks for callback-based permission APIs (e.g. AVCaptureDevice requestAccess)
-block = "0.1"
+block2 = "0.6"
 # Grand Central Dispatch for main thread operations
 dispatch = "0.2"
 

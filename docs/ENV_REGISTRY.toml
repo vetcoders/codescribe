@@ -212,11 +212,11 @@ category = "stt"
 description = "Whisper model id for cloud/multipart STT"
 
 [vars.WHISPER_LANGUAGE]
-default = "pl"
+default = "auto"
 type = "string"
-reload = "restart"
+reload = "hot"
 category = "stt"
-description = "Whisper transcription language code"
+description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
 
 [vars.CODESCRIBE_WHISPER_INITIAL_PROMPT]
 default = ""

@@ -21,6 +21,10 @@ use tempfile::TempDir;
 
 /// Path to CLI binary (prefers release for embedded model)
 fn cli_binary() -> PathBuf {
+    if let Some(current) = option_env!("CARGO_BIN_EXE_codescribe") {
+        return PathBuf::from(current);
+    }
+
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let release = base.join("target/release/codescribe");
     let debug = base.join("target/debug/codescribe");
@@ -163,6 +167,30 @@ fn test_cli_transcribe_help() {
     assert!(stdout.contains("--format"), "Should have format option");
     assert!(stdout.contains("--llm"), "Should have llm option");
     assert!(stdout.contains("live"), "Should mention live subcommand");
+}
+
+/// Test: `codescribe app --help` exposes the native automation surface
+#[test]
+fn test_cli_app_help() {
+    ensure_cli_built();
+
+    let output = cli_command()
+        .args(["app", "--help"])
+        .output()
+        .expect("Failed to run CLI");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "app --help should succeed");
+    assert!(stdout.contains("state"), "Should mention app state command");
+    assert!(
+        stdout.contains("action"),
+        "Should mention app action command"
+    );
+    assert!(
+        stdout.contains("native app automation surface"),
+        "Should describe the native automation surface"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════

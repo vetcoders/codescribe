@@ -54,7 +54,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.whisper_language, Language::Polish); // Polish is default
+        assert_eq!(config.whisper_language, Language::Auto);
         assert_eq!(config.ai_max_tokens, 0); // 0 = no limit (API decides)
         assert!(!config.ai_formatting_enabled);
         assert!(!config.transcript_tagging_enabled);
@@ -111,10 +111,11 @@ mod tests {
 
     #[test]
     fn test_language_parsing() {
+        assert_eq!("auto".parse::<Language>(), Ok(Language::Auto));
+        assert_eq!("detect".parse::<Language>(), Ok(Language::Auto));
+        assert_eq!("multilingual".parse::<Language>(), Ok(Language::Auto));
         assert_eq!("pl".parse::<Language>(), Ok(Language::Polish));
         assert_eq!("en".parse::<Language>(), Ok(Language::English));
-        // "auto" maps to Polish (legacy compatibility)
-        assert_eq!("auto".parse::<Language>(), Ok(Language::Polish));
         assert!("invalid".parse::<Language>().is_err());
     }
 
