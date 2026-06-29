@@ -151,7 +151,7 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
         }
     }
     if let Some(listener) = current_listener() {
-        listener.on_recording_started();
+        listener.on_recording_preparing();
     }
 }
 

@@ -270,6 +270,10 @@ final class OverlayState: ObservableObject {
     }
 
     func prepareForExternalStart() {
+        handleRecordingPreparing()
+    }
+
+    func handleRecordingPreparing() {
         mode = .listening
         warmingUp = true
         audioReady = false
@@ -279,14 +283,14 @@ final class OverlayState: ObservableObject {
             isFormatting = false
             errorMessage = nil
         }
+        recording = true
     }
 
     func handleRecordingStarted() {
-        let wasRecording = recording
         mode = .listening
-        warmingUp = !wasRecording
-        audioReady = wasRecording
-        if !wasRecording {
+        warmingUp = false
+        audioReady = true
+        if !recording {
             resetTranscript()
             formattedText = ""
             isFormatting = false
@@ -589,6 +593,9 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
         self.state = state
     }
 
+    func onRecordingPreparing() {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.handleRecordingPreparing() } }
+    }
     func onRecordingStarted() {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.handleRecordingStarted() } }
     }

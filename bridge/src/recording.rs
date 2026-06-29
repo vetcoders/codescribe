@@ -103,6 +103,7 @@ impl From<&LayerSummary> for CsLayerSummary {
 /// The Swift side must hop these onto the main actor.
 #[uniffi::export(with_foreign)]
 pub trait CsTranscriptionListener: Send + Sync {
+    fn on_recording_preparing(&self);
     fn on_recording_started(&self);
     fn on_recording_stopped(&self);
     fn on_preview(&self, text: String);
