@@ -51,8 +51,8 @@ fn current_controller(controller_store: &SharedController) -> Option<Arc<Recordi
 
 fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
     let listener_store = shared_listener();
+    let mut events = controller.subscribe_events();
     handle.spawn(async move {
-        let mut events = controller.subscribe_events();
         loop {
             let Ok(event) = events.recv().await else {
                 break;
