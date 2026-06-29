@@ -21,6 +21,46 @@ import AppKit
 
 // MARK: - Engine seam (orchestrator injects the real adapter in App.swift)
 
+private struct OverlayTranscriptAnnotation: Equatable {
+    var position: Int
+    var text: String
+}
+
+private struct OverlayTranscriptSegment: Equatable {
+    var utteranceId: UInt64?
+    var text: String
+    var annotations: [OverlayTranscriptAnnotation] = []
+
+    var renderedText: String {
+        guard !annotations.isEmpty else { return text }
+        var rendered = text
+        for annotation in annotations.sorted(by: { $0.position > $1.position }) {
+            let bounded = min(max(annotation.position, 0), rendered.count)
+            let index = rendered.index(rendered.startIndex, offsetBy: bounded)
+            rendered.insert(contentsOf: " [\(annotation.text)]", at: index)
+        }
+        return rendered
+    }
+
+    mutating func replaceRange(start: UInt64, end: UInt64, replacement: String) -> Bool {
+        guard start <= end,
+              let startOffset = Int(exactly: start),
+              let endOffset = Int(exactly: end),
+              endOffset <= text.count else { return false }
+        let startIndex = text.index(text.startIndex, offsetBy: startOffset)
+        let endIndex = text.index(text.startIndex, offsetBy: endOffset)
+        text.replaceSubrange(startIndex..<endIndex, with: replacement)
+        annotations = annotations.filter { $0.position <= text.count }
+        return true
+    }
+
+    mutating func insertAnnotation(position: UInt64, text annotationText: String) -> Bool {
+        guard let offset = Int(exactly: position), offset <= text.count else { return false }
+        annotations.append(OverlayTranscriptAnnotation(position: offset, text: annotationText))
+        return true
+    }
+}
+
 /// Minimal slice of the controller-backed dictation surface the overlay needs.
 /// Kept as a protocol so the view-model + preview compile without a live Rust core.
 protocol DictationEngine: AnyObject {
@@ -71,6 +111,7 @@ final class OverlayState: ObservableObject {
     private lazy var listener: CsTranscriptionListener = DictationListener(state: self)
 
     private var recording = false
+    private var committedSegments: [OverlayTranscriptSegment] = []
     private var toastTask: Task<Void, Never>?
     private var mockRevealTask: Task<Void, Never>?
 
@@ -139,8 +180,7 @@ final class OverlayState: ObservableObject {
         }
         engine.setListener(listener)
         mode = .listening
-        preview = ""
-        committedUtterances = []
+        resetTranscript()
         formattedText = ""
         isFormatting = false
         errorMessage = nil
@@ -178,7 +218,9 @@ final class OverlayState: ObservableObject {
             let raw = try await engine.stopRecording()
             recording = false
             vadActive = false
-            formattedText = raw.isEmpty ? liveText : raw
+            commitPreviewIfNeeded()
+            let visible = liveText
+            formattedText = visible.isEmpty ? raw : visible
             mode = .formatted
         } catch {
             recording = false
@@ -214,8 +256,7 @@ final class OverlayState: ObservableObject {
         let wasRecording = recording
         mode = .listening
         if !wasRecording {
-            preview = ""
-            committedUtterances = []
+            resetTranscript()
             formattedText = ""
             isFormatting = false
             errorMessage = nil
@@ -227,6 +268,7 @@ final class OverlayState: ObservableObject {
     func finishControllerRecording() {
         recording = false
         vadActive = false
+        commitPreviewIfNeeded()
         formattedText = liveText
         mode = .formatted
     }
@@ -273,30 +315,79 @@ final class OverlayState: ObservableObject {
         }
 
         if committedUtterances.last.map({ normalized($0) == normalized(corrected) }) != true {
-            committedUtterances.append(corrected)
+            appendCommittedSegment(corrected)
         }
     }
 
     func applyFinal(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
-            if normalized(preview) == normalized(trimmed) {
-                preview = ""
+            if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !isSamePreviewUtterance(current: preview, next: trimmed) {
+                commitPreviewIfNeeded()
             }
-            if committedUtterances.last.map({ normalized($0) == normalized(trimmed) }) != true {
-                committedUtterances.append(trimmed)
-            }
+            appendCommittedSegment(trimmed)
         }
         preview = ""
+    }
+
+    func applyReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String) {
+        guard let index = committedSegments.lastIndex(where: { $0.utteranceId == utteranceId }) else {
+            showToast("Skipped unbound transcript patch")
+            return
+        }
+        guard committedSegments[index].replaceRange(start: start, end: end, replacement: text) else {
+            showToast("Skipped out-of-range transcript patch")
+            return
+        }
+        syncCommittedUtterances()
+    }
+
+    func applyInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String) {
+        let annotation = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !annotation.isEmpty else { return }
+        guard let index = committedSegments.lastIndex(where: { $0.utteranceId == utteranceId }) else {
+            showToast("Skipped unbound transcript annotation")
+            return
+        }
+        guard committedSegments[index].insertAnnotation(position: position, text: annotation) else {
+            showToast("Skipped out-of-range transcript annotation")
+            return
+        }
+        syncCommittedUtterances()
+    }
+
+    func applySessionFinalised() {
+        commitPreviewIfNeeded()
+        formattedText = liveText
+        mode = .formatted
+    }
+
+    private func resetTranscript() {
+        preview = ""
+        committedSegments = []
+        committedUtterances = []
     }
 
     private func commitPreviewIfNeeded() {
         let active = preview.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !active.isEmpty else { return }
-        if committedUtterances.last.map({ normalized($0) == normalized(active) }) != true {
-            committedUtterances.append(active)
-        }
+        appendCommittedSegment(active)
         preview = ""
+    }
+
+    private func appendCommittedSegment(_ text: String, utteranceId: UInt64? = nil) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if committedSegments.last.map({ normalized($0.text) == normalized(trimmed) }) == true {
+            return
+        }
+        committedSegments.append(OverlayTranscriptSegment(utteranceId: utteranceId, text: trimmed))
+        syncCommittedUtterances()
+    }
+
+    private func syncCommittedUtterances() {
+        committedUtterances = committedSegments.map(\.renderedText)
     }
 
     private func isSamePreviewUtterance(current: String, next: String) -> Bool {
@@ -334,16 +425,9 @@ final class OverlayState: ObservableObject {
         guard !committedUtterances.isEmpty else { return false }
         let previousKey = normalized(previous)
         if let exact = committedUtterances.lastIndex(where: { normalized($0) == previousKey }) {
-            committedUtterances[exact] = corrected
-            preview = ""
-            return true
-        }
-        if !previousKey.isEmpty,
-           let suffix = committedUtterances.indices.reversed().first(where: {
-               previousKey.hasSuffix(normalized(committedUtterances[$0]))
-                   || normalized(committedUtterances[$0]).hasSuffix(previousKey)
-           }) {
-            committedUtterances[suffix] = corrected
+            committedSegments[exact].text = corrected
+            committedSegments[exact].annotations = []
+            syncCommittedUtterances()
             preview = ""
             return true
         }
@@ -393,7 +477,7 @@ final class OverlayState: ObservableObject {
 
     func beginMockReveal(_ full: String, interval: Double = 0.046) {
         mockRevealTask?.cancel()
-        preview = ""
+        resetTranscript()
         mockRevealTask = Task { @MainActor [weak self] in
             var acc = ""
             for ch in full {
@@ -466,9 +550,23 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     func onFinal(text: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyFinal(text) } }
     }
-    func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {}
-    func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind) {}
-    func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {}
+    func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.state?.applyReplaceRange(utteranceId: utteranceId, start: start, end: end, text: text)
+            }
+        }
+    }
+    func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.state?.applyInsertAnnotation(utteranceId: utteranceId, position: position, text: text)
+            }
+        }
+    }
+    func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applySessionFinalised() } }
+    }
     func onVadActive(active: Bool) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyVad(active) } }
     }
