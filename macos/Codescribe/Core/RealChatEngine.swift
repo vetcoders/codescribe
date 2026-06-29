@@ -44,7 +44,7 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.onReasoning(delta) } }
     }
     func onToolExecuting(name: String, id: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onTool(name, false) } }
+        // Surfaced via onToolResult (completed) to avoid duplicate activity rows.
     }
     func onToolResult(name: String, id: String, summary: String, isError: Bool) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.onTool(name, isError) } }

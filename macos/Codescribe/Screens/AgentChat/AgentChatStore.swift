@@ -167,11 +167,8 @@ final class AgentChatStore: ObservableObject {
                     },
                     onReasoning: { _ in },
                     onTool: { [weak self] name, isError in
-                        self?.update(assistantID, in: threadID) {
-                            $0.isThinking = false
-                            let verb = isError ? "tool · failed" : "tool"
-                            $0.toolLines.append(ToolLine(verb: verb, detail: name))
-                        }
+                        self?.recordToolActivity(name: name, isError: isError,
+                                                 before: assistantID, in: threadID)
                     }
                 )
                 update(assistantID, in: threadID) {
@@ -252,6 +249,24 @@ final class AgentChatStore: ObservableObject {
         guard let ti = threads.firstIndex(where: { $0.id == threadID }),
               let mi = threads[ti].messages.firstIndex(where: { $0.id == id }) else { return }
         body(&threads[ti].messages[mi])
+    }
+
+    /// Surface a completed tool call as a `.tool` activity turn placed immediately
+    /// before the streaming assistant bubble (matches the mock's "What I checked").
+    private func recordToolActivity(name: String, isError: Bool, before assistantID: UUID, in threadID: UUID) {
+        guard let ti = threads.firstIndex(where: { $0.id == threadID }),
+              let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }) else { return }
+        let line = ToolLine(verb: isError ? "failed" : "ran", detail: name)
+        if ai > 0, threads[ti].messages[ai - 1].role == .tool {
+            threads[ti].messages[ai - 1].toolLines.append(line)
+            let n = threads[ti].messages[ai - 1].toolLines.count
+            threads[ti].messages[ai - 1].toolTitle = "What I checked · \(n) tool\(n == 1 ? "" : "s")"
+        } else {
+            var tool = ChatMessage(role: .tool, timestamp: now(), text: "")
+            tool.toolLines = [line]
+            tool.toolTitle = "What I checked · 1 tool"
+            threads[ti].messages.insert(tool, at: ai)
+        }
     }
 
     private func now() -> String { Self.timeFmt.string(from: Date()) }
