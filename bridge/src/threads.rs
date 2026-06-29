@@ -1,2 +1,370 @@
-//! Thread persistence + history surface — `CodescribeThreads`.
-//! Filled by W3 cut #5. Uses shared `crate::CsError`.
+//! Thread persistence + transcript history surface — a thin, synchronous UniFFI
+//! wrapper over the live codescribe `ThreadStore` / `ThreadIndex` (saved agent
+//! conversations) and `state::history` (on-disk transcript artifacts). Split out
+//! of `lib.rs` in W3 cut #5 so each bridge slice owns a disjoint file.
+//!
+//! All cross-FFI types are UniFFI-able: `DateTime<Utc>` / `DateTime<Local>` are
+//! flattened to `i64` epoch-millis, `serde_json::Value` to a `raw_json` String,
+//! `PathBuf` to String, and `usize` to `u64`. No secret values cross the boundary.
+
+use std::fs;
+
+use codescribe_core::agent::thread_index::{ThreadFilter, ThreadIndex, ThreadSummary};
+use codescribe_core::agent::thread_store::{
+    Thread, ThreadMessage, ThreadNote, ThreadStore, TokenUsage,
+};
+use codescribe_core::state::history::{self, HistoryEntry, TranscriptKind};
+use serde_json::Value;
+
+use crate::CsError;
+
+/// Cumulative token accounting for a thread. Mirrors `TokenUsage`
+/// (`thread_store.rs:105`).
+#[derive(uniffi::Record)]
+pub struct CsTokenUsage {
+    pub input: u64,
+    pub output: u64,
+}
+
+impl From<&TokenUsage> for CsTokenUsage {
+    fn from(usage: &TokenUsage) -> Self {
+        Self {
+            input: usage.input,
+            output: usage.output,
+        }
+    }
+}
+
+/// Lightweight thread index entry used to render the thread list/search.
+/// Mirrors `ThreadSummary` (`thread_index.rs:30`); the internal `search_text`
+/// field is intentionally omitted (index-only, not display-facing).
+#[derive(uniffi::Record)]
+pub struct CsThreadSummary {
+    pub id: String,
+    pub title: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub message_count: u64,
+    pub mode: String,
+    pub tags: Vec<String>,
+    pub summary: Option<String>,
+    pub has_notes: bool,
+    pub latest_message: Option<String>,
+    pub latest_note: Option<String>,
+    pub is_favorite: bool,
+}
+
+impl From<&ThreadSummary> for CsThreadSummary {
+    fn from(summary: &ThreadSummary) -> Self {
+        Self {
+            id: summary.id.clone(),
+            title: summary.title.clone(),
+            created_at_ms: summary.created_at.timestamp_millis(),
+            updated_at_ms: summary.updated_at.timestamp_millis(),
+            message_count: summary.message_count as u64,
+            mode: summary.mode.clone(),
+            tags: summary.tags.clone(),
+            summary: summary.summary.clone(),
+            has_notes: summary.has_notes,
+            latest_message: summary.latest_message.clone(),
+            latest_note: summary.latest_note.clone(),
+            is_favorite: summary.is_favorite,
+        }
+    }
+}
+
+/// One message inside a thread. `text` is the flattened, human-readable content
+/// (replicating the private preview logic at `thread_index.rs:334/348`, without
+/// the search-side lowercasing). `raw_json` carries the full structured content
+/// array so callers can recover tool calls / images. Mirrors `ThreadMessage`
+/// (`thread_store.rs:54`).
+#[derive(uniffi::Record)]
+pub struct CsThreadMessage {
+    pub role: String,
+    pub text: String,
+    pub raw_json: String,
+    pub timestamp_ms: i64,
+}
+
+impl From<&ThreadMessage> for CsThreadMessage {
+    fn from(message: &ThreadMessage) -> Self {
+        Self {
+            role: message.role.clone(),
+            text: flatten_message_text(&message.content),
+            raw_json: serde_json::to_string(&message.content).unwrap_or_default(),
+            timestamp_ms: message.timestamp.timestamp_millis(),
+        }
+    }
+}
+
+/// A pinned note attached to a thread. Mirrors `ThreadNote`
+/// (`thread_store.rs:96`).
+#[derive(uniffi::Record)]
+pub struct CsThreadNote {
+    pub id: String,
+    pub created_at_ms: i64,
+    pub text: String,
+    pub anchored_to_message: Option<u64>,
+}
+
+impl From<&ThreadNote> for CsThreadNote {
+    fn from(note: &ThreadNote) -> Self {
+        Self {
+            id: note.id.clone(),
+            created_at_ms: note.created_at.timestamp_millis(),
+            text: note.text.clone(),
+            anchored_to_message: note.anchored_to_message.map(|index| index as u64),
+        }
+    }
+}
+
+/// A fully loaded conversation thread. Mirrors `Thread` (`thread_store.rs:20`).
+#[derive(uniffi::Record)]
+pub struct CsThread {
+    pub id: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub title: String,
+    pub mode: String,
+    pub tags: Vec<String>,
+    pub notes: Vec<CsThreadNote>,
+    pub messages: Vec<CsThreadMessage>,
+    pub summary: Option<String>,
+    pub total_tokens: Option<CsTokenUsage>,
+    pub provider: String,
+    pub model: String,
+}
+
+impl From<&Thread> for CsThread {
+    fn from(thread: &Thread) -> Self {
+        Self {
+            id: thread.id.clone(),
+            created_at_ms: thread.created_at.timestamp_millis(),
+            updated_at_ms: thread.updated_at.timestamp_millis(),
+            title: thread.title.clone(),
+            mode: thread.mode.clone(),
+            tags: thread.tags.clone(),
+            notes: thread.notes.iter().map(CsThreadNote::from).collect(),
+            messages: thread.messages.iter().map(CsThreadMessage::from).collect(),
+            summary: thread.summary.clone(),
+            total_tokens: thread.total_tokens.as_ref().map(CsTokenUsage::from),
+            provider: thread.provider.clone(),
+            model: thread.model.clone(),
+        }
+    }
+}
+
+/// Filter applied to `list_threads`. Mirrors `ThreadFilter`
+/// (`thread_index.rs:111`).
+#[derive(uniffi::Record)]
+pub struct CsThreadFilter {
+    pub mode: Option<String>,
+    pub favorites_only: bool,
+    pub has_notes: bool,
+    pub tag: Option<String>,
+}
+
+impl From<CsThreadFilter> for ThreadFilter {
+    fn from(filter: CsThreadFilter) -> Self {
+        Self {
+            mode: filter.mode,
+            favorites_only: filter.favorites_only,
+            has_notes: filter.has_notes,
+            tag: filter.tag,
+        }
+    }
+}
+
+/// What kind of transcript artifact a history entry holds. Mirrors
+/// `TranscriptKind` (`state/history.rs:27`).
+#[derive(uniffi::Enum)]
+pub enum CsTranscriptKind {
+    Raw,
+    Cloud,
+    FormattedTranscript,
+    AssistantInterpretation,
+    FormattingFailed,
+    Failed,
+}
+
+impl From<TranscriptKind> for CsTranscriptKind {
+    fn from(kind: TranscriptKind) -> Self {
+        match kind {
+            TranscriptKind::Raw => CsTranscriptKind::Raw,
+            TranscriptKind::Cloud => CsTranscriptKind::Cloud,
+            TranscriptKind::FormattedTranscript => CsTranscriptKind::FormattedTranscript,
+            TranscriptKind::AssistantInterpretation => CsTranscriptKind::AssistantInterpretation,
+            TranscriptKind::FormattingFailed => CsTranscriptKind::FormattingFailed,
+            TranscriptKind::Failed => CsTranscriptKind::Failed,
+        }
+    }
+}
+
+/// One on-disk transcript artifact. Mirrors `HistoryEntry`
+/// (`state/history.rs:20`); `path` is the absolute file path as a String and
+/// `timestamp_ms` is epoch-millis from the entry's local timestamp.
+#[derive(uniffi::Record)]
+pub struct CsHistoryEntry {
+    pub path: String,
+    pub timestamp_ms: i64,
+    pub preview: String,
+    pub kind: CsTranscriptKind,
+}
+
+impl From<HistoryEntry> for CsHistoryEntry {
+    fn from(entry: HistoryEntry) -> Self {
+        Self {
+            path: entry.path.to_string_lossy().into_owned(),
+            timestamp_ms: entry.timestamp.timestamp_millis(),
+            preview: entry.preview,
+            kind: entry.kind.into(),
+        }
+    }
+}
+
+/// Thin handle to the codescribe thread store + transcript history.
+///
+/// Stateless: every call constructs a fresh `ThreadStore` / `ThreadIndex` over
+/// the live on-disk data dir, so reads always reflect what the engine wrote.
+#[derive(uniffi::Object)]
+pub struct CodescribeThreads {}
+
+#[uniffi::export]
+impl CodescribeThreads {
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    /// List indexed thread summaries, newest first, optionally filtered.
+    /// Wraps `ThreadIndex::list` (`thread_index.rs:195`).
+    pub fn list_threads(
+        &self,
+        filter: Option<CsThreadFilter>,
+    ) -> Result<Vec<CsThreadSummary>, CsError> {
+        let index = open_index()?;
+        let core_filter = filter.map(ThreadFilter::from);
+        Ok(index
+            .list(core_filter.as_ref())
+            .into_iter()
+            .map(CsThreadSummary::from)
+            .collect())
+    }
+
+    /// Full-text search over indexed threads (all query words must match),
+    /// newest first. Wraps `ThreadIndex::search` (`thread_index.rs:206`).
+    pub fn search_threads(&self, query: String) -> Result<Vec<CsThreadSummary>, CsError> {
+        let index = open_index()?;
+        Ok(index
+            .search(&query)
+            .into_iter()
+            .map(CsThreadSummary::from)
+            .collect())
+    }
+
+    /// Load a full thread by id. Wraps `ThreadStore::load_thread`
+    /// (`thread_store.rs:149`).
+    pub fn load_thread(&self, id: String) -> Result<CsThread, CsError> {
+        let store = ThreadStore::new()?;
+        let thread = store.load_thread(&id)?;
+        Ok(CsThread::from(&thread))
+    }
+
+    /// Delete a thread (file + index entry) by id. Wraps
+    /// `ThreadStore::delete_thread` (`thread_store.rs:159`).
+    pub fn delete_thread(&self, id: String) -> Result<(), CsError> {
+        let store = ThreadStore::new()?;
+        store.delete_thread(&id)?;
+        Ok(())
+    }
+
+    /// Set a thread's favorite flag; returns `false` when no such thread exists.
+    /// Wraps `ThreadStore::set_thread_favorite` (`thread_store.rs:173`).
+    pub fn set_thread_favorite(&self, id: String, is_favorite: bool) -> Result<bool, CsError> {
+        let store = ThreadStore::new()?;
+        Ok(store.set_thread_favorite(&id, is_favorite)?)
+    }
+
+    /// Generate a fresh, collision-resistant thread id. Wraps
+    /// `ThreadStore::generate_id` (`thread_store.rs:191`).
+    pub fn generate_thread_id(&self) -> String {
+        ThreadStore::generate_id()
+    }
+
+    /// Recent transcript history entries, newest first, capped at `limit`.
+    /// Wraps `history::recent_entries` (`state/history.rs:404`).
+    pub fn recent_history(&self, limit: u32) -> Vec<CsHistoryEntry> {
+        history::recent_entries(limit as usize)
+            .into_iter()
+            .map(CsHistoryEntry::from)
+            .collect()
+    }
+
+    /// Read the full text of a transcript artifact at `path`. Wraps
+    /// `std::fs::read_to_string`.
+    pub fn read_history_text(&self, path: String) -> Result<String, CsError> {
+        Ok(fs::read_to_string(&path)?)
+    }
+}
+
+/// Open the live thread index over the default on-disk data dir.
+fn open_index() -> Result<ThreadIndex, CsError> {
+    let store = ThreadStore::new()?;
+    let index = ThreadIndex::load_or_create(store.threads_dir())?;
+    Ok(index)
+}
+
+/// Flatten a message's structured content into a single display string by
+/// replicating the private `thread_message_preview_text` / `collect_message_text`
+/// logic (`thread_index.rs:334/348`), minus the search-side lowercasing so the
+/// returned text preserves original casing for display.
+fn flatten_message_text(content: &[Value]) -> String {
+    let mut chunks = Vec::new();
+    for value in content {
+        collect_message_text(value, &mut chunks);
+    }
+    chunks
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Recursively collect human-readable text from a content `Value`, mirroring
+/// `collect_message_text` (`thread_index.rs:348`).
+fn collect_message_text(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) if !text.trim().is_empty() => {
+            out.push(text.to_string());
+        }
+        Value::Array(items) => {
+            // Skip binary-like arrays (e.g., image bytes).
+            if items.iter().all(Value::is_number) {
+                return;
+            }
+            for item in items {
+                collect_message_text(item, out);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(text) = map.get("text").and_then(Value::as_str)
+                && !text.trim().is_empty()
+            {
+                out.push(text.to_string());
+            }
+            if let Some(nested) = map.get("content") {
+                collect_message_text(nested, out);
+            }
+            if let Some(input) = map.get("input") {
+                collect_message_text(input, out);
+            }
+            for (key, nested) in map {
+                if matches!(key.as_str(), "text" | "content" | "input" | "data") {
+                    continue;
+                }
+                collect_message_text(nested, out);
+            }
+        }
+        _ => {}
+    }
+}

@@ -1,2 +1,379 @@
-//! Config / prompts / keychain / onboarding surface — `CodescribeConfig`.
-//! Filled by W3 cut #1. Uses shared `crate::{CsError, CsLanguage}`.
+//! Configuration surface — thin UniFFI wrapper over the live codescribe
+//! `config` engine (settings.json / .env tiering, Keychain-backed API keys,
+//! prompt files, onboarding state). Split out of `lib.rs` in W3 cut #0 so each
+//! bridge slice owns a disjoint file.
+//!
+//! Sync-only (NOT tokio): every call here is cheap disk / Keychain / env I/O.
+//! Secrets NEVER cross the FFI boundary — only `CsKeyStatus` booleans report
+//! whether a key is present.
+
+use std::fs;
+
+use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
+use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting_prompt_path};
+use codescribe_core::config::{
+    Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
+};
+
+use crate::{CsError, CsLanguage};
+
+/// Full settings snapshot pushed to the Swift Settings UI. Combines real
+/// `Config` struct fields (settings.json / .env / defaults already merged by
+/// `Config::load()`) with env-only knobs the core reads via `std::env::var`
+/// after load (LLM model/endpoint overrides, formatting level, voice-lab).
+///
+/// API keys are intentionally absent — they live only in `CsKeyStatus` as
+/// booleans. Write back through `update_config` / `update_config_many` using the
+/// router env keys (see `CodescribeConfig::update_config`).
+#[derive(uniffi::Record)]
+pub struct CsSettings {
+    // ── Hotkeys ──
+    pub hold_exclusive: bool,
+    pub hold_start_delay_ms: u64,
+    pub double_tap_interval_ms: u64,
+    pub toggle_silence_sec: f32,
+    // ── Language ──
+    pub whisper_language: CsLanguage,
+    // ── AI / formatting ──
+    pub ai_formatting_enabled: bool,
+    /// `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
+    pub transcript_send_mode: String,
+    pub transcript_tagging_enabled: bool,
+    pub transcript_tag_template: String,
+    pub ai_max_tokens: i32,
+    pub ai_assistive_max_tokens: i32,
+    // ── UI ──
+    pub show_tray_glyph: bool,
+    pub show_dock_icon: bool,
+    pub transcription_overlay_enabled: bool,
+    pub hold_indicator: bool,
+    pub hold_badge_size: u32,
+    pub hold_badge_offset_x: i32,
+    pub hold_badge_offset_y: i32,
+    /// `OverlayPositionMode::as_str()` — `"snapped_top_right"` / `"custom"`.
+    pub overlay_position_mode: String,
+    pub overlay_custom_x: Option<f64>,
+    pub overlay_custom_y: Option<f64>,
+    // ── Sound ──
+    pub beep_on_start: bool,
+    pub sound_name: String,
+    pub sound_volume: f32,
+    // ── Audio ──
+    pub audio_input_device: Option<String>,
+    // ── History / quick notes ──
+    pub history_enabled: bool,
+    pub quick_notes_enabled: bool,
+    pub quick_notes_save_only: bool,
+    // ── STT backend ──
+    pub use_local_stt: bool,
+    pub local_model: String,
+    pub stt_endpoint: Option<String>,
+    // ── LLM backend (base) ──
+    pub llm_endpoint: Option<String>,
+    // ── Clipboard ──
+    pub restore_clipboard: bool,
+    pub restore_clipboard_delay_ms: u64,
+    // ── System / agent ──
+    pub start_at_login: bool,
+    pub agent_enter_sends: bool,
+    pub dump_audio_logs: bool,
+    // ── Env-only knobs (not Config struct fields; read after load) ──
+    pub llm_model: Option<String>,
+    pub llm_formatting_endpoint: Option<String>,
+    pub llm_formatting_model: Option<String>,
+    pub llm_assistive_endpoint: Option<String>,
+    pub llm_assistive_model: Option<String>,
+    pub formatting_level: Option<String>,
+    pub whisper_model: Option<String>,
+    pub buffer_delay_ms: Option<u64>,
+    pub typing_cps: Option<f32>,
+    pub emit_words_max: Option<u64>,
+    pub buffered_interim_sec: Option<f32>,
+    pub backend_max_upload_mb: Option<u64>,
+}
+
+/// Presence-only view of the Keychain-backed API keys. Booleans only — the
+/// secret values themselves never cross FFI. A key counts as "set" when its
+/// account env var is present and non-empty after `Config::load()` (which calls
+/// `populate_env_from_keychain`).
+#[derive(uniffi::Record)]
+pub struct CsKeyStatus {
+    pub llm_api_key_set: bool,
+    pub stt_api_key_set: bool,
+    pub llm_formatting_api_key_set: bool,
+    pub llm_assistive_api_key_set: bool,
+    pub github_token_set: bool,
+}
+
+/// One config key/value pair for `update_config_many` batch writes. `key` is a
+/// router env key (e.g. `"WHISPER_LANGUAGE"`, `"USE_LOCAL_STT"`); `value` is the
+/// string form the core parses (bool `"1"`/`"0"`, f32 `"1.00"`, etc.).
+#[derive(uniffi::Record)]
+pub struct CsConfigEntry {
+    pub key: String,
+    pub value: String,
+}
+
+/// Thin handle to the codescribe config engine. Stateless: each method reloads
+/// or writes through the live `Config` / `UserSettings` / Keychain so Swift
+/// always sees on-disk truth.
+#[derive(uniffi::Object)]
+pub struct CodescribeConfig {}
+
+#[uniffi::export]
+impl CodescribeConfig {
+    /// Warm the process env from Keychain + settings.json + default LLM runtime
+    /// (same startup the live app performs). Idempotent.
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        let _ = Config::load();
+        Self {}
+    }
+
+    /// Full settings snapshot for the Settings UI. Reloads from disk so it
+    /// reflects any writes made since construction.
+    pub fn load_settings(&self) -> CsSettings {
+        let config = Config::load();
+        CsSettings {
+            hold_exclusive: config.hold_exclusive,
+            hold_start_delay_ms: config.hold_start_delay_ms,
+            double_tap_interval_ms: config.double_tap_interval_ms,
+            toggle_silence_sec: config.toggle_silence_sec,
+            whisper_language: CsLanguage::from(config.whisper_language),
+            ai_formatting_enabled: config.ai_formatting_enabled,
+            transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
+            transcript_tagging_enabled: config.transcript_tagging_enabled,
+            transcript_tag_template: config.transcript_tag_template.clone(),
+            ai_max_tokens: config.ai_max_tokens,
+            ai_assistive_max_tokens: config.ai_assistive_max_tokens,
+            show_tray_glyph: config.show_tray_glyph,
+            show_dock_icon: config.show_dock_icon,
+            transcription_overlay_enabled: config.transcription_overlay_enabled,
+            hold_indicator: config.hold_indicator,
+            hold_badge_size: config.hold_badge_size,
+            hold_badge_offset_x: config.hold_badge_offset_x,
+            hold_badge_offset_y: config.hold_badge_offset_y,
+            overlay_position_mode: config.overlay_position_mode.as_str().to_string(),
+            overlay_custom_x: config.overlay_custom_x,
+            overlay_custom_y: config.overlay_custom_y,
+            beep_on_start: config.beep_on_start,
+            sound_name: config.sound_name.clone(),
+            sound_volume: config.sound_volume,
+            audio_input_device: config.audio_input_device.clone(),
+            history_enabled: config.history_enabled,
+            quick_notes_enabled: config.quick_notes_enabled,
+            quick_notes_save_only: config.quick_notes_save_only,
+            use_local_stt: config.use_local_stt,
+            local_model: config.local_model.clone(),
+            stt_endpoint: config.stt_endpoint.clone(),
+            llm_endpoint: config.llm_endpoint.clone(),
+            restore_clipboard: config.restore_clipboard,
+            restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,
+            start_at_login: config.start_at_login,
+            agent_enter_sends: config.agent_enter_sends,
+            dump_audio_logs: config.dump_audio_logs,
+            // Env-only knobs (read after Config::load populated the env).
+            llm_model: env_string("LLM_MODEL"),
+            llm_formatting_endpoint: env_string("LLM_FORMATTING_ENDPOINT"),
+            llm_formatting_model: env_string("LLM_FORMATTING_MODEL"),
+            llm_assistive_endpoint: env_string("LLM_ASSISTIVE_ENDPOINT"),
+            llm_assistive_model: env_string("LLM_ASSISTIVE_MODEL"),
+            formatting_level: env_string("FORMATTING_LEVEL"),
+            whisper_model: env_string("WHISPER_MODEL"),
+            buffer_delay_ms: env_parse("CODESCRIBE_BUFFER_DELAY_MS"),
+            typing_cps: env_parse("CODESCRIBE_TYPING_CPS"),
+            emit_words_max: env_parse("CODESCRIBE_EMIT_WORDS_MAX"),
+            buffered_interim_sec: env_parse("CODESCRIBE_BUFFERED_INTERIM_SEC"),
+            backend_max_upload_mb: env_parse("BACKEND_MAX_UPLOAD_MB"),
+        }
+    }
+
+    /// Persist one config value, auto-tiered by the core router
+    /// (`save_to_env`): API keys → Keychain, promoted keys → settings.json,
+    /// power-user keys → `.env`. Also updates the live process env.
+    pub fn update_config(&self, key: String, value: String) -> Result<(), CsError> {
+        Config::load()
+            .save_to_env(&key, &value)
+            .map_err(|error| CsError::Config {
+                msg: error.to_string(),
+            })
+    }
+
+    /// Batch variant of `update_config` (`save_to_env_many`) — one settings.json
+    /// write and one `.env` rewrite for the whole batch.
+    pub fn update_config_many(&self, entries: Vec<CsConfigEntry>) -> Result<(), CsError> {
+        let pairs: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|entry| (entry.key.as_str(), entry.value.as_str()))
+            .collect();
+        Config::load()
+            .save_to_env_many(&pairs)
+            .map_err(|error| CsError::Config {
+                msg: error.to_string(),
+            })
+    }
+
+    /// Absolute path to the config directory (`~/.codescribe`, or the
+    /// `CODESCRIBE_DATA_DIR` override).
+    pub fn config_dir(&self) -> String {
+        Config::config_dir().to_string_lossy().to_string()
+    }
+
+    /// Presence booleans for every Keychain-backed API key.
+    pub fn key_status(&self) -> CsKeyStatus {
+        CsKeyStatus {
+            llm_api_key_set: key_present("LLM_API_KEY"),
+            stt_api_key_set: key_present("STT_API_KEY"),
+            llm_formatting_api_key_set: key_present("LLM_FORMATTING_API_KEY"),
+            llm_assistive_api_key_set: key_present("LLM_ASSISTIVE_API_KEY"),
+            github_token_set: key_present("GITHUB_TOKEN"),
+        }
+    }
+
+    /// Canonical list of Keychain account names (`KEYCHAIN_ACCOUNTS`).
+    pub fn key_accounts(&self) -> Vec<String> {
+        KEYCHAIN_ACCOUNTS.iter().map(|a| a.to_string()).collect()
+    }
+
+    /// Store an API key in the Keychain and sync the live process env, exactly
+    /// like the core's `save_to_env` path. `account` must be a known
+    /// `KEYCHAIN_ACCOUNTS` entry. The secret is never echoed back.
+    pub fn set_api_key(&self, account: String, secret: String) -> Result<(), CsError> {
+        ensure_known_account(&account)?;
+        save_key(&account, &secret).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        // SAFETY: settings writes are serialized on a single Swift actor (W3
+        // contract) and runtime readers consume refreshed Config snapshots, so
+        // this mirrors the core's `ui_thread_set_env` after `save_key`.
+        unsafe { std::env::set_var(&account, &secret) };
+        Ok(())
+    }
+
+    /// Delete an API key from the Keychain and clear it from the live process
+    /// env. `account` must be a known `KEYCHAIN_ACCOUNTS` entry.
+    pub fn clear_api_key(&self, account: String) -> Result<(), CsError> {
+        ensure_known_account(&account)?;
+        delete_key(&account).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        // SAFETY: same single-writer invariant as `set_api_key`.
+        unsafe { std::env::remove_var(&account) };
+        Ok(())
+    }
+
+    /// Current BASE formatting prompt (the editable `formatting.txt`, WITHOUT
+    /// the appended `*_tuning.txt`). Falls back to the built-in default when the
+    /// file does not exist yet.
+    pub fn get_formatting_prompt(&self) -> String {
+        read_prompt_or_default(
+            &get_formatting_prompt_path().to_string_lossy(),
+            DEFAULT_FORMATTING_PROMPT,
+        )
+    }
+
+    /// Current BASE assistive prompt (the editable `assistive.txt`, WITHOUT the
+    /// appended `*_tuning.txt`). Falls back to the built-in default when the file
+    /// does not exist yet.
+    pub fn get_assistive_prompt(&self) -> String {
+        read_prompt_or_default(
+            &get_assistive_prompt_path().to_string_lossy(),
+            DEFAULT_ASSISTIVE_PROMPT,
+        )
+    }
+
+    /// Overwrite the BASE formatting prompt file. The core has no setter, so we
+    /// write `formatting.txt` directly (creating the prompts dir if needed).
+    pub fn set_formatting_prompt(&self, content: String) -> Result<(), CsError> {
+        write_prompt(&get_formatting_prompt_path(), &content)
+    }
+
+    /// Overwrite the BASE assistive prompt file (`assistive.txt`).
+    pub fn set_assistive_prompt(&self, content: String) -> Result<(), CsError> {
+        write_prompt(&get_assistive_prompt_path(), &content)
+    }
+
+    /// Reset both BASE prompt files to their built-in defaults
+    /// (`reset_to_defaults`). Does not touch `*_tuning.txt`.
+    pub fn reset_prompts_to_defaults(&self) -> Result<(), CsError> {
+        reset_to_defaults().map_err(CsError::from)
+    }
+
+    /// Built-in default formatting prompt (`DEFAULT_FORMATTING_PROMPT`).
+    pub fn default_formatting_prompt(&self) -> String {
+        DEFAULT_FORMATTING_PROMPT.to_string()
+    }
+
+    /// Built-in default assistive prompt (`DEFAULT_ASSISTIVE_PROMPT`).
+    pub fn default_assistive_prompt(&self) -> String {
+        DEFAULT_ASSISTIVE_PROMPT.to_string()
+    }
+
+    /// Whether the first-run onboarding wizard should be shown (mirrors the
+    /// live app gate; re-validates permission markers).
+    pub fn should_show_onboarding(&self) -> bool {
+        codescribe::should_show_onboarding()
+    }
+
+    /// First-run operating lane chosen during onboarding (`"basic"` /
+    /// `"agentic"`), or `None` when not yet chosen.
+    pub fn onboarding_mode(&self) -> Option<String> {
+        UserSettings::load().onboarding_mode
+    }
+
+    /// Persist the onboarding operating lane. Routes to settings.json via the
+    /// promoted `ONBOARDING_MODE` key.
+    pub fn set_onboarding_mode(&self, mode: String) -> Result<(), CsError> {
+        Config::load()
+            .save_to_env("ONBOARDING_MODE", &mode)
+            .map_err(|error| CsError::Config {
+                msg: error.to_string(),
+            })
+    }
+}
+
+/// Non-empty env var as `Some(String)`, else `None`.
+fn env_string(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Parse a non-empty env var into `T`, else `None`.
+fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// True when the account env var is present and non-empty.
+fn key_present(account: &str) -> bool {
+    env_string(account).is_some()
+}
+
+/// Reject unknown Keychain accounts before touching the Keychain.
+fn ensure_known_account(account: &str) -> Result<(), CsError> {
+    if KEYCHAIN_ACCOUNTS.contains(&account) {
+        Ok(())
+    } else {
+        Err(CsError::Config {
+            msg: format!("unknown keychain account: {account}"),
+        })
+    }
+}
+
+/// Read a BASE prompt file, falling back to the supplied default when it is
+/// missing or unreadable.
+fn read_prompt_or_default(path: &str, default: &str) -> String {
+    fs::read_to_string(path).unwrap_or_else(|_| default.to_string())
+}
+
+/// Write a BASE prompt file, creating its parent directory first.
+fn write_prompt(path: &std::path::Path, content: &str) -> Result<(), CsError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, content)?;
+    Ok(())
+}
