@@ -8,8 +8,9 @@ import AppKit
 // renders standalone against `MockDictationEngine`.
 //
 // TRANSCRIPT MODEL (new bridge semantics):
-//   on_preview  → interim utterance, REPLACE-not-append (utterance-local).
-//   on_final    → completed VAD-bounded utterance → commit + clear preview.
+//   on_preview    → interim utterance, REPLACE-not-append (utterance-local).
+//   on_correction → replacement for the active or last committed utterance.
+//   on_final      → completed VAD-bounded utterance → commit + clear preview.
 //   on_vad_active → speech start/stop → drives the WaveformView pulse.
 //   on_no_speech / on_error → transient toast.
 //
@@ -45,7 +46,7 @@ final class OverlayState: ObservableObject {
     // MARK: Published state
     @Published var mode: OverlayMode = .listening
     @Published var preview: String = ""        // current utterance interim (replace-not-append)
-    @Published var committed: String = ""      // accumulated finals (joined)
+    @Published var committedUtterances: [String] = [] // accumulated finals, one item per utterance
     @Published var formattedText: String = ""  // finalized transcript after stop
     @Published var vadActive: Bool = false     // drives the WaveformView pulse
     @Published var toast: String?              // transient no-speech / error notice
@@ -94,7 +95,9 @@ final class OverlayState: ObservableObject {
 
     /// committed finals + the current interim preview, space-joined.
     var liveText: String {
-        [committed, preview].filter { !$0.isEmpty }.joined(separator: " ")
+        (committedUtterances + [preview])
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: " ")
     }
 
     /// Text shown in the listening body, with the mock's "listening…" placeholder.
@@ -135,7 +138,7 @@ final class OverlayState: ObservableObject {
         engine.setListener(listener)
         mode = .listening
         preview = ""
-        committed = ""
+        committedUtterances = []
         formattedText = ""
         isFormatting = false
         errorMessage = nil
@@ -210,7 +213,7 @@ final class OverlayState: ObservableObject {
         mode = .listening
         if !wasRecording {
             preview = ""
-            committed = ""
+            committedUtterances = []
             formattedText = ""
             isFormatting = false
             errorMessage = nil
@@ -233,12 +236,75 @@ final class OverlayState: ObservableObject {
         preview = text
     }
 
+    func applyCorrection(_ text: String, previousText: String) {
+        let corrected = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !corrected.isEmpty else { return }
+
+        mode = .listening
+        let previous = previousText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if replacesActivePreview(previous: previous, corrected: corrected) {
+            return
+        }
+        if replacesCommittedUtterance(previous: previous, corrected: corrected) {
+            return
+        }
+
+        if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            preview = corrected
+        } else if !committedUtterances.isEmpty {
+            committedUtterances[committedUtterances.count - 1] = corrected
+        } else {
+            preview = corrected
+        }
+    }
+
     func applyFinal(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
-            committed = committed.isEmpty ? trimmed : committed + " " + trimmed
+            if normalized(preview) == normalized(trimmed) {
+                preview = ""
+            }
+            if committedUtterances.last.map({ normalized($0) == normalized(trimmed) }) != true {
+                committedUtterances.append(trimmed)
+            }
         }
         preview = ""
+    }
+
+    private func replacesActivePreview(previous: String, corrected: String) -> Bool {
+        guard !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if previous.isEmpty || normalized(preview) == normalized(previous) {
+            preview = corrected
+            return true
+        }
+        return false
+    }
+
+    private func replacesCommittedUtterance(previous: String, corrected: String) -> Bool {
+        guard !committedUtterances.isEmpty else { return false }
+        let previousKey = normalized(previous)
+        if let exact = committedUtterances.lastIndex(where: { normalized($0) == previousKey }) {
+            committedUtterances[exact] = corrected
+            preview = ""
+            return true
+        }
+        if !previousKey.isEmpty,
+           let suffix = committedUtterances.indices.reversed().first(where: {
+               previousKey.hasSuffix(normalized(committedUtterances[$0]))
+                   || normalized(committedUtterances[$0]).hasSuffix(previousKey)
+           }) {
+            committedUtterances[suffix] = corrected
+            preview = ""
+            return true
+        }
+        return false
+    }
+
+    private func normalized(_ text: String) -> String {
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     func applyVad(_ active: Bool) {
@@ -343,6 +409,9 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     }
     func onPreview(text: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyPreview(text) } }
+    }
+    func onCorrection(text: String, previousText: String) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyCorrection(text, previousText: previousText) } }
     }
     func onFinal(text: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyFinal(text) } }

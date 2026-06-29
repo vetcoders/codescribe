@@ -81,9 +81,12 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             EngineEventWire::VadStart { .. } => listener.on_vad_active(true),
             EngineEventWire::VadEnd { .. } => listener.on_vad_active(false),
             EngineEventWire::NoSpeech { reason } => listener.on_no_speech(reason),
-            EngineEventWire::Preview { text, .. } | EngineEventWire::Correction { text, .. } => {
-                listener.on_preview(text)
-            }
+            EngineEventWire::Preview { text, .. } => listener.on_preview(text),
+            EngineEventWire::Correction {
+                text,
+                previous_text,
+                ..
+            } => listener.on_correction(text, previous_text),
             EngineEventWire::UtteranceFinal { text, .. } => listener.on_final(text),
             EngineEventWire::Warning { code, message } => {
                 listener.on_error(format!("{code}: {message}"));

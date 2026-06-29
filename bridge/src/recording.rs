@@ -40,6 +40,7 @@ pub trait CsTranscriptionListener: Send + Sync {
     fn on_recording_started(&self);
     fn on_recording_stopped(&self);
     fn on_preview(&self, text: String);
+    fn on_correction(&self, text: String, previous_text: String);
     fn on_final(&self, text: String);
     fn on_vad_active(&self, active: bool);
     fn on_no_speech(&self, reason: String);
@@ -59,10 +60,14 @@ impl EventSink for CsEventSink {
             EngineEvent::VadStart { .. } => self.listener.on_vad_active(true),
             EngineEvent::VadEnd { .. } => self.listener.on_vad_active(false),
             EngineEvent::NoSpeech { reason } => self.listener.on_no_speech(reason.clone()),
-            // Interim preview and post-correction both surface as "preview"
-            // (replace-not-append); streaming continues either way.
             EngineEvent::Preview { text, .. } => self.listener.on_preview(text.clone()),
-            EngineEvent::Correction { text, .. } => self.listener.on_preview(text.clone()),
+            EngineEvent::Correction {
+                text,
+                previous_text,
+                ..
+            } => self
+                .listener
+                .on_correction(text.clone(), previous_text.clone()),
             EngineEvent::UtteranceFinal { text, .. } => self.listener.on_final(text.clone()),
             // Recoverable engine warning — surface as a non-fatal error string.
             EngineEvent::Warning { code, message } => {
