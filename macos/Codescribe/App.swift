@@ -17,5 +17,10 @@ struct CodescribeRedesignApp: App {
                 .frame(minWidth: 900, minHeight: 600)
         }
         .windowStyle(.titleBar)
+
+        // Standard macOS Settings scene (⌘,) backed by the real config bridge.
+        Settings {
+            SettingsView(model: SettingsViewModel(engine: RealSettingsEngine()))
+        }
     }
 }
