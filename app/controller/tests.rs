@@ -872,6 +872,33 @@ fn test_adjudicate_recording_truth_cold_whisper_empty_live_recovers_via_final_pa
 }
 
 #[test]
+fn test_recording_start_paths_do_not_gate_on_whisper_health() {
+    let source = include_str!("mod.rs");
+    let hold_start = source
+        .split("let task = tokio::spawn(async move {")
+        .nth(1)
+        .and_then(|tail| tail.split("Self::configure_hold_event_sink(").next())
+        .expect("hold start pre-recorder block should be present");
+    let toggle_start = source
+        .split("async fn start_toggle_recording")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("let _guard = self.serial_lock.lock().await;")
+                .next()
+        })
+        .expect("toggle start pre-lock block should be present");
+
+    assert!(
+        !hold_start.contains("check_health"),
+        "hold recording start must not wait for Whisper health; saved audio/final pass recovers cold STT"
+    );
+    assert!(
+        !toggle_start.contains("check_health"),
+        "toggle recording start must not wait for Whisper health; saved audio/final pass recovers cold STT"
+    );
+}
+
+#[test]
 fn test_adjudicate_recording_truth_uses_typed_cloud_primary_verdict() {
     let verdict = adjudicate_recording_truth(
         false,

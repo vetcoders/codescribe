@@ -131,6 +131,7 @@ extension CsLanguage {
     /// Two-letter code shown in the UI and written to `WHISPER_LANGUAGE`.
     var shortCode: String {
         switch self {
+        case .auto: return "auto"
         case .polish: return "pl"
         case .english: return "en"
         }
@@ -139,6 +140,7 @@ extension CsLanguage {
     /// Human-readable label for the language picker.
     var displayName: String {
         switch self {
+        case .auto: return "Auto"
         case .polish: return "Polish"
         case .english: return "English"
         }

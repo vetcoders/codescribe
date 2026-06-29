@@ -67,6 +67,7 @@ impl From<std::io::Error> for CsError {
 /// (dictation language) surfaces. Maps 1:1 to `codescribe_core::config::Language`.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsLanguage {
+    Auto,
     Polish,
     English,
 }
@@ -74,6 +75,7 @@ pub enum CsLanguage {
 impl From<codescribe_core::config::Language> for CsLanguage {
     fn from(language: codescribe_core::config::Language) -> Self {
         match language {
+            codescribe_core::config::Language::Auto => CsLanguage::Auto,
             codescribe_core::config::Language::Polish => CsLanguage::Polish,
             codescribe_core::config::Language::English => CsLanguage::English,
         }
@@ -83,6 +85,7 @@ impl From<codescribe_core::config::Language> for CsLanguage {
 impl From<CsLanguage> for codescribe_core::config::Language {
     fn from(language: CsLanguage) -> Self {
         match language {
+            CsLanguage::Auto => codescribe_core::config::Language::Auto,
             CsLanguage::Polish => codescribe_core::config::Language::Polish,
             CsLanguage::English => codescribe_core::config::Language::English,
         }
@@ -93,6 +96,7 @@ impl CsLanguage {
     /// Two-letter code (`"pl"` / `"en"`) as the core uses it.
     pub fn as_code(&self) -> &'static str {
         match self {
+            CsLanguage::Auto => "auto",
             CsLanguage::Polish => "pl",
             CsLanguage::English => "en",
         }
