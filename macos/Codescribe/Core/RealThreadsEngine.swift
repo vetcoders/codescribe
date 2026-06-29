@@ -23,12 +23,27 @@ final class RealThreadsEngine: ChatThreadsProviding {
 
     func loadMessages(backendId: String) -> [ChatMessage] {
         guard let thread = try? threads.loadThread(id: backendId) else { return [] }
+        var toolNamesById: [String: String] = [:]
         return thread.messages.compactMap { message -> ChatMessage? in
+            let content = StoredMessageContent(rawJson: message.rawJson)
+            content.toolUses.forEach { toolNamesById[$0.id] = $0.name }
+
+            if !content.toolResults.isEmpty {
+                return Self.toolActivityMessage(
+                    from: content.toolResults,
+                    toolNamesById: toolNamesById,
+                    timestampMs: message.timestampMs
+                )
+            }
+            if content.hasToolUseOnly {
+                return nil
+            }
+
             let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
             switch message.role {
-            case "user": return ChatMessage(role: .you, timestamp: "", text: text)
-            case "assistant": return ChatMessage(role: .assistant, timestamp: "", text: text)
+            case "user": return ChatMessage(role: .you, timestamp: Self.timeString(timestampMs: message.timestampMs), text: text)
+            case "assistant": return ChatMessage(role: .assistant, timestamp: Self.timeString(timestampMs: message.timestampMs), text: text)
             default: return nil  // skip system/tool turns in the transcript view
             }
         }
@@ -70,4 +85,83 @@ final class RealThreadsEngine: ChatThreadsProviding {
         }
         return formatter.string(from: date)
     }
+
+    private static func toolActivityMessage(
+        from results: [StoredToolResult],
+        toolNamesById: [String: String],
+        timestampMs: Int64
+    ) -> ChatMessage {
+        let lines = results.map { result in
+            ToolLine(
+                verb: result.isError ? "failed" : "ran",
+                detail: toolNamesById[result.toolUseId] ?? "tool result"
+            )
+        }
+        var message = ChatMessage(role: .tool, timestamp: timeString(timestampMs: timestampMs), text: "")
+        let n = lines.count
+        message.toolTitle = "What I checked · \(n) tool\(n == 1 ? "" : "s")"
+        message.toolLines = lines
+        return message
+    }
+
+    private static func timeString(timestampMs: Int64) -> String {
+        guard timestampMs > 0 else { return "" }
+        let date = Date(timeIntervalSince1970: Double(timestampMs) / 1000.0)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
+private struct StoredMessageContent {
+    var toolUses: [StoredToolUse] = []
+    var toolResults: [StoredToolResult] = []
+
+    var hasToolUseOnly: Bool {
+        !toolUses.isEmpty && toolResults.isEmpty
+    }
+
+    init(rawJson: String) {
+        guard let data = rawJson.data(using: .utf8),
+              let blocks = try? JSONDecoder().decode([StoredContentBlock].self, from: data) else {
+            return
+        }
+        toolUses = blocks.compactMap { block in
+            guard block.type == "tool_use",
+                  let id = block.id,
+                  let name = block.name else { return nil }
+            return StoredToolUse(id: id, name: name)
+        }
+        toolResults = blocks.compactMap { block in
+            guard block.type == "tool_result",
+                  let toolUseId = block.toolUseId else { return nil }
+            return StoredToolResult(toolUseId: toolUseId, isError: block.isError ?? false)
+        }
+    }
+}
+
+private struct StoredContentBlock: Decodable {
+    let type: String?
+    let id: String?
+    let name: String?
+    let toolUseId: String?
+    let isError: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case id
+        case name
+        case toolUseId = "tool_use_id"
+        case isError = "is_error"
+    }
+}
+
+private struct StoredToolUse {
+    let id: String
+    let name: String
+}
+
+private struct StoredToolResult {
+    let toolUseId: String
+    let isError: Bool
 }
