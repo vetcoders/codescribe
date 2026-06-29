@@ -10,6 +10,8 @@
 // to grant permissions in System Settings if not already granted.
 
 #[cfg(target_os = "macos")]
+use block2::RcBlock;
+#[cfg(target_os = "macos")]
 use core_foundation::base::TCFType;
 #[cfg(target_os = "macos")]
 use core_foundation::string::CFString;
@@ -17,6 +19,8 @@ use core_foundation::string::CFString;
 use dispatch::Queue;
 #[cfg(target_os = "macos")]
 use objc::{msg_send, runtime::Class, sel, sel_impl};
+#[cfg(target_os = "macos")]
+use objc2::runtime::Bool;
 #[cfg(target_os = "macos")]
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 #[cfg(target_os = "macos")]
@@ -184,10 +188,9 @@ fn start_microphone_request(callback_tx: Sender<bool>) -> bool {
 
     let media_type = CFString::new("soun");
     unsafe {
-        let request_block = block::ConcreteBlock::new(move |granted: bool| {
-            let _ = callback_tx.send(granted);
-        })
-        .copy();
+        let request_block: RcBlock<dyn Fn(Bool)> = RcBlock::new(move |granted: Bool| {
+            let _ = callback_tx.send(granted.as_bool());
+        });
 
         let _: () = msg_send![
             av_class,
