@@ -234,7 +234,7 @@ final class OverlayState: ObservableObject {
             warmingUp = false
             commitPreviewIfNeeded()
             let visible = liveText
-            formattedText = visible.isEmpty ? raw : visible
+            formattedText = bestFinalTranscript(raw: raw, visible: visible)
             mode = .formatted
         } catch {
             recording = false
@@ -326,9 +326,6 @@ final class OverlayState: ObservableObject {
             preview = next
             return
         }
-        if previewWouldShrinkVisibleText(current: preview, next: next) {
-            return
-        }
         commitPreviewIfNeeded()
         preview = next
     }
@@ -351,8 +348,6 @@ final class OverlayState: ObservableObject {
         if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if previewExtendsVisibleText(current: preview, next: corrected) {
                 preview = corrected
-            } else if previewWouldShrinkVisibleText(current: preview, next: corrected) {
-                return
             } else {
                 commitPreviewIfNeeded()
                 preview = corrected
@@ -374,10 +369,6 @@ final class OverlayState: ObservableObject {
                 if previewExtendsVisibleText(current: preview, next: trimmed) {
                     appendCommittedSegment(trimmed)
                     preview = ""
-                    return
-                }
-                if previewWouldShrinkVisibleText(current: preview, next: trimmed) {
-                    commitPreviewIfNeeded()
                     return
                 }
                 commitPreviewIfNeeded()
@@ -447,18 +438,22 @@ final class OverlayState: ObservableObject {
         committedUtterances = committedSegments.map(\.renderedText)
     }
 
+    private func bestFinalTranscript(raw: String, visible: String) -> String {
+        let rawTrimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let visibleTrimmed = visible.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawTrimmed.isEmpty else { return visibleTrimmed }
+        guard !visibleTrimmed.isEmpty else { return rawTrimmed }
+
+        let rawWords = normalized(rawTrimmed).split(separator: " ").count
+        let visibleWords = normalized(visibleTrimmed).split(separator: " ").count
+        return rawWords > visibleWords ? rawTrimmed : visibleTrimmed
+    }
+
     private func previewExtendsVisibleText(current: String, next: String) -> Bool {
         let currentKey = normalized(current)
         let nextKey = normalized(next)
         guard !currentKey.isEmpty, !nextKey.isEmpty else { return false }
         return nextKey.hasPrefix(currentKey)
-    }
-
-    private func previewWouldShrinkVisibleText(current: String, next: String) -> Bool {
-        let currentKey = normalized(current)
-        let nextKey = normalized(next)
-        guard !currentKey.isEmpty, !nextKey.isEmpty else { return false }
-        return currentKey.hasPrefix(nextKey)
     }
 
     private func replacesActivePreview(previous: String, corrected: String) -> Bool {
