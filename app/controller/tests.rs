@@ -497,7 +497,7 @@ fn test_transcript_delivery_wrap_uses_config_when_enabled() {
 
     assert_eq!(
         maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
-        "<codescribe mode=\"dictation\" lang=\"pl\">\nliteral transcript\n</codescribe>"
+        "<codescribe mode=\"dictation\" lang=\"auto\">\nliteral transcript\n</codescribe>"
     );
 }
 
@@ -979,16 +979,6 @@ fn test_recorder_recovery_message_uses_settings_language() {
     assert!(message.contains("Open Settings"));
     assert!(!message.contains("Setup"));
     assert!(message.contains("Accessibility, Microphone"));
-}
-
-#[test]
-fn test_backend_recovery_message_uses_settings_language() {
-    let message =
-        RecordingController::format_backend_recovery_message(Some("Cloud endpoint timed out"));
-
-    assert!(message.contains("Open Settings"));
-    assert!(!message.contains("Setup"));
-    assert!(message.contains("Cloud endpoint timed out"));
 }
 
 // ── Pure-function unit tests for truth helpers (push_typed_flag,

@@ -269,7 +269,7 @@ make config
 
 ```env
 # STT (Speech-to-Text)
-WHISPER_LANGUAGE=pl                  # pl | en | de | fr (no auto!)
+WHISPER_LANGUAGE=auto                # auto | pl | en
 # CODESCRIBE_MODEL_PATH=             # Override runtime Whisper model lookup
 
 # Hotkeys behavior

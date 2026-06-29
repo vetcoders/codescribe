@@ -1311,18 +1311,6 @@ impl RecordingController {
         }
     }
 
-    #[cfg(test)]
-    fn format_backend_recovery_message(detail: Option<&str>) -> String {
-        let mut message =
-            "Speech backend unavailable. Open Settings to verify the transcription provider, endpoint, and runtime service, then retry."
-                .to_string();
-        if let Some(detail) = detail.map(str::trim).filter(|text| !text.is_empty()) {
-            message.push_str(" Details: ");
-            message.push_str(detail);
-        }
-        message
-    }
-
     fn recording_recovery_guidance() -> String {
         let settings = crate::config::UserSettings::load();
         let dictation_binding = settings
@@ -2742,6 +2730,9 @@ impl RecordingController {
             );
             if !cfg!(test) {
                 let language_hint = language.whisper_hint().map(str::to_string);
+                // Audio-first cold start: do not preflight Whisper here. The
+                // recorder starts feedback now while STT lazy-loads behind the
+                // StreamingRecorder backlog.
                 let start_result = rec.start_event_session(language_hint.clone()).await;
                 if let Err(e) = start_result {
                     if Self::is_already_in_progress_error(&e) {
@@ -2940,6 +2931,8 @@ impl RecordingController {
 
         // Skip actual audio stream in tests (no CoreAudio device needed)
         let language_hint = language.whisper_hint().map(str::to_string);
+        // Audio-first cold start: do not preflight Whisper here. The recorder
+        // starts feedback now while STT lazy-loads behind the StreamingRecorder backlog.
         if !cfg!(test)
             && let Err(e) = recorder.start_event_session(language_hint.clone()).await
         {
