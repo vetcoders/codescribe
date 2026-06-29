@@ -131,9 +131,12 @@ impl ThreadIndex {
             )
         })?;
 
+        // `path` joins a compile-time constant filename (`INDEX_FILE_NAME`) onto
+        // the store-owned `threads_dir`. No caller-supplied component reaches it,
+        // so there is no path-traversal source to taint.
         let path = threads_dir.join(INDEX_FILE_NAME);
         if path.exists() {
-            let raw = fs::read_to_string(&path) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+            let raw = fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read thread index: {}", path.display()))?;
             let data = serde_json::from_str::<ThreadIndexData>(&raw)
                 .with_context(|| format!("Failed to parse thread index: {}", path.display()))?;

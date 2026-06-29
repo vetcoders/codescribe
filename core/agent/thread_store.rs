@@ -136,8 +136,7 @@ impl ThreadStore {
     }
 
     pub fn save_thread(&self, thread: &Thread) -> Result<()> {
-        validate_thread_id(&thread.id)?;
-        let path = self.thread_path(&thread.id);
+        let path = self.thread_path(&thread.id)?;
         let json = serde_json::to_vec_pretty(thread).context("Failed to serialize thread JSON")?;
         atomic_write(&path, &json)?;
 
@@ -147,9 +146,8 @@ impl ThreadStore {
     }
 
     pub fn load_thread(&self, id: &str) -> Result<Thread> {
-        validate_thread_id(id)?;
-        let path = self.thread_path(id);
-        let raw = fs::read_to_string(&path) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+        let path = self.thread_path(id)?;
+        let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read thread file: {}", path.display()))?;
         let thread = serde_json::from_str::<Thread>(&raw)
             .with_context(|| format!("Failed to parse thread file: {}", path.display()))?;
@@ -157,8 +155,7 @@ impl ThreadStore {
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<()> {
-        validate_thread_id(id)?;
-        let path = self.thread_path(id);
+        let path = self.thread_path(id)?;
         if path.exists() {
             fs::remove_file(&path)
                 .with_context(|| format!("Failed to remove thread file: {}", path.display()))?;
@@ -177,8 +174,7 @@ impl ThreadStore {
     }
 
     pub fn thread_file_path(&self, id: &str) -> Result<PathBuf> {
-        validate_thread_id(id)?;
-        Ok(self.thread_path(id))
+        self.thread_path(id)
     }
 
     pub fn save_blob(&self, data: &[u8], name: &str) -> Result<PathBuf> {
@@ -200,8 +196,16 @@ impl ThreadStore {
         &self.blobs_dir
     }
 
-    fn thread_path(&self, id: &str) -> PathBuf {
-        self.threads_dir.join(format!("{id}.{THREAD_FILE_EXT}"))
+    /// Build the on-disk path for a thread id.
+    ///
+    /// Validation lives here — at path *construction* — so every caller
+    /// (current or future) that turns an id into a filesystem path is forced
+    /// through `validate_thread_id`. This keeps the path-traversal guard
+    /// adjacent to the join that produces the path, instead of relying on each
+    /// API entry point to remember to validate first.
+    fn thread_path(&self, id: &str) -> Result<PathBuf> {
+        validate_thread_id(id)?;
+        Ok(self.threads_dir.join(format!("{id}.{THREAD_FILE_EXT}")))
     }
 
     fn unique_blob_path(&self, file_name: &str) -> PathBuf {
@@ -531,7 +535,7 @@ mod tests {
         store.save_thread(&thread)?;
         store.delete_thread(&thread.id)?;
 
-        let path = store.thread_path(&thread.id);
+        let path = store.thread_path(&thread.id)?;
         assert!(!path.exists());
 
         let index = ThreadIndex::load_or_create(store.threads_dir())?;
