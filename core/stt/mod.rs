@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod apple_stt;
 pub mod onnx_adapter;
 pub mod scheduler;
+pub mod tail_patcher;
 pub mod whisper;
 
 use crate::pipeline::contracts::RawTranscript;
