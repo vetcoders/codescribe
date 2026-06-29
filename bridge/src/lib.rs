@@ -56,6 +56,10 @@ pub struct CodescribeAgent {}
 impl CodescribeAgent {
     #[uniffi::constructor]
     pub fn new() -> Self {
+        // Populate the process env (Keychain keys + settings.json + default LLM
+        // runtime endpoint/model) exactly like the live app's startup, so the
+        // assistive provider can be built. Idempotent; safe to call repeatedly.
+        let _ = codescribe_core::config::Config::load();
         Self {}
     }
 
@@ -69,16 +73,19 @@ impl CodescribeAgent {
     /// Stream one agent reply for `text`, forwarding token/reasoning/tool events to
     /// `listener` as they arrive. Returns the final assembled assistant text.
     ///
-    /// First cut: no tools registered (text + reasoning streaming). Tool registry
-    /// wiring is the next step.
+    /// Full native tool set + MCP are registered, so the agent can actually act
+    /// (clipboard, selection, screenshot, filesystem, typing, github, search,
+    /// transcribe). Tools execute on demand when the model calls them.
     pub async fn stream_reply(
         &self,
         text: String,
         listener: Arc<dyn CsAgentListener>,
     ) -> Result<String, CsError> {
         let provider = codescribe::agent::create_default_provider()?;
+        let mut registry = ToolRegistry::new();
+        codescribe::agent::tools::register_all_tools(&mut registry);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
-        let session = AgentSession::new(provider, Arc::new(ToolRegistry::new()), ui_tx);
+        let session = AgentSession::new(provider, Arc::new(registry), ui_tx);
 
         // Drive the agent loop on a task so the channel closes when it finishes,
         // letting the drain loop below terminate cleanly.
