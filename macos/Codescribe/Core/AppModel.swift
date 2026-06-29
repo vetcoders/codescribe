@@ -10,7 +10,7 @@ final class AppModel: ObservableObject {
     let overlay: OverlayController
 
     init() {
-        let chat = AgentChatStore(engine: RealChatEngine())
+        let chat = AgentChatStore(engine: RealChatEngine(), threadsProvider: RealThreadsEngine())
         self.chat = chat
         self.overlay = OverlayController(store: chat)
         self.tray = TrayViewModel(engine: RealTrayEngine())

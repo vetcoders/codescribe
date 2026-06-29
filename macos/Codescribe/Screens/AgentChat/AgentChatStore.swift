@@ -85,7 +85,19 @@ struct ChatThread: Identifiable {
     var title: String
     var meta: String        // mono subtitle, e.g. "active · restored" / "today · 18:40"
     var isRestored: Bool = false
+    var backendId: String? = nil      // codescribe ThreadStore id (nil = local-only, not yet persisted)
+    var messagesLoaded: Bool = false  // lazy-load guard for persisted threads
     var messages: [ChatMessage] = []
+}
+
+// MARK: - Threads provider (read-only access to persisted codescribe threads)
+
+/// Backs the thread rail / drawer with real persisted threads from the
+/// codescribe ThreadStore (via `CodescribeThreads`). Kept separate from
+/// `AgentChatEngine` so the #Preview mock stays standalone.
+protocol ChatThreadsProviding: AnyObject {
+    func listThreads() -> [ChatThread]
+    func loadMessages(backendId: String) -> [ChatMessage]
 }
 
 // MARK: - Store
@@ -99,14 +111,31 @@ final class AgentChatStore: ObservableObject {
     /// Injected by W2-01. `nil` until then; `send` degrades gracefully.
     var engine: AgentChatEngine?
 
+    /// Injected provider for persisted threads. `nil` → falls back to mock seed.
+    var threadsProvider: ChatThreadsProviding?
+
     private var revealTask: Task<Void, Never>?
     private var didStartDemo = false
 
-    init(engine: AgentChatEngine? = nil, threads: [ChatThread]? = nil) {
+    init(engine: AgentChatEngine? = nil,
+         threadsProvider: ChatThreadsProviding? = nil,
+         threads: [ChatThread]? = nil) {
         self.engine = engine
-        let seeded = threads ?? Self.seedThreads()
+        self.threadsProvider = threadsProvider
+
+        let seeded: [ChatThread]
+        if let threads {
+            seeded = threads                                    // explicit (preview/mock)
+        } else if let real = threadsProvider?.listThreads(), !real.isEmpty {
+            seeded = real                                       // real persisted threads
+        } else if threadsProvider != nil {
+            seeded = [ChatThread(title: "New thread", meta: "now")]  // real provider, empty history
+        } else {
+            seeded = Self.seedThreads()                         // no provider → mock seed
+        }
         self.threads = seeded
         self.selectedThreadID = seeded.first?.id
+        if let first = seeded.first { loadMessagesIfNeeded(first.id) }
     }
 
     var currentThread: ChatThread? {
@@ -124,6 +153,17 @@ final class AgentChatStore: ObservableObject {
 
     func select(_ id: UUID) {
         selectedThreadID = id
+        loadMessagesIfNeeded(id)
+    }
+
+    /// Lazily pull a persisted thread's messages the first time it is selected.
+    private func loadMessagesIfNeeded(_ id: UUID) {
+        guard let provider = threadsProvider,
+              let ti = threads.firstIndex(where: { $0.id == id }),
+              let backendId = threads[ti].backendId,
+              !threads[ti].messagesLoaded else { return }
+        threads[ti].messages = provider.loadMessages(backendId: backendId)
+        threads[ti].messagesLoaded = true
     }
 
     // MARK: Send (real single-shot FFI round-trip)
