@@ -5,6 +5,8 @@ import SwiftUI
 /// other (overlay → chat, tray → overlay) without @StateObject init-order pain.
 @MainActor
 final class AppModel: ObservableObject {
+    static let shared = AppModel()
+
     let chat: AgentChatStore
     let tray: TrayViewModel
     let overlay: OverlayController
