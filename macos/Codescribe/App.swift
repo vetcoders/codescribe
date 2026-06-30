@@ -6,7 +6,7 @@ import SwiftUI
 // via UniFFI. AppKit owns the menu-bar status item/popover; SwiftUI owns the
 // Settings scene and the content hosted inside AppKit windows.
 private let appLogger = Logger(
-    subsystem: Bundle.main.bundleIdentifier ?? "com.codescribe.redesign",
+    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
     category: "App"
 )
 
@@ -27,8 +27,8 @@ struct CodescribeRedesignApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let showAgentNotification = Notification.Name("com.codescribe.redesign.showAgent")
-    private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.codescribe.redesign"
+    private static let showAgentNotification = Notification.Name("com.vetcoders.codescribe.showAgent")
+    private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe"
 
     private let model = AppModel.shared
     private let hotkeys = CodescribeHotkeys()

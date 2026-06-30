@@ -338,7 +338,7 @@ if [[ "$FRESH" -eq 1 ]]; then
   echo "    - remove Python caches (.venv, .ruff_cache, .mypy_cache, .pytest_cache)"
   echo "    - uv cache prune (global)"
   if [[ "$RESET_TCC_SELF" -eq 1 ]]; then
-    bundle="${TCC_BUNDLE_ID:-com.codescribe.app}"
+    bundle="${TCC_BUNDLE_ID:-com.vetcoders.codescribe}"
     echo "    - reset TCC (Accessibility/Input/Mic) for bundle: $bundle"
   fi
   if [[ "$FRESH_YES" -ne 1 ]]; then
@@ -370,7 +370,7 @@ if [[ "$FRESH" -eq 1 ]]; then
   rm -rf .venv .ruff_cache .mypy_cache .pytest_cache .uv_cache 2>/dev/null || true
   uv cache prune --all >/dev/null 2>&1 || true
   if [[ "$RESET_TCC_SELF" -eq 1 ]]; then
-    bundle="${TCC_BUNDLE_ID:-com.codescribe.app}"
+    bundle="${TCC_BUNDLE_ID:-com.vetcoders.codescribe}"
     echo "==> Resetting macOS permissions for $bundle…"
     /usr/bin/tccutil reset Accessibility "$bundle" || true
     /usr/bin/tccutil reset ListenEvent "$bundle" || true

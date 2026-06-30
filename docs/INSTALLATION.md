@@ -132,7 +132,7 @@ Codescribe.app/
 
 | Key                          | Value                 | Purpose                      |
 | ---------------------------- | --------------------- | ---------------------------- |
-| CFBundleIdentifier           | com.codescribe.app    | Unique app identifier        |
+| CFBundleIdentifier           | com.vetcoders.codescribe | Unique app identifier     |
 | CFBundleIconFile             | AppIcon               | Points to AppIcon.icns       |
 | CFBundleExecutable           | codescribe            | Main binary name             |
 | LSMinimumSystemVersion       | 14.0                  | Requires macOS Sonoma+       |

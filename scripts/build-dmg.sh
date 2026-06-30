@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="${CODESCRIBE_APP_NAME:-Codescribe}"
 DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_NAME}"
-BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.codescribe.app}"
+BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.codescribe}"
 MIN_MACOS="${CODESCRIBE_MIN_MACOS:-}"
 LSUIELEMENT="${CODESCRIBE_LSUIELEMENT:-true}"
 ENTITLEMENTS="${CODESCRIBE_ENTITLEMENTS:-$ROOT_DIR/scripts/entitlements.plist}"

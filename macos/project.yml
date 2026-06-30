@@ -18,7 +18,7 @@ targets:
     settings:
       base:
         # Same dev identity as the prior redesign build → own TCC/keychain slot.
-        PRODUCT_BUNDLE_IDENTIFIER: com.codescribe.redesign
+        PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "CodeScribe Dev"
         ENABLE_HARDENED_RUNTIME: NO
