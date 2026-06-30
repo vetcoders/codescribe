@@ -90,7 +90,9 @@ unsafe fn apply_current_state(source: &str) {
                     source,
                     "macOS thermal pressure critical; STT commit/refine lanes paused"
                 );
-                let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thermal);
+                crate::os::tray_status::update_tray_status(
+                    crate::os::tray_status::TrayStatus::Thermal,
+                );
             }
         }
     }

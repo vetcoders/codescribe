@@ -378,8 +378,9 @@ async fn dispatch_hotkey_event(
                 reason.message()
             );
             eprintln!("Hotkey double-tap blocked: {body}");
-            let _ =
-                codescribe::tray::update_tray_status(codescribe::tray::TrayStatus::HotkeyConflict);
+            codescribe::os::tray_status::update_tray_status(
+                codescribe::os::tray_status::TrayStatus::HotkeyConflict,
+            );
             codescribe::os::notifications::notify("Codescribe hotkey conflict", &body);
         }
     }
