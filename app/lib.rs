@@ -50,7 +50,9 @@ pub use ui::{
 };
 
 #[cfg(target_os = "macos")]
-pub use ui::onboarding::{should_show_onboarding, show_onboarding_wizard};
+pub use os::onboarding::should_show_onboarding;
+#[cfg(target_os = "macos")]
+pub use ui::onboarding::show_onboarding_wizard;
 
 #[cfg(target_os = "macos")]
 pub use ui::automation::{app_automation_state, run_app_automation};

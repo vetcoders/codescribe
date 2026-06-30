@@ -37,6 +37,31 @@ pub enum PermissionStatus {
     NotDetermined,
 }
 
+/// The macOS permission classes Codescribe probes at startup and during
+/// onboarding. Relocated here (out of `app/ui/onboarding/steps`) so the
+/// non-UI permission model lives next to the `check_*` probes it drives and
+/// survives the legacy AppKit UI excision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionKind {
+    Microphone,
+    Accessibility,
+    InputMonitoring,
+    ScreenRecording,
+    FullDiskAccess,
+}
+
+/// Probe the live status of a single permission class. Dispatches to the
+/// per-permission `check_*` probes in this module.
+pub fn permission_status(kind: PermissionKind) -> PermissionStatus {
+    match kind {
+        PermissionKind::Microphone => check_microphone(),
+        PermissionKind::Accessibility => check_accessibility(),
+        PermissionKind::InputMonitoring => check_input_monitoring(),
+        PermissionKind::ScreenRecording => check_screen_recording(),
+        PermissionKind::FullDiskAccess => check_full_disk_access(),
+    }
+}
+
 /// Check if Accessibility permission is granted
 ///
 /// Accessibility permission is required for global hotkeys to work.

@@ -5,6 +5,8 @@ pub mod hotkeys;
 #[cfg(target_os = "macos")]
 pub mod notifications;
 #[cfg(target_os = "macos")]
+pub mod onboarding;
+#[cfg(target_os = "macos")]
 pub mod permissions;
 #[cfg(target_os = "macos")]
 pub mod selection;
