@@ -25,14 +25,14 @@ pub trait CsAgentListener: Send + Sync {
 }
 
 /// Thin handle to the codescribe agent engine.
-#[derive(uniffi::Object)]
+#[derive(uniffi::Object, Default)]
 pub struct CodescribeAgent {}
 
 #[uniffi::export(async_runtime = "tokio")]
 impl CodescribeAgent {
     #[uniffi::constructor]
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 
     /// True when the assistive LLM provider can be built from the environment

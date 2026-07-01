@@ -148,10 +148,10 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
     if !starts_redesign_overlay {
         return;
     }
-    if let Some(existing) = current_controller(&shared_controller()) {
-        if existing.current_state().await != State::Idle {
-            return;
-        }
+    if let Some(existing) = current_controller(&shared_controller())
+        && existing.current_state().await != State::Idle
+    {
+        return;
     }
     if let Some(listener) = current_listener() {
         listener.on_recording_preparing();
@@ -164,14 +164,14 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
 /// lazily on the first real hotkey event. That keeps app launch/menu-open free
 /// of `Config::load()` side effects while still routing hotkeys through the
 /// real controller once the user intentionally invokes a shortcut.
-#[derive(uniffi::Object)]
+#[derive(uniffi::Object, Default)]
 pub struct CodescribeHotkeys {}
 
 #[uniffi::export(async_runtime = "tokio")]
 impl CodescribeHotkeys {
     #[uniffi::constructor]
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 
     /// Start or replace the process-global hotkey listener.
