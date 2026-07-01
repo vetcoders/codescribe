@@ -48,8 +48,8 @@ struct DesignGallery: View {
                 // Components
                 HStack(spacing: 12) {
                     StatusPill(text: "recording", color: CSColor.terracotta, rippling: true)
-                    StatusPill(text: "Idle", color: CSColor.oliveLight)
-                    StatusPill(text: "reasoned · 2.1s", color: CSColor.amber)
+                    StaticStatusPill(text: "Idle", color: CSColor.oliveLight)
+                    StaticStatusPill(text: "reasoned · 2.1s", color: CSColor.amber)
                 }
 
                 GlassPanel {

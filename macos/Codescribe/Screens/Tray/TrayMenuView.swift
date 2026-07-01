@@ -53,11 +53,18 @@ struct TrayMenuView: View {
         HStack(spacing: 9) {
             Wordmark(size: 14)
             Spacer(minLength: 8)
-            StatusPill(
-                text: viewModel.statusText,
-                color: viewModel.statusColor,
-                rippling: viewModel.isRecording && !viewModel.isStartingDictation
-            )
+            // Separate view type on live vs idle (same rule as the overlay header):
+            // the animated pill exists only while recording; idle uses the static
+            // type so no @State/onAppear animation can survive into idle.
+            if viewModel.isRecording && !viewModel.isStartingDictation {
+                StatusPill(
+                    text: viewModel.statusText,
+                    color: viewModel.statusColor,
+                    rippling: true
+                )
+            } else {
+                StaticStatusPill(text: viewModel.statusText, color: viewModel.statusColor)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 11)

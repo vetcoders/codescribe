@@ -52,7 +52,7 @@ private struct ThreadDetail: View {
     private var header: some View {
         HStack(spacing: 12) {
             ModeToggle()
-            StatusPill(text: "Idle", color: CSColor.oliveLight)
+            StaticStatusPill(text: "Idle", color: CSColor.oliveLight)
             Spacer()
             HStack(spacing: 14) {
                 Text("🎙").font(.system(size: 15))
