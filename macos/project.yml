@@ -1,29 +1,36 @@
-name: CodescribeRedesign
+name: Codescribe
 options:
-  bundleIdPrefix: com.codescribe
+  bundleIdPrefix: com.vetcoders
   deploymentTarget:
     macOS: "14.0"
 targets:
-  CodescribeRedesign:
+  Codescribe:
     type: application
     platform: macOS
     sources: [Codescribe]
     info:
       path: Codescribe/Info.plist
       properties:
-        CFBundleDisplayName: codescribe redesign
-        CFBundleName: codescribe redesign
+        CFBundleDisplayName: CodeScribe
+        CFBundleName: CodeScribe
         LSUIElement: true
-        NSMicrophoneUsageDescription: "codescribe transcribes your speech locally with on-device Whisper."
+        NSMicrophoneUsageDescription: "CodeScribe transcribes your speech locally with on-device Whisper."
     settings:
       base:
-        # Same dev identity as the prior redesign build → own TCC/keychain slot.
+        # Stable dev identity → own TCC/keychain slot across rebuilds.
         PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "CodeScribe Dev"
         ENABLE_HARDENED_RUNTIME: NO
         SWIFT_VERSION: 5.0
         SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Bridge/codescribe_ffiFFI.h
-        # Links libcodescribe_ffi.dylib from the cargo build (codescribe/target/debug).
+        # Links libcodescribe_ffi.dylib produced by `cargo build -p codescribe-ffi`.
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
         OTHER_LDFLAGS: "-lcodescribe_ffi"
+        # Runpath so the app finds the @rpath-id'd dylib both when run from Xcode
+        # (against target/debug) and when distributed (embedded in Frameworks by
+        # scripts/build-app.sh).
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+          - "$(SRCROOT)/../target/debug"
+          - "$(SRCROOT)/../target/release"
