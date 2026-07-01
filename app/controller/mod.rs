@@ -1364,6 +1364,11 @@ impl RecordingController {
         };
 
         if old_state != new_state {
+            // Recording ended → always tear down the cursor badge (covers finalize,
+            // cancel, error, no-speech — any path back to Idle).
+            if new_state == State::Idle {
+                crate::os::hold_badge::hide_hold_badge();
+            }
             let _ = event_broadcast.send(IpcEvent {
                 timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 payload: IpcEventPayload::StateChange {
@@ -2386,6 +2391,15 @@ impl RecordingController {
 
             let hold_mode = *hold_mode.read().await;
             let is_assistive = matches!(hold_mode, HoldMode::Chat | HoldMode::Selection);
+            // Cursor-following recording badge (config-gated): red for hold dictation,
+            // purple for assistive/agent. Works headless — no overlay needed.
+            if config.hold_indicator {
+                crate::os::hold_badge::show_badge_for_mode(if is_assistive {
+                    crate::os::hold_badge::BadgeMode::Assistive
+                } else {
+                    crate::os::hold_badge::BadgeMode::Hold
+                });
+            }
             let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
@@ -2555,6 +2569,15 @@ impl RecordingController {
         info!("Starting toggle recording (session={})", new_session_id);
 
         let config = self.config.read().await.clone();
+        // Cursor-following recording badge (config-gated): pulsing red for toggle /
+        // hands-off, purple for assistive/agent.
+        if config.hold_indicator {
+            crate::os::hold_badge::show_badge_for_mode(if is_assistive {
+                crate::os::hold_badge::BadgeMode::Assistive
+            } else {
+                crate::os::hold_badge::BadgeMode::Toggle
+            });
+        }
         let language = config.whisper_language;
         let toggle_silence_sec = config.toggle_silence_sec;
         let beep_enabled = config.beep_on_start;
