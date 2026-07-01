@@ -71,11 +71,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch intent {
             case .openChat:
                 self.showAgent()
-            case .openSettings:
-                NSApp.activate(ignoringOtherApps: true)
-                if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-                    NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-                }
             }
         }
         model.tray.onDictationStartRequested = { [model] in

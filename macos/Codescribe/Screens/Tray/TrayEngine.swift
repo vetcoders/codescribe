@@ -11,7 +11,6 @@ import Foundation
 /// that actually opens the relevant window / scene / panel.
 enum TrayIntent {
     case openChat      // bring up the Agent Chat window
-    case openSettings  // open the Settings window
 }
 
 /// The two fast config toggles surfaced in the tray, mapped to the core's

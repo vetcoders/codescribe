@@ -10,6 +10,9 @@ import SwiftUI
 // the composite TrayEngine.
 struct TrayMenuView: View {
     @ObservedObject var viewModel: TrayViewModel
+    // macOS 14+ action to open the app's Settings scene — replaces the fragile
+    // private `showSettingsWindow:` selector that stopped working on newer macOS.
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         GlassPanel(cornerRadius: CSRadius.tray) {
@@ -27,7 +30,7 @@ struct TrayMenuView: View {
 
                 TrayDivider()
                 TrayRow(icon: "⚙", title: "Settings…", shortcut: "⌘,") {
-                    viewModel.onOpenSettings()
+                    openSettings()
                 }
                 TrayRow(icon: "?", title: "Help") { viewModel.onHelp() }
                 TrayRow(icon: "ⓘ", title: "About") { viewModel.onAbout() }

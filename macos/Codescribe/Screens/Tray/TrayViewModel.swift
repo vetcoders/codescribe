@@ -51,7 +51,6 @@ final class TrayViewModel: ObservableObject {
     // MARK: - Navigation intents
 
     func onShowAgent() { onIntent(.openChat) }
-    func onOpenSettings() { onIntent(.openSettings) }
 
     // MARK: - Derived status (mock copy + palette)
 
