@@ -200,7 +200,12 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
 
         // No per-window reset: Silero state is carried across windows so speech
         // onsets spanning a window boundary are not lost (see reset() above).
-        let prob = vad.feed(window);
+        //
+        // Use the per-window MAX probability (feed_max) rather than the last
+        // 32ms chunk: a ~500ms window that contains a fully-spoken word but ends
+        // in the brief pause after it must NOT be dropped on the strength of its
+        // trailing chunk alone.
+        let prob = vad.feed_max(window);
         total_windows += 1;
         probabilities.push(prob);
 
@@ -267,6 +272,92 @@ fn should_include_trailing_fragment(
     saw_any_speech && last_window_was_speech
 }
 
+/// Inclusive `[first, last]` window indices spanning detected speech.
+///
+/// The caller slices a *contiguous* range, so any interior window — including
+/// non-speech pauses between two spoken words — is implicitly kept. Returns
+/// `None` when no window is speech.
+fn speech_slab_bounds(window_is_speech: &[bool]) -> Option<(usize, usize)> {
+    let first = window_is_speech.iter().position(|&s| s)?;
+    let last = window_is_speech.iter().rposition(|&s| s)?;
+    Some((first, last))
+}
+
+/// Commit-lane prefilter: trim ONLY leading and trailing silence, never excise
+/// interior windows.
+///
+/// The authoritative final transcript must never lose mid-utterance speech, so
+/// unlike [`extract_speech`] (which concatenates only the speech windows and
+/// would drop interior windows that dip below threshold) this returns the
+/// contiguous slab spanning the first..=last speech window. A pause between two
+/// spoken digits stays inside the slab and is sent to Whisper intact.
+///
+/// Returns an empty vector only when at least one window was measured and NONE
+/// contained speech (genuine silence) — preserving the Commit lane's
+/// "empty => no speech" contract. When the audio is too short to measure even a
+/// single window, or the VAD is unavailable, the full audio is returned rather
+/// than dropped: the final lane fails *open*, never silently swallowing words.
+pub fn extract_speech_trim_edges(samples: &[f32], sample_rate: u32) -> Vec<f32> {
+    if samples.is_empty() || sample_rate == 0 {
+        return Vec::new();
+    }
+    let window_size = (sample_rate * EXTRACT_WINDOW_MS / 1000) as usize;
+    if window_size == 0 {
+        return samples.to_vec();
+    }
+
+    let mut vad = match take_extract_vad(sample_rate) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                "extract_speech_trim_edges: VAD init failed at {} Hz, returning full audio: {}",
+                sample_rate, e
+            );
+            // Fail open: never drop committed audio just because VAD is down.
+            return samples.to_vec();
+        }
+    };
+    vad.reset();
+    let threshold = vad.threshold();
+
+    let mut window_is_speech: Vec<bool> = Vec::new();
+    for window in samples.chunks(window_size) {
+        if window.len() < window_size / 2 {
+            break;
+        }
+        // Per-window MAX (see extract_speech): a window with a spoken word that
+        // ends in a pause must register as speech so it is not trimmed as an edge.
+        let prob = vad.feed_max(window);
+        window_is_speech.push(prob >= threshold);
+    }
+
+    return_extract_vad(sample_rate, vad);
+
+    match speech_slab_bounds(&window_is_speech) {
+        Some((first, last)) => {
+            let start = first * window_size;
+            // If speech ran to the final measured window, extend to the end so
+            // the trailing partial fragment (which likely continues speech) is
+            // kept; otherwise stop at the end of the last speech window.
+            let end = if last + 1 >= window_is_speech.len() {
+                samples.len()
+            } else {
+                ((last + 1) * window_size).min(samples.len())
+            };
+            samples[start..end].to_vec()
+        }
+        None => {
+            if window_is_speech.is_empty() {
+                // Too short to measure a window — don't drop from the commit lane.
+                samples.to_vec()
+            } else {
+                // At least one full window measured, all silence: genuine no-speech.
+                Vec::new()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +409,53 @@ mod tests {
         assert_eq!(stats.probabilities.len(), 3);
         // Silence input must not be misclassified as speech.
         assert_eq!(stats.speech_windows, 0);
+    }
+
+    #[test]
+    fn slab_bounds_keeps_interior_pause() {
+        // speech, pause, speech => the interior pause window (index 1) must stay
+        // inside the slab; the commit lane must not split the utterance there.
+        assert_eq!(speech_slab_bounds(&[true, false, true]), Some((0, 2)));
+        // Leading + trailing silence trimmed, two interior pauses kept.
+        assert_eq!(
+            speech_slab_bounds(&[false, true, false, true, false]),
+            Some((1, 3))
+        );
+    }
+
+    #[test]
+    fn slab_bounds_none_on_pure_silence() {
+        assert_eq!(speech_slab_bounds(&[false, false, false]), None);
+        assert_eq!(speech_slab_bounds(&[]), None);
+    }
+
+    #[test]
+    fn slab_bounds_single_and_edge_windows() {
+        assert_eq!(speech_slab_bounds(&[true]), Some((0, 0)));
+        // Leading silence trimmed down to the single trailing speech window.
+        assert_eq!(speech_slab_bounds(&[false, true]), Some((1, 1)));
+    }
+
+    #[test]
+    fn trim_edges_returns_full_audio_on_short_input() {
+        // Shorter than one window: the commit lane must NOT drop it.
+        let window_size = (SAMPLE_RATE * EXTRACT_WINDOW_MS / 1000) as usize;
+        let samples = vec![0.1f32; window_size / 4];
+        let out = extract_speech_trim_edges(&samples, SAMPLE_RATE);
+        assert_eq!(out.len(), samples.len());
+    }
+
+    #[test]
+    fn trim_edges_pure_silence_returns_empty() {
+        // Several full windows of silence => genuine no-speech => empty (commit
+        // lane "empty => no speech" contract).
+        let window_size = (SAMPLE_RATE * EXTRACT_WINDOW_MS / 1000) as usize;
+        let samples = vec![0.0f32; window_size * 3];
+        let out = extract_speech_trim_edges(&samples, SAMPLE_RATE);
+        assert!(
+            out.is_empty(),
+            "pure silence trims to empty for commit lane"
+        );
     }
 
     #[test]

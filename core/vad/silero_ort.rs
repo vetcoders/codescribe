@@ -375,6 +375,47 @@ impl AccumulatingVad {
         self.last_prob
     }
 
+    /// Like [`feed`](Self::feed), but returns the **maximum** speech probability
+    /// across all 512-sample chunks processed in THIS call instead of only the
+    /// last chunk's probability.
+    ///
+    /// Window-based extraction (`vad::extract_speech`) feeds ~500ms slabs and
+    /// keeps a slab when its probability clears the threshold. With `feed`'s
+    /// last-chunk semantics, a slab containing a fully-spoken word would be
+    /// dropped if it merely *ends* in the micro-pause after that word. Using the
+    /// per-call max makes the keep/drop decision reflect any speech inside the
+    /// window, not just its final 32ms.
+    ///
+    /// `last_prob` / [`probability`](Self::probability) are still updated to the
+    /// final chunk's value, so callers relying on the latest-probability
+    /// semantics (live indicators, turn detection) are unaffected.
+    pub fn feed_max(&mut self, samples: &[f32]) -> f32 {
+        let resampled = if let Some(ref mut r) = self.resampler {
+            r.resample(samples)
+        } else {
+            samples.to_vec()
+        };
+        self.accumulator.extend_from_slice(&resampled);
+
+        let mut max_prob = 0.0f32;
+        let mut processed_any = false;
+        while self.accumulator.len() >= CHUNK_SIZE {
+            let chunk: Vec<f32> = self.accumulator.drain(..CHUNK_SIZE).collect();
+            if let Ok(prob) = self.vad.predict(&chunk) {
+                self.last_prob = prob;
+                max_prob = max_prob.max(prob);
+                processed_any = true;
+            }
+        }
+        // No full chunk available this call (or all predicts errored): fall back
+        // to the latest known probability, matching `feed`'s sub-chunk behavior.
+        if processed_any {
+            max_prob
+        } else {
+            self.last_prob
+        }
+    }
+
     /// Current speech probability without feeding new audio.
     pub fn probability(&self) -> f32 {
         self.last_prob
