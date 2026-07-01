@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 pub mod clipboard;
+// Cross-platform: macOS AppKit impl + non-macOS no-op stubs live in the module.
+pub mod hold_badge;
 #[cfg(target_os = "macos")]
 pub mod hotkeys;
 #[cfg(target_os = "macos")]
