@@ -12,26 +12,34 @@ Codescribe is a native macOS Rust application for dictation and assistive voice 
 
 ## Local Setup
 
-1. Install Rust (toolchain new enough for edition 2024).
-2. Clone the repo.
-3. Copy or create your local config when needed:
+Prerequisites (macOS):
+
+1. Rust toolchain new enough for edition 2024 (https://rustup.rs).
+2. Xcode (the full app, not just the Command Line Tools). Finalise it once with
+   `sudo xcodebuild -runFirstLaunch` — a freshly installed Xcode fails to load its
+   build plug-ins until you do.
+3. `xcodegen` — the SwiftUI app's `.xcodeproj` is generated, not checked in:
+   `brew install xcodegen`.
+
+Then:
+
+1. Clone the repo.
+2. Copy or create your local config when needed:
    ```bash
    cp .env.example ~/.codescribe/.env
    ```
-4. Build or install:
+3. Build the macOS app:
    ```bash
-   make build
-   make install
+   make install-app   # build + install the SwiftUI app
+   # or: make app      # build only, without installing
    ```
 
 Useful commands:
 
 ```bash
-make build
-make install
-make install-app
-codescribe --version
-codescribe --config
+make build          # cargo build (core + FFI bridge)
+make app            # build the app: cargo -> uniffi-bindgen -> xcodegen -> xcodebuild
+make install-app    # build and install the app
 ```
 
 ## Required Local Gates
