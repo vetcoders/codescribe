@@ -207,9 +207,15 @@ impl CodescribeConfig {
             transcription_overlay_enabled: settings
                 .transcription_overlay_enabled
                 .unwrap_or(defaults.transcription_overlay_enabled),
+            // Notes Mode is "on" only when BOTH flags are set (dictation → note
+            // AND no paste). Reading just quick_notes_enabled could show the toggle
+            // ON while dictation still pastes (save_only=false) — an edge desync.
             notes_mode_enabled: settings
                 .quick_notes_enabled
-                .unwrap_or(defaults.quick_notes_enabled),
+                .unwrap_or(defaults.quick_notes_enabled)
+                && settings
+                    .quick_notes_save_only
+                    .unwrap_or(defaults.quick_notes_save_only),
         }
     }
 

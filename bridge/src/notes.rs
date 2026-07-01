@@ -1,10 +1,12 @@
-//! Quick-notes surface — thin UniFFI wrapper over the live codescribe
-//! `state::notes` daily-note store plus the shared clipboard paste path used by
-//! the tray's "Quick notes" actions.
+//! Daily-note surface — thin UniFFI wrapper over the live codescribe
+//! `state::notes` store. Backs the tray's "Save last transcript" and "Save
+//! selection" actions plus Notes Mode; every input funnels into the one raw
+//! append sink (no paste — Notes is a brain-dump destination, not delivery).
 //!
 //! Sync-only (NOT tokio): every call here is cheap disk I/O or a one-shot
-//! CGEvent paste. Paths honour the same `CODESCRIBE_NOTES_DIR` / `CODESCRIBE_DATA_DIR`
-//! overrides the core respects, so Swift always sees on-disk truth.
+//! Accessibility selection read. Paths honour the same `CODESCRIBE_NOTES_DIR` /
+//! `CODESCRIBE_DATA_DIR` overrides the core respects, so Swift always sees
+//! on-disk truth.
 
 use chrono::Local;
 
@@ -68,7 +70,11 @@ impl CodescribeNotes {
                 notify_saved(&path);
                 Ok(Some(text))
             }
-            None => Ok(None),
+            None => {
+                // Don't fail silently: tell the user there was nothing to capture.
+                notify_toast("Nothing to save — no selection");
+                Ok(None)
+            }
         }
     }
 }
@@ -77,8 +83,17 @@ impl CodescribeNotes {
 #[cfg(target_os = "macos")]
 fn notify_saved(path: &std::path::Path) {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("note");
-    codescribe::os::notifications::notify("Codescribe", &format!("Saved note: {name}"));
+    notify_toast(&format!("Saved note: {name}"));
 }
 
 #[cfg(not(target_os = "macos"))]
 fn notify_saved(_path: &std::path::Path) {}
+
+/// Best-effort non-blocking toast (macOS only).
+#[cfg(target_os = "macos")]
+fn notify_toast(message: &str) {
+    codescribe::os::notifications::notify("Codescribe", message);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn notify_toast(_message: &str) {}
