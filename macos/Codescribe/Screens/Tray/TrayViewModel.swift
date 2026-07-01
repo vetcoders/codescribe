@@ -19,9 +19,14 @@ final class TrayViewModel: ObservableObject {
     @Published var overlayEnabled: Bool = true
 
     // Disclosure state for the nested groups. Notes is expanded by default to
-    // match the static mock; Diagnostics is collapsed.
+    // match the static mock; Diagnostics and History are collapsed.
     @Published var notesExpanded: Bool = true
     @Published var diagnosticsExpanded: Bool = false
+    @Published var historyExpanded: Bool = false
+
+    // The 5 most recent transcripts, loaded when the History group is expanded
+    // (cached so re-renders don't re-hit disk).
+    @Published private(set) var historyItems: [TrayTranscript] = []
 
     private let engine: TrayEngine?
 
@@ -103,6 +108,10 @@ final class TrayViewModel: ObservableObject {
     func setShowDockIcon(_ enabled: Bool) {
         showDockIcon = enabled
         engine?.setQuickToggle(.showDockIcon, enabled: enabled)
+        // Persisting the flag isn't enough: the app launches as an accessory
+        // (LSUIElement), so flip the activation policy to actually show/hide the
+        // Dock icon at runtime.
+        NSApp.setActivationPolicy(enabled ? .regular : .accessory)
     }
 
     func setOverlayEnabled(_ enabled: Bool) {
@@ -112,10 +121,27 @@ final class TrayViewModel: ObservableObject {
 
     // MARK: - History actions (route through the engine seam)
 
-    /// Reveal the most recent transcript file in Finder.
-    func openHistory() {
+    /// Toggle the "Open history" disclosure, loading the 5 most recent
+    /// transcripts from the engine the moment it opens.
+    func toggleHistory() {
+        historyExpanded.toggle()
+        if historyExpanded {
+            historyItems = engine?.recentTranscripts(limit: 5) ?? []
+        }
+    }
+
+    /// Copy a chosen recent transcript's full text to the system pasteboard.
+    func copyTranscript(path: String) {
+        guard let text = engine?.transcriptText(forPath: path) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// Reveal the folder holding the most recent transcript in Finder.
+    func openHistoryFolder() {
         guard let path = engine?.latestHistoryPath() else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        let dir = (path as NSString).deletingLastPathComponent
+        NSWorkspace.shared.open(URL(fileURLWithPath: dir))
     }
 
     /// Copy the most recent transcript's text to the system pasteboard.

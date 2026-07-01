@@ -96,9 +96,41 @@ struct TrayMenuView: View {
                     : (viewModel.isRecording ? "Stop Dictation" : "Start Dictation")
             ) { viewModel.toggleDictation() }
 
-            TrayRow(icon: "🕑", title: "Open history…") { viewModel.openHistory() }
+            historyGroup
             TrayRow(icon: "⧉", title: "Copy last transcript") {
                 viewModel.copyLastTranscript()
+            }
+        }
+    }
+
+    // MARK: - History (nested disclosure → copy a recent transcript)
+
+    private var historyGroup: some View {
+        VStack(spacing: 0) {
+            TrayRow(
+                icon: "🕑",
+                title: "Open history",
+                showChevron: true,
+                style: viewModel.historyExpanded ? .raised : .plain
+            ) {
+                withAnimation(.easeOut(duration: 0.18)) { viewModel.toggleHistory() }
+            }
+
+            if viewModel.historyExpanded {
+                TrayDisclosureChildren {
+                    if viewModel.historyItems.isEmpty {
+                        TrayChildRow(title: "No transcripts yet")
+                    } else {
+                        ForEach(viewModel.historyItems) { item in
+                            TrayChildRow(title: item.title) {
+                                viewModel.copyTranscript(path: item.path)
+                            }
+                        }
+                    }
+                    TrayChildRow(title: "Open history folder") {
+                        viewModel.openHistoryFolder()
+                    }
+                }
             }
         }
     }

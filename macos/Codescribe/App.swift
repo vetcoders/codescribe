@@ -58,7 +58,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !shouldExitForDuplicate else { return }
-        NSApp.setActivationPolicy(.accessory)
+        // Honour the persisted "Show Dock Icon" toggle at launch. LSUIElement
+        // makes us an accessory by default; promote to .regular when enabled so
+        // the launch state matches the tray toggle.
+        NSApp.setActivationPolicy(config.trayToggles().showDockIcon ? .regular : .accessory)
 
         DistributedNotificationCenter.default().addObserver(
             self,
@@ -82,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.tray.onDictationStartRequested = { [model] in
             model.overlay.prepareForRecordingStart()
-            model.overlay.show()
+            model.overlay.showForRecording()
         }
         wireTrayActions()
         installStatusItem()
@@ -174,7 +177,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "codescribe")
+            // Brand mark from Assets.xcassets (template image → auto-tints for
+            // light/dark menu bars). If it's ever missing that's a build bug to
+            // surface (empty item), not something to paper over with an old glyph.
+            let image = NSImage(named: "MenuBarIcon")
             image?.isTemplate = true
             button.image = image
             button.imagePosition = .imageOnly

@@ -27,6 +27,9 @@ final class AppModel: ObservableObject {
 final class OverlayController: ObservableObject {
     let state = OverlayState()
     private var panel: NSPanel?
+    // Read fresh at show-time so the tray's "Transcription Overlay" toggle takes
+    // effect on the very next dictation (stateless bridge handle — cheap).
+    private let config = CodescribeConfig()
 
     init(store: AgentChatStore) {
         state.engine = ControllerDictationEngine()
@@ -35,11 +38,11 @@ final class OverlayController: ObservableObject {
         // appear (and the popover is built once), so it stayed "Recording" after
         // Finish. These hooks fire for every start/stop path (hotkey, tray, auto).
         state.onRecordingPreparing = { [weak self] in
-            self?.show()
+            self?.showForRecording()
             AppModel.shared.tray.isStartingDictation = true
         }
         state.onRecordingStarted = { [weak self] in
-            self?.show()
+            self?.showForRecording()
             AppModel.shared.tray.isRecording = true
             AppModel.shared.tray.isStartingDictation = false
         }
@@ -58,10 +61,18 @@ final class OverlayController: ObservableObject {
         state.attach()
     }
 
-    func toggle() { (panel?.isVisible ?? false) ? hide() : show() }
-
     func prepareForRecordingStart() {
         state.prepareForExternalStart()
+    }
+
+    /// Show the overlay for a dictation session, honouring the "Transcription
+    /// Overlay" toggle. When disabled, dictation runs headless — hold the hotkey,
+    /// dictate, and the text lands at the cursor (+ clipboard) with no window.
+    /// Delivery is engine-side (LocalFinalPass), independent of this window, so
+    /// hiding the overlay never suppresses the paste.
+    func showForRecording() {
+        guard config.trayToggles().transcriptionOverlayEnabled else { return }
+        show()
     }
 
     func show() {

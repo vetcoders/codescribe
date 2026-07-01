@@ -17,6 +17,8 @@ targets:
         NSMicrophoneUsageDescription: "CodeScribe transcribes your speech locally with on-device Whisper."
     settings:
       base:
+        # Dock/app icon — AppIcon.appiconset in Codescribe/Assets.xcassets.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Stable dev identity → own TCC/keychain slot across rebuilds.
         PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
         CODE_SIGN_STYLE: Manual

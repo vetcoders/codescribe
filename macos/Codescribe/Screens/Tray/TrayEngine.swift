@@ -27,6 +27,15 @@ enum TrayQuickToggle {
     }
 }
 
+/// A recent transcript artifact surfaced in the tray's "Open history" submenu.
+/// `path` is the on-disk file (and the stable identity); `title` is a short
+/// display label (time + preview) built by the engine.
+struct TrayTranscript: Identifiable {
+    let path: String
+    let title: String
+    var id: String { path }
+}
+
 protocol TrayEngine: AnyObject {
     /// True when the assistive LLM provider can be built (gates "Show Agent").
     func isAgentAvailable() -> Bool
@@ -45,6 +54,12 @@ protocol TrayEngine: AnyObject {
     func latestHistoryPath() -> String?
     /// Full text of the most recent transcript, or `nil` when unavailable.
     func latestTranscriptText() -> String?
+
+    /// Up to `limit` most-recent transcript artifacts, newest first, for the
+    /// "Open history" submenu. Empty when none exist.
+    func recentTranscripts(limit: Int) -> [TrayTranscript]
+    /// Full text of the transcript artifact at `path`, or `nil` when unreadable.
+    func transcriptText(forPath path: String) -> String?
 }
 
 // Standalone seed so the `#Preview` renders without the real core.
@@ -89,4 +104,10 @@ final class MockTrayEngine: TrayEngine {
 
     func latestHistoryPath() -> String? { historyPath }
     func latestTranscriptText() -> String? { transcriptText }
+
+    func recentTranscripts(limit: Int) -> [TrayTranscript] {
+        [TrayTranscript(path: historyPath, title: "14:22 · \(transcriptText)")]
+    }
+
+    func transcriptText(forPath path: String) -> String? { transcriptText }
 }

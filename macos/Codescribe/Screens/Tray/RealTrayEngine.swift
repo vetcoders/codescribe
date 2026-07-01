@@ -57,4 +57,32 @@ final class RealTrayEngine: TrayEngine {
         guard let path = latestHistoryPath() else { return nil }
         return try? threads.readHistoryText(path: path)
     }
+
+    func recentTranscripts(limit: Int) -> [TrayTranscript] {
+        threads.recentHistory(limit: UInt32(limit)).map { entry in
+            TrayTranscript(path: entry.path, title: Self.historyTitle(entry))
+        }
+    }
+
+    func transcriptText(forPath path: String) -> String? {
+        try? threads.readHistoryText(path: path)
+    }
+
+    /// "HH:mm · <first words>" label for a history entry; falls back to the file
+    /// name when the preview is empty.
+    private static func historyTitle(_ entry: CsHistoryEntry) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(entry.timestampMs) / 1000)
+        let time = timeFormatter.string(from: date)
+        let preview = entry.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        let snippet = preview.isEmpty
+            ? (entry.path as NSString).lastPathComponent
+            : String(preview.prefix(32))
+        return "\(time) · \(snippet)"
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 }
