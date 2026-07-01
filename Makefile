@@ -167,10 +167,17 @@ bundle-legacy: ensure-models release
 	fi
 	@echo "Bundle ready: bundle/$(CODESCRIBE_APP_NAME).app"
 
-install-app: bundle
-	@echo "Installing to /Applications..."
-	@mkdir -p /Applications
-	@rsync -a --delete bundle/$(CODESCRIBE_APP_NAME).app/ /Applications/$(CODESCRIBE_APP_NAME).app/
+install-app:
+	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, release) via scripts/build-app.sh ..."
+	@$(MAKE) --no-print-directory app PROFILE=release
+	@APP_SRC="macos/build/Build/Products/Release/Codescribe.app"; \
+	if [ ! -d "$$APP_SRC" ]; then \
+		echo "Build product missing: $$APP_SRC — 'make app PROFILE=release' did not produce the app."; \
+		exit 1; \
+	fi; \
+	echo "Installing to /Applications ..."; \
+	mkdir -p /Applications; \
+	rsync -a --delete "$$APP_SRC/" "/Applications/$(CODESCRIBE_APP_NAME).app/"
 	@if [ "$(CODESCRIBE_CODESIGN_IDENTITY)" = "-" ]; then \
 		echo "Codesigning ad-hoc (no stable signing identity found in keychain)."; \
 		echo "NOTE: macOS Accessibility/Input Monitoring may need re-grant after reinstall."; \
