@@ -2054,6 +2054,7 @@ impl RecordingController {
                     // Full cleanup on failure: state, session flag, badge
                     Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
                     helpers::set_conversation_session(false);
+                    codescribe_core::memory::release_freed_heap();
                     return;
                 }
             };
@@ -2066,6 +2067,7 @@ impl RecordingController {
                 // Full cleanup on failure: state, session flag, badge
                 Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
                 helpers::set_conversation_session(false);
+                codescribe_core::memory::release_freed_heap();
                 return;
             }
         }
@@ -2080,6 +2082,7 @@ impl RecordingController {
                     drop(rec_guard);
                     Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
                     helpers::set_conversation_session(false);
+                    codescribe_core::memory::release_freed_heap();
                     return;
                 }
             };
@@ -2216,6 +2219,10 @@ impl RecordingController {
 
             Self::set_state_with_broadcast(&state, &event_broadcast, State::Idle).await;
             helpers::set_conversation_session(false);
+            // Return freed host memory to the OS after a conversation session
+            // (the dictation stop path already does this; conversation exits did
+            // not, leaving malloc retention). Memory-lifecycle only.
+            codescribe_core::memory::release_freed_heap();
             info!(
                 "Loop cleanup: conversation ended unexpectedly (gen {})",
                 my_generation
@@ -2277,6 +2284,8 @@ impl RecordingController {
 
         // 7. Transition back to IDLE
         self.set_state(State::Idle).await;
+        // Return freed host memory after a conversation session (see note above).
+        codescribe_core::memory::release_freed_heap();
         info!("STATE TRANSITION: CONVERSATION → IDLE");
 
         Ok(())
