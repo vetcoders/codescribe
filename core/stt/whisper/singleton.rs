@@ -33,8 +33,12 @@ use super::params::DecodingParams;
 pub use crate::config::models::DEFAULT_MODEL;
 
 /// Default idle period after which the Whisper engine is unloaded to free GPU
-/// memory. Overridable via `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (0 disables).
-const DEFAULT_IDLE_UNLOAD_SECS: u64 = 300;
+/// memory. Disabled by default (0): each idle-unload→reload recreates the Metal
+/// device (`Device::new_metal`), leaking IOAccelerator Mach ports + dispatch
+/// threads per cycle and forcing a ~20-30s cold reload after the idle gap.
+/// Keeping the engine resident (~3GB GPU floor) matches the old always-warm
+/// daemon. Re-enable per machine via `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=<secs>`.
+const DEFAULT_IDLE_UNLOAD_SECS: u64 = 0;
 
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
@@ -329,10 +333,9 @@ mod tests {
         unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "120") };
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(120)));
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
-        assert_eq!(
-            idle_unload_after(),
-            Some(Duration::from_secs(DEFAULT_IDLE_UNLOAD_SECS))
-        );
+        // DEFAULT_IDLE_UNLOAD_SECS is now 0 (idle-unload disabled by default),
+        // so with no override the reaper is off.
+        assert!(idle_unload_after().is_none());
     }
 
     #[test]
