@@ -33,6 +33,17 @@ case "$PROFILE" in
   *) echo "usage: $0 [debug|release]" >&2; exit 2 ;;
 esac
 
+# ── Preflight: a clean checkout on a fresh Mac otherwise dies deep in the
+# pipeline with a cryptic "command not found". Fail early, actionably.
+require() {
+  command -v "$1" >/dev/null 2>&1 || { echo "error: '$1' not found — $2" >&2; exit 1; }
+}
+require cargo    "install the Rust toolchain: https://rustup.rs"
+require xcodegen "the app's .xcodeproj is generated, not committed: brew install xcodegen"
+if [ "${SKIP_XCODEBUILD:-0}" != "1" ]; then
+  require xcodebuild "install Xcode (App Store), then: sudo xcodebuild -runFirstLaunch"
+fi
+
 SCHEME="Codescribe"
 BRIDGE_DIR="macos/Codescribe/Bridge"
 DYLIB="$TARGET_DIR/libcodescribe_ffi.dylib"
