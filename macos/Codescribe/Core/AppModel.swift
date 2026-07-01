@@ -30,9 +30,24 @@ final class OverlayController: ObservableObject {
 
     init(store: AgentChatStore) {
         state.engine = ControllerDictationEngine()
-        state.onRecordingPreparing = { [weak self] in self?.show() }
-        state.onRecordingStarted = { [weak self] in self?.show() }
-        state.onRecordingStopped = { [weak self] in self?.markStopped() }
+        // Drive the tray status off the SAME authoritative recording lifecycle the
+        // overlay already receives. The tray view-model otherwise only polls on
+        // appear (and the popover is built once), so it stayed "Recording" after
+        // Finish. These hooks fire for every start/stop path (hotkey, tray, auto).
+        state.onRecordingPreparing = { [weak self] in
+            self?.show()
+            AppModel.shared.tray.isStartingDictation = true
+        }
+        state.onRecordingStarted = { [weak self] in
+            self?.show()
+            AppModel.shared.tray.isRecording = true
+            AppModel.shared.tray.isStartingDictation = false
+        }
+        state.onRecordingStopped = { [weak self] in
+            self?.markStopped()
+            AppModel.shared.tray.isRecording = false
+            AppModel.shared.tray.isStartingDictation = false
+        }
         state.onClose = { [weak self] in self?.hide() }
         state.onSendToAgent = { [weak self, weak store] text in
             guard let store, !text.isEmpty else { return }
