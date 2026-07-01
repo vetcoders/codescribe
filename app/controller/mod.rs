@@ -3813,16 +3813,7 @@ impl RecordingController {
 
         // Quick Notes: optionally save to daily note file (dictation-only).
         if !assistive && config.quick_notes_enabled {
-            let frontmost_app = tokio::task::spawn_blocking(capture_frontmost_app_only)
-                .await
-                .ok()
-                .and_then(|ctx| ctx.frontmost_app);
-
-            match crate::state::notes::append_quick_note(
-                &formatted_text,
-                recording_timestamp,
-                frontmost_app.as_deref(),
-            ) {
+            match crate::state::notes::append_quick_note(&formatted_text, recording_timestamp) {
                 Ok(path) => {
                     info!("Quick note saved: {}", path.display());
                     #[cfg(target_os = "macos")]

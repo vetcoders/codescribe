@@ -38,10 +38,10 @@ impl CodescribeNotes {
             .into_owned()
     }
 
-    /// Append `text` as a timestamped bullet to today's note, returning the note
+    /// Append `text` as a raw entry to today's daily note, returning the note
     /// file path. Wraps `state::notes::append_quick_note` (errors on empty text).
     pub fn append_quick_note(&self, text: String) -> Result<String, CsError> {
-        let path = notes::append_quick_note(&text, Local::now(), None)?;
+        let path = notes::append_quick_note(&text, Local::now())?;
         Ok(path.to_string_lossy().into_owned())
     }
 
