@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 use super::defaults::{
-    default_assistive_model, default_formatting_model, default_llm_endpoint, default_llm_model,
+    default_assistive_model, default_assistive_provider, default_formatting_model,
+    default_formatting_provider, default_llm_endpoint, default_llm_model,
 };
 use super::types::{Config, Language, OverlayPositionMode, TranscriptSendMode};
 
@@ -131,8 +132,16 @@ impl Config {
         Self::config_init_set_env_if_missing("LLM_MODEL", default_llm_model());
         Self::config_init_set_env_if_missing("LLM_FORMATTING_ENDPOINT", &endpoint);
         Self::config_init_set_env_if_missing("LLM_FORMATTING_MODEL", default_formatting_model());
+        Self::config_init_set_env_if_missing(
+            "LLM_FORMATTING_PROVIDER",
+            default_formatting_provider(),
+        );
         Self::config_init_set_env_if_missing("LLM_ASSISTIVE_ENDPOINT", &endpoint);
         Self::config_init_set_env_if_missing("LLM_ASSISTIVE_MODEL", default_assistive_model());
+        Self::config_init_set_env_if_missing(
+            "LLM_ASSISTIVE_PROVIDER",
+            default_assistive_provider(),
+        );
     }
 
     /// Load configuration values from environment variables.
