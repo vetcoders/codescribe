@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Scrolling turn list: You (terracotta bubble, right) · Tool activity
 /// (DisclosureGroup, mono) · Assistant (amber "reasoned · Xs" chip + body,
@@ -19,6 +20,10 @@ struct MessageList: View {
                 .padding(20)
             }
             .scrollContentBackground(.hidden)
+            // Let the user drag-select message text and Cmd+C it (SwiftUI Text is
+            // not selectable by default). Per-message "Copy" lives in the bubble
+            // context menu below.
+            .textSelection(.enabled)
             .onChange(of: lastSignature) { _, _ in
                 if let last = messages.last {
                     withAnimation(.easeOut(duration: 0.25)) {
@@ -76,6 +81,7 @@ private struct YouTurn: View {
                     bottomTrailingRadius: 4, topTrailingRadius: 14,
                     style: .continuous
                 ))
+                .contextMenu { CopyButton(text: message.text) }
         }
         .frame(maxWidth: 510, alignment: .trailing)
     }
@@ -202,8 +208,20 @@ private struct AssistantTurn: View {
                 bottomTrailingRadius: 14, topTrailingRadius: 14,
                 style: .continuous
             ))
+            .contextMenu { CopyButton(text: message.text) }
         }
         .frame(maxWidth: 560, alignment: .leading)
+    }
+}
+
+/// Right-click "Copy" that puts a message's raw text on the pasteboard.
+private struct CopyButton: View {
+    let text: String
+    var body: some View {
+        Button("Copy") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
     }
 }
 
