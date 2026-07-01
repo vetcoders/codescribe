@@ -122,10 +122,19 @@ final class TrayViewModel: ObservableObject {
     }
 
     /// Notes Mode: dictation → daily note (no paste). Distinct from normal
-    /// dictation, which pastes at the cursor.
+    /// dictation, which pastes at the cursor. Only reflect the new state if the
+    /// two-key write actually persisted — otherwise re-sync to on-disk truth so
+    /// the toggle never shows a state the config doesn't hold.
     func setNotesMode(_ enabled: Bool) {
-        notesModeEnabled = enabled
-        engine?.setNotesMode(enabled)
+        guard let engine else {
+            notesModeEnabled = enabled
+            return
+        }
+        if engine.setNotesMode(enabled) {
+            notesModeEnabled = enabled
+        } else {
+            refreshStatus()
+        }
     }
 
     // MARK: - History actions (route through the engine seam)

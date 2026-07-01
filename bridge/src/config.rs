@@ -230,6 +230,24 @@ impl CodescribeConfig {
             })
     }
 
+    /// Toggle Notes Mode as one explicit two-key operation. Notes Mode means
+    /// "dictation → daily note AND no paste", so `QUICK_NOTES_ENABLED` and
+    /// `QUICK_NOTES_SAVE_ONLY` are written together in a single settings.json
+    /// update — never two independent writes that could half-succeed and desync.
+    pub fn set_notes_mode(&self, enabled: bool) -> Result<(), CsError> {
+        let value = if enabled { "1" } else { "0" }.to_string();
+        self.update_config_many(vec![
+            CsConfigEntry {
+                key: "QUICK_NOTES_ENABLED".to_string(),
+                value: value.clone(),
+            },
+            CsConfigEntry {
+                key: "QUICK_NOTES_SAVE_ONLY".to_string(),
+                value,
+            },
+        ])
+    }
+
     /// Batch variant of `update_config` (`save_to_env_many`) — one settings.json
     /// write and one `.env` rewrite for the whole batch.
     pub fn update_config_many(&self, entries: Vec<CsConfigEntry>) -> Result<(), CsError> {

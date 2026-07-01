@@ -43,10 +43,21 @@ impl CodescribeNotes {
     /// Append `text` to today's daily note and toast "Saved note". The one-shot
     /// save behind the tray's "Save last transcript" action — no paste, because
     /// Notes is a brain-dump destination, not delivery to the cursor.
-    pub fn save_text(&self, text: String) -> Result<String, CsError> {
-        let path = notes::append_quick_note(&text, Local::now())?;
-        notify_saved(&path);
-        Ok(path.to_string_lossy().into_owned())
+    pub fn save_text(&self, text: String) -> Result<Option<String>, CsError> {
+        if text.trim().is_empty() {
+            notify_toast("Nothing to save — no transcript");
+            return Ok(None);
+        }
+        match notes::append_quick_note(&text, Local::now()) {
+            Ok(path) => {
+                notify_saved(&path);
+                Ok(Some(path.to_string_lossy().into_owned()))
+            }
+            Err(error) => {
+                notify_toast("Could not save note");
+                Err(error.into())
+            }
+        }
     }
 
     /// Capture the user's current selection and append it to the daily note.
@@ -65,11 +76,16 @@ impl CodescribeNotes {
             });
 
         match text {
-            Some(text) => {
-                let path = notes::append_quick_note(&text, Local::now())?;
-                notify_saved(&path);
-                Ok(Some(text))
-            }
+            Some(text) => match notes::append_quick_note(&text, Local::now()) {
+                Ok(path) => {
+                    notify_saved(&path);
+                    Ok(Some(text))
+                }
+                Err(error) => {
+                    notify_toast("Could not save note");
+                    Err(error.into())
+                }
+            },
             None => {
                 // Don't fail silently: tell the user there was nothing to capture.
                 notify_toast("Nothing to save — no selection");

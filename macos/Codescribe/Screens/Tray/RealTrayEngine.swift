@@ -49,12 +49,11 @@ final class RealTrayEngine: TrayEngine {
         try? config.updateConfig(key: toggle.configKey, value: enabled ? "1" : "0")
     }
 
-    func setNotesMode(_ enabled: Bool) {
-        // Notes Mode = dictation routed to the daily note without pasting, i.e.
-        // quick-notes enabled AND save-only, flipped together.
-        let value = enabled ? "1" : "0"
-        try? config.updateConfig(key: "QUICK_NOTES_ENABLED", value: value)
-        try? config.updateConfig(key: "QUICK_NOTES_SAVE_ONLY", value: value)
+    func setNotesMode(_ enabled: Bool) -> Bool {
+        // One atomic two-key write (both flags together): a failure leaves the
+        // config unchanged rather than half-set. Returns false on failure so the
+        // UI can avoid faking success.
+        (try? config.setNotesMode(enabled: enabled)) != nil
     }
 
     func latestHistoryPath() -> String? {

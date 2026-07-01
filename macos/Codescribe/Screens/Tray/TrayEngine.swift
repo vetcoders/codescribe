@@ -49,9 +49,10 @@ protocol TrayEngine: AnyObject {
     /// `nil` when settings cannot be loaded.
     func currentToggles() -> (showDockIcon: Bool, overlayEnabled: Bool, notesMode: Bool)?
     func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool)
-    /// Notes Mode is a two-key flag (quick-notes enabled + save-only), flipped
-    /// together, so it gets its own setter rather than the single-key path.
-    func setNotesMode(_ enabled: Bool)
+    /// Notes Mode is a two-key flag (quick-notes enabled + save-only) written as
+    /// one atomic op. Returns whether the write persisted, so the UI never fakes
+    /// success on a failed write.
+    func setNotesMode(_ enabled: Bool) -> Bool
 
     /// Path of the most recent transcript artifact, or `nil` when none exist.
     func latestHistoryPath() -> String?
@@ -108,7 +109,7 @@ final class MockTrayEngine: TrayEngine {
         }
     }
 
-    func setNotesMode(_ enabled: Bool) { notesMode = enabled }
+    func setNotesMode(_ enabled: Bool) -> Bool { notesMode = enabled; return true }
 
     func latestHistoryPath() -> String? { historyPath }
     func latestTranscriptText() -> String? { transcriptText }

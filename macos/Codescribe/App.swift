@@ -119,10 +119,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         // One-shot: append the most recent transcript to the daily note. No paste
-        // — Notes is a brain-dump destination, not delivery to the cursor.
+        // — Notes is a brain-dump destination. Pass the text (or "") straight to
+        // the bridge, which toasts saved / nothing-to-save / could-not-save so
+        // nothing fails silently.
         model.tray.onSaveLastTranscript = { [notes, threads] in
-            guard let text = Self.latestTranscriptText(threads), !text.isEmpty else { return }
-            _ = try? notes.saveText(text: text)
+            _ = try? notes.saveText(text: Self.latestTranscriptText(threads) ?? "")
         }
         // One-shot: capture the current selection (AX, clipboard fallback) into the
         // daily note.
