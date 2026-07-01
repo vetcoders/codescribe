@@ -14,6 +14,7 @@
 #   4. xcodegen generate                -> macos/Codescribe.xcodeproj + Info.plist
 #   5. xcodebuild                        -> Codescribe.app
 #   6. embed the dylib in Contents/Frameworks so the bundle is self-contained
+#   7. ad-hoc sign with a stable identifier so macOS TCC grants survive rebuilds
 #
 # Usage:
 #   scripts/build-app.sh [debug|release]
@@ -49,17 +50,17 @@ BRIDGE_DIR="macos/Codescribe/Bridge"
 DYLIB="$TARGET_DIR/libcodescribe_ffi.dylib"
 BINDGEN="$TARGET_DIR/uniffi-bindgen"
 
-echo "==> [1/6] Building codescribe-ffi ($PROFILE)"
+echo "==> [1/7] Building codescribe-ffi ($PROFILE)"
 cargo build -p codescribe-ffi "${CARGO_FLAGS[@]}"
 
-echo "==> [2/6] Rewriting dylib install_name to @rpath (relocatable bundle)"
+echo "==> [2/7] Rewriting dylib install_name to @rpath (relocatable bundle)"
 install_name_tool -id @rpath/libcodescribe_ffi.dylib "$DYLIB"
 
-echo "==> [3/6] Generating Swift bindings via uniffi-bindgen"
+echo "==> [3/7] Generating Swift bindings via uniffi-bindgen"
 mkdir -p "$BRIDGE_DIR"
 "$BINDGEN" generate --library "$DYLIB" --language swift --out-dir "$BRIDGE_DIR"
 
-echo "==> [4/6] Generating Xcode project (xcodegen)"
+echo "==> [4/7] Generating Xcode project (xcodegen)"
 ( cd macos && xcodegen generate )
 
 if [ "${SKIP_XCODEBUILD:-0}" = "1" ]; then
@@ -67,7 +68,7 @@ if [ "${SKIP_XCODEBUILD:-0}" = "1" ]; then
   exit 0
 fi
 
-echo "==> [5/6] Building app (xcodebuild, $CONFIG)"
+echo "==> [5/7] Building app (xcodebuild, $CONFIG)"
 DERIVED="$REPO_ROOT/macos/build"
 xcodebuild -project macos/Codescribe.xcodeproj \
   -scheme "$SCHEME" -configuration "$CONFIG" \
@@ -76,10 +77,18 @@ xcodebuild -project macos/Codescribe.xcodeproj \
   build
 
 APP="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"
-echo "==> [6/6] Embedding dylib into $SCHEME.app/Contents/Frameworks"
+echo "==> [6/7] Embedding dylib into $SCHEME.app/Contents/Frameworks"
 FRAMEWORKS="$APP/Contents/Frameworks"
 mkdir -p "$FRAMEWORKS"
 cp "$DYLIB" "$FRAMEWORKS/"
+
+# Ad-hoc sign the finished bundle with a STABLE identifier so macOS TCC
+# (Accessibility / Input Monitoring) keeps its grant across rebuilds instead of
+# re-prompting every time an unsigned binary's cdhash changes — the same
+# identifier make install-app uses. `--deep` also covers the just-embedded dylib.
+BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.codescribe}"
+echo "==> [7/7] Ad-hoc signing $SCHEME.app (stable identifier: $BUNDLE_ID)"
+codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
 
 echo "==> App built: $APP"
 echo "    (portability: dylib is @rpath-relative and embedded; project.yml adds"
