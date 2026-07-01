@@ -3849,6 +3849,23 @@ impl RecordingController {
             write_truth_sidecar_logged(&audio_saved_path, &truth_metadata);
         }
 
+        // Overlay disabled = no decision surface. The action-driven gates above
+        // (commit_trigger / toggle-adjudicated / live-stream) hand the transcript
+        // to the overlay; with no overlay it would just vanish. Deliver headless by
+        // pasting directly at the cursor — unless there is nothing to paste (no
+        // speech) or Notes Mode chose save-only.
+        let overlay_disabled = !config.transcription_overlay_enabled;
+        let has_final_text = !final_formatted_text.trim().is_empty();
+        let notes_save_only = config.quick_notes_enabled && config.quick_notes_save_only;
+        if overlay_disabled
+            && !assistive
+            && truth_no_speech_reason.is_none()
+            && has_final_text
+            && !notes_save_only
+        {
+            should_auto_paste = true;
+        }
+
         if cfg!(test) {
             info!("Skipping paste in tests (mode={})", mode_label);
         } else if should_auto_paste {
