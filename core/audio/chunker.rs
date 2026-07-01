@@ -966,10 +966,18 @@ impl SpeechSession {
     }
 
     /// Override VAD threshold (test-only). Set impossibly high to prevent
-    /// VadIterState from firing `Start`.
+    /// VadIterState from firing `Start`, or below zero to force a deterministic
+    /// open segment when the Silero model is unavailable.
+    ///
+    /// Forces `neg_threshold` to the same value: the speech-sample accounting
+    /// (see `feed`) now counts frames at `neg_threshold`, not `threshold`, so a
+    /// test that drives the onset threshold below the silence floor must move
+    /// the hysteresis bound with it — otherwise forced-open segments would
+    /// report zero accounted speech.
     #[cfg(test)]
     pub fn set_vad_threshold_for_test(&mut self, threshold: f32) {
         self.threshold = threshold;
+        self.neg_threshold = threshold;
         if let Some(iter_state) = self.iter_state.as_mut() {
             iter_state.params.threshold = threshold;
         }
