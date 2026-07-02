@@ -146,6 +146,9 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     font: 500 11px / 1.35 var(--font-mono);
     color: var(--muted-3);
     letter-spacing: 0.08em;
+    /* quick opacity dip on phase-label swaps (listening… / shaping intent… /
+       structured intent) so the text change reads as a crossfade, not a jump. */
+    transition: opacity 0.16s ease;
   }
   .console__engine {
     margin-left: auto;
@@ -166,9 +169,11 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
        scoped data-astro-cid attribute the scoped .word rule targets. */
     column-gap: 0.32em;
     font: 500 19px / 1.55 var(--font-display);
-    color: var(--muted);
+    /* One text color for BOTH phases: the raw↔clean difference is carried by
+       the status label, result strip, and the content itself — never by a
+       shade/weight/size shift, which reads as a font change. */
+    color: var(--ink-2);
   }
-  .console__body[data-mode='clean'] { color: var(--ink-3); }
   .word {
     display: inline-block;
     opacity: 0;
@@ -290,6 +295,26 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
       result!.setAttribute('aria-hidden', String(muted));
     };
 
+    // Crossfade the console body (opacity-only, so no geometry change / CLS):
+    // fade the current words out, swap content while invisible, then let the
+    // per-word reveal bring the new phase in. The color jump between raw
+    // (muted) and clean (ink) happens while the body is at opacity 0, so it no
+    // longer reads as an abrupt font/weight change.
+    const BODY_FADE = 240;
+    function fadeOutBody() {
+      body!.style.transition = `opacity ${BODY_FADE}ms ease`;
+      body!.style.opacity = '0';
+      return wait(BODY_FADE);
+    }
+    function resetBody() {
+      // Snap the container back to opaque with no transition; the new words are
+      // individually at opacity 0, so nothing visibly pops — reveal() fades
+      // them in one by one. Reflow commits the snap before the next fade.
+      body!.style.transition = 'none';
+      body!.style.opacity = '1';
+      void body!.offsetHeight;
+    }
+
     function setMode(mode: 'raw' | 'clean') {
       body!.dataset.mode = mode;
       const words = mode === 'raw' ? RAW : CLEAN;
@@ -305,17 +330,33 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
       }
     }
 
-    function setStatus(mode: 'raw' | 'clean', showResult: boolean) {
-      statusEl!.textContent =
-        mode === 'clean' ? (showResult ? 'structured intent' : 'shaping intent…') : 'listening…';
+    const statusText = (mode: 'raw' | 'clean', showResult: boolean) =>
+      mode === 'clean' ? (showResult ? 'structured intent' : 'shaping intent…') : 'listening…';
+
+    // Quick opacity dip (CSS transition on .console__status) around the text
+    // swap. Awaits only the fade-out so callers can overlap the fade-in with
+    // other work; skips entirely when the label is unchanged.
+    async function setStatus(mode: 'raw' | 'clean', showResult: boolean) {
+      const text = statusText(mode, showResult);
+      if (statusEl!.textContent === text) return;
+      statusEl!.style.opacity = '0';
+      await wait(150);
+      if (!alive) return;
+      statusEl!.textContent = text;
+      statusEl!.style.opacity = '1';
     }
 
     async function reveal(mode: 'raw' | 'clean', per: number) {
       if (!alive) return;
-      setMode(mode);
-      setStatus(mode, false);
+      // Fade the outgoing words (and any visible result strip) out together,
+      // then swap while invisible.
       muteResult(true);
-      await wait(60);
+      await fadeOutBody();
+      if (!alive) return;
+      setMode(mode);
+      resetBody();
+      void setStatus(mode, false); // status dip runs concurrently with the reveal
+      await wait(50);
       const spans = body!.querySelectorAll<HTMLElement>('.word');
       for (let i = 0; i < spans.length; i++) {
         if (!alive) return;
@@ -328,15 +369,17 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
       // Start from a clean slate rather than the pre-rendered resolved frame.
       muteResult(true);
       while (alive) {
-        await wait(650);
+        // Waits trimmed ~150-200ms each to absorb the added fade durations and
+        // keep the overall cycle cadence close to the pre-crossfade feel.
+        await wait(500);
         await reveal('raw', 150);
-        await wait(1000);
+        await wait(850);
         if (!alive) return;
         await reveal('clean', 115);
         if (!alive) return;
-        setStatus('clean', true);
+        await setStatus('clean', true);
         muteResult(false);
-        await wait(2700);
+        await wait(2500);
       }
     }
 
