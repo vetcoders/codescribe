@@ -1,4 +1,12 @@
+import OSLog
 import SwiftUI
+
+/// Diagnostic breadcrumbs for the attachment staging path. Filter with:
+///   log show --predicate 'subsystem == "com.vetcoders.codescribe"' --info
+private let attachLog = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+    category: "attachments"
+)
 
 // MARK: - Runtime contract (read before extending this screen)
 //
@@ -237,9 +245,13 @@ final class AgentChatStore: ObservableObject {
 
     /// Stage image files chosen in the composer, de-duplicating by URL.
     func addAttachments(_ urls: [URL]) {
+        let before = pendingAttachments.count
         for url in urls where !pendingAttachments.contains(where: { $0.url == url }) {
             pendingAttachments.append(PendingAttachment(url: url))
         }
+        attachLog.info(
+            "addAttachments: incoming=\(urls.count, privacy: .public) staged=\(self.pendingAttachments.count - before, privacy: .public) (post-dedupe) pendingAttachments.count=\(self.pendingAttachments.count, privacy: .public)"
+        )
     }
 
     /// Remove a staged attachment before it is sent.
@@ -258,6 +270,9 @@ final class AgentChatStore: ObservableObject {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachmentPaths = pendingAttachments.map { $0.url.path }
+        attachLog.info(
+            "send: building request attachmentPaths.count=\(attachmentPaths.count, privacy: .public) text.isEmpty=\(text.isEmpty, privacy: .public)"
+        )
         guard (!text.isEmpty || !attachmentPaths.isEmpty), let threadID = selectedThreadID else { return }
         draft = ""
         pendingAttachments = []

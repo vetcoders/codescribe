@@ -1,6 +1,14 @@
 import AppKit
+import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
+
+/// Diagnostic breadcrumbs for the attachment staging path. Filter with:
+///   log show --predicate 'subsystem == "com.vetcoders.codescribe"' --info
+private let attachLog = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+    category: "attachments"
+)
 
 /// Bottom composer: the 📎 attach button (image picker), staged-attachment chips,
 /// the message field, the ripple mic (shares the dictation core later), and the
@@ -125,9 +133,15 @@ struct Composer: View {
         panel.message = "Attach images to send to the agent"
         // Restrict to the vision-supported image types the bridge actually loads.
         panel.allowedContentTypes = [.png, .jpeg, .gif, .webP, .bmp, .tiff]
+        attachLog.info("pickAttachments: presenting NSOpenPanel (modeless begin)")
         panel.begin { response in
-            guard response == .OK else { return }
-            let urls = panel.urls
+            let ok = response == .OK
+            let urls = ok ? panel.urls : []
+            let names = urls.map { $0.lastPathComponent }.joined(separator: ", ")
+            attachLog.info(
+                "pickAttachments completion: response=\(ok ? "OK" : "cancel", privacy: .public) urls=\(urls.count, privacy: .public) files=[\(names, privacy: .public)]"
+            )
+            guard ok else { return }
             Task { @MainActor in store.addAttachments(urls) }
         }
     }

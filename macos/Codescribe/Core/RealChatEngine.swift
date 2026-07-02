@@ -1,4 +1,12 @@
 import Foundation
+import OSLog
+
+/// Diagnostic breadcrumbs for the attachment staging path. Filter with:
+///   log show --predicate 'subsystem == "com.vetcoders.codescribe"' --info
+private let attachLog = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+    category: "attachments"
+)
 
 // Backs the Agent Chat with the REAL codescribe engine via the UniFFI bridge
 // (CodescribeAgent / CsAgentListener). Streaming token deltas are hopped onto the
@@ -20,8 +28,12 @@ final class RealChatEngine: AgentChatEngine {
         // Text-only path stays byte-identical to before; only route through the
         // vision method when the composer actually staged an image.
         if attachmentPaths.isEmpty {
+            attachLog.info("RealChatEngine.streamReply: text-only path (streamReply, no attachments)")
             return try await agent.streamReply(text: text, threadId: threadId, listener: listener)
         }
+        attachLog.info(
+            "RealChatEngine.streamReply: vision path (streamReplyWithAttachments) with \(attachmentPaths.count, privacy: .public) attachment(s)"
+        )
         let attachments = attachmentPaths.map { CsAttachment(path: $0) }
         return try await agent.streamReplyWithAttachments(
             text: text,
