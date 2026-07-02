@@ -486,6 +486,7 @@ final class OverlayState: ObservableObject {
     /// delivery/Copy); fall back to the id-ordered committed assembly only if that
     /// event has not arrived.
     private func finalizeTranscript() {
+        let wasFinalized = finalized
         cancelWarmupWatchdog()
         warmingUp = false
         vadActive = false
@@ -497,6 +498,13 @@ final class OverlayState: ObservableObject {
         // FREEZE: from here, late streaming events are dropped (see the apply guards)
         // so nothing keeps mutating @Published state and re-rendering in Idle.
         finalized = true
+        // Notify the recording-lifecycle sink that the session ended. This is the
+        // stop-side counterpart to `handleRecordingStarted` firing `onRecordingStarted?()`:
+        // the tray otherwise only clears its "Recording" pill via the popover's one-shot
+        // onAppear poll, so a hotkey stop left it stuck. Gate on the finalize transition
+        // so redundant re-finalizes (finishControllerRecording + applySessionFinalised)
+        // don't re-fire and churn @Published tray state.
+        if !wasFinalized { onRecordingStopped?() }
     }
 
     private var usableAuthoritativeFinalText: String? {
