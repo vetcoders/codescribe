@@ -75,6 +75,11 @@ docs/runtime-diagnosis.md
 /core/models
 *.log
 
+# Website (site/ — Astro marketing site)
+site/node_modules/
+site/dist/
+site/.astro/
+
 # AI Context
 .ai-context/*
 !.ai-context/share/
