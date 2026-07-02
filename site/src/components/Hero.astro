@@ -165,8 +165,7 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     align-items: center;
     flex-wrap: wrap;
     /* Inter-word gap lives on the flex container (not per-.word margin) so it
-       also reaches the JS-recreated word spans, which don't carry Astro's
-       scoped data-astro-cid attribute the scoped .word rule targets. */
+       governs both the SSR words and the JS-recreated ones uniformly. */
     column-gap: 0.32em;
     font: 500 19px / 1.55 var(--font-display);
     /* One text color for BOTH phases: the raw↔clean difference is carried by
@@ -174,14 +173,20 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
        shade/weight/size shift, which reads as a font change. */
     color: var(--ink-2);
   }
-  .word {
+  /* :global() so the reveal reaches BOTH the SSR word spans and the ones the
+     island recreates via document.createElement — the latter never carry
+     Astro's scoped data-astro-cid attribute, so a plain scoped .word rule
+     silently misses them (per-word reveal was dead for JS-driven cycles).
+     Nested under the server-rendered .console__body (which does carry the cid)
+     to keep the selector contained to this component. */
+  .console__body :global(.word) {
     display: inline-block;
     opacity: 0;
     transform: translateY(10px);
     filter: blur(3px);
     transition: opacity 0.55s ease, transform 0.55s ease, filter 0.55s ease;
   }
-  .word--in {
+  .console__body :global(.word--in) {
     opacity: 1;
     transform: translateY(0);
     filter: blur(0);
