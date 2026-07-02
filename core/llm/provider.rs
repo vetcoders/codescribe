@@ -22,6 +22,8 @@
 
 use std::str::FromStr;
 
+use crate::llm::account_auth;
+
 use tracing::warn;
 
 /// Canonical LLM provider identity — the wire protocol a request targets.
@@ -61,6 +63,63 @@ impl ProviderKind {
         match self {
             ProviderKind::OpenAiResponses => "LLM_ASSISTIVE_API_KEY",
             ProviderKind::AnthropicMessages => "LLM_ANTHROPIC_API_KEY",
+        }
+    }
+}
+
+/// How a provider authenticates requests for a lane.
+///
+/// `ApiKey` is the default and preserves the existing request builders. The
+/// provider-account path is an explicit opt-in foundation for future ChatGPT
+/// sign-in; it does not change any caller until a request path chooses this
+/// mode and asks for a bearer header.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    #[default]
+    ApiKey,
+    ProviderAccount,
+}
+
+impl AuthMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AuthMode::ApiKey => "api-key",
+            AuthMode::ProviderAccount => "provider-account",
+        }
+    }
+}
+
+impl std::fmt::Display for AuthMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseAuthModeError(pub String);
+
+impl std::fmt::Display for ParseAuthModeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown auth mode '{}' (expected 'api-key' or 'provider-account')",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ParseAuthModeError {}
+
+impl FromStr for AuthMode {
+    type Err = ParseAuthModeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "api-key" | "api_key" | "apikey" | "key" => Ok(AuthMode::ApiKey),
+            "provider-account" | "provider_account" | "account" | "chatgpt" => {
+                Ok(AuthMode::ProviderAccount)
+            }
+            other => Err(ParseAuthModeError(other.to_string())),
         }
     }
 }
@@ -268,6 +327,14 @@ impl LlmMode {
             LlmMode::Assistive => "LLM_ASSISTIVE_PROVIDER",
         }
     }
+
+    /// The env var carrying the auth mode for this lane.
+    pub const fn auth_mode_env_key(self) -> &'static str {
+        match self {
+            LlmMode::Formatting => "LLM_FORMATTING_AUTH_MODE",
+            LlmMode::Assistive => "LLM_ASSISTIVE_AUTH_MODE",
+        }
+    }
 }
 
 /// Resolve the configured provider for a lane from process env, defaulting to
@@ -292,6 +359,39 @@ pub fn resolve_provider(mode: LlmMode) -> ProviderKind {
     }
 }
 
+/// Resolve the configured auth mode for a lane from process env, defaulting to
+/// API keys. Invalid values are logged and fall back to `ApiKey`, so account
+/// auth can never become active by typo.
+pub fn resolve_auth_mode(mode: LlmMode) -> AuthMode {
+    let key = mode.auth_mode_env_key();
+    match std::env::var(key) {
+        Ok(raw) if !raw.trim().is_empty() => match AuthMode::from_str(&raw) {
+            Ok(kind) => kind,
+            Err(e) => {
+                warn!("{key}: {e}; falling back to {}", AuthMode::default());
+                AuthMode::default()
+            }
+        },
+        _ => AuthMode::default(),
+    }
+}
+
+/// Optional Authorization header for the provider-account path.
+///
+/// Request builders are intentionally unchanged in this wave. Future callers can
+/// ask this helper for a bearer header when `AuthMode=ProviderAccount`; the
+/// default `ApiKey` mode returns `Ok(None)` and preserves the current API-key
+/// behavior exactly.
+pub async fn provider_account_authorization_header(
+    provider: ProviderKind,
+    mode: LlmMode,
+) -> Result<Option<String>, account_auth::AccountAuthError> {
+    if resolve_auth_mode(mode) != AuthMode::ProviderAccount {
+        return Ok(None);
+    }
+    account_auth::authorization_header(provider).await.map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +403,7 @@ mod tests {
     fn default_provider_is_openai() {
         assert_eq!(ProviderKind::default(), ProviderKind::OpenAiResponses);
         assert_eq!(ProviderKind::default().as_str(), "openai-responses");
+        assert_eq!(AuthMode::default(), AuthMode::ApiKey);
     }
 
     #[test]
@@ -342,6 +443,16 @@ mod tests {
         let err = ProviderKind::from_str("gemini").unwrap_err();
         assert_eq!(err, ParseProviderError("gemini".to_string()));
         assert!(err.to_string().contains("gemini"));
+    }
+
+    #[test]
+    fn parses_auth_mode_spellings() {
+        assert_eq!(AuthMode::from_str("api-key"), Ok(AuthMode::ApiKey));
+        assert_eq!(
+            AuthMode::from_str("provider_account"),
+            Ok(AuthMode::ProviderAccount)
+        );
+        assert!(AuthMode::from_str("oauth-ish").is_err());
     }
 
     // ---- per-model capability policy ----
@@ -502,6 +613,127 @@ mod tests {
         );
 
         restore("LLM_ASSISTIVE_PROVIDER", prev);
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_auth_mode_defaults_to_api_key_when_unset() {
+        let prev_f = std::env::var("LLM_FORMATTING_AUTH_MODE").ok();
+        let prev_a = std::env::var("LLM_ASSISTIVE_AUTH_MODE").ok();
+        unsafe {
+            std::env::remove_var("LLM_FORMATTING_AUTH_MODE");
+            std::env::remove_var("LLM_ASSISTIVE_AUTH_MODE");
+        }
+
+        assert_eq!(resolve_auth_mode(LlmMode::Formatting), AuthMode::ApiKey);
+        assert_eq!(resolve_auth_mode(LlmMode::Assistive), AuthMode::ApiKey);
+
+        restore("LLM_FORMATTING_AUTH_MODE", prev_f);
+        restore("LLM_ASSISTIVE_AUTH_MODE", prev_a);
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_auth_mode_reads_mode_specific_values_and_falls_back_on_invalid() {
+        let prev_f = std::env::var("LLM_FORMATTING_AUTH_MODE").ok();
+        let prev_a = std::env::var("LLM_ASSISTIVE_AUTH_MODE").ok();
+        unsafe {
+            std::env::set_var("LLM_FORMATTING_AUTH_MODE", "provider-account");
+            std::env::set_var("LLM_ASSISTIVE_AUTH_MODE", "bad-mode");
+        }
+
+        assert_eq!(
+            resolve_auth_mode(LlmMode::Formatting),
+            AuthMode::ProviderAccount
+        );
+        assert_eq!(resolve_auth_mode(LlmMode::Assistive), AuthMode::ApiKey);
+
+        restore("LLM_FORMATTING_AUTH_MODE", prev_f);
+        restore("LLM_ASSISTIVE_AUTH_MODE", prev_a);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn api_key_mode_returns_no_provider_account_header() {
+        let prev = std::env::var("LLM_ASSISTIVE_AUTH_MODE").ok();
+        unsafe { std::env::remove_var("LLM_ASSISTIVE_AUTH_MODE") };
+
+        let header = provider_account_authorization_header(
+            ProviderKind::OpenAiResponses,
+            LlmMode::Assistive,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(header, None);
+        restore("LLM_ASSISTIVE_AUTH_MODE", prev);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn provider_account_mode_refreshes_expired_token_and_returns_bearer() {
+        use crate::llm::account_auth::{
+            AccountTokens, OPENAI_ACCOUNT_TOKENS_ACCOUNT, OPENAI_CLIENT_ID_ENV, OPENAI_ISSUER_ENV,
+            load_account_tokens, store_account_tokens,
+        };
+
+        let prev_mode = std::env::var("LLM_ASSISTIVE_AUTH_MODE").ok();
+        let prev_client = std::env::var(OPENAI_CLIENT_ID_ENV).ok();
+        let prev_issuer = std::env::var(OPENAI_ISSUER_ENV).ok();
+        let prev_disable = std::env::var("CODESCRIBE_DISABLE_KEYCHAIN").ok();
+        let prev_tokens = std::env::var(OPENAI_ACCOUNT_TOKENS_ACCOUNT).ok();
+        let mut server = mockito::Server::new_async().await;
+        let _refresh = server
+            .mock("POST", "/oauth/token")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("grant_type".to_string(), "refresh_token".to_string()),
+                mockito::Matcher::UrlEncoded("client_id".to_string(), "client".to_string()),
+                mockito::Matcher::UrlEncoded(
+                    "refresh_token".to_string(),
+                    "old-refresh".to_string(),
+                ),
+            ]))
+            .with_status(200)
+            .with_body(
+                r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+            std::env::set_var("LLM_ASSISTIVE_AUTH_MODE", "provider-account");
+            std::env::set_var(OPENAI_CLIENT_ID_ENV, "client");
+            std::env::set_var(OPENAI_ISSUER_ENV, server.url());
+        }
+        let expired = AccountTokens {
+            provider: ProviderKind::OpenAiResponses.as_str().to_string(),
+            access_token: "old-access".to_string(),
+            refresh_token: Some("old-refresh".to_string()),
+            id_token: None,
+            token_type: "Bearer".to_string(),
+            expires_at_unix: Some(0),
+        };
+        store_account_tokens(ProviderKind::OpenAiResponses, &expired).unwrap();
+
+        let header = provider_account_authorization_header(
+            ProviderKind::OpenAiResponses,
+            LlmMode::Assistive,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(header.as_deref(), Some("Bearer new-access"));
+        let stored = load_account_tokens(ProviderKind::OpenAiResponses).unwrap();
+        assert_eq!(stored.access_token, "new-access");
+        assert_eq!(stored.refresh_token.as_deref(), Some("new-refresh"));
+
+        restore("LLM_ASSISTIVE_AUTH_MODE", prev_mode);
+        restore(OPENAI_CLIENT_ID_ENV, prev_client);
+        restore(OPENAI_ISSUER_ENV, prev_issuer);
+        restore("CODESCRIBE_DISABLE_KEYCHAIN", prev_disable);
+        restore(OPENAI_ACCOUNT_TOKENS_ACCOUNT, prev_tokens);
     }
 
     fn restore(key: &str, prev: Option<String>) {
