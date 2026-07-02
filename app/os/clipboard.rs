@@ -142,13 +142,6 @@ impl ClipboardSnapshot {
     }
 }
 
-/// Takes a snapshot of the current clipboard
-///
-/// Convenience function for ClipboardSnapshot::capture()
-pub fn snapshot_clipboard() -> Result<ClipboardSnapshot> {
-    ClipboardSnapshot::capture()
-}
-
 /// Sets the clipboard content without simulating paste
 ///
 /// # Arguments
@@ -183,17 +176,6 @@ pub fn get_clipboard() -> Result<String> {
 
     debug!("Retrieved clipboard content ({} chars)", text.len());
     Ok(text)
-}
-
-/// Alias for set_clipboard - copies text to clipboard without pasting
-///
-/// # Arguments
-/// * `text` - The text to copy to clipboard
-///
-/// # Errors
-/// Returns error if clipboard operation fails
-pub fn copy(text: &str) -> Result<()> {
-    set_clipboard(text)
 }
 
 /// Simulates a key press using CGEvent (thread-safe, no TSM issues)
@@ -292,44 +274,6 @@ fn simulate_right_arrow() -> Result<()> {
 
     // Key up: Right Arrow
     simulate_key_event(KEYCODE_RIGHT_ARROW, false, CGEventFlags::empty())?;
-
-    Ok(())
-}
-
-/// Simple paste function - just sets clipboard and simulates Cmd+V
-///
-/// Does NOT restore the previous clipboard content. Use paste_and_restore()
-/// for smart clipboard management.
-///
-/// # Arguments
-/// * `text` - The text to paste
-///
-/// # Errors
-/// Returns error if clipboard or keyboard simulation fails
-///
-/// # Focus / scope note (E: focus-confirm)
-/// This module only sets the clipboard and posts the synthetic Cmd+V; it does
-/// NOT activate or focus-confirm a target window. The "Cmd+C robustness" work
-/// (cut E: `changeCount` + `wait_for_frontmost_app` focus-confirm backoff,
-/// commit 65e713a) hardened the *selection capture* path (Cmd+C) in
-/// `crate::os::selection`. The *paste* path (Cmd+V) that activates a target app
-/// before pasting lives in `app/controller/mod.rs`
-/// (`paste_overlay_text_with_target`) and still uses a fixed `sleep(80ms)`
-/// after `activate_target_app` — it has the same activation→focus race but is
-/// owned by a different module, so E does not rewire it here. The reusable
-/// `crate::os::selection::wait_for_frontmost_app` (now `pub(crate)`) is the
-/// intended drop-in replacement for that fixed sleep in a controller-owned
-/// follow-up.
-pub fn paste(text: &str) -> Result<()> {
-    if text.is_empty() {
-        warn!("Paste called with empty text");
-        return Ok(());
-    }
-
-    set_clipboard(text).context("Failed to set clipboard for paste")?;
-
-    // Simulate Cmd+V using CGEvent (thread-safe)
-    simulate_cmd_v().context("Failed to simulate Cmd+V")?;
 
     Ok(())
 }
@@ -521,17 +465,6 @@ mod tests {
         // Should match original
         let restored = get_clipboard().expect("Failed to get clipboard");
         assert_eq!(restored, original);
-    }
-
-    #[test]
-    #[serial]
-    fn test_copy_alias() {
-        let _guard = ClipboardTestGuard::capture();
-        let test_text = "Copy alias test";
-        copy(test_text).expect("Failed to copy");
-
-        let retrieved = get_clipboard().expect("Failed to get clipboard");
-        assert_eq!(retrieved, test_text);
     }
 
     struct ClipboardTestGuard(Option<ClipboardSnapshot>);
