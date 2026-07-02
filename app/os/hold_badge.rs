@@ -115,6 +115,7 @@ mod imp {
         NSBackingStoreType, NSColor, NSEvent, NSWindowCollectionBehavior, NSWindowStyleMask,
     };
     use std::ptr;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
@@ -206,6 +207,13 @@ mod imp {
             last_position: (f64::NAN, f64::NAN),
         }));
     }
+
+    /// Monotonic show generation. A show captures it at REQUEST time; `hide_hold_badge`
+    /// bumps it. When a queued (`exec_async`) show finally runs on the main thread it
+    /// aborts if the generation moved — otherwise a hide that raced ahead of the
+    /// enqueued show would be undone, leaving a badge window + updater thread stuck
+    /// with nothing to tear them down.
+    static BADGE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
     /// Check if the currently focused element accepts text input
     pub fn focused_element_accepts_text() -> bool {
@@ -536,8 +544,18 @@ mod imp {
         show_hold_badge_with_config(HoldBadgeConfig::from_mode(mode));
     }
 
-    /// Internal implementation that must run on the main thread
-    fn show_hold_badge_impl(config: HoldBadgeConfig) {
+    /// Internal implementation that must run on the main thread.
+    ///
+    /// `generation` is the show generation captured when this show was requested.
+    /// If a `hide_hold_badge` bumped it in the meantime, the show is stale and is
+    /// aborted so it cannot resurrect a badge the user already dismissed.
+    fn show_hold_badge_impl(config: HoldBadgeConfig, generation: u64) {
+        // A hide issued after this show was enqueued already tore the badge down;
+        // honor it and do not create a new window/updater.
+        if generation != BADGE_GENERATION.load(Ordering::SeqCst) {
+            debug!("Skipping stale hold-badge show (superseded by hide)");
+            return;
+        }
         debug!("Showing hold badge (diameter={})", config.diameter);
         unsafe {
             // IMPORTANT: do not hold BADGE_STATE while calling `window_close`.
@@ -562,14 +580,26 @@ mod imp {
             let _: () = msg_send![content_view, setNeedsDisplay: true];
 
             // Update shared state and determine whether we need to start the updater thread.
-            let (update_interval, start_updater) = {
+            let update_interval = config.update_interval_ms;
+            let start_updater;
+            {
                 let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                // Re-check under the lock: a hide that landed between the top-of-fn
+                // check and here bumped the generation. Honor it — drop the lock,
+                // close the window we just created (never hold BADGE_STATE across
+                // window_close, see above), and leave the state torn down.
+                if generation != BADGE_GENERATION.load(Ordering::SeqCst) {
+                    drop(state);
+                    window_close(window);
+                    debug!("Aborting hold-badge show; hide raced in during window creation");
+                    return;
+                }
                 let was_running = state.timer_running;
                 state.window = Some(window as usize);
                 state.config = config.clone();
                 state.timer_running = true;
-                (config.update_interval_ms, !was_running)
-            };
+                start_updater = !was_running;
+            }
 
             // Start a SINGLE position updater thread. Subsequent calls to `show_*` just update state.
             if start_updater {
@@ -682,17 +712,22 @@ mod imp {
     /// Show the hold badge with custom configuration.
     /// This dispatches to the main thread for thread safety with NSWindow.
     pub fn show_hold_badge_with_config(config: HoldBadgeConfig) {
+        // Capture the show generation at REQUEST time. A hide that lands before the
+        // (possibly queued) impl runs bumps the generation, so the impl recognises
+        // itself as stale and does not resurrect a dismissed badge.
+        let generation = BADGE_GENERATION.load(Ordering::SeqCst);
+
         // Check if we're already on the main thread by checking thread name.
         // Note: exec_sync on main queue from main thread causes deadlock.
         let is_main_thread = std::thread::current().name() == Some("main");
 
         if is_main_thread {
-            show_hold_badge_impl(config);
+            show_hold_badge_impl(config, generation);
         } else {
             // Dispatch to main thread - NSWindow MUST be created on main thread.
             // Using exec_async to avoid deadlock when called from tokio runtime.
             Queue::main().exec_async(move || {
-                show_hold_badge_impl(config);
+                show_hold_badge_impl(config, generation);
             });
         }
     }
@@ -701,6 +736,11 @@ mod imp {
     /// This dispatches to the main thread for thread safety with NSWindow.
     pub fn hide_hold_badge() {
         debug!("Hiding hold badge");
+
+        // Bump the show generation so any show enqueued before this hide (or racing
+        // its window creation) is recognised as stale and does not resurrect the
+        // badge after we tear it down.
+        BADGE_GENERATION.fetch_add(1, Ordering::SeqCst);
 
         // Stop the timer first (can be done on any thread)
         let window_ptr = {
