@@ -139,5 +139,5 @@ echo "DMG ready: $DMG_PATH"
 
 if [[ "$NOTARIZE" -eq 1 ]]; then
   echo "Notarizing DMG with profile: $NOTARY_PROFILE"
-  NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" "$DMG_PATH"
+  NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" "$DMG_PATH" "$APP_PATH"
 fi
