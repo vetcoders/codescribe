@@ -1,4 +1,4 @@
-# Codescribe - Team Setup (Pure Rust Era)
+# Codescribe - Team Setup (Rust Core + SwiftUI App)
 
 ## Quick Start
 
@@ -7,23 +7,25 @@
 - macOS 14+ (Apple Silicon ARM64 only)
 - Rust 1.83+
 
-### 2. Build & Run (CLI)
+### 2. Build & Run (Native App)
 
 ```bash
 # Clone
 git clone git@github.com:Vetcoders/Codescribe.git
 cd codescribe
 
-# Build and run CLI
-cargo build --release -p codescribe
-./target/release/codescribe
+# Build and install the SwiftUI app over the Rust UniFFI core
+make app PROFILE=release
+make install-app
+make start
 ```
 
 ### 3. Development Mode
 
 ```bash
-# Run debug binary
-cargo run
+# Build and launch the debug app bundle
+make app PROFILE=debug
+open macos/build/Build/Products/Debug/Codescribe.app
 ```
 
 ## Permissions Required
@@ -62,22 +64,18 @@ Grant in: System Settings > Privacy & Security
 - Runtime fallback resolves Whisper from exactly one shared contract in `core/config/models.rs`:
   `CODESCRIBE_MODEL_PATH` → configured local model path/alias → configured HF repo snapshot →
   default local turbo model → default HF cache snapshot.
-- `make install` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
+- `make install-app` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
 
 **Developer note:**
 If runtime lookup cannot find the model, point `CODESCRIBE_MODEL_PATH` at a valid Whisper directory.
 
-## CLI Usage
+## Qube CLI Utilities
+
+The app path is the SwiftUI bundle. Terminal utilities are limited to batch quality/reporting tools:
 
 ```bash
-# Transcribe audio file
-codescribe transcribe audio.wav
-
-# With AI formatting
-codescribe transcribe audio.wav --format
-
-# Specify language
-codescribe transcribe audio.wav --language pl
+qube-report --help
+qube-daemon --help
 ```
 
 ## Quality & Tools
@@ -85,10 +83,10 @@ codescribe transcribe audio.wav --language pl
 New CLI tools for batch processing and automation:
 
 ```bash
-# Batch quality report (renamed from codescribe-quality in 0.9.0)
+# Batch quality report
 qube-report --help
 
-# Self-improving quality daemon (renamed from codescribe-loop in 0.9.0)
+# Quality daemon
 qube-daemon --help
 ```
 

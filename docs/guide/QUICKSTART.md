@@ -13,17 +13,16 @@ Get codescribe running in 5 minutes.
 git clone https://github.com/vetcoders/codescribe.git
 cd codescribe
 
-# Build and install
-make install           # Binary to ~/.cargo/bin/codescribe; ensures runtime model/cache availability
-make app PROFILE=release   # Build Codescribe.app
-make install-app       # Build + copy app to /Applications
+# Build and install the SwiftUI app
+make app PROFILE=release
+make install-app       # Build + copy Codescribe.app to /Applications
 ```
 
 ### Option B: From Release (Users)
 
 1. Download `Codescribe_x.x.x.dmg` from [Releases](https://github.com/vetcoders/codescribe/releases)
 2. Open DMG, drag to Applications
-3. Open codescribe from Applications
+3. Open Codescribe from Applications
 
 > If Releases is empty for the branch you are on, fall back to Option A and build locally.
 
@@ -39,13 +38,13 @@ On first launch, grant these permissions in **System Settings → Privacy & Secu
 | **Accessibility**    | Privacy → Accessibility    | Global hotkeys       |
 | **Input Monitoring** | Privacy → Input Monitoring | Detect modifier keys |
 
-> **Tip**: Restart codescribe after granting permissions.
+> **Tip**: Restart Codescribe after granting permissions.
 
 ---
 
 ## 3. Configure
 
-Recommended: configure codescribe in the **Settings** window.
+Recommended: configure Codescribe in the **Settings** window.
 
 ```bash
 # Menu bar icon → Settings
@@ -112,8 +111,8 @@ make logs
 ### Hotkeys don't work
 
 1. Check all three permissions are granted
-2. Restart codescribe
-3. Try `codescribe -v` for verbose logging
+2. Restart Codescribe
+3. Check `make logs` for recent app output
 
 ### No transcription
 
