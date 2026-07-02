@@ -170,13 +170,41 @@ final class SettingsViewModel: ObservableObject {
         case "LLM_API_KEY": return "LLM API key"
         case "STT_API_KEY": return "Speech-to-text API key"
         case "LLM_FORMATTING_API_KEY": return "Formatting API key"
-        case "LLM_ASSISTIVE_API_KEY": return "Assistive API key"
+        case "LLM_ASSISTIVE_API_KEY": return "Assistive API key (OpenAI)"
+        case "LLM_ANTHROPIC_API_KEY": return "Anthropic API key"
         case "GITHUB_TOKEN": return "GitHub token"
         default: return account
         }
     }
 
     var keyAccounts: [String] { engine?.keyAccounts() ?? [] }
+
+    // MARK: - Agent provider / model selection (assistive lane)
+
+    /// Provider + model catalog with per-provider key presence.
+    var availableProviders: [CsProviderOption] { engine?.availableProviders() ?? [] }
+
+    /// Currently selected assistive-lane provider id (falls back to OpenAI).
+    var assistiveProviderId: String { settings.llmAssistiveProvider ?? "openai-responses" }
+
+    /// Currently configured assistive-lane model id (may be empty until set).
+    var assistiveModel: String { settings.llmAssistiveModel ?? "" }
+
+    /// The selected provider's catalog entry, if present.
+    var selectedProvider: CsProviderOption? {
+        let id = assistiveProviderId
+        return availableProviders.first { $0.id == id } ?? availableProviders.first
+    }
+
+    func setAssistiveProvider(_ id: String) {
+        settings.llmAssistiveProvider = id
+        persist("LLM_ASSISTIVE_PROVIDER", id)
+    }
+
+    func setAssistiveModel(_ id: String) {
+        settings.llmAssistiveModel = id
+        persist("LLM_ASSISTIVE_MODEL", id)
+    }
 
     func saveKey(account: String, secret: String) {
         let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -23,6 +23,11 @@ struct KeysPanel: View {
                 .foregroundStyle(CSColor.textMutedAlt)
                 .padding(.top, 8)
 
+            SettingsSectionLabel("Agent provider")
+                .padding(.top, 22)
+            AgentProviderSelector(model: model)
+                .padding(.top, 11)
+
             SettingsSectionLabel("Providers")
                 .padding(.top, 22)
             VStack(spacing: 8) {
@@ -48,6 +53,131 @@ struct KeysPanel: View {
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
+    }
+}
+
+// MARK: - Agent provider / model selector
+
+// Picks the assistive/agent-lane provider + model. The chosen provider maps to
+// one of the API-key rows below; the dot reflects whether that key is present.
+private struct AgentProviderSelector: View {
+    @ObservedObject var model: SettingsViewModel
+
+    private var selected: CsProviderOption? { model.selectedProvider }
+
+    private var currentModelLabel: String {
+        let id = model.assistiveModel
+        if id.isEmpty { return "Choose a model" }
+        return selected?.models.first { $0.id == id }?.displayName ?? id
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SelectorRow(label: "Provider") {
+                Menu {
+                    ForEach(model.availableProviders, id: \.id) { provider in
+                        Button {
+                            model.setAssistiveProvider(provider.id)
+                        } label: {
+                            if provider.id == model.assistiveProviderId {
+                                Label(provider.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(provider.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    MenuLabel(text: selected?.displayName ?? model.assistiveProviderId)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+            }
+
+            SelectorRow(label: "Model") {
+                Menu {
+                    ForEach(selected?.models ?? [], id: \.id) { option in
+                        Button {
+                            model.setAssistiveModel(option.id)
+                        } label: {
+                            if option.id == model.assistiveModel {
+                                Label(option.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(option.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    MenuLabel(text: currentModelLabel, mono: true)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+            }
+
+            if let selected {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill((selected.apiKeySet ? CSColor.olive : CSColor.terracotta).opacity(0.85))
+                        .frame(width: 7, height: 7)
+                    Text("uses \(SettingsViewModel.keyLabel(for: selected.apiKeyAccount)) — \(selected.apiKeySet ? "set" : "not set") below")
+                        .font(CSFont.mono(11, .medium))
+                        .foregroundStyle(CSColor.textFaint)
+                }
+            }
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 13)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        )
+    }
+}
+
+private struct SelectorRow<Content: View>: View {
+    let label: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .font(CSFont.mono(12, .medium))
+                .foregroundStyle(CSColor.textMutedAlt)
+                .frame(width: 80, alignment: .leading)
+            content()
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct MenuLabel: View {
+    let text: String
+    var mono: Bool = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(text)
+                .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
+                .foregroundStyle(CSColor.textHigh)
+                .lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(CSColor.textFaint)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
     }
 }
 

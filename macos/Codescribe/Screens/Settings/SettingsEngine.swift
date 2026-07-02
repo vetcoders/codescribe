@@ -37,6 +37,9 @@ protocol SettingsEngine {
     func setApiKey(account: String, secret: String) throws
     func clearApiKey(account: String) throws
 
+    // Assistive/agent-lane provider + model catalog (with per-provider key presence)
+    func availableProviders() -> [CsProviderOption]
+
     // Editable BASE prompts
     func getFormattingPrompt() -> String
     func getAssistivePrompt() -> String
@@ -75,6 +78,8 @@ final class RealSettingsEngine: SettingsEngine {
     }
     func clearApiKey(account: String) throws { try config.clearApiKey(account: account) }
 
+    func availableProviders() -> [CsProviderOption] { config.availableProviders() }
+
     func getFormattingPrompt() -> String { config.getFormattingPrompt() }
     func getAssistivePrompt() -> String { config.getAssistivePrompt() }
     func defaultFormattingPrompt() -> String { config.defaultFormattingPrompt() }
@@ -111,10 +116,15 @@ struct MockSettingsEngine: SettingsEngine {
 
     func keyStatus() -> CsKeyStatus { status }
     func keyAccounts() -> [String] {
-        ["LLM_API_KEY", "STT_API_KEY", "LLM_FORMATTING_API_KEY", "LLM_ASSISTIVE_API_KEY", "GITHUB_TOKEN"]
+        [
+            "LLM_API_KEY", "STT_API_KEY", "LLM_FORMATTING_API_KEY",
+            "LLM_ASSISTIVE_API_KEY", "LLM_ANTHROPIC_API_KEY", "GITHUB_TOKEN",
+        ]
     }
     func setApiKey(account: String, secret: String) throws {}
     func clearApiKey(account: String) throws {}
+
+    func availableProviders() -> [CsProviderOption] { CsProviderOption.sampleProviders }
 
     func getFormattingPrompt() -> String { CsSettings.samplePrompt }
     func getAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
@@ -192,6 +202,7 @@ extension CsSettings {
         llmFormattingModel: "gpt-4o-mini",
         llmAssistiveEndpoint: "https://api.openai.com/v1/responses",
         llmAssistiveModel: "gpt-4o",
+        llmAssistiveProvider: "openai-responses",
         formattingLevel: "medium",
         whisperModel: "whisper-large-v3-turbo",
         bufferDelayMs: nil,
@@ -214,6 +225,7 @@ extension CsKeyStatus {
         sttApiKeySet: true,
         llmFormattingApiKeySet: true,
         llmAssistiveApiKeySet: true,
+        llmAnthropicApiKeySet: false,
         githubTokenSet: false
     )
 
@@ -224,8 +236,37 @@ extension CsKeyStatus {
         case "STT_API_KEY": return sttApiKeySet
         case "LLM_FORMATTING_API_KEY": return llmFormattingApiKeySet
         case "LLM_ASSISTIVE_API_KEY": return llmAssistiveApiKeySet
+        case "LLM_ANTHROPIC_API_KEY": return llmAnthropicApiKeySet
         case "GITHUB_TOKEN": return githubTokenSet
         default: return false
         }
     }
+}
+
+extension CsProviderOption {
+    /// Preview seed mirroring the core provider catalog (OpenAI + Anthropic).
+    static let sampleProviders: [CsProviderOption] = [
+        CsProviderOption(
+            id: "openai-responses",
+            displayName: "OpenAI (Responses)",
+            apiKeyAccount: "LLM_ASSISTIVE_API_KEY",
+            apiKeySet: true,
+            models: [
+                CsModelOption(id: "gpt-5.5", displayName: "GPT-5.5"),
+                CsModelOption(id: "gpt-4.1", displayName: "GPT-4.1"),
+            ]
+        ),
+        CsProviderOption(
+            id: "anthropic-messages",
+            displayName: "Anthropic (Messages)",
+            apiKeyAccount: "LLM_ANTHROPIC_API_KEY",
+            apiKeySet: false,
+            models: [
+                CsModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8"),
+                CsModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5"),
+                CsModelOption(id: "claude-opus-4-7", displayName: "Claude Opus 4.7"),
+                CsModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5"),
+            ]
+        ),
+    ]
 }
