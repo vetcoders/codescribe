@@ -155,13 +155,16 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     display: flex;
     align-items: center;
     flex-wrap: wrap;
+    /* Inter-word gap lives on the flex container (not per-.word margin) so it
+       also reaches the JS-recreated word spans, which don't carry Astro's
+       scoped data-astro-cid attribute the scoped .word rule targets. */
+    column-gap: 0.32em;
     font: 500 19px / 1.55 var(--font-display);
     color: var(--muted);
   }
   .console__body[data-mode='clean'] { color: var(--ink-3); }
   .word {
     display: inline-block;
-    margin-right: 0.32em;
     opacity: 0;
     transform: translateY(10px);
     filter: blur(3px);
@@ -264,6 +267,9 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
         span.className = 'word';
         span.textContent = w;
         body!.appendChild(span);
+        // Whitespace between words: keeps the transcript readable (and
+        // copy-/screen-reader-correct) instead of "uh,soscanthisrepo".
+        body!.appendChild(document.createTextNode(' '));
       }
     }
 
