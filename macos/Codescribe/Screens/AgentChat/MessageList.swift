@@ -132,6 +132,7 @@ private struct AttachmentChip: View {
                 .font(CSFont.mono(10.5, .medium))
                 .foregroundStyle(CSColor.textBodyAlt)
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .frame(maxWidth: 160)
         }
         .padding(.horizontal, 9)

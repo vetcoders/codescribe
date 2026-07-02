@@ -98,6 +98,7 @@ struct Composer: View {
                             .font(CSFont.mono(10.5, .medium))
                             .foregroundStyle(CSColor.textBodyAlt)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                             .frame(maxWidth: 160)
                         Button(action: { store.removeAttachment(attachment.id) }) {
                             Image(systemName: "xmark")
