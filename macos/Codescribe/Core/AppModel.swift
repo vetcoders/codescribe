@@ -54,6 +54,9 @@ final class OverlayController: ObservableObject {
         state.onClose = { [weak self] in self?.hide() }
         state.onSendToAgent = { [weak self, weak store] text in
             guard let store, !text.isEmpty else { return }
+            // Reveal + focus the Agent window (same path as the tray's Open Chat
+            // intent) so the reply streams into a visible store, not a hidden one.
+            AppModel.shared.tray.onIntent(.openChat)
             store.draft = text
             store.send()
             self?.hide()
