@@ -32,12 +32,13 @@ struct CreatorPanel: View {
                 SettingsControlRow(title: "Whisper language",
                                    subtitle: "Language used for speech-to-text") {
                     Picker("", selection: languageBinding) {
+                        Text("Auto").tag(CsLanguage.auto)
                         Text("Polish").tag(CsLanguage.polish)
                         Text("English").tag(CsLanguage.english)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(width: 168)
+                    .frame(width: 220)
                 }
                 SettingsControlRow(title: "AI formatting",
                                    subtitle: "Clean up transcripts with the LLM") {
