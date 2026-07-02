@@ -20,7 +20,7 @@ struct CreatorPanel: View {
             SettingsSectionLabel("Permission checklist")
                 .padding(.top, 22)
             VStack(spacing: 8) {
-                ForEach([PermissionKind.microphone, .accessibility, .inputMonitoring]) { kind in
+                ForEach([PermissionKind.microphone, .accessibility, .inputMonitoring, .screenRecording]) { kind in
                     PermissionChecklistRow(kind: kind, state: model.permissions.state(kind))
                 }
             }
