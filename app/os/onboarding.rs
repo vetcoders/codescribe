@@ -162,6 +162,13 @@ fn invalidate_setup_done_if_permissions_missing() {
         return;
     }
 
+    // Outside an app bundle the permission model does not apply, so setup_done is
+    // never invalidated here. Return before the four system-wide permission probes
+    // below (evaluated as call arguments) so dev/CLI runs pay nothing.
+    if !current_runtime_is_app_bundle() {
+        return;
+    }
+
     let Some(resume_step) = setup_done_refresh_target(
         true,
         current_runtime_is_app_bundle(),
