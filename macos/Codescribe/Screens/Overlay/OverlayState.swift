@@ -373,9 +373,16 @@ final class OverlayState: ObservableObject {
     func applyFinal(utteranceId: UInt64, _ text: String) {
         guard !finalized else { return }
         markTranscriptActivity()
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            upsertFinalSegment(utteranceId: utteranceId, text: trimmed)
+        // A1 contract sensor (debug-only): Rust trims at source and computes
+        // ReplaceRange/InsertAnnotation offsets over that exact string. A Swift-side
+        // trim here would silently shift those offsets, so we store the text
+        // byte-for-byte and only assert the guarantee.
+        assert(
+            text == text.trimmingCharacters(in: .whitespacesAndNewlines),
+            "UtteranceFinal text not trimmed at source (A1 contract) — ReplaceRange offsets would misalign"
+        )
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            upsertFinalSegment(utteranceId: utteranceId, text: text)
         }
         preview = ""
         refreshFormattedTranscriptIfNeeded()
@@ -483,15 +490,17 @@ final class OverlayState: ObservableObject {
     /// Append a committed segment, keyed by `utteranceId`. Re-finals for an id we
     /// already hold replace that slot in place (no duplicate, no drop); new ids
     /// append in arrival order = id order, the bridge's FIFO ordering.
+    /// Kontrakt: tekst przychodzi już przycięty z Rusta (jedyny właściciel ofsetów);
+    /// Swift przechowuje go bajt-w-bajt, bo ofsety ReplaceRange/InsertAnnotation
+    /// liczone są u emitenta nad tym samym stringiem.
     private func upsertFinalSegment(utteranceId: UInt64, text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         if let index = committedSegments.firstIndex(where: { $0.utteranceId == utteranceId }) {
-            guard committedSegments[index].text != trimmed else { return }
-            committedSegments[index].text = trimmed
+            guard committedSegments[index].text != text else { return }
+            committedSegments[index].text = text
             committedSegments[index].annotations = []
         } else {
-            committedSegments.append(OverlayTranscriptSegment(utteranceId: utteranceId, text: trimmed))
+            committedSegments.append(OverlayTranscriptSegment(utteranceId: utteranceId, text: text))
         }
         syncCommittedUtterances()
     }
