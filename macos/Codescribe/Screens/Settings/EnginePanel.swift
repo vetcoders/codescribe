@@ -61,6 +61,9 @@ struct EnginePanel: View {
 
             AgentStatusSection(model: model)
                 .padding(.top, 30)
+
+            MCPServersSection(model: model)
+                .padding(.top, 26)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)

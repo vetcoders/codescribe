@@ -34,6 +34,9 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var needsOnboarding: Bool
     @Published private(set) var agentReadiness: CsAgenticReadiness
     @Published private(set) var mcpStatus: CsMcpStatusReport
+    @Published private(set) var mcpServers: [CsMcpServer] = []
+    @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
+    @Published private(set) var mcpTestPending: Set<String> = []
     @Published var lastError: String?
 
     /// Version label. No FFI surface exposes the running version, so this stays a
@@ -43,15 +46,18 @@ final class SettingsViewModel: ObservableObject {
     private let engine: SettingsEngine?
     private let permissionProbe: PermissionProbing
     private let agentStatus: AgentStatusEngine?
+    private let mcpAdmin: MCPAdminEngine?
 
     init(
         engine: SettingsEngine? = nil,
         permissionProbe: PermissionProbing = NativePermissionProbe(),
-        agentStatus: AgentStatusEngine? = nil
+        agentStatus: AgentStatusEngine? = nil,
+        mcpAdmin: MCPAdminEngine? = nil
     ) {
         self.engine = engine
         self.permissionProbe = permissionProbe
         self.agentStatus = agentStatus
+        self.mcpAdmin = mcpAdmin
 
         // Keep construction side-effect free. SwiftUI may instantiate the
         // Settings scene at app launch; live config/keychain reads happen in
@@ -75,6 +81,7 @@ final class SettingsViewModel: ObservableObject {
             needsOnboarding = engine.shouldShowOnboarding()
         }
         refreshAgentStatus()
+        reloadMcpServers()
     }
 
     /// Re-probe just the agent substrate (readiness + MCP status). Cheap on-disk
@@ -84,6 +91,80 @@ final class SettingsViewModel: ObservableObject {
         guard let agentStatus else { return }
         agentReadiness = agentStatus.agenticReadiness()
         mcpStatus = agentStatus.mcpStatus()
+    }
+
+    // MARK: - MCP server management (writes through the atomic config store)
+
+    /// Re-read the configured MCP servers from `mcp.json`. A missing config is an
+    /// empty list, not an error.
+    func reloadMcpServers() {
+        guard let mcpAdmin else { return }
+        do {
+            mcpServers = try mcpAdmin.listServers()
+        } catch {
+            lastError = String(describing: error)
+            mcpServers = []
+        }
+    }
+
+    /// Add a server from the form. `args` is already split into tokens. On success
+    /// the list + readiness re-probe so the panel reflects the new state.
+    func addMcpServer(name: String, command: String, args: [String]) {
+        guard let mcpAdmin else { return }
+        do {
+            try mcpAdmin.addServer(
+                CsMcpServerInput(name: name, command: command, args: args, enabled: true)
+            )
+            reloadMcpServers()
+            refreshAgentStatus()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    /// Flip a server's `enabled` flag, preserving its command / args / env.
+    func toggleMcpServer(_ server: CsMcpServer) {
+        guard let mcpAdmin else { return }
+        do {
+            try mcpAdmin.updateServer(
+                name: server.name,
+                input: CsMcpServerInput(
+                    name: server.name, command: server.command,
+                    args: server.args, enabled: !server.enabled
+                )
+            )
+            reloadMcpServers()
+            refreshAgentStatus()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    /// Remove a server and drop any cached test result for it.
+    func removeMcpServer(_ name: String) {
+        guard let mcpAdmin else { return }
+        do {
+            try mcpAdmin.removeServer(name: name)
+            mcpTestResults[name] = nil
+            reloadMcpServers()
+            refreshAgentStatus()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    /// Spawn + handshake the named server and record the result inline. Runs off
+    /// the main actor (the engine detaches) so the up-to-10s test never freezes
+    /// the window; `mcpTestPending` drives a spinner in the row.
+    func testMcpServer(_ name: String) {
+        guard let mcpAdmin else { return }
+        guard !mcpTestPending.contains(name) else { return }
+        mcpTestPending.insert(name)
+        Task {
+            let result = await mcpAdmin.testServer(name)
+            mcpTestPending.remove(name)
+            mcpTestResults[name] = result
+        }
     }
 
     func select(_ target: SettingsSection) {
@@ -261,9 +342,11 @@ final class SettingsViewModel: ObservableObject {
         let model = SettingsViewModel(
             engine: MockSettingsEngine(),
             permissionProbe: MockPermissionProbe(.allGranted),
-            agentStatus: MockAgentStatusEngine()
+            agentStatus: MockAgentStatusEngine(),
+            mcpAdmin: MockMCPAdminEngine()
         )
         model.section = section
+        model.reloadMcpServers()
         return model
     }
 }
