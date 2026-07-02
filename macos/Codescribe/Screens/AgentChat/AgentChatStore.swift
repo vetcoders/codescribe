@@ -176,6 +176,18 @@ final class AgentChatStore: ObservableObject {
 
     var usesRealThreadSearch: Bool { threadsProvider != nil }
 
+    /// True while the current thread's latest assistant turn is in its pre-reply
+    /// "thinking…" state. Drives the header status pill (Idle → Thinking).
+    var isThinking: Bool {
+        currentThread?.messages.last { $0.role == .assistant }?.isThinking ?? false
+    }
+
+    /// True while the current thread's latest assistant turn is revealing tokens.
+    /// Drives the header status pill (Thinking → Streaming).
+    var isStreaming: Bool {
+        currentThread?.messages.last { $0.role == .assistant }?.isStreaming ?? false
+    }
+
     // MARK: Thread ops
 
     func newThread() {

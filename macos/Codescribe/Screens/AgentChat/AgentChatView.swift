@@ -32,6 +32,7 @@ struct AgentChatView: View {
 
 private struct ThreadDetail: View {
     @ObservedObject var store: AgentChatStore
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,15 +49,18 @@ private struct ThreadDetail: View {
         .background(CSColor.glassBase)
     }
 
-    // Header: Drawer/Agent toggle · Idle pill · inert glyphs
+    // Header: live status pill · Settings · thread menu (⋯ wired in the menu section)
     private var header: some View {
         HStack(spacing: 12) {
-            ModeToggle()
-            StaticStatusPill(text: "Idle", color: CSColor.oliveLight)
+            StaticStatusPill(text: status.label, color: status.color)
             Spacer()
             HStack(spacing: 14) {
-                Text("🎙").font(.system(size: 15))
-                Text("⚙").font(.system(size: 16))
+                Button(action: { openSettings() }) {
+                    Text("⚙").font(.system(size: 16))
+                }
+                .buttonStyle(.plain)
+                .help("Settings")
+
                 Text("⋯").font(.system(size: 16, weight: .bold)).tracking(1)
             }
             .foregroundStyle(CSColor.textFaint)
@@ -68,19 +72,23 @@ private struct ThreadDetail: View {
         }
     }
 
-    // Title bar: thread title · memory/turn meta · restore
+    // Live status: Idle (olive) → Thinking (amber) → Streaming (terracotta).
+    private var status: (label: String, color: Color) {
+        if store.isStreaming { return ("Streaming", CSColor.terracottaLight) }
+        if store.isThinking { return ("Thinking", CSColor.amber) }
+        return ("Idle", CSColor.oliveLight)
+    }
+
+    // Title bar: thread title · turn count
     private var titleBar: some View {
         HStack(spacing: 10) {
             Text(store.currentThread?.title ?? "—")
                 .font(CSFont.ui(14, .semibold))
                 .foregroundStyle(ChatPalette.nameActive)
-            Text("· thread memory on · \(turnCount) turns")
+            Text("· \(turnCount) turns")
                 .font(CSFont.mono(11, .medium))
                 .foregroundStyle(CSColor.textFaintAlt)
             Spacer()
-            Text("restore ↺")
-                .font(CSFont.mono(11, .medium))
-                .foregroundStyle(CSColor.textFaint)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -90,29 +98,6 @@ private struct ThreadDetail: View {
     }
 
     private var turnCount: Int { store.currentThread?.messages.count ?? 0 }
-}
-
-/// Segmented Drawer / Agent control. Agent is active (terracotta); Drawer inert.
-private struct ModeToggle: View {
-    var body: some View {
-        HStack(spacing: 2) {
-            segment("Drawer", active: false)
-            segment("Agent", active: true)
-        }
-        .padding(3)
-        .background(CSColor.surfaceRaised(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
-    }
-
-    private func segment(_ title: String, active: Bool) -> some View {
-        Text(title)
-            .font(CSFont.ui(12, .semibold))
-            .foregroundStyle(active ? CSColor.terracottaLight : CSColor.textMuted)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 6)
-            .background(active ? CSColor.terracotta.opacity(0.16) : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-    }
 }
 
 // MARK: - Preview (standalone — mock engine + seeded threads)

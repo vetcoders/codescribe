@@ -37,7 +37,7 @@ struct Composer: View {
                 .help("Attach an image (PNG, JPEG, GIF, WebP)")
 
                 TextField("", text: $store.draft, prompt:
-                    Text("Type a message, or hold Fn to speak…")
+                    Text("Type a message…")
                         .font(CSFont.ui(13.5))
                         .foregroundColor(CSColor.textFaint)
                 )
@@ -210,8 +210,6 @@ struct Composer: View {
 
     private let affordances = [
         "· streaming",
-        "· thread memory",
         "· attach file / image",
-        "· context: selection · clipboard · frontmost app",
     ]
 }
