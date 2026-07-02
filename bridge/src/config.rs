@@ -227,7 +227,9 @@ impl CodescribeConfig {
             .save_to_env(&key, &value)
             .map_err(|error| CsError::Config {
                 msg: error.to_string(),
-            })
+            })?;
+        reload_hotkey_runtime();
+        Ok(())
     }
 
     /// Toggle Notes Mode as one explicit two-key operation. Notes Mode means
@@ -259,7 +261,9 @@ impl CodescribeConfig {
             .save_to_env_many(&pairs)
             .map_err(|error| CsError::Config {
                 msg: error.to_string(),
-            })
+            })?;
+        reload_hotkey_runtime();
+        Ok(())
     }
 
     /// Absolute path to the config directory (`~/.codescribe`, or the
@@ -382,6 +386,17 @@ impl CodescribeConfig {
                 msg: error.to_string(),
             })
     }
+}
+
+/// Re-seed the live hotkey detector atomics after a settings write so mode
+/// binding / cadence changes take effect without an app restart. The CGEventTap
+/// callback reads these atomics per-event (app/os/hotkeys/platform.rs), so a
+/// fresh apply is a true live-reload. Idempotent and cheap (a few atomic stores);
+/// applied unconditionally because every settings mutation funnels through
+/// `update_config` / `update_config_many`, and re-applying unchanged values is a
+/// no-op.
+fn reload_hotkey_runtime() {
+    codescribe::os::hotkeys::apply_hotkey_config(&Config::load());
 }
 
 /// Non-empty env var as `Some(String)`, else `None`.

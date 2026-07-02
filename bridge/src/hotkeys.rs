@@ -182,6 +182,13 @@ impl CodescribeHotkeys {
         // Idempotent: install_thermal_probe guards its own observer singleton.
         codescribe::os::thermal::install_thermal_probe();
 
+        // Seed the hotkey detector atomics from persisted config so the
+        // CGEventTap honours the user's saved mode bindings / cadence from
+        // launch. The atomics otherwise hold only compile-time defaults, so
+        // non-default bindings would never take effect. update_config re-applies
+        // this on every later settings change for live-reload without restart.
+        codescribe::os::hotkeys::apply_hotkey_config(&codescribe_core::config::Config::load());
+
         let (tx, rx) = unbounded::<HotkeyEvent>();
         let handle = tokio::runtime::Handle::current();
         let controller_store = shared_controller();
