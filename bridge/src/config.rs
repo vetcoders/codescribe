@@ -263,25 +263,19 @@ impl CodescribeConfig {
     }
 
     /// Lightweight tray-only settings read. Unlike `load_settings`, this never
-    /// calls `Config::load()` and therefore never prompts Keychain just because
-    /// the user opened the menu.
+    /// populates the Keychain, so it never prompts just because the user opened
+    /// the menu. It DOES honor the full tier stack (defaults < settings.json <
+    /// .env < process-env) so env overrides such as `SHOW_DOCK_ICON=0` take
+    /// effect — reading `UserSettings` + defaults alone silently dropped them.
     pub fn tray_toggles(&self) -> CsTrayToggles {
-        let settings = UserSettings::load();
-        let defaults = Config::default();
+        let config = Config::load_without_keychain();
         CsTrayToggles {
-            show_dock_icon: settings.show_dock_icon.unwrap_or(defaults.show_dock_icon),
-            transcription_overlay_enabled: settings
-                .transcription_overlay_enabled
-                .unwrap_or(defaults.transcription_overlay_enabled),
+            show_dock_icon: config.show_dock_icon,
+            transcription_overlay_enabled: config.transcription_overlay_enabled,
             // Notes Mode is "on" only when BOTH flags are set (dictation → note
             // AND no paste). Reading just quick_notes_enabled could show the toggle
             // ON while dictation still pastes (save_only=false) — an edge desync.
-            notes_mode_enabled: settings
-                .quick_notes_enabled
-                .unwrap_or(defaults.quick_notes_enabled)
-                && settings
-                    .quick_notes_save_only
-                    .unwrap_or(defaults.quick_notes_save_only),
+            notes_mode_enabled: config.quick_notes_enabled && config.quick_notes_save_only,
         }
     }
 
