@@ -112,6 +112,15 @@ pub struct UserSettings {
     /// "phase1".."phase4" (or bare "1".."4") is treated as OFF by the core.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layered_transcription: Option<String>,
+
+    // ── Agent workspace ──
+    /// Workspace root directories the agent scans (`list_projects`) to resolve a
+    /// project name to an absolute path. Seeds `AGENT_WORKSPACE_ROOTS`
+    /// (colon-joined); `None`/absent means the built-in default (`~/Git`).
+    /// Env-managed (NOT promoted), same rationale as the F1 STT knobs: a manual
+    /// `~/.codescribe/.env` line keeps winning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_workspace_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -301,6 +310,10 @@ struct SystemV2 {
     qube_daemon_autostart: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     onboarding_mode: Option<String>,
+    // Agent workspace roots (colon-joined into AGENT_WORKSPACE_ROOTS). List on
+    // purpose — mirrors mode_bindings' Vec round-trip through the V2 schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_workspace_roots: Option<Vec<String>>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -441,6 +454,7 @@ impl UserSettings {
                 start_at_login: self.start_at_login,
                 qube_daemon_autostart: self.qube_daemon_autostart,
                 onboarding_mode: self.onboarding_mode.clone(),
+                agent_workspace_roots: self.agent_workspace_roots.clone(),
             }),
         }
     }
@@ -559,6 +573,10 @@ impl UserSettings {
             start_at_login: v2.system.as_ref().and_then(|s| s.start_at_login),
             qube_daemon_autostart: v2.system.as_ref().and_then(|s| s.qube_daemon_autostart),
             onboarding_mode: v2.system.as_ref().and_then(|s| s.onboarding_mode.clone()),
+            agent_workspace_roots: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.agent_workspace_roots.clone()),
             agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
             buffer_delay_ms: v2
                 .speech
@@ -840,6 +858,17 @@ impl UserSettings {
             "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
                 self.layered_transcription = Some(value.to_owned())
             }
+            "AGENT_WORKSPACE_ROOTS" => {
+                // Colon-separated on the wire (PATH-style); empty → None so the
+                // core falls back to the built-in default (`~/Git`).
+                let roots: Vec<String> = value
+                    .split(':')
+                    .map(str::trim)
+                    .filter(|segment| !segment.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                self.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
+            }
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;
@@ -1068,6 +1097,53 @@ mod tests {
         let reloaded = UserSettings::load();
         assert_eq!(reloaded.stt_engine.as_deref(), Some("whisper"));
         assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_agent_workspace_roots_survive_v2_system_roundtrip() {
+        // Workspace roots must round-trip through the V2 `system` section (Vec,
+        // like mode_bindings) or save→load silently drops the AGENT_WORKSPACE_ROOTS
+        // seed the list_projects tool depends on.
+        let _tmp = setup_isolated_data_dir();
+        let settings = UserSettings {
+            agent_workspace_roots: Some(vec!["~/Git".to_string(), "~/dev".to_string()]),
+            ..Default::default()
+        };
+        settings.save().expect("save settings");
+
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.agent_workspace_roots.as_deref(),
+            Some(["~/Git".to_string(), "~/dev".to_string()].as_slice())
+        );
+
+        // Land under the V2 `system` section (not a stray top-level key).
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read persisted settings"))
+                .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("system")
+                .and_then(|v| v.get("agent_workspace_roots"))
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
+
+        // set_string parses the colon-joined wire form; empty clears back to None.
+        let mut mutated = loaded;
+        mutated.set_string("AGENT_WORKSPACE_ROOTS", "~/code : ~/work");
+        let reloaded = UserSettings::load();
+        assert_eq!(
+            reloaded.agent_workspace_roots.as_deref(),
+            Some(["~/code".to_string(), "~/work".to_string()].as_slice())
+        );
+
+        let mut cleared = reloaded;
+        cleared.set_string("AGENT_WORKSPACE_ROOTS", "");
+        assert_eq!(cleared.agent_workspace_roots, None);
     }
 
     #[test]

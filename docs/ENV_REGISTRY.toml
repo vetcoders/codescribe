@@ -1026,6 +1026,13 @@ reload = "restart"
 category = "assistive"
 description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."
 
+[vars.AGENT_WORKSPACE_ROOTS]
+default = "~/Git"
+type = "string"
+reload = "restart"
+category = "assistive"
+description = "Colon-separated workspace root directories the agent's list_projects tool scans (one level deep) to resolve a project name to an absolute path. Defaults to ~/Git."
+
 [vars.ASSISTIVE_CONTEXT_PROMPT_MAX_CHARS]
 default = "5000"
 type = "usize"

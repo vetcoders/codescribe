@@ -604,6 +604,16 @@ impl Config {
         {
             Self::safe_set_env("CODESCRIBE_LAYERED_TRANSCRIPTION", v);
         }
+
+        // ── Agent workspace roots ──
+        // Colon-joined (PATH-style); the `list_projects` tool reads and splits it.
+        // Explicit process env / .env wins; settings.json only seeds when absent.
+        if std::env::var("AGENT_WORKSPACE_ROOTS").is_err()
+            && let Some(ref roots) = settings.agent_workspace_roots
+            && !roots.is_empty()
+        {
+            Self::safe_set_env("AGENT_WORKSPACE_ROOTS", &roots.join(":"));
+        }
     }
 
     /// Save a configuration value, routing to the appropriate tier:

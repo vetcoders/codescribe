@@ -98,6 +98,12 @@ pub struct CsSettings {
     /// `"phase1"` | `"off"` (anything non-phase means OFF). Written back via
     /// `update_config` with the same key (promoted → settings.json).
     pub layered_transcription: Option<String>,
+    /// Workspace root directories the agent scans (`list_projects` tool) to
+    /// resolve project names to paths (`AGENT_WORKSPACE_ROOTS`, colon-joined on
+    /// the wire). Effective value: never empty here — defaults to `["~/Git"]` so
+    /// the Settings UI always shows the root the tool will actually scan. Written
+    /// back via `update_config` with the same key (env-managed, NOT promoted).
+    pub agent_workspace_roots: Vec<String>,
     pub buffer_delay_ms: Option<u64>,
     pub typing_cps: Option<f32>,
     pub emit_words_max: Option<u64>,
@@ -231,6 +237,7 @@ impl CodescribeConfig {
             formatting_level: env_string("FORMATTING_LEVEL"),
             whisper_model: env_string("WHISPER_MODEL"),
             layered_transcription: env_string("CODESCRIBE_LAYERED_TRANSCRIPTION"),
+            agent_workspace_roots: env_list("AGENT_WORKSPACE_ROOTS", DEFAULT_AGENT_WORKSPACE_ROOT),
             buffer_delay_ms: env_parse("CODESCRIBE_BUFFER_DELAY_MS"),
             typing_cps: env_parse("CODESCRIBE_TYPING_CPS"),
             emit_words_max: env_parse("CODESCRIBE_EMIT_WORDS_MAX"),
@@ -491,6 +498,31 @@ impl CodescribeConfig {
 /// no-op.
 fn reload_hotkey_runtime() {
     codescribe::os::hotkeys::apply_hotkey_config(&Config::load());
+}
+
+/// Built-in default workspace root when `AGENT_WORKSPACE_ROOTS` is unset. Kept in
+/// sync with the `list_projects` tool default (`app/agent/tools/workspace.rs`).
+const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/Git";
+
+/// Colon-separated env var into a trimmed, non-empty `Vec<String>`. Falls back to
+/// a single-element `[default]` when the var is unset/empty, so the Settings UI
+/// always renders the effective root the agent tool will scan.
+fn env_list(key: &str, default: &str) -> Vec<String> {
+    let roots: Vec<String> = std::env::var(key)
+        .ok()
+        .map(|value| {
+            value
+                .split(':')
+                .map(|segment| segment.trim().to_string())
+                .filter(|segment| !segment.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if roots.is_empty() {
+        vec![default.to_string()]
+    } else {
+        roots
+    }
 }
 
 /// Non-empty env var as `Some(String)`, else `None`.
