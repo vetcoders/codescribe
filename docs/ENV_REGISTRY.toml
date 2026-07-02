@@ -261,6 +261,13 @@ reload = "restart"
 category = "stt"
 description = "STT engine: auto (Apple on supported macOS, Candle fallback), candle, onnx, or apple"
 
+[vars.CODESCRIBE_LAYERED_TRANSCRIPTION]
+default = "off"
+type = "string"
+reload = "hot"
+category = "stt"
+description = "Layered transcription gate: off or phase1..phase4"
+
 [vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
 default = "1"
 type = "bool"
@@ -515,6 +522,13 @@ reload = "hot"
 category = "llm"
 description = "LLM endpoint for formatting mode (overrides LLM_ENDPOINT)"
 
+[vars.LLM_FORMATTING_PROVIDER]
+default = "openai-responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "LLM provider for formatting mode: openai-responses or anthropic-messages"
+
 [vars.LLM_FORMATTING_MODEL]
 default = ""
 type = "string"
@@ -542,6 +556,13 @@ type = "string"
 reload = "hot"
 category = "llm"
 description = "LLM endpoint for assistive mode (overrides LLM_ENDPOINT)"
+
+[vars.LLM_ASSISTIVE_PROVIDER]
+default = "openai-responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "LLM provider for assistive/agent mode: openai-responses or anthropic-messages"
 
 [vars.LLM_ANTHROPIC_ENDPOINT]
 default = "https://api.anthropic.com/v1/messages"
