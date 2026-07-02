@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // Rail sections. Creator · Keys · Prompts · Engine are interactive; Audio · Voice
@@ -505,6 +506,23 @@ final class SettingsViewModel: ObservableObject {
             if account == selectedProvider?.apiKeyAccount {
                 refreshAssistiveModels()
             }
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    func providerForKeyAccount(_ account: String) -> CsProviderOption? {
+        availableProviders.first { $0.apiKeyAccount == account && $0.id == "openai-responses" }
+    }
+
+    func startAccountLogin(providerId: String) {
+        guard let engine else { return }
+        do {
+            let result = try engine.startAccountLogin(providerId: providerId)
+            if let authUrl = result.authUrl, let url = URL(string: authUrl) {
+                NSWorkspace.shared.open(url)
+            }
+            providers = engine.availableProviders()
         } catch {
             lastError = String(describing: error)
         }

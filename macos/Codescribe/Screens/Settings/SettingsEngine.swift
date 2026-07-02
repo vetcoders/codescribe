@@ -40,6 +40,7 @@ protocol SettingsEngine {
     // Assistive/agent-lane providers and live model discovery
     func availableProviders() -> [CsProviderOption]
     func discoverModels(providerId: String) -> CsModelDiscovery
+    func startAccountLogin(providerId: String) throws -> CsAccountLoginResult
 
     // Editable BASE prompts
     func getFormattingPrompt() -> String
@@ -82,6 +83,9 @@ final class RealSettingsEngine: SettingsEngine {
     func availableProviders() -> [CsProviderOption] { config.availableProviders() }
     func discoverModels(providerId: String) -> CsModelDiscovery {
         config.discoverModels(providerId: providerId)
+    }
+    func startAccountLogin(providerId: String) throws -> CsAccountLoginResult {
+        try config.startAccountLogin(providerId: providerId)
     }
 
     func getFormattingPrompt() -> String { config.getFormattingPrompt() }
@@ -131,6 +135,16 @@ struct MockSettingsEngine: SettingsEngine {
     func availableProviders() -> [CsProviderOption] { CsProviderOption.sampleProviders }
     func discoverModels(providerId: String) -> CsModelDiscovery {
         CsModelDiscovery.sample(for: providerId)
+    }
+    func startAccountLogin(providerId: String) throws -> CsAccountLoginResult {
+        CsAccountLoginResult(
+            providerId: providerId,
+            status: "blocked",
+            message: "awaiting app registration",
+            authUrl: nil,
+            signedIn: false,
+            clientIdConfigured: false
+        )
     }
 
     func getFormattingPrompt() -> String { CsSettings.samplePrompt }
@@ -261,6 +275,9 @@ extension CsProviderOption {
             displayName: "OpenAI (Responses)",
             apiKeyAccount: "LLM_ASSISTIVE_API_KEY",
             apiKeySet: true,
+            accountSignedIn: false,
+            accountLoginEnabled: false,
+            accountStatusMessage: "awaiting app registration",
             models: []
         ),
         CsProviderOption(
@@ -268,6 +285,9 @@ extension CsProviderOption {
             displayName: "Anthropic (Messages)",
             apiKeyAccount: "LLM_ANTHROPIC_API_KEY",
             apiKeySet: false,
+            accountSignedIn: false,
+            accountLoginEnabled: false,
+            accountStatusMessage: "provider account login unavailable",
             models: []
         ),
     ]

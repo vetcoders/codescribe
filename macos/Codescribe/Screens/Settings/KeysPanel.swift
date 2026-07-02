@@ -36,8 +36,10 @@ struct KeysPanel: View {
                         account: account,
                         label: SettingsViewModel.keyLabel(for: account),
                         isSet: model.keyStatus.isSet(account: account),
+                        accountProvider: model.providerForKeyAccount(account),
                         onSave: { model.saveKey(account: account, secret: $0) },
-                        onClear: { model.clearKey(account: account) }
+                        onClear: { model.clearKey(account: account) },
+                        onStartAccountLogin: { model.startAccountLogin(providerId: $0) }
                     )
                 }
             }
@@ -210,8 +212,10 @@ private struct KeyRow: View {
     let account: String
     let label: String
     let isSet: Bool
+    let accountProvider: CsProviderOption?
     let onSave: (String) -> Void
     let onClear: () -> Void
+    let onStartAccountLogin: (String) -> Void
 
     @State private var draft: String = ""
 
@@ -287,6 +291,13 @@ private struct KeyRow: View {
                 .disabled(!isSet)
                 .help("Remove this key from the Keychain")
             }
+
+            if let accountProvider {
+                AccountLoginRow(
+                    provider: accountProvider,
+                    onStart: { onStartAccountLogin(accountProvider.id) }
+                )
+            }
         }
         .padding(.horizontal, 15)
         .padding(.vertical, 13)
@@ -304,6 +315,60 @@ private struct KeyRow: View {
         guard !draft.isEmpty else { return }
         onSave(draft)
         draft = ""
+    }
+}
+
+private struct AccountLoginRow: View {
+    let provider: CsProviderOption
+    let onStart: () -> Void
+
+    private var signedIn: Bool { provider.accountSignedIn }
+    private var accent: Color { signedIn ? CSColor.olive : CSColor.textFaint }
+    private var statusText: String {
+        signedIn ? "signed in" : "not signed in"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(accent.opacity(0.85))
+                .frame(width: 7, height: 7)
+            Text("ChatGPT account")
+                .font(CSFont.ui(12.5, .semibold))
+                .foregroundStyle(CSColor.textBody)
+            Text(statusText)
+                .font(CSFont.mono(10, .semibold))
+                .foregroundStyle(accent)
+            if !provider.accountStatusMessage.isEmpty, provider.accountStatusMessage != statusText {
+                Text(provider.accountStatusMessage)
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Button(action: onStart) {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Sign in with ChatGPT")
+                        .font(CSFont.ui(12, .semibold))
+                }
+                .foregroundStyle(provider.accountLoginEnabled ? CSColor.oliveLight : CSColor.textFaint)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .fill(CSColor.surfaceRaised(0.03))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!provider.accountLoginEnabled)
+            .help(provider.accountStatusMessage)
+        }
     }
 }
 

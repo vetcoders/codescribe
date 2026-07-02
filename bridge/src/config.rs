@@ -9,12 +9,14 @@
 
 use std::fs;
 use std::str::FromStr;
+use std::sync::{Mutex, OnceLock};
 
 use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
 use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting_prompt_path};
 use codescribe_core::config::{
     Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
 };
+use codescribe_core::llm::account_auth;
 use codescribe_core::llm::model_discovery::{
     ModelDiscoveryStatus, discover_models as discover_provider_models,
 };
@@ -161,9 +163,30 @@ pub struct CsProviderOption {
     pub api_key_account: String,
     /// True when that key is present (mirrors `CsKeyStatus`, keyed per provider).
     pub api_key_set: bool,
+    /// True when provider-account tokens are stored for this provider.
+    pub account_signed_in: bool,
+    /// True when the account-login flow can start. For OpenAI this requires
+    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`; until then Settings renders the
+    /// disabled "Sign in with ChatGPT" affordance.
+    pub account_login_enabled: bool,
+    /// Human-readable account status ("signed in", "not signed in", or
+    /// "awaiting app registration"). Never contains secrets.
+    pub account_status_message: String,
     /// Always empty for live Settings; retained for bridge compatibility with
     /// older Swift bindings and preview seed objects.
     pub models: Vec<CsModelOption>,
+}
+
+/// Result of starting the provider-account login flow. `auth_url` is present
+/// when the local callback server is listening and the UI should open a browser.
+#[derive(uniffi::Record)]
+pub struct CsAccountLoginResult {
+    pub provider_id: String,
+    pub status: String,
+    pub message: String,
+    pub auth_url: Option<String>,
+    pub signed_in: bool,
+    pub client_id_configured: bool,
 }
 
 /// One config key/value pair for `update_config_many` batch writes. `key` is a
@@ -359,15 +382,57 @@ impl CodescribeConfig {
             .iter()
             .map(|kind| {
                 let account = kind.api_key_env_key().to_string();
+                let account_status = account_auth::account_status(*kind);
                 CsProviderOption {
                     id: kind.as_str().to_string(),
                     display_name: kind.display_name().to_string(),
                     api_key_set: key_present(&account),
                     api_key_account: account,
+                    account_signed_in: account_status.signed_in,
+                    account_login_enabled: account_status.client_id_configured,
+                    account_status_message: account_status.message,
                     models: Vec::new(),
                 }
             })
             .collect()
+    }
+
+    /// Start provider-account login for the selected provider. Today this is
+    /// only supported for OpenAI Responses and is gated by
+    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`; absent client id returns a config
+    /// error whose message contains "awaiting app registration".
+    pub fn start_account_login(
+        &self,
+        provider_id: String,
+    ) -> Result<CsAccountLoginResult, CsError> {
+        let provider = ProviderKind::from_str(&provider_id).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        let client_id =
+            account_auth::client_id_for_provider(provider).map_err(account_auth_to_cs)?;
+        let mut opts = account_auth::ServerOptions::new(client_id);
+        opts.issuer = account_auth::issuer_from_env();
+
+        let login = account_auth_runtime()
+            .block_on(account_auth::run_login_server(opts))
+            .map_err(account_auth_to_cs)?;
+        let auth_url = login.auth_url.clone();
+        let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
+            msg: "account login state lock poisoned".to_string(),
+        })?;
+        if let Some(previous) = guard.take() {
+            previous.cancel();
+        }
+        *guard = Some(login);
+
+        Ok(CsAccountLoginResult {
+            provider_id: provider.as_str().to_string(),
+            status: "started".to_string(),
+            message: "open the browser to finish sign-in".to_string(),
+            auth_url: Some(auth_url),
+            signed_in: false,
+            client_id_configured: true,
+        })
     }
 
     /// Discover model options from the selected provider using the live provider
@@ -601,6 +666,28 @@ fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
 /// True when the account env var is present and non-empty.
 fn key_present(account: &str) -> bool {
     env_string(account).is_some()
+}
+
+fn account_auth_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("codescribe-account-auth")
+            .build()
+            .expect("account auth runtime should initialize")
+    })
+}
+
+fn active_account_login() -> &'static Mutex<Option<account_auth::LoginServer>> {
+    static ACTIVE: OnceLock<Mutex<Option<account_auth::LoginServer>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(None))
+}
+
+fn account_auth_to_cs(error: account_auth::AccountAuthError) -> CsError {
+    CsError::Config {
+        msg: error.to_string(),
+    }
 }
 
 /// Reject unknown Keychain accounts before touching the Keychain.
