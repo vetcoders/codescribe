@@ -8,6 +8,7 @@
 //! Layout (W3 cut #0 — split for conflict-free parallel work):
 //!   - `agent`     — CodescribeAgent + CsAgentListener (streaming chat)        [live]
 //!   - `agent_status` — CodescribeAgentStatus (read-only readiness + MCP status) [W-C1]
+//!   - `mcp_admin` — CodescribeMcpAdmin (add/update/remove/test MCP servers)     [W-C4]
 //!   - `config`    — CodescribeConfig (settings/prompts/keychain/onboarding)   [W3 #1]
 //!   - `recording` — CodescribeDictation + CsTranscriptionListener (STT)       [W3 #3]
 //!   - `threads`   — CodescribeThreads (thread persistence + history)          [W3 #5]
@@ -21,6 +22,7 @@ mod agent;
 mod agent_status;
 mod config;
 mod hotkeys;
+mod mcp_admin;
 mod notes;
 mod recording;
 mod threads;
