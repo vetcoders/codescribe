@@ -20,9 +20,15 @@ protocol AgentChatEngine: AnyObject {
     func isAvailable() -> Bool
     /// Streams a real assistant reply. Callbacks fire on the main actor as tokens
     /// arrive; returns the final assembled text.
+    ///
+    /// `attachmentPaths` are absolute filesystem paths to images the composer
+    /// attached (empty for a text-only turn). Kept as plain paths — not bridge
+    /// types — so the view-model + #Preview stay standalone; the real adapter
+    /// maps them to the bridge `CsAttachment` at the edge.
     func streamReply(
         _ text: String,
         threadId: String,
+        attachmentPaths: [String],
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
         onTool: @escaping @MainActor (_ name: String, _ isError: Bool) -> Void
@@ -60,6 +66,15 @@ struct ChatMessage: Identifiable {
     var isStreaming: Bool = false     // word-reveal in progress (shows caret)
 }
 
+/// An image the user staged in the composer but has not sent yet. Referenced by
+/// file URL (NSOpenPanel / clipboard-saved temp file); the send path forwards the
+/// path to the bridge, which loads + validates the bytes.
+struct PendingAttachment: Identifiable, Hashable {
+    let id = UUID()
+    let url: URL
+    var name: String { url.lastPathComponent }
+}
+
 struct ChatThread: Identifiable {
     let id = UUID()
     var title: String
@@ -93,6 +108,10 @@ final class AgentChatStore: ObservableObject {
     @Published var threads: [ChatThread]
     @Published var selectedThreadID: UUID?
     @Published var draft: String = ""
+
+    /// Images staged in the composer for the next message. Cleared when the
+    /// message is dispatched.
+    @Published var pendingAttachments: [PendingAttachment] = []
 
     /// Injected by W2-01. `nil` until then; `send` degrades gracefully.
     var engine: AgentChatEngine?
@@ -214,14 +233,37 @@ final class AgentChatStore: ObservableObject {
         return id
     }
 
+    // MARK: Attachments (composer staging)
+
+    /// Stage image files chosen in the composer, de-duplicating by URL.
+    func addAttachments(_ urls: [URL]) {
+        for url in urls where !pendingAttachments.contains(where: { $0.url == url }) {
+            pendingAttachments.append(PendingAttachment(url: url))
+        }
+    }
+
+    /// Remove a staged attachment before it is sent.
+    func removeAttachment(_ id: UUID) {
+        pendingAttachments.removeAll { $0.id == id }
+    }
+
+    /// True when there is something to send: text, at least one staged image, or
+    /// both. Drives the send button's enabled state.
+    var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespaces).isEmpty || !pendingAttachments.isEmpty
+    }
+
     // MARK: Send (real single-shot FFI round-trip)
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let threadID = selectedThreadID else { return }
+        let attachmentPaths = pendingAttachments.map { $0.url.path }
+        guard (!text.isEmpty || !attachmentPaths.isEmpty), let threadID = selectedThreadID else { return }
         draft = ""
+        pendingAttachments = []
 
-        append(ChatMessage(role: .you, timestamp: now(), text: text), to: threadID)
+        let bubble = text.isEmpty ? attachmentSummary(attachmentPaths) : text
+        append(ChatMessage(role: .you, timestamp: now(), text: bubble), to: threadID)
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         let assistantID = assistant.id
         append(assistant, to: threadID)
@@ -246,6 +288,7 @@ final class AgentChatStore: ObservableObject {
                 _ = try await engine.streamReply(
                     text,
                     threadId: backendId,
+                    attachmentPaths: attachmentPaths,
                     onDelta: { [weak self] delta in
                         self?.update(assistantID, in: threadID) {
                             $0.isThinking = false
@@ -361,6 +404,16 @@ final class AgentChatStore: ObservableObject {
         }
     }
 
+    /// Placeholder bubble text for an image-only turn (no typed message).
+    private func attachmentSummary(_ paths: [String]) -> String {
+        let names = paths.map { ($0 as NSString).lastPathComponent }
+        switch names.count {
+        case 0: return ""
+        case 1: return "🖼 \(names[0])"
+        default: return "🖼 \(names.count) images"
+        }
+    }
+
     private func now() -> String { Self.timeFmt.string(from: Date()) }
     private static let timeFmt: DateFormatter = {
         let f = DateFormatter()
@@ -459,11 +512,13 @@ final class MockChatEngine: AgentChatEngine {
     func streamReply(
         _ text: String,
         threadId: String,
+        attachmentPaths: [String],
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
         onTool: @escaping @MainActor (_ name: String, _ isError: Bool) -> Void
     ) async throws -> String {
-        let reply = "On it — \(text.lowercased()). I'd start with a minimal patch and a regression test."
+        let seen = attachmentPaths.isEmpty ? "" : " (saw \(attachmentPaths.count) image\(attachmentPaths.count == 1 ? "" : "s"))"
+        let reply = "On it — \(text.lowercased())\(seen). I'd start with a minimal patch and a regression test."
         var assembled = ""
         for word in reply.split(separator: " ", omittingEmptySubsequences: false) {
             try? await Task.sleep(nanoseconds: 60_000_000)

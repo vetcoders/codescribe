@@ -11,12 +11,24 @@ final class RealChatEngine: AgentChatEngine {
     func streamReply(
         _ text: String,
         threadId: String,
+        attachmentPaths: [String],
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
         onTool: @escaping @MainActor (_ name: String, _ isError: Bool) -> Void
     ) async throws -> String {
         let listener = StreamListener(onDelta: onDelta, onReasoning: onReasoning, onTool: onTool)
-        return try await agent.streamReply(text: text, threadId: threadId, listener: listener)
+        // Text-only path stays byte-identical to before; only route through the
+        // vision method when the composer actually staged an image.
+        if attachmentPaths.isEmpty {
+            return try await agent.streamReply(text: text, threadId: threadId, listener: listener)
+        }
+        let attachments = attachmentPaths.map { CsAttachment(path: $0) }
+        return try await agent.streamReplyWithAttachments(
+            text: text,
+            threadId: threadId,
+            attachments: attachments,
+            listener: listener
+        )
     }
 }
 

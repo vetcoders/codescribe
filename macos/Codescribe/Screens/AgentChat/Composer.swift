@@ -1,19 +1,30 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// Bottom composer: inert 📎 attach, the message field, the ripple mic
-/// (shares the dictation core later), and the terracotta send ↑ button.
-/// Below: the affordance row mirroring the mock's capability hints.
+/// Bottom composer: the 📎 attach button (image picker), staged-attachment chips,
+/// the message field, the ripple mic (shares the dictation core later), and the
+/// terracotta send ↑ button. Below: the affordance row mirroring the mock's
+/// capability hints.
 struct Composer: View {
     @ObservedObject var store: AgentChatStore
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
+            if !store.pendingAttachments.isEmpty {
+                attachmentChips
+            }
+
             HStack(spacing: 10) {
-                // Attach (inert this pass — no attachment surface in core)
-                Text("📎")
-                    .font(.system(size: 15))
-                    .foregroundStyle(CSColor.textFaint)
+                // Attach images (NSOpenPanel → staged chips → vision FFI on send).
+                Button(action: pickAttachments) {
+                    Text("📎")
+                        .font(.system(size: 15))
+                        .foregroundStyle(store.pendingAttachments.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+                }
+                .buttonStyle(.plain)
+                .help("Attach an image (PNG, JPEG, GIF, WebP)")
 
                 TextField("", text: $store.draft, prompt:
                     Text("Type a message, or hold Fn to speak…")
@@ -37,7 +48,7 @@ struct Composer: View {
                         .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(store.draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(!store.canSend)
             }
             .padding(.leading, 13)
             .padding(.trailing, 11)
@@ -62,6 +73,62 @@ struct Composer: View {
         .padding(.vertical, 14)
         .overlay(alignment: .top) {
             Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+        }
+    }
+
+    // MARK: Attachment chips
+
+    private var attachmentChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(store.pendingAttachments) { attachment in
+                    HStack(spacing: 6) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 11))
+                            .foregroundStyle(CSColor.terracottaLight)
+                        Text(attachment.name)
+                            .font(CSFont.mono(10.5, .medium))
+                            .foregroundStyle(CSColor.textBodyAlt)
+                            .lineLimit(1)
+                            .frame(maxWidth: 160)
+                        Button(action: { store.removeAttachment(attachment.id) }) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(CSColor.textFaint)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove attachment")
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(CSColor.surfaceRaised(0.05))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+                            .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .frame(maxHeight: 30)
+    }
+
+    // MARK: Image picker
+
+    private func pickAttachments() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = "Attach"
+        panel.message = "Attach images to send to the agent"
+        // Restrict to the vision-supported image types the bridge actually loads.
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .webP, .bmp, .tiff]
+        panel.begin { response in
+            guard response == .OK else { return }
+            let urls = panel.urls
+            Task { @MainActor in store.addAttachments(urls) }
         }
     }
 
