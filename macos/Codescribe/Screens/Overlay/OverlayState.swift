@@ -129,6 +129,13 @@ final class OverlayState: ObservableObject {
     private var finalized = false
     private var toastTask: Task<Void, Never>?
     private var mockRevealTask: Task<Void, Never>?
+    /// Belt-and-suspenders guard against an orphaned optimistic "starting" overlay.
+    /// The Rust bridge now guarantees a terminal event for every preparing it shows
+    /// (`compensate_orphaned_preparing`); this watchdog is the second layer: if no
+    /// started/activity/stopped/finish arrives within `warmupWatchdogNanos`, the
+    /// overlay dismisses itself instead of hanging on "starting" forever.
+    private var warmupWatchdogTask: Task<Void, Never>?
+    private static let warmupWatchdogNanos: UInt64 = 4_000_000_000
 
     init() {}
 
@@ -266,6 +273,7 @@ final class OverlayState: ObservableObject {
     }
 
     func close() {
+        cancelWarmupWatchdog()
         mockRevealTask?.cancel()
         toastTask?.cancel()
         if recording, let engine {
@@ -295,9 +303,11 @@ final class OverlayState: ObservableObject {
         }
         recording = true
         onRecordingPreparing?()
+        armWarmupWatchdog()
     }
 
     func handleRecordingStarted() {
+        cancelWarmupWatchdog()
         finalized = false
         mode = .listening
         warmingUp = false
@@ -315,8 +325,46 @@ final class OverlayState: ObservableObject {
     }
 
     func finishControllerRecording() {
+        cancelWarmupWatchdog()
         recording = false
         finalizeTranscript()
+    }
+
+    // MARK: Warmup watchdog (orphaned "starting" overlay recovery)
+
+    /// Arm (or re-arm) the warmup watchdog. Called every time an optimistic
+    /// "preparing" overlay is shown; a re-arm cancels any prior pending fire so
+    /// rapid repeated preparing events collapse to a single 4s window.
+    private func armWarmupWatchdog() {
+        warmupWatchdogTask?.cancel()
+        warmupWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: OverlayState.warmupWatchdogNanos)
+            guard !Task.isCancelled else { return }
+            self?.fireWarmupWatchdog()
+        }
+    }
+
+    /// Cancel the pending watchdog. Called from every path that proves the session
+    /// progressed (started / streaming activity / vad) or terminated (stop /
+    /// finalize / close), so a genuine session never trips the fallback dismiss.
+    private func cancelWarmupWatchdog() {
+        warmupWatchdogTask?.cancel()
+        warmupWatchdogTask = nil
+    }
+
+    /// Fallback dismiss for a stuck optimistic overlay. Only fires if we are STILL
+    /// in the "starting" state (`warmingUp`, not finalized) — if any real event
+    /// already progressed us, `warmingUp` is false and this is a no-op.
+    private func fireWarmupWatchdog() {
+        warmupWatchdogTask = nil
+        guard warmingUp, !finalized else { return }
+        recording = false
+        warmingUp = false
+        audioReady = false
+        vadActive = false
+        resetTranscript()
+        mode = .listening
+        onClose?()
     }
 
     // MARK: Listener-driven mutations (called on the main actor by DictationListener)
@@ -438,6 +486,7 @@ final class OverlayState: ObservableObject {
     /// delivery/Copy); fall back to the id-ordered committed assembly only if that
     /// event has not arrived.
     private func finalizeTranscript() {
+        cancelWarmupWatchdog()
         warmingUp = false
         vadActive = false
         audioReady = false
@@ -465,6 +514,7 @@ final class OverlayState: ObservableObject {
     }
 
     private func markTranscriptActivity() {
+        cancelWarmupWatchdog()
         warmingUp = false
         audioReady = true
         if recording {
@@ -535,6 +585,7 @@ final class OverlayState: ObservableObject {
         guard !finalized else { return }
         vadActive = active
         if active {
+            cancelWarmupWatchdog()
             warmingUp = false
             audioReady = true
         }
