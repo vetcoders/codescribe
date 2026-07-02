@@ -200,6 +200,56 @@ private struct WrapLayout: Layout {
 
 // MARK: - Tool activity
 
+/// One tool-activity line. A successful line is static (`verb detail`). A failed
+/// line that carries a reason becomes a compact disclosure: the row is tappable
+/// and reveals the failure cause (mono, terracotta, up to 3 wrapped lines),
+/// collapsed by default so the list stays scannable.
+private struct ToolLineRow: View {
+    let line: ToolLine
+    @State private var showReason = false
+
+    private var reason: String? {
+        guard let reason = line.reason, !reason.isEmpty else { return nil }
+        return reason
+    }
+
+    var body: some View {
+        let failed = reason != nil
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                if failed { showReason.toggle() }
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    (Text(line.verb).foregroundColor(failed ? CSColor.terracottaLight : CSColor.oliveLight)
+                        + Text(" \(line.detail)").foregroundColor(ChatPalette.toolBody))
+                        .font(CSFont.mono(11.5, .medium))
+                        .lineSpacing(4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if failed {
+                        Image(systemName: showReason ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(CSColor.terracottaLight.opacity(0.75))
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!failed)
+
+            if failed, showReason, let reason {
+                Text(reason)
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.terracottaLight)
+                    .lineLimit(3)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 10)
+            }
+        }
+    }
+}
+
 private struct ToolTurn: View {
     let message: ChatMessage
     @State private var expanded = true
@@ -211,13 +261,9 @@ private struct ToolTurn: View {
                 .foregroundStyle(CSColor.textFaintAlt)
 
             DisclosureGroup(isExpanded: $expanded) {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 3) {
                     ForEach(message.toolLines) { line in
-                        (Text(line.verb).foregroundColor(CSColor.oliveLight)
-                            + Text(" \(line.detail)").foregroundColor(ChatPalette.toolBody))
-                            .font(CSFont.mono(11.5, .medium))
-                            .lineSpacing(4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        ToolLineRow(line: line)
                     }
                 }
                 .padding(.horizontal, 13)

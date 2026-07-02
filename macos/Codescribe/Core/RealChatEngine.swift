@@ -22,7 +22,7 @@ final class RealChatEngine: AgentChatEngine {
         attachmentPaths: [String],
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
-        onTool: @escaping @MainActor (_ name: String, _ isError: Bool) -> Void
+        onTool: @escaping @MainActor (_ name: String, _ isError: Bool, _ reason: String) -> Void
     ) async throws -> String {
         let listener = StreamListener(onDelta: onDelta, onReasoning: onReasoning, onTool: onTool)
         // Text-only path stays byte-identical to before; only route through the
@@ -49,12 +49,12 @@ final class RealChatEngine: AgentChatEngine {
 final class StreamListener: CsAgentListener, @unchecked Sendable {
     private let onDelta: @MainActor (String) -> Void
     private let onReasoning: @MainActor (String) -> Void
-    private let onTool: @MainActor (String, Bool) -> Void
+    private let onTool: @MainActor (String, Bool, String) -> Void
 
     init(
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
-        onTool: @escaping @MainActor (String, Bool) -> Void
+        onTool: @escaping @MainActor (String, Bool, String) -> Void
     ) {
         self.onDelta = onDelta
         self.onReasoning = onReasoning
@@ -72,7 +72,10 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
         // Surfaced via onToolResult (completed) to avoid duplicate activity rows.
     }
     func onToolResult(name: String, id: String, summary: String, isError: Bool) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onTool(name, isError) } }
+        // `summary` already carries the tool's error reason on failure (see the
+        // Rust AgentUiEvent::ToolResult contract); forward it so the chat row can
+        // reveal the cause instead of a bare "failed".
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.onTool(name, isError, summary) } }
     }
     func onDone() {}
     func onError(message: String) {

@@ -39,7 +39,7 @@ protocol AgentChatEngine: AnyObject {
         attachmentPaths: [String],
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
-        onTool: @escaping @MainActor (_ name: String, _ isError: Bool) -> Void
+        onTool: @escaping @MainActor (_ name: String, _ isError: Bool, _ reason: String) -> Void
     ) async throws -> String
 }
 
@@ -53,8 +53,12 @@ enum ChatRole {
 
 struct ToolLine: Identifiable, Hashable {
     let id = UUID()
-    let verb: String     // "grep", "read" — rendered olive
+    let verb: String     // "grep", "read" — rendered olive; "failed" — terracotta
     let detail: String   // "events/bus.ts · ui/store.ts"
+    /// Failure reason for a `failed` line (from the tool's error output). `nil`
+    /// for successful lines and for reloaded/persisted turns, which do not carry
+    /// the reason. Drives the expandable disclosure in the tool-activity row.
+    var reason: String? = nil
 }
 
 struct ChatMessage: Identifiable {
@@ -375,8 +379,8 @@ final class AgentChatStore: ObservableObject {
                         }
                     },
                     onReasoning: { _ in },
-                    onTool: { [weak self] name, isError in
-                        self?.recordToolActivity(name: name, isError: isError,
+                    onTool: { [weak self] name, isError, reason in
+                        self?.recordToolActivity(name: name, isError: isError, reason: reason,
                                                  before: assistantID, in: threadID)
                     }
                 )
@@ -463,10 +467,14 @@ final class AgentChatStore: ObservableObject {
 
     /// Surface a completed tool call as a `.tool` activity turn placed immediately
     /// before the streaming assistant bubble (matches the mock's "What I checked").
-    private func recordToolActivity(name: String, isError: Bool, before assistantID: UUID, in threadID: UUID) {
+    private func recordToolActivity(name: String, isError: Bool, reason: String, before assistantID: UUID, in threadID: UUID) {
         guard let ti = threads.firstIndex(where: { $0.id == threadID }),
               let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }) else { return }
-        let line = ToolLine(verb: isError ? "failed" : "ran", detail: name)
+        let line = ToolLine(
+            verb: isError ? "failed" : "ran",
+            detail: name,
+            reason: (isError && !reason.isEmpty) ? reason : nil
+        )
         if ai > 0, threads[ti].messages[ai - 1].role == .tool {
             threads[ti].messages[ai - 1].toolLines.append(line)
             let n = threads[ti].messages[ai - 1].toolLines.count
@@ -580,7 +588,7 @@ final class MockChatEngine: AgentChatEngine {
         attachmentPaths: [String],
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
-        onTool: @escaping @MainActor (_ name: String, _ isError: Bool) -> Void
+        onTool: @escaping @MainActor (_ name: String, _ isError: Bool, _ reason: String) -> Void
     ) async throws -> String {
         let seen = attachmentPaths.isEmpty ? "" : " (saw \(attachmentPaths.count) image\(attachmentPaths.count == 1 ? "" : "s"))"
         let reply = "On it — \(text.lowercased())\(seen). I'd start with a minimal patch and a regression test."
