@@ -1,9 +1,11 @@
 import SwiftUI
 
-// Tray Menu (MenuBarExtra `.window` glass dropdown).
+// Tray Menu (glass dropdown panel).
 //
-// Reusable content view: App.swift hosts this inside
-// `MenuBarExtra(...) { TrayMenuView(viewModel:) }.menuBarExtraStyle(.window)`.
+// Reusable content view: App.swift hosts this inside an `NSPopover`
+// (`NSHostingController(rootView: TrayMenuView(viewModel:))`) anchored to a
+// manual `NSStatusItem` — deliberately not `MenuBarExtra`, to sidestep the
+// WindowServer status-item session-state issue seen on this bundle id.
 // 300pt wide, glass panel, status header bound to runtime, terracotta marking
 // ONLY the primary action ("Show Agent"), Notes / Diagnostics as nested
 // disclosure groups. Dictation toggle + quick config toggles are wired through

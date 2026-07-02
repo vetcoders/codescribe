@@ -3,9 +3,9 @@
 //! This is the non-UI half of the old `ui/onboarding/session` module: the
 //! filesystem/permission sentinel (`should_show_onboarding`) plus the marker
 //! migration and permission-invalidation helpers it transitively needs. The
-//! AppKit wizard window (`show_onboarding_wizard`) stays in `app/ui` and dies
-//! with the rest of the legacy UI; this logic lives here in `os` because its
-//! real dependency is the permission probe surface (`crate::os::permissions`).
+//! AppKit wizard window (`show_onboarding_wizard`) was removed with the rest of
+//! the legacy UI; this logic lives here in `os` because its real dependency is
+//! the permission probe surface (`crate::os::permissions`).
 
 use std::fs;
 use std::path::PathBuf;
@@ -47,13 +47,13 @@ const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 4] = [
 ];
 
 /// Leading non-permission wizard steps (`Welcome`, `Mode`) that precede the
-/// permission block in the onboarding flow. Mirrors `ui/onboarding/steps`'
-/// `STEP_FLOW`, whose saved progress index the wizard reads back on resume, so
-/// this offset MUST stay in lockstep with that array.
+/// permission block. This offset defines the resume-step layout persisted to
+/// the `onboarding_progress` marker; it must match whatever onboarding surface
+/// consumes that marker (none does today — the legacy wizard was excised).
 const WIZARD_STEPS_BEFORE_PERMISSIONS: usize = 2;
 
-/// Permission steps in wizard-flow order, immediately following the leading
-/// steps. Order mirrors the `WizardStep::Permission(..)` entries in `STEP_FLOW`.
+/// Permission steps in resume-flow order, immediately following the leading
+/// steps.
 const PERMISSION_STEP_ORDER: [PermissionKind; 5] = [
     PermissionKind::Microphone,
     PermissionKind::Accessibility,
@@ -62,9 +62,9 @@ const PERMISSION_STEP_ORDER: [PermissionKind; 5] = [
     PermissionKind::FullDiskAccess,
 ];
 
-/// Resolve a permission's index within the wizard's resume flow. Equivalent to
-/// the original `STEP_FLOW.position(WizardStep::Permission(kind))` lookup, but
-/// self-contained so this module no longer depends on `app/ui`.
+/// Resolve a permission's index within the resume flow (leading steps +
+/// permission offset). Self-contained so this module does not depend on the
+/// removed `app/ui` wizard.
 fn permission_step_index(kind: PermissionKind) -> Option<usize> {
     PERMISSION_STEP_ORDER
         .iter()

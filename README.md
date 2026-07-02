@@ -11,11 +11,11 @@
 
 Codescribe is a native macOS menu-bar application that captures audio through global hotkeys, shows live local
 transcription while you speak, and pastes or routes the final result into the focused application. The shipped product
-in this repo is a tray app with three explicit surfaces: onboarding, settings, and overlays.
+in this repo is a tray app whose SwiftUI front-end has two explicit surfaces: settings and overlays.
 
 Local Whisper is the low-latency path. Cloud STT is optional and currently used as a post-capture transcript backend,
 not as live cloud preview. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default,
-configured in Onboarding, Settings, or `~/.codescribe/.env`.
+configured in Settings or `~/.codescribe/.env`.
 
 ```mermaid
 flowchart TB
@@ -25,7 +25,6 @@ flowchart TB
     subgraph APP[Codescribe Runtime]
         direction LR
         TRAY[Tray + Hotkeys]
-        ONB[Onboarding]
         SET[Settings Window]
         OVL[Dictation Overlay]
         CHAT[Assistive Voice Overlay]
@@ -45,7 +44,6 @@ flowchart TB
         LCLI[qube-daemon]
     end
 
-    TRAY --> ONB
     TRAY --> SET
     TRAY --> OVL
     TRAY --> CHAT
@@ -73,7 +71,7 @@ Codescribe uses **OpenAI Responses API** (`/v1/responses`) by default for AI for
 
 ### Default Setup
 
-Put your OpenAI API key in Onboarding or Settings. Codescribe stores it in macOS Keychain and applies it to both AI modes:
+Put your OpenAI API key in Settings. Codescribe stores it in macOS Keychain and applies it to both AI modes:
 
 ```env
 # ~/.codescribe/.env
@@ -372,16 +370,17 @@ Model files required:
 ```text
 Codescribe/
 ├── core/                      # Portable pipeline, STT, config, quality
-├── app/                       # macOS app shell
+├── app/                       # Rust engine library (macOS)
+│   ├── agent/                 # Assistive agent + tools
 │   ├── controller/            # Recording/transcription orchestration
-│   ├── os/                    # Hotkeys, permissions, clipboard
-│   └── ui/
-│       ├── settings/          # Persistent settings window
-│       ├── onboarding/        # First-run flow
-│       ├── overlay/           # Dictation overlay
-│       ├── voice_chat/        # Assistive overlay
-│       └── tray/              # Menu bar UI
-├── bin/                       # CLI entry points
+│   ├── os/                    # Hotkeys, permissions, clipboard, thermal
+│   └── presentation/          # Overlay delta/typing emitter
+├── bridge/                    # UniFFI bridge (Rust <-> Swift)
+├── macos/Codescribe/          # SwiftUI front-end
+│   ├── Screens/               # Tray, Settings, Overlay, AgentChat
+│   ├── DesignSystem/          # Tokens, typography, components
+│   └── Bridge/                # Generated UniFFI Swift bindings
+├── bin/                       # CLI entry points (qube-report, qube-daemon)
 ├── tests/                     # Integration + E2E tests
 └── docs/                      # Product + technical docs
 ```
@@ -445,7 +444,7 @@ Grant permissions in System Settings > Privacy & Security when prompted.
 ## Current Focus
 
 - Keep the VAD auto-stop path honest and fully integrated before presenting it as the default hands-off mode.
-- Preserve the explicit split between onboarding, settings, dictation overlay, and assistive overlay.
+- Preserve the explicit split between settings, dictation overlay, and assistive overlay.
 - Ship the macOS distribution path cleanly: bundle, sign, and notarize the DMG story.
 
 See [`docs/PUBLIC_RELEASE_CHECKLIST.md`](docs/PUBLIC_RELEASE_CHECKLIST.md) for the public launch gate.
