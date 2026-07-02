@@ -4,6 +4,7 @@
 //! `CGEventTap` listener used by the legacy daemon and dispatches emitted
 //! `HotkeyEvent`s into the existing `RecordingController` state machine.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
@@ -74,8 +75,17 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
 fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTranscriptionListener>) {
     match payload {
         IpcEventPayload::StateChange { to, .. } => match to.as_str() {
-            "rec_hold" | "rec_toggle" | "conversation" => listener.on_recording_started(),
-            "idle" => listener.on_recording_stopped(),
+            "rec_hold" | "rec_toggle" | "conversation" => {
+                // A real state transition resolves any pending optimistic
+                // "preparing" overlay, so the post-dispatch compensator must not
+                // also fire a terminal stop for it.
+                PREPARING_PENDING.store(false, Ordering::Release);
+                listener.on_recording_started();
+            }
+            "idle" => {
+                PREPARING_PENDING.store(false, Ordering::Release);
+                listener.on_recording_stopped();
+            }
             _ => {}
         },
         IpcEventPayload::FinalTranscript { text } => listener.on_final_transcript_ready(text),
@@ -136,6 +146,21 @@ fn current_listener() -> Option<Arc<dyn CsTranscriptionListener>> {
         .map(Arc::clone)
 }
 
+/// True while an optimistic "preparing" overlay has been shown but no terminal
+/// event (`on_recording_started` / `on_recording_stopped`) has resolved it yet.
+///
+/// The optimistic overlay (`optimistically_show_overlay`) is driven by a DIRECT
+/// listener call, bypassing the controller's `StateChange` broadcast. The only
+/// mechanism that later dismisses it is that broadcast — but
+/// `set_state_with_broadcast` stays silent when the state does not change. Any
+/// dispatch that shows "preparing" and returns to Idle WITHOUT a state
+/// transition (quick hold-release cancel, start-failure reset, no-op re-check)
+/// therefore orphans the overlay forever. This flag lets the post-dispatch
+/// compensator emit exactly one terminal `on_recording_stopped` for those paths,
+/// while the broadcast forwarder clears it so a genuine start/stop never
+/// double-fires.
+static PREPARING_PENDING: AtomicBool = AtomicBool::new(false);
+
 async fn optimistically_show_overlay(event: &HotkeyEvent) {
     let starts_redesign_overlay = matches!(
         event,
@@ -155,7 +180,32 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
         return;
     }
     if let Some(listener) = current_listener() {
+        // Arm the compensator BEFORE the direct call so the terminal guarantee
+        // holds even if the dispatch that follows never transitions state.
+        PREPARING_PENDING.store(true, Ordering::Release);
         listener.on_recording_preparing();
+    }
+}
+
+/// Guarantee the terminal half of the "preparing" contract after a dispatch.
+///
+/// Run once after every `dispatch_hotkey_event` that may have shown an optimistic
+/// overlay. If a "preparing" is still pending AND the controller did not end up
+/// recording, the optimistic overlay was orphaned (no `StateChange` broadcast
+/// will ever dismiss it) — emit the compensating terminal stop. If the controller
+/// is recording (or finalising via `Busy`), the broadcast forwarder owns the
+/// transition and we leave the flag for it to clear. The `swap` makes the stop
+/// idempotent against a forwarder that already resolved the same "preparing".
+async fn compensate_orphaned_preparing(controller: &Arc<RecordingController>) {
+    if controller.current_state().await != State::Idle {
+        // Recording/finalising: the StateChange broadcast drives preparing→started
+        // and, later, →stopped. Nothing to compensate here.
+        return;
+    }
+    if PREPARING_PENDING.swap(false, Ordering::AcqRel)
+        && let Some(listener) = current_listener()
+    {
+        listener.on_recording_stopped();
     }
 }
 
@@ -207,7 +257,9 @@ impl CodescribeHotkeys {
                 spawn_handle.spawn(async move {
                     optimistically_show_overlay(&event).await;
                     let controller = ensure_controller(&controller_store, controller_handle);
-                    if let Err(error) = dispatch_hotkey_event(event, controller).await {
+                    let dispatch = dispatch_hotkey_event(event, Arc::clone(&controller)).await;
+                    compensate_orphaned_preparing(&controller).await;
+                    if let Err(error) = dispatch {
                         eprintln!("Hotkey event error: {error}");
                     }
                 });
@@ -253,11 +305,11 @@ impl CodescribeHotkeys {
         let event = HotkeyEvent::ToggleNormal;
         optimistically_show_overlay(&event).await;
         let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        dispatch_hotkey_event(event, controller)
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        let dispatch = dispatch_hotkey_event(event, Arc::clone(&controller)).await;
+        compensate_orphaned_preparing(&controller).await;
+        dispatch.map_err(|error| CsError::Recording {
+            msg: error.to_string(),
+        })
     }
 
     /// Stop the active legacy-controller recording flow, if one is live.
@@ -773,5 +825,210 @@ mod mode_binding_tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ===========================================================================
+// Orphaned optimistic-overlay compensation (CUT P0a)
+//
+// Contract under test: any dispatch that shows the optimistic "preparing"
+// overlay is guaranteed a terminal listener event. When the controller ends the
+// dispatch back at Idle WITHOUT a StateChange broadcast — the shape produced by
+// the quick hold-release cancel (`cancel_pending_hold_start`), the start-failure
+// reset (`reset_session_after_start_failure` → `set_state(Idle)` at old==Idle),
+// and the no-op re-check dispatch — `compensate_orphaned_preparing` emits exactly
+// one compensating `on_recording_stopped`. When a real transition occurred the
+// broadcast forwarder owns the terminal event and the compensator must NOT
+// double-fire.
+// ===========================================================================
+#[cfg(test)]
+mod preparing_compensation_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    // Serializes the process-global PREPARING_PENDING / shared_listener /
+    // shared_controller these tests mutate, so parallel runs don't interleave.
+    // Async-aware so the guard can be held across the `.await` points below.
+    static TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+
+    #[derive(Default)]
+    struct RecordingLifecycleListener {
+        preparing: AtomicUsize,
+        started: AtomicUsize,
+        stopped: AtomicUsize,
+    }
+
+    impl RecordingLifecycleListener {
+        fn preparing(&self) -> usize {
+            self.preparing.load(Ordering::SeqCst)
+        }
+        fn started(&self) -> usize {
+            self.started.load(Ordering::SeqCst)
+        }
+        fn stopped(&self) -> usize {
+            self.stopped.load(Ordering::SeqCst)
+        }
+    }
+
+    impl CsTranscriptionListener for RecordingLifecycleListener {
+        fn on_recording_preparing(&self) {
+            self.preparing.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_recording_started(&self) {
+            self.started.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_recording_stopped(&self) {
+            self.stopped.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_preview(&self, _text: String) {}
+        fn on_correction(&self, _text: String, _previous_text: String) {}
+        fn on_final(&self, _utterance_id: u64, _text: String) {}
+        fn on_replace_range(
+            &self,
+            _utterance_id: u64,
+            _start: u64,
+            _end: u64,
+            _text: String,
+            _source: crate::recording::CsLayerSource,
+        ) {
+        }
+        fn on_insert_annotation(
+            &self,
+            _utterance_id: u64,
+            _position: u64,
+            _text: String,
+            _kind: CsAnnotationKind,
+        ) {
+        }
+        fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
+        fn on_final_transcript_ready(&self, _text: String) {}
+        fn on_vad_active(&self, _active: bool) {}
+        fn on_no_speech(&self, _reason: String) {}
+        fn on_error(&self, _message: String) {}
+    }
+
+    /// Install a fresh capturing listener + an Idle controller into the shared
+    /// process stores and clear the pending flag. Returns both so the test can
+    /// assert on the listener and pass the controller to the compensator.
+    fn install() -> (Arc<RecordingLifecycleListener>, Arc<RecordingController>) {
+        PREPARING_PENDING.store(false, Ordering::SeqCst);
+        let listener = Arc::new(RecordingLifecycleListener::default());
+        *shared_listener().write().unwrap_or_else(|e| e.into_inner()) =
+            Some(Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>);
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        *shared_controller()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&controller));
+        (listener, controller)
+    }
+
+    fn teardown() {
+        *shared_listener().write().unwrap_or_else(|e| e.into_inner()) = None;
+        *shared_controller()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        PREPARING_PENDING.store(false, Ordering::SeqCst);
+    }
+
+    /// Paths 1 & 2 (quick hold-release cancel, start-failure reset): preparing was
+    /// shown, the controller ended the dispatch at Idle with no broadcast → the
+    /// compensator must emit exactly one terminal stop.
+    #[tokio::test]
+    async fn orphaned_preparing_at_idle_gets_a_compensating_stop() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, controller) = install();
+
+        // The optimistic overlay is shown for a start gesture at Idle.
+        optimistically_show_overlay(&HotkeyEvent::ToggleNormal).await;
+        assert_eq!(listener.preparing(), 1, "preparing overlay must be shown");
+        assert!(PREPARING_PENDING.load(Ordering::SeqCst), "flag armed");
+
+        // The dispatch left the controller at Idle without any StateChange
+        // (the shape of cancel_pending_hold_start / start-failure reset).
+        compensate_orphaned_preparing(&controller).await;
+
+        assert_eq!(
+            listener.stopped(),
+            1,
+            "orphaned preparing must receive one terminal stop"
+        );
+        assert!(!PREPARING_PENDING.load(Ordering::SeqCst), "flag cleared");
+        teardown();
+    }
+
+    /// The compensator is inert when no optimistic overlay was shown: an ordinary
+    /// stop dispatch (controller back at Idle, but flag never armed) must not have a
+    /// spurious extra stop synthesized on top of the broadcast one.
+    #[tokio::test]
+    async fn no_preparing_shown_means_no_compensating_stop() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, controller) = install();
+
+        compensate_orphaned_preparing(&controller).await;
+
+        assert_eq!(listener.preparing(), 0);
+        assert_eq!(
+            listener.stopped(),
+            0,
+            "no preparing was pending, so nothing to compensate"
+        );
+        teardown();
+    }
+
+    /// Idempotency: a second compensator pass (e.g. the FFI `start_recording` path
+    /// racing the hotkey spawn) must not emit a second stop for the same overlay.
+    #[tokio::test]
+    async fn compensation_is_idempotent_across_repeated_passes() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, controller) = install();
+
+        optimistically_show_overlay(&HotkeyEvent::ToggleNormal).await;
+        compensate_orphaned_preparing(&controller).await;
+        compensate_orphaned_preparing(&controller).await;
+
+        assert_eq!(
+            listener.stopped(),
+            1,
+            "the compensating stop must fire at most once per preparing"
+        );
+        teardown();
+    }
+
+    /// Path 3 (no-op dispatch) / genuine start: when a real transition's broadcast
+    /// already resolved the preparing (forwarder cleared the flag and emitted
+    /// started), the compensator must not double-fire a stop on top of it.
+    #[tokio::test]
+    async fn forwarder_resolved_preparing_is_not_double_stopped() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, controller) = install();
+
+        optimistically_show_overlay(&HotkeyEvent::ToggleNormal).await;
+        assert!(PREPARING_PENDING.load(Ordering::SeqCst));
+
+        // Simulate the broadcast forwarder observing a real Idle→rec_toggle
+        // transition: it emits started and clears the pending flag.
+        forward_event_to_listener(
+            IpcEventPayload::StateChange {
+                from: "idle".to_string(),
+                to: "rec_toggle".to_string(),
+            },
+            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
+        );
+        assert_eq!(listener.started(), 1, "forwarder emitted started");
+        assert!(
+            !PREPARING_PENDING.load(Ordering::SeqCst),
+            "forwarder cleared flag"
+        );
+
+        // A late compensator pass (controller now back at Idle) must stay silent —
+        // the started already resolved the overlay.
+        compensate_orphaned_preparing(&controller).await;
+        assert_eq!(
+            listener.stopped(),
+            0,
+            "a forwarder-resolved preparing must not be double-stopped"
+        );
+        teardown();
     }
 }
