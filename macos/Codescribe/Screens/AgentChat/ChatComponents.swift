@@ -89,6 +89,12 @@ struct MarkdownText: View {
             listRow(marker: "•", indent: indent, text: text, isLast: isLast)
         case let .ordered(indent, number, text):
             listRow(marker: "\(number).", indent: indent, text: text, isLast: isLast)
+        case let .task(indent, done, text):
+            taskRow(indent: indent, done: done, text: text, isLast: isLast)
+        case let .blockquote(text):
+            blockquoteView(text, isLast: isLast)
+        case let .table(header, rows):
+            tableView(header: header, rows: rows)
         case let .code(content):
             codeBlock(content, isLast: isLast)
         }
@@ -132,6 +138,91 @@ struct MarkdownText: View {
                        fontSize: size, isLast: isLast)
         }
         .padding(.leading, CGFloat(min(indent, 4)) * 16)
+    }
+
+    /// A `- [x]` / `- [ ]` checklist row: a filled/empty SF Symbol checkbox in
+    /// place of the literal brackets, olive when done, faint when open. Done
+    /// items read slightly dimmer so an open task stands out.
+    @ViewBuilder
+    private func taskRow(indent: Int, done: Bool, text: String, isLast: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: done ? "checkmark.square.fill" : "square")
+                .font(.system(size: size - 1))
+                .foregroundStyle(done ? CSColor.olive : CSColor.textFaint)
+                .frame(minWidth: 14, alignment: .trailing)
+            inlineText(text, baseFont: CSFont.ui(size),
+                       baseColor: done ? CSColor.textMutedAlt : bodyColor,
+                       fontSize: size, isLast: isLast)
+        }
+        .padding(.leading, CGFloat(min(indent, 4)) * 16)
+    }
+
+    /// A `>` blockquote (single- or multi-line; deeper `>>` nesting collapses to
+    /// one level). Terracotta hairline bar on the left, dimmed body text.
+    @ViewBuilder
+    private func blockquoteView(_ text: String, isLast: Bool) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(CSColor.terracotta.opacity(0.55))
+                .frame(width: 2.5)
+            inlineText(text, baseFont: CSFont.ui(size), baseColor: CSColor.textMutedAlt,
+                       fontSize: size, isLast: isLast)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// A GFM pipe table. Header row is mono + high-contrast over a faint fill;
+    /// hairline separators between rows; each cell renders inline markdown and
+    /// wraps rather than overflowing (columns share width via `maxWidth:
+    /// .infinity`), so a wide table never blows out the bubble.
+    @ViewBuilder
+    private func tableView(header: [String], rows: [[String]]) -> some View {
+        let columnCount = max(header.count, rows.map(\.count).max() ?? 0)
+        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+            GridRow {
+                ForEach(0..<columnCount, id: \.self) { column in
+                    tableCell(cell(header, column), isHeader: true)
+                }
+            }
+            Divider().overlay(CSColor.hairline(0.12))
+            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                GridRow {
+                    ForEach(0..<columnCount, id: \.self) { column in
+                        tableCell(cell(row, column), isHeader: false)
+                    }
+                }
+                if index < rows.count - 1 {
+                    Divider().overlay(CSColor.hairline(0.06))
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        )
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func cell(_ row: [String], _ column: Int) -> String {
+        column < row.count ? row[column] : ""
+    }
+
+    @ViewBuilder
+    private func tableCell(_ text: String, isHeader: Bool) -> some View {
+        let cellSize = isHeader ? size - 2 : size - 1
+        let font = isHeader ? CSFont.mono(cellSize, .semibold) : CSFont.ui(cellSize)
+        let color = isHeader ? CSColor.textHigh : bodyColor
+        let attr = Self.inlineAttributed(text, fontSize: cellSize,
+                                         baseFont: font, baseColor: color)
+        Text(attr)
+            .lineSpacing(3)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(isHeader ? CSColor.surfaceRaised(0.05) : Color.clear)
     }
 
     @ViewBuilder
@@ -209,6 +300,9 @@ enum MDBlock: Equatable {
     case heading(level: Int, text: String)
     case bullet(indent: Int, text: String)
     case ordered(indent: Int, number: Int, text: String)
+    case task(indent: Int, done: Bool, text: String)
+    case blockquote(String)
+    case table(header: [String], rows: [[String]])
     case code(String)
 
     /// Split raw text into blocks. Consecutive plain lines (no blank line
@@ -247,6 +341,37 @@ enum MDBlock: Equatable {
             if trimmed.isEmpty {
                 flush()
                 i += 1
+                continue
+            }
+
+            // Table: a pipe row immediately followed by a `|---|---|` separator.
+            // The separator gate keeps stray-pipe prose from misfiring.
+            if trimmed.contains("|"), i + 1 < lines.count,
+               isTableSeparator(lines[i + 1]) {
+                flush()
+                let header = tableCells(trimmed)
+                i += 2  // consume the header and separator rows
+                var rows: [[String]] = []
+                while i < lines.count {
+                    let rowLine = lines[i].trimmingCharacters(in: .whitespaces)
+                    guard !rowLine.isEmpty, rowLine.contains("|") else { break }
+                    rows.append(tableCells(rowLine))
+                    i += 1
+                }
+                blocks.append(.table(header: header, rows: rows))
+                continue
+            }
+
+            if trimmed.hasPrefix(">") {
+                flush()
+                var quote: [String] = []
+                while i < lines.count {
+                    let qline = lines[i].trimmingCharacters(in: .whitespaces)
+                    guard qline.hasPrefix(">") else { break }
+                    quote.append(stripQuoteMarker(qline))
+                    i += 1
+                }
+                blocks.append(.blockquote(quote.joined(separator: "\n")))
                 continue
             }
 
@@ -291,8 +416,11 @@ enum MDBlock: Equatable {
         if let first = content.first, "-*+".contains(first) {
             let after = content.dropFirst()
             if after.first == " " {
-                let text = String(after.dropFirst()).trimmingCharacters(in: .whitespaces)
-                return .bullet(indent: indent, text: text)
+                let body = String(after.dropFirst()).trimmingCharacters(in: .whitespaces)
+                if let task = taskBlock(indent: indent, body: body) {
+                    return task
+                }
+                return .bullet(indent: indent, text: body)
             }
         }
 
@@ -305,5 +433,52 @@ enum MDBlock: Equatable {
             }
         }
         return nil
+    }
+
+    /// A `[x]` / `[X]` / `[ ]` checkbox prefix on a bullet body → task item.
+    private static func taskBlock(indent: Int, body: String) -> MDBlock? {
+        guard body.hasPrefix("[") else { return nil }
+        let inner = body.dropFirst()
+        guard let mark = inner.first, inner.dropFirst().first == "]" else { return nil }
+        let rest = inner.dropFirst(2)
+        guard rest.isEmpty || rest.first == " " else { return nil }
+        let done: Bool
+        switch mark {
+        case "x", "X": done = true
+        case " ": done = false
+        default: return nil
+        }
+        return .task(indent: indent, done: done,
+                     text: String(rest).trimmingCharacters(in: .whitespaces))
+    }
+
+    /// Strip every leading `>` / space so `>> quoted` collapses to `quoted`
+    /// (nesting is flattened to a single level, per the chat renderer's scope).
+    private static func stripQuoteMarker(_ line: String) -> String {
+        var slice = Substring(line)
+        while let first = slice.first, first == ">" || first == " " {
+            slice = slice.dropFirst()
+        }
+        return String(slice)
+    }
+
+    /// Split a pipe row into trimmed cells, dropping the optional outer pipes.
+    static func tableCells(_ line: String) -> [String] {
+        var body = line.trimmingCharacters(in: .whitespaces)
+        if body.hasPrefix("|") { body.removeFirst() }
+        if body.hasSuffix("|") { body.removeLast() }
+        return body.components(separatedBy: "|")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// True for a GFM separator row such as `|---|:--:|`: every cell is dashes
+    /// with optional alignment colons, and at least one cell carries a dash.
+    static func isTableSeparator(_ line: String) -> Bool {
+        let cells = tableCells(line)
+        guard !cells.isEmpty else { return false }
+        return cells.allSatisfy { cell in
+            !cell.isEmpty && cell.contains("-")
+                && cell.allSatisfy { $0 == "-" || $0 == ":" }
+        }
     }
 }
