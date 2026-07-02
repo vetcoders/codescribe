@@ -477,6 +477,7 @@ mod tests {
             created_at: updated_at - Duration::minutes(5),
             updated_at,
             title: title.to_string(),
+            title_is_custom: false,
             mode: mode.to_string(),
             tags: vec!["vet".to_string(), "urgent".to_string()],
             notes: Vec::new(),

@@ -286,6 +286,14 @@ impl CodescribeThreads {
         Ok(store.set_thread_favorite(&id, is_favorite)?)
     }
 
+    /// Rename a thread. Marks the title as user-custom so auto-titling won't
+    /// overwrite it on the next turn; returns `false` when no such thread exists.
+    /// Wraps `ThreadStore::set_thread_title` (`thread_store.rs`).
+    pub fn rename_thread(&self, id: String, title: String) -> Result<bool, CsError> {
+        let store = ThreadStore::new()?;
+        Ok(store.set_thread_title(&id, &title)?)
+    }
+
     /// Generate a fresh, collision-resistant thread id. Wraps
     /// `ThreadStore::generate_id` (`thread_store.rs:191`).
     pub fn generate_thread_id(&self) -> String {

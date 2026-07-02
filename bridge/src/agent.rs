@@ -307,6 +307,7 @@ async fn persist_thread(thread_id: String, messages: Vec<Message>) {
             created_at: now,
             updated_at: now,
             title: "Codescribe Agent Chat".to_string(),
+            title_is_custom: false,
             mode: "assistive".to_string(),
             tags: vec!["agent".to_string(), "overlay".to_string()],
             notes: Vec::new(),
@@ -318,7 +319,10 @@ async fn persist_thread(thread_id: String, messages: Vec<Message>) {
         });
 
         thread.updated_at = now;
-        thread.title = derive_thread_title(&messages);
+        // Never clobber a title the user set by hand from the rail.
+        if !thread.title_is_custom {
+            thread.title = derive_thread_title(&messages);
+        }
         thread.summary = derive_thread_summary(&messages);
         thread.messages = messages.iter().map(ThreadMessage::from).collect();
         thread.provider = provider;
@@ -336,20 +340,100 @@ async fn persist_thread(thread_id: String, messages: Vec<Message>) {
     }
 }
 
-/// First user message, trimmed to a title-length slice. Replica of
-/// `derive_thread_title` in app/controller/helpers.rs.
+/// First user message, boilerplate-stripped and trimmed to a title-length slice.
+///
+/// Every agent conversation is seeded with a pasted instruction preamble
+/// ("INSTRUKCJA UŻYTKOWNIKA: JESTEŚ AGENTEM…"), so a naive first-line title makes
+/// every thread read identically. We first try the newline-preserving raw text
+/// and skip leading instruction/header lines; only if the whole message looks
+/// like boilerplate do we fall back to the collapsed full text.
 fn derive_thread_title(messages: &[Message]) -> String {
-    let candidate = messages
-        .iter()
-        .find(|message| message.role == Role::User)
-        .and_then(extract_text_from_message)
+    let first_user = messages.iter().find(|message| message.role == Role::User);
+
+    let candidate = first_user
+        .and_then(raw_text_from_message)
+        .and_then(|raw| strip_boilerplate_title(&raw))
+        .or_else(|| first_user.and_then(extract_text_from_message))
         .unwrap_or_else(|| "Codescribe Agent Chat".to_string());
 
     let mut title = candidate.chars().take(72).collect::<String>();
-    if title.is_empty() {
+    if title.trim().is_empty() {
         title = "Codescribe Agent Chat".to_string();
     }
     title
+}
+
+/// Newline-preserving flatten of a message's textual content (unlike
+/// `extract_text_from_message`, which collapses all whitespace). Lets the title
+/// heuristic reason about the first "real" line.
+fn raw_text_from_message(message: &Message) -> Option<String> {
+    let mut out = Vec::new();
+    for block in &message.content {
+        extract_text_from_block(block, &mut out);
+    }
+    let text = out.join("\n");
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// Known leading-boilerplate line prefixes, matched case-insensitively against
+/// the trimmed line. Pasted agent preambles open with one of these.
+const BOILERPLATE_LINE_PREFIXES: &[&str] = &[
+    "instrukcja",
+    "instruction",
+    "jesteś agentem",
+    "jestes agentem",
+    "you are an agent",
+    "system prompt",
+    "system:",
+];
+
+/// Drop leading instruction/header lines and return the first meaningful line,
+/// whitespace-normalized. Returns `None` when every line looks like boilerplate
+/// (the caller then falls back to the collapsed full text).
+fn strip_boilerplate_title(raw: &str) -> Option<String> {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || is_boilerplate_line(trimmed) {
+            continue;
+        }
+        let normalized = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !normalized.is_empty() {
+            return Some(normalized);
+        }
+    }
+    None
+}
+
+/// A line is boilerplate when it opens with a known preamble prefix or reads as
+/// an all-caps header (letters present, none lowercase — e.g.
+/// "INSTRUKCJA UŻYTKOWNIKA:").
+fn is_boilerplate_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    if BOILERPLATE_LINE_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+    {
+        return true;
+    }
+    is_all_caps_header(line)
+}
+
+/// True when the line has alphabetic characters and none of them are lowercase.
+fn is_all_caps_header(line: &str) -> bool {
+    let mut has_alpha = false;
+    for ch in line.chars() {
+        if ch.is_alphabetic() {
+            has_alpha = true;
+            if ch.is_lowercase() {
+                return false;
+            }
+        }
+    }
+    has_alpha
 }
 
 /// Latest assistant message, trimmed to a summary-length slice. Replica of
@@ -470,5 +554,35 @@ mod tests {
             panic!("expected a readable agent error");
         };
         assert!(msg.contains("Too many"), "explains the cap: {msg}");
+    }
+
+    fn user_message(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text(text.to_string())],
+            timestamp: None,
+        }
+    }
+
+    #[test]
+    fn title_skips_boilerplate_preamble() {
+        let text = "INSTRUKCJA UŻYTKOWNIKA: JESTEŚ AGENTEM\n\nNapraw hang na starcie sesji";
+        let title = derive_thread_title(&[user_message(text)]);
+        assert_eq!(title, "Napraw hang na starcie sesji");
+    }
+
+    #[test]
+    fn title_keeps_plain_first_line() {
+        let title = derive_thread_title(&[user_message("Fix the rate limiter double-fire")]);
+        assert_eq!(title, "Fix the rate limiter double-fire");
+    }
+
+    #[test]
+    fn title_falls_back_when_all_boilerplate() {
+        // Single merged line: prefix-flagged, so stripping yields nothing and we
+        // fall back to the collapsed full text (never worse than before).
+        let text = "INSTRUKCJA: zrób coś";
+        let title = derive_thread_title(&[user_message(text)]);
+        assert_eq!(title, "INSTRUKCJA: zrób coś");
     }
 }
