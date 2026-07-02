@@ -297,6 +297,9 @@ async fn persist_thread(thread_id: String, messages: Vec<Message>) {
         };
 
         let model = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_default();
+        // Reflect the resolved assistive provider so persisted thread metadata is
+        // accurate when Anthropic is active (was hardcoded "openai-responses").
+        let provider = resolve_provider(LlmMode::Assistive).as_str().to_string();
 
         let mut thread = store.load_thread(&thread_id).unwrap_or_else(|_| Thread {
             id: thread_id.clone(),
@@ -309,7 +312,7 @@ async fn persist_thread(thread_id: String, messages: Vec<Message>) {
             messages: Vec::new(),
             summary: None,
             total_tokens: None,
-            provider: "openai-responses".to_string(),
+            provider: provider.clone(),
             model: model.clone(),
         });
 
@@ -317,7 +320,7 @@ async fn persist_thread(thread_id: String, messages: Vec<Message>) {
         thread.title = derive_thread_title(&messages);
         thread.summary = derive_thread_summary(&messages);
         thread.messages = messages.iter().map(ThreadMessage::from).collect();
-        thread.provider = "openai-responses".to_string();
+        thread.provider = provider;
         thread.model = model;
 
         store.save_thread(&thread)?;
