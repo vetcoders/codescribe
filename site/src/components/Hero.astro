@@ -143,18 +143,21 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     animation: softpulse 2.6s ease-in-out infinite;
   }
   .console__status {
-    font: 500 11px var(--font-mono);
+    font: 500 11px / 1.35 var(--font-mono);
     color: var(--muted-3);
     letter-spacing: 0.08em;
   }
   .console__engine {
     margin-left: auto;
-    font: 500 10px var(--font-mono);
+    font: 500 10px / 1.35 var(--font-mono);
     color: var(--olive);
   }
   .console__body {
     padding: 24px 22px;
-    min-height: 104px;
+    /* min-height reserves the tallest state (2-line "clean" transcript) so the
+       raw↔clean swap never changes the card height (CLS). Per-breakpoint values
+       track how far the text wraps as the console narrows. */
+    min-height: 110px;
     display: flex;
     align-items: center;
     flex-wrap: wrap;
@@ -185,9 +188,16 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     padding: 13px 22px;
     border-top: 1px solid var(--line-soft);
     background: rgba(95, 107, 62, 0.06);
-    animation: floatIn 0.4s ease both;
+    /* Always occupies its box; the loop toggles the --muted class instead of
+       the [hidden]/display:none it used to, so the console never resizes (CLS).
+       The floatIn feel is preserved via the opacity/transform transition. */
+    transition: opacity 0.4s ease, transform 0.4s ease, visibility 0.4s ease;
   }
-  .console__result[hidden] { display: none; }
+  .console__result--muted {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(8px);
+  }
   .console__resultdot {
     width: 7px;
     height: 7px;
@@ -197,12 +207,12 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     flex: none;
   }
   .console__resulttext {
-    font: 500 12px var(--font-mono);
+    font: 500 12px / 1.35 var(--font-mono);
     color: var(--olive-ink);
   }
   .console__resultmeta {
     margin-left: auto;
-    font: 500 11px var(--font-mono);
+    font: 500 11px / 1.35 var(--font-mono);
     color: var(--muted-4);
   }
 
@@ -217,7 +227,9 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     text-decoration: none;
     padding: 14px 26px;
     border-radius: 11px;
-    font: 600 14px var(--font-display);
+    /* explicit line-height: font-size-based box is swap-independent, so the CTA
+       height doesn't change when the web font replaces the fallback (CLS). */
+    font: 600 14px / 1.4 var(--font-display);
   }
   .btn--primary {
     background: var(--terracotta);
@@ -240,6 +252,15 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     animation: drift 3s ease-in-out infinite;
   }
 
+  /* As the console narrows the clean transcript wraps to more lines; bump the
+     reserved height per band so neither raw nor clean ever changes it. */
+  @media (max-width: 600px) {
+    .console__body { min-height: 138px; }
+  }
+  @media (max-width: 374px) {
+    .console__body { min-height: 168px; }
+  }
+
   @media (max-width: 480px) {
     h1 { white-space: normal; }
     .hero { padding: 56px 20px 48px; }
@@ -260,6 +281,14 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
   if (body && statusEl && result && !reduce) {
     let alive = true;
     const wait = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+    // Toggle the result strip without removing it from layout (was the
+    // `hidden` attribute → display:none, which resized the console and shifted
+    // the hero). aria-hidden keeps it out of the a11y tree while muted.
+    const muteResult = (muted: boolean) => {
+      result!.classList.toggle('console__result--muted', muted);
+      result!.setAttribute('aria-hidden', String(muted));
+    };
 
     function setMode(mode: 'raw' | 'clean') {
       body!.dataset.mode = mode;
@@ -285,7 +314,7 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
       if (!alive) return;
       setMode(mode);
       setStatus(mode, false);
-      result!.hidden = true;
+      muteResult(true);
       await wait(60);
       const spans = body!.querySelectorAll<HTMLElement>('.word');
       for (let i = 0; i < spans.length; i++) {
@@ -297,7 +326,7 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
 
     async function loop() {
       // Start from a clean slate rather than the pre-rendered resolved frame.
-      result!.hidden = true;
+      muteResult(true);
       while (alive) {
         await wait(650);
         await reveal('raw', 150);
@@ -306,7 +335,7 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
         await reveal('clean', 115);
         if (!alive) return;
         setStatus('clean', true);
-        result!.hidden = false;
+        muteResult(false);
         await wait(2700);
       }
     }

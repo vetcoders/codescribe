@@ -11,6 +11,16 @@ import '@fontsource/jetbrains-mono/500.css';
 import '@fontsource/jetbrains-mono/600.css';
 import '../styles/global.css';
 
+// Preload the above-the-fold fonts so the first paint uses the real web font
+// instead of a fallback that swaps in later (font-swap text reflow was the sole
+// source of hero CLS). Vite resolves `?url` to the hashed, emitted asset path.
+import sg700 from '@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2?url';
+import sg600 from '@fontsource/space-grotesk/files/space-grotesk-latin-600-normal.woff2?url';
+import sg500 from '@fontsource/space-grotesk/files/space-grotesk-latin-500-normal.woff2?url';
+import sg400 from '@fontsource/space-grotesk/files/space-grotesk-latin-400-normal.woff2?url';
+import jb500 from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2?url';
+const preloadFonts = [sg700, sg600, sg500, sg400, jb500];
+
 interface Props {
   title?: string;
   description?: string;
@@ -37,6 +47,9 @@ const ogImage = new URL(base.replace(/\/$/, '') + '/og.png', site).href;
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
+    {preloadFonts.map((href) => (
+      <link rel="preload" href={href} as="font" type="font/woff2" crossorigin />
+    ))}
     <meta name="theme-color" content="#090a0d" />
     <link rel="icon" type="image/png" href={base.replace(/\/$/, '') + '/icon.png'} />
 

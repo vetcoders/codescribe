@@ -113,7 +113,9 @@ button:focus-visible {
 }
 .container { margin: 0 auto; }
 .eyebrow {
-  font: 500 12px var(--font-mono);
+  /* explicit line-height keeps the label box font-size-based (not font-metric
+     dependent), so it doesn't reflow when the web font swaps in (CLS). */
+  font: 500 12px / 1.4 var(--font-mono);
   color: var(--eyebrow);
   letter-spacing: 0.2em;
   text-transform: uppercase;
