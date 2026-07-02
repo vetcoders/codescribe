@@ -87,19 +87,25 @@ fn local_timestamp(ts: DateTime<Utc>) -> String {
         .to_string()
 }
 
-/// Flatten a message's structured content into a single display string, keeping
-/// runs of whitespace collapsed. Type-aware (see `collect_text`) so it yields
-/// clean prose without leaking structural field values.
+/// Flatten a message's structured content into a display string. Type-aware (see
+/// `collect_text`) so it yields clean prose without leaking structural field
+/// values. Interior whitespace — newlines, fenced code blocks, list breaks — is
+/// preserved so the exported Markdown keeps its structure; only each block's
+/// outer edges are trimmed and distinct blocks are separated by a blank line
+/// (mirrors `thread_store` / bridge `threads::flatten_message_text`). The
+/// previous `split_whitespace().join(" ")` collapsed every newline and code
+/// fence into one paragraph.
 fn flatten_content(content: &[Value]) -> String {
     let mut chunks = Vec::new();
     for value in content {
         collect_text(value, &mut chunks);
     }
     chunks
-        .join(" ")
-        .split_whitespace()
+        .iter()
+        .map(|chunk| chunk.trim())
+        .filter(|chunk| !chunk.is_empty())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join("\n\n")
 }
 
 /// Collect human-readable prose from a stored content `Value`, keyed on the
@@ -205,6 +211,23 @@ mod tests {
         assert!(!md.contains("please summarize"));
         assert!(md.contains("## Assistant · "));
         assert!(md.contains("Done — here is the summary."));
+    }
+
+    #[test]
+    fn preserves_code_fences_and_line_breaks_in_export() {
+        // Regression: the .md export must keep fenced code blocks and list line
+        // breaks intact. `split_whitespace().join(" ")` collapsed them into a
+        // single paragraph; the fix in threads.rs never reached this exporter.
+        let raw = "Here:\n\n```rust\nfn main() {}\n```\n\n- a\n- b";
+        let md = thread_to_markdown(&thread(vec![message("assistant", raw)]), false);
+        assert!(
+            md.contains("```rust\nfn main() {}\n```"),
+            "fenced code block must survive export:\n{md}"
+        );
+        assert!(
+            md.contains("- a\n- b"),
+            "list line breaks must survive export:\n{md}"
+        );
     }
 
     #[test]
