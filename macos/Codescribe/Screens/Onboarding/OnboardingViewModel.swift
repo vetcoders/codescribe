@@ -150,7 +150,9 @@ final class OnboardingViewModel: ObservableObject {
         self.selectedLanguage = engine.currentLanguage()
         self.hotkeyMode = HotkeyModeChoice.derive(from: hotkeys.modeBindings())
         self.selectedProviderId =
-            engine.availableProviders().first?.id ?? "openai-responses"
+            engine.assistiveProvider()
+            ?? engine.availableProviders().first?.id
+            ?? "openai-responses"
     }
 
     // MARK: - Derived

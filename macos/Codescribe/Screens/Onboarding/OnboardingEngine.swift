@@ -30,6 +30,10 @@ protocol OnboardingEngine {
     func currentLanguage() -> CsLanguage
 
     // API-key step (shared with the Settings Keys panel).
+    /// Persisted assistive-lane provider (`LLM_ASSISTIVE_PROVIDER`), or nil when
+    /// unset. Seeds the wizard's provider selection on resume so a returning user
+    /// sees — and keys — the provider they picked, not the catalog default.
+    func assistiveProvider() -> String?
     func keyStatus() -> CsKeyStatus
     func availableProviders() -> [CsProviderOption]
     func setApiKey(account: String, secret: String) throws
@@ -53,6 +57,7 @@ final class RealOnboardingEngine: OnboardingEngine {
     func setOnboardingMode(_ mode: String) throws { try config.setOnboardingMode(mode: mode) }
     func currentLanguage() -> CsLanguage { config.loadSettings().whisperLanguage }
 
+    func assistiveProvider() -> String? { config.loadSettings().llmAssistiveProvider }
     func keyStatus() -> CsKeyStatus { config.keyStatus() }
     func availableProviders() -> [CsProviderOption] { config.availableProviders() }
     func setApiKey(account: String, secret: String) throws {
@@ -73,6 +78,7 @@ final class MockOnboardingEngine: OnboardingEngine {
     var status: CsKeyStatus = .sampleAllSet
     var mode: String?
     var language: CsLanguage = .auto
+    var savedProvider: String?
 
     init(progress: UInt32 = 0) { self.progress = progress }
 
@@ -85,6 +91,7 @@ final class MockOnboardingEngine: OnboardingEngine {
     func setOnboardingMode(_ mode: String) throws { self.mode = mode }
     func currentLanguage() -> CsLanguage { language }
 
+    func assistiveProvider() -> String? { savedProvider }
     func keyStatus() -> CsKeyStatus { status }
     func availableProviders() -> [CsProviderOption] { CsProviderOption.sampleProviders }
     func setApiKey(account: String, secret: String) throws {}
