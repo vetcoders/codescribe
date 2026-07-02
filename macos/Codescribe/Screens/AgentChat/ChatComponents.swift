@@ -13,22 +13,35 @@ enum ChatPalette {
     static let sendGlyph = Color(hex: 0x0A0A0A)       // ↑ glyph on terracotta button
 }
 
-/// Expanding terracotta ring + solid dot — the composer mic affordance.
+/// Expanding terracotta ring + solid dot — the composer mic affordance. The
+/// expanding ring animates only while `isActive`; idle renders just the static
+/// dot so no `repeatForever` animation keeps the SwiftUI render loop alive.
 struct RippleMic: View {
-    @State private var animate = false
+    var isActive: Bool = false
     var body: some View {
         ZStack {
-            Circle()
-                .strokeBorder(CSColor.terracotta, lineWidth: 1)
-                .frame(width: 12, height: 12)
-                .scaleEffect(animate ? 2.7 : 0.5)
-                .opacity(animate ? 0 : 0.7)
+            if isActive {
+                ExpandingRing()
+            }
             Circle()
                 .fill(CSColor.terracotta)
                 .frame(width: 6, height: 6)
         }
         .frame(width: 12, height: 12)
-        .onAppear { withAnimation(CSMotion.ripple) { animate = true } }
+    }
+}
+
+/// The pulsing ring, split out so its `repeatForever` animation exists only while
+/// mounted (i.e. while the mic is active) — unmounting stops the render loop.
+private struct ExpandingRing: View {
+    @State private var animate = false
+    var body: some View {
+        Circle()
+            .strokeBorder(CSColor.terracotta, lineWidth: 1)
+            .frame(width: 12, height: 12)
+            .scaleEffect(animate ? 2.7 : 0.5)
+            .opacity(animate ? 0 : 0.7)
+            .onAppear { withAnimation(CSMotion.ripple) { animate = true } }
     }
 }
 

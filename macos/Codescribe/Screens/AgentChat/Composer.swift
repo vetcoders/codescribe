@@ -27,6 +27,9 @@ struct Composer: View {
     @State private var overInner = false
     /// True while an image is being dragged anywhere over the composer.
     private var isDragging: Bool { overOuter || overInner }
+    /// Drives the mic ripple: animate only on hover so the composer's render loop
+    /// stays idle the rest of the time.
+    @State private var micHovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -55,7 +58,8 @@ struct Composer: View {
                 .focused($fieldFocused)
                 .onSubmit { store.send() }
 
-                RippleMic()
+                RippleMic(isActive: micHovering)
+                    .onHover { micHovering = $0 }
 
                 Button(action: { store.send() }) {
                     Text("↑")

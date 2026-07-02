@@ -314,42 +314,6 @@ async fn test_hold_down_sets_force_raw_mode() {
 }
 
 #[test]
-fn test_action_contract_mode_prefers_raw_when_forced() {
-    let mode = resolve_transcription_action_contract_mode(true, false, true, true);
-    assert_eq!(
-        mode,
-        crate::controller::TranscriptionActionContractMode::Raw
-    );
-}
-
-#[test]
-fn test_action_contract_mode_uses_ai_format_when_force_ai_enabled() {
-    let mode = resolve_transcription_action_contract_mode(false, true, false, false);
-    assert_eq!(
-        mode,
-        crate::controller::TranscriptionActionContractMode::AiFormat
-    );
-}
-
-#[test]
-fn test_action_contract_mode_uses_ai_format_for_toggle_ai_path() {
-    let mode = resolve_transcription_action_contract_mode(false, false, true, true);
-    assert_eq!(
-        mode,
-        crate::controller::TranscriptionActionContractMode::AiFormat
-    );
-}
-
-#[test]
-fn test_action_contract_mode_uses_raw_for_toggle_without_ai() {
-    let mode = resolve_transcription_action_contract_mode(false, false, true, false);
-    assert_eq!(
-        mode,
-        crate::controller::TranscriptionActionContractMode::Raw
-    );
-}
-
-#[test]
 fn test_truth_engine_label_maps_toggle_session_adjudicated_to_local_whisper() {
     assert_eq!(
         truth_engine_label(Some(RecordingTranscriptSource::ToggleSessionAdjudicated)).as_deref(),

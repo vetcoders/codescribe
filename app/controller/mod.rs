@@ -790,21 +790,6 @@ fn evaluate_quality_commit_trigger(
     None
 }
 
-fn resolve_transcription_action_contract_mode(
-    force_raw: bool,
-    force_ai: bool,
-    ai_formatting_enabled: bool,
-    ai_key_available: bool,
-) -> TranscriptionActionContractMode {
-    if force_raw {
-        TranscriptionActionContractMode::Raw
-    } else if force_ai || (ai_formatting_enabled && ai_key_available) {
-        TranscriptionActionContractMode::AiFormat
-    } else {
-        TranscriptionActionContractMode::Raw
-    }
-}
-
 /// Rotate runtime + thread identity and return generation once backend reset completes.
 pub async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
     reset_agent_runtime_for_new_thread_impl().await
@@ -3468,16 +3453,12 @@ impl RecordingController {
             write_truth_sidecar_logged(path, &truth_metadata);
         }
 
-        if should_apply_transcription_action_contract(assistive, live_stream_session)
-            && config.transcription_overlay_enabled
-        {
-            let _action_contract_mode = resolve_transcription_action_contract_mode(
-                force_raw,
-                force_ai,
-                config.ai_formatting_enabled,
-                ai_key_available,
-            );
-        } else if !assistive {
+        // The action-contract rewrite was retired with the AppKit delivery path;
+        // keep only the live-stream skip breadcrumb (formatting is bypassed there).
+        let action_contract_applies =
+            should_apply_transcription_action_contract(assistive, live_stream_session)
+                && config.transcription_overlay_enabled;
+        if !(assistive || action_contract_applies) {
             debug!(
                 "Skipping transcription action contract rewrite during live stream (mode={mode_label})"
             );

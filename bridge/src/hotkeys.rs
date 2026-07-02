@@ -14,6 +14,7 @@ use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
 use crossbeam_channel::unbounded;
 use tokio::runtime::Handle;
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::recording::{CsAnnotationKind, CsLayerSummary, CsTranscriptionListener};
 use crate::{CsError, CsLanguage};
