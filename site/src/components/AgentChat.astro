@@ -17,12 +17,12 @@ import { asset } from '../lib/asset';
     </div>
     <div class="frame">
       <img
-        src={asset('shots/agent-threads-transparent.webp')}
-        width="2259"
-        height="1435"
+        src={asset('shots/agent-dispatch-transparent.webp')}
+        width="2260"
+        height="1698"
         loading="lazy"
         decoding="async"
-        alt="codescribe agent chat — threads rail, tool activity, reasoned, streaming"
+        alt="codescribe agent chat — voice-dispatched PR review: tool activity, reasoned reply, agent run started"
       />
     </div>
   </div>
@@ -32,16 +32,17 @@ import { asset } from '../lib/asset';
   .agentchat {
     padding: 120px 24px;
     background: radial-gradient(70% 100% at 50% 0%, rgba(214, 178, 78, 0.05), transparent 60%);
+    overflow: hidden;
   }
   .container {
-    max-width: 1000px;
+    max-width: 1080px;
     display: flex;
-    gap: 50px;
+    gap: 48px;
     align-items: center;
     flex-wrap: wrap;
   }
   .copy {
-    flex: 1;
+    flex: 0.82;
     min-width: 300px;
   }
   h2 {
@@ -65,20 +66,24 @@ import { asset } from '../lib/asset';
     flex-wrap: wrap;
   }
   .frame {
-    flex: 1;
-    min-width: 320px;
+    flex: 1.28;
+    min-width: 340px;
     border: 1px solid var(--stroke-2);
     border-radius: 16px;
     overflow: hidden;
     box-shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
-    max-height: 540px;
+  }
+  /* Let the money shot break out slightly to the right on wide viewports so the
+     reasoned reply reads at a glance, without breaking the half-column rhythm. */
+  @media (min-width: 900px) {
+    .frame {
+      margin-right: -56px;
+    }
   }
   .frame img {
     width: 100%;
     height: auto;
     display: block;
-    object-fit: cover;
-    object-position: top;
   }
   @media (max-width: 480px) {
     .agentchat { padding: 84px 20px; }
