@@ -17,8 +17,16 @@ private let attachLog = Logger(
 struct Composer: View {
     @ObservedObject var store: AgentChatStore
     @FocusState private var fieldFocused: Bool
-    /// Highlights the composer while an image file is dragged over it.
-    @State private var isDropTargeted = false
+
+    // Drag-over is tracked by two OR'd targets so it stays stable as the pointer
+    // crosses from the composer padding onto the text field. The outer target
+    // (whole strip) bootstraps the drag; the inner clear overlay (above the
+    // NSTextField) actually intercepts a drop that lands *on* the field, so the
+    // field editor never eats it as pasted path text. See `dropCatcher`.
+    @State private var overOuter = false
+    @State private var overInner = false
+    /// True while an image is being dragged anywhere over the composer.
+    private var isDragging: Bool { overOuter || overInner }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -63,15 +71,21 @@ struct Composer: View {
             .padding(.leading, 13)
             .padding(.trailing, 11)
             .padding(.vertical, 9)
-            .background(CSColor.surfaceRaised(isDropTargeted ? 0.07 : 0.04))
+            .background(CSColor.surfaceRaised(isDragging ? 0.07 : 0.04))
             .overlay(
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .strokeBorder(
-                        isDropTargeted ? CSColor.terracotta : CSColor.hairline(0.09),
-                        lineWidth: isDropTargeted ? 1.5 : 1
+                        isDragging ? CSColor.terracotta : CSColor.hairline(0.09),
+                        lineWidth: isDragging ? 1.5 : 1
                     )
             )
             .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            // Sits above the NSTextField and swallows a drop that lands *on* the
+            // field, so the field editor never pastes the path as text. Only
+            // hit-testable mid-drag (isDragging) so typing/clicks pass through
+            // the rest of the time.
+            .overlay(dropCatcher)
+            .animation(.easeOut(duration: 0.12), value: isDragging)
 
             // Affordance row
             HStack(spacing: 16) {
@@ -88,11 +102,26 @@ struct Composer: View {
             Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
         }
         // Drag an image from Finder onto the composer to stage it (same path as
-        // the 📎 picker). The whole bottom strip is the drop area; the input box
-        // border lights up terracotta while a file is dragged over it.
-        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted.animation(.easeOut(duration: 0.12))) { providers in
+        // the 📎 picker). The whole bottom strip is the outer drop area — it
+        // bootstraps the drag-over state and catches drops that miss the field;
+        // `dropCatcher` handles drops on the field itself.
+        .onDrop(of: [.fileURL], isTargeted: $overOuter) { providers in
             handleDrop(providers)
         }
+    }
+
+    /// Transparent drop target layered over the input box. Hit-testable only
+    /// while a drag is in progress, so it intercepts a field drop (beating the
+    /// NSTextField field editor) without blocking clicks/typing at rest. Its own
+    /// `isTargeted` binding keeps `isDragging` true while the pointer is over the
+    /// field even as the outer target reports false — no highlight flicker.
+    private var dropCatcher: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onDrop(of: [.fileURL], isTargeted: $overInner) { providers in
+                handleDrop(providers)
+            }
+            .allowsHitTesting(isDragging)
     }
 
     // MARK: Attachment chips
