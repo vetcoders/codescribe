@@ -23,7 +23,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
-use crate::mcp::{McpClient, McpConfigFile, McpServerConfig};
+use crate::mcp::{McpClient, McpConfigFile, McpServerConfig, default_mcp_config_path};
 
 const SERVERS_KEY: &str = "mcpServers";
 
@@ -49,9 +49,14 @@ pub struct McpServerSpec {
     pub enabled: bool,
 }
 
-/// List every configured server (sorted by name). A missing `mcp.json` is an
-/// empty list, never an error — the UI shows an empty section with an add form.
-pub fn list_servers(path: &Path) -> Result<Vec<McpServerSummary>> {
+/// List every configured server (sorted by name) from the canonical config path
+/// (`~/.codescribe/mcp.json`). A missing `mcp.json` is an empty list, never an
+/// error — the UI shows an empty section with an add form.
+pub fn list_servers() -> Result<Vec<McpServerSummary>> {
+    list_servers_at(&default_mcp_config_path()?)
+}
+
+fn list_servers_at(path: &Path) -> Result<Vec<McpServerSummary>> {
     let Some(config) = McpConfigFile::load_optional(path)? else {
         return Ok(Vec::new());
     };
@@ -77,7 +82,11 @@ pub fn list_servers(path: &Path) -> Result<Vec<McpServerSummary>> {
 /// Add a new server. Errors if the name already exists so a real edit is never
 /// silently overwritten by an "add". Creates `mcp.json` (and its parent dir) when
 /// absent.
-pub fn add_server(path: &Path, spec: &McpServerSpec) -> Result<()> {
+pub fn add_server(spec: &McpServerSpec) -> Result<()> {
+    add_server_at(&default_mcp_config_path()?, spec)
+}
+
+fn add_server_at(path: &Path, spec: &McpServerSpec) -> Result<()> {
     validate_name(&spec.name)?;
     validate_command(&spec.command)?;
 
@@ -95,7 +104,11 @@ pub fn add_server(path: &Path, spec: &McpServerSpec) -> Result<()> {
 /// Update an existing server's spawn shape in place, PRESERVING every other field
 /// of that entry (`env`, `timeout_seconds`, custom keys) and every unrelated
 /// top-level key. Errors if the named server does not exist.
-pub fn update_server(path: &Path, name: &str, spec: &McpServerSpec) -> Result<()> {
+pub fn update_server(name: &str, spec: &McpServerSpec) -> Result<()> {
+    update_server_at(&default_mcp_config_path()?, name, spec)
+}
+
+fn update_server_at(path: &Path, name: &str, spec: &McpServerSpec) -> Result<()> {
     validate_command(&spec.command)?;
 
     let mut root = load_value(path)?;
@@ -115,7 +128,11 @@ pub fn update_server(path: &Path, name: &str, spec: &McpServerSpec) -> Result<()
 }
 
 /// Remove a server. Errors if it does not exist.
-pub fn remove_server(path: &Path, name: &str) -> Result<()> {
+pub fn remove_server(name: &str) -> Result<()> {
+    remove_server_at(&default_mcp_config_path()?, name)
+}
+
+fn remove_server_at(path: &Path, name: &str) -> Result<()> {
     let mut root = load_value(path)?;
     {
         let servers = servers_map_mut(&mut root)?;
@@ -130,7 +147,11 @@ pub fn remove_server(path: &Path, name: &str) -> Result<()> {
 /// runs the async discovery on a dedicated thread + one-shot current-thread
 /// runtime so it is safe to call from a synchronous FFI context (and from within
 /// an already-running runtime). `timeout` bounds the whole handshake.
-pub fn test_server_blocking(path: &Path, name: &str, timeout: Duration) -> Result<usize> {
+pub fn test_server_blocking(name: &str, timeout: Duration) -> Result<usize> {
+    test_server_blocking_at(&default_mcp_config_path()?, name, timeout)
+}
+
+fn test_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result<usize> {
     let config = McpConfigFile::load(path)?;
     let server = config
         .servers
@@ -179,7 +200,13 @@ fn load_value(path: &Path) -> Result<Value> {
         root.insert(SERVERS_KEY.to_string(), Value::Object(Map::new()));
         return Ok(Value::Object(root));
     }
-    let content = std::fs::read_to_string(path)
+    // Sanitize before reading: `canonicalize` resolves `..` segments and symlinks
+    // to a real absolute path, so the value handed to the filesystem is a
+    // validated path rather than an unchecked string.
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve MCP config {}", path.display()))?;
+    let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read MCP config {}", path.display()))?;
     serde_json::from_str(&content).with_context(|| {
         format!(
@@ -297,12 +324,12 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json"); // does not exist yet
 
-        assert!(list_servers(&path).expect("list empty").is_empty());
+        assert!(list_servers_at(&path).expect("list empty").is_empty());
 
-        add_server(&path, &spec("loctree-mcp", "loctree-mcp", &["mcp"])).expect("add");
-        add_server(&path, &spec("aicx-mcp", "aicx", &["mcp"])).expect("add");
+        add_server_at(&path, &spec("loctree-mcp", "loctree-mcp", &["mcp"])).expect("add");
+        add_server_at(&path, &spec("aicx-mcp", "aicx", &["mcp"])).expect("add");
 
-        let servers = list_servers(&path).expect("list");
+        let servers = list_servers_at(&path).expect("list");
         // Sorted by name.
         assert_eq!(servers.len(), 2);
         assert_eq!(servers[0].name, "aicx-mcp");
@@ -330,7 +357,7 @@ mod tests {
         });
         std::fs::write(&path, original.to_string()).expect("seed");
 
-        add_server(&path, &spec("added", "added-cmd", &["x"])).expect("add");
+        add_server_at(&path, &spec("added", "added-cmd", &["x"])).expect("add");
 
         let raw = read_raw(&path);
         // Unknown top-level key intact.
@@ -365,7 +392,7 @@ mod tests {
 
         let mut updated = spec("srv", "new-cmd", &["b", "c"]);
         updated.enabled = false;
-        update_server(&path, "srv", &updated).expect("update");
+        update_server_at(&path, "srv", &updated).expect("update");
 
         let raw = read_raw(&path);
         assert_eq!(raw["mcpServers"]["srv"]["command"], json!("new-cmd"));
@@ -381,11 +408,11 @@ mod tests {
     fn remove_deletes_only_the_named_server() {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json");
-        add_server(&path, &spec("a", "a", &[])).expect("add");
-        add_server(&path, &spec("b", "b", &[])).expect("add");
+        add_server_at(&path, &spec("a", "a", &[])).expect("add");
+        add_server_at(&path, &spec("b", "b", &[])).expect("add");
 
-        remove_server(&path, "a").expect("remove");
-        let names: Vec<String> = list_servers(&path)
+        remove_server_at(&path, "a").expect("remove");
+        let names: Vec<String> = list_servers_at(&path)
             .expect("list")
             .into_iter()
             .map(|s| s.name)
@@ -393,7 +420,7 @@ mod tests {
         assert_eq!(names, vec!["b".to_string()]);
 
         // Removing a missing server errors.
-        assert!(remove_server(&path, "ghost").is_err());
+        assert!(remove_server_at(&path, "ghost").is_err());
     }
 
     #[test]
@@ -403,8 +430,8 @@ mod tests {
         std::fs::write(&path, "{ not valid json").expect("seed garbage");
 
         // Every mutation refuses to run and leaves the file byte-for-byte intact.
-        assert!(add_server(&path, &spec("x", "x", &[])).is_err());
-        assert!(remove_server(&path, "x").is_err());
+        assert!(add_server_at(&path, &spec("x", "x", &[])).is_err());
+        assert!(remove_server_at(&path, "x").is_err());
         assert_eq!(
             std::fs::read_to_string(&path).expect("still there"),
             "{ not valid json"
@@ -416,9 +443,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json");
 
-        assert!(add_server(&path, &spec("bad name", "cmd", &[])).is_err());
-        assert!(add_server(&path, &spec("", "cmd", &[])).is_err());
-        assert!(add_server(&path, &spec("ok", "   ", &[])).is_err());
+        assert!(add_server_at(&path, &spec("bad name", "cmd", &[])).is_err());
+        assert!(add_server_at(&path, &spec("", "cmd", &[])).is_err());
+        assert!(add_server_at(&path, &spec("ok", "   ", &[])).is_err());
         // Nothing was written by the rejected adds.
         assert!(!path.exists());
     }
@@ -427,11 +454,11 @@ mod tests {
     fn duplicate_add_is_rejected() {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json");
-        add_server(&path, &spec("dup", "cmd", &[])).expect("add");
-        assert!(add_server(&path, &spec("dup", "other", &[])).is_err());
+        add_server_at(&path, &spec("dup", "cmd", &[])).expect("add");
+        assert!(add_server_at(&path, &spec("dup", "other", &[])).is_err());
         // Original command survives the rejected duplicate.
         assert_eq!(
-            list_servers(&path).expect("list")[0].command,
+            list_servers_at(&path).expect("list")[0].command,
             "cmd".to_string()
         );
     }
@@ -440,7 +467,7 @@ mod tests {
     fn written_config_is_valid_and_reparses_through_typed_loader() {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json");
-        add_server(&path, &spec("srv", "cmd", &["one", "two"])).expect("add");
+        add_server_at(&path, &spec("srv", "cmd", &["one", "two"])).expect("add");
         // Atomic write must leave a clean file the typed loader accepts.
         let config = McpConfigFile::load(&path).expect("typed reload");
         let server = config.servers.get("srv").expect("server present");
@@ -458,9 +485,9 @@ mod tests {
             .join("mock_mcp.py");
         let mut server = spec("mock", "python3", &[&script.display().to_string()]);
         server.enabled = true;
-        add_server(&path, &server).expect("add");
+        add_server_at(&path, &server).expect("add");
 
-        let count = test_server_blocking(&path, "mock", Duration::from_secs(5)).expect("test");
+        let count = test_server_blocking_at(&path, "mock", Duration::from_secs(5)).expect("test");
         assert_eq!(count, 1, "mock server exposes one tool");
     }
 
@@ -468,8 +495,8 @@ mod tests {
     fn test_server_blocking_errors_for_missing_server() {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json");
-        add_server(&path, &spec("present", "python3", &[])).expect("add");
-        assert!(test_server_blocking(&path, "absent", Duration::from_secs(1)).is_err());
+        add_server_at(&path, &spec("present", "python3", &[])).expect("add");
+        assert!(test_server_blocking_at(&path, "absent", Duration::from_secs(1)).is_err());
     }
 
     fn repo_root() -> PathBuf {

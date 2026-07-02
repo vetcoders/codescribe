@@ -11,8 +11,8 @@
 use std::time::Duration;
 
 use codescribe_core::mcp::{
-    McpServerSpec, McpServerSummary, add_server, default_mcp_config_path, list_servers,
-    remove_server, test_server_blocking, update_server,
+    McpServerSpec, McpServerSummary, add_server, list_servers, remove_server, test_server_blocking,
+    update_server,
 };
 
 use crate::CsError;
@@ -89,38 +89,30 @@ impl CodescribeMcpAdmin {
 
     /// List configured servers (sorted). A missing `mcp.json` is an empty list.
     pub fn list_servers(&self) -> Result<Vec<CsMcpServer>, CsError> {
-        let path = default_mcp_config_path().map_err(config_err)?;
-        let servers = list_servers(&path).map_err(config_err)?;
+        let servers = list_servers().map_err(config_err)?;
         Ok(servers.into_iter().map(CsMcpServer::from).collect())
     }
 
     /// Add a new server. Errors if the name already exists or is invalid.
     pub fn add_server(&self, server: CsMcpServerInput) -> Result<(), CsError> {
-        let path = default_mcp_config_path().map_err(config_err)?;
-        add_server(&path, &McpServerSpec::from(&server)).map_err(config_err)
+        add_server(&McpServerSpec::from(&server)).map_err(config_err)
     }
 
     /// Update the named server's spawn shape, preserving its env + unknown fields.
     pub fn update_server(&self, name: String, server: CsMcpServerInput) -> Result<(), CsError> {
-        let path = default_mcp_config_path().map_err(config_err)?;
-        update_server(&path, &name, &McpServerSpec::from(&server)).map_err(config_err)
+        update_server(&name, &McpServerSpec::from(&server)).map_err(config_err)
     }
 
     /// Remove the named server. Errors if it does not exist.
     pub fn remove_server(&self, name: String) -> Result<(), CsError> {
-        let path = default_mcp_config_path().map_err(config_err)?;
-        remove_server(&path, &name).map_err(config_err)
+        remove_server(&name).map_err(config_err)
     }
 
     /// Spawn the named server and report its live tool count. Bounded by a 10s
     /// timeout. A failed handshake is returned as `ok == false` with a reason,
     /// never as a thrown error.
     pub fn test_server(&self, name: String) -> CsMcpTestResult {
-        let path = match default_mcp_config_path() {
-            Ok(path) => path,
-            Err(error) => return CsMcpTestResult::failure(error.to_string()),
-        };
-        match test_server_blocking(&path, &name, TEST_TIMEOUT) {
+        match test_server_blocking(&name, TEST_TIMEOUT) {
             Ok(count) => CsMcpTestResult {
                 ok: true,
                 tool_count: count as u32,
