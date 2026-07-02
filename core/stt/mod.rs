@@ -38,7 +38,11 @@ fn requested_engine(value: &str) -> Option<SttEngine> {
 }
 
 fn default_engine() -> SttEngine {
-    if apple_stt::is_runtime_available() {
+    // AUTO only selects Apple when the SpeechAnalyzer bridge is actually
+    // launchable; otherwise the probe is wasted and the router silently falls
+    // back to Candle anyway (a misleading "Apple" selector). Explicit
+    // `CODESCRIBE_STT_ENGINE=apple` bypasses this and still probes + fails loudly.
+    if apple_stt::is_runtime_available() && apple_stt::is_bridge_resolvable() {
         SttEngine::Apple
     } else {
         SttEngine::Candle
@@ -314,7 +318,7 @@ mod tests {
     #[serial]
     fn selected_engine_defaults_to_platform_auto_policy() {
         let _guard = EnvGuard::unset();
-        let expected = if apple_stt::is_runtime_available() {
+        let expected = if apple_stt::is_runtime_available() && apple_stt::is_bridge_resolvable() {
             SttEngine::Apple
         } else {
             SttEngine::Candle
