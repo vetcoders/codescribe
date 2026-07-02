@@ -254,7 +254,9 @@ impl CodescribeHotkeys {
         // launch. The atomics otherwise hold only compile-time defaults, so
         // non-default bindings would never take effect. update_config re-applies
         // this on every later settings change for live-reload without restart.
-        codescribe::os::hotkeys::apply_hotkey_config(&codescribe_core::config::Config::load());
+        codescribe::os::hotkeys::apply_hotkey_config(
+            &codescribe_core::config::Config::load_without_keychain(),
+        );
 
         let (tx, rx) = unbounded::<HotkeyEvent>();
         let handle = tokio::runtime::Handle::current();
@@ -628,7 +630,9 @@ fn build_mode_binding(mode: WorkMode, binding: ShortcutBinding) -> CsModeBinding
 /// binding write. Identical to `CodescribeConfig::update_config`'s reload step, so
 /// mode-binding edits take effect on the running CGEventTap without a restart.
 fn reload_hotkey_runtime_after_write() {
-    hotkeys::apply_hotkey_config(&Config::load());
+    // Binding-only reload: never populate the Keychain (would prompt for a
+    // password on every mode-binding save even though bindings need none).
+    hotkeys::apply_hotkey_config(&Config::load_without_keychain());
 }
 
 #[uniffi::export]
