@@ -26,8 +26,6 @@ targets:
         ENABLE_HARDENED_RUNTIME: NO
         SWIFT_VERSION: 5.0
         SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Bridge/codescribe_ffiFFI.h
-        # Links libcodescribe_ffi.dylib produced by `cargo build -p codescribe-ffi`.
-        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
         OTHER_LDFLAGS: "-lcodescribe_ffi"
         # Runpath so the app finds the @rpath-id'd dylib both when run from Xcode
         # (against target/debug) and when distributed (embedded in Frameworks by
@@ -36,3 +34,12 @@ targets:
           - "@executable_path/../Frameworks"
           - "$(SRCROOT)/../target/debug"
           - "$(SRCROOT)/../target/release"
+      configs:
+        # Links libcodescribe_ffi.dylib produced by `cargo build -p codescribe-ffi`.
+        # Per-config so a Release link never resolves against a stale debug dylib
+        # (and vice versa) — the base value used to hardcode target/debug, which
+        # made every Release build fail with `ld: library 'codescribe_ffi' not found`.
+        Debug:
+          LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
+        Release:
+          LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/release"
