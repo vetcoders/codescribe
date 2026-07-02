@@ -86,9 +86,11 @@ struct MarkdownText: View {
                        fontSize: hSize, isLast: isLast)
                 .padding(.top, level <= 2 ? 3 : 1)
         case let .bullet(indent, text):
-            listRow(marker: "•", indent: indent, text: text, isLast: isLast)
+            listRow(marker: bulletMarker(indent), indent: indent, text: text,
+                    isLast: isLast, deep: indent >= 2)
         case let .ordered(indent, number, text):
-            listRow(marker: "\(number).", indent: indent, text: text, isLast: isLast)
+            listRow(marker: "\(number).", indent: indent, text: text,
+                    isLast: isLast, deep: false)
         case let .task(indent, done, text):
             taskRow(indent: indent, done: done, text: text, isLast: isLast)
         case let .blockquote(text):
@@ -106,7 +108,13 @@ struct MarkdownText: View {
         }
     }
 
-    /// Renders a list of already-parsed blocks (used for blockquote
+    /// Bullet glyph by depth: a filled dot at the top two levels, then a hollow
+    /// ring for level 3+ so deep nesting reads lighter.
+    private func bulletMarker(_ indent: Int) -> String {
+        indent >= 2 ? "◦" : "•"
+    }
+
+    /// Renders a list of already-parsed blocks (used for blockquote / callout
     /// bodies). No streaming caret — nested content is never the live turn tail.
     // `AnyView` breaks the otherwise-recursive opaque return type: blockView ->
     // blockquoteView/calloutView -> blocksView -> blockView would define `some
@@ -147,11 +155,12 @@ struct MarkdownText: View {
     }
 
     @ViewBuilder
-    private func listRow(marker: String, indent: Int, text: String, isLast: Bool) -> some View {
+    private func listRow(marker: String, indent: Int, text: String, isLast: Bool,
+                         deep: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Text(marker)
-                .font(CSFont.mono(size - 2))
-                .foregroundStyle(CSColor.textMutedAlt)
+                .font(CSFont.mono(deep ? size - 4 : size - 2))
+                .foregroundStyle(deep ? CSColor.textFaint : CSColor.textMutedAlt)
                 .frame(minWidth: 14, alignment: .trailing)
             inlineText(text, baseFont: CSFont.ui(size), baseColor: bodyColor,
                        fontSize: size, isLast: isLast)
@@ -166,8 +175,8 @@ struct MarkdownText: View {
     private func taskRow(indent: Int, done: Bool, text: String, isLast: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Image(systemName: done ? "checkmark.square.fill" : "square")
-                .font(.system(size: size - 1))
-                .foregroundStyle(done ? CSColor.olive : CSColor.textFaint)
+                .font(.system(size: size - 1, weight: done ? .semibold : .regular))
+                .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)
                 .frame(minWidth: 14, alignment: .trailing)
             inlineText(text, baseFont: CSFont.ui(size),
                        baseColor: done ? CSColor.textMutedAlt : bodyColor,
@@ -177,17 +186,53 @@ struct MarkdownText: View {
     }
 
     /// A `>` blockquote. Its inner text is parsed recursively so nested lists,
-    /// code fences and quotes render properly (not half-raw). Terracotta hairline
-    /// bar on the left, dimmed body.
+    /// code fences and quotes render properly (not half-raw). A quote that opens
+    /// with a `[!NOTE]`-style marker is promoted to a GitHub-flavored callout.
     @ViewBuilder
     private func blockquoteView(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            RoundedRectangle(cornerRadius: 1, style: .continuous)
-                .fill(CSColor.terracotta.opacity(0.55))
-                .frame(width: 2.5)
-            blocksView(MDBlock.parse(text))
-                .opacity(0.9)
+        if let callout = CalloutKind.detect(text) {
+            calloutView(kind: callout.kind, body: callout.body)
+        } else {
+            HStack(alignment: .top, spacing: 9) {
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(CSColor.terracotta.opacity(0.55))
+                    .frame(width: 2.5)
+                blocksView(MDBlock.parse(text))
+                    .opacity(0.9)
+            }
+            .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// A GitHub alert callout: tinted icon + label header over the parsed body,
+    /// a colored left bar and a faint wash of the same tint. Reuses the
+    /// blockquote parse path, so callout bodies carry lists / code / links.
+    @ViewBuilder
+    private func calloutView(kind: CalloutKind, body: String) -> some View {
+        let blocks = MDBlock.parse(body)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: kind.icon)
+                    .font(.system(size: size - 2, weight: .semibold))
+                Text(kind.label)
+                    .font(CSFont.mono(size - 4, .semibold))
+                    .tracking(0.8)
+            }
+            .foregroundStyle(kind.tint)
+            if !blocks.isEmpty {
+                blocksView(blocks)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(kind.tint.opacity(0.08))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(kind.tint.opacity(0.8))
+                .frame(width: 2.5)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
         .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -266,20 +311,7 @@ struct MarkdownText: View {
 
     @ViewBuilder
     private func codeBlock(_ content: String, isLast: Bool) -> some View {
-        let block = Text(content.isEmpty ? " " : content)
-            .font(CSFont.mono(size - 1))
-            .foregroundColor(CSColor.textBodyAlt)
-            .lineSpacing(4)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 9)
-            .background(CSColor.surfaceRaised(0.05))
-            .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                    .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
-            )
+        let block = CodeBlockView(content: content, size: size)
         if isLast, showsCaret {
             HStack(alignment: .bottom, spacing: 2) {
                 block
@@ -322,12 +354,17 @@ struct MarkdownText: View {
                 linkRanges.append(run.range)
             }
         }
+        // Inline code: mono + olive over a raised chip so it detaches from prose
+        // (also inside checkboxes and table cells, which route through here).
         for range in codeRanges {
             attr[range].font = CSFont.mono(fontSize - 1)
             attr[range].foregroundColor = CSColor.oliveLight
+            attr[range].backgroundColor = CSColor.surfaceRaised(0.10)
         }
+        // Links: terracotta + a subtle underline (Text has no cheap hover state).
         for range in linkRanges {
             attr[range].foregroundColor = CSColor.terracotta
+            attr[range].underlineStyle = .single
         }
         return attr
     }
@@ -370,6 +407,136 @@ struct MarkdownText: View {
             index += 1
         }
         return out
+    }
+}
+
+/// A GitHub-flavored alert kind parsed from a `> [!NOTE]`-style blockquote head.
+enum CalloutKind {
+    case note, tip, important, warning, caution
+
+    init?(tag: String) {
+        switch tag {
+        case "NOTE": self = .note
+        case "TIP": self = .tip
+        case "IMPORTANT": self = .important
+        case "WARNING": self = .warning
+        case "CAUTION": self = .caution
+        default: return nil
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .note: return "NOTE"
+        case .tip: return "TIP"
+        case .important: return "IMPORTANT"
+        case .warning: return "WARNING"
+        case .caution: return "CAUTION"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .note: return "info.circle"
+        case .tip: return "lightbulb"
+        case .important: return "exclamationmark.circle"
+        case .warning: return "exclamationmark.triangle"
+        case .caution: return "exclamationmark.octagon"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .note: return CSColor.textMuted        // neutral (palette carries no blue)
+        case .tip: return CSColor.oliveLight
+        case .important: return CSColor.terracottaDeep
+        case .warning: return CSColor.amber
+        case .caution: return CSColor.terracotta
+        }
+    }
+
+    /// Recognize a `[!TYPE]` marker on the first non-empty line of a blockquote.
+    /// Returns the kind plus the remaining body (any trailing text on the marker
+    /// line folds into the body). Nil when the head is not a known alert marker.
+    static func detect(_ raw: String) -> (kind: CalloutKind, body: String)? {
+        let lines = raw.components(separatedBy: "\n")
+        guard let head = lines.firstIndex(where: {
+            !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }) else { return nil }
+        let first = lines[head].trimmingCharacters(in: .whitespaces)
+        guard first.hasPrefix("[!"), let close = first.firstIndex(of: "]") else {
+            return nil
+        }
+        let tag = String(first[first.index(first.startIndex, offsetBy: 2)..<close])
+            .uppercased()
+        guard let kind = CalloutKind(tag: tag) else { return nil }
+        let trailing = String(first[first.index(after: close)...])
+            .trimmingCharacters(in: .whitespaces)
+        var body = head + 1 <= lines.count - 1 ? Array(lines[(head + 1)...]) : []
+        if !trailing.isEmpty { body.insert(trailing, at: 0) }
+        return (kind, body.joined(separator: "\n"))
+    }
+}
+
+/// A fenced code block with a hover-revealed copy affordance in the corner.
+/// Copies the raw block body; the button flips to a green "copied" for ~1.5s,
+/// mirroring the message-level copy button.
+private struct CodeBlockView: View {
+    let content: String
+    let size: CGFloat
+    @State private var hovering = false
+    @State private var copied = false
+
+    var body: some View {
+        Text(content.isEmpty ? " " : content)
+            .font(CSFont.mono(size - 1))
+            .foregroundColor(CSColor.textBodyAlt)
+            .lineSpacing(4)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 9)
+            .background(CSColor.surfaceRaised(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                    .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
+            )
+            .overlay(alignment: .topTrailing) {
+                if hovering || copied {
+                    copyButton
+                        .padding(6)
+                }
+            }
+            .onHover { hovering = $0 }
+    }
+
+    private var copyButton: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(content, forType: .string)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 9))
+                Text(copied ? "copied" : "copy")
+                    .font(CSFont.mono(10, .medium))
+            }
+            .foregroundStyle(copied ? CSColor.oliveLight : CSColor.textMuted)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(CSColor.glassUnder.opacity(0.7))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help("Copy code")
     }
 }
 
