@@ -367,6 +367,23 @@ final class SettingsViewModel: ObservableObject {
         persist("CODESCRIBE_LAYERED_TRANSCRIPTION", value)
     }
 
+    // MARK: - Agent workspace roots (list_projects tool)
+
+    /// Effective workspace roots the `list_projects` tool scans. Never empty —
+    /// the bridge fills the built-in default (`~/Git`) when unset.
+    var agentWorkspaceRoots: [String] { settings.agentWorkspaceRoots }
+
+    /// Persist the workspace roots as the colon-joined `AGENT_WORKSPACE_ROOTS`
+    /// value. Blank/whitespace rows are dropped; an all-empty list clears the
+    /// override so the core falls back to `~/Git`.
+    func setAgentWorkspaceRoots(_ roots: [String]) {
+        let cleaned = roots
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        settings.agentWorkspaceRoots = cleaned.isEmpty ? ["~/Git"] : cleaned
+        persist("AGENT_WORKSPACE_ROOTS", cleaned.joined(separator: ":"))
+    }
+
     private func persist(_ key: String, _ value: String) {
         guard let engine else { return }
         do {

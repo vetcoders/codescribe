@@ -207,6 +207,7 @@ extension CsSettings {
         formattingLevel: "medium",
         whisperModel: "whisper-large-v3-turbo",
         layeredTranscription: nil,
+        agentWorkspaceRoots: ["~/Git"],
         bufferDelayMs: nil,
         typingCps: nil,
         emitWordsMax: nil,

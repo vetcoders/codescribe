@@ -67,6 +67,9 @@ struct EnginePanel: View {
             }
             .padding(.top, 16)
 
+            WorkspaceRootsSection(model: model)
+                .padding(.top, 30)
+
             AgentStatusSection(model: model)
                 .padding(.top, 30)
 
@@ -178,6 +181,134 @@ private struct EngineMenuLabel: View {
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(CSColor.textFaint)
         }
+    }
+}
+
+// MARK: - Agent workspace roots editor
+
+/// Editable list of workspace roots the agent's `list_projects` tool scans to
+/// resolve project names to absolute paths. Rows are edited locally and committed
+/// through `SettingsViewModel.setAgentWorkspaceRoots` (colon-joined ->
+/// `AGENT_WORKSPACE_ROOTS`). Each row shows a live "directory exists" indicator.
+struct WorkspaceRootsSection: View {
+    @ObservedObject var model: SettingsViewModel
+
+    @State private var rows: [String] = []
+    @State private var loaded = false
+
+    private var isDirty: Bool {
+        cleaned(rows) != cleaned(model.agentWorkspaceRoots)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsSectionLabel("Agent workspace roots")
+
+            Text("Directories the assistant scans to resolve a project name to a path (list_projects). One level deep; git checkouts only.")
+                .font(CSFont.ui(11.5))
+                .lineSpacing(2)
+                .foregroundStyle(CSColor.textMutedAlt)
+                .padding(.top, 8)
+
+            VStack(spacing: 8) {
+                ForEach(rows.indices, id: \.self) { index in
+                    rootRow(index: index)
+                }
+            }
+            .padding(.top, 12)
+
+            HStack(spacing: 10) {
+                Button {
+                    rows.append("")
+                } label: {
+                    Label("Add root", systemImage: "plus")
+                        .font(CSFont.ui(12, .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(CSColor.textBody)
+
+                Spacer()
+
+                Button {
+                    model.setAgentWorkspaceRoots(rows)
+                    syncFromModel()
+                } label: {
+                    Text("Save roots")
+                        .font(CSFont.ui(12, .semibold))
+                        .foregroundStyle(isDirty ? CSColor.textHigh : CSColor.textFaint)
+                }
+                .buttonStyle(.plain)
+                .disabled(!isDirty)
+            }
+            .padding(.top, 12)
+        }
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            syncFromModel()
+        }
+    }
+
+    private func rootRow(index: Int) -> some View {
+        HStack(spacing: 10) {
+            existsDot(for: rows[index])
+            TextField("~/Git", text: Binding(
+                get: { index < rows.count ? rows[index] : "" },
+                set: { if index < rows.count { rows[index] = $0 } }
+            ))
+            .textFieldStyle(.plain)
+            .font(CSFont.mono(12, .regular))
+            .foregroundStyle(CSColor.textBody)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                rows.remove(at: index)
+            } label: {
+                Image(systemName: "minus.circle")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(CSColor.textFaint)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        )
+    }
+
+    /// Green when the (tilde-expanded) path is an existing directory, amber
+    /// otherwise — the tool will silently skip a root that does not resolve.
+    private func existsDot(for path: String) -> some View {
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
+        let valid = Self.directoryExists(trimmed)
+        return Circle()
+            .fill(valid ? CSColor.oliveLight : CSColor.amber)
+            .frame(width: 7, height: 7)
+    }
+
+    private func syncFromModel() {
+        rows = model.agentWorkspaceRoots
+        if rows.isEmpty { rows = ["~/Git"] }
+    }
+
+    private func cleaned(_ input: [String]) -> [String] {
+        input
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func directoryExists(_ path: String) -> Bool {
+        guard !path.isEmpty else { return false }
+        let expanded = (path as NSString).expandingTildeInPath
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir)
+        return exists && isDir.boolValue
     }
 }
 
