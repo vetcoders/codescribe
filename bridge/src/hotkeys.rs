@@ -35,7 +35,6 @@ fn ensure_controller(
     let mut guard = controller_store.lock().unwrap_or_else(|e| e.into_inner());
     Arc::clone(guard.get_or_insert_with(|| {
         let controller = Arc::new(RecordingController::new_without_keychain());
-        codescribe::controller::register_overlay_controller(Arc::clone(&controller));
         spawn_event_forwarder(Arc::clone(&controller), handle);
         controller
     }))

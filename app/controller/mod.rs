@@ -33,14 +33,9 @@ pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActio
 use crate::presentation::emitter::PresentationEmitter;
 use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
-use dispatch::Queue;
-#[cfg(target_os = "macos")]
-use objc::runtime::Class;
-#[cfg(target_os = "macos")]
-use objc::{msg_send, sel, sel_impl};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::task::JoinHandle;
@@ -52,7 +47,6 @@ use crate::config::models::ModelManager;
 use crate::config::{Config, UserSettings};
 use crate::os::clipboard;
 use crate::os::hotkeys::HoldMode;
-use crate::os::permissions::{PermissionStatus, check_microphone};
 use crate::os::selection::{
     AssistiveContext, build_assistive_input, capture_assistive_context,
     capture_assistive_context_with_prior_frontmost, capture_frontmost_app_only,
@@ -78,8 +72,6 @@ use helpers::{
 use types::{
     RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
 };
-
-static OVERLAY_CONTROLLER: OnceLock<Arc<RecordingController>> = OnceLock::new();
 
 const LIVE_PROFILE_BUFFER_DELAY_MS: u64 = 280;
 const LIVE_PROFILE_TYPING_CPS: f32 = 90.0;
@@ -119,26 +111,6 @@ fn normalize_for_diff(s: &str) -> String {
     match chars.next() {
         Some(c) => c.to_lowercase().chain(chars).collect(),
         None => String::new(),
-    }
-}
-
-const OVERLAY_FORMAT_FAILED_MARKER: &str = "(raw — formatting failed)";
-
-fn overlay_format_result_text(
-    raw_text: &str,
-    result: crate::ai_formatting::AiFormatResult,
-) -> String {
-    if result.text.trim().is_empty()
-        || result.status == crate::ai_formatting::AiFormatStatus::Failed
-    {
-        let raw = raw_text.trim_end();
-        if raw.is_empty() {
-            OVERLAY_FORMAT_FAILED_MARKER.to_string()
-        } else {
-            format!("{raw}\n\n{OVERLAY_FORMAT_FAILED_MARKER}")
-        }
-    } else {
-        result.text
     }
 }
 
@@ -739,13 +711,6 @@ const QUALITY_GATE_DROP_RATIO: f32 = 0.35;
 const QUALITY_GATE_DIFF_RATIO: f32 = 0.62;
 const QUALITY_GATE_CORRECTION_RATIO: f32 = 0.40;
 
-fn should_attempt_recorder_runtime_recovery(
-    microphone_status: PermissionStatus,
-    recorder_missing: bool,
-) -> bool {
-    microphone_status == PermissionStatus::Granted && recorder_missing
-}
-
 struct AtomicFlagGuard {
     flag: Arc<AtomicBool>,
 }
@@ -838,266 +803,6 @@ fn resolve_transcription_action_contract_mode(
     } else {
         TranscriptionActionContractMode::Raw
     }
-}
-
-/// Register the controller for overlay actions (commit/close fragment).
-pub fn register_overlay_controller(controller: Arc<RecordingController>) {
-    if OVERLAY_CONTROLLER.set(controller).is_err() {
-        warn!("Overlay controller already registered");
-    }
-}
-
-pub fn request_permission_runtime_reconcile() {
-    let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
-        debug!("Overlay controller not registered; skipping permission runtime reconcile");
-        return;
-    };
-
-    // P2.4/P3.4 DEFERRED (cross-cut, owned by the runtime/bin group):
-    // This builds a fresh current_thread runtime per call, which bypasses the
-    // intentional 4-worker cap of the main multi-threaded runtime
-    // (bin/codescribe.rs). The clean fix is to reuse a cached
-    // `tokio::runtime::Handle` from the main runtime. We CANNOT use
-    // `Handle::current()` here: the sole caller
-    // (ui/onboarding/permission_flow.rs::reconcile_permission_runtime_after_grant)
-    // is a synchronous fn driven from the AppKit/objc permission-grant flow on
-    // the main thread, which is NOT a tokio worker, so `Handle::current()` would
-    // panic with "there is no reactor running". A proper fix requires a
-    // startup-side `OnceLock<Handle>` populated in bin/codescribe.rs (the same
-    // cached-Handle pattern noted in ui/voice_chat/handlers/connectors.rs) —
-    // that lives outside this file's single-ownership domain. Until that cache
-    // exists, the per-call runtime is kept deliberately to avoid a main-thread
-    // panic regression.
-    std::thread::spawn(move || {
-        match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime.block_on(async move {
-                controller.reconcile_runtime_after_permission_grant().await;
-            }),
-            Err(error) => warn!("Failed to build runtime for permission reconcile: {error}"),
-        }
-    });
-}
-
-/// Stop the current recording and force the finish pipeline without waiting for VAD.
-///
-/// Note: this is the "external stop trigger" — distinct from `request_segment_commit`
-/// which saves a segment without stopping. The overlay's Commit button used to call
-/// this (legacy behavior = stop on Commit); now it routes through `request_segment_commit`
-/// for incremental clipping during a continuing hands-off session.
-pub fn request_recording_stop() {
-    let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
-        warn!("Overlay controller not registered; cannot stop recording");
-        return;
-    };
-
-    tokio::spawn(async move {
-        let result = controller.stop_recording_from_external_surface().await;
-        if let Err(e) = result {
-            error!("Overlay stop failed: {}", e);
-        }
-    });
-}
-
-/// Save the current recording segment (audio + transcript + Quick Notes) WITHOUT
-/// stopping the recorder. Buffer offset advances so the next segment starts from
-/// here. Recording stream continues; VAD worker keeps running.
-///
-/// Fire-and-forget — spawns async task to perform save off the calling thread.
-/// Errors are logged but not propagated to the caller (Overlay button handler).
-pub fn request_segment_commit() {
-    let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
-        warn!("Overlay controller not registered; cannot commit segment");
-        return;
-    };
-
-    tokio::spawn(async move {
-        if let Err(e) = controller.commit_segment(false).await {
-            error!("Segment commit failed: {}", e);
-        }
-    });
-}
-
-/// Save the current segment (like `request_segment_commit`) AND trigger LLM
-/// augmentation via the voice chat overlay handoff. Recording continues.
-///
-/// LLM handoff runs off-main-thread to avoid AppKit deadlock — the controller's
-/// `commit_segment(with_augment=true)` spawns the voice-chat invocation as a
-/// follow-up task after the synchronous save completes.
-pub fn request_segment_commit_and_augment() {
-    let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
-        warn!("Overlay controller not registered; cannot commit segment + augment");
-        return;
-    };
-
-    tokio::spawn(async move {
-        if let Err(e) = controller.commit_segment(true).await {
-            error!("Segment commit + augment failed: {}", e);
-        }
-    });
-}
-
-/// Format the decision-mode transcript with AI and return the result to the overlay.
-///
-/// Revision 2026-06-11: `[Format]` stays in the overlay and becomes editable
-/// after the async formatting pass. The callback is executed on the main queue.
-pub fn request_format_for_overlay<F>(text: String, on_done: F)
-where
-    F: FnOnce(String) + Send + 'static,
-{
-    if text.trim().is_empty() {
-        return;
-    }
-    let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
-        warn!("Overlay controller not registered; cannot format overlay transcript");
-        return;
-    };
-
-    tokio::spawn(async move {
-        let formatted = controller.format_decision_text(text).await;
-        Queue::main().exec_async(move || on_done(formatted));
-    });
-}
-
-/// Paste the current editable overlay text into the app captured before the overlay.
-pub fn request_overlay_paste(text: String) {
-    if text.trim().is_empty() {
-        return;
-    }
-    let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
-        warn!("Overlay controller not registered; pasting without target reactivation");
-        paste_overlay_text_with_target(text, None);
-        return;
-    };
-
-    tokio::spawn(async move {
-        let context_target = {
-            controller
-                .assistive_context
-                .read()
-                .await
-                .clone()
-                .and_then(|ctx| ctx.frontmost_app)
-        };
-        let prior_target = { controller.pre_overlay_frontmost_app.read().await.clone() };
-        let target_app = context_target.or(prior_target);
-        let config = { controller.config.read().await.clone() };
-        let paste_text = maybe_wrap_transcript_for_delivery(&text, &config, "dictation");
-        paste_overlay_text_with_target(paste_text, target_app);
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn activate_target_app(app_name: &str) {
-    unsafe {
-        let Some(ns_workspace) = Class::get("NSWorkspace") else {
-            return;
-        };
-        let workspace: crate::os::Id = msg_send![ns_workspace, sharedWorkspace];
-        let running: crate::os::Id = msg_send![workspace, runningApplications];
-        let count: usize = msg_send![running, count];
-        for i in 0..count {
-            let app: crate::os::Id = msg_send![running, objectAtIndex: i];
-            let name: crate::os::Id = msg_send![app, localizedName];
-            if !name.is_null() {
-                let name_cstr: *const std::ffi::c_char = msg_send![name, UTF8String];
-                if !name_cstr.is_null() {
-                    let name_str = std::ffi::CStr::from_ptr(name_cstr).to_string_lossy();
-                    if name_str == app_name {
-                        let _: bool = msg_send![app, activateWithOptions: 1u64];
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn paste_overlay_text_with_target(text: String, target_app: Option<String>) {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(app_name) = target_app {
-            Queue::main().exec_async({
-                let app_name = app_name.clone();
-                move || activate_target_app(&app_name)
-            });
-            std::thread::spawn(move || {
-                // Confirm focus actually landed on the target before pasting,
-                // instead of a fixed sleep that is too short under a CPU spike and
-                // lets the synthetic Cmd+V hit the wrong window. `activate_target_app`
-                // uses `activateWithOptions`, and `wait_for_frontmost_app` reads
-                // `NSWorkspace.frontmostApplication`, so the confirm works regardless
-                // of the activation mechanism. Budget is bounded so a stuck
-                // activation cannot wedge the paste path; on miss we proceed
-                // best-effort, matching the selection-capture path.
-                let budget = Duration::from_millis(200);
-                if !crate::os::selection::wait_for_frontmost_app(&app_name, budget) {
-                    debug!(
-                        "Overlay paste: focus did not confirm on '{}' within {:?}; pasting best-effort",
-                        app_name, budget
-                    );
-                }
-                Queue::main().exec_async(move || paste_overlay_text_now(&text));
-            });
-        } else {
-            Queue::main().exec_async(move || paste_overlay_text_now(&text));
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        paste_overlay_text_now(&text);
-    }
-}
-
-fn paste_overlay_text_now(text: &str) {
-    if cfg!(test) {
-        info!("Skipping overlay paste in tests ({} chars)", text.len());
-        return;
-    }
-    if let Err(e) = clipboard::paste_text(text) {
-        warn!("Overlay paste failed: {e}");
-    } else {
-        info!("Overlay transcript pasted ({} chars)", text.len());
-    }
-}
-
-/// Start a toggle recording session from the UI (CTA).
-pub fn request_toggle_recording_start(assistive: bool) {
-    let Some(controller) = OVERLAY_CONTROLLER.get().cloned() else {
-        warn!("Overlay controller not registered; cannot start recording");
-        return;
-    };
-
-    tokio::spawn(async move {
-        let event = HotkeyInput {
-            key_type: HotkeyType::Toggle,
-            action: HotkeyAction::Press,
-            assistive,
-            hold_mode: HoldMode::Raw,
-            force_raw: !assistive,
-            force_ai: assistive,
-        };
-        if let Err(e) = controller.handle_hotkey_event(event).await {
-            error!("CTA start recording failed: {}", e);
-        }
-    });
-}
-
-/// Rotate the backend agent thread/runtime boundary for a fresh chat thread.
-pub fn request_new_agent_thread() {
-    tokio::spawn(async {
-        match reset_agent_runtime_for_new_thread_impl().await {
-            Ok(generation) => {
-                debug!("UI requested new agent thread boundary (generation={generation})");
-            }
-            Err(error) => {
-                warn!("Failed to rotate agent thread boundary: {error}");
-            }
-        }
-    });
 }
 
 /// Rotate runtime + thread identity and return generation once backend reset completes.
@@ -1387,18 +1092,6 @@ impl RecordingController {
     /// Snapshot of current controller configuration
     pub async fn get_config(&self) -> Config {
         self.config.read().await.clone()
-    }
-
-    async fn reconcile_runtime_after_permission_grant(&self) {
-        let mut recorder_guard = self.recorder.lock().await;
-        if !should_attempt_recorder_runtime_recovery(check_microphone(), recorder_guard.is_none()) {
-            return;
-        }
-
-        *recorder_guard = Self::init_streaming_recorder("Permission runtime reconcile");
-        if recorder_guard.is_some() {
-            info!("Permission runtime reconcile: recorder runtime recovered after grant");
-        }
     }
 
     /// Check if VAD (silence detection) has triggered auto-stop
@@ -2804,22 +2497,6 @@ impl RecordingController {
         Ok(())
     }
 
-    /// Format the given transcript with AI for the overlay `[Format]` action.
-    ///
-    /// On-demand formatting for the decision-mode transcript. Falls back to the raw
-    /// text with a visible marker if AI formatting is unavailable or returns empty.
-    async fn format_decision_text(&self, text: String) -> String {
-        let language = self.config.read().await.whisper_language;
-        let result = crate::ai_formatting::format_text_with_status(
-            &text,
-            language.whisper_hint(),
-            false,
-            None,
-        )
-        .await;
-        overlay_format_result_text(&text, result)
-    }
-
     async fn stop_toggle_and_adjudicate(&self) -> Result<()> {
         if cfg!(test) {
             return self.stop_toggle_recording().await;
@@ -2982,34 +2659,6 @@ impl RecordingController {
             .store(false, Ordering::SeqCst);
         self.start_transition_in_flight
             .store(false, Ordering::SeqCst);
-    }
-
-    /// Save the current recording segment to disk WITHOUT stopping the recorder.
-    ///
-    /// Reads buffer slice [`last_segment_audio_offset`..now] from the underlying
-    /// recorder, writes WAV via `core::state::history::save_audio` + transcript
-    /// text via `save_entry_with_timestamp`, appends a Quick Notes line, then
-    /// advances `last_segment_audio_offset` for the next segment.
-    ///
-    /// `with_augment=true` adds an off-main-thread voice-chat handoff after
-    /// the synchronous save completes.
-    ///
-    /// Graceful no-op returns `Ok(())` if state is not `RecToggle` or recorder
-    /// is unavailable (protects against overlay button race). Errors only on
-    /// actual save failures (e.g. recorder buffer lock poisoned during
-    /// snapshot_wav).
-    async fn commit_segment(&self, _with_augment: bool) -> Result<()> {
-        let current_state = self.current_state().await;
-        if current_state != State::RecToggle {
-            warn!(
-                "commit_segment called while state={}; ignoring (legacy overlay action)",
-                current_state
-            );
-            return Ok(());
-        }
-
-        info!("commit_segment: legacy transcription overlay actions were removed; skipping");
-        Ok(())
     }
 
     pub async fn stop_recording_from_external_surface(&self) -> Result<()> {

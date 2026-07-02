@@ -53,18 +53,6 @@ async fn test_last_segment_audio_offset_atomic_advance_and_reset() {
 }
 
 #[test]
-fn test_renamed_request_recording_stop_is_callable() {
-    // Compile-time guard that the rename `request_recording_commit` →
-    // `request_recording_stop` shipped intact. If anyone re-renames or
-    // removes the function this test stops compiling. Body doesn't have to
-    // execute (OVERLAY_CONTROLLER won't be registered in tests, so the call
-    // gates out early with a warn!) — we just need the symbol to resolve.
-    let _: fn() = request_recording_stop;
-    let _: fn() = request_segment_commit;
-    let _: fn() = request_segment_commit_and_augment;
-}
-
-#[test]
 fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
     assert_eq!(effective_hold_start_delay_ms(200, false), 200);
     assert_eq!(effective_hold_start_delay_ms(200, true), 400);
@@ -77,48 +65,6 @@ fn test_toggle_stop_watchdog_allows_default_ai_attempt_budget() {
         toggle_stop_adjudicate_timeout() >= Duration::from_secs(90),
         "toggle stop watchdog must not fire before the default AI attempt/inter-chunk budget"
     );
-}
-
-#[test]
-fn test_overlay_format_result_marks_failed_formatting_raw() {
-    let out = overlay_format_result_text(
-        "raw transcript",
-        crate::ai_formatting::AiFormatResult {
-            text: "raw transcript".to_string(),
-            reasoning_text: None,
-            status: crate::ai_formatting::AiFormatStatus::Failed,
-        },
-    );
-
-    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
-}
-
-#[test]
-fn test_overlay_format_result_marks_empty_formatting_output() {
-    let out = overlay_format_result_text(
-        "raw transcript",
-        crate::ai_formatting::AiFormatResult {
-            text: "   ".to_string(),
-            reasoning_text: None,
-            status: crate::ai_formatting::AiFormatStatus::Applied,
-        },
-    );
-
-    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
-}
-
-#[test]
-fn test_overlay_format_result_keeps_applied_formatting() {
-    let out = overlay_format_result_text(
-        "raw transcript",
-        crate::ai_formatting::AiFormatResult {
-            text: "Formatted transcript.".to_string(),
-            reasoning_text: None,
-            status: crate::ai_formatting::AiFormatStatus::Applied,
-        },
-    );
-
-    assert_eq!(out, "Formatted transcript.");
 }
 
 #[tokio::test]
@@ -949,22 +895,6 @@ fn test_adjudicate_recording_truth_marks_low_logprob_as_unsafe() {
         Some("possible_hallucination_logprob")
     );
     assert_eq!(verdict.display_status, "Possible hallucination");
-}
-
-#[test]
-fn test_recorder_runtime_recovery_requires_granted_microphone_and_missing_recorder() {
-    assert!(should_attempt_recorder_runtime_recovery(
-        PermissionStatus::Granted,
-        true
-    ));
-    assert!(!should_attempt_recorder_runtime_recovery(
-        PermissionStatus::Denied,
-        true
-    ));
-    assert!(!should_attempt_recorder_runtime_recovery(
-        PermissionStatus::Granted,
-        false
-    ));
 }
 
 // ── Pure-function unit tests for truth helpers (push_typed_flag,
