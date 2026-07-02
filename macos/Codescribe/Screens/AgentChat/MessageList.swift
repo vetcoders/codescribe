@@ -58,11 +58,23 @@ struct MessageList: View {
 
 private struct YouTurn: View {
     let message: ChatMessage
+
+    /// Copies the raw prompt text; for a text-less image turn falls back to the
+    /// attachment filenames so the button still does something useful.
+    private var copyText: String {
+        message.text.isEmpty
+            ? message.attachments.map(\.name).joined(separator: "\n")
+            : message.text
+    }
+
     var body: some View {
         VStack(alignment: .trailing, spacing: 5) {
-            Text("You · \(message.timestamp)")
-                .font(CSFont.mono(10, .medium))
-                .foregroundStyle(CSColor.textFaintAlt)
+            HStack(spacing: 8) {
+                Text("You · \(message.timestamp)")
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                CopyMessageButton(text: copyText)
+            }
             VStack(alignment: .leading, spacing: 9) {
                 if !message.attachments.isEmpty {
                     WrapLayout(spacing: 6) {
@@ -70,8 +82,7 @@ private struct YouTurn: View {
                     }
                 }
                 if !message.text.isEmpty {
-                    CodeSpanText(raw: message.text, bodyColor: ChatPalette.nameActive)
-                        .multilineTextAlignment(.leading)
+                    MarkdownText(raw: message.text, bodyColor: ChatPalette.nameActive)
                 }
             }
             .padding(.horizontal, 15)
@@ -265,9 +276,15 @@ private struct AssistantTurn: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("Assistant · \(message.timestamp)")
-                .font(CSFont.mono(10, .medium))
-                .foregroundStyle(CSColor.textFaintAlt)
+            HStack(spacing: 8) {
+                Text("Assistant · \(message.timestamp)")
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                if !message.isThinking {
+                    CopyMessageButton(text: message.text)
+                }
+                Spacer(minLength: 0)
+            }
 
             VStack(alignment: .leading, spacing: 9) {
                 if message.isThinking {
@@ -281,14 +298,7 @@ private struct AssistantTurn: View {
                     if let secs = message.reasonedSeconds {
                         ReasonedChip(seconds: secs)
                     }
-                    if message.isStreaming {
-                        HStack(alignment: .bottom, spacing: 2) {
-                            CodeSpanText(raw: message.text)
-                            BlinkCaret()
-                        }
-                    } else {
-                        CodeSpanText(raw: message.text)
-                    }
+                    MarkdownText(raw: message.text, showsCaret: message.isStreaming)
                 }
             }
             .padding(.horizontal, 15)
@@ -313,14 +323,53 @@ private struct AssistantTurn: View {
     }
 }
 
+/// Puts a message's raw text on the general pasteboard — the single copy path
+/// shared by the bubble context menu and the inline copy button.
+private func chatCopy(_ text: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+}
+
 /// Right-click "Copy" that puts a message's raw text on the pasteboard.
 private struct CopyButton: View {
     let text: String
     var body: some View {
-        Button("Copy") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+        Button("Copy") { chatCopy(text) }
+    }
+}
+
+/// Subtle inline "copy" affordance in a turn's meta row (mono 10, faint until
+/// hovered). Copies the raw pre-render text via the same `chatCopy` path the
+/// context menu uses, then flips to a green "copied" for ~1.5s. Disabled when
+/// there is nothing to copy.
+private struct CopyMessageButton: View {
+    let text: String
+    @State private var copied = false
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            chatCopy(text)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 9))
+                Text(copied ? "copied" : "copy")
+                    .font(CSFont.mono(10, .medium))
+            }
+            .foregroundStyle(labelColor)
         }
+        .buttonStyle(.plain)
+        .disabled(text.isEmpty)
+        .onHover { hovering = $0 }
+        .help("Copy message")
+    }
+
+    private var labelColor: Color {
+        if copied { return CSColor.oliveLight }
+        return hovering ? CSColor.textMuted : CSColor.textFaintAlt
     }
 }
 
