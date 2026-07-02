@@ -4,6 +4,7 @@ import SwiftUI
 // Lab · User render but are inert (present-but-disabled), matching the mock.
 enum SettingsSection: String, CaseIterable, Identifiable {
     case creator = "Creator"
+    case shortcuts = "Shortcuts"
     case keys = "Keys"
     case prompts = "Prompts"
     case engine = "Engine"
@@ -14,7 +15,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var isInteractive: Bool {
         switch self {
-        case .creator, .keys, .prompts, .engine: return true
+        case .creator, .shortcuts, .keys, .prompts, .engine: return true
         case .audio, .voiceLab, .user: return false
         }
     }
@@ -39,6 +40,17 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var mcpTestPending: Set<String> = []
     @Published var lastError: String?
 
+    // MARK: - Hotkeys (mode bindings)
+
+    /// Persisted per-mode bindings as last read from disk.
+    @Published private(set) var modeBindings: [CsModeBinding] = []
+    /// The closed set of selectable gestures for the pickers.
+    @Published private(set) var bindingOptions: [CsBindingOption] = []
+    /// Editable copy the Shortcuts panel mutates before a save.
+    @Published private(set) var draftBindings: [CsModeBinding] = []
+    /// Conflicts for the CURRENT draft (recomputed on every edit).
+    @Published private(set) var bindingConflicts: [CsHotkeyConflict] = []
+
     /// Version label. No FFI surface exposes the running version, so this stays a
     /// build-time constant (tracked gap).
     let appVersion: String = "0.8.0"
@@ -47,17 +59,20 @@ final class SettingsViewModel: ObservableObject {
     private let permissionProbe: PermissionProbing
     private let agentStatus: AgentStatusEngine?
     private let mcpAdmin: MCPAdminEngine?
+    private let hotkeys: HotkeysEngine?
 
     init(
         engine: SettingsEngine? = nil,
         permissionProbe: PermissionProbing = NativePermissionProbe(),
         agentStatus: AgentStatusEngine? = nil,
-        mcpAdmin: MCPAdminEngine? = nil
+        mcpAdmin: MCPAdminEngine? = nil,
+        hotkeys: HotkeysEngine? = nil
     ) {
         self.engine = engine
         self.permissionProbe = permissionProbe
         self.agentStatus = agentStatus
         self.mcpAdmin = mcpAdmin
+        self.hotkeys = hotkeys
 
         // Keep construction side-effect free. SwiftUI may instantiate the
         // Settings scene at app launch; live config/keychain reads happen in
@@ -82,6 +97,7 @@ final class SettingsViewModel: ObservableObject {
         }
         refreshAgentStatus()
         reloadMcpServers()
+        loadHotkeys()
     }
 
     /// Re-probe just the agent substrate (readiness + MCP status). Cheap on-disk
@@ -91,6 +107,90 @@ final class SettingsViewModel: ObservableObject {
         guard let agentStatus else { return }
         agentReadiness = agentStatus.agenticReadiness()
         mcpStatus = agentStatus.mcpStatus()
+    }
+
+    // MARK: - Hotkeys (mode-binding editor)
+
+    /// Re-read persisted bindings + the option catalog, then reset the editable
+    /// draft to match disk and revalidate. A missing engine leaves the seeds.
+    func loadHotkeys() {
+        guard let hotkeys else { return }
+        modeBindings = hotkeys.modeBindings()
+        bindingOptions = hotkeys.availableBindings()
+        draftBindings = modeBindings
+        revalidateBindings()
+    }
+
+    /// Any blocking (reachability / system) conflict in the current draft.
+    var hasBlockingBindingConflicts: Bool { bindingConflicts.contains { $0.blocking } }
+
+    /// The draft differs from persisted state (something to save).
+    var hasPendingBindingChanges: Bool {
+        draftBindings.map(\.binding) != modeBindings.map(\.binding)
+    }
+
+    /// Save is allowed only for a changed, conflict-clean draft.
+    var canSaveBindings: Bool { hasPendingBindingChanges && !hasBlockingBindingConflicts }
+
+    /// Current draft binding for a mode (falls back to the persisted value).
+    func draftBinding(for mode: CsWorkMode) -> CsShortcutBinding {
+        draftBindings.first { $0.mode == mode }?.binding
+            ?? modeBindings.first { $0.mode == mode }?.binding
+            ?? .disabled
+    }
+
+    /// Stage a binding change for one mode WITHOUT persisting, then re-validate so
+    /// conflicts surface inline before the user commits.
+    func editDraftBinding(mode: CsWorkMode, binding: CsShortcutBinding) {
+        guard let index = draftBindings.firstIndex(where: { $0.mode == mode }) else { return }
+        let label = bindingOptions.first { $0.binding == binding }?.label
+            ?? draftBindings[index].bindingLabel
+        draftBindings[index] = CsModeBinding(
+            mode: mode,
+            modeLabel: draftBindings[index].modeLabel,
+            modeDescription: draftBindings[index].modeDescription,
+            binding: binding,
+            bindingLabel: label
+        )
+        revalidateBindings()
+    }
+
+    /// Recompute conflicts for the current draft via the revived shortcut registry.
+    func revalidateBindings() {
+        guard let hotkeys else {
+            bindingConflicts = []
+            return
+        }
+        bindingConflicts = hotkeys.validate(candidate: draftBindings)
+    }
+
+    /// Persist every changed mode through the core `set_mode_binding` contract
+    /// (each write live-reloads the detector), then re-read disk truth. Guarded by
+    /// `canSaveBindings`, so a conflicted or unchanged draft never writes.
+    func saveBindings() {
+        guard let hotkeys, canSaveBindings else { return }
+        do {
+            for draft in draftBindings {
+                let current = modeBindings.first { $0.mode == draft.mode }
+                if current?.binding != draft.binding {
+                    try hotkeys.setModeBinding(mode: draft.mode, binding: draft.binding)
+                }
+            }
+            loadHotkeys()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    /// Reset all bindings to the built-in defaults and re-read.
+    func resetBindingsToDefaults() {
+        guard let hotkeys else { return }
+        do {
+            try hotkeys.resetToDefaults()
+            loadHotkeys()
+        } catch {
+            lastError = String(describing: error)
+        }
     }
 
     // MARK: - MCP server management (writes through the atomic config store)
@@ -343,10 +443,12 @@ final class SettingsViewModel: ObservableObject {
             engine: MockSettingsEngine(),
             permissionProbe: MockPermissionProbe(.allGranted),
             agentStatus: MockAgentStatusEngine(),
-            mcpAdmin: MockMCPAdminEngine()
+            mcpAdmin: MockMCPAdminEngine(),
+            hotkeys: MockHotkeysEngine()
         )
         model.section = section
         model.reloadMcpServers()
+        model.loadHotkeys()
         return model
     }
 }

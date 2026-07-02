@@ -23,7 +23,8 @@ struct CodescribeRedesignApp: App {
             SettingsView(model: SettingsViewModel(
                 engine: RealSettingsEngine(),
                 agentStatus: RealAgentStatusEngine(),
-                mcpAdmin: RealMCPAdminEngine()
+                mcpAdmin: RealMCPAdminEngine(),
+                hotkeys: RealHotkeysEngine()
             ))
         }
     }

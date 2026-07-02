@@ -34,6 +34,8 @@ struct SettingsView: View {
                 switch model.section {
                 case .engine:
                     EnginePanel(model: model)
+                case .shortcuts:
+                    ShortcutsPanel(model: model)
                 case .keys:
                     KeysPanel(model: model)
                 case .prompts:
