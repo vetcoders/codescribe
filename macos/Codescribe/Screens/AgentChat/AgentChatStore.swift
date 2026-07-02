@@ -364,7 +364,7 @@ final class AgentChatStore: ObservableObject {
             let start = Date()
             do {
                 // REAL streaming: tokens land live as the agent emits them.
-                _ = try await engine.streamReply(
+                let finalText = try await engine.streamReply(
                     text,
                     threadId: backendId,
                     attachmentPaths: attachmentPaths,
@@ -387,6 +387,10 @@ final class AgentChatStore: ObservableObject {
                 update(assistantID, in: threadID) {
                     $0.isThinking = false
                     $0.isStreaming = false
+                    // A provider that emits only a final TextDone (no token deltas)
+                    // leaves the bubble empty; fall back to the assembled return so
+                    // the reply is never a blank bubble.
+                    if $0.text.isEmpty { $0.text = finalText }
                     $0.timestamp = self.now()
                 }
                 refreshThreads(selectingBackendId: backendId)
