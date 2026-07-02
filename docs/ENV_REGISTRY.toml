@@ -543,6 +543,13 @@ reload = "hot"
 category = "llm"
 description = "LLM endpoint for assistive mode (overrides LLM_ENDPOINT)"
 
+[vars.LLM_ANTHROPIC_ENDPOINT]
+default = "https://api.anthropic.com/v1/messages"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Anthropic Messages API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=anthropic-messages (override for proxies)"
+
 [vars.LLM_ASSISTIVE_MODEL]
 default = ""
 type = "string"

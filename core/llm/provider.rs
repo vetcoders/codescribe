@@ -45,6 +45,80 @@ impl ProviderKind {
             ProviderKind::AnthropicMessages => "anthropic-messages",
         }
     }
+
+    /// Human-readable label for provider pickers (Settings UI).
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            ProviderKind::OpenAiResponses => "OpenAI (Responses)",
+            ProviderKind::AnthropicMessages => "Anthropic (Messages)",
+        }
+    }
+
+    /// Env var / Keychain account holding the assistive-lane API key for this
+    /// provider. OpenAI shares the assistive-lane key; Anthropic has its own so
+    /// the two secrets coexist and switching providers never overwrites a key.
+    pub const fn api_key_env_key(self) -> &'static str {
+        match self {
+            ProviderKind::OpenAiResponses => "LLM_ASSISTIVE_API_KEY",
+            ProviderKind::AnthropicMessages => "LLM_ANTHROPIC_API_KEY",
+        }
+    }
+}
+
+/// Every provider identity, in Settings-picker order. The request layer branches
+/// on [`ProviderKind`]; this is the catalog the UI enumerates.
+pub const ALL_PROVIDERS: [ProviderKind; 2] = [
+    ProviderKind::OpenAiResponses,
+    ProviderKind::AnthropicMessages,
+];
+
+/// One selectable model for a provider — a stable `id` (sent on the wire) plus a
+/// display label. Curated per provider so Settings offers models the capability
+/// policy actually understands rather than a free-text field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelDescriptor {
+    pub id: &'static str,
+    pub display_name: &'static str,
+}
+
+const OPENAI_MODELS: &[ModelDescriptor] = &[
+    ModelDescriptor {
+        id: "gpt-5.5",
+        display_name: "GPT-5.5",
+    },
+    ModelDescriptor {
+        id: "gpt-4.1",
+        display_name: "GPT-4.1",
+    },
+];
+
+const ANTHROPIC_MODELS: &[ModelDescriptor] = &[
+    ModelDescriptor {
+        id: "claude-opus-4-8",
+        display_name: "Claude Opus 4.8",
+    },
+    ModelDescriptor {
+        id: "claude-sonnet-5",
+        display_name: "Claude Sonnet 5",
+    },
+    ModelDescriptor {
+        id: "claude-opus-4-7",
+        display_name: "Claude Opus 4.7",
+    },
+    ModelDescriptor {
+        id: "claude-haiku-4-5",
+        display_name: "Claude Haiku 4.5",
+    },
+];
+
+/// Curated model catalog for a provider. Anthropic entries are the current
+/// Claude family (Opus 4.8 / Sonnet 5 / Opus 4.7 / Haiku 4.5); unknown Anthropic
+/// models still resolve to a safe strict policy in [`capability_policy`].
+pub const fn provider_models(provider: ProviderKind) -> &'static [ModelDescriptor] {
+    match provider {
+        ProviderKind::OpenAiResponses => OPENAI_MODELS,
+        ProviderKind::AnthropicMessages => ANTHROPIC_MODELS,
+    }
 }
 
 impl Default for ProviderKind {
@@ -356,6 +430,43 @@ mod tests {
         let p = capability_policy(ProviderKind::AnthropicMessages, "claude-future-9");
         assert!(!p.allow_sampling_params);
         assert_eq!(p.budget_tokens, BudgetTokensPolicy::Hard400);
+    }
+
+    // ---- provider catalog (display / key account / models) ----
+
+    #[test]
+    fn every_provider_has_display_name_key_account_and_models() {
+        for kind in ALL_PROVIDERS {
+            assert!(!kind.display_name().is_empty());
+            assert!(!kind.api_key_env_key().is_empty());
+            assert!(
+                !provider_models(kind).is_empty(),
+                "{kind} must offer at least one model"
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_key_account_is_distinct_from_openai() {
+        assert_eq!(
+            ProviderKind::OpenAiResponses.api_key_env_key(),
+            "LLM_ASSISTIVE_API_KEY"
+        );
+        assert_eq!(
+            ProviderKind::AnthropicMessages.api_key_env_key(),
+            "LLM_ANTHROPIC_API_KEY"
+        );
+    }
+
+    #[test]
+    fn anthropic_catalog_models_resolve_through_capability_policy() {
+        // Every advertised Anthropic model must parse a coherent policy (the
+        // catalog and the policy matrix stay in lockstep).
+        for model in provider_models(ProviderKind::AnthropicMessages) {
+            let policy = capability_policy(ProviderKind::AnthropicMessages, model.id);
+            assert!(policy.refusal_stop_reason, "{} is Anthropic", model.id);
+            assert!(!policy.previous_response_id);
+        }
     }
 
     // ---- env resolution (serialized: mutates process env) ----

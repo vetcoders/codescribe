@@ -14,6 +14,7 @@ use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting
 use codescribe_core::config::{
     Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
 };
+use codescribe_core::llm::provider::{ALL_PROVIDERS, provider_models};
 
 use crate::{CsError, CsLanguage};
 
@@ -83,6 +84,10 @@ pub struct CsSettings {
     pub llm_formatting_model: Option<String>,
     pub llm_assistive_endpoint: Option<String>,
     pub llm_assistive_model: Option<String>,
+    /// Assistive/agent-lane provider identity (`LLM_ASSISTIVE_PROVIDER`):
+    /// `"openai-responses"` | `"anthropic-messages"`. Written back via
+    /// `update_config` with the same key; drives `create_default_provider`.
+    pub llm_assistive_provider: Option<String>,
     pub formatting_level: Option<String>,
     pub whisper_model: Option<String>,
     pub buffer_delay_ms: Option<u64>,
@@ -102,7 +107,33 @@ pub struct CsKeyStatus {
     pub stt_api_key_set: bool,
     pub llm_formatting_api_key_set: bool,
     pub llm_assistive_api_key_set: bool,
+    /// Anthropic assistive-lane key (`LLM_ANTHROPIC_API_KEY`) — separate from the
+    /// OpenAI assistive key so both providers can be configured at once.
+    pub llm_anthropic_api_key_set: bool,
     pub github_token_set: bool,
+}
+
+/// One selectable model for a provider (id sent on the wire + display label).
+#[derive(uniffi::Record)]
+pub struct CsModelOption {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// One assistive/agent-lane provider option: canonical id, label, the Keychain
+/// account holding its key (+ whether that key is present), and its model
+/// catalog. Sourced from the core provider-identity layer so the list stays in
+/// sync with the per-model capability policy.
+#[derive(uniffi::Record)]
+pub struct CsProviderOption {
+    /// `LLM_ASSISTIVE_PROVIDER` value: `"openai-responses"` | `"anthropic-messages"`.
+    pub id: String,
+    pub display_name: String,
+    /// Keychain account for this provider's assistive key.
+    pub api_key_account: String,
+    /// True when that key is present (mirrors `CsKeyStatus`, keyed per provider).
+    pub api_key_set: bool,
+    pub models: Vec<CsModelOption>,
 }
 
 /// One config key/value pair for `update_config_many` batch writes. `key` is a
@@ -186,6 +217,7 @@ impl CodescribeConfig {
             llm_formatting_model: env_string("LLM_FORMATTING_MODEL"),
             llm_assistive_endpoint: env_string("LLM_ASSISTIVE_ENDPOINT"),
             llm_assistive_model: env_string("LLM_ASSISTIVE_MODEL"),
+            llm_assistive_provider: env_string("LLM_ASSISTIVE_PROVIDER"),
             formatting_level: env_string("FORMATTING_LEVEL"),
             whisper_model: env_string("WHISPER_MODEL"),
             buffer_delay_ms: env_parse("CODESCRIBE_BUFFER_DELAY_MS"),
@@ -282,8 +314,38 @@ impl CodescribeConfig {
             stt_api_key_set: key_present("STT_API_KEY"),
             llm_formatting_api_key_set: key_present("LLM_FORMATTING_API_KEY"),
             llm_assistive_api_key_set: key_present("LLM_ASSISTIVE_API_KEY"),
+            llm_anthropic_api_key_set: key_present("LLM_ANTHROPIC_API_KEY"),
             github_token_set: key_present("GITHUB_TOKEN"),
         }
+    }
+
+    /// Assistive/agent-lane provider + model catalog with per-provider key
+    /// presence. The Settings picker uses this to offer providers, the models
+    /// each supports, and which key each needs. Loads config first so key
+    /// presence reflects Keychain-populated env. Selection is read from
+    /// `CsSettings.llm_assistive_provider` and written via `update_config`
+    /// (`LLM_ASSISTIVE_PROVIDER` / `LLM_ASSISTIVE_MODEL`).
+    pub fn available_providers(&self) -> Vec<CsProviderOption> {
+        let _ = Config::load();
+        ALL_PROVIDERS
+            .iter()
+            .map(|kind| {
+                let account = kind.api_key_env_key().to_string();
+                CsProviderOption {
+                    id: kind.as_str().to_string(),
+                    display_name: kind.display_name().to_string(),
+                    api_key_set: key_present(&account),
+                    api_key_account: account,
+                    models: provider_models(*kind)
+                        .iter()
+                        .map(|model| CsModelOption {
+                            id: model.id.to_string(),
+                            display_name: model.display_name.to_string(),
+                        })
+                        .collect(),
+                }
+            })
+            .collect()
     }
 
     /// Canonical list of Keychain account names (`KEYCHAIN_ACCOUNTS`).
