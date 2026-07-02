@@ -433,6 +433,27 @@ impl CodescribeConfig {
         codescribe::should_show_onboarding()
     }
 
+    /// Persisted resume step for the first-run wizard (0-based index into the
+    /// canonical 12-step flow). Returns `0` (Welcome) when no progress marker
+    /// exists yet, so a fresh install starts at the top.
+    pub fn onboarding_progress(&self) -> u32 {
+        codescribe::load_onboarding_progress() as u32
+    }
+
+    /// Persist the wizard's current step so a relaunch resumes where the user
+    /// left off. Writer for the `onboarding_progress` marker that the live gate
+    /// (`should_show_onboarding`) already reconciles against permission state.
+    pub fn save_onboarding_progress(&self, step: u32) {
+        codescribe::save_onboarding_progress(step as usize);
+    }
+
+    /// Mark onboarding complete: clears the resume marker and writes the
+    /// canonical `setup_done` sentinel so `should_show_onboarding()` returns
+    /// `false` on the next launch.
+    pub fn mark_onboarding_done(&self) {
+        codescribe::mark_onboarding_done();
+    }
+
     /// First-run operating lane chosen during onboarding (`"basic"` /
     /// `"agentic"`), or `None` when not yet chosen.
     pub fn onboarding_mode(&self) -> Option<String> {

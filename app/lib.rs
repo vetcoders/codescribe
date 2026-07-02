@@ -30,7 +30,10 @@ pub mod controller;
 pub mod presentation;
 
 #[cfg(target_os = "macos")]
-pub use os::onboarding::should_show_onboarding;
+pub use os::onboarding::{
+    load_onboarding_progress, mark_onboarding_done, save_onboarding_progress,
+    should_show_onboarding,
+};
 
 #[cfg(target_os = "macos")]
 pub use os::clipboard;

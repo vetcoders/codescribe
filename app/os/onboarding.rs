@@ -31,12 +31,44 @@ fn onboarding_progress_path() -> PathBuf {
     Config::config_dir().join("onboarding_progress")
 }
 
-fn save_onboarding_progress(step_index: usize) {
+/// Canonical first-run wizard step count: `Welcome`, `Mode`, 5× `Permission`,
+/// `Language`, `ApiKey`, `HotkeyMode`, `AgenticReadiness`, `Done`. Mirrors the
+/// SwiftUI `OnboardingStep` flow; kept here so the persisted resume index can be
+/// clamped without depending on the (excised) AppKit step table.
+const TOTAL_ONBOARDING_STEPS: usize = 12;
+
+/// Persist the wizard's current step so a relaunch resumes where the user left
+/// off. Writer half of the `onboarding_progress` marker; the SwiftUI wizard is
+/// now the reader via [`load_onboarding_progress`].
+pub fn save_onboarding_progress(step_index: usize) {
     let path = onboarding_progress_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     let _ = fs::write(path, step_index.to_string());
+}
+
+/// Resume step persisted by [`save_onboarding_progress`], clamped to the last
+/// valid step. Returns `0` (Welcome) when no marker exists or it is unparsable.
+pub fn load_onboarding_progress() -> usize {
+    let raw = fs::read_to_string(onboarding_progress_path()).ok();
+    let step = raw
+        .as_deref()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    step.min(TOTAL_ONBOARDING_STEPS.saturating_sub(1))
+}
+
+/// Mark first-run onboarding complete: clear the resume marker and write the
+/// canonical `setup_done` sentinel so [`should_show_onboarding`] returns `false`
+/// on the next launch.
+pub fn mark_onboarding_done() {
+    let _ = fs::remove_file(onboarding_progress_path());
+    let setup_done = setup_done_path();
+    if let Some(parent) = setup_done.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(setup_done, "done");
 }
 
 const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 4] = [
