@@ -469,6 +469,11 @@ final class SettingsViewModel: ObservableObject {
         settings.llmAssistiveProvider = id
         persist("LLM_ASSISTIVE_PROVIDER", id)
         refreshAssistiveModels()
+        // The stored model belonged to the previous provider; keeping it would make
+        // the first send hit a model the new provider doesn't serve (e.g. gpt-5.5 on
+        // Anthropic). Re-anchor to the new provider's first discovered model, or
+        // clear it so the provider default applies.
+        setAssistiveModel(discoveredModels.first?.id ?? "")
     }
 
     func setAssistiveModel(_ id: String) {
