@@ -1,0 +1,61 @@
+---
+// Self-hosted fonts (WEBSITE_SPEC §2). Per-weight CSS includes the latin-ext
+// subset via unicode-range — required for the verbatim Polish copy in the
+// Formatting section (ą/ę/ł/ż…). font-display: swap is the @fontsource default.
+import '@fontsource/space-grotesk/400.css';
+import '@fontsource/space-grotesk/500.css';
+import '@fontsource/space-grotesk/600.css';
+import '@fontsource/space-grotesk/700.css';
+import '@fontsource/jetbrains-mono/400.css';
+import '@fontsource/jetbrains-mono/500.css';
+import '@fontsource/jetbrains-mono/600.css';
+import '../styles/global.css';
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = 'codescribe — a macOS voice control layer for text, code & AI agents',
+  description = 'codescribe is a macOS-native voice control layer for text, code and AI agents. Not voice typing — voice to intent to action. Dictate, format, ask, remember, and dispatch work from one always-available overlay.',
+} = Astro.props;
+
+// Absolute URLs for canonical / social cards. SITE = https://vetcoders.github.io,
+// BASE_URL = /codescribe/ → canonical https://vetcoders.github.io/codescribe/
+const site = import.meta.env.SITE ?? 'https://vetcoders.github.io';
+const base = import.meta.env.BASE_URL; // "/codescribe/"
+const canonical = new URL(base, site).href;
+const ogImage = new URL(base.replace(/\/$/, '') + '/og.png', site).href;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <meta name="theme-color" content="#090a0d" />
+    <link rel="icon" type="image/png" href={base.replace(/\/$/, '') + '/icon.png'} />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="codescribe" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <slot />
+  </body>
+</html>
