@@ -1,0 +1,50 @@
+---
+// Control layer manifesto (WEBSITE_SPEC §4.10).
+---
+
+<section class="section control" data-screen-label="Control layer" aria-labelledby="control-title">
+  <div class="container">
+    <h2 id="control-title">Your voice becomes<br />the <span class="accent">control layer.</span></h2>
+    <p class="sub">
+      Not a tool you open. A layer that sits over everything you already do — and
+      turns talking into doing.
+    </p>
+    <a class="btn" href="#install">Install from source</a>
+  </div>
+</section>
+
+<style>
+  .control {
+    padding: 160px 24px;
+    text-align: center;
+    background: radial-gradient(60% 80% at 50% 50%, rgba(217, 119, 87, 0.08), transparent 70%);
+  }
+  .container { max-width: 860px; }
+  h2 {
+    font: 700 clamp(40px, 6.4vw, 72px) / 1.04 var(--font-display);
+    letter-spacing: -0.04em;
+    margin: 0;
+    color: var(--ink);
+  }
+  .accent { color: var(--terracotta); }
+  .sub {
+    font: 400 17px / 1.6 var(--font-display);
+    color: var(--muted-2);
+    margin: 28px auto 0;
+    max-width: 440px;
+  }
+  .btn {
+    display: inline-block;
+    text-decoration: none;
+    margin-top: 36px;
+    padding: 15px 30px;
+    background: var(--terracotta);
+    border-radius: 11px;
+    font: 600 15px var(--font-display);
+    color: #0a0a0a;
+    box-shadow: 0 8px 24px rgba(217, 119, 87, 0.3);
+  }
+  @media (max-width: 480px) {
+    .control { padding: 96px 20px; }
+  }
+</style>
