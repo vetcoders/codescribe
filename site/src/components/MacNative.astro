@@ -88,9 +88,14 @@ const shots = [
     max-width: 520px;
     margin: 0 auto;
   }
+  /* Uniform 2x2 with equal-height media boxes. auto-fit + minmax gave ragged
+     rows because the tray shot is portrait (808x1646) while the others are
+     landscape — the portrait stretched its row and left dead space. Now every
+     frame is the same fixed-height card and each transparent shot floats,
+     centered and complete, inside it (object-fit: contain). */
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    grid-template-columns: repeat(2, 1fr);
     gap: 18px;
   }
   .frame {
@@ -99,16 +104,31 @@ const shots = [
     overflow: hidden;
     box-shadow: 0 20px 44px rgba(0, 0, 0, 0.45);
     background: #0d0f13;
+    height: 420px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
   }
   .frame img {
-    width: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
     height: auto;
+    object-fit: contain;
     display: block;
   }
   .caption {
     font: 500 11px var(--font-mono);
     color: var(--muted-3);
     margin: 12px 0 0;
+  }
+  /* One-column stack below tablet; media height goes auto (capped) so the
+     portrait tray isn't letterboxed into a tall void. */
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr; }
+    .frame { height: auto; }
+    .frame img { max-height: 70vw; }
   }
   @media (max-width: 480px) {
     .macnative { padding: 84px 20px; }
