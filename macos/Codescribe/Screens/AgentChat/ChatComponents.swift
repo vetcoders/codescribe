@@ -92,11 +92,30 @@ struct MarkdownText: View {
         case let .task(indent, done, text):
             taskRow(indent: indent, done: done, text: text, isLast: isLast)
         case let .blockquote(text):
-            blockquoteView(text, isLast: isLast)
+            blockquoteView(text)
         case let .table(header, rows):
             tableView(header: header, rows: rows)
         case let .code(content):
             codeBlock(content, isLast: isLast)
+        case .thematicBreak:
+            Rectangle()
+                .fill(CSColor.hairline(0.12))
+                .frame(height: 1)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+        }
+    }
+
+    /// Renders a list of already-parsed blocks (used for blockquote
+    /// bodies). No streaming caret — nested content is never the live turn tail.
+    // `AnyView` breaks the otherwise-recursive opaque return type: blockView ->
+    // blockquoteView/calloutView -> blocksView -> blockView would define `some
+    // View` in terms of itself, which the compiler rejects.
+    private func blocksView(_ blocks: [MDBlock]) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                AnyView(blockView(block, isLast: false))
+            }
         }
     }
 
@@ -157,42 +176,39 @@ struct MarkdownText: View {
         .padding(.leading, CGFloat(min(indent, 4)) * 16)
     }
 
-    /// A `>` blockquote (single- or multi-line; deeper `>>` nesting collapses to
-    /// one level). Terracotta hairline bar on the left, dimmed body text.
+    /// A `>` blockquote. Its inner text is parsed recursively so nested lists,
+    /// code fences and quotes render properly (not half-raw). Terracotta hairline
+    /// bar on the left, dimmed body.
     @ViewBuilder
-    private func blockquoteView(_ text: String, isLast: Bool) -> some View {
+    private func blockquoteView(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 9) {
             RoundedRectangle(cornerRadius: 1, style: .continuous)
                 .fill(CSColor.terracotta.opacity(0.55))
                 .frame(width: 2.5)
-            inlineText(text, baseFont: CSFont.ui(size), baseColor: CSColor.textMutedAlt,
-                       fontSize: size, isLast: isLast)
+            blocksView(MDBlock.parse(text))
+                .opacity(0.9)
         }
         .fixedSize(horizontal: false, vertical: true)
     }
 
     /// A GFM pipe table. Header row is mono + high-contrast over a faint fill;
-    /// hairline separators between rows; each cell renders inline markdown and
-    /// wraps rather than overflowing (columns share width via `maxWidth:
-    /// .infinity`), so a wide table never blows out the bubble.
+    /// hairline separators between rows. Columns share the bubble width via a
+    /// custom `Layout` that weights each column by its longest cell but keeps a
+    /// per-column minimum, so a single very long column can't crush the others
+    /// down to word-per-line slivers. Cell text wraps normally within its width.
     @ViewBuilder
     private func tableView(header: [String], rows: [[String]]) -> some View {
         let columnCount = max(header.count, rows.map(\.count).max() ?? 0)
-        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
-            GridRow {
-                ForEach(0..<columnCount, id: \.self) { column in
-                    tableCell(cell(header, column), isHeader: true)
-                }
+        let weights = columnWeights(header: header, rows: rows, count: columnCount)
+        MDTableLayout(columns: columnCount, rowCount: rows.count + 1, weights: weights) {
+            ForEach(0..<columnCount, id: \.self) { column in
+                tableCell(cell(header, column), isHeader: true,
+                          isLastRow: rows.isEmpty)
             }
-            Divider().overlay(CSColor.hairline(0.12))
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                GridRow {
-                    ForEach(0..<columnCount, id: \.self) { column in
-                        tableCell(cell(row, column), isHeader: false)
-                    }
-                }
-                if index < rows.count - 1 {
-                    Divider().overlay(CSColor.hairline(0.06))
+                ForEach(0..<columnCount, id: \.self) { column in
+                    tableCell(cell(row, column), isHeader: false,
+                              isLastRow: index == rows.count - 1)
                 }
             }
         }
@@ -208,8 +224,24 @@ struct MarkdownText: View {
         column < row.count ? row[column] : ""
     }
 
+    /// Per-column weight = its longest cell length, floored so tiny columns stay
+    /// legible and capped so one long column doesn't monopolize the width.
+    private func columnWeights(header: [String], rows: [[String]],
+                               count: Int) -> [CGFloat] {
+        guard count > 0 else { return [] }
+        var weights = [CGFloat](repeating: 1, count: count)
+        func consider(_ row: [String]) {
+            for column in 0..<count where column < row.count {
+                weights[column] = max(weights[column], CGFloat(row[column].count))
+            }
+        }
+        consider(header)
+        rows.forEach(consider)
+        return weights.map { min(max($0, 3), 48) }
+    }
+
     @ViewBuilder
-    private func tableCell(_ text: String, isHeader: Bool) -> some View {
+    private func tableCell(_ text: String, isHeader: Bool, isLastRow: Bool) -> some View {
         let cellSize = isHeader ? size - 2 : size - 1
         let font = isHeader ? CSFont.mono(cellSize, .semibold) : CSFont.ui(cellSize)
         let color = isHeader ? CSColor.textHigh : bodyColor
@@ -219,10 +251,17 @@ struct MarkdownText: View {
             .lineSpacing(3)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(isHeader ? CSColor.surfaceRaised(0.05) : Color.clear)
+            .overlay(alignment: .bottom) {
+                if !isLastRow {
+                    Rectangle()
+                        .fill(CSColor.hairline(isHeader ? 0.12 : 0.06))
+                        .frame(height: 1)
+                }
+            }
     }
 
     @ViewBuilder
@@ -263,7 +302,8 @@ struct MarkdownText: View {
             interpretedSyntax: .inlineOnlyPreservingWhitespace,
             failurePolicy: .returnPartiallyParsedIfPossible
         )
-        guard var attr = try? AttributedString(markdown: text, options: options) else {
+        let escaped = escapingInlineHTML(text)
+        guard var attr = try? AttributedString(markdown: escaped, options: options) else {
             var raw = AttributedString(text)
             raw.font = baseFont
             raw.foregroundColor = baseColor
@@ -291,6 +331,149 @@ struct MarkdownText: View {
         }
         return attr
     }
+
+    /// Backslash-escape `<`/`>` that live outside inline code spans so raw HTML
+    /// tags always render as literal, predictable text instead of being dropped
+    /// by the markdown parser. Content inside `` `…` `` code spans is copied
+    /// verbatim (code keeps its literal angle brackets, no stray backslashes).
+    static func escapingInlineHTML(_ text: String) -> String {
+        let chars = Array(text)
+        var out = ""
+        out.reserveCapacity(chars.count + 8)
+        var index = 0
+        while index < chars.count {
+            let char = chars[index]
+            if char == "`" {
+                var open = 0
+                while index < chars.count, chars[index] == "`" { open += 1; index += 1 }
+                out += String(repeating: "`", count: open)
+                // Copy verbatim until a backtick run of equal length closes it.
+                while index < chars.count {
+                    if chars[index] == "`" {
+                        var close = 0
+                        while index < chars.count, chars[index] == "`" {
+                            close += 1; index += 1
+                        }
+                        out += String(repeating: "`", count: close)
+                        if close == open { break }
+                    } else {
+                        out.append(chars[index]); index += 1
+                    }
+                }
+                continue
+            }
+            switch char {
+            case "<": out += "\\<"
+            case ">": out += "\\>"
+            default: out.append(char)
+            }
+            index += 1
+        }
+        return out
+    }
+}
+
+/// Lays a pipe-table's cells into a proportional grid. Column widths come from
+/// per-column weights (longest cell), each floored to `minColumn` so a very long
+/// column can't squeeze the rest to slivers; leftover width is shared by weight.
+/// Cells are placed row-major: `subviews[row * columns + column]`.
+struct MDTableLayout: Layout {
+    let columns: Int
+    let rowCount: Int
+    let weights: [CGFloat]
+    var minColumn: CGFloat = 46
+
+    struct Cache {
+        var columnWidths: [CGFloat] = []
+        var rowHeights: [CGFloat] = []
+        var width: CGFloat = -1
+    }
+
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+
+    /// Distribute `total` width across columns proportional to weight, but never
+    /// below `minColumn`; columns pinned to the floor drop out and the remainder
+    /// re-shares among the rest.
+    private func columnWidths(for total: CGFloat) -> [CGFloat] {
+        guard columns > 0 else { return [] }
+        var widths = [CGFloat](repeating: minColumn, count: columns)
+        var active = Array(0..<columns)
+        var remaining = total
+        while !active.isEmpty {
+            let weightSum = active.reduce(CGFloat(0)) { $0 + weights[$1] }
+            guard weightSum > 0 else {
+                let each = max(minColumn, remaining / CGFloat(active.count))
+                for column in active { widths[column] = each }
+                break
+            }
+            var pinned: [Int] = []
+            for column in active where remaining * weights[column] / weightSum < minColumn {
+                pinned.append(column)
+            }
+            if pinned.isEmpty {
+                for column in active {
+                    widths[column] = remaining * weights[column] / weightSum
+                }
+                break
+            }
+            for column in pinned { widths[column] = minColumn; remaining -= minColumn }
+            active.removeAll { pinned.contains($0) }
+            if remaining <= 0 { break }
+        }
+        return widths
+    }
+
+    private func resolve(_ subviews: Subviews, total: CGFloat, cache: inout Cache) {
+        if cache.width == total, !cache.columnWidths.isEmpty { return }
+        let widths = columnWidths(for: total)
+        var heights = [CGFloat](repeating: 0, count: rowCount)
+        for (offset, subview) in subviews.enumerated() {
+            let row = offset / columns
+            let column = offset % columns
+            guard row < rowCount, column < columns else { continue }
+            let height = subview.sizeThatFits(
+                ProposedViewSize(width: widths[column], height: nil)
+            ).height
+            heights[row] = max(heights[row], height)
+        }
+        cache.columnWidths = widths
+        cache.rowHeights = heights
+        cache.width = total
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews,
+                      cache: inout Cache) -> CGSize {
+        let total = proposal.width ?? 320
+        resolve(subviews, total: total, cache: &cache)
+        return CGSize(width: total, height: cache.rowHeights.reduce(0, +))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout Cache) {
+        resolve(subviews, total: bounds.width, cache: &cache)
+        let widths = cache.columnWidths
+        let heights = cache.rowHeights
+        var xOffsets = [CGFloat](repeating: 0, count: columns)
+        var accX: CGFloat = 0
+        for column in 0..<columns { xOffsets[column] = accX; accX += widths[column] }
+        var yOffsets = [CGFloat](repeating: 0, count: rowCount)
+        var accY: CGFloat = 0
+        for row in 0..<rowCount { yOffsets[row] = accY; accY += heights[row] }
+        for (offset, subview) in subviews.enumerated() {
+            let row = offset / columns
+            let column = offset % columns
+            guard row < rowCount, column < columns else {
+                subview.place(at: bounds.origin,
+                              proposal: ProposedViewSize(width: 0, height: 0))
+                continue
+            }
+            subview.place(
+                at: CGPoint(x: bounds.minX + xOffsets[column],
+                            y: bounds.minY + yOffsets[row]),
+                proposal: ProposedViewSize(width: widths[column], height: heights[row])
+            )
+        }
+    }
 }
 
 /// One block of parsed markdown. Line-based, intentionally small — enough for
@@ -304,6 +487,7 @@ enum MDBlock: Equatable {
     case blockquote(String)
     case table(header: [String], rows: [[String]])
     case code(String)
+    case thematicBreak
 
     /// Split raw text into blocks. Consecutive plain lines (no blank line
     /// between) coalesce into one paragraph, preserving their newlines.
@@ -324,22 +508,38 @@ enum MDBlock: Equatable {
             let line = lines[i]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            if trimmed.hasPrefix("```") {
+            // A fenced code block opened with N backticks closes only on a line
+            // whose backtick run is >= N (CommonMark). This lets a ````md block
+            // carry inner ```ts fences verbatim instead of closing early.
+            if let openTicks = openingFence(trimmed) {
                 flush()
                 var body: [String] = []
                 i += 1
-                while i < lines.count,
-                      !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                while i < lines.count {
+                    let closeTrim = lines[i].trimmingCharacters(in: .whitespaces)
+                    if let closeTicks = closingFence(closeTrim), closeTicks >= openTicks {
+                        i += 1  // consume the closing fence
+                        break
+                    }
                     body.append(lines[i])
                     i += 1
                 }
-                if i < lines.count { i += 1 }  // consume closing fence when present
                 blocks.append(.code(body.joined(separator: "\n")))
                 continue
             }
 
             if trimmed.isEmpty {
                 flush()
+                i += 1
+                continue
+            }
+
+            // A thematic break: 3+ of the same `-`/`*`/`_` on a line of nothing
+            // else (spaces allowed). Table separators are consumed by the table
+            // branch below before they can reach here, so a lone `---` is an HR.
+            if isThematicBreak(trimmed) {
+                flush()
+                blocks.append(.thematicBreak)
                 i += 1
                 continue
             }
@@ -452,14 +652,41 @@ enum MDBlock: Equatable {
                      text: String(rest).trimmingCharacters(in: .whitespaces))
     }
 
-    /// Strip every leading `>` / space so `>> quoted` collapses to `quoted`
-    /// (nesting is flattened to a single level, per the chat renderer's scope).
+    /// Strip a single leading `>` marker (plus one optional space). Keeping the
+    /// remainder intact — including any inner `>` or list indentation — lets the
+    /// blockquote body be re-parsed recursively (nested quotes, lists, fences).
     private static func stripQuoteMarker(_ line: String) -> String {
         var slice = Substring(line)
-        while let first = slice.first, first == ">" || first == " " {
-            slice = slice.dropFirst()
-        }
+        if slice.first == ">" { slice = slice.dropFirst() }
+        if slice.first == " " { slice = slice.dropFirst() }
         return String(slice)
+    }
+
+    /// Leading backtick count of an opening fence (>= 3), or nil. The info
+    /// string after the ticks must not itself contain a backtick (CommonMark),
+    /// which keeps an inline `` `code` `` run from being read as a fence.
+    private static func openingFence(_ s: String) -> Int? {
+        let ticks = s.prefix { $0 == "`" }.count
+        guard ticks >= 3 else { return nil }
+        return s.dropFirst(ticks).contains("`") ? nil : ticks
+    }
+
+    /// Backtick count of a closing fence line (>= 3, nothing but ticks and
+    /// trailing spaces), or nil.
+    private static func closingFence(_ s: String) -> Int? {
+        let ticks = s.prefix { $0 == "`" }.count
+        guard ticks >= 3 else { return nil }
+        return s.dropFirst(ticks).allSatisfy { $0 == " " } ? ticks : nil
+    }
+
+    /// A CommonMark thematic break: 3+ of a single `-`/`*`/`_`, with only spaces
+    /// otherwise. Also matches spaced forms like `- - -` and `* * *`.
+    private static func isThematicBreak(_ s: String) -> Bool {
+        let core = s.filter { $0 != " " && $0 != "\t" }
+        guard core.count >= 3, let first = core.first, "-*_".contains(first) else {
+            return false
+        }
+        return core.allSatisfy { $0 == first }
     }
 
     /// Split a pipe row into trimmed cells, dropping the optional outer pipes.
