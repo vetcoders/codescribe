@@ -507,7 +507,6 @@ fn selected_text_from_frontmost(
     //
     // Some apps report `AXSelectedTextRange.length == 0` even when `AXSelectedText` is non-empty,
     // so we do *not* early-return on length==0 before checking `AXSelectedText`.
-    let sel_len = crate::os::selection::get_selected_text_length();
     if let Some(selected) = crate::os::selection::get_selected_text(max_chars) {
         return Some(selected);
     }
@@ -525,6 +524,10 @@ fn selected_text_from_frontmost(
         );
         return None;
     }
+    // Only now (fallback path) pay for the system-wide AX length probe — it feeds
+    // this diagnostic only, and the AX-selection early-return above skips it
+    // entirely on the common success path.
+    let sel_len = crate::os::selection::get_selected_text_length();
     debug!(
         "Assistive context: AX gave no selection for {:?} (range len={:?}); trying Cmd+C fallback",
         frontmost_app, sel_len
