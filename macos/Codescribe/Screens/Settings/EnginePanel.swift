@@ -58,6 +58,9 @@ struct EnginePanel: View {
                     .foregroundStyle(CSColor.textFaint)
             }
             .padding(.top, 16)
+
+            AgentStatusSection(model: model)
+                .padding(.top, 30)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)

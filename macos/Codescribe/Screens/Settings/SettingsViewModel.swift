@@ -32,6 +32,8 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var keyStatus: CsKeyStatus
     @Published private(set) var configDir: String
     @Published private(set) var needsOnboarding: Bool
+    @Published private(set) var agentReadiness: CsAgenticReadiness
+    @Published private(set) var mcpStatus: CsMcpStatusReport
     @Published var lastError: String?
 
     /// Version label. No FFI surface exposes the running version, so this stays a
@@ -40,13 +42,16 @@ final class SettingsViewModel: ObservableObject {
 
     private let engine: SettingsEngine?
     private let permissionProbe: PermissionProbing
+    private let agentStatus: AgentStatusEngine?
 
     init(
         engine: SettingsEngine? = nil,
-        permissionProbe: PermissionProbing = NativePermissionProbe()
+        permissionProbe: PermissionProbing = NativePermissionProbe(),
+        agentStatus: AgentStatusEngine? = nil
     ) {
         self.engine = engine
         self.permissionProbe = permissionProbe
+        self.agentStatus = agentStatus
 
         // Keep construction side-effect free. SwiftUI may instantiate the
         // Settings scene at app launch; live config/keychain reads happen in
@@ -56,6 +61,8 @@ final class SettingsViewModel: ObservableObject {
         self.keyStatus = .sampleAllSet
         self.configDir = ""
         self.needsOnboarding = false
+        self.agentReadiness = .sample
+        self.mcpStatus = .sample
     }
 
     /// Re-read live state (permissions can change while the window is open).
@@ -67,6 +74,16 @@ final class SettingsViewModel: ObservableObject {
             configDir = engine.configDir()
             needsOnboarding = engine.shouldShowOnboarding()
         }
+        refreshAgentStatus()
+    }
+
+    /// Re-probe just the agent substrate (readiness + MCP status). Cheap on-disk
+    /// reads; used by the Engine panel's "Refresh" action so re-checking MCP does
+    /// not disturb the rest of the panel.
+    func refreshAgentStatus() {
+        guard let agentStatus else { return }
+        agentReadiness = agentStatus.agenticReadiness()
+        mcpStatus = agentStatus.mcpStatus()
     }
 
     func select(_ target: SettingsSection) {
@@ -215,7 +232,8 @@ final class SettingsViewModel: ObservableObject {
     static func preview(_ section: SettingsSection) -> SettingsViewModel {
         let model = SettingsViewModel(
             engine: MockSettingsEngine(),
-            permissionProbe: MockPermissionProbe(.allGranted)
+            permissionProbe: MockPermissionProbe(.allGranted),
+            agentStatus: MockAgentStatusEngine()
         )
         model.section = section
         return model

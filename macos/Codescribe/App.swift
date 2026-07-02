@@ -20,7 +20,10 @@ struct CodescribeRedesignApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(model: SettingsViewModel(engine: RealSettingsEngine()))
+            SettingsView(model: SettingsViewModel(
+                engine: RealSettingsEngine(),
+                agentStatus: RealAgentStatusEngine()
+            ))
         }
     }
 }
