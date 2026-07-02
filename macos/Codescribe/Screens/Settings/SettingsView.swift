@@ -21,7 +21,7 @@ struct SettingsView: View {
             detail
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 880, minHeight: 620)
+        .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .background(Self.windowGradient.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .onAppear { model.refresh() }

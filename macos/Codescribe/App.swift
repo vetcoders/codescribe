@@ -27,6 +27,10 @@ struct CodescribeRedesignApp: App {
                 hotkeys: RealHotkeysEngine()
             ))
         }
+        // Make the Settings window user-resizable: the content's `.frame` floor
+        // becomes the window minimum, and it can grow from there (default is a
+        // fixed content-sized window). SwiftUI restores the frame across launches.
+        .windowResizability(.contentMinSize)
     }
 }
 
