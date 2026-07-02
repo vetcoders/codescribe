@@ -295,6 +295,7 @@ impl CodescribeConfig {
                 msg: error.to_string(),
             })?;
         reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
         Ok(())
     }
 
@@ -329,6 +330,7 @@ impl CodescribeConfig {
                 msg: error.to_string(),
             })?;
         reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
         Ok(())
     }
 
@@ -444,6 +446,7 @@ impl CodescribeConfig {
         // contract) and runtime readers consume refreshed Config snapshots, so
         // this mirrors the core's `ui_thread_set_env` after `save_key`.
         unsafe { std::env::set_var(&account, &secret) };
+        crate::hotkeys::refresh_live_controller_config();
         Ok(())
     }
 

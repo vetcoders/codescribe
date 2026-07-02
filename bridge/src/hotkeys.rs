@@ -52,6 +52,31 @@ fn current_controller(controller_store: &SharedController) -> Option<Arc<Recordi
         .map(Arc::clone)
 }
 
+/// Process-global tokio runtime handle, captured when the hotkey listener
+/// starts. Lets sync surfaces (e.g. the Settings config writer) schedule async
+/// controller work on the runtime the shared controller already lives on.
+fn shared_runtime_handle() -> &'static OnceLock<Handle> {
+    static HANDLE: OnceLock<Handle> = OnceLock::new();
+    &HANDLE
+}
+
+/// Push freshly-persisted settings into the live shared controller so a Settings
+/// write takes effect without an app restart (language, AI formatting, hold
+/// delays, …). No-op before the runtime/controller exist — a controller created
+/// later already loads fresh config on construction. Runs `set_config` on the
+/// hotkey runtime the controller lives on, mirroring how `start()` drives it.
+pub(crate) fn refresh_live_controller_config() {
+    let Some(handle) = shared_runtime_handle().get() else {
+        return;
+    };
+    let Some(controller) = current_controller(&shared_controller()) else {
+        return;
+    };
+    handle.spawn(async move {
+        controller.set_config(Config::load_without_keychain()).await;
+    });
+}
+
 fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
     let listener_store = shared_listener();
     let mut events = controller.subscribe_events();
@@ -260,6 +285,9 @@ impl CodescribeHotkeys {
 
         let (tx, rx) = unbounded::<HotkeyEvent>();
         let handle = tokio::runtime::Handle::current();
+        // Publish the runtime handle so sync config-write surfaces can push fresh
+        // settings into the live controller (refresh_live_controller_config).
+        let _ = shared_runtime_handle().set(handle.clone());
         let controller_store = shared_controller();
 
         hotkeys::install_global_hotkey_manager(tx.clone())
