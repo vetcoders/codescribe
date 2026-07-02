@@ -266,6 +266,7 @@ extension CsProviderOption {
             models: [
                 CsModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8"),
                 CsModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5"),
+                CsModelOption(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6"),
                 CsModelOption(id: "claude-opus-4-7", displayName: "Claude Opus 4.7"),
                 CsModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5"),
             ]

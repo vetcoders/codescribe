@@ -102,6 +102,10 @@ const ANTHROPIC_MODELS: &[ModelDescriptor] = &[
         display_name: "Claude Sonnet 5",
     },
     ModelDescriptor {
+        id: "claude-sonnet-4-6",
+        display_name: "Claude Sonnet 4.6",
+    },
+    ModelDescriptor {
         id: "claude-opus-4-7",
         display_name: "Claude Opus 4.7",
     },
@@ -112,8 +116,11 @@ const ANTHROPIC_MODELS: &[ModelDescriptor] = &[
 ];
 
 /// Curated model catalog for a provider. Anthropic entries are the current
-/// Claude family (Opus 4.8 / Sonnet 5 / Opus 4.7 / Haiku 4.5); unknown Anthropic
-/// models still resolve to a safe strict policy in [`capability_policy`].
+/// Claude family (Opus 4.8 / Sonnet 5 / Sonnet 4.6 / Opus 4.7 / Haiku 4.5);
+/// unknown Anthropic models still resolve to a safe strict policy in
+/// [`capability_policy`]. Sonnet 5 premiered after the line's CORRECTION.md
+/// snapshot (operator-confirmed real, 2026-07-02); the catalog test below
+/// guards against typo'd ids, not against new releases.
 pub const fn provider_models(provider: ProviderKind) -> &'static [ModelDescriptor] {
     match provider {
         ProviderKind::OpenAiResponses => OPENAI_MODELS,
@@ -577,6 +584,28 @@ mod tests {
         match prev {
             Some(v) => unsafe { std::env::set_var(key, v) },
             None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    #[test]
+    fn anthropic_catalog_contains_no_fictional_model_ids() {
+        // Guards against typo'd ids in the interim static catalog. Sonnet 5 is
+        // REAL (premiered post-CORRECTION; operator-confirmed 2026-07-02). The
+        // static catalog itself is slated for replacement by per-key model
+        // auto-discovery (GET /v1/models) — the only sanctioned source.
+        let known = [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-opus-4-7",
+            "claude-haiku-4-5",
+        ];
+        for model in provider_models(ProviderKind::AnthropicMessages) {
+            assert!(
+                known.contains(&model.id),
+                "unknown Anthropic model id in catalog: {}",
+                model.id
+            );
         }
     }
 }
