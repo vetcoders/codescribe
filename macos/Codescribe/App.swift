@@ -253,7 +253,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let pasteboard = NSPasteboard.general
         let changeCountBefore = pasteboard.changeCount
-        let savedClipboard = pasteboard.string(forType: .string)
+        // Snapshot the ENTIRE pasteboard (every item, every type) so restoring it
+        // can't clobber images/files the user had copied — a string-only snapshot
+        // would drop them. Items read from the pasteboard are owned by it, so each
+        // is deep-copied into a fresh NSPasteboardItem before we overwrite them.
+        let savedItems: [NSPasteboardItem] = (pasteboard.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    copy.setData(data, forType: type)
+                }
+            }
+            return copy
+        }
 
         let handled = window.firstResponder?
             .tryToPerform(#selector(NSText.copy(_:)), with: nil) ?? false
@@ -265,9 +277,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let harvested = pasteboard.string(forType: .string)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Restore the user's clipboard — Save selection must not clobber it.
+        // Restore the user's full clipboard — Save selection must not clobber it.
         pasteboard.clearContents()
-        if let savedClipboard { pasteboard.setString(savedClipboard, forType: .string) }
+        if !savedItems.isEmpty { pasteboard.writeObjects(savedItems) }
 
         guard let harvested, !harvested.isEmpty else { return nil }
         return harvested
