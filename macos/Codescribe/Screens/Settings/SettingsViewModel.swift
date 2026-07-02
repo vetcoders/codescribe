@@ -31,6 +31,8 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var permissions: PermissionSnapshot
     @Published private(set) var settings: CsSettings
     @Published private(set) var keyStatus: CsKeyStatus
+    @Published private(set) var providers: [CsProviderOption]
+    @Published private(set) var modelDiscovery: CsModelDiscovery
     @Published private(set) var configDir: String
     @Published private(set) var needsOnboarding: Bool
     @Published private(set) var agentReadiness: CsAgenticReadiness
@@ -80,6 +82,8 @@ final class SettingsViewModel: ObservableObject {
         self.permissions = permissionProbe.snapshot()
         self.settings = .sample
         self.keyStatus = .sampleAllSet
+        self.providers = CsProviderOption.sampleProviders
+        self.modelDiscovery = CsModelDiscovery.sample(for: CsSettings.sample.llmAssistiveProvider ?? "openai-responses")
         self.configDir = ""
         self.needsOnboarding = false
         self.agentReadiness = .sample
@@ -92,8 +96,10 @@ final class SettingsViewModel: ObservableObject {
         if let engine {
             settings = engine.loadSettings()
             keyStatus = engine.keyStatus()
+            providers = engine.availableProviders()
             configDir = engine.configDir()
             needsOnboarding = engine.shouldShowOnboarding()
+            refreshAssistiveModels()
         }
         refreshAgentStatus()
         reloadMcpServers()
@@ -270,6 +276,9 @@ final class SettingsViewModel: ObservableObject {
     func select(_ target: SettingsSection) {
         guard target.isInteractive else { return }
         section = target
+        if target == .keys {
+            refreshAssistiveModels()
+        }
     }
 
     // MARK: - Engine-panel derived values (runtime truth)
@@ -304,7 +313,7 @@ final class SettingsViewModel: ObservableObject {
     /// Any LLM/STT provider key present (GitHub token is shown separately).
     var apiKeysStored: Bool {
         keyStatus.llmApiKeySet || keyStatus.llmAssistiveApiKeySet
-            || keyStatus.llmFormattingApiKeySet || keyStatus.sttApiKeySet
+            || keyStatus.llmAnthropicApiKeySet || keyStatus.llmFormattingApiKeySet || keyStatus.sttApiKeySet
     }
 
     var apiKeysDescription: String {
@@ -413,8 +422,8 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Agent provider / model selection (assistive lane)
 
-    /// Provider + model catalog with per-provider key presence.
-    var availableProviders: [CsProviderOption] { engine?.availableProviders() ?? [] }
+    /// Provider catalog with per-provider key presence.
+    var availableProviders: [CsProviderOption] { providers }
 
     /// Currently selected assistive-lane provider id (falls back to OpenAI).
     var assistiveProviderId: String { settings.llmAssistiveProvider ?? "openai-responses" }
@@ -428,9 +437,38 @@ final class SettingsViewModel: ObservableObject {
         return availableProviders.first { $0.id == id } ?? availableProviders.first
     }
 
+    /// Models discovered from the selected provider's live `/models` API.
+    var discoveredModels: [CsModelOption] {
+        modelDiscovery.providerId == assistiveProviderId ? modelDiscovery.models : []
+    }
+
+    var modelDiscoveryStatus: String { modelDiscovery.status }
+
+    var modelDiscoveryDescription: String {
+        switch modelDiscovery.status {
+        case "fresh":
+            let count = modelDiscovery.models.count
+            let noun = count == 1 ? "model" : "models"
+            return count == 0 ? "no models returned by provider" : "\(count) \(noun) discovered from provider"
+        case "cached":
+            if let message = modelDiscovery.message, !message.isEmpty {
+                return "using cached models — \(message)"
+            }
+            return "using cached models"
+        case "no_key":
+            return "Add API key to discover models"
+        default:
+            if let message = modelDiscovery.message, !message.isEmpty {
+                return "model discovery failed — \(message)"
+            }
+            return "model discovery failed"
+        }
+    }
+
     func setAssistiveProvider(_ id: String) {
         settings.llmAssistiveProvider = id
         persist("LLM_ASSISTIVE_PROVIDER", id)
+        refreshAssistiveModels()
     }
 
     func setAssistiveModel(_ id: String) {
@@ -444,6 +482,10 @@ final class SettingsViewModel: ObservableObject {
         do {
             try engine.setApiKey(account: account, secret: trimmed)
             keyStatus = engine.keyStatus()
+            providers = engine.availableProviders()
+            if account == selectedProvider?.apiKeyAccount {
+                refreshAssistiveModels()
+            }
         } catch {
             lastError = String(describing: error)
         }
@@ -454,9 +496,21 @@ final class SettingsViewModel: ObservableObject {
         do {
             try engine.clearApiKey(account: account)
             keyStatus = engine.keyStatus()
+            providers = engine.availableProviders()
+            if account == selectedProvider?.apiKeyAccount {
+                refreshAssistiveModels()
+            }
         } catch {
             lastError = String(describing: error)
         }
+    }
+
+    func refreshAssistiveModels() {
+        guard let engine else {
+            modelDiscovery = CsModelDiscovery.sample(for: assistiveProviderId)
+            return
+        }
+        modelDiscovery = engine.discoverModels(providerId: assistiveProviderId)
     }
 
     // MARK: - Prompts (editable BASE prompts)

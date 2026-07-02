@@ -14,9 +14,9 @@ import Foundation
 //   AI_FORMATTING_ENABLED "1" | "0"
 //   FORMATTING_LEVEL      "raw" | "medium" | "creative"
 //   USE_LOCAL_STT         "1" | "0"
-//   LOCAL_MODEL / STT_ENDPOINT / LLM_MODEL / LLM_ENDPOINT / LLM_ASSISTIVE_* …  free strings
+//   LOCAL_MODEL / STT_ENDPOINT / LLM_MODEL / LLM_ENDPOINT / LLM_ASSISTIVE_* ...  free strings
 // Keychain accounts (CsKeyStatus, core/config/keychain.rs::KEYCHAIN_ACCOUNTS):
-//   LLM_API_KEY / STT_API_KEY / LLM_FORMATTING_API_KEY / LLM_ASSISTIVE_API_KEY / GITHUB_TOKEN
+//   LLM_API_KEY / STT_API_KEY / LLM_FORMATTING_API_KEY / LLM_ASSISTIVE_API_KEY / LLM_ANTHROPIC_API_KEY / GITHUB_TOKEN
 
 /// Subset of the codescribe config surface the Settings screen consumes.
 protocol SettingsEngine {
@@ -37,8 +37,9 @@ protocol SettingsEngine {
     func setApiKey(account: String, secret: String) throws
     func clearApiKey(account: String) throws
 
-    // Assistive/agent-lane provider + model catalog (with per-provider key presence)
+    // Assistive/agent-lane providers and live model discovery
     func availableProviders() -> [CsProviderOption]
+    func discoverModels(providerId: String) -> CsModelDiscovery
 
     // Editable BASE prompts
     func getFormattingPrompt() -> String
@@ -79,6 +80,9 @@ final class RealSettingsEngine: SettingsEngine {
     func clearApiKey(account: String) throws { try config.clearApiKey(account: account) }
 
     func availableProviders() -> [CsProviderOption] { config.availableProviders() }
+    func discoverModels(providerId: String) -> CsModelDiscovery {
+        config.discoverModels(providerId: providerId)
+    }
 
     func getFormattingPrompt() -> String { config.getFormattingPrompt() }
     func getAssistivePrompt() -> String { config.getAssistivePrompt() }
@@ -125,6 +129,9 @@ struct MockSettingsEngine: SettingsEngine {
     func clearApiKey(account: String) throws {}
 
     func availableProviders() -> [CsProviderOption] { CsProviderOption.sampleProviders }
+    func discoverModels(providerId: String) -> CsModelDiscovery {
+        CsModelDiscovery.sample(for: providerId)
+    }
 
     func getFormattingPrompt() -> String { CsSettings.samplePrompt }
     func getAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
@@ -247,30 +254,45 @@ extension CsKeyStatus {
 }
 
 extension CsProviderOption {
-    /// Preview seed mirroring the core provider catalog (OpenAI + Anthropic).
+    /// Preview seed mirroring the core provider identities (OpenAI + Anthropic).
     static let sampleProviders: [CsProviderOption] = [
         CsProviderOption(
             id: "openai-responses",
             displayName: "OpenAI (Responses)",
             apiKeyAccount: "LLM_ASSISTIVE_API_KEY",
             apiKeySet: true,
-            models: [
-                CsModelOption(id: "gpt-5.5", displayName: "GPT-5.5"),
-                CsModelOption(id: "gpt-4.1", displayName: "GPT-4.1"),
-            ]
+            models: []
         ),
         CsProviderOption(
             id: "anthropic-messages",
             displayName: "Anthropic (Messages)",
             apiKeyAccount: "LLM_ANTHROPIC_API_KEY",
             apiKeySet: false,
-            models: [
-                CsModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8"),
-                CsModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5"),
-                CsModelOption(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6"),
-                CsModelOption(id: "claude-opus-4-7", displayName: "Claude Opus 4.7"),
-                CsModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5"),
-            ]
+            models: []
         ),
     ]
+}
+
+extension CsModelDiscovery {
+    static func sample(for providerId: String) -> CsModelDiscovery {
+        switch providerId {
+        case "anthropic-messages":
+            return CsModelDiscovery(
+                providerId: providerId,
+                status: "no_key",
+                message: "Add API key to discover models",
+                models: []
+            )
+        default:
+            return CsModelDiscovery(
+                providerId: "openai-responses",
+                status: "fresh",
+                message: nil,
+                models: [
+                    CsModelOption(id: "gpt-5.5", displayName: "gpt-5.5"),
+                    CsModelOption(id: "gpt-4.1", displayName: "gpt-4.1"),
+                ]
+            )
+        }
+    }
 }

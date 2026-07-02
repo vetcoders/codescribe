@@ -8,13 +8,17 @@
 //! whether a key is present.
 
 use std::fs;
+use std::str::FromStr;
 
 use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
 use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting_prompt_path};
 use codescribe_core::config::{
     Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
 };
-use codescribe_core::llm::provider::{ALL_PROVIDERS, provider_models};
+use codescribe_core::llm::model_discovery::{
+    ModelDiscoveryStatus, discover_models as discover_provider_models,
+};
+use codescribe_core::llm::provider::{ALL_PROVIDERS, ProviderKind};
 
 use crate::{CsError, CsLanguage};
 
@@ -134,10 +138,20 @@ pub struct CsModelOption {
     pub display_name: String,
 }
 
+/// Live model discovery result for one provider. `status` is one of:
+/// `"fresh"`, `"cached"`, `"no_key"`, `"error"`. Errors never carry secrets.
+#[derive(uniffi::Record)]
+pub struct CsModelDiscovery {
+    pub provider_id: String,
+    pub status: String,
+    pub message: Option<String>,
+    pub models: Vec<CsModelOption>,
+}
+
 /// One assistive/agent-lane provider option: canonical id, label, the Keychain
 /// account holding its key (+ whether that key is present), and its model
-/// catalog. Sourced from the core provider-identity layer so the list stays in
-/// sync with the per-model capability policy.
+/// catalog. Provider identity is static; models are discovered by
+/// `discover_models` from the live provider API using the user's key.
 #[derive(uniffi::Record)]
 pub struct CsProviderOption {
     /// `LLM_ASSISTIVE_PROVIDER` value: `"openai-responses"` | `"anthropic-messages"`.
@@ -147,6 +161,8 @@ pub struct CsProviderOption {
     pub api_key_account: String,
     /// True when that key is present (mirrors `CsKeyStatus`, keyed per provider).
     pub api_key_set: bool,
+    /// Always empty for live Settings; retained for bridge compatibility with
+    /// older Swift bindings and preview seed objects.
     pub models: Vec<CsModelOption>,
 }
 
@@ -337,12 +353,10 @@ impl CodescribeConfig {
         }
     }
 
-    /// Assistive/agent-lane provider + model catalog with per-provider key
-    /// presence. The Settings picker uses this to offer providers, the models
-    /// each supports, and which key each needs. Loads config first so key
-    /// presence reflects Keychain-populated env. Selection is read from
-    /// `CsSettings.llm_assistive_provider` and written via `update_config`
-    /// (`LLM_ASSISTIVE_PROVIDER` / `LLM_ASSISTIVE_MODEL`).
+    /// Assistive/agent-lane provider catalog with per-provider key presence.
+    /// Model lists are intentionally empty here: Settings must call
+    /// `discover_models` so dropdown options come from the provider's live API,
+    /// not a static fallback.
     pub fn available_providers(&self) -> Vec<CsProviderOption> {
         let _ = Config::load();
         ALL_PROVIDERS
@@ -354,16 +368,63 @@ impl CodescribeConfig {
                     display_name: kind.display_name().to_string(),
                     api_key_set: key_present(&account),
                     api_key_account: account,
-                    models: provider_models(*kind)
-                        .iter()
-                        .map(|model| CsModelOption {
-                            id: model.id.to_string(),
-                            display_name: model.display_name.to_string(),
-                        })
-                        .collect(),
+                    models: Vec::new(),
                 }
             })
             .collect()
+    }
+
+    /// Discover model options from the selected provider using the live provider
+    /// `/models` API plus the existing config/Keychain/env key resolution path.
+    /// Missing key is returned as a typed status, not as a thrown bridge error,
+    /// so Settings can render "Add API key to discover models" inline.
+    pub fn discover_models(&self, provider_id: String) -> CsModelDiscovery {
+        let provider = match ProviderKind::from_str(&provider_id) {
+            Ok(provider) => provider,
+            Err(error) => {
+                return CsModelDiscovery {
+                    provider_id,
+                    status: "error".to_string(),
+                    message: Some(error.to_string()),
+                    models: Vec::new(),
+                };
+            }
+        };
+
+        match discover_provider_models(provider) {
+            Ok(result) => {
+                let (status, message) = match result.status {
+                    ModelDiscoveryStatus::Fresh => ("fresh".to_string(), None),
+                    ModelDiscoveryStatus::Cached { reason } => ("cached".to_string(), Some(reason)),
+                };
+                CsModelDiscovery {
+                    provider_id: result.provider.as_str().to_string(),
+                    status,
+                    message,
+                    models: result
+                        .models
+                        .into_iter()
+                        .map(|model| CsModelOption {
+                            id: model.id,
+                            display_name: model.display_name,
+                        })
+                        .collect(),
+                }
+            }
+            Err(error) => {
+                let status = if error.code() == "no_key" {
+                    "no_key"
+                } else {
+                    "error"
+                };
+                CsModelDiscovery {
+                    provider_id: error.provider().as_str().to_string(),
+                    status: status.to_string(),
+                    message: Some(error.message()),
+                    models: Vec::new(),
+                }
+            }
+        }
     }
 
     /// Canonical list of Keychain account names (`KEYCHAIN_ACCOUNTS`).

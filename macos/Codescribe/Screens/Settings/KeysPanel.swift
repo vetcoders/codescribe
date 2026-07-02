@@ -64,11 +64,23 @@ private struct AgentProviderSelector: View {
     @ObservedObject var model: SettingsViewModel
 
     private var selected: CsProviderOption? { model.selectedProvider }
+    private var discoveredModels: [CsModelOption] { model.discoveredModels }
+
+    private var discoveryDotColor: Color {
+        switch model.modelDiscoveryStatus {
+        case "fresh": return CSColor.olive
+        case "cached": return CSColor.amber
+        case "no_key": return CSColor.textFaint
+        default: return CSColor.terracotta
+        }
+    }
 
     private var currentModelLabel: String {
         let id = model.assistiveModel
-        if id.isEmpty { return "Choose a model" }
-        return selected?.models.first { $0.id == id }?.displayName ?? id
+        if id.isEmpty {
+            return discoveredModels.isEmpty ? "No discovered models" : "Choose a model"
+        }
+        return discoveredModels.first { $0.id == id }?.displayName ?? id
     }
 
     var body: some View {
@@ -95,7 +107,7 @@ private struct AgentProviderSelector: View {
 
             SelectorRow(label: "Model") {
                 Menu {
-                    ForEach(selected?.models ?? [], id: \.id) { option in
+                    ForEach(discoveredModels, id: \.id) { option in
                         Button {
                             model.setAssistiveModel(option.id)
                         } label: {
@@ -111,6 +123,7 @@ private struct AgentProviderSelector: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                .disabled(discoveredModels.isEmpty)
             }
 
             if let selected {
@@ -122,6 +135,16 @@ private struct AgentProviderSelector: View {
                         .font(CSFont.mono(11, .medium))
                         .foregroundStyle(CSColor.textFaint)
                 }
+            }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(discoveryDotColor.opacity(0.85))
+                    .frame(width: 7, height: 7)
+                Text(model.modelDiscoveryDescription)
+                    .font(CSFont.mono(11, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+                    .lineLimit(2)
             }
         }
         .padding(.horizontal, 15)
