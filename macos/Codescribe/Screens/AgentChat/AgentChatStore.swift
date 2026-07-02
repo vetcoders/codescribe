@@ -157,6 +157,12 @@ final class AgentChatStore: ObservableObject {
     private var revealTask: Task<Void, Never>?
     private var didStartDemo = false
 
+    /// In-flight `send()` streaming tasks keyed by thread. Tracked so deleting a
+    /// thread can cancel its running reply — otherwise the task's post-stream
+    /// `refreshThreads` (plus the agent's best-effort re-persist) would resurrect
+    /// the just-deleted thread.
+    private var inFlightSends: [UUID: Task<Void, Never>] = [:]
+
     init(engine: AgentChatEngine? = nil,
          threadsProvider: ChatThreadsProviding? = nil,
          threads: [ChatThread]? = nil) {
@@ -269,6 +275,10 @@ final class AgentChatStore: ObservableObject {
         if let backendId = thread.backendId {
             guard threadsProvider?.deleteThread(backendId: backendId) == true else { return }
         }
+        // Cancel any in-flight reply for this thread so its post-stream refresh
+        // can't re-list (and the caret/finalize can't mutate) a deleted thread.
+        inFlightSends[thread.id]?.cancel()
+        inFlightSends[thread.id] = nil
         threads.removeAll { $0.id == thread.id }
         if selectedThreadID == thread.id {
             selectedThreadID = threads.first?.id
@@ -349,7 +359,8 @@ final class AgentChatStore: ObservableObject {
 
         let backendId = ensureBackendId(threadID)
 
-        Task { @MainActor in
+        let sendTask = Task { @MainActor in
+            defer { inFlightSends[threadID] = nil }
             guard let engine else {
                 finish(assistantID, in: threadID,
                        text: "Engine not wired yet.")
@@ -384,6 +395,9 @@ final class AgentChatStore: ObservableObject {
                                                  before: assistantID, in: threadID)
                     }
                 )
+                // The thread may have been deleted mid-stream; drop the late
+                // finalize + refresh so a cancelled send can't bring it back.
+                if Task.isCancelled { return }
                 update(assistantID, in: threadID) {
                     $0.isThinking = false
                     $0.isStreaming = false
@@ -395,10 +409,12 @@ final class AgentChatStore: ObservableObject {
                 }
                 refreshThreads(selectingBackendId: backendId)
             } catch {
+                if Task.isCancelled { return }
                 finish(assistantID, in: threadID,
                        text: "Something went wrong: \(error.localizedDescription)")
             }
         }
+        inFlightSends[threadID] = sendTask
     }
 
     // MARK: Demo stream (reproduces the mock's mid-stream last turn)
