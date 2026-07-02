@@ -28,9 +28,17 @@
 //! skipped wholesale.
 //!
 //! This module is a **pure** function of its inputs. It performs no audio
-//! capture, no network calls, and is not yet wired into the streaming hot path —
-//! the orchestrator (ADR `app/controller/layered_orchestrator.rs`) owns that
-//! wiring and the audio cursor.
+//! capture and no network calls. It IS wired into the streaming hot path:
+//! `core/pipeline/streaming/session.rs` gates it behind
+//! `CODESCRIBE_LAYERED_TRANSCRIPTION` (phase >= 1), attaches the FINAL audio
+//! slice per work item, spawns `compute_tail_patch_job` right after
+//! `EngineEvent::UtteranceFinal`, drains results into
+//! `ReplaceRange { source: TailPatch }` emissions, and reports the count in
+//! `SessionFinalised.layer_summary`.
+//!
+//! Contract: the `committed` argument is byte-identical to the emitted
+//! `UtteranceFinal.text` and is already trimmed by the emitter (single trim
+//! owner: `final_text` at the session.rs emit site).
 
 use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
@@ -408,6 +416,18 @@ mod tests {
         let retranscribed = "witaj świecie cześć";
         let outcome = compute_tail_patch(committed, retranscribed, 1, &cfg);
         assert_eq!(apply_all(committed, &outcome), "witaj świecie cześć");
+    }
+
+    #[test]
+    fn retranscribed_whitespace_never_skews_offsets() {
+        // Whisper output routinely carries leading/trailing whitespace. tokenize
+        // skips it and replacements are joined from tokens, so it must never
+        // enter the offsets nor the replacement text.
+        let cfg = TailPatchConfig::default();
+        let committed = "ala ma kota";
+        let outcome = compute_tail_patch(committed, "  ala ma psa \n", 1, &cfg);
+        assert!(matches!(outcome, TailPatchOutcome::Patches(_)));
+        assert_eq!(apply_all(committed, &outcome), "ala ma psa");
     }
 
     #[test]

@@ -141,6 +141,12 @@ async fn compute_tail_patch_job(
     language: Option<String>,
     config: TailPatchConfig,
 ) -> Result<(u64, TailPatchOutcome)> {
+    debug_assert_eq!(
+        committed_text.trim(),
+        committed_text,
+        "tail-patch committed_text must be the exact, pre-trimmed UtteranceFinal text \
+         (single trim owner: final_text at the emit site)"
+    );
     tokio::task::spawn_blocking(move || {
         let retranscribed =
             crate::stt::whisper_tail_patch_transcribe(&audio, sample_rate, language.as_deref())?;
@@ -1000,6 +1006,11 @@ pub(crate) async fn transcription_session(
                         if item.is_final {
                             utterance_id += 1;
                             total_utterances += 1;
+                            // TRIM CONTRACT (single owner): this .trim() is the ONE place that
+                            // guarantees UtteranceFinal.text == tail-patch committed_text ==
+                            // already-trimmed. ReplaceRange char offsets are computed against
+                            // THIS string; the SwiftUI sink stores it verbatim (its own trim is
+                            // an idempotent no-op). Do not emit untrimmed text from any path.
                             let final_text = accumulated_text.trim().to_string();
                             let end_ts = utterance_start_s
                                 + utterance_audio_samples as f32 / output_sample_rate as f32;
@@ -1450,6 +1461,37 @@ mod session_tests {
                 source: LayerSource::TailPatch,
             }] if text == "kot"
         ));
+    }
+
+    #[test]
+    fn final_text_trim_contract_keeps_tail_patch_offsets_aligned() {
+        // Simulate the emit site: accumulated_text carries whitespace, the single
+        // trim owner produces final_text, and that SAME string is both
+        // UtteranceFinal.text and the tail-patch committed_text.
+        let accumulated = "  ala ma kota  ";
+        let final_text = accumulated.trim().to_string();
+
+        // Retranscribed side mimics real Whisper output shape: leading/trailing
+        // whitespace and a newline. It must never skew offsets or get skipped.
+        let outcome = compute_tail_patch(
+            &final_text,
+            " ala ma psa \n",
+            1,
+            &TailPatchConfig::default(),
+        );
+        let TailPatchOutcome::Patches(events) = &outcome else {
+            panic!("expected Patches (not Skipped/NoChange), got {outcome:?}");
+        };
+
+        // Offsets must apply cleanly against the exact string the consumer holds.
+        let mut buf = final_text.clone();
+        for event in events {
+            let applied = event
+                .apply_to_committed_text(&mut buf)
+                .expect("patch offsets must be in range for the trimmed final_text");
+            assert!(applied, "ReplaceRange must mutate the committed buffer");
+        }
+        assert_eq!(buf, "ala ma psa");
     }
 
     #[test]
