@@ -16,6 +16,42 @@ final class FloatingOverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Content container for the overlay panel. Its sole job is to keep the SwiftUI
+/// hosting view's frame identical to its own bounds on every resize — including each
+/// step of a live edge-drag — via an ABSOLUTE frame sync rather than an autoresizing
+/// mask. The mask resizes by DELTAS measured from the hosting view's initial frame;
+/// on a borderless resizable panel those deltas drift the hosting view off the
+/// window's content bounds after an edge-drag, so content spilled past the window
+/// edge (clipped action row, left-anchored pill/waveform) and — because the SwiftUI
+/// rounded glass background was then painted beyond the window rectangle — the
+/// visible corners squared off. Re-asserting `hosting.frame = bounds` per resize step
+/// keeps the glass panel covering the window 1:1 at any size. Exports no layout
+/// constraints, so the content↔window sizing feedback loop that once hung the app
+/// stays structurally dead.
+private final class OverlayContentContainer: NSView {
+    private let hosting: NSView
+
+    init(hosting: NSView) {
+        self.hosting = hosting
+        super.init(frame: .zero)
+        addSubview(hosting)
+        hosting.frame = bounds
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        hosting.frame = bounds
+    }
+
+    override func layout() {
+        super.layout()
+        hosting.frame = bounds
+    }
+}
+
 enum DictationOverlayWindow {
     /// Hard floor for the panel's content size — below this the glass chrome and
     /// action row overlap. Enforced for user edge-drag (`minSize`/`contentMinSize`)
@@ -47,14 +83,15 @@ enum DictationOverlayWindow {
         // hosting VIEW (not just an NSHostingController) is what actually stops the
         // constraint export.
         hosting.sizingOptions = []
-        // Track the window's content bounds by springs, not by a one-shot frame: on
-        // every window resize AppKit grows the content view to fill, which drives
-        // NSHostingView.setFrameSize and reflows the SwiftUI layout (header pinned
-        // top, footer bottom, transcript region absorbing the middle). Without this
-        // the view kept its creation-time frame and the content rendered anchored,
-        // spilling past the window's left edge with dead space filling the rest.
+        // Fill by an ABSOLUTE frame sync (OverlayContentContainer), not an
+        // autoresizing mask. AppKit's spring mask resizes by deltas from the view's
+        // initial frame; on a borderless resizable panel those deltas drift the
+        // hosting view off the window's content bounds after an edge-drag, clipping
+        // content at the edges and squaring off the rounded glass corners. Frame-based
+        // layout (no exported constraints) keeps the sizing feedback loop dead while
+        // the container re-pins the hosting frame to its bounds on every resize step.
         hosting.translatesAutoresizingMaskIntoConstraints = true
-        hosting.autoresizingMask = [.width, .height]
+        hosting.autoresizingMask = []
 
         let panel = FloatingOverlayPanel(
             contentRect: NSRect(origin: .zero, size: restoredContentSize()),
@@ -62,7 +99,7 @@ enum DictationOverlayWindow {
             backing: .buffered,
             defer: false
         )
-        panel.contentView = hosting
+        panel.contentView = OverlayContentContainer(hosting: hosting)
 
         // User-resizable: borderless windows still honour edge-drag resize when
         // `.resizable` is set. Floor keeps the glass chrome + action row readable.
