@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
+use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
+use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode};
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
 use crossbeam_channel::unbounded;
 use tokio::runtime::Handle;
@@ -404,4 +406,371 @@ async fn dispatch_hotkey_event(
     }
 
     Ok(())
+}
+
+// ===========================================================================
+// Mode-binding configuration surface (B0)
+//
+// The hotkey ENGINE — mode-first bindings, seeded at launch and live-reloaded on
+// every settings write — already exists after Wave A3. What was missing is a
+// Settings editor: read the current per-mode bindings, propose a change, validate
+// it for conflicts, and persist it so the running CGEventTap honours it WITHOUT
+// an app restart.
+//
+// Writes go through the core's first-class `UserSettings::set_mode_binding`
+// (mode bindings are NOT a `save_to_env` router key, so `update_config` can't
+// carry them), then re-apply the hotkey atomics via the SAME `apply_hotkey_config`
+// path `CodescribeConfig::update_config` uses — preserving A3 live-reload.
+// Conflict validation reuses the revived `shortcut_registry` gem
+// (`detect_hotkey_conflicts` + the informational `fn_tap_intercept_note`).
+// ===========================================================================
+
+/// The three first-class work modes, mirrored from `codescribe_core::config::WorkMode`.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsWorkMode {
+    Dictation,
+    Formatting,
+    Assistive,
+}
+
+impl From<WorkMode> for CsWorkMode {
+    fn from(mode: WorkMode) -> Self {
+        match mode {
+            WorkMode::Dictation => CsWorkMode::Dictation,
+            WorkMode::Formatting => CsWorkMode::Formatting,
+            WorkMode::Assistive => CsWorkMode::Assistive,
+        }
+    }
+}
+
+impl From<CsWorkMode> for WorkMode {
+    fn from(mode: CsWorkMode) -> Self {
+        match mode {
+            CsWorkMode::Dictation => WorkMode::Dictation,
+            CsWorkMode::Formatting => WorkMode::Formatting,
+            CsWorkMode::Assistive => WorkMode::Assistive,
+        }
+    }
+}
+
+/// A normalized gesture a work mode can bind to, mirrored from
+/// `codescribe_core::config::ShortcutBinding`. This is a CLOSED set — the Settings
+/// picker offers exactly these, matching `docs/HOTKEYS_CONTRACT.md`.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsShortcutBinding {
+    Disabled,
+    HoldFn,
+    HoldCtrl,
+    HoldCtrlAlt,
+    HoldCtrlShift,
+    HoldCtrlCmd,
+    DoubleCtrl,
+    DoubleLeftOption,
+    DoubleRightOption,
+}
+
+impl From<ShortcutBinding> for CsShortcutBinding {
+    fn from(binding: ShortcutBinding) -> Self {
+        match binding {
+            ShortcutBinding::Disabled => CsShortcutBinding::Disabled,
+            ShortcutBinding::HoldFn => CsShortcutBinding::HoldFn,
+            ShortcutBinding::HoldCtrl => CsShortcutBinding::HoldCtrl,
+            ShortcutBinding::HoldCtrlAlt => CsShortcutBinding::HoldCtrlAlt,
+            ShortcutBinding::HoldCtrlShift => CsShortcutBinding::HoldCtrlShift,
+            ShortcutBinding::HoldCtrlCmd => CsShortcutBinding::HoldCtrlCmd,
+            ShortcutBinding::DoubleCtrl => CsShortcutBinding::DoubleCtrl,
+            ShortcutBinding::DoubleLeftOption => CsShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption => CsShortcutBinding::DoubleRightOption,
+        }
+    }
+}
+
+impl From<CsShortcutBinding> for ShortcutBinding {
+    fn from(binding: CsShortcutBinding) -> Self {
+        match binding {
+            CsShortcutBinding::Disabled => ShortcutBinding::Disabled,
+            CsShortcutBinding::HoldFn => ShortcutBinding::HoldFn,
+            CsShortcutBinding::HoldCtrl => ShortcutBinding::HoldCtrl,
+            CsShortcutBinding::HoldCtrlAlt => ShortcutBinding::HoldCtrlAlt,
+            CsShortcutBinding::HoldCtrlShift => ShortcutBinding::HoldCtrlShift,
+            CsShortcutBinding::HoldCtrlCmd => ShortcutBinding::HoldCtrlCmd,
+            CsShortcutBinding::DoubleCtrl => ShortcutBinding::DoubleCtrl,
+            CsShortcutBinding::DoubleLeftOption => ShortcutBinding::DoubleLeftOption,
+            CsShortcutBinding::DoubleRightOption => ShortcutBinding::DoubleRightOption,
+        }
+    }
+}
+
+/// One work mode's current binding, with display labels sourced from the core so
+/// the Settings UI never re-invents copy that lives in `HOTKEYS_CONTRACT`.
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct CsModeBinding {
+    pub mode: CsWorkMode,
+    pub mode_label: String,
+    pub mode_description: String,
+    pub binding: CsShortcutBinding,
+    pub binding_label: String,
+}
+
+/// One selectable gesture for the Settings picker (id + display label).
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct CsBindingOption {
+    pub binding: CsShortcutBinding,
+    pub label: String,
+}
+
+/// One detected conflict for a candidate binding set. `blocking` conflicts must be
+/// resolved before a save is allowed; non-blocking entries are informational
+/// (e.g. the macOS Fn-tap intercept note).
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct CsHotkeyConflict {
+    pub gesture_label: String,
+    pub message: String,
+    pub blocking: bool,
+}
+
+const ALL_WORK_MODES: [WorkMode; 3] = [
+    WorkMode::Dictation,
+    WorkMode::Formatting,
+    WorkMode::Assistive,
+];
+
+const ALL_SHORTCUT_BINDINGS: [ShortcutBinding; 9] = [
+    ShortcutBinding::Disabled,
+    ShortcutBinding::HoldFn,
+    ShortcutBinding::HoldCtrl,
+    ShortcutBinding::HoldCtrlAlt,
+    ShortcutBinding::HoldCtrlShift,
+    ShortcutBinding::HoldCtrlCmd,
+    ShortcutBinding::DoubleCtrl,
+    ShortcutBinding::DoubleLeftOption,
+    ShortcutBinding::DoubleRightOption,
+];
+
+fn build_mode_binding(mode: WorkMode, binding: ShortcutBinding) -> CsModeBinding {
+    CsModeBinding {
+        mode: mode.into(),
+        mode_label: mode.label().to_string(),
+        mode_description: mode.description().to_string(),
+        binding: binding.into(),
+        binding_label: binding.label().to_string(),
+    }
+}
+
+/// Re-seed the live hotkey detector atomics from persisted settings after a
+/// binding write. Identical to `CodescribeConfig::update_config`'s reload step, so
+/// mode-binding edits take effect on the running CGEventTap without a restart.
+fn reload_hotkey_runtime_after_write() {
+    hotkeys::apply_hotkey_config(&Config::load());
+}
+
+#[uniffi::export]
+impl CodescribeHotkeys {
+    /// Current per-mode bindings (Dictation / Formatting / Assistive), normalized
+    /// against defaults so every mode is always present. Reads on-disk truth.
+    pub fn get_mode_bindings(&self) -> Vec<CsModeBinding> {
+        let settings = UserSettings::load();
+        ALL_WORK_MODES
+            .iter()
+            .map(|&mode| build_mode_binding(mode, settings.mode_binding_for(mode)))
+            .collect()
+    }
+
+    /// The closed set of gestures a mode can bind to, with display labels. Drives
+    /// the Settings picker (no free-form key capture — the binding space is a
+    /// fixed enum, see `HOTKEYS_CONTRACT`).
+    pub fn available_bindings(&self) -> Vec<CsBindingOption> {
+        ALL_SHORTCUT_BINDINGS
+            .iter()
+            .map(|&binding| CsBindingOption {
+                binding: binding.into(),
+                label: binding.label().to_string(),
+            })
+            .collect()
+    }
+
+    /// Persist one mode's binding through the core's canonical `set_mode_binding`
+    /// contract, then live-reload the detector atomics.
+    pub fn set_mode_binding(
+        &self,
+        mode: CsWorkMode,
+        binding: CsShortcutBinding,
+    ) -> Result<(), CsError> {
+        let mut settings = UserSettings::load();
+        settings.set_mode_binding(mode.into(), binding.into());
+        reload_hotkey_runtime_after_write();
+        Ok(())
+    }
+
+    /// Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
+    /// Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+    pub fn reset_bindings_to_defaults(&self) -> Result<(), CsError> {
+        let mut settings = UserSettings::load();
+        // `None` normalizes to `default_mode_bindings()` on the next read, so this
+        // is the canonical "reset" without hardcoding the default list twice.
+        settings.mode_bindings = None;
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        reload_hotkey_runtime_after_write();
+        Ok(())
+    }
+
+    /// Validate a candidate binding set WITHOUT persisting it. Returns every
+    /// detected conflict via the revived `shortcut_registry` (internal reachability
+    /// collisions + macOS symbolic-hotkey collisions), plus the informational Fn
+    /// tap-intercept note when relevant. Callers gate "save" on zero `blocking`
+    /// entries.
+    pub fn validate_bindings(&self, candidate: Vec<CsModeBinding>) -> Vec<CsHotkeyConflict> {
+        let mode_bindings: Vec<ModeBinding> = candidate
+            .iter()
+            .map(|entry| ModeBinding {
+                mode: entry.mode.into(),
+                binding: entry.binding.into(),
+            })
+            .collect();
+        let settings = UserSettings {
+            mode_bindings: Some(mode_bindings),
+            ..Default::default()
+        };
+
+        let mut conflicts: Vec<CsHotkeyConflict> = detect_hotkey_conflicts(&settings)
+            .into_iter()
+            .map(|conflict| CsHotkeyConflict {
+                gesture_label: conflict.gesture.label().to_string(),
+                message: conflict.message,
+                blocking: true,
+            })
+            .collect();
+
+        if let Some(note) = fn_tap_intercept_note(&settings) {
+            conflicts.push(CsHotkeyConflict {
+                gesture_label: "Hold Fn/Globe".to_string(),
+                message: note.to_string(),
+                blocking: false,
+            });
+        }
+
+        conflicts
+    }
+}
+
+#[cfg(test)]
+mod mode_binding_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Serializes the CODESCRIBE_DATA_DIR-mutating test below within this module.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn work_mode_ffi_round_trips() {
+        for mode in ALL_WORK_MODES {
+            let cs: CsWorkMode = mode.into();
+            assert_eq!(WorkMode::from(cs), mode);
+        }
+    }
+
+    #[test]
+    fn shortcut_binding_ffi_round_trips() {
+        for binding in ALL_SHORTCUT_BINDINGS {
+            let cs: CsShortcutBinding = binding.into();
+            assert_eq!(ShortcutBinding::from(cs), binding);
+        }
+    }
+
+    #[test]
+    fn available_bindings_cover_the_closed_set() {
+        let options = CodescribeHotkeys::new().available_bindings();
+        assert_eq!(options.len(), ALL_SHORTCUT_BINDINGS.len());
+        for (option, expected) in options.iter().zip(ALL_SHORTCUT_BINDINGS.iter()) {
+            assert_eq!(ShortcutBinding::from(option.binding), *expected);
+            assert!(!option.label.is_empty());
+        }
+    }
+
+    fn candidate(
+        dictation: CsShortcutBinding,
+        formatting: CsShortcutBinding,
+        assistive: CsShortcutBinding,
+    ) -> Vec<CsModeBinding> {
+        vec![
+            build_mode_binding(WorkMode::Dictation, dictation.into()),
+            build_mode_binding(WorkMode::Formatting, formatting.into()),
+            build_mode_binding(WorkMode::Assistive, assistive.into()),
+        ]
+    }
+
+    #[test]
+    fn validate_flags_internal_reachability_conflict_as_blocking() {
+        // Dictation=DoubleCtrl steals the toggle path from Formatting=DoubleLeftOption.
+        let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
+            CsShortcutBinding::DoubleCtrl,
+            CsShortcutBinding::DoubleLeftOption,
+            CsShortcutBinding::Disabled,
+        ));
+        assert!(
+            conflicts.iter().any(|c| c.blocking),
+            "a known reachability collision must surface a blocking conflict"
+        );
+    }
+
+    #[test]
+    fn validate_is_clean_for_a_safe_hold_only_profile() {
+        // HoldCtrl never collides with macOS symbolic hotkeys and Disabled toggles
+        // add nothing — a deterministic zero-conflict candidate on any machine.
+        let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
+            CsShortcutBinding::HoldCtrl,
+            CsShortcutBinding::Disabled,
+            CsShortcutBinding::Disabled,
+        ));
+        assert!(
+            conflicts.is_empty(),
+            "safe hold-only profile must validate clean, got {conflicts:?}"
+        );
+    }
+
+    #[test]
+    fn set_mode_binding_persists_and_reads_back_through_the_bridge() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let dir = std::env::temp_dir().join(format!("cs_bridge_hotkeys_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create isolated data dir");
+        let previous = std::env::var("CODESCRIBE_DATA_DIR").ok();
+        // SAFETY: serialized by ENV_LOCK; env is restored before the lock drops.
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &dir) };
+
+        let hotkeys = CodescribeHotkeys::new();
+        hotkeys
+            .set_mode_binding(CsWorkMode::Dictation, CsShortcutBinding::HoldCtrlAlt)
+            .expect("set_mode_binding");
+
+        let bindings = hotkeys.get_mode_bindings();
+        let dictation = bindings
+            .iter()
+            .find(|b| b.mode == CsWorkMode::Dictation)
+            .expect("dictation binding present");
+        assert_eq!(dictation.binding, CsShortcutBinding::HoldCtrlAlt);
+
+        // Reset restores defaults through the same path.
+        hotkeys
+            .reset_bindings_to_defaults()
+            .expect("reset_bindings_to_defaults");
+        let after_reset = hotkeys.get_mode_bindings();
+        let dictation_reset = after_reset
+            .iter()
+            .find(|b| b.mode == CsWorkMode::Dictation)
+            .expect("dictation binding present after reset");
+        assert_eq!(dictation_reset.binding, CsShortcutBinding::HoldFn);
+
+        // SAFETY: serialized by ENV_LOCK.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CODESCRIBE_DATA_DIR", value),
+                None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
