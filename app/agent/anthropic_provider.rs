@@ -1045,6 +1045,43 @@ mod tests {
     }
 
     #[test]
+    fn user_message_inline_image_rides_into_request_body() {
+        // Composer 📎 path: `AgentSession::send` builds a [Text, Image{bytes}]
+        // user turn via `build_image_block`. A non-empty inline image must
+        // serialize into the request as a base64 image source alongside its
+        // caption — a regression here silently drops user attachments (the exact
+        // failure mode the composer vision path must never reintroduce). Parity
+        // with the OpenAI `input_image` guard.
+        let messages = vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::Text("what is in this image?".to_string()),
+                ContentBlock::Image {
+                    data: b"png bytes".to_vec(),
+                    media_type: "image/png".to_string(),
+                },
+            ],
+        )];
+
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None)
+            .expect("request body should build");
+
+        assert_eq!(body["messages"][0]["role"], "user");
+        let content = body["messages"][0]["content"]
+            .as_array()
+            .expect("user content array");
+        assert_eq!(content.len(), 2, "caption + image both survive");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(
+            content[1]["source"]["data"].as_str().unwrap(),
+            BASE64.encode(b"png bytes")
+        );
+    }
+
+    #[test]
     fn tool_result_carries_image_asset_as_base64() {
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
