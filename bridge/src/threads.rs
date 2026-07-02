@@ -361,20 +361,25 @@ fn open_index() -> Result<ThreadIndex, CsError> {
     Ok(index)
 }
 
-/// Flatten a message's structured content into a single display string by
-/// replicating the private `thread_message_preview_text` / `collect_message_text`
-/// logic (`thread_index.rs:334/348`), minus the search-side lowercasing so the
-/// returned text preserves original casing for display.
+/// Flatten a message's structured content into a display string, mirroring the
+/// private `collect_message_text` walk (`thread_index.rs:348`) but for the
+/// *display* surface rather than the search index. Unlike the search preview we
+/// must NOT collapse interior whitespace: the live stream hands the renderer raw
+/// markdown, so a restored message has to keep its newlines or the block parser
+/// sees one giant paragraph. We therefore preserve intra-block newlines and only
+/// trim each block's outer edges, separating distinct content blocks with a
+/// blank line so their markdown structure stays intact.
 fn flatten_message_text(content: &[Value]) -> String {
     let mut chunks = Vec::new();
     for value in content {
         collect_message_text(value, &mut chunks);
     }
     chunks
-        .join(" ")
-        .split_whitespace()
+        .iter()
+        .map(|chunk| chunk.trim())
+        .filter(|chunk| !chunk.is_empty())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join("\n\n")
 }
 
 /// Recursively collect human-readable text from a content `Value`, mirroring
@@ -406,12 +411,56 @@ fn collect_message_text(value: &Value, out: &mut Vec<String>) {
                 collect_message_text(input, out);
             }
             for (key, nested) in map {
-                if matches!(key.as_str(), "text" | "content" | "input" | "data") {
+                // `type` is block metadata (`"text"`, `"tool_use"`, …), never
+                // human-readable content. The search-index twin in
+                // `thread_index.rs` leaves it in (a harmless extra token once
+                // lowercased), but on the display surface it would surface as a
+                // literal "text" paragraph next to the real message body.
+                if matches!(key.as_str(), "text" | "type" | "content" | "input" | "data") {
                     continue;
                 }
                 collect_message_text(nested, out);
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Regression: a message that streams as rich markdown must survive the
+    /// structured-content -> display-text flatten with its newlines intact.
+    /// Before the fix `split_whitespace().join(" ")` collapsed every `\n` into a
+    /// space, so a restored thread rendered one giant paragraph.
+    #[test]
+    fn flatten_preserves_newlines_within_a_text_block() {
+        let raw = "# Nagłówek H1\n\n## Nagłówek H2\n\n- punkt 1\n- punkt 2";
+        let content = vec![json!({ "type": "text", "text": raw })];
+        assert_eq!(flatten_message_text(&content), raw);
+    }
+
+    #[test]
+    fn flatten_separates_distinct_text_blocks_with_a_blank_line() {
+        let content = vec![
+            json!({ "type": "text", "text": "Pierwszy akapit." }),
+            json!({ "type": "text", "text": "Drugi akapit\nz nową linią." }),
+        ];
+        assert_eq!(
+            flatten_message_text(&content),
+            "Pierwszy akapit.\n\nDrugi akapit\nz nową linią."
+        );
+    }
+
+    #[test]
+    fn flatten_skips_binary_arrays_and_blank_blocks() {
+        let content = vec![
+            json!({ "type": "text", "text": "widoczny" }),
+            json!([1, 2, 3, 4]),
+            json!({ "type": "text", "text": "   " }),
+        ];
+        assert_eq!(flatten_message_text(&content), "widoczny");
     }
 }
