@@ -256,14 +256,9 @@ pub(crate) async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
     let runtime_state = shared_agent_runtime_state();
     let mut guard = runtime_state.lock().await;
 
-    match guard.rotate_for_new_thread_with(
-        generation,
-        initialize_agent_runtime,
-        persist_runtime_thread,
-    ) {
-        Ok(_persisted_previous) => Ok(generation),
-        Err(error) => Err(error),
-    }
+    guard
+        .rotate_for_new_thread_with(generation, initialize_agent_runtime, persist_runtime_thread)
+        .map(|_| generation)
 }
 
 fn initialize_agent_runtime() -> Result<AgentRuntime> {
