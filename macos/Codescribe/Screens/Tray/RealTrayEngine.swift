@@ -57,7 +57,10 @@ final class RealTrayEngine: TrayEngine {
     }
 
     func latestHistoryPath() -> String? {
-        threads.recentHistory(limit: 1).first?.path
+        // Skip failure / no-speech markers: "copy / save last transcript" must land
+        // on the newest entry that actually carries copyable text, not a "failed"
+        // placeholder (mirrors Rust's `TranscriptKind::is_copyable_transcript`).
+        threads.recentHistory(limit: 32).first { $0.kind.isCopyableTranscript }?.path
     }
 
     func latestTranscriptText() -> String? {
@@ -92,4 +95,18 @@ final class RealTrayEngine: TrayEngine {
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
+}
+
+extension CsTranscriptKind {
+    /// Mirrors `TranscriptKind::is_copyable_transcript` (core/state/history.rs):
+    /// true for entries that carry copyable transcript text, false for the
+    /// assistant interpretation and the failure / no-speech marker.
+    var isCopyableTranscript: Bool {
+        switch self {
+        case .raw, .cloud, .formattedTranscript, .formattingFailed:
+            return true
+        case .assistantInterpretation, .failed:
+            return false
+        }
+    }
 }

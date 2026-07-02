@@ -206,7 +206,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Text of the most recent transcript artifact, mirroring the tray engine's
     /// `latestTranscriptText` (newest history entry → its file contents).
     private static func latestTranscriptText(_ threads: CodescribeThreads) -> String? {
-        guard let path = threads.recentHistory(limit: 1).first?.path else { return nil }
+        // Skip failure / no-speech markers so "Save last transcript" never writes a
+        // "failed" placeholder into the daily note (see RealTrayEngine).
+        guard let path = threads.recentHistory(limit: 32)
+            .first(where: { $0.kind.isCopyableTranscript })?.path else { return nil }
         return try? threads.readHistoryText(path: path)
     }
 
