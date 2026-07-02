@@ -33,12 +33,17 @@ enum PermissionState: Equatable {
     }
 }
 
-/// The four privacy scopes codescribe touches.
+/// The privacy scopes codescribe touches. The first four gate live dictation /
+/// hotkeys and appear in the Settings engine matrix (which enumerates them by an
+/// explicit list, NOT `allCases`); `fullDiskAccess` is the optional fifth scope
+/// used only by the first-run onboarding wizard, so adding it here does not
+/// change any Settings surface.
 enum PermissionKind: String, CaseIterable, Identifiable {
     case microphone = "Microphone"
     case accessibility = "Accessibility"
     case inputMonitoring = "Input Monitoring"
     case screenRecording = "Screen Recording"
+    case fullDiskAccess = "Full Disk Access"
 
     var id: String { rawValue }
 
@@ -50,6 +55,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
         case .accessibility: return URL(string: base + "Privacy_Accessibility")
         case .inputMonitoring: return URL(string: base + "Privacy_ListenEvent")
         case .screenRecording: return URL(string: base + "Privacy_ScreenCapture")
+        case .fullDiskAccess: return URL(string: base + "Privacy_AllFiles")
         }
     }
 
@@ -65,6 +71,9 @@ struct PermissionSnapshot: Equatable {
     var accessibility: PermissionState
     var inputMonitoring: PermissionState
     var screenRecording: PermissionState
+    /// Optional fifth scope, probed only for the onboarding wizard. Settings
+    /// never reads it (its matrix lists the first four explicitly).
+    var fullDiskAccess: PermissionState = .notDetermined
 
     func state(_ kind: PermissionKind) -> PermissionState {
         switch kind {
@@ -72,6 +81,7 @@ struct PermissionSnapshot: Equatable {
         case .accessibility: return accessibility
         case .inputMonitoring: return inputMonitoring
         case .screenRecording: return screenRecording
+        case .fullDiskAccess: return fullDiskAccess
         }
     }
 
@@ -80,7 +90,8 @@ struct PermissionSnapshot: Equatable {
         microphone: .granted,
         accessibility: .granted,
         inputMonitoring: .granted,
-        screenRecording: .granted
+        screenRecording: .granted,
+        fullDiskAccess: .granted
     )
 }
 
@@ -99,8 +110,34 @@ struct NativePermissionProbe: PermissionProbing {
             microphone: microphoneState(),
             accessibility: AXIsProcessTrusted() ? .granted : .denied,
             inputMonitoring: inputMonitoringState(),
-            screenRecording: CGPreflightScreenCaptureAccess() ? .granted : .denied
+            screenRecording: CGPreflightScreenCaptureAccess() ? .granted : .denied,
+            fullDiskAccess: fullDiskAccessState()
         )
+    }
+
+    /// Heuristic Full Disk Access probe mirroring the core's
+    /// `full_disk_access_status` (app/os/permissions.rs): try to list a handful
+    /// of TCC-protected roots. A successful read means granted; an explicit
+    /// permission error means denied; otherwise the paths are simply absent on
+    /// this machine and the scope is treated as not-yet-determined. Never prompts.
+    private func fullDiskAccessState() -> PermissionState {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let protectedRoots = ["Library/Mail", "Library/Messages", "Library/Safari"]
+        var sawPermissionDenied = false
+        for relative in protectedRoots {
+            let path = home.appendingPathComponent(relative).path
+            do {
+                _ = try FileManager.default.contentsOfDirectory(atPath: path)
+                return .granted
+            } catch let error as NSError {
+                if error.domain == NSCocoaErrorDomain,
+                    error.code == NSFileReadNoPermissionError {
+                    sawPermissionDenied = true
+                }
+                // Absent path (NSFileReadNoSuchFileError) → keep probing.
+            }
+        }
+        return sawPermissionDenied ? .denied : .notDetermined
     }
 
     private func microphoneState() -> PermissionState {

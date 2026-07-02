@@ -48,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var shouldExitForDuplicate = false
+    // First-run onboarding wizard host. Presented at launch when the core gate
+    // (`shouldShowOnboarding`) reports setup is due.
+    private let onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard Self.isDuplicateInstance else { return }
@@ -96,6 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installStatusItem()
         startHotkeys()
         prewarmRecordingController()
+        // Show the first-run wizard on top of the freshly-installed tray when the
+        // core reports onboarding is still due (no setup_done marker, or a stale
+        // one invalidated because a required permission is missing).
+        onboarding.presentIfNeeded()
     }
 
     /// Bind the tray's app-level action closures (Help / About / Notes /
