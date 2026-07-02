@@ -214,6 +214,7 @@ pub struct CodescribeDictation {
 impl CodescribeDictation {
     #[uniffi::constructor]
     pub fn new() -> Self {
+        codescribe::logging::init_logging();
         Self {
             recorder: Mutex::new(None),
             listener: RwLock::new(None),

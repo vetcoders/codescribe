@@ -21,6 +21,7 @@ pub use codescribe_core::{
 // ═══════════════════════════════════════════════════════════
 
 pub mod agent;
+pub mod logging;
 pub mod os;
 
 #[cfg(target_os = "macos")]

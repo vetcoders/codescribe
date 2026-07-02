@@ -113,6 +113,7 @@ pub struct CodescribeAgentStatus {}
 impl CodescribeAgentStatus {
     #[uniffi::constructor]
     pub fn new() -> Self {
+        codescribe::logging::init_logging();
         Self::default()
     }
 

@@ -166,6 +166,7 @@ pub struct CodescribeConfig {}
 impl CodescribeConfig {
     #[uniffi::constructor]
     pub fn new() -> Self {
+        codescribe::logging::init_logging();
         Self {}
     }
 

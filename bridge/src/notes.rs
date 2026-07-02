@@ -23,6 +23,7 @@ pub struct CodescribeNotes {}
 impl CodescribeNotes {
     #[uniffi::constructor]
     pub fn new() -> Self {
+        codescribe::logging::init_logging();
         Self {}
     }
 

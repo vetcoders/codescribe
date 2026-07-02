@@ -84,6 +84,7 @@ pub struct CodescribeMcpAdmin {}
 impl CodescribeMcpAdmin {
     #[uniffi::constructor]
     pub fn new() -> Self {
+        codescribe::logging::init_logging();
         Self::default()
     }
 

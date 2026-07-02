@@ -172,6 +172,7 @@ pub struct CodescribeHotkeys {}
 impl CodescribeHotkeys {
     #[uniffi::constructor]
     pub fn new() -> Self {
+        codescribe::logging::init_logging();
         Self::default()
     }
 
