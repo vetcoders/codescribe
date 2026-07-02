@@ -24,6 +24,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
+      - name: Install XcodeGen
+        # scripts/build-app.sh preflights `require xcodegen` — the app's
+        # .xcodeproj is generated, not committed, so the release runner needs it
+        # or the DMG build dies before xcodebuild. (cargo, uniffi-bindgen and
+        # xcodebuild are already provided: rust-toolchain installs cargo,
+        # uniffi-bindgen is built from `cargo build -p codescribe-ffi`, and
+        # xcodebuild ships with the macOS runner image.)
+        run: brew install xcodegen
+
       - name: Validate signing secrets
         env:
           CODESIGN_CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
