@@ -66,67 +66,11 @@ impl ProviderKind {
 }
 
 /// Every provider identity, in Settings-picker order. The request layer branches
-/// on [`ProviderKind`]; this is the catalog the UI enumerates.
+/// on [`ProviderKind`]; Settings discovers model options via live provider APIs.
 pub const ALL_PROVIDERS: [ProviderKind; 2] = [
     ProviderKind::OpenAiResponses,
     ProviderKind::AnthropicMessages,
 ];
-
-/// One selectable model for a provider — a stable `id` (sent on the wire) plus a
-/// display label. Curated per provider so Settings offers models the capability
-/// policy actually understands rather than a free-text field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ModelDescriptor {
-    pub id: &'static str,
-    pub display_name: &'static str,
-}
-
-const OPENAI_MODELS: &[ModelDescriptor] = &[
-    ModelDescriptor {
-        id: "gpt-5.5",
-        display_name: "GPT-5.5",
-    },
-    ModelDescriptor {
-        id: "gpt-4.1",
-        display_name: "GPT-4.1",
-    },
-];
-
-const ANTHROPIC_MODELS: &[ModelDescriptor] = &[
-    ModelDescriptor {
-        id: "claude-opus-4-8",
-        display_name: "Claude Opus 4.8",
-    },
-    ModelDescriptor {
-        id: "claude-sonnet-5",
-        display_name: "Claude Sonnet 5",
-    },
-    ModelDescriptor {
-        id: "claude-sonnet-4-6",
-        display_name: "Claude Sonnet 4.6",
-    },
-    ModelDescriptor {
-        id: "claude-opus-4-7",
-        display_name: "Claude Opus 4.7",
-    },
-    ModelDescriptor {
-        id: "claude-haiku-4-5",
-        display_name: "Claude Haiku 4.5",
-    },
-];
-
-/// Curated model catalog for a provider. Anthropic entries are the current
-/// Claude family (Opus 4.8 / Sonnet 5 / Sonnet 4.6 / Opus 4.7 / Haiku 4.5);
-/// unknown Anthropic models still resolve to a safe strict policy in
-/// [`capability_policy`]. Sonnet 5 premiered after the line's CORRECTION.md
-/// snapshot (operator-confirmed real, 2026-07-02); the catalog test below
-/// guards against typo'd ids, not against new releases.
-pub const fn provider_models(provider: ProviderKind) -> &'static [ModelDescriptor] {
-    match provider {
-        ProviderKind::OpenAiResponses => OPENAI_MODELS,
-        ProviderKind::AnthropicMessages => ANTHROPIC_MODELS,
-    }
-}
 
 impl Default for ProviderKind {
     /// OpenAI Responses is the default provider — never regress this without a
@@ -217,8 +161,9 @@ pub struct CapabilityPolicy {
     pub previous_response_id: bool,
     /// Whether this `(provider, model)` accepts image (vision) input blocks.
     /// `false` ⇒ the send path must surface a readable error instead of silently
-    /// dropping attached images. Every model in the current catalog is
-    /// vision-capable; the flag is the honest seam for a future text-only model.
+    /// dropping attached images. Unknown Anthropic models default to the current
+    /// vision-capable policy; this flag is the honest seam for a future text-only
+    /// model family.
     pub supports_vision: bool,
 }
 
@@ -413,7 +358,7 @@ mod tests {
         assert_eq!(p.budget_tokens, BudgetTokensPolicy::NotApplicable);
         assert!(
             p.supports_vision,
-            "OpenAI catalog models accept image input"
+            "OpenAI Responses models accept image input by default"
         );
         // Model must not matter for OpenAI.
         assert_eq!(
@@ -459,17 +404,13 @@ mod tests {
         assert_eq!(p.budget_tokens, BudgetTokensPolicy::Hard400);
     }
 
-    // ---- provider catalog (display / key account / models) ----
+    // ---- provider identity (display / key account) ----
 
     #[test]
-    fn every_provider_has_display_name_key_account_and_models() {
+    fn every_provider_has_display_name_and_key_account() {
         for kind in ALL_PROVIDERS {
             assert!(!kind.display_name().is_empty());
             assert!(!kind.api_key_env_key().is_empty());
-            assert!(
-                !provider_models(kind).is_empty(),
-                "{kind} must offer at least one model"
-            );
         }
     }
 
@@ -486,32 +427,15 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_catalog_models_resolve_through_capability_policy() {
-        // Every advertised Anthropic model must parse a coherent policy (the
-        // catalog and the policy matrix stay in lockstep).
-        for model in provider_models(ProviderKind::AnthropicMessages) {
-            let policy = capability_policy(ProviderKind::AnthropicMessages, model.id);
-            assert!(policy.refusal_stop_reason, "{} is Anthropic", model.id);
-            assert!(!policy.previous_response_id);
-        }
-    }
-
-    #[test]
-    fn every_catalog_model_is_vision_capable() {
-        // The composer-attachment path gates on `supports_vision`; every model we
-        // advertise in the picker must accept image input so a valid selection
-        // never yields a "can't read images" error.
-        for provider in ALL_PROVIDERS {
-            for model in provider_models(provider) {
-                assert!(
-                    provider_supports_vision(provider, model.id),
-                    "{provider} / {} must accept vision input",
-                    model.id
-                );
-            }
-        }
-        // Unknown Anthropic model still resolves through the strict policy, which
-        // keeps vision available (safe: sending an image is never a hard 400).
+    fn default_and_unknown_models_are_vision_capable() {
+        assert!(provider_supports_vision(
+            ProviderKind::OpenAiResponses,
+            "gpt-5.5"
+        ));
+        assert!(provider_supports_vision(
+            ProviderKind::AnthropicMessages,
+            "claude-opus-4-8"
+        ));
         assert!(provider_supports_vision(
             ProviderKind::AnthropicMessages,
             "claude-future-9"
@@ -584,28 +508,6 @@ mod tests {
         match prev {
             Some(v) => unsafe { std::env::set_var(key, v) },
             None => unsafe { std::env::remove_var(key) },
-        }
-    }
-
-    #[test]
-    fn anthropic_catalog_contains_no_fictional_model_ids() {
-        // Guards against typo'd ids in the interim static catalog. Sonnet 5 is
-        // REAL (premiered post-CORRECTION; operator-confirmed 2026-07-02). The
-        // static catalog itself is slated for replacement by per-key model
-        // auto-discovery (GET /v1/models) — the only sanctioned source.
-        let known = [
-            "claude-opus-4-8",
-            "claude-sonnet-5",
-            "claude-sonnet-4-6",
-            "claude-opus-4-7",
-            "claude-haiku-4-5",
-        ];
-        for model in provider_models(ProviderKind::AnthropicMessages) {
-            assert!(
-                known.contains(&model.id),
-                "unknown Anthropic model id in catalog: {}",
-                model.id
-            );
         }
     }
 }
