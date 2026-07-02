@@ -15,7 +15,7 @@
     <div class="spotlight" data-spotlight>
       <div class="pill" data-pill style="border-color:#d9775755;background:rgba(255,255,255,.03)">
         <span class="pill__dot" data-dot style="background:#d97757;box-shadow:0 0 12px 1px #d9775788"></span>
-        <span class="pill__name" data-name style="color:#d97757">DICTATION</span>
+        <span class="pill__name" data-name style="color:#e9b79f">DICTATION</span>
       </div>
       <p class="quote" data-quote>“just get this thought down before I lose it”</p>
       <p class="outcome" data-outcome>pasted into your editor · live preview</p>
@@ -94,7 +94,8 @@
   }
   .outcome {
     font: 500 12px var(--font-mono);
-    color: var(--muted-3);
+    /* --muted-3 (~4.0:1) fails AA; --muted (~7.2:1) passes. */
+    color: var(--muted);
     margin: 12px 0 0;
   }
   .rail {
@@ -140,15 +141,16 @@
 <script>
   interface Mode {
     name: string;
-    color: string;
+    color: string; // dot / border accent (raw mode color)
+    ink: string; // label text — a readable variant that passes AA on the dark bg
     ex: string;
     out: string;
   }
   const MODES: Mode[] = [
-    { name: 'DICTATION', color: '#d97757', ex: 'just get this thought down before I lose it', out: 'pasted into your editor · live preview' },
-    { name: 'FORMATTING', color: '#5f6b3e', ex: 'clean this up but keep exactly what I meant', out: 'punctuation + structure fixed · meaning intact' },
-    { name: 'AGENT CHAT', color: '#d6b24e', ex: 'what is causing this race condition?', out: 'a thread that stays with your work' },
-    { name: 'SELECTION', color: '#c98a6e', ex: 'make this paragraph more formal', out: 'rewritten in place · 0.8s · local' },
+    { name: 'DICTATION', color: '#d97757', ink: '#e9b79f', ex: 'just get this thought down before I lose it', out: 'pasted into your editor · live preview' },
+    { name: 'FORMATTING', color: '#5f6b3e', ink: '#9db178', ex: 'clean this up but keep exactly what I meant', out: 'punctuation + structure fixed · meaning intact' },
+    { name: 'AGENT CHAT', color: '#d6b24e', ink: '#d6b24e', ex: 'what is causing this race condition?', out: 'a thread that stays with your work' },
+    { name: 'SELECTION', color: '#c98a6e', ink: '#c98a6e', ex: 'make this paragraph more formal', out: 'rewritten in place · 0.8s · local' },
   ];
 
   const pill = document.querySelector<HTMLElement>('[data-pill]');
@@ -164,7 +166,7 @@
     pill!.style.borderColor = m.color + '55';
     dot!.style.background = m.color;
     dot!.style.boxShadow = `0 0 12px 1px ${m.color}88`;
-    name!.style.color = m.color;
+    name!.style.color = m.ink;
     name!.textContent = m.name;
     quote!.textContent = `“${m.ex}”`;
     outcome!.textContent = m.out;
