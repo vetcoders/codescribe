@@ -78,13 +78,21 @@ final class OverlayController: ObservableObject {
     func show() {
         let panel = panel ?? DictationOverlayWindow.make(state: state)
         self.panel = panel
-        if let screen = NSScreen.main {
-            let frame = panel.frame
+        let screen = NSScreen.main
+        // Clamp the current size to the active screen (it may have shrunk since the
+        // size was chosen) and re-centre — in ONE setFrame so there is no transient
+        // mismatched frame. Enforcing the min here covers programmatic sizing, which
+        // AppKit's minSize does not.
+        let size = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
+        if let screen {
             let visible = screen.visibleFrame
-            panel.setFrameOrigin(NSPoint(
-                x: visible.midX - frame.width / 2,
+            let origin = NSPoint(
+                x: visible.midX - size.width / 2,
                 y: visible.minY + visible.height * 0.22
-            ))
+            )
+            panel.setFrame(NSRect(origin: origin, size: size), display: false)
+        } else {
+            panel.setContentSize(size)
         }
         panel.orderFrontRegardless()
     }
@@ -94,6 +102,11 @@ final class OverlayController: ObservableObject {
     }
 
     func hide() {
+        // Persist the user's chosen size for next launch (replaces frame autosave,
+        // which used to write back the old feedback loop's runaway sizes).
+        if let panel {
+            DictationOverlayWindow.persist(size: panel.frame.size)
+        }
         panel?.orderOut(nil)
     }
 }
