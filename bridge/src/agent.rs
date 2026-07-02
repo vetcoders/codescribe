@@ -5,11 +5,30 @@
 use std::sync::Arc;
 
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ContentBlock, Message, Role, StreamOptions, Thread, ThreadMessage,
-    ThreadStore, ToolRegistry,
+    AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, Role, StreamOptions,
+    Thread, ThreadMessage, ThreadStore, ToolRegistry,
 };
+use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
+use codescribe_core::llm::provider::{LlmMode, provider_supports_vision, resolve_provider};
 
 use crate::CsError;
+
+/// Maximum number of image attachments the composer may forward in one message.
+/// Matches the live app controller's `MAX_AGENT_VISION_IMAGES` so both send paths
+/// behave alike; exceeding it is surfaced as a readable error rather than a silent
+/// truncation.
+const MAX_COMPOSER_VISION_IMAGES: usize = 16;
+
+/// One outgoing composer attachment. Path-based on purpose: the bridge reads and
+/// validates the file on the Rust side (via `load_image_for_vision`), which is
+/// cheaper than marshalling raw image bytes across FFI and reuses core's single
+/// vision-loading path. Swift persists clipboard images to disk before handing a
+/// path here, so every attachment reduces to a filesystem path.
+#[derive(uniffi::Record)]
+pub struct CsAttachment {
+    /// Absolute filesystem path to the attached image.
+    pub path: String,
+}
 
 /// Foreign callback trait — agent streaming events forwarded to Swift.
 /// Mirrors `AgentUiEvent`; the Swift side must hop these onto the main actor.
@@ -65,6 +84,43 @@ impl CodescribeAgent {
         thread_id: String,
         listener: Arc<dyn CsAgentListener>,
     ) -> Result<String, CsError> {
+        self.run_stream(text, thread_id, Vec::new(), listener).await
+    }
+
+    /// Stream one agent reply for `text` with `attachments` forwarded as real
+    /// vision input (the composer 📎 path). Attachments are path-based; the bridge
+    /// loads + validates each one via core's single `load_image_for_vision` path
+    /// (PNG/JPEG/GIF/WebP/BMP/TIFF, ≤ 8 MB each) so the send never routes raw
+    /// bytes through FFI and never produces a second attachment pipeline.
+    ///
+    /// Degradation is explicit, never a silent drop:
+    /// - the selected model is not vision-capable ⇒ readable error, nothing sent;
+    /// - any attachment is missing / unsupported / too large / empty ⇒ readable
+    ///   error naming the offending file(s), nothing sent;
+    /// - more than 16 images ⇒ readable error.
+    pub async fn stream_reply_with_attachments(
+        &self,
+        text: String,
+        thread_id: String,
+        attachments: Vec<CsAttachment>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        let images = validate_composer_attachments(&attachments)?;
+        self.run_stream(text, thread_id, images, listener).await
+    }
+}
+
+impl CodescribeAgent {
+    /// Shared streaming core behind [`stream_reply`] and
+    /// [`stream_reply_with_attachments`]. `attachments` are already loaded +
+    /// validated `ImageAttachment`s (empty for the text-only path).
+    async fn run_stream(
+        &self,
+        text: String,
+        thread_id: String,
+        attachments: Vec<ImageAttachment>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
         // Keep provider construction behavior identical to the old eager
         // constructor path, but delay it until the user sends a message.
         let _ = codescribe_core::config::Config::load();
@@ -106,6 +162,7 @@ impl CodescribeAgent {
         // session's final message log so the caller can persist the thread.
         let send_handle = tokio::spawn(async move {
             let mut session = session;
+            let attachments = attachments;
             let options = StreamOptions {
                 model: String::new(),
                 system_prompt: None,
@@ -113,7 +170,7 @@ impl CodescribeAgent {
                 temperature: None,
                 reset_chain: false,
             };
-            session.send(text, Vec::new(), &options).await?;
+            session.send(text, attachments, &options).await?;
             Ok::<Vec<Message>, anyhow::Error>(session.messages().to_vec())
         });
 
@@ -154,6 +211,72 @@ impl CodescribeAgent {
             }),
         }
     }
+}
+
+/// Load + validate composer attachments into vision `ImageAttachment`s.
+///
+/// All-or-nothing on purpose: a partial success would silently drop images the
+/// user chose to attach. Any failure returns a readable [`CsError`] naming the
+/// offending files so the composer surfaces it instead of sending a quietly
+/// degraded message. Also gates on the selected model's vision capability.
+fn validate_composer_attachments(
+    attachments: &[CsAttachment],
+) -> Result<Vec<ImageAttachment>, CsError> {
+    if attachments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if attachments.len() > MAX_COMPOSER_VISION_IMAGES {
+        return Err(CsError::Agent {
+            msg: format!(
+                "Too many images ({}). Attach at most {} per message.",
+                attachments.len(),
+                MAX_COMPOSER_VISION_IMAGES
+            ),
+        });
+    }
+
+    // Vision gate: refuse (readable error) rather than silently drop the images
+    // when the configured assistive model cannot read them.
+    let provider = resolve_provider(LlmMode::Assistive);
+    let model = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_default();
+    if !provider_supports_vision(provider, &model) {
+        return Err(CsError::Agent {
+            msg: "The selected model can't read images. Switch to a vision-capable \
+                  model in Settings, or remove the attachment before sending."
+                .to_string(),
+        });
+    }
+
+    let mut images = Vec::with_capacity(attachments.len());
+    let mut failed: Vec<String> = Vec::new();
+    for attachment in attachments {
+        let path = std::path::Path::new(&attachment.path);
+        match load_image_for_vision(path, MAX_VISION_IMAGE_BYTES) {
+            Some((data, media_type)) => images.push(ImageAttachment { data, media_type }),
+            None => failed.push(attachment_label(&attachment.path)),
+        }
+    }
+
+    if !failed.is_empty() {
+        return Err(CsError::Agent {
+            msg: format!(
+                "Couldn't attach {}: image must be PNG, JPEG, GIF, WebP, BMP, or \
+                 TIFF and 8 MB or smaller.",
+                failed.join(", ")
+            ),
+        });
+    }
+
+    Ok(images)
+}
+
+/// Short, user-facing label (file name, path fallback) for an attachment path.
+fn attachment_label(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
 }
 
 /// Persist (create or update) the thread identified by `thread_id` from the
@@ -271,5 +394,77 @@ fn extract_text_from_block(block: &ContentBlock, out: &mut Vec<String>) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("cs_bridge_attach_{}_{tag}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn cs(path: &std::path::Path) -> CsAttachment {
+        CsAttachment {
+            path: path.to_string_lossy().into_owned(),
+        }
+    }
+
+    #[test]
+    fn empty_attachments_yield_no_images() {
+        let images = validate_composer_attachments(&[]).unwrap();
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn valid_image_loads_as_vision_attachment() {
+        let dir = tmp_dir("valid");
+        let png = dir.join("shot.png");
+        std::fs::write(&png, b"\x89PNG\r\n\x1a\nfake").unwrap();
+
+        let images = validate_composer_attachments(&[cs(&png)]).unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].media_type, "image/png");
+        assert!(!images[0].data.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreadable_or_nonimage_is_a_readable_error_not_a_silent_drop() {
+        let dir = tmp_dir("bad");
+        let txt = dir.join("note.txt");
+        std::fs::write(&txt, b"hello").unwrap();
+        let missing = dir.join("gone.png");
+
+        let err = validate_composer_attachments(&[cs(&txt), cs(&missing)]).unwrap_err();
+        let CsError::Agent { msg } = err else {
+            panic!("expected a readable agent error");
+        };
+        assert!(
+            msg.contains("note.txt"),
+            "names the unsupported file: {msg}"
+        );
+        assert!(msg.contains("gone.png"), "names the missing file: {msg}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn too_many_images_is_rejected() {
+        let attachments: Vec<CsAttachment> = (0..=MAX_COMPOSER_VISION_IMAGES)
+            .map(|i| CsAttachment {
+                path: format!("/tmp/x{i}.png"),
+            })
+            .collect();
+        let err = validate_composer_attachments(&attachments).unwrap_err();
+        let CsError::Agent { msg } = err else {
+            panic!("expected a readable agent error");
+        };
+        assert!(msg.contains("Too many"), "explains the cap: {msg}");
     }
 }

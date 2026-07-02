@@ -208,6 +208,11 @@ pub struct CapabilityPolicy {
     /// `previous_response_id` (OpenAI Responses). Anthropic replays messages, so
     /// `false`.
     pub previous_response_id: bool,
+    /// Whether this `(provider, model)` accepts image (vision) input blocks.
+    /// `false` ⇒ the send path must surface a readable error instead of silently
+    /// dropping attached images. Every model in the current catalog is
+    /// vision-capable; the flag is the honest seam for a future text-only model.
+    pub supports_vision: bool,
 }
 
 impl CapabilityPolicy {
@@ -244,6 +249,7 @@ fn anthropic_policy_for_model(model: &str) -> CapabilityPolicy {
             effort: true,
             refusal_stop_reason: true,
             previous_response_id: false,
+            supports_vision: true,
         }
     } else {
         // claude-opus-4-8 (assistive) and unknown Anthropic models: strict.
@@ -255,6 +261,7 @@ fn anthropic_policy_for_model(model: &str) -> CapabilityPolicy {
             effort: true,
             refusal_stop_reason: true,
             previous_response_id: false,
+            supports_vision: true,
         }
     }
 }
@@ -269,7 +276,16 @@ const fn openai_policy() -> CapabilityPolicy {
         effort: true,
         refusal_stop_reason: false,
         previous_response_id: true,
+        supports_vision: true,
     }
+}
+
+/// Whether the given `(provider, model)` accepts image (vision) input. Thin
+/// accessor over [`capability_policy`] for send paths that only need the vision
+/// gate (e.g. the composer-attachment bridge). Keeps the vision decision in the
+/// capability layer rather than duplicated at the FFI boundary.
+pub fn provider_supports_vision(provider: ProviderKind, model: &str) -> bool {
+    capability_policy(provider, model).supports_vision
 }
 
 /// Resolve the capability policy for a `(provider, model)` pair.
@@ -388,6 +404,10 @@ mod tests {
         assert!(!p.refusal_stop_reason);
         assert!(!p.adaptive_thinking);
         assert_eq!(p.budget_tokens, BudgetTokensPolicy::NotApplicable);
+        assert!(
+            p.supports_vision,
+            "OpenAI catalog models accept image input"
+        );
         // Model must not matter for OpenAI.
         assert_eq!(
             capability_policy(ProviderKind::OpenAiResponses, "gpt-4.1"),
@@ -467,6 +487,28 @@ mod tests {
             assert!(policy.refusal_stop_reason, "{} is Anthropic", model.id);
             assert!(!policy.previous_response_id);
         }
+    }
+
+    #[test]
+    fn every_catalog_model_is_vision_capable() {
+        // The composer-attachment path gates on `supports_vision`; every model we
+        // advertise in the picker must accept image input so a valid selection
+        // never yields a "can't read images" error.
+        for provider in ALL_PROVIDERS {
+            for model in provider_models(provider) {
+                assert!(
+                    provider_supports_vision(provider, model.id),
+                    "{provider} / {} must accept vision input",
+                    model.id
+                );
+            }
+        }
+        // Unknown Anthropic model still resolves through the strict policy, which
+        // keeps vision available (safe: sending an image is never a hard 400).
+        assert!(provider_supports_vision(
+            ProviderKind::AnthropicMessages,
+            "claude-future-9"
+        ));
     }
 
     // ---- env resolution (serialized: mutates process env) ----
