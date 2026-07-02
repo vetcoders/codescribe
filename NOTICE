@@ -1,0 +1,14 @@
+CodeScribe Notices
+==================
+
+Portions of the account authentication foundation are derived from
+openai/codex (Apache-2.0), specifically the Codex CLI login PKCE,
+device-code, and local callback server flow.
+
+Derived files:
+- core/llm/account_auth/pkce.rs
+- core/llm/account_auth/device_code.rs
+- core/llm/account_auth/server.rs
+
+The derived portions retain Apache-2.0 attribution. CodeScribe's repository
+license metadata remains authoritative for this project.

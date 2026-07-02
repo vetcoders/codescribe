@@ -1,3 +1,4 @@
+pub mod account_auth;
 pub mod ai_formatting;
 pub mod client;
 pub mod model_discovery;
