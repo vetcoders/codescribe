@@ -175,6 +175,13 @@ impl CodescribeHotkeys {
 
     /// Start or replace the process-global hotkey listener.
     pub async fn start(&self) -> Result<(), CsError> {
+        // Install the process-wide macOS thermal observer once at runtime
+        // bootstrap so STT duty-cycle throttling (core/stt/scheduler.rs) sees
+        // real thermal pressure. Without this the scheduler always reads
+        // ThermalLevel::Nominal and never backs off during hot/long sessions.
+        // Idempotent: install_thermal_probe guards its own observer singleton.
+        codescribe::os::thermal::install_thermal_probe();
+
         let (tx, rx) = unbounded::<HotkeyEvent>();
         let handle = tokio::runtime::Handle::current();
         let controller_store = shared_controller();
