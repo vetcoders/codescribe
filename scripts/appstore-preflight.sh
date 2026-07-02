@@ -25,6 +25,7 @@ ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT"
 
 ENTITLEMENTS="scripts/entitlements.plist"
+BASIC_ENTITLEMENTS="scripts/entitlements.appstore-basic.plist"
 MAKEFILE="Makefile"
 KEYCHAIN_RS="core/config/keychain.rs"
 RELEASE_YML=".github/workflows/release.yml"
@@ -49,14 +50,24 @@ echo "════════════════════════�
 echo "  Codescribe — Mac App Store readiness preflight (read-only)"
 echo "═══════════════════════════════════════════════════════════"
 
-# 1. App Sandbox — REQUIRED for MAS, intentionally absent today.
+# 1. App Sandbox — REQUIRED for MAS, intentionally enabled only for Basic.
 echo ""
 echo "▶ App Sandbox entitlement (com.apple.security.app-sandbox)"
-if grep -q "com.apple.security.app-sandbox" "$ENTITLEMENTS" 2>/dev/null \
-   && grep -A1 "com.apple.security.app-sandbox" "$ENTITLEMENTS" | grep -q "<true/>"; then
-    ok "App Sandbox is enabled."
+if ! grep -q "^  CodescribeBasic:" "$PROJECT_YML" 2>/dev/null; then
+    blocker "No CodescribeBasic target in $PROJECT_YML. MAS needs a separate sandboxed Basic SKU, not the Pro target."
+elif ! grep -q "PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe.basic" "$PROJECT_YML" 2>/dev/null; then
+    blocker "CodescribeBasic does not use the distinct MAS bundle id com.vetcoders.codescribe.basic."
+elif ! grep -q "CODE_SIGN_ENTITLEMENTS: .*scripts/entitlements.appstore-basic.plist" "$PROJECT_YML" 2>/dev/null; then
+    blocker "CodescribeBasic is not wired to $BASIC_ENTITLEMENTS via CODE_SIGN_ENTITLEMENTS."
+elif [ ! -f "$BASIC_ENTITLEMENTS" ]; then
+    blocker "Missing $BASIC_ENTITLEMENTS for the sandboxed Basic SKU."
+elif command -v plutil >/dev/null 2>&1 && ! plutil -lint "$BASIC_ENTITLEMENTS" >/dev/null 2>&1; then
+    blocker "$BASIC_ENTITLEMENTS is not a valid plist (plutil -lint failed)."
+elif grep -q "com.apple.security.app-sandbox" "$BASIC_ENTITLEMENTS" 2>/dev/null \
+   && grep -A1 "com.apple.security.app-sandbox" "$BASIC_ENTITLEMENTS" | grep -q "<true/>"; then
+    ok "CodescribeBasic has App Sandbox enabled via $BASIC_ENTITLEMENTS; Pro remains on Developer ID entitlements."
 else
-    blocker "App Sandbox is NOT enabled in $ENTITLEMENTS. MAS rejects builds without it."
+    blocker "App Sandbox is NOT enabled in $BASIC_ENTITLEMENTS. MAS rejects builds without it."
 fi
 
 # 2. Hardened-runtime relaxations that conflict with a clean sandboxed MAS build.

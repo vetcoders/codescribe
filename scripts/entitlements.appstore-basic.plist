@@ -3,15 +3,14 @@
 <plist version="1.0">
 <!--
   ===========================================================================
-  DRAFT TEMPLATE — NOT WIRED INTO ANY BUILD. Do not treat as "done".
+  BASIC-SKU ENTITLEMENTS — WIRED ONLY INTO THE CodescribeBasic TARGET.
   ===========================================================================
 
-  This is the sandbox-clean entitlement set for the FUTURE Mac App Store
-  "Basic" SKU (on-device dictation: microphone -> transcript -> in-app /
-  clipboard). It is intentionally NOT referenced by the Makefile bundle
-  target, scripts/build-dmg.sh, or any signing step. The current shipping
-  lane is Developer ID + notarization (scripts/entitlements.plist), which
-  does NOT enable the sandbox.
+  This is the sandbox-clean entitlement set for the Mac App Store "Basic" SKU
+  (on-device dictation: microphone -> transcript -> in-app / clipboard). It is
+  referenced by macos/project.yml for CodescribeBasic only. The current Pro
+  shipping lane is Developer ID + notarization (scripts/entitlements.plist),
+  which does NOT enable the sandbox.
 
   Sibling file: scripts/entitlements.plist is the SHIPPING (Developer ID)
   entitlement set. The two are deliberately separate because a single binary
