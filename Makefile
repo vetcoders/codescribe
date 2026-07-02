@@ -9,7 +9,7 @@
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
         demo demo-raw demo-assistive check semgrep fix clean help \
-        dmg dmg-signed release-standard release-full release-dmgs notarize download-model download-e5 download-embedder ensure-models \
+        appstore-pkg dmg dmg-signed release-standard release-full release-dmgs notarize download-model download-e5 download-embedder ensure-models \
         hooks
 
 SHELL := /bin/bash
@@ -33,6 +33,13 @@ CODESCRIBE_BUNDLE_ID ?= com.vetcoders.codescribe
 CODESCRIBE_MIN_MACOS ?=
 CODESCRIBE_LSUIELEMENT ?= true
 CODESCRIBE_ENTITLEMENTS ?= scripts/entitlements.plist
+CODESCRIBE_MAS_IDENTITY ?=
+CODESCRIBE_MAS_INSTALLER_IDENTITY ?=
+CODESCRIBE_MAS_BUNDLE_ID ?= com.vetcoders.codescribe.basic
+CODESCRIBE_MAS_APP_NAME ?= CodescribeBasic
+CODESCRIBE_MAS_ENTITLEMENTS ?= scripts/entitlements.appstore-basic.plist
+CODESCRIBE_MAS_DERIVED_DATA ?= macos/build
+CODESCRIBE_MAS_PKG ?= macos/build/CodescribeBasic.pkg
 
 # Test defaults (reference/cloud unless forced local)
 TEST_USE_LOCAL_LLM ?= 0
@@ -437,6 +444,59 @@ help:
 # ============================================================================
 # Release & Distribution
 # ============================================================================
+
+appstore-pkg:
+	@echo "Building $(CODESCRIBE_MAS_APP_NAME).pkg for Mac App Store upload..."
+	@if [ -z "$(strip $(CODESCRIBE_MAS_IDENTITY))" ]; then \
+		echo "Missing CODESCRIBE_MAS_IDENTITY."; \
+		echo "Need: Apple Distribution signing identity for the MAS app bundle."; \
+		echo "Get it in Apple Developer > Certificates, install it in Keychain, then run:"; \
+		echo "  CODESCRIBE_MAS_IDENTITY='Apple Distribution: Team Name (TEAMID)' CODESCRIBE_MAS_INSTALLER_IDENTITY='3rd Party Mac Developer Installer: Team Name (TEAMID)' make appstore-pkg"; \
+		exit 1; \
+	fi
+	@if [ -z "$(strip $(CODESCRIBE_MAS_INSTALLER_IDENTITY))" ]; then \
+		echo "Missing CODESCRIBE_MAS_INSTALLER_IDENTITY."; \
+		echo "Need: 3rd Party Mac Developer Installer / Mac Installer Distribution identity for productbuild."; \
+		echo "Get it in Apple Developer > Certificates, install it in Keychain, then run:"; \
+		echo "  CODESCRIBE_MAS_IDENTITY='Apple Distribution: Team Name (TEAMID)' CODESCRIBE_MAS_INSTALLER_IDENTITY='3rd Party Mac Developer Installer: Team Name (TEAMID)' make appstore-pkg"; \
+		exit 1; \
+	fi
+	@if ! security find-identity -v 2>/dev/null | grep -F "\"$(CODESCRIBE_MAS_IDENTITY)\"" >/dev/null; then \
+		echo "Apple Distribution identity not found in this keychain: $(CODESCRIBE_MAS_IDENTITY)"; \
+		echo "Install the Apple Distribution certificate/private key pair, or pass the exact identity printed by:"; \
+		echo "  security find-identity -v"; \
+		exit 1; \
+	fi
+	@if ! security find-identity -v 2>/dev/null | grep -F "\"$(CODESCRIBE_MAS_INSTALLER_IDENTITY)\"" >/dev/null; then \
+		echo "MAS installer identity not found in this keychain: $(CODESCRIBE_MAS_INSTALLER_IDENTITY)"; \
+		echo "Install the 3rd Party Mac Developer Installer / Mac Installer Distribution certificate/private key pair, or pass the exact identity printed by:"; \
+		echo "  security find-identity -v"; \
+		exit 1; \
+	fi
+	@command -v xcodegen >/dev/null 2>&1 || { echo "Missing xcodegen. Install with: brew install xcodegen"; exit 1; }
+	@command -v xcodebuild >/dev/null 2>&1 || { echo "Missing xcodebuild. Install Xcode, then run: sudo xcodebuild -runFirstLaunch"; exit 1; }
+	@command -v productbuild >/dev/null 2>&1 || { echo "Missing productbuild. Install Xcode command line tools."; exit 1; }
+	@$(MAKE) --no-print-directory release-codescribe
+	@install_name_tool -id @rpath/libcodescribe_ffi.dylib target/release/libcodescribe_ffi.dylib
+	@mkdir -p macos/Codescribe/Bridge
+	@target/release/uniffi-bindgen generate --library target/release/libcodescribe_ffi.dylib --language swift --out-dir macos/Codescribe/Bridge
+	@(cd macos && xcodegen generate)
+	@xcodebuild -project macos/Codescribe.xcodeproj \
+		-scheme "$(CODESCRIBE_MAS_APP_NAME)" -configuration Release \
+		-derivedDataPath "$(CODESCRIBE_MAS_DERIVED_DATA)" \
+		CODE_SIGNING_ALLOWED=NO build
+	@APP="$(CODESCRIBE_MAS_DERIVED_DATA)/Build/Products/Release/$(CODESCRIBE_MAS_APP_NAME).app"; \
+	DYLIB="target/release/libcodescribe_ffi.dylib"; \
+	FRAMEWORKS="$$APP/Contents/Frameworks"; \
+	if [ ! -d "$$APP" ]; then echo "Build product missing: $$APP"; exit 1; fi; \
+	mkdir -p "$$FRAMEWORKS"; \
+	cp "$$DYLIB" "$$FRAMEWORKS/"; \
+	codesign --force --options runtime --sign "$(CODESCRIBE_MAS_IDENTITY)" "$$FRAMEWORKS/libcodescribe_ffi.dylib"; \
+	codesign --force --options runtime --entitlements "$(CODESCRIBE_MAS_ENTITLEMENTS)" --sign "$(CODESCRIBE_MAS_IDENTITY)" --identifier "$(CODESCRIBE_MAS_BUNDLE_ID)" "$$APP"; \
+	productbuild --component "$$APP" /Applications --sign "$(CODESCRIBE_MAS_INSTALLER_IDENTITY)" "$(CODESCRIBE_MAS_PKG)"; \
+	echo "Created: $(CODESCRIBE_MAS_PKG)"; \
+	echo "Upload with Transporter.app or xcrun iTMSTransporter to App Store Connect."; \
+	echo "Do not use Apple's retired altool upload flow."
 
 dmg:
 	@./scripts/build-dmg.sh

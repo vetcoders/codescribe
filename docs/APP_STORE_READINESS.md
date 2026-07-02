@@ -16,7 +16,7 @@ Run the read-only check any time:
 ./scripts/appstore-preflight.sh   # exit 0 = no P0 blockers, 1 = blockers present
 ```
 
-Last run: **3 P0 blockers, 6 P1 warnings**.
+R2 update (2026-07-01): `CodescribeBasic` and `make appstore-pkg` now stand up the Basic MAS build/package path; run preflight for the current blocker count.
 
 ---
 

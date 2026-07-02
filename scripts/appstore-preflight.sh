@@ -130,13 +130,55 @@ else
     ok "No NSAccessibilityUsageDescription."
 fi
 
-# 6. App Store distribution path — none today (Developer ID only).
+# 6. App Store distribution path — Basic SKU pkg + Transporter handoff.
 echo ""
 echo "▶ App Store upload path"
-if grep -qiE "productbuild|App Store Connect|altool|Transporter|3rd Party Mac Developer|Apple Distribution" "$MAKEFILE" "$RELEASE_YML" 2>/dev/null; then
-    ok "An App Store distribution path is referenced."
+UPLOAD_PATH_OK=1
+if ! grep -q "^appstore-pkg:" "$MAKEFILE" 2>/dev/null; then
+    blocker "No make appstore-pkg target. MAS needs a repeatable pkg build path."
+    UPLOAD_PATH_OK=0
+fi
+if ! grep -q "CODESCRIBE_MAS_IDENTITY ?=" "$MAKEFILE" 2>/dev/null; then
+    blocker "Makefile does not parameterize the Apple Distribution identity (CODESCRIBE_MAS_IDENTITY)."
+    UPLOAD_PATH_OK=0
+fi
+if ! grep -q "CODESCRIBE_MAS_INSTALLER_IDENTITY ?=" "$MAKEFILE" 2>/dev/null; then
+    blocker "Makefile does not parameterize the MAS installer identity (CODESCRIBE_MAS_INSTALLER_IDENTITY)."
+    UPLOAD_PATH_OK=0
+fi
+if ! grep -q "productbuild --component" "$MAKEFILE" 2>/dev/null; then
+    blocker "No productbuild --component pkg creation in the MAS path."
+    UPLOAD_PATH_OK=0
+fi
+if ! grep -q "Transporter\\|iTMSTransporter" "$MAKEFILE" 2>/dev/null; then
+    blocker "MAS path does not point to Transporter / iTMSTransporter for App Store Connect upload."
+    UPLOAD_PATH_OK=0
+fi
+if grep -q "xcrun altool" "$MAKEFILE" 2>/dev/null; then
+    blocker "Makefile still references xcrun altool for MAS upload; altool is retired."
+    UPLOAD_PATH_OK=0
+fi
+if [ "$UPLOAD_PATH_OK" -eq 1 ]; then
+    ok "make appstore-pkg builds CodescribeBasic, signs with MAS identities, productbuilds a pkg, and hands upload to Transporter."
+fi
+
+if ! command -v productbuild >/dev/null 2>&1; then
+    warn "productbuild is not available locally. Install Xcode command line tools before creating the MAS pkg."
+fi
+if security find-identity -v 2>/dev/null | grep -q '"Apple Distribution:'; then
+    ok "Apple Distribution identity is installed locally."
 else
-    blocker "No App Store distribution path (productbuild/pkg, Apple Distribution cert, App Store Connect upload). Only Developer ID + notarization exists."
+    warn "No Apple Distribution identity in the local keychain. Set CODESCRIBE_MAS_IDENTITY after creating/installing the certificate."
+fi
+if security find-identity -v 2>/dev/null | grep -Eq '"(3rd Party Mac Developer Installer|Mac Installer Distribution):'; then
+    ok "MAS installer identity is installed locally."
+else
+    warn "No MAS installer identity in the local keychain. Set CODESCRIBE_MAS_INSTALLER_IDENTITY after creating/installing the certificate."
+fi
+if xcrun -f iTMSTransporter >/dev/null 2>&1; then
+    ok "Transporter CLI is available through xcrun."
+else
+    warn "Transporter CLI was not found via xcrun; use Transporter.app or install the transporter tooling before upload."
 fi
 
 # 7. Basic-SKU draft scaffolding — informational (does not affect exit code).
