@@ -270,6 +270,12 @@ final class OnboardingViewModel: ObservableObject {
         case .mode: persistMode()
         case .language: persistLanguage()
         case .hotkeyMode: persistHotkeyMode()
+        case .apiKey:
+            // Continue with a pasted-but-unsaved key would drop it; commit the draft
+            // so the key persists (saveApiKey no-ops on an empty draft).
+            if !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                saveApiKey()
+            }
         default: break
         }
     }
