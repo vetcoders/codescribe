@@ -15,6 +15,8 @@ targets:
         CFBundleName: Codescribe
         LSUIElement: true
         NSMicrophoneUsageDescription: "Codescribe transcribes your speech locally with on-device Whisper."
+        NSAppleEventsUsageDescription: "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."
+        NSScreenCaptureUsageDescription: "Codescribe captures the screen when you ask the assistant to look at what is currently on screen."
     settings:
       base:
         # Dock/app icon — AppIcon.appiconset in Codescribe/Assets.xcassets.
