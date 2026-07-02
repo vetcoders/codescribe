@@ -51,29 +51,17 @@ struct OnboardingView: View {
         case .welcome:
             WelcomeStepView()
         case .mode:
-            OnboardingPlaceholderStepView(
-                eyebrow: "Operating lane",
-                title: "Basic or Agentic.",
-                blurb: "Choose whether codescribe stays a plain dictation tool or opts into the agentic runtime.")
+            ModeStepView(model: model)
         case .permission(let kind):
             PermissionStepView(kind: kind, model: model)
         case .language:
-            OnboardingPlaceholderStepView(
-                eyebrow: "Language",
-                title: "Pick your dictation language.",
-                blurb: "Auto-detect, English, or Polish. You can change this any time in Settings.")
+            LanguageStepView(model: model)
         case .apiKey:
             ApiKeyStepView(model: model)
         case .hotkeyMode:
-            OnboardingPlaceholderStepView(
-                eyebrow: "Hotkeys",
-                title: "Hold, toggle, or hybrid.",
-                blurb: "How you trigger recording. Configure the exact shortcuts later in Settings.")
+            HotkeyModeStepView(model: model)
         case .agenticReadiness:
-            OnboardingPlaceholderStepView(
-                eyebrow: "Agentic readiness",
-                title: "Your agentic substrate.",
-                blurb: "A readiness verdict for the agentic lane (Vibecrafted / AICX / Loctree / PRView).")
+            AgenticReadinessStepView(model: model)
         case .done:
             DoneStepView(model: model)
         }
@@ -166,6 +154,18 @@ struct OnboardingButton: View {
 #Preview("Onboarding — Welcome") {
     OnboardingView(model: OnboardingViewModel(
         engine: MockOnboardingEngine(progress: 0),
+        hotkeys: MockHotkeysEngine(),
+        agentStatus: MockAgentStatusEngine(),
+        probe: MockPermissionProbe(.allGranted)))
+        .frame(width: 720, height: 620)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Onboarding — Mode") {
+    OnboardingView(model: OnboardingViewModel(
+        engine: MockOnboardingEngine(progress: 1),
+        hotkeys: MockHotkeysEngine(),
+        agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted)))
         .frame(width: 720, height: 620)
         .preferredColorScheme(.dark)
@@ -174,6 +174,8 @@ struct OnboardingButton: View {
 #Preview("Onboarding — Permission") {
     OnboardingView(model: OnboardingViewModel(
         engine: MockOnboardingEngine(progress: 2),
+        hotkeys: MockHotkeysEngine(),
+        agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(PermissionSnapshot(
             microphone: .denied, accessibility: .granted,
             inputMonitoring: .notDetermined, screenRecording: .denied,
@@ -182,9 +184,43 @@ struct OnboardingButton: View {
         .preferredColorScheme(.dark)
 }
 
+#Preview("Onboarding — Language") {
+    OnboardingView(model: OnboardingViewModel(
+        engine: MockOnboardingEngine(progress: 7),
+        hotkeys: MockHotkeysEngine(),
+        agentStatus: MockAgentStatusEngine(),
+        probe: MockPermissionProbe(.allGranted)))
+        .frame(width: 720, height: 620)
+        .preferredColorScheme(.dark)
+}
+
 #Preview("Onboarding — API key") {
     OnboardingView(model: OnboardingViewModel(
         engine: MockOnboardingEngine(progress: 8),
+        hotkeys: MockHotkeysEngine(),
+        agentStatus: MockAgentStatusEngine(),
+        probe: MockPermissionProbe(.allGranted)))
+        .frame(width: 720, height: 620)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Onboarding — Hotkeys") {
+    OnboardingView(model: OnboardingViewModel(
+        engine: MockOnboardingEngine(progress: 9),
+        hotkeys: MockHotkeysEngine(),
+        agentStatus: MockAgentStatusEngine(),
+        probe: MockPermissionProbe(.allGranted)))
+        .frame(width: 720, height: 620)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Onboarding — Agentic readiness") {
+    let engine = MockOnboardingEngine(progress: 10)
+    engine.mode = "agentic"
+    return OnboardingView(model: OnboardingViewModel(
+        engine: engine,
+        hotkeys: MockHotkeysEngine(),
+        agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted)))
         .frame(width: 720, height: 620)
         .preferredColorScheme(.dark)

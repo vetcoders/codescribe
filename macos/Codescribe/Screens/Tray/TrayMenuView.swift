@@ -34,6 +34,7 @@ struct TrayMenuView: View {
                 TrayRow(icon: "⚙", title: "Settings…", shortcut: "⌘,") {
                     openSettings()
                 }
+                TrayRow(icon: "✦", title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
                 TrayRow(icon: "?", title: "Help") { viewModel.onHelp() }
                 TrayRow(icon: "ⓘ", title: "About") { viewModel.onAbout() }
 

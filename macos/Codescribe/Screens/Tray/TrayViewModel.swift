@@ -39,6 +39,10 @@ final class TrayViewModel: ObservableObject {
     // so the screen is fully interactive in isolation and in #Preview.
     var onHelp: () -> Void = {}
     var onAbout: () -> Void = {}
+    /// Re-open the first-run setup wizard. Bound by App.swift to the onboarding
+    /// window controller; a stable auxiliary-menu entry so setup is always
+    /// reachable — mid-onboarding (resume) or after completion (re-run).
+    var onOpenSetupWizard: () -> Void = {}
     var onQuit: () -> Void = { NSApplication.shared.terminate(nil) }
 
     var onSaveLastTranscript: () -> Void = {}

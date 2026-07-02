@@ -116,6 +116,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.tray.onHelp = {
             NSWorkspace.shared.open(Self.helpURL)
         }
+        // Re-open the setup wizard on demand. Unlike `presentIfNeeded()` (launch
+        // gate), `present()` always fronts the window — resume when onboarding is
+        // still due, or re-run from Welcome after completion.
+        model.tray.onOpenSetupWizard = { [onboarding] in
+            onboarding.present()
+        }
 
         // ── Notes ──
         model.tray.onOpenNotesFolder = { [notes] in

@@ -20,6 +20,15 @@ protocol OnboardingEngine {
     func saveOnboardingProgress(step: UInt32)
     func markOnboardingDone()
 
+    // Mode step: first-run operating lane (Basic / Agentic). Reader + setter
+    // route to the promoted `ONBOARDING_MODE` key in settings.json.
+    func onboardingMode() -> String?
+    func setOnboardingMode(_ mode: String) throws
+
+    // Language step: current dictation language (seeds the picker). Writes reuse
+    // the shared `updateConfig("WHISPER_LANGUAGE", …)` path below — no new mechanism.
+    func currentLanguage() -> CsLanguage
+
     // API-key step (shared with the Settings Keys panel).
     func keyStatus() -> CsKeyStatus
     func availableProviders() -> [CsProviderOption]
@@ -40,6 +49,10 @@ final class RealOnboardingEngine: OnboardingEngine {
     func saveOnboardingProgress(step: UInt32) { config.saveOnboardingProgress(step: step) }
     func markOnboardingDone() { config.markOnboardingDone() }
 
+    func onboardingMode() -> String? { config.onboardingMode() }
+    func setOnboardingMode(_ mode: String) throws { try config.setOnboardingMode(mode: mode) }
+    func currentLanguage() -> CsLanguage { config.loadSettings().whisperLanguage }
+
     func keyStatus() -> CsKeyStatus { config.keyStatus() }
     func availableProviders() -> [CsProviderOption] { config.availableProviders() }
     func setApiKey(account: String, secret: String) throws {
@@ -58,6 +71,8 @@ final class MockOnboardingEngine: OnboardingEngine {
     var showOnboarding: Bool = true
     var progress: UInt32 = 0
     var status: CsKeyStatus = .sampleAllSet
+    var mode: String?
+    var language: CsLanguage = .auto
 
     init(progress: UInt32 = 0) { self.progress = progress }
 
@@ -65,6 +80,10 @@ final class MockOnboardingEngine: OnboardingEngine {
     func onboardingProgress() -> UInt32 { progress }
     func saveOnboardingProgress(step: UInt32) { progress = step }
     func markOnboardingDone() { showOnboarding = false }
+
+    func onboardingMode() -> String? { mode }
+    func setOnboardingMode(_ mode: String) throws { self.mode = mode }
+    func currentLanguage() -> CsLanguage { language }
 
     func keyStatus() -> CsKeyStatus { status }
     func availableProviders() -> [CsProviderOption] { CsProviderOption.sampleProviders }
