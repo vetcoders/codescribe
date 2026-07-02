@@ -6,6 +6,8 @@ struct ThreadRail: View {
     @ObservedObject var store: AgentChatStore
     @State private var search: String = ""
     @State private var deleteCandidate: ChatThread?
+    @State private var editingThreadID: UUID?
+    @State private var renameDraft: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,11 +64,18 @@ struct ThreadRail: View {
                         ThreadRow(
                             thread: thread,
                             isActive: thread.id == store.selectedThreadID,
+                            isEditing: editingThreadID == thread.id,
+                            renameDraft: $renameDraft,
                             onToggleFavorite: { store.toggleFavorite(thread) },
-                            onRequestDelete: { deleteCandidate = thread }
+                            onRequestDelete: { deleteCandidate = thread },
+                            onBeginRename: { beginRename(thread) },
+                            onCommitRename: { commitRename(thread) },
+                            onCancelRename: { cancelRename(thread) }
                         )
                         .contentShape(Rectangle())
-                        .onTapGesture { store.select(thread.id) }
+                        .onTapGesture {
+                            if editingThreadID != thread.id { store.select(thread.id) }
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
@@ -134,13 +143,42 @@ struct ThreadRail: View {
         if store.usesRealThreadSearch { return store.threads }
         return store.threads.filter { $0.title.lowercased().contains(q) }
     }
+
+    // MARK: Rename (inline edit)
+
+    private func beginRename(_ thread: ChatThread) {
+        guard editingThreadID != thread.id else { return }
+        renameDraft = thread.title
+        editingThreadID = thread.id
+    }
+
+    /// Persist the typed title. Clearing `editingThreadID` first makes any
+    /// trailing focus-loss commit a no-op (see ThreadRow's blur handling).
+    private func commitRename(_ thread: ChatThread) {
+        guard editingThreadID == thread.id else { return }
+        let value = renameDraft
+        editingThreadID = nil
+        store.rename(thread, to: value)
+    }
+
+    private func cancelRename(_ thread: ChatThread) {
+        guard editingThreadID == thread.id else { return }
+        editingThreadID = nil
+    }
 }
 
 private struct ThreadRow: View {
     let thread: ChatThread
     let isActive: Bool
+    let isEditing: Bool
+    @Binding var renameDraft: String
     let onToggleFavorite: () -> Void
     let onRequestDelete: () -> Void
+    let onBeginRename: () -> Void
+    let onCommitRename: () -> Void
+    let onCancelRename: () -> Void
+
+    @FocusState private var renameFieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -148,10 +186,27 @@ private struct ThreadRow: View {
                 if isActive {
                     Circle().fill(CSColor.terracotta).frame(width: 6, height: 6)
                 }
-                Text(thread.title)
-                    .font(CSFont.ui(13, isActive ? .semibold : .medium))
-                    .foregroundStyle(isActive ? ChatPalette.nameActive : ChatPalette.nameInactive)
-                    .lineLimit(1)
+                if isEditing {
+                    TextField("", text: $renameDraft)
+                        .textFieldStyle(.plain)
+                        .font(CSFont.ui(13, .semibold))
+                        .foregroundStyle(ChatPalette.nameActive)
+                        .focused($renameFieldFocused)
+                        .onSubmit { onCommitRename() }
+                        .onExitCommand { onCancelRename() }
+                        .onAppear { DispatchQueue.main.async { renameFieldFocused = true } }
+                        .onChange(of: renameFieldFocused) { _, focused in
+                            // Click-away commits the typed value; Enter/Esc already
+                            // cleared editing, so those paths make this a no-op.
+                            if !focused, isEditing { onCommitRename() }
+                        }
+                } else {
+                    Text(thread.title)
+                        .font(CSFont.ui(13, isActive ? .semibold : .medium))
+                        .foregroundStyle(isActive ? ChatPalette.nameActive : ChatPalette.nameInactive)
+                        .lineLimit(1)
+                        .onTapGesture(count: 2) { onBeginRename() }
+                }
                 Spacer(minLength: 4)
                 Button(action: onToggleFavorite) {
                     Image(systemName: thread.isFavorite ? "star.fill" : "star")
@@ -178,6 +233,9 @@ private struct ThreadRow: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .contextMenu {
+            Button("Rename") {
+                onBeginRename()
+            }
             Button(thread.isFavorite ? "Unfavorite" : "Favorite") {
                 onToggleFavorite()
             }

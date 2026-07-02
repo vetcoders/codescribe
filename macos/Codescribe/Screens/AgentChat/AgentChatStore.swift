@@ -121,6 +121,9 @@ protocol ChatThreadsProviding: AnyObject {
     func loadMessages(backendId: String) -> [ChatMessage]
     func deleteThread(backendId: String) -> Bool
     func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool
+    /// Rename a persisted thread; the core marks the title user-custom so
+    /// auto-titling won't overwrite it. Returns `false` on failure / no such thread.
+    func renameThread(backendId: String, title: String) -> Bool
     /// Mint a fresh ThreadStore id for a new conversation (so it persists).
     func generateThreadId() -> String
 }
@@ -218,6 +221,20 @@ final class AgentChatStore: ObservableObject {
             guard threadsProvider?.setThreadFavorite(backendId: backendId, isFavorite: next) == true else { return }
         }
         threads[ti].isFavorite = next
+    }
+
+    /// Rename a thread from the rail. Persists through the threads provider when
+    /// the thread is backed on disk; a not-yet-persisted local thread is renamed
+    /// in memory only. No-ops on an empty or unchanged title. The chat header
+    /// reads `currentThread.title`, so it updates reactively too.
+    func rename(_ thread: ChatThread, to newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != thread.title,
+              let ti = threads.firstIndex(where: { $0.id == thread.id }) else { return }
+        if let backendId = thread.backendId {
+            guard threadsProvider?.renameThread(backendId: backendId, title: trimmed) == true else { return }
+        }
+        threads[ti].title = trimmed
     }
 
     func delete(_ thread: ChatThread) {

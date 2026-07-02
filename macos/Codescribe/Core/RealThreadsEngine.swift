@@ -62,6 +62,10 @@ final class RealThreadsEngine: ChatThreadsProviding {
         (try? threads.setThreadFavorite(id: backendId, isFavorite: isFavorite)) ?? false
     }
 
+    func renameThread(backendId: String, title: String) -> Bool {
+        (try? threads.renameThread(id: backendId, title: title)) ?? false
+    }
+
     private static func thread(from summary: CsThreadSummary) -> ChatThread {
         var thread = ChatThread(
             title: summary.title.isEmpty ? "Untitled" : summary.title,
