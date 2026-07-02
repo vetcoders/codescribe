@@ -31,7 +31,10 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
         <span class="console__engine">● local whisper</span>
       </div>
       <div class="console__body" data-body data-mode="clean">
-        {CLEAN.map((w) => <span class="word word--in">{w}</span>)}
+        {/* Trailing whitespace text node per word keeps textContent readable for
+            screen readers (reduced-motion path); flex collapses it visually, so
+            column-gap still governs the on-screen separation. */}
+        {CLEAN.map((w) => <Fragment><span class="word word--in">{w}</span>{' '}</Fragment>)}
       </div>
       <div class="console__result" data-result data-reveal>
         <span class="console__resultdot" aria-hidden="true"></span>
