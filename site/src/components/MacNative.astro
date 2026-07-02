@@ -34,7 +34,7 @@ const shots = [
 <section class="section macnative" data-screen-label="macOS native" aria-labelledby="macnative-title">
   <div class="container">
     <div class="head">
-      <p class="eyebrow">BUILT FOR macOS · APPLE SILICON</p>
+      <p class="eyebrow eyebrow--plain">BUILT FOR macOS · APPLE SILICON</p>
       <h2 id="macnative-title">A real native app. No web wrapper.</h2>
       <p class="sub">
         A menu-bar tray, a floating overlay, and a settings window that tells you
@@ -68,6 +68,9 @@ const shots = [
     padding: 120px 24px;
     background: radial-gradient(70% 100% at 50% 0%, rgba(95, 107, 62, 0.05), transparent 60%);
   }
+  /* Keep literal "macOS" casing (spec §4.11); "BUILT FOR" / "APPLE SILICON"
+     are already written uppercase, so no visual regression. */
+  .eyebrow--plain { text-transform: none; }
   .container { max-width: 1080px; }
   .head {
     text-align: center;

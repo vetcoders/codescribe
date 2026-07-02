@@ -6,7 +6,7 @@
 
 <section class="section install" id="install" data-screen-label="Install" aria-labelledby="install-title">
   <div class="container">
-    <p class="eyebrow">macOS · APPLE SILICON · v0.12.2</p>
+    <p class="eyebrow eyebrow--plain">macOS · APPLE SILICON · v0.12.2</p>
     <h2 id="install-title">Local-first. Cloud opt-in.</h2>
     <div class="terminal">
       <code><span class="prompt">$</span> git clone github.com/Vetcoders/codescribe<br /><span class="prompt">$</span> make install<br /><span class="prompt">$</span> codescribe <span class="flag">--version</span></code>
@@ -22,6 +22,9 @@
 
 <style>
   .install { padding: 110px 24px; }
+  /* Literal casing for this eyebrow (spec §4.12): keep "macOS" and "v0.12.2"
+     as written instead of the global .eyebrow uppercase transform. */
+  .eyebrow--plain { text-transform: none; }
   .container {
     max-width: 680px;
     text-align: center;
