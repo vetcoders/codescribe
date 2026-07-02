@@ -26,16 +26,24 @@ enum DictationOverlayWindow {
         let hosting = NSHostingController(rootView: root)
         // CRITICAL: do NOT let the hosting controller resize the window to fit the
         // (constantly animating) content — that made the panel drift in circles and
-        // dodge clicks. Fixed panel size; the content lays out inside it.
+        // dodge clicks. The window owns its size (user-resizable, see below); the
+        // content lays out inside whatever frame the window has.
         hosting.sizingOptions = []
 
         let panel = FloatingOverlayPanel(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 380),
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: [.borderless, .nonactivatingPanel, .resizable],
             backing: .buffered,
             defer: false
         )
         panel.contentViewController = hosting
+
+        // User-resizable: borderless windows still honour edge-drag resize when
+        // `.resizable` is set. Floor keeps the glass chrome + action row readable.
+        panel.minSize = NSSize(width: 460, height: 300)
+        // Persist the user's chosen size across launches; the orchestrator re-centres
+        // the origin on every show(), so only the size is meaningfully restored.
+        panel.setFrameAutosaveName("DictationOverlayPanel")
 
         // Transparent chrome so the SwiftUI glass material is the only surface.
         panel.isOpaque = false
@@ -47,7 +55,7 @@ enum DictationOverlayWindow {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
-        panel.isMovableByWindowBackground = true  // draggable again (resize-drift fixed via hosting.sizingOptions)
+        panel.isMovableByWindowBackground = true  // draggable via background; edges resize
 
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
@@ -55,7 +63,7 @@ enum DictationOverlayWindow {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        // Fixed size (set above) — do NOT resize to fittingSize each frame.
+        // Size is window-owned (user-resizable) — do NOT resize to fittingSize each frame.
         return panel
     }
 }

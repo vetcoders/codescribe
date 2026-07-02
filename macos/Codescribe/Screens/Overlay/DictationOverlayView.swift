@@ -16,9 +16,16 @@ struct DictationOverlayView: View {
     @ObservedObject var state: OverlayState
 
     // Mock-derived geometry constants (not design tokens — local to this surface).
-    private let windowWidth: CGFloat = 560
+    // The window is user-resizable; content flows to fill whatever frame it gets,
+    // never narrower than `windowMinWidth`.
+    private let windowMinWidth: CGFloat = 460
     private let bodyMinHeight: CGFloat = 118
     private let buttonRadius: CGFloat = 10
+
+    /// Scroll bookkeeping for the live transcript (follow-tail with pause-on-scroll).
+    @State private var followTail = true
+    private let transcriptScrollSpace = "overlayTranscriptScroll"
+    private let transcriptBottomAnchor = "overlayTranscriptBottom"
 
     var body: some View {
         GlassPanel(cornerRadius: CSRadius.window) {
@@ -33,7 +40,7 @@ struct DictationOverlayView: View {
                 footer
             }
         }
-        .frame(width: windowWidth)
+        .frame(minWidth: windowMinWidth, maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottom) {
             if let toast = state.toast {
                 ToastPill(text: toast)
@@ -123,7 +130,7 @@ struct DictationOverlayView: View {
                     .transition(.opacity.combined(with: .offset(y: 8)))
             }
         }
-        .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: bodyMinHeight, maxHeight: .infinity, alignment: .topLeading)
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 20)
@@ -135,13 +142,54 @@ struct DictationOverlayView: View {
             WaveformView(active: state.audioReady || state.vadActive)
                 .padding(.top, 6)
                 .padding(.bottom, 14)
-            HStack(alignment: .bottom, spacing: 2) {
-                Text(state.listeningDisplay)
-                    .font(CSFont.ui(18, .medium))
-                    .lineSpacing(10)
-                    .foregroundStyle(CSColor.textBody)
-                    .fixedSize(horizontal: false, vertical: true)
-                BlinkingCaret()
+            transcriptScroll
+        }
+    }
+
+    /// Scrollable live transcript. Follows the tail (auto-scrolls to the newest
+    /// text) by default; scrolling up manually pauses the follow, and scrolling
+    /// back to the bottom resumes it — the standard "follow tail, pause on scroll"
+    /// pattern. Pre-macOS-15 detection: measure the content's bottom edge in the
+    /// scroll's coordinate space and compare against the viewport height.
+    private var transcriptScroll: some View {
+        GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(alignment: .bottom, spacing: 2) {
+                            Text(state.listeningDisplay)
+                                .font(CSFont.ui(18, .medium))
+                                .lineSpacing(10)
+                                .foregroundStyle(CSColor.textBody)
+                                .fixedSize(horizontal: false, vertical: true)
+                            BlinkingCaret()
+                        }
+                        Color.clear
+                            .frame(height: 1)
+                            .id(transcriptBottomAnchor)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        GeometryReader { content in
+                            Color.clear.preference(
+                                key: TranscriptBottomKey.self,
+                                value: content.frame(in: .named(transcriptScrollSpace)).maxY
+                            )
+                        }
+                    )
+                }
+                .coordinateSpace(name: transcriptScrollSpace)
+                .onPreferenceChange(TranscriptBottomKey.self) { contentBottom in
+                    // At bottom when the content's bottom edge is within a small
+                    // slack of the viewport's bottom; drives follow on/off.
+                    followTail = contentBottom <= viewport.size.height + 28
+                }
+                .onChange(of: state.listeningDisplay) { _, _ in
+                    guard followTail else { return }
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo(transcriptBottomAnchor, anchor: .bottom)
+                    }
+                }
             }
         }
     }
@@ -252,6 +300,15 @@ struct DictationOverlayView: View {
         .font(CSFont.mono(10, .medium))
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
+    }
+}
+
+/// Carries the live transcript content's bottom-edge Y (in the scroll's coordinate
+/// space) up to the follow-tail detector.
+private struct TranscriptBottomKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
