@@ -444,7 +444,10 @@ dmg:
 dmg-signed:
 	@./scripts/build-dmg.sh --sign
 
-release-standard:
+# ensure-models runs first so the embedded-Whisper release build finds the model
+# in the HF cache. build.rs only warns on a missing model, so without this the
+# signed/notarized DMG could ship without embedded Whisper.
+release-standard: ensure-models
 	@./scripts/build-dmg.sh --sign --notarize
 
 # Compatibility alias — the standard DMG now embeds Whisper by default, so it IS
