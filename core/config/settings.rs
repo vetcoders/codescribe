@@ -100,6 +100,18 @@ pub struct UserSettings {
     pub whisper_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_max_upload_mb: Option<u64>,
+
+    // ── STT engine / layered transcription (F1) ──
+    /// STT engine selection ("auto" | "apple" | "whisper").
+    /// Seeds `CODESCRIBE_STT_ENGINE`; string on purpose (1:1 env mapping, like
+    /// `onboarding_mode`). `None`/absent means the built-in auto policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_engine: Option<String>,
+    /// Layered incremental transcription phase ("off" | "phase1").
+    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`; anything other than
+    /// "phase1".."phase4" (or bare "1".."4") is treated as OFF by the core.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layered_transcription: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -191,6 +203,11 @@ struct SpeechEngineV2 {
     // De-ghosted (2026-05-30): Whisper model id (distinct from local_model_id path).
     #[serde(skip_serializing_if = "Option::is_none")]
     whisper_model: Option<String>,
+    // F1 layered transcription: engine selector + phase flag (string, 1:1 env).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stt_engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layered_transcription: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -339,6 +356,10 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_BUFFERED_INTERIM_SEC",
     "WHISPER_MODEL",
     "BACKEND_MAX_UPLOAD_MB",
+    // NOTE (F1): CODESCRIBE_STT_ENGINE / CODESCRIBE_LAYERED_TRANSCRIPTION are
+    // deliberately NOT promoted — they stay env-managed so an existing
+    // ~/.codescribe/.env line (e.g. CODESCRIBE_STT_ENGINE=onnx) keeps winning.
+    // settings.json only seeds them when the env var is absent (loader.rs).
 ];
 
 /// Check if a key is a promoted (settings.json) setting.
@@ -374,6 +395,8 @@ impl UserSettings {
                     cloud_transcription_endpoint: self.stt_endpoint.clone(),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
+                    stt_engine: self.stt_engine.clone(),
+                    layered_transcription: self.layered_transcription.clone(),
                 }),
                 formatting: Some(FormattingV2 {
                     enabled: self.ai_formatting_enabled,
@@ -567,6 +590,16 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.cloud_max_upload_mb),
+            stt_engine: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.stt_engine.clone()),
+            layered_transcription: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.layered_transcription.clone()),
         }
     }
 
@@ -803,6 +836,10 @@ impl UserSettings {
             "SOUND_NAME" => self.sound_name = Some(value.to_owned()),
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
+            "CODESCRIBE_STT_ENGINE" => self.stt_engine = Some(value.to_owned()),
+            "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
+                self.layered_transcription = Some(value.to_owned())
+            }
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;
@@ -1005,6 +1042,32 @@ mod tests {
             Some("https://api.example/v1/responses")
         );
         assert_eq!(loaded.llm_model.as_deref(), Some("gpt-4.1"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_stt_engine_and_layered_transcription_survive_roundtrip() {
+        // F1 layered transcription: both env-managed keys must round-trip through
+        // the V2 speech.engine section, or save→load silently drops the seed value.
+        let _tmp = setup_isolated_data_dir();
+        let settings = UserSettings {
+            stt_engine: Some("apple".to_string()),
+            layered_transcription: Some("phase1".to_string()),
+            ..Default::default()
+        };
+        settings.save().expect("save settings");
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.stt_engine.as_deref(), Some("apple"));
+        assert_eq!(loaded.layered_transcription.as_deref(), Some("phase1"));
+
+        // set_string routes both keys (settings.json stays a valid seed source).
+        let mut mutated = loaded;
+        mutated.set_string("CODESCRIBE_STT_ENGINE", "whisper");
+        mutated.set_string("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
+        let reloaded = UserSettings::load();
+        assert_eq!(reloaded.stt_engine.as_deref(), Some("whisper"));
+        assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
     }
 
     #[test]

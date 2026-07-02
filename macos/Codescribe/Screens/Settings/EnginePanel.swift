@@ -1,7 +1,10 @@
 import SwiftUI
 
-// Engine panel: READ-ONLY runtime truth. Key/value rows are sourced from the live
-// CsSettings snapshot (not hardcoded); the permission matrix reflects live status.
+// Engine panel: runtime truth + engine controls. The key/value runtime rows are
+// READ-ONLY (sourced from the live CsSettings snapshot, not hardcoded) and the
+// permission matrix reflects live status. The "Engine controls" section below the
+// runtime rows is editable (F1 layered transcription): STT engine selector +
+// layered-transcription toggle, persisted through the promoted-key config router.
 
 struct EnginePanel: View {
     @ObservedObject var model: SettingsViewModel
@@ -18,7 +21,7 @@ struct EnginePanel: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 EyebrowLabel(text: "Settings · Engine")
-                Text("READ-ONLY RUNTIME TRUTH")
+                Text("RUNTIME TRUTH · READ-ONLY ROWS")
                     .font(CSFont.mono(9, .medium))
                     .foregroundStyle(CSColor.textMutedAlt)
                     .padding(.horizontal, 8)
@@ -42,6 +45,11 @@ struct EnginePanel: View {
             runtimeRows
                 .padding(.top, 20)
 
+            SettingsSectionLabel("Engine controls")
+                .padding(.top, 22)
+            engineControls
+                .padding(.top, 11)
+
             SettingsSectionLabel("Permission matrix")
                 .padding(.top, 22)
             LazyVGrid(columns: columns, spacing: 8) {
@@ -53,7 +61,7 @@ struct EnginePanel: View {
 
             HStack(spacing: 8) {
                 Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
-                Text("values reflect the live runtime — edit in the relevant section")
+                Text("runtime rows reflect the live engine — engine controls apply from the next recording session")
                     .font(CSFont.mono(11, .medium))
                     .foregroundStyle(CSColor.textFaint)
             }
@@ -104,6 +112,72 @@ struct EnginePanel: View {
 
     private var divider: some View {
         Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+    }
+
+    // MARK: Engine controls (editable — F1 layered transcription)
+
+    /// Selectable engines. "onnx" is deliberately NOT exposed (experimental,
+    /// frozen); "auto" defers to the core policy (Apple live when available).
+    private static let sttEngineOptions: [(id: String, label: String)] = [
+        ("auto", "Auto"),
+        ("apple", "Apple (live)"),
+        ("whisper", "Whisper (Candle)"),
+    ]
+
+    private var layeredBinding: Binding<Bool> {
+        Binding(get: { model.layeredTranscriptionEnabled },
+                set: { model.setLayeredTranscription($0) })
+    }
+
+    private var engineControls: some View {
+        VStack(spacing: 8) {
+            SettingsControlRow(title: "STT engine",
+                               subtitle: "Auto prefers Apple live speech, else Whisper") {
+                Menu {
+                    ForEach(Self.sttEngineOptions, id: \.id) { option in
+                        Button {
+                            model.setSttEngine(option.id)
+                        } label: {
+                            if option.id == model.sttEngineId {
+                                Label(option.label, systemImage: "checkmark")
+                            } else {
+                                Text(option.label)
+                            }
+                        }
+                    }
+                } label: {
+                    EngineMenuLabel(text: model.sttEngineLabel)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
+            SettingsControlRow(title: "Layered transcription",
+                               subtitle: "Experimental: Apple live layer + Whisper tail patches") {
+                Toggle("", isOn: layeredBinding)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .tint(CSColor.terracotta)
+            }
+        }
+    }
+}
+
+// MARK: - Engine dropdown label (mirrors the KeysPanel MenuLabel shape)
+
+private struct EngineMenuLabel: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(text)
+                .font(CSFont.ui(12.5, .semibold))
+                .foregroundStyle(CSColor.textHigh)
+                .lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(CSColor.textFaint)
+        }
     }
 }
 

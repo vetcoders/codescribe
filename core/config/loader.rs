@@ -590,6 +590,20 @@ impl Config {
         {
             Self::config_init_set_env("BACKEND_MAX_UPLOAD_MB", v.to_string());
         }
+
+        // ── STT engine / layered transcription (F1) ──
+        // Explicit process env wins; settings.json seeds the env-only knobs that
+        // core/stt reads per-call (selected_engine / layered_phase).
+        if std::env::var("CODESCRIBE_STT_ENGINE").is_err()
+            && let Some(ref v) = settings.stt_engine
+        {
+            Self::safe_set_env("CODESCRIBE_STT_ENGINE", v);
+        }
+        if std::env::var("CODESCRIBE_LAYERED_TRANSCRIPTION").is_err()
+            && let Some(ref v) = settings.layered_transcription
+        {
+            Self::safe_set_env("CODESCRIBE_LAYERED_TRANSCRIPTION", v);
+        }
     }
 
     /// Save a configuration value, routing to the appropriate tier:
