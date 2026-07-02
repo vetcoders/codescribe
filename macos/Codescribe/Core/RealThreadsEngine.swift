@@ -66,6 +66,10 @@ final class RealThreadsEngine: ChatThreadsProviding {
         (try? threads.renameThread(id: backendId, title: title)) ?? false
     }
 
+    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? {
+        try? threads.exportThreadMarkdown(id: backendId, assistantOnly: assistantOnly)
+    }
+
     private static func thread(from summary: CsThreadSummary) -> ChatThread {
         var thread = ChatThread(
             title: summary.title.isEmpty ? "Untitled" : summary.title,

@@ -124,6 +124,10 @@ protocol ChatThreadsProviding: AnyObject {
     /// Rename a persisted thread; the core marks the title user-custom so
     /// auto-titling won't overwrite it. Returns `false` on failure / no such thread.
     func renameThread(backendId: String, title: String) -> Bool
+    /// Export a persisted thread to a Markdown file under
+    /// `~/.codescribe/transcriptions/YYYY-MM-DD/`. Returns the absolute path of the
+    /// written file, or `nil` on failure. `assistantOnly` keeps only assistant turns.
+    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String?
     /// Mint a fresh ThreadStore id for a new conversation (so it persists).
     func generateThreadId() -> String
 }
@@ -247,6 +251,14 @@ final class AgentChatStore: ObservableObject {
             guard threadsProvider?.renameThread(backendId: backendId, title: trimmed) == true else { return }
         }
         threads[ti].title = trimmed
+    }
+
+    /// Export a thread to a Markdown transcript on disk, returning the file path
+    /// so the caller can reveal it in Finder. Only persisted threads (with a
+    /// backend id) can be exported; a not-yet-saved local thread returns `nil`.
+    func exportMarkdown(_ thread: ChatThread, assistantOnly: Bool) -> String? {
+        guard let backendId = thread.backendId else { return nil }
+        return threadsProvider?.exportThreadMarkdown(backendId: backendId, assistantOnly: assistantOnly)
     }
 
     func delete(_ thread: ChatThread) {

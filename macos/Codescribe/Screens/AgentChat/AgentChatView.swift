@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Agent Chat MVP shell. `NavigationSplitView`: local in-memory thread rail ↔
@@ -33,6 +34,8 @@ struct AgentChatView: View {
 private struct ThreadDetail: View {
     @ObservedObject var store: AgentChatStore
     @Environment(\.openSettings) private var openSettings
+    @State private var isRenaming = false
+    @State private var renameText = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,6 +50,13 @@ private struct ThreadDetail: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CSColor.glassBase)
+        .alert("Rename thread", isPresented: $isRenaming) {
+            TextField("Thread title", text: $renameText)
+            Button("Rename") {
+                if let thread = store.currentThread { store.rename(thread, to: renameText) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     // Header: live status pill · Settings · thread menu (⋯ wired in the menu section)
@@ -61,7 +71,7 @@ private struct ThreadDetail: View {
                 .buttonStyle(.plain)
                 .help("Settings")
 
-                Text("⋯").font(.system(size: 16, weight: .bold)).tracking(1)
+                threadMenu
             }
             .foregroundStyle(CSColor.textFaint)
         }
@@ -70,6 +80,43 @@ private struct ThreadDetail: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
         }
+    }
+
+    // Current-thread actions. Export entries appear only for persisted threads
+    // (a not-yet-saved local thread has no backend id to export from).
+    private var threadMenu: some View {
+        Menu {
+            if let thread = store.currentThread {
+                Button("Rename") { beginRename(thread) }
+                Button(thread.isFavorite ? "Unfavorite" : "Favorite") {
+                    store.toggleFavorite(thread)
+                }
+                if thread.backendId != nil {
+                    Button("Export to Markdown") { export(thread, assistantOnly: false) }
+                    Button("Export assistant replies only") { export(thread, assistantOnly: true) }
+                }
+                Divider()
+                Button("Delete Thread", role: .destructive) { store.delete(thread) }
+            }
+        } label: {
+            Text("⋯").font(.system(size: 16, weight: .bold)).tracking(1)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Thread actions")
+    }
+
+    private func beginRename(_ thread: ChatThread) {
+        renameText = thread.title
+        isRenaming = true
+    }
+
+    /// Export the thread and reveal the written file in Finder (no permission
+    /// prompt — the path lives under the app's own `~/.codescribe` data dir).
+    private func export(_ thread: ChatThread, assistantOnly: Bool) {
+        guard let path = store.exportMarkdown(thread, assistantOnly: assistantOnly) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
     // Live status: Idle (olive) → Thinking (amber) → Streaming (terracotta).
