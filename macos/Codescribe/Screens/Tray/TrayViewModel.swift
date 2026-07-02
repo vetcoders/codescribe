@@ -25,6 +25,13 @@ final class TrayViewModel: ObservableObject {
     @Published var diagnosticsExpanded: Bool = false
     @Published var historyExpanded: Bool = false
 
+    // Transient result banner for the Notes actions ("Save selection" / "Save
+    // last transcript"). Rendered inside the still-open popover so the user gets
+    // an unmissable, permission-free confirmation even when the OS notification
+    // path is silent (accessory app / not-yet-granted). Auto-clears.
+    @Published private(set) var noteStatus: TrayActionStatus?
+    private var noteStatusClearTask: Task<Void, Never>?
+
     // The 5 most recent transcripts, loaded when the History group is expanded
     // (cached so re-renders don't re-hit disk).
     @Published private(set) var historyItems: [TrayTranscript] = []
@@ -172,4 +179,26 @@ final class TrayViewModel: ObservableObject {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
+
+    // MARK: - Notes action feedback
+
+    /// Surface the outcome of a Notes action in the popover and auto-clear it a
+    /// few seconds later. Cancels any in-flight clear so back-to-back actions
+    /// don't wipe the newest banner early.
+    func showNoteStatus(_ status: TrayActionStatus) {
+        noteStatus = status
+        noteStatusClearTask?.cancel()
+        noteStatusClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.noteStatus = nil
+        }
+    }
+}
+
+/// Outcome of a tray Notes action, shown as a transient banner row.
+struct TrayActionStatus: Equatable {
+    enum Kind { case success, failure }
+    let kind: Kind
+    let message: String
 }

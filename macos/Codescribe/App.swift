@@ -10,6 +10,13 @@ private let appLogger = Logger(
     category: "App"
 )
 
+// Breadcrumbs for the tray Notes actions. Inspect with:
+//   log show --predicate 'subsystem == "com.vetcoders.codescribe" && category == "notes"' --info
+private let notesLog = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+    category: "notes"
+)
+
 @main
 struct CodescribeRedesignApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -141,16 +148,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         // One-shot: append the most recent transcript to the daily note. No paste
-        // — Notes is a brain-dump destination. Pass the text (or "") straight to
-        // the bridge, which toasts saved / nothing-to-save / could-not-save so
-        // nothing fails silently.
-        model.tray.onSaveLastTranscript = { [notes, threads] in
-            _ = try? notes.saveText(text: Self.latestTranscriptText(threads) ?? "")
+        // — Notes is a brain-dump destination. Result is surfaced in the popover
+        // (and the bridge's OS toast) so the action is never a silent no-op.
+        model.tray.onSaveLastTranscript = { [weak self, notes, threads, model] in
+            let text = Self.latestTranscriptText(threads) ?? ""
+            self?.saveToNote(tray: model.tray, emptyMessage: "No transcript to save") {
+                try notes.saveText(text: text)
+            }
         }
-        // One-shot: capture the current selection (AX, clipboard fallback) into the
-        // daily note.
-        model.tray.onSaveSelection = { [notes] in
-            _ = try? notes.saveSelection()
+        // One-shot: capture the current selection into the daily note. The tray
+        // popover steals key focus and SwiftUI `Text.textSelection` doesn't expose
+        // `AXSelectedText`, so the system-wide AX read can't see a selection made
+        // in our own agent window — harvest it from that window's responder chain
+        // first, then fall back to the AX/clipboard path for other apps.
+        model.tray.onSaveSelection = { [weak self, notes, model] in
+            guard let self else { return }
+            self.saveToNote(tray: model.tray, emptyMessage: "No text selected") {
+                if let own = self.harvestAgentWindowSelection() {
+                    notesLog.info("save selection: harvested \(own.count, privacy: .public) chars from agent window")
+                    return try notes.saveText(text: own)
+                }
+                notesLog.info("save selection: no own-window selection; trying AX/clipboard path")
+                return try notes.saveSelection()
+            }
         }
 
         // ── Diagnostics ──
@@ -188,6 +208,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func latestTranscriptText(_ threads: CodescribeThreads) -> String? {
         guard let path = threads.recentHistory(limit: 1).first?.path else { return nil }
         return try? threads.readHistoryText(path: path)
+    }
+
+    /// Run a Notes save and reflect the outcome in the still-open popover. The
+    /// bridge returns the saved payload (non-nil) on success, nil when there was
+    /// nothing to save, and throws on a write error — every branch gets a banner
+    /// so the action is fail-loud, never a silent no-op.
+    private func saveToNote(
+        tray: TrayViewModel,
+        emptyMessage: String,
+        _ perform: () throws -> String?
+    ) {
+        do {
+            let saved = try perform()
+            if let saved, !saved.isEmpty {
+                notesLog.info("note saved (\(saved.count, privacy: .public) chars)")
+                tray.showNoteStatus(.init(kind: .success, message: "Saved to daily note"))
+            } else {
+                notesLog.info("note save: nothing to save")
+                tray.showNoteStatus(.init(kind: .failure, message: emptyMessage))
+            }
+        } catch {
+            notesLog.error("note save failed: \(error.localizedDescription, privacy: .public)")
+            tray.showNoteStatus(.init(kind: .failure, message: "Could not save note"))
+        }
+    }
+
+    /// Best-effort harvest of the live text selection from our own agent window.
+    ///
+    /// The system-wide AX read used by the bridge can't see it: the tray popover
+    /// has stolen key focus and SwiftUI `Text.textSelection` doesn't expose
+    /// `AXSelectedText`. Instead we ask the agent window's responder chain to
+    /// `copy:`, snapshotting and restoring the real pasteboard so the user's
+    /// clipboard is left untouched. Returns nil when the window is absent/hidden
+    /// or holds no selection (a `copy:` on an empty selection leaves the
+    /// pasteboard `changeCount` unmoved).
+    private func harvestAgentWindowSelection() -> String? {
+        guard let window = agentWindow, window.isVisible else {
+            notesLog.info("harvest: no visible agent window")
+            return nil
+        }
+        let pasteboard = NSPasteboard.general
+        let changeCountBefore = pasteboard.changeCount
+        let savedClipboard = pasteboard.string(forType: .string)
+
+        let handled = window.firstResponder?
+            .tryToPerform(#selector(NSText.copy(_:)), with: nil) ?? false
+        guard handled, pasteboard.changeCount != changeCountBefore else {
+            notesLog.info("harvest: responder copy produced no selection")
+            return nil
+        }
+
+        let harvested = pasteboard.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Restore the user's clipboard — Save selection must not clobber it.
+        pasteboard.clearContents()
+        if let savedClipboard { pasteboard.setString(savedClipboard, forType: .string) }
+
+        guard let harvested, !harvested.isEmpty else { return nil }
+        return harvested
     }
 
     func applicationWillTerminate(_ notification: Notification) {

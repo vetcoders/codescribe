@@ -199,6 +199,9 @@ struct TrayMenuView: View {
                     TrayChildRow(title: "Open today's note") {
                         viewModel.onOpenTodayNote()
                     }
+                    if let status = viewModel.noteStatus {
+                        TrayNoteStatusRow(status: status)
+                    }
                 }
             }
         }
@@ -224,6 +227,38 @@ struct TrayMenuView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Notes action result banner
+
+/// Transient confirmation row for the Notes actions. Olive check on success,
+/// terracotta cross on failure — a permission-free, always-visible replacement
+/// for the OS notification that an accessory app can't guarantee.
+private struct TrayNoteStatusRow: View {
+    let status: TrayActionStatus
+
+    private var isSuccess: Bool { status.kind == .success }
+    private var tint: Color { isSuccess ? CSColor.oliveLight : CSColor.terracotta }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(isSuccess ? "✓" : "✕")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(tint)
+            Text(status.message)
+                .font(CSFont.ui(12, .medium))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(tint.opacity(0.10))
+        )
+        .transition(.opacity)
     }
 }
 
