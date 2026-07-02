@@ -57,8 +57,21 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
     let mut events = controller.subscribe_events();
     handle.spawn(async move {
         loop {
-            let Ok(event) = events.recv().await else {
-                break;
+            let event = match events.recv().await {
+                Ok(event) => event,
+                // Lagged: the broadcast channel (cap 256) overflowed during a
+                // burst of dictation events and dropped `skipped` messages. That
+                // is recoverable — keep forwarding subsequent events instead of
+                // tearing the listener bridge down permanently.
+                Err(RecvError::Lagged(skipped)) => {
+                    eprintln!(
+                        "Hotkey event forwarder lagged; dropped {skipped} broadcast event(s)"
+                    );
+                    continue;
+                }
+                // Closed: the controller (sender) was dropped — nothing more will
+                // ever arrive, so end the forwarder task.
+                Err(RecvError::Closed) => break,
             };
             let listener = listener_store
                 .read()
