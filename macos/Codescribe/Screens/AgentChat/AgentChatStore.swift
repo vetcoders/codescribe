@@ -64,6 +64,12 @@ struct ChatMessage: Identifiable {
     /// Body text. May contain `backtick` code spans for assistant/you turns.
     var text: String
 
+    /// Files attached to a sent user turn (empty otherwise). Rendered as chips in
+    /// the You bubble. In-memory for the current session only — the persisted
+    /// thread does not carry attachment metadata (see RealThreadsEngine), so a
+    /// restored turn comes back with this empty.
+    var attachments: [MessageAttachment] = []
+
     // Tool-activity turn
     var toolTitle: String = ""        // "What I checked · 2 tools"
     var toolLines: [ToolLine] = []
@@ -81,6 +87,16 @@ struct PendingAttachment: Identifiable, Hashable {
     let id = UUID()
     let url: URL
     var name: String { url.lastPathComponent }
+}
+
+/// An attachment carried by a *sent* chat message, surfaced as a chip in the You
+/// bubble. `url` points at the source file for an optional inline thumbnail; it
+/// is nil for restored turns (the persisted thread has no source path), in which
+/// case the chip shows the filename only.
+struct MessageAttachment: Identifiable, Hashable {
+    let id = UUID()
+    let name: String
+    let url: URL?
 }
 
 struct ChatThread: Identifiable {
@@ -269,7 +285,8 @@ final class AgentChatStore: ObservableObject {
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let attachmentPaths = pendingAttachments.map { $0.url.path }
+        let staged = pendingAttachments
+        let attachmentPaths = staged.map { $0.url.path }
         attachLog.info(
             "send: building request attachmentPaths.count=\(attachmentPaths.count, privacy: .public) text.isEmpty=\(text.isEmpty, privacy: .public)"
         )
@@ -277,8 +294,10 @@ final class AgentChatStore: ObservableObject {
         draft = ""
         pendingAttachments = []
 
-        let bubble = text.isEmpty ? attachmentSummary(attachmentPaths) : text
-        append(ChatMessage(role: .you, timestamp: now(), text: bubble), to: threadID)
+        // Carry the staged attachments onto the You bubble so the sender sees a
+        // chip (name + optional thumbnail) for what they attached.
+        let sent = staged.map { MessageAttachment(name: $0.name, url: $0.url) }
+        append(ChatMessage(role: .you, timestamp: now(), text: text, attachments: sent), to: threadID)
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         let assistantID = assistant.id
         append(assistant, to: threadID)
@@ -416,16 +435,6 @@ final class AgentChatStore: ObservableObject {
             tool.toolLines = [line]
             tool.toolTitle = "What I checked · 1 tool"
             threads[ti].messages.insert(tool, at: ai)
-        }
-    }
-
-    /// Placeholder bubble text for an image-only turn (no typed message).
-    private func attachmentSummary(_ paths: [String]) -> String {
-        let names = paths.map { ($0 as NSString).lastPathComponent }
-        switch names.count {
-        case 0: return ""
-        case 1: return "🖼 \(names[0])"
-        default: return "🖼 \(names.count) images"
         }
     }
 

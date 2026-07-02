@@ -63,27 +63,126 @@ private struct YouTurn: View {
             Text("You · \(message.timestamp)")
                 .font(CSFont.mono(10, .medium))
                 .foregroundStyle(CSColor.textFaintAlt)
-            CodeSpanText(raw: message.text, bodyColor: ChatPalette.nameActive)
-                .multilineTextAlignment(.leading)
-                .padding(.horizontal, 15)
-                .padding(.vertical, 12)
-                .background(CSColor.terracotta.opacity(0.15))
-                .overlay(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: 14, bottomLeadingRadius: 14,
-                        bottomTrailingRadius: 4, topTrailingRadius: 14,
-                        style: .continuous
-                    )
-                    .strokeBorder(CSColor.terracotta.opacity(0.22), lineWidth: 1)
-                )
-                .clipShape(UnevenRoundedRectangle(
+            VStack(alignment: .leading, spacing: 9) {
+                if !message.attachments.isEmpty {
+                    WrapLayout(spacing: 6) {
+                        ForEach(message.attachments) { AttachmentChip(attachment: $0) }
+                    }
+                }
+                if !message.text.isEmpty {
+                    CodeSpanText(raw: message.text, bodyColor: ChatPalette.nameActive)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            .padding(.horizontal, 15)
+            .padding(.vertical, 12)
+            .background(CSColor.terracotta.opacity(0.15))
+            .overlay(
+                UnevenRoundedRectangle(
                     topLeadingRadius: 14, bottomLeadingRadius: 14,
                     bottomTrailingRadius: 4, topTrailingRadius: 14,
                     style: .continuous
-                ))
-                .contextMenu { CopyButton(text: message.text) }
+                )
+                .strokeBorder(CSColor.terracotta.opacity(0.22), lineWidth: 1)
+            )
+            .clipShape(UnevenRoundedRectangle(
+                topLeadingRadius: 14, bottomLeadingRadius: 14,
+                bottomTrailingRadius: 4, topTrailingRadius: 14,
+                style: .continuous
+            ))
+            .contextMenu { CopyButton(text: message.text) }
         }
         .frame(maxWidth: 510, alignment: .trailing)
+    }
+}
+
+/// Attachment chip for a sent You turn — mirrors the composer's staged-chip
+/// style (icon/thumbnail + mono filename), minus the remove button. Shows a
+/// small inline thumbnail when the source image still loads; otherwise falls
+/// back to a photo glyph. Loaded once on appear so scrolling doesn't re-decode.
+private struct AttachmentChip: View {
+    let attachment: MessageAttachment
+    @State private var thumbnail: NSImage?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 18, height: 18)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 11))
+                    .foregroundStyle(CSColor.terracottaLight)
+            }
+            Text(attachment.name)
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(CSColor.textBodyAlt)
+                .lineLimit(1)
+                .frame(maxWidth: 160)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(CSColor.surfaceRaised(0.05))
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+        .onAppear {
+            if thumbnail == nil, let url = attachment.url {
+                thumbnail = NSImage(contentsOf: url)
+            }
+        }
+    }
+}
+
+/// Minimal wrapping layout: lays chips left→right, wrapping to a new row when the
+/// next would exceed the proposed width. Hugs its content so the You bubble stays
+/// tight around 1–N attachment chips instead of overflowing or forcing full width.
+private struct WrapLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var rowWidth: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if rowWidth > 0, rowWidth + spacing + size.width > maxWidth {
+                totalWidth = max(totalWidth, rowWidth)
+                totalHeight += rowHeight + spacing
+                rowWidth = size.width
+                rowHeight = size.height
+            } else {
+                rowWidth += (rowWidth > 0 ? spacing : 0) + size.width
+                rowHeight = max(rowHeight, size.height)
+            }
+        }
+        totalWidth = max(totalWidth, rowWidth)
+        totalHeight += rowHeight
+        return CGSize(width: min(totalWidth, maxWidth), height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width - bounds.minX > bounds.width {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
 
