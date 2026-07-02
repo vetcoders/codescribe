@@ -76,8 +76,11 @@ impl From<McpStatusReport> for CsMcpStatusReport {
     }
 }
 
-/// Agentic-lane readiness verdict + per-prerequisite rows (Vibecrafted + AICX +
-/// Loctree + PRView). `ready` is `true` only when no prerequisite is blocking.
+/// Agentic-lane readiness verdict + rows. `ready` reflects the CORE capability
+/// gate only (assistive provider configured + its API key set + native tools
+/// available); the MCP rows (Vibecrafted + AICX + Loctree + PRView) are
+/// informational context and never flip `ready`. See the core
+/// `AgenticReadinessReport` for the C4 semantics decision.
 #[derive(uniffi::Record)]
 pub struct CsAgenticReadiness {
     pub config_path_display: String,
@@ -119,9 +122,12 @@ impl CodescribeAgentStatus {
         probe_mcp_status().into()
     }
 
-    /// Agentic-lane readiness verdict for the four substrate prerequisites.
-    /// Missing config → not-ready with every prerequisite "not configured".
+    /// Agentic-lane readiness. `ready` is the core capability gate (assistive
+    /// provider + its API key + native tools); the MCP rows are informational.
+    /// Loads `Config` first so Keychain-backed keys are populated into env and the
+    /// core gate sees real key presence (mirrors `available_providers`).
     pub fn agentic_readiness(&self) -> CsAgenticReadiness {
+        let _ = codescribe_core::config::Config::load();
         probe_agentic_readiness().into()
     }
 }
