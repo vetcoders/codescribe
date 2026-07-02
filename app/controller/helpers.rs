@@ -297,13 +297,22 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
 
     StreamOptions {
         model,
-        system_prompt: Some(crate::config::get_assistive_prompt()),
+        system_prompt: Some(compose_agent_system_prompt()),
         max_tokens,
         temperature: None,
         // First-attempt default: preserve conversational chain. Session retry
         // path will clone+override this to true for retry attempts only.
         reset_chain: false,
     }
+}
+
+/// Compose the agent system prompt: the base assistive prompt plus a workspace
+/// section that pins the configured project roots and tells the model to resolve
+/// project names via `list_projects` instead of guessing filesystem paths.
+fn compose_agent_system_prompt() -> String {
+    let base = crate::config::get_assistive_prompt();
+    let workspace = crate::agent::tools::workspace::workspace_prompt_section();
+    format!("{base}\n\n{workspace}")
 }
 
 /// Title-case a `snake_case` / `kebab-case` identifier into readable words.
