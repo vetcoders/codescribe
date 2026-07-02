@@ -17,6 +17,8 @@ private let attachLog = Logger(
 struct Composer: View {
     @ObservedObject var store: AgentChatStore
     @FocusState private var fieldFocused: Bool
+    /// Highlights the composer while an image file is dragged over it.
+    @State private var isDropTargeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -61,10 +63,13 @@ struct Composer: View {
             .padding(.leading, 13)
             .padding(.trailing, 11)
             .padding(.vertical, 9)
-            .background(CSColor.surfaceRaised(0.04))
+            .background(CSColor.surfaceRaised(isDropTargeted ? 0.07 : 0.04))
             .overlay(
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(CSColor.hairline(0.09), lineWidth: 1)
+                    .strokeBorder(
+                        isDropTargeted ? CSColor.terracotta : CSColor.hairline(0.09),
+                        lineWidth: isDropTargeted ? 1.5 : 1
+                    )
             )
             .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
 
@@ -81,6 +86,12 @@ struct Composer: View {
         .padding(.vertical, 14)
         .overlay(alignment: .top) {
             Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+        }
+        // Drag an image from Finder onto the composer to stage it (same path as
+        // the 📎 picker). The whole bottom strip is the drop area; the input box
+        // border lights up terracotta while a file is dragged over it.
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted.animation(.easeOut(duration: 0.12))) { providers in
+            handleDrop(providers)
         }
     }
 
@@ -145,6 +156,56 @@ struct Composer: View {
             guard ok else { return }
             Task { @MainActor in store.addAttachments(urls) }
         }
+    }
+
+    // MARK: Drag & drop
+
+    /// Image types accepted by the drop area — mirrors the NSOpenPanel picker so
+    /// the two staging paths agree on what counts as an image.
+    private static let acceptedImageTypes: [UTType] = [.png, .jpeg, .gif, .webP, .bmp, .tiff]
+
+    /// Handle a batch of dropped file providers. Loads each file URL off-main,
+    /// then stages the image ones via the existing `store.addAttachments` path
+    /// (chips + send parity). Non-image files are rejected with a breadcrumb.
+    /// Returns true when at least one file-URL provider was accepted for loading.
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        attachLog.info(
+            "onDrop: providers=\(providers.count, privacy: .public) fileURL=\(fileProviders.count, privacy: .public)"
+        )
+        guard !fileProviders.isEmpty else { return false }
+
+        for provider in fileProviders {
+            _ = provider.loadObject(ofClass: URL.self) { url, error in
+                guard let url else {
+                    attachLog.error(
+                        "onDrop: failed to load dropped URL: \(error?.localizedDescription ?? "nil", privacy: .public)"
+                    )
+                    return
+                }
+                Task { @MainActor in ingestDroppedURL(url) }
+            }
+        }
+        return true
+    }
+
+    /// Stage a single dropped file if it is an accepted image type, otherwise log
+    /// the rejection. Called on the main actor per resolved URL.
+    @MainActor
+    private func ingestDroppedURL(_ url: URL) {
+        let type = UTType(filenameExtension: url.pathExtension)
+        let isImage = type.map { candidate in
+            Self.acceptedImageTypes.contains { candidate.conforms(to: $0) }
+        } ?? false
+        guard isImage else {
+            attachLog.info(
+                "onDrop: rejected non-image name=\(url.lastPathComponent, privacy: .public) ext=\(url.pathExtension, privacy: .public)"
+            )
+            return
+        }
+        store.addAttachments([url])
     }
 
     private let affordances = [
