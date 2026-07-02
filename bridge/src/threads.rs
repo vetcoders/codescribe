@@ -382,15 +382,21 @@ fn flatten_message_text(content: &[Value]) -> String {
         .join("\n\n")
 }
 
-/// Recursively collect human-readable text from a content `Value`, mirroring
-/// `collect_message_text` (`thread_index.rs:348`).
+/// Recursively collect human-readable text from a content `Value`, keyed on the
+/// canonical content-block `type` (like `core::agent::thread_export::collect_text`)
+/// rather than a blind key walk. A blind walk recurses into structural fields, so
+/// a restored `image` block leaks its `media_type` ("image/png") and a `tool_use`
+/// block leaks its `id`/`name` into the displayed transcript. A type-aware
+/// whitelist emits only real prose: `text` blocks plus recursed `tool_result`
+/// content. Interior newlines are preserved (unlike the search-index twin) so
+/// restored markdown keeps its structure.
 fn collect_message_text(value: &Value, out: &mut Vec<String>) {
     match value {
         Value::String(text) if !text.trim().is_empty() => {
             out.push(text.to_string());
         }
         Value::Array(items) => {
-            // Skip binary-like arrays (e.g., image bytes).
+            // Skip binary-like arrays (e.g., raw image bytes).
             if items.iter().all(Value::is_number) {
                 return;
             }
@@ -398,30 +404,25 @@ fn collect_message_text(value: &Value, out: &mut Vec<String>) {
                 collect_message_text(item, out);
             }
         }
-        Value::Object(map) => {
-            if let Some(text) = map.get("text").and_then(Value::as_str)
-                && !text.trim().is_empty()
-            {
-                out.push(text.to_string());
-            }
-            if let Some(nested) = map.get("content") {
-                collect_message_text(nested, out);
-            }
-            if let Some(input) = map.get("input") {
-                collect_message_text(input, out);
-            }
-            for (key, nested) in map {
-                // `type` is block metadata (`"text"`, `"tool_use"`, …), never
-                // human-readable content. The search-index twin in
-                // `thread_index.rs` leaves it in (a harmless extra token once
-                // lowercased), but on the display surface it would surface as a
-                // literal "text" paragraph next to the real message body.
-                if matches!(key.as_str(), "text" | "type" | "content" | "input" | "data") {
-                    continue;
+        Value::Object(map) => match map.get("type").and_then(Value::as_str) {
+            // A text block (or an untyped object treated as one) contributes its
+            // `text`; structural fields (media_type, id, name, …) are ignored.
+            Some("text") | None => {
+                if let Some(text) = map.get("text").and_then(Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    out.push(text.to_string());
                 }
-                collect_message_text(nested, out);
             }
-        }
+            // Tool results carry nested display prose; recurse into it.
+            Some("tool_result") => {
+                if let Some(nested) = map.get("content") {
+                    collect_message_text(nested, out);
+                }
+            }
+            // tool_use / image / image_asset / anything else: no display prose.
+            Some(_) => {}
+        },
         _ => {}
     }
 }
@@ -462,5 +463,37 @@ mod tests {
             json!({ "type": "text", "text": "   " }),
         ];
         assert_eq!(flatten_message_text(&content), "widoczny");
+    }
+
+    /// Regression: a restored `image` block must not leak its `media_type`
+    /// ("image/png") and a `tool_use` block must not leak its `id`/`name` into
+    /// the displayed transcript. The type-aware whitelist emits only real prose.
+    #[test]
+    fn flatten_skips_restored_image_and_tool_use_structural_fields() {
+        let content = vec![
+            json!({ "type": "text", "text": "opis zdjęcia" }),
+            json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" }
+            }),
+            json!({
+                "type": "tool_use",
+                "id": "toolu_42",
+                "name": "grep",
+                "input": { "pattern": "x" }
+            }),
+        ];
+        assert_eq!(flatten_message_text(&content), "opis zdjęcia");
+    }
+
+    /// Nested `tool_result` prose still surfaces on the display surface.
+    #[test]
+    fn flatten_surfaces_tool_result_prose() {
+        let content = vec![json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_42",
+            "content": [ { "type": "text", "text": "wynik grep" } ]
+        })];
+        assert_eq!(flatten_message_text(&content), "wynik grep");
     }
 }
