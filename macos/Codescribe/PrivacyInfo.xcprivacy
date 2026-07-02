@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Privacy manifest for the Codescribe app bundle. Wired into the Codescribe
+  target via macos/project.yml (resources build phase), so xcodebuild copies it
+  to Codescribe.app/Contents/Resources/PrivacyInfo.xcprivacy and codesign
+  covers it. Materialized from scripts/PrivacyInfo.xcprivacy.template; see
+  docs/APP_STORE_READINESS.md for the full rationale and Apple citations.
+
+  Required-reason API usage (verified against the code, not assumed):
+    std::fs metadata().modified() in core/state/history.rs, core/hf_cache.rs,
+    core/attachment.rs and core/pipeline/stream_postprocess.rs reads file
+    modification times of files inside the app's own directories ->
+    NSPrivacyAccessedAPICategoryFileTimestamp, reason C617.1 ("access file
+    metadata ... within the app container, app group container, or the app's
+    CloudKit container"). No UserDefaults/@AppStorage usage exists in the
+    Swift layer, so no UserDefaults category is declared.
+
+  Data collection, honestly:
+    - Microphone audio is transcribed ON-DEVICE (embedded Whisper) and never
+      leaves the machine, so audio is not "collected" in Apple's sense
+      (no off-device transmission). The Audio Data nutrition label is an App
+      Store Connect questionnaire item, separate from this file.
+    - In the AI modes ONLY (formatting / assistive / selection), transcribed
+      text and user-provided context are sent to the user-configured LLM
+      provider (e.g. OpenAI, Anthropic) to service the request. That is
+      user-generated content leaving the device -> declared below as
+      OtherUserContent, purpose App Functionality, not linked to identity,
+      not used for tracking.
+
+  Created by Vetcoders (c)2026
+-->
+<dict>
+    <!-- This app does not track users across apps/websites owned by others. -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array>
+        <dict>
+            <!-- Transcript/context text sent to the configured LLM provider,
+                 only when the user invokes an AI mode. -->
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- Required-reason API declarations (mandatory since 2024-05-01). -->
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <!-- C617.1: access file metadata within the app's own containers. -->
+                <string>C617.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

@@ -7,7 +7,17 @@ targets:
   Codescribe:
     type: application
     platform: macOS
-    sources: [Codescribe]
+    sources:
+      # Excluded from the directory source and re-added explicitly below with
+      # buildPhase: resources, so the privacy manifest lands deterministically
+      # in Codescribe.app/Contents/Resources (not left to type inference).
+      - path: Codescribe
+        excludes:
+          - PrivacyInfo.xcprivacy
+      # App Store privacy manifest (required-reason APIs + data collection).
+      # See docs/APP_STORE_READINESS.md.
+      - path: Codescribe/PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: Codescribe/Info.plist
       properties:
