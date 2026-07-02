@@ -3,6 +3,7 @@ pub mod event;
 pub mod provider;
 pub mod registry;
 pub mod session;
+pub mod thread_export;
 pub mod thread_index;
 pub mod thread_store;
 pub mod types;

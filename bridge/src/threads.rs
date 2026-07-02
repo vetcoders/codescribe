@@ -9,6 +9,8 @@
 
 use std::fs;
 
+use chrono::Local;
+use codescribe_core::agent::thread_export::thread_to_markdown;
 use codescribe_core::agent::thread_index::{ThreadFilter, ThreadIndex, ThreadSummary};
 use codescribe_core::agent::thread_store::{
     Thread, ThreadMessage, ThreadNote, ThreadStore, TokenUsage,
@@ -298,6 +300,42 @@ impl CodescribeThreads {
     /// `ThreadStore::generate_id` (`thread_store.rs:191`).
     pub fn generate_thread_id(&self) -> String {
         ThreadStore::generate_id()
+    }
+
+    /// Export a thread as a Markdown transcript saved under
+    /// `~/.codescribe/transcriptions/YYYY-MM-DD/`. Returns the absolute path of
+    /// the written file. `assistant_only = true` keeps only assistant turns.
+    /// Formatting lives in `codescribe_core::agent::thread_export` (unit-tested);
+    /// this wrapper owns the on-disk placement + collision-avoidance, mirroring
+    /// the legacy `save_chat_markdown_to_history` (removed in 37efe51).
+    pub fn export_thread_markdown(
+        &self,
+        id: String,
+        assistant_only: bool,
+    ) -> Result<String, CsError> {
+        let store = ThreadStore::new()?;
+        let thread = store.load_thread(&id)?;
+        let markdown = thread_to_markdown(&thread, assistant_only);
+
+        let now = Local::now();
+        let dir = history::transcriptions_dir(&now);
+        let time_base = now.format("%H%M%S").to_string();
+        let kind = if assistant_only {
+            "chat-assistant"
+        } else {
+            "chat"
+        };
+
+        let mut candidate = dir.join(format!("{time_base}_{kind}.md"));
+        for i in 1..=10_000 {
+            if !candidate.exists() {
+                break;
+            }
+            candidate = dir.join(format!("{time_base}_{kind}_{i}.md"));
+        }
+
+        fs::write(&candidate, markdown)?;
+        Ok(candidate.to_string_lossy().into_owned())
     }
 
     /// Recent transcript history entries, newest first, capped at `limit`.
