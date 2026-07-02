@@ -169,7 +169,7 @@ fn is_git_checkout(dir: &Path) -> bool {
 /// A concise workspace section for the agent system prompt: the configured roots
 /// plus the instruction to resolve names via `list_projects` instead of guessing
 /// filesystem paths.
-pub(crate) fn workspace_prompt_section() -> String {
+pub fn workspace_prompt_section() -> String {
     let roots = configured_roots().join(", ");
     format!(
         "WORKSPACE\n\

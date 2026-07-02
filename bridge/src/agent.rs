@@ -124,7 +124,7 @@ impl CodescribeAgent {
     ) -> Result<String, CsError> {
         // Keep provider construction behavior identical to the old eager
         // constructor path, but delay it until the user sends a message.
-        let _ = codescribe_core::config::Config::load();
+        let config = codescribe_core::config::Config::load();
         let provider = codescribe::agent::create_default_provider()?;
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
@@ -158,19 +158,18 @@ impl CodescribeAgent {
             session.restore_messages(restored);
         }
 
+        // Honor the same assistive system prompt + token cap the in-app
+        // controller path uses (build_agent_stream_options), so a Swift chat send
+        // is not stripped of the WORKSPACE-augmented assistive prompt and the
+        // configured `ai_assistive_max_tokens`.
+        let options = build_bridge_stream_options(config.ai_assistive_max_tokens);
+
         // Drive the agent loop on a task so the channel closes when it finishes,
         // letting the drain loop below terminate cleanly. The task hands back the
         // session's final message log so the caller can persist the thread.
         let send_handle = tokio::spawn(async move {
             let mut session = session;
             let attachments = attachments;
-            let options = StreamOptions {
-                model: String::new(),
-                system_prompt: None,
-                max_tokens: None,
-                temperature: None,
-                reset_chain: false,
-            };
             session.send(text, attachments, &options).await?;
             Ok::<Vec<Message>, anyhow::Error>(session.messages().to_vec())
         });
@@ -212,6 +211,34 @@ impl CodescribeAgent {
             }),
         }
     }
+}
+
+/// Build the assistive stream options for a bridge chat send, honoring the same
+/// assistive system prompt and token cap the in-app controller path uses
+/// (`app/controller/helpers.rs::build_agent_stream_options`). Model is left empty
+/// so the provider resolves it from `LLM_ASSISTIVE_MODEL` (identical default to
+/// the controller), keeping both send paths behaviorally aligned.
+fn build_bridge_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
+    let max_tokens = u32::try_from(ai_assistive_max_tokens)
+        .ok()
+        .filter(|tokens| *tokens > 0);
+    StreamOptions {
+        model: String::new(),
+        system_prompt: Some(compose_agent_system_prompt()),
+        max_tokens,
+        temperature: None,
+        reset_chain: false,
+    }
+}
+
+/// Compose the agent system prompt exactly like the controller path
+/// (`app/controller/helpers.rs::compose_agent_system_prompt`): the base assistive
+/// prompt plus the WORKSPACE section (6238ca1) that pins project roots and tells
+/// the model to resolve names via `list_projects` instead of guessing paths.
+fn compose_agent_system_prompt() -> String {
+    let base = codescribe_core::config::prompts::get_assistive_prompt();
+    let workspace = codescribe::agent::tools::workspace::workspace_prompt_section();
+    format!("{base}\n\n{workspace}")
 }
 
 /// Load + validate composer attachments into vision `ImageAttachment`s.
