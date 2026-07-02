@@ -69,6 +69,10 @@ pub struct CsSettings {
     pub use_local_stt: bool,
     pub local_model: String,
     pub stt_endpoint: Option<String>,
+    /// STT engine selection (`CODESCRIBE_STT_ENGINE`): `"auto"` | `"apple"` |
+    /// `"whisper"`. `None` means the built-in auto policy. Written back via
+    /// `update_config` with the same key (promoted → settings.json).
+    pub stt_engine: Option<String>,
     // ── LLM backend (base) ──
     pub llm_endpoint: Option<String>,
     // ── Clipboard ──
@@ -90,6 +94,10 @@ pub struct CsSettings {
     pub llm_assistive_provider: Option<String>,
     pub formatting_level: Option<String>,
     pub whisper_model: Option<String>,
+    /// Layered incremental transcription phase (`CODESCRIBE_LAYERED_TRANSCRIPTION`):
+    /// `"phase1"` | `"off"` (anything non-phase means OFF). Written back via
+    /// `update_config` with the same key (promoted → settings.json).
+    pub layered_transcription: Option<String>,
     pub buffer_delay_ms: Option<u64>,
     pub typing_cps: Option<f32>,
     pub emit_words_max: Option<u64>,
@@ -206,6 +214,7 @@ impl CodescribeConfig {
             use_local_stt: config.use_local_stt,
             local_model: config.local_model.clone(),
             stt_endpoint: config.stt_endpoint.clone(),
+            stt_engine: env_string("CODESCRIBE_STT_ENGINE"),
             llm_endpoint: config.llm_endpoint.clone(),
             restore_clipboard: config.restore_clipboard,
             restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,
@@ -221,6 +230,7 @@ impl CodescribeConfig {
             llm_assistive_provider: env_string("LLM_ASSISTIVE_PROVIDER"),
             formatting_level: env_string("FORMATTING_LEVEL"),
             whisper_model: env_string("WHISPER_MODEL"),
+            layered_transcription: env_string("CODESCRIBE_LAYERED_TRANSCRIPTION"),
             buffer_delay_ms: env_parse("CODESCRIBE_BUFFER_DELAY_MS"),
             typing_cps: env_parse("CODESCRIBE_TYPING_CPS"),
             emit_words_max: env_parse("CODESCRIBE_EMIT_WORDS_MAX"),

@@ -333,6 +333,40 @@ final class SettingsViewModel: ObservableObject {
         persist("USE_LOCAL_STT", on ? "1" : "0")
     }
 
+    // MARK: - STT engine / layered transcription (Engine panel controls)
+
+    /// Selected STT engine id ("auto" | "apple" | "whisper"); absent → auto policy.
+    var sttEngineId: String { settings.sttEngine ?? "auto" }
+
+    /// Display label for the current STT engine selection.
+    var sttEngineLabel: String {
+        switch sttEngineId {
+        case "apple": return "Apple (live)"
+        case "whisper", "candle": return "Whisper (Candle)"
+        default: return "Auto"
+        }
+    }
+
+    func setSttEngine(_ id: String) {
+        settings.sttEngine = id
+        persist("CODESCRIBE_STT_ENGINE", id)
+    }
+
+    /// ON for any phase value ("phase1".."phase4" or bare "1".."4"); anything
+    /// else (including "off"/absent) is OFF — mirrors the core `layered_phase`.
+    var layeredTranscriptionEnabled: Bool {
+        let value = settings.layeredTranscription ?? "off"
+        return value.hasPrefix("phase") || Int(value) != nil
+    }
+
+    /// The GUI only exposes Phase 1 (Apple live layer + Whisper tail patch);
+    /// phases 2-4 do not exist as features yet.
+    func setLayeredTranscription(_ on: Bool) {
+        let value = on ? "phase1" : "off"
+        settings.layeredTranscription = value
+        persist("CODESCRIBE_LAYERED_TRANSCRIPTION", value)
+    }
+
     private func persist(_ key: String, _ value: String) {
         guard let engine else { return }
         do {
