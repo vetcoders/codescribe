@@ -125,11 +125,15 @@ struct DictationOverlayView: View {
 
     private var bodySection: some View {
         Group {
-            if state.mode == .listening {
+            switch state.mode {
+            case .listening:
                 listeningBody
                     .transition(.opacity.combined(with: .offset(y: 8)))
-            } else {
+            case .formatted:
                 formattedBody
+                    .transition(.opacity.combined(with: .offset(y: 8)))
+            case .noSpeech:
+                noSpeechBody
                     .transition(.opacity.combined(with: .offset(y: 8)))
             }
         }
@@ -210,6 +214,28 @@ struct DictationOverlayView: View {
             .frame(minHeight: bodyMinHeight)
     }
 
+    /// Terminal outcome for a session that captured no usable speech. Replaces
+    /// the empty editable FINAL with a calm, non-alarming notice (mic glyph +
+    /// message). No Copy/Format/Send — there is nothing to act on; only Close
+    /// remains in the action row.
+    private var noSpeechBody: some View {
+        HStack(spacing: 12) {
+            CSIconView(icon: .mic, size: 18, weight: .regular)
+                .foregroundStyle(CSColor.textFaint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state.noSpeechNotice)
+                    .font(CSFont.ui(15, .medium))
+                    .foregroundStyle(CSColor.textBody)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Nothing was captured this session.")
+                    .font(CSFont.metaMono)
+                    .foregroundStyle(CSColor.textFaint)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
+    }
+
     // MARK: Action row
 
     private var actionRow: some View {
@@ -225,7 +251,9 @@ struct DictationOverlayView: View {
                         .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
                 }
                 .buttonStyle(.plain)
-            } else {
+            } else if state.mode == .formatted {
+                // `.noSpeech` intentionally shows no Copy/Format/Send — there is
+                // nothing to act on; only the trailing Close remains.
                 Button(action: { state.copyToPasteboard() }) {
                     Text("Copy")
                         .font(CSFont.bodyStrong)
@@ -371,6 +399,22 @@ private struct ToastPill: View {
     // the min-size regression check: "transcribing…" fills the main status slot and
     // the transcript line is not vertically clipped at the floor.
     DictationOverlayView(state: .previewTranscribing())
+        .frame(width: 390, height: 250)
+        .padding(44)
+        .background(
+            LinearGradient(
+                colors: [Color(hex: 0x15110E), CSColor.glassUnder],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        )
+        .preferredColorScheme(.dark)
+}
+
+#Preview("No speech") {
+    // Session ended without usable text: dedicated notice body, no
+    // Copy/Format/Send, only Close. Pinned to the min content size so it also
+    // guards the floor layout for this outcome.
+    DictationOverlayView(state: .previewNoSpeech())
         .frame(width: 390, height: 250)
         .padding(44)
         .background(
