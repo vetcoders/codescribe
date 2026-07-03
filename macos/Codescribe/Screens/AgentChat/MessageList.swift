@@ -159,9 +159,7 @@ private struct AttachmentChip: View {
                     .frame(width: 18, height: 18)
                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             } else {
-                Image(systemName: "photo")
-                    .font(.system(size: 11))
-                    .foregroundStyle(CSColor.terracottaLight)
+                CSIconView(icon: .photo, size: 11, color: CSColor.terracottaLight)
             }
             Text(attachment.name)
                 .font(CSFont.mono(10.5, .medium))
@@ -261,9 +259,12 @@ private struct ToolLineRow: View {
                         .lineSpacing(4)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if failed {
-                        Image(systemName: showReason ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(CSColor.terracottaLight.opacity(0.75))
+                        CSIconView(
+                            icon: showReason ? .chevronDown : .chevronRight,
+                            size: 8,
+                            weight: .semibold,
+                            color: CSColor.terracottaLight.opacity(0.75)
+                        )
                     }
                 }
                 .contentShape(Rectangle())
@@ -305,9 +306,7 @@ private struct ToolTurn: View {
                 .padding(.vertical, 11)
             } label: {
                 HStack(spacing: 8) {
-                    Text("✓")
-                        .font(.system(size: 11))
-                        .foregroundStyle(CSColor.oliveLight)
+                    CSIconView(icon: .success, size: 11, color: CSColor.oliveLight)
                     Text(message.toolTitle)
                         .font(CSFont.mono(11, .semibold))
                         .foregroundStyle(ChatPalette.nameInactive)
@@ -436,8 +435,7 @@ private struct CopyMessageButton: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 9))
+                CSIconView(icon: copied ? .check : .copy, size: 9)
                 Text(copied ? "copied" : "copy")
                     .font(CSFont.mono(10, .medium))
             }

@@ -187,10 +187,13 @@ struct MarkdownText: View {
     @ViewBuilder
     private func taskRow(indent: Int, done: Bool, text: String, isLast: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Image(systemName: done ? "checkmark.square.fill" : "square")
-                .font(.system(size: size - 1, weight: done ? .semibold : .regular))
-                .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)
-                .frame(minWidth: 14, alignment: .trailing)
+            CSIconView(
+                icon: done ? .checkboxOn : .checkboxOff,
+                size: size - 1,
+                weight: done ? .semibold : .regular,
+                color: done ? CSColor.oliveLight : CSColor.textFaint
+            )
+            .frame(minWidth: 14, alignment: .trailing)
             inlineText(text, baseFont: CSFont.ui(size),
                        baseColor: done ? CSColor.textMutedAlt : bodyColor,
                        fontSize: size, isLast: isLast)
@@ -225,8 +228,7 @@ struct MarkdownText: View {
         let blocks = MDBlock.parse(body)
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: kind.icon)
-                    .font(.system(size: size - 2, weight: .semibold))
+                CSIconView(icon: kind.csIcon, size: size - 2, weight: .semibold)
                 Text(kind.label)
                     .font(CSFont.mono(size - 4, .semibold))
                     .tracking(0.8)
@@ -448,13 +450,13 @@ enum CalloutKind {
         }
     }
 
-    var icon: String {
+    var csIcon: CSIcon {
         switch self {
-        case .note: return "info.circle"
-        case .tip: return "lightbulb"
-        case .important: return "exclamationmark.circle"
-        case .warning: return "exclamationmark.triangle"
-        case .caution: return "exclamationmark.octagon"
+        case .note: return .info
+        case .tip: return .tip
+        case .important: return .error
+        case .warning: return .warning
+        case .caution: return .caution
         }
     }
 
@@ -533,8 +535,7 @@ private struct CodeBlockView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 9))
+                CSIconView(icon: copied ? .check : .copy, size: 9)
                 Text(copied ? "copied" : "copy")
                     .font(CSFont.mono(10, .medium))
             }
