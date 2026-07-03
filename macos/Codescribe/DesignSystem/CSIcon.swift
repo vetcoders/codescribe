@@ -114,70 +114,72 @@ enum CSIcon {
     case circleEmpty
 
     /// Which library draws this semantic icon. Owned by the design system,
-    /// invisible to call sites.
+    /// invisible to call sites. `sf` is retained so a glyph can fall back to an
+    /// SF Symbol if Phosphor ever lacks one; today the whole set is Phosphor so
+    /// the UI reads as a single icon family (operator decision, 02-07-2026).
     enum Backend {
         case sf(String)
         case phosphor(Ph)
+        case phosphorFill(Ph) // forces the fill weight — for genuinely filled-state glyphs
     }
 
     var backend: Backend {
         switch self {
         // Chrome / navigation
-        case .settings: return .sf("gearshape") // matches the overlay's existing SF gear
+        case .settings: return .phosphor(.gear)
         case .setupWizard: return .phosphor(.sparkle)
-        case .help: return .sf("questionmark.circle")
-        case .info: return .sf("info.circle")
+        case .help: return .phosphor(.question)
+        case .info: return .phosphor(.info)
         case .power: return .phosphor(.power)
 
         // Agent / capture
-        case .agent: return .phosphor(.chatCircle) // opens the agent conversation — a chat bubble, not a grid
-
-        case .mic: return .sf("mic")
+        case .agent: return .phosphor(.chatCircle) // opens the agent conversation — a chat bubble
+        case .mic: return .phosphor(.microphone)
         case .record: return .phosphor(.record)
         case .stop: return .phosphor(.stop)
 
         // Content actions
-        case .copy: return .sf("doc.on.doc")
+        case .copy: return .phosphor(.copy)
         case .edit: return .phosphor(.pencilSimple)
         case .notes: return .phosphor(.notePencil)
-        case .notesMode: return .sf("note.text")
+        case .notesMode: return .phosphor(.note)
         case .history: return .phosphor(.clockCounterClockwise)
-        case .search: return .sf("magnifyingglass")
-        case .send: return .sf("arrow.up")
-        case .refresh: return .sf("arrow.clockwise")
-        case .attach: return .sf("paperclip")
-        case .shortcuts: return .sf("keyboard")
-        case .photo: return .sf("photo")
-        case .delete: return .sf("trash")
-        case .remove: return .sf("minus.circle")
+        case .search: return .phosphor(.magnifyingGlass)
+        case .send: return .phosphor(.arrowUp)
+        case .refresh: return .phosphor(.arrowClockwise)
+        case .attach: return .phosphor(.paperclip)
+        case .shortcuts: return .phosphor(.keyboard)
+        case .photo: return .phosphor(.image)
+        case .delete: return .phosphor(.trash)
+        case .remove: return .phosphor(.minusCircle)
 
         // Window modes
-        case .dock: return .sf("macwindow")
-        case .overlay: return .sf("rectangle.on.rectangle")
+        case .dock: return .phosphor(.appWindow)
+        case .overlay: return .phosphor(.pictureInPicture)
 
         // Status / diagnostics
-        case .success: return .sf("checkmark")
-        case .failure: return .sf("xmark")
-        case .warning: return .sf("exclamationmark.triangle")
-        case .error: return .sf("exclamationmark.circle")
-        case .tip: return .sf("lightbulb")
-        case .caution: return .sf("exclamationmark.octagon")
+        case .success: return .phosphor(.check)
+        case .failure: return .phosphor(.x)
+        case .warning: return .phosphor(.warning)
+        case .error: return .phosphor(.warningCircle)
+        case .tip: return .phosphor(.lightbulb)
+        case .caution: return .phosphor(.warningOctagon)
         case .diagnostics: return .phosphor(.stethoscope)
-        case .accountVerified: return .sf("person.crop.circle.badge.checkmark")
+        case .accountVerified: return .phosphor(.userCircleCheck)
 
         // Affordances / selection
-        case .chevronRight: return .sf("chevron.right")
-        case .chevronDown: return .sf("chevron.down")
-        case .chevronUpDown: return .sf("chevron.up.chevron.down")
-        case .close: return .sf("xmark")
-        case .check: return .sf("checkmark")
-        case .more: return .sf("ellipsis")
-        case .star: return .sf("star")
-        case .starFill: return .sf("star.fill")
-        case .checkboxOn: return .sf("checkmark.square.fill")
-        case .checkboxOff: return .sf("square")
-        case .checkCircleFill: return .sf("checkmark.circle.fill")
-        case .circleEmpty: return .sf("circle")
+        case .chevronRight: return .phosphor(.caretRight)
+        case .chevronDown: return .phosphor(.caretDown)
+        case .chevronUpDown: return .phosphor(.caretUpDown)
+        case .close: return .phosphor(.x)
+        case .check: return .phosphor(.check)
+        case .more: return .phosphor(.dotsThree)
+        case .star: return .phosphor(.star)
+        case .starFill: return .phosphorFill(.star)
+        case .checkboxOn: return .phosphorFill(.checkSquare)
+        case .checkboxOff: return .phosphor(.square)
+        case .checkCircleFill: return .phosphorFill(.checkCircle)
+        case .circleEmpty: return .phosphor(.circle)
         }
     }
 }
@@ -189,26 +191,35 @@ struct CSIconView: View {
     let icon: CSIcon
     var size: CGFloat = 13
     var weight: CSIconWeight = .regular
-    /// `nil` lets an SF glyph inherit the ambient `foregroundStyle` (matches
-    /// call sites that tint a whole row). Phosphor cannot inherit (it tints via
-    /// a source-atop blend), so it falls back to `CSColor.textBody`.
+    /// `nil` lets the glyph inherit the ambient `foregroundStyle` (matches call
+    /// sites that tint a whole row). Phosphor assets ship with a template
+    /// rendering intent, so — exactly like SF Symbols — they either inherit the
+    /// ambient tint or accept an explicit one through `foregroundStyle`.
     var color: Color? = nil
 
     var body: some View {
         switch icon.backend {
         case .sf(let name):
-            if let color {
-                Image(systemName: name)
-                    .font(.system(size: size, weight: weight.font))
-                    .foregroundStyle(color)
-            } else {
-                Image(systemName: name)
-                    .font(.system(size: size, weight: weight.font))
-            }
+            tinted(Image(systemName: name).font(.system(size: size, weight: weight.font)))
         case .phosphor(let ph):
-            ph.weight(weight.phosphor)
-                .frame(width: size, height: size)
-                .color(color ?? CSColor.textBody)
+            sized(ph.weight(weight.phosphor))
+        case .phosphorFill(let ph):
+            sized(ph.fill)
+        }
+    }
+
+    /// A Phosphor glyph is sized to a square box (an SF Symbol gets its size
+    /// from the font instead).
+    @ViewBuilder private func sized(_ image: Image) -> some View {
+        tinted(image.resizable().scaledToFit().frame(width: size, height: size))
+    }
+
+    /// Apply an explicit tint, or leave the view to inherit the ambient one.
+    @ViewBuilder private func tinted(_ view: some View) -> some View {
+        if let color {
+            view.foregroundStyle(color)
+        } else {
+            view
         }
     }
 }
