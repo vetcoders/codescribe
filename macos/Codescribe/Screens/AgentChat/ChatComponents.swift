@@ -110,8 +110,8 @@ struct MarkdownText: View {
             blockquoteView(text)
         case let .table(header, rows):
             tableView(header: header, rows: rows)
-        case let .code(content):
-            codeBlock(content, isLast: isLast)
+        case let .code(language, content):
+            codeBlock(language, content, isLast: isLast)
         case .thematicBreak:
             Rectangle()
                 .fill(CSColor.hairline(0.12))
@@ -325,8 +325,14 @@ struct MarkdownText: View {
     }
 
     @ViewBuilder
-    private func codeBlock(_ content: String, isLast: Bool) -> some View {
-        let block = CodeBlockView(content: content, size: size)
+    private func codeBlock(_ language: String?, _ content: String, isLast: Bool) -> some View {
+        // A code block is the live stream tail only while it is both the last
+        // block and the turn is still streaming (caret on). In that state we skip
+        // highlighting entirely and render plain mono; once the fence closes (the
+        // turn ends or a later block appears) the block becomes highlightable.
+        let highlightable = !(isLast && showsCaret)
+        let block = CodeBlockView(content: content, language: language, size: size,
+                                  highlightable: highlightable)
         if isLast, showsCaret {
             HStack(alignment: .bottom, spacing: 2) {
                 block
@@ -498,7 +504,10 @@ enum CalloutKind {
 /// mirroring the message-level copy button.
 private struct CodeBlockView: View {
     let content: String
+    let language: String?
     let size: CGFloat
+    /// False while the block is the live stream tail — render plain, no highlight.
+    let highlightable: Bool
     @State private var hovering = false
     @State private var copied = false
 
@@ -667,7 +676,7 @@ enum MDBlock: Equatable {
     case task(indent: Int, done: Bool, text: String)
     case blockquote(String)
     case table(header: [String], rows: [[String]])
-    case code(String)
+    case code(language: String?, String)
     case thematicBreak
 
     /// Split raw text into blocks. Consecutive plain lines (no blank line
@@ -692,20 +701,21 @@ enum MDBlock: Equatable {
             // A fenced code block opened with N backticks closes only on a line
             // whose backtick run is >= N (CommonMark). This lets a ````md block
             // carry inner ```ts fences verbatim instead of closing early.
-            if let openTicks = openingFence(trimmed) {
+            if let fence = openingFence(trimmed) {
                 flush()
                 var body: [String] = []
                 i += 1
                 while i < lines.count {
                     let closeTrim = lines[i].trimmingCharacters(in: .whitespaces)
-                    if let closeTicks = closingFence(closeTrim), closeTicks >= openTicks {
+                    if let closeTicks = closingFence(closeTrim), closeTicks >= fence.ticks {
                         i += 1  // consume the closing fence
                         break
                     }
                     body.append(lines[i])
                     i += 1
                 }
-                blocks.append(.code(body.joined(separator: "\n")))
+                blocks.append(.code(language: fence.language,
+                                    body.joined(separator: "\n")))
                 continue
             }
 
@@ -843,13 +853,21 @@ enum MDBlock: Equatable {
         return String(slice)
     }
 
-    /// Leading backtick count of an opening fence (>= 3), or nil. The info
-    /// string after the ticks must not itself contain a backtick (CommonMark),
-    /// which keeps an inline `` `code` `` run from being read as a fence.
-    private static func openingFence(_ s: String) -> Int? {
+    /// Leading backtick count of an opening fence (>= 3) plus its language hint,
+    /// or nil. The info string after the ticks must not itself contain a backtick
+    /// (CommonMark), which keeps an inline `` `code` `` run from being read as a
+    /// fence. The language is the first whitespace-delimited token of the info
+    /// string (``` ```rust ``` → `rust`; extra info like ``` ```ts title=x ```
+    /// keeps only `ts`); an empty info string yields `nil`.
+    private static func openingFence(_ s: String) -> (ticks: Int, language: String?)? {
         let ticks = s.prefix { $0 == "`" }.count
         guard ticks >= 3 else { return nil }
-        return s.dropFirst(ticks).contains("`") ? nil : ticks
+        let info = s.dropFirst(ticks)
+        guard !info.contains("`") else { return nil }
+        let language = info.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            .first
+            .map(String.init)
+        return (ticks, language)
     }
 
     /// Backtick count of a closing fence line (>= 3, nothing but ticks and
