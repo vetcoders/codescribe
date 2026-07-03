@@ -136,6 +136,26 @@ protocol ChatThreadsProviding: AnyObject {
     func generateThreadId() -> String
 }
 
+// MARK: - Composer dictation seam (voice message → transcript into the draft)
+
+/// Lifecycle of the composer's own voice-note dictation. Independent from the
+/// hotkey / overlay dictation session — this drives only the composer mic.
+enum ComposerDictationPhase: Equatable {
+    case idle
+    case preparing   // permission / model load / start-stop transition in flight
+    case recording
+    case failed(String)
+}
+
+/// UI-only seam over the composer dictation controller. The real adapter
+/// (`RealComposerDictation`, Core layer) wraps the `CodescribeDictation` bridge;
+/// kept bridge-free here so the view-model + #Preview stay standalone (nil = mic
+/// is a no-op, e.g. in previews).
+protocol ComposerDictating: AnyObject {
+    /// Start recording when idle, stop-and-insert when recording.
+    func toggle()
+}
+
 // MARK: - Store
 
 @MainActor
@@ -147,6 +167,58 @@ final class AgentChatStore: ObservableObject {
     /// Images staged in the composer for the next message. Cleared when the
     /// message is dispatched.
     @Published var pendingAttachments: [PendingAttachment] = []
+
+    // MARK: Composer dictation
+
+    /// Current phase of the composer's voice-note dictation. Drives the mic
+    /// affordance (ripple while `.recording`) and the inline error feedback.
+    @Published private(set) var dictationPhase: ComposerDictationPhase = .idle
+
+    /// True while a hotkey / tray / overlay dictation session owns the microphone.
+    /// Set from the authoritative recording lifecycle hooks (see OverlayController)
+    /// so the composer mic can't open a second, colliding recorder.
+    @Published var dictationBlocked: Bool = false
+
+    /// Injected real adapter (Core). `nil` in previews / mock → mic is inert.
+    var dictation: ComposerDictating?
+
+    /// Guards the auto-clear of a `.failed` phase against a stale timer overwriting
+    /// a newer state.
+    private var dictationFailureToken = UUID()
+
+    /// Toggle the composer voice note (start ↔ stop-and-insert).
+    func toggleDictation() { dictation?.toggle() }
+
+    /// Set by the real adapter as the dictation session transitions. No-op-safe
+    /// when no adapter is wired.
+    func setDictationPhase(_ phase: ComposerDictationPhase) { dictationPhase = phase }
+
+    /// Surface a recoverable dictation failure with a self-clearing inline message
+    /// (auto-returns to `.idle` after a few seconds so the composer doesn't keep a
+    /// stale error banner).
+    func reportDictationFailure(_ message: String) {
+        dictationPhase = .failed(message)
+        let token = UUID()
+        dictationFailureToken = token
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard dictationFailureToken == token, case .failed = dictationPhase else { return }
+            dictationPhase = .idle
+        }
+    }
+
+    /// Append a finished voice-note transcript to the current draft with a natural
+    /// separator (no auto-send — the user decides when to dispatch).
+    func appendDictatedTranscript(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if draft.isEmpty {
+            draft = trimmed
+        } else {
+            let needsSeparator = !(draft.last?.isWhitespace ?? false)
+            draft += (needsSeparator ? " " : "") + trimmed
+        }
+    }
 
     /// Injected by W2-01. `nil` until then; `send` degrades gracefully.
     var engine: AgentChatEngine?
