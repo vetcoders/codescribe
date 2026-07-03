@@ -110,7 +110,8 @@ enum CSIcon {
         case .power: return .phosphor(.power)
 
         // Agent / capture
-        case .agent: return .phosphor(.squaresFour)
+        case .agent: return .phosphor(.chatCircle) // opens the agent conversation — a chat bubble, not a grid
+
         case .mic: return .sf("mic")
         case .record: return .phosphor(.record)
         case .stop: return .phosphor(.stop)
