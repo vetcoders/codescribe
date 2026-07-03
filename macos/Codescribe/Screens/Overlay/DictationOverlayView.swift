@@ -85,11 +85,10 @@ struct DictationOverlayView: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: 14) {
-                Image(systemName: "mic")
-                Image(systemName: "gearshape")
-                Image(systemName: "ellipsis")
+                CSIconView(icon: .mic, size: 15, weight: .medium)
+                CSIconView(icon: .settings, size: 15, weight: .medium)
+                CSIconView(icon: .more, size: 15, weight: .medium)
             }
-            .font(CSFont.ui(15, .medium))
             .foregroundStyle(CSColor.textFaint)
         }
         .padding(.horizontal, 20)
