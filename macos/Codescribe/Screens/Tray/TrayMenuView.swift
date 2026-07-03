@@ -31,16 +31,16 @@ struct TrayMenuView: View {
                 diagnosticsGroup
 
                 TrayDivider()
-                TrayRow(icon: "⚙", title: "Settings…", shortcut: "⌘,") {
+                TrayRow(icon: .settings, title: "Settings…", shortcut: "⌘,") {
                     openSettings()
                 }
-                TrayRow(icon: "✦", title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
-                TrayRow(icon: "?", title: "Help") { viewModel.onHelp() }
-                TrayRow(icon: "ⓘ", title: "About") { viewModel.onAbout() }
+                TrayRow(icon: .setupWizard, title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
+                TrayRow(icon: .help, title: "Help") { viewModel.onHelp() }
+                TrayRow(icon: .info, title: "About") { viewModel.onAbout() }
 
                 TrayDivider()
                 TrayRow(
-                    icon: "⏻",
+                    icon: .power,
                     iconColor: CSColor.terracottaDeep,
                     title: "Quit codescribe",
                     titleColor: TrayRow.subnoteColor,
@@ -82,7 +82,7 @@ struct TrayMenuView: View {
     private var primaryActions: some View {
         VStack(spacing: 0) {
             TrayRow(
-                icon: "▦",
+                icon: .agent,
                 title: "Show Agent",
                 titleColor: viewModel.agentAvailable ? CSColor.textBody : CSColor.textFaint,
                 titleWeight: .semibold,
@@ -92,7 +92,7 @@ struct TrayMenuView: View {
             ) { viewModel.onShowAgent() }
 
             TrayRow(
-                icon: viewModel.isRecording && !viewModel.isStartingDictation ? "■" : "●",
+                icon: viewModel.isRecording && !viewModel.isStartingDictation ? .stop : .record,
                 iconColor: viewModel.isRecording ? CSColor.terracotta : CSColor.oliveLight,
                 title: viewModel.isStartingDictation
                     ? "Starting…"
@@ -100,7 +100,7 @@ struct TrayMenuView: View {
             ) { viewModel.toggleDictation() }
 
             historyGroup
-            TrayRow(icon: "⧉", title: "Copy last transcript") {
+            TrayRow(icon: .copy, title: "Copy last transcript") {
                 viewModel.copyLastTranscript()
             }
 
@@ -119,7 +119,7 @@ struct TrayMenuView: View {
     private var historyGroup: some View {
         VStack(spacing: 0) {
             TrayRow(
-                icon: "🕑",
+                icon: .history,
                 title: "Open history",
                 showChevron: true,
                 style: viewModel.historyExpanded ? .raised : .plain
@@ -150,15 +150,15 @@ struct TrayMenuView: View {
 
     private var quickToggles: some View {
         VStack(spacing: 0) {
-            toggleRow(icon: "◱", title: "Show Dock Icon", isOn: viewModel.showDockIcon) {
+            toggleRow(icon: .dock, title: "Show Dock Icon", isOn: viewModel.showDockIcon) {
                 viewModel.setShowDockIcon($0)
             }
             toggleRow(
-                icon: "◰",
+                icon: .overlay,
                 title: "Transcription Overlay",
                 isOn: viewModel.overlayEnabled
             ) { viewModel.setOverlayEnabled($0) }
-            toggleRow(icon: "◲", title: "Notes Mode", isOn: viewModel.notesModeEnabled) {
+            toggleRow(icon: .notesMode, title: "Notes Mode", isOn: viewModel.notesModeEnabled) {
                 viewModel.setNotesMode($0)
             }
         }
@@ -167,7 +167,7 @@ struct TrayMenuView: View {
     /// A checkbox-style row reusing `TrayRow`, with the on/off state shown as the
     /// trailing keycap so it shares the locked palette and geometry.
     private func toggleRow(
-        icon: String,
+        icon: CSIcon,
         title: String,
         isOn: Bool,
         set: @escaping (Bool) -> Void
@@ -185,7 +185,7 @@ struct TrayMenuView: View {
     private var notesGroup: some View {
         VStack(spacing: 0) {
             TrayRow(
-                icon: "✎",
+                icon: .notes,
                 title: "Notes",
                 showChevron: true,
                 style: viewModel.notesExpanded ? .raised : .plain
@@ -220,7 +220,7 @@ struct TrayMenuView: View {
     private var diagnosticsGroup: some View {
         VStack(spacing: 0) {
             TrayRow(
-                icon: "🩺",
+                icon: .diagnostics,
                 title: "Diagnostics",
                 showChevron: true,
                 style: viewModel.diagnosticsExpanded ? .raised : .plain
@@ -251,9 +251,7 @@ private struct TrayNoteStatusRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(isSuccess ? "✓" : "✕")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(tint)
+            CSIconView(icon: isSuccess ? .success : .failure, size: 11, weight: .bold, color: tint)
             Text(status.message)
                 .font(CSFont.ui(12, .medium))
                 .foregroundStyle(tint)
