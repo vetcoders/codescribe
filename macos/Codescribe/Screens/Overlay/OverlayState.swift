@@ -184,10 +184,13 @@ final class OverlayState: ObservableObject {
             .joined(separator: " ")
     }
 
-    /// Text shown in the listening body, with the mock's "listening…" placeholder.
+    /// Text shown in the listening body, in the SAME prominent slot that renders
+    /// "listening…"/"starting…" during capture. The transcribing phase wins over any
+    /// committed text so the post-capture state surfaces "transcribing…" here (not the
+    /// raw streaming assembly) — the main-status counterpart to the header pill.
     var listeningDisplay: String {
-        if !liveText.isEmpty { return liveText }
         if transcribing { return "transcribing…" }
+        if !liveText.isEmpty { return liveText }
         return warmingUp ? "starting…" : "listening…"
     }
 

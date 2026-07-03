@@ -117,8 +117,8 @@ struct DictationOverlayView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
     }
 
     // MARK: Body
@@ -135,8 +135,8 @@ struct DictationOverlayView: View {
         }
         .frame(maxWidth: .infinity, minHeight: bodyMinHeight, maxHeight: .infinity, alignment: .topLeading)
         .padding(.horizontal, 20)
-        .padding(.top, 6)
-        .padding(.bottom, 14)
+        .padding(.top, 4)
+        .padding(.bottom, 10)
         .animation(CSMotion.floatIn, value: state.mode)
     }
 
@@ -146,8 +146,8 @@ struct DictationOverlayView: View {
                 active: !state.transcribing && (state.audioReady || state.vadActive),
                 transcribing: state.transcribing
             )
-            .padding(.top, 6)
-            .padding(.bottom, 14)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
             transcriptScroll
         }
     }
@@ -367,7 +367,11 @@ private struct ToastPill: View {
 }
 
 #Preview("Transcribing") {
+    // Pinned to the window's min content size (390×250) so this preview doubles as
+    // the min-size regression check: "transcribing…" fills the main status slot and
+    // the transcript line is not vertically clipped at the floor.
     DictationOverlayView(state: .previewTranscribing())
+        .frame(width: 390, height: 250)
         .padding(44)
         .background(
             LinearGradient(
