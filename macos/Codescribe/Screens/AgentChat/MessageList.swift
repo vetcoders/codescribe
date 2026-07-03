@@ -7,27 +7,53 @@ import AppKit
 struct MessageList: View {
     let messages: [ChatMessage]
 
+    /// Follow-tail with pause-on-scroll (the overlay transcript pattern): auto-scroll
+    /// to the newest turn only while the user is already at the bottom. Scrolling up
+    /// during a stream pauses the follow; returning to the bottom resumes it, so the
+    /// view stops fighting the user's manual scroll on a long streamed message.
+    @State private var followTail = true
+    private let scrollSpace = "chatMessageScroll"
+    private let bottomAnchor = "chatMessageBottom"
+
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 16) {
-                    ForEach(messages) { message in
-                        turn(message)
-                            .frame(maxWidth: .infinity, alignment: alignment(message.role))
-                            .id(message.id)
+        GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        ForEach(messages) { message in
+                            turn(message)
+                                .frame(maxWidth: .infinity, alignment: alignment(message.role))
+                                .id(message.id)
+                        }
+                        Color.clear
+                            .frame(height: 1)
+                            .id(bottomAnchor)
                     }
+                    .padding(20)
+                    .background(
+                        GeometryReader { content in
+                            Color.clear.preference(
+                                key: ChatBottomKey.self,
+                                value: content.frame(in: .named(scrollSpace)).maxY
+                            )
+                        }
+                    )
                 }
-                .padding(20)
-            }
-            .scrollContentBackground(.hidden)
-            // Let the user drag-select message text and Cmd+C it (SwiftUI Text is
-            // not selectable by default). Per-message "Copy" lives in the bubble
-            // context menu below.
-            .textSelection(.enabled)
-            .onChange(of: lastSignature) { _, _ in
-                if let last = messages.last {
+                .coordinateSpace(name: scrollSpace)
+                .scrollContentBackground(.hidden)
+                // Let the user drag-select message text and Cmd+C it (SwiftUI Text is
+                // not selectable by default). Per-message "Copy" lives in the bubble
+                // context menu below.
+                .textSelection(.enabled)
+                .onPreferenceChange(ChatBottomKey.self) { contentBottom in
+                    // At bottom when the content's bottom edge sits within a small
+                    // slack of the viewport's bottom; drives follow on/off.
+                    followTail = contentBottom <= viewport.size.height + 40
+                }
+                .onChange(of: lastSignature) { _, _ in
+                    guard followTail else { return }
                     withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
                     }
                 }
             }
@@ -51,6 +77,15 @@ struct MessageList: View {
         case .tool: ToolTurn(message: message)
         case .assistant: AssistantTurn(message: message)
         }
+    }
+}
+
+/// Carries the message list content's bottom-edge Y (in the scroll's coordinate
+/// space) up to the follow-tail detector. Mirrors the overlay transcript's key.
+private struct ChatBottomKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
