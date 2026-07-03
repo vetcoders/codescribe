@@ -201,6 +201,25 @@ impl EventSink for CsEventSink {
     }
 }
 
+/// Resolve the Whisper language hint for a manual voice-note session.
+///
+/// An explicit caller choice wins; `None` falls back to the persisted
+/// `WHISPER_LANGUAGE` setting (mirroring the hotkey path in
+/// `RecordingController`) rather than forcing blind auto-detect — the latter
+/// mis-guessed `en`/`ru` on short manual notes. `Auto` collapses to `None`
+/// (genuine auto-detect) via `whisper_hint`, never the literal `"auto"` code.
+/// Uses `load_without_keychain` so opening the composer mic never triggers a
+/// Keychain prompt.
+fn resolve_language_hint(language: Option<CsLanguage>) -> Option<String> {
+    match language {
+        Some(lang) => codescribe_core::config::Language::from(lang).whisper_hint(),
+        None => codescribe_core::config::Config::load_without_keychain()
+            .whisper_language
+            .whisper_hint(),
+    }
+    .map(str::to_string)
+}
+
 /// Thin handle to the codescribe dictation engine (streaming recorder +
 /// Whisper). Holds the active recorder behind an async mutex and the current
 /// foreign listener behind an `RwLock`.
@@ -274,7 +293,16 @@ impl CodescribeDictation {
             StreamingRecorder::new().map_err(|e| CsError::Recording { msg: e.to_string() })?;
         recorder.set_event_sink(Some(sink));
 
-        let language_code = language.map(|l| l.as_code().to_string());
+        // Manual voice-note: the composer's Stop click is the source of truth,
+        // exactly like the hotkey hold's key-up (see `RecordingController`
+        // hold-start, which also sets `auto_silence = false`). The legacy
+        // `RecorderConfig` defaults to `auto_silence = true`, which auto-stops the
+        // stream after ~0.3s of silence and chops a single spoken note into
+        // fragments the commit-VAD then rejects as "no speech". Disable it so the
+        // user — not the VAD — ends the recording.
+        recorder.recorder.config.auto_silence = false;
+
+        let language_code = resolve_language_hint(language);
         recorder
             .start_event_session(language_code)
             .await
@@ -431,6 +459,28 @@ mod tests {
             calls.as_slice(),
             &[(7, "ala ma kota".to_string())],
             "on_final must receive the utterance_id from UtteranceFinal"
+        );
+    }
+
+    /// An explicit caller language must map to its two-letter Whisper hint, and
+    /// `Auto` must collapse to genuine auto-detect (`None`) — never the literal
+    /// `"auto"` code, which Whisper cannot honour. Guards the manual voice-note
+    /// language path so the composer respects the persisted language like the
+    /// hotkey path instead of blind-guessing `en`/`ru`.
+    #[test]
+    fn resolve_language_hint_maps_explicit_choices() {
+        assert_eq!(
+            resolve_language_hint(Some(CsLanguage::Polish)),
+            Some("pl".to_string())
+        );
+        assert_eq!(
+            resolve_language_hint(Some(CsLanguage::English)),
+            Some("en".to_string())
+        );
+        assert_eq!(
+            resolve_language_hint(Some(CsLanguage::Auto)),
+            None,
+            "Auto must be genuine auto-detect (None), never the literal \"auto\" code"
         );
     }
 }
