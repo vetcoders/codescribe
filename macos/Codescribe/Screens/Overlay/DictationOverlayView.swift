@@ -142,9 +142,12 @@ struct DictationOverlayView: View {
 
     private var listeningBody: some View {
         VStack(alignment: .leading, spacing: 0) {
-            WaveformView(active: state.audioReady || state.vadActive)
-                .padding(.top, 6)
-                .padding(.bottom, 14)
+            WaveformView(
+                active: !state.transcribing && (state.audioReady || state.vadActive),
+                transcribing: state.transcribing
+            )
+            .padding(.top, 6)
+            .padding(.bottom, 14)
             transcriptScroll
         }
     }
@@ -353,6 +356,18 @@ private struct ToastPill: View {
 #if DEBUG
 #Preview("Listening") {
     DictationOverlayView(state: .previewListening())
+        .padding(44)
+        .background(
+            LinearGradient(
+                colors: [Color(hex: 0x15110E), CSColor.glassUnder],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        )
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Transcribing") {
+    DictationOverlayView(state: .previewTranscribing())
         .padding(44)
         .background(
             LinearGradient(

@@ -93,6 +93,12 @@ final class OverlayState: ObservableObject {
     @Published var vadActive: Bool = false     // drives the WaveformView pulse
     @Published var audioReady: Bool = false    // recorder confirmed; STT/VAD may still be warming
     @Published var warmingUp: Bool = false     // true after user intent, before audio/VAD proves life
+    /// Stop was requested and we are awaiting the final transcript. Distinct from
+    /// recording: the waveform must NOT keep pulsing like capture, and the status
+    /// reads "transcribing" so the user can tell recording ended vs. hung. Set only
+    /// on the Swift-observable stop (`runStop`); cleared by finalize / error / reset
+    /// / close so it can never stick. See `WaveformView(transcribing:)`.
+    @Published var transcribing: Bool = false
     @Published var toast: String?              // transient no-speech / error notice
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
@@ -147,17 +153,25 @@ final class OverlayState: ObservableObject {
 
     var statusText: String {
         guard mode == .listening else { return "Idle" }
+        if transcribing { return "transcribing" }
         return warmingUp ? "starting" : "recording"
     }
     var statusColor: Color { mode == .listening ? CSColor.terracotta : CSColor.oliveLight }
-    var statusRippling: Bool { mode == .listening && (audioReady || vadActive) }
+    /// Only the live-capture pill ripples. During `transcribing` we swap to the
+    /// static pill so its repeatForever animation tears down — a second visual
+    /// cue that capture has ended.
+    var statusRippling: Bool { mode == .listening && !transcribing && (audioReady || vadActive) }
 
     var tagText: String { mode == .listening ? "DICTATION" : "FINAL" }
     var tagColor: Color { mode == .listening ? CSColor.terracottaLight : CSColor.oliveLight }
 
-    var metaText: String { mode == .listening ? "live preview · raw" : "final · transcript" }
+    var metaText: String {
+        guard mode == .listening else { return "final · transcript" }
+        return transcribing ? "finalizing · transcript" : "live preview · raw"
+    }
     var footerRight: String {
         if isFormatting { return "formatting" }
+        if mode == .listening && transcribing { return "transcribing" }
         if mode == .listening && warmingUp { return "warming up" }
         if mode == .listening && audioReady && liveText.isEmpty { return "audio live" }
         return mode == .listening ? "vad-gated preview" : "editable"
@@ -173,6 +187,7 @@ final class OverlayState: ObservableObject {
     /// Text shown in the listening body, with the mock's "listening…" placeholder.
     var listeningDisplay: String {
         if !liveText.isEmpty { return liveText }
+        if transcribing { return "transcribing…" }
         return warmingUp ? "starting…" : "listening…"
     }
 
@@ -197,8 +212,10 @@ final class OverlayState: ObservableObject {
     }
 
     /// Stop the mic and flip to the finalized transcript returned by the core.
+    /// Ignored while already transcribing so a second Finish tap during the
+    /// awaited `stopRecording()` cannot re-enter and hit "no active recording".
     func stop() {
-        guard engine != nil, recording else { return }
+        guard engine != nil, recording, !transcribing else { return }
         Task { @MainActor in await self.runStop() }
     }
 
@@ -246,15 +263,21 @@ final class OverlayState: ObservableObject {
 
     private func runStop() async {
         guard let engine else { return }
+        // Enter the explicit "transcribing" phase for the whole awaited stop: the
+        // waveform stops pulsing like capture and the status reads "transcribing"
+        // instead of leaving the recording UI up while the final pass runs.
+        transcribing = true
+        warmingUp = false
         do {
             // The controller bridge returns "" here; the authoritative transcript
             // is the id-ordered assembly of `UtteranceFinal` events (see liveText).
             _ = try await engine.stopRecording()
             recording = false
-            finalizeTranscript()
+            finalizeTranscript() // clears `transcribing` as it flips to `.formatted`
         } catch {
             recording = false
             warmingUp = false
+            transcribing = false
             errorMessage = "Couldn't finalize transcript: \(error)"
             showToast("Couldn't finalize transcript")
         }
@@ -283,6 +306,7 @@ final class OverlayState: ObservableObject {
         vadActive = false
         audioReady = false
         warmingUp = false
+        transcribing = false
         onClose?()
     }
 
@@ -496,6 +520,7 @@ final class OverlayState: ObservableObject {
         let wasFinalized = finalized
         cancelWarmupWatchdog()
         warmingUp = false
+        transcribing = false
         vadActive = false
         audioReady = false
         commitPreviewIfNeeded()
@@ -526,6 +551,7 @@ final class OverlayState: ObservableObject {
         committedUtterances = []
         authoritativeFinalText = nil
         finalized = false
+        transcribing = false
     }
 
     private func markTranscriptActivity() {
@@ -627,6 +653,16 @@ final class OverlayState: ObservableObject {
         s.mode = .listening
         s.vadActive = true
         s.beginMockReveal("add a rate limiter to the login route and write a test for it")
+        return s
+    }
+
+    /// Seeded view model for #Preview in the post-capture transcribing phase.
+    static func previewTranscribing() -> OverlayState {
+        let s = OverlayState()
+        s.mode = .listening
+        s.transcribing = true
+        s.audioReady = true
+        s.committedUtterances = ["add a rate limiter to the login route and write a test for it"]
         return s
     }
 
