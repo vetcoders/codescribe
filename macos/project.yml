@@ -9,6 +9,14 @@ packages:
   PhosphorSwift:
     url: https://github.com/phosphor-icons/swift
     from: 2.1.0
+  # HighlightSwift — MIT, highlight.js via JavaScriptCore. Powers syntax
+  # highlighting of finalized agent-chat code blocks. Returns AttributedString
+  # from an async actor (tokenize runs off the main thread); we feed it our own
+  # brand-token CSS via HighlightColors.custom (no bundled foreign theme).
+  # macOS 13+.
+  HighlightSwift:
+    url: https://github.com/appstefan/HighlightSwift
+    from: 1.1.0
 targets:
   Codescribe:
     type: application
@@ -17,6 +25,8 @@ targets:
     dependencies:
       - package: PhosphorSwift
         product: PhosphorSwift
+      - package: HighlightSwift
+        product: HighlightSwift
     info:
       path: Codescribe/Info.plist
       properties:
