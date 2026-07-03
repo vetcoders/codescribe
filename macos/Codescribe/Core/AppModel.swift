@@ -17,6 +17,9 @@ final class AppModel: ObservableObject {
         self.chat = chat
         self.overlay = OverlayController(store: chat)
         self.tray = TrayViewModel(engine: RealTrayEngine())
+        // Composer voice-note dictation (independent recorder; disabled while a
+        // hotkey/overlay session owns the mic — see OverlayController hooks).
+        chat.dictation = RealComposerDictation(store: chat)
     }
 }
 
@@ -40,16 +43,20 @@ final class OverlayController: ObservableObject {
         state.onRecordingPreparing = { [weak self] in
             self?.showForRecording()
             AppModel.shared.tray.isStartingDictation = true
+            // Block the composer mic while the shared recorder owns the microphone.
+            AppModel.shared.chat.dictationBlocked = true
         }
         state.onRecordingStarted = { [weak self] in
             self?.showForRecording()
             AppModel.shared.tray.isRecording = true
             AppModel.shared.tray.isStartingDictation = false
+            AppModel.shared.chat.dictationBlocked = true
         }
         state.onRecordingStopped = { [weak self] in
             self?.markStopped()
             AppModel.shared.tray.isRecording = false
             AppModel.shared.tray.isStartingDictation = false
+            AppModel.shared.chat.dictationBlocked = false
         }
         state.onClose = { [weak self] in self?.hide() }
         state.onSendToAgent = { [weak self, weak store] text in

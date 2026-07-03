@@ -27,9 +27,6 @@ struct Composer: View {
     @State private var overInner = false
     /// True while an image is being dragged anywhere over the composer.
     private var isDragging: Bool { overOuter || overInner }
-    /// Drives the mic ripple: animate only on hover so the composer's render loop
-    /// stays idle the rest of the time.
-    @State private var micHovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -58,8 +55,7 @@ struct Composer: View {
                 .focused($fieldFocused)
                 .onSubmit { store.send() }
 
-                RippleMic(isActive: micHovering)
-                    .onHover { micHovering = $0 }
+                micButton
 
                 Button(action: { store.send() }) {
                     Text("↑")
@@ -91,6 +87,8 @@ struct Composer: View {
             .overlay(dropCatcher)
             .animation(.easeOut(duration: 0.12), value: isDragging)
 
+            dictationFeedback
+
             // Affordance row
             HStack(spacing: 16) {
                 ForEach(affordances, id: \.self) { item in
@@ -111,6 +109,64 @@ struct Composer: View {
         // `dropCatcher` handles drops on the field itself.
         .onDrop(of: [.fileURL], isTargeted: $overOuter) { providers in
             handleDrop(providers)
+        }
+    }
+
+    // MARK: Voice-note mic
+
+    /// The composer mic: click to start a voice note, click again to stop and
+    /// insert the transcript into the draft. The ripple lives only while
+    /// recording; a spinner shows the preparing transition. Disabled (and dimmed)
+    /// while a hotkey/overlay dictation session owns the microphone.
+    private var micButton: some View {
+        Button(action: { store.toggleDictation() }) {
+            micVisual
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+                .opacity(store.dictationBlocked ? 0.35 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(store.dictationBlocked || store.dictationPhase == .preparing)
+        .help(micHelp)
+        .animation(.easeOut(duration: 0.15), value: store.dictationPhase)
+    }
+
+    @ViewBuilder
+    private var micVisual: some View {
+        switch store.dictationPhase {
+        case .preparing:
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.6)
+                .frame(width: 12, height: 12)
+        default:
+            RippleMic(isActive: store.dictationPhase == .recording)
+        }
+    }
+
+    private var micHelp: String {
+        if store.dictationBlocked { return "Microphone is busy with a shortcut dictation" }
+        switch store.dictationPhase {
+        case .recording: return "Stop dictation and insert the transcript"
+        case .preparing: return "Preparing dictation…"
+        default: return "Dictate a voice message"
+        }
+    }
+
+    /// Small non-modal error line under the input box (permission off, no speech,
+    /// STT failure). Self-clears via the store after a few seconds.
+    @ViewBuilder
+    private var dictationFeedback: some View {
+        if case let .failed(message) = store.dictationPhase {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: 10.5))
+                Text(message)
+                    .font(CSFont.mono(10.5, .medium))
+            }
+            .foregroundStyle(CSColor.amber)
+            .padding(.leading, 2)
+            .transition(.opacity)
         }
     }
 
