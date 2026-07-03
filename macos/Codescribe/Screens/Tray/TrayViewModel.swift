@@ -194,7 +194,7 @@ final class TrayViewModel: ObservableObject {
     private func showCopyStatus(_ message: String) {
         copyStatus = TrayActionStatus(kind: .success, message: message)
         copyStatusClearTask?.cancel()
-        copyStatusClearTask = Task { [weak self] in
+        copyStatusClearTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
             self?.copyStatus = nil
@@ -209,7 +209,7 @@ final class TrayViewModel: ObservableObject {
     func showNoteStatus(_ status: TrayActionStatus) {
         noteStatus = status
         noteStatusClearTask?.cancel()
-        noteStatusClearTask = Task { [weak self] in
+        noteStatusClearTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
             self?.noteStatus = nil
