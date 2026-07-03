@@ -1,74 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::contracts::{
-    DropKind, EngineEvent, TranscriptSegment, TranscriptionConfidenceFlag,
+    AnnotationKind, DropKind, EngineEvent, LayerSource, LayerSummary, TranscriptSegment,
+    TranscriptionConfidenceFlag,
 };
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum IpcCommand {
-    // Config
-    GetConfig,
-    SaveConfig {
-        config: Box<crate::config::Config>,
-    },
-    ReloadRuntimeConfig,
-
-    // Prompts
-    GetPrompt {
-        prompt_type: String,
-    },
-    SavePrompt {
-        prompt_type: String,
-        content: String,
-    },
-    ResetPrompt {
-        prompt_type: String,
-    },
-
-    // AI / Chat
-    SendMessage {
-        message: String,
-    },
-    ResetContext,
-    FormatTranscript {
-        text: String,
-        language: Option<String>,
-        assistive: bool,
-    },
-    TranscribeFile {
-        path: String,
-    },
-
-    // Status
-    GetStatus,
-
-    // Recording
-    StartRecording {
-        assistive: bool,
-    },
-    StopRecording,
-
-    // Event stream
-    Subscribe,
-    Unsubscribe,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum IpcResponse {
-    Config(Box<crate::config::Config>),
-    Prompt(String),
-    Message(String),
-    Status(AppStatus),
-    Ok,
-    Error(String),
-    Event(IpcEvent),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppStatus {
-    pub state: String, // "idle", "recording", "busy"
-    pub ai_formatting: bool,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcEvent {
@@ -84,6 +19,12 @@ pub enum IpcEventPayload {
     Engine(EngineEventWire),
     #[serde(rename = "state_change")]
     StateChange { from: String, to: String },
+    /// Authoritative post-stop transcript (the LocalFinalPass `final_formatted_text`
+    /// that is pasted and written to history). Emitted once per dictation stop so
+    /// external surfaces (the SwiftUI overlay) can show the SAME clean text as the
+    /// delivery/Copy paths instead of the raw per-utterance streaming hypotheses.
+    #[serde(rename = "final_transcript")]
+    FinalTranscript { text: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +61,23 @@ pub enum EngineEventWire {
         compression_ratio: Option<f32>,
         quality_gate_dropped: bool,
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
+    },
+    ReplaceRange {
+        utterance_id: u64,
+        start: usize,
+        end: usize,
+        text: String,
+        source: LayerSource,
+    },
+    InsertAnnotation {
+        utterance_id: u64,
+        position: usize,
+        text: String,
+        kind: AnnotationKind,
+    },
+    SessionFinalised {
+        session_id: String,
+        layer_summary: LayerSummary,
     },
     Drop {
         kind: String,
@@ -231,6 +189,37 @@ impl From<&EngineEvent> for EngineEventWire {
                 partial_stale_count: *partial_stale_count,
                 partial_coalesced_count: *partial_coalesced_count,
                 partial_dropped_count: *partial_dropped_count,
+            },
+            EngineEvent::ReplaceRange {
+                utterance_id,
+                start,
+                end,
+                text,
+                source,
+            } => Self::ReplaceRange {
+                utterance_id: *utterance_id,
+                start: *start,
+                end: *end,
+                text: text.clone(),
+                source: *source,
+            },
+            EngineEvent::InsertAnnotation {
+                utterance_id,
+                position,
+                text,
+                kind,
+            } => Self::InsertAnnotation {
+                utterance_id: *utterance_id,
+                position: *position,
+                text: text.clone(),
+                kind: kind.clone(),
+            },
+            EngineEvent::SessionFinalised {
+                session_id,
+                layer_summary,
+            } => Self::SessionFinalised {
+                session_id: session_id.clone(),
+                layer_summary: layer_summary.clone(),
             },
             EngineEvent::Warning { code, message } => Self::Warning {
                 code: code.clone(),
@@ -375,6 +364,101 @@ mod tests {
         assert_eq!(
             obj.get("partial_dropped_count").and_then(Value::as_u64),
             Some(13)
+        );
+    }
+
+    #[test]
+    fn replace_range_event_serializes_typed_wire_payload() {
+        let event = EngineEvent::ReplaceRange {
+            utterance_id: 7,
+            start: 2,
+            end: 5,
+            text: "kot".to_string(),
+            source: LayerSource::TailPatch,
+        };
+
+        let wire = EngineEventWire::from(&event);
+        let json = serde_json::to_value(&wire).expect("serialize replace_range");
+        let obj = must_object(json);
+
+        assert_eq!(
+            obj.get("type").and_then(Value::as_str),
+            Some("replace_range")
+        );
+        assert_eq!(obj.get("utterance_id").and_then(Value::as_u64), Some(7));
+        assert_eq!(obj.get("start").and_then(Value::as_u64), Some(2));
+        assert_eq!(obj.get("end").and_then(Value::as_u64), Some(5));
+        assert_eq!(obj.get("text").and_then(Value::as_str), Some("kot"));
+        assert_eq!(
+            obj.get("source").and_then(Value::as_str),
+            Some("tail_patch")
+        );
+    }
+
+    #[test]
+    fn insert_annotation_event_serializes_typed_wire_payload() {
+        let event = EngineEvent::InsertAnnotation {
+            utterance_id: 9,
+            position: 4,
+            text: "...".to_string(),
+            kind: AnnotationKind::HesitationPause,
+        };
+
+        let wire = EngineEventWire::from(&event);
+        let json = serde_json::to_value(&wire).expect("serialize insert_annotation");
+        let obj = must_object(json);
+
+        assert_eq!(
+            obj.get("type").and_then(Value::as_str),
+            Some("insert_annotation")
+        );
+        assert_eq!(obj.get("utterance_id").and_then(Value::as_u64), Some(9));
+        assert_eq!(obj.get("position").and_then(Value::as_u64), Some(4));
+        assert_eq!(obj.get("text").and_then(Value::as_str), Some("..."));
+        assert_eq!(
+            obj.get("kind").and_then(Value::as_str),
+            Some("hesitation_pause")
+        );
+    }
+
+    #[test]
+    fn session_finalised_event_serializes_typed_wire_payload() {
+        let event = EngineEvent::SessionFinalised {
+            session_id: "session-1".to_string(),
+            layer_summary: LayerSummary {
+                tail_patch_replacements: 1,
+                lexicon_replacements: 2,
+                inline_llm_replacements: 3,
+                final_bam_replacements: 4,
+                annotations_inserted: 5,
+            },
+        };
+
+        let wire = EngineEventWire::from(&event);
+        let json = serde_json::to_value(&wire).expect("serialize session_finalised");
+        let obj = must_object(json);
+
+        assert_eq!(
+            obj.get("type").and_then(Value::as_str),
+            Some("session_finalised")
+        );
+        assert_eq!(
+            obj.get("session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        let summary = obj
+            .get("layer_summary")
+            .and_then(Value::as_object)
+            .expect("layer_summary object");
+        assert_eq!(
+            summary
+                .get("inline_llm_replacements")
+                .and_then(Value::as_u64),
+            Some(3)
+        );
+        assert_eq!(
+            summary.get("annotations_inserted").and_then(Value::as_u64),
+            Some(5)
         );
     }
 

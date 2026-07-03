@@ -11,11 +11,11 @@
 
 Codescribe is a native macOS menu-bar application that captures audio through global hotkeys, shows live local
 transcription while you speak, and pastes or routes the final result into the focused application. The shipped product
-in this repo is a tray app with three explicit surfaces: onboarding, settings, and overlays.
+in this repo is a tray app whose SwiftUI front-end has two explicit surfaces: settings and overlays.
 
 Local Whisper is the low-latency path. Cloud STT is optional and currently used as a post-capture transcript backend,
 not as live cloud preview. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default,
-configured in Onboarding, Settings, or `~/.codescribe/.env`.
+configured in Settings or `~/.codescribe/.env`.
 
 ```mermaid
 flowchart TB
@@ -25,7 +25,6 @@ flowchart TB
     subgraph APP[Codescribe Runtime]
         direction LR
         TRAY[Tray + Hotkeys]
-        ONB[Onboarding]
         SET[Settings Window]
         OVL[Dictation Overlay]
         CHAT[Assistive Voice Overlay]
@@ -45,7 +44,6 @@ flowchart TB
         LCLI[qube-daemon]
     end
 
-    TRAY --> ONB
     TRAY --> SET
     TRAY --> OVL
     TRAY --> CHAT
@@ -73,7 +71,7 @@ Codescribe uses **OpenAI Responses API** (`/v1/responses`) by default for AI for
 
 ### Default Setup
 
-Put your OpenAI API key in Onboarding or Settings. Codescribe stores it in macOS Keychain and applies it to both AI modes:
+Put your OpenAI API key in Settings. Codescribe stores it in macOS Keychain and applies it to both AI modes:
 
 ```env
 # ~/.codescribe/.env
@@ -102,14 +100,14 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 
 ## Features
 
-- **Pure Rust Implementation** — Native macOS app built entirely in Rust with candle-core + Metal GPU
+- **Rust core + SwiftUI app** — Native macOS SwiftUI shell over the Rust engine through UniFFI, with candle-core + Metal GPU
 - **Two DMG variants** — The standard DMG embeds Silero VAD + MiniLM support assets and resolves Whisper from cache/download. The `_full` DMG embeds Silero + MiniLM + Whisper for users who prefer one larger download.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
 - **IPC Server** — Stable runtime interface for GUI/clients
 - **Quality Loop + Report** — Automated quality scoring and batch reports
-- **CLI Suite** — `codescribe`, `qube-report`, `qube-daemon` (renamed from `codescribe-quality` / `codescribe-loop` in 0.8.1)
+- **Qube CLI tools** — `qube-report` and `qube-daemon` from `bin/qube_report.rs` / `bin/qube_daemon.rs`
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
 - **Global Hotkeys** — Hold Fn (default) or double‑tap Option to record
@@ -151,11 +149,14 @@ cd codescribe
 # Install the hook runner once (required for local commit/push gates)
 pipx install pre-commit
 
-# Install CLI + repo-local git hooks
-make install
+# Build the SwiftUI app
+make app PROFILE=release
 
-# Verify installation
-codescribe --version
+# Install the app bundle into /Applications
+make install-app
+
+# Verify installation (prints the version)
+make version
 ```
 
 ### Install via Release DMG
@@ -171,30 +172,28 @@ Tagged builds publish DMGs through GitHub Releases:
 ### Build Options
 
 ```bash
-make build              # Debug build
-make release            # Release build with embedded Silero + embedder; Whisper from cache/download
-make install            # Install CLI + repo-local git hooks
-make install-app        # Build + install macOS .app (auto-downloads models if missing)
-make install-no-embed   # Install without optional embedding + repo-local git hooks
+make app                # Debug SwiftUI app build
+make app PROFILE=release # Release SwiftUI app build
+make install-app        # Build + install macOS .app into /Applications
+make release-qube       # Build qube CLI tools
+make install            # Install qube CLI tools + repo-local git hooks
 ```
 
 ## Quick Start
 
 ```bash
-# Start tray app
-codescribe
+# Build and install the app
+make install-app
+
+# Launch installed app bundle
+make start
 
 # Open/create config file
 make config
-# or: codescribe --config
+# or: edit ~/.codescribe/.env directly
 
-# Verbose logging
-codescribe -v
-
-# CLI transcription
-codescribe transcribe audio.wav
-codescribe transcribe -l pl audio.m4a
-codescribe transcribe -f audio.mp3  # with AI formatting
+# View app logs
+make logs
 ```
 
 ## Default Hotkeys (macOS)
@@ -269,7 +268,7 @@ make config
 
 ```env
 # STT (Speech-to-Text)
-WHISPER_LANGUAGE=pl                  # pl | en | de | fr (no auto!)
+WHISPER_LANGUAGE=auto                # auto | pl | en
 # CODESCRIBE_MODEL_PATH=             # Override runtime Whisper model lookup
 
 # Hotkeys behavior
@@ -306,38 +305,19 @@ LOG_LEVEL=INFO                       # TRACE | DEBUG | INFO | WARN | ERROR
 
 See `.env.example` for complete reference.
 
-## CLI Reference
+## Runtime and CLI Reference
 
-### `codescribe` (Tray App)
+### `Codescribe.app`
 
-Main application — runs as menu bar app with global hotkeys.
+The user-facing app is the native SwiftUI bundle built by `make app` and installed with `make install-app`. It runs as a menu-bar app with global hotkeys and talks to the Rust core through the UniFFI bridge.
 
-```bash
-codescribe [OPTIONS]
+### Qube Tools
 
-Options:
-  -v, --verbose      Enable verbose logging
-  --config           Create/edit config file
-  --version          Show version
-  -h, --help         Show help
-```
-
-### `codescribe transcribe`
-
-CLI transcription without tray app.
+The repo still ships Rust CLI utilities for batch quality work:
 
 ```bash
-codescribe transcribe FILE [OPTIONS]
-
-Arguments:
-  FILE               Audio file (WAV, MP3, M4A)
-
-Options:
-  -l, --language     Language hint (pl, en, de, fr)
-  -f, --format       Apply AI formatting
-  -m, --model        Model name (if using external)
-  --llm              LLM model for formatting
-  -h, --help         Show help
+qube-report --help
+qube-daemon --help
 ```
 
 ## Model
@@ -351,7 +331,7 @@ Codescribe uses **whisper-large-v3-turbo-mlx-q8**:
 
 ### Runtime Whisper (Current)
 
-User-delivery builds (`make release`, `make install`, the release DMG) embed everything by default: Silero VAD, the MiniLM semantic embedder, and Whisper (`CODESCRIBE_EMBED_WHISPER=1`). The fast developer build (`make build` / raw `cargo build`) stays lean and resolves Whisper at runtime from the locations below; that same resolution order is the fallback whenever a build is not embedded.
+User-delivery app builds (`make app PROFILE=release`, `make install-app`, the release DMG) embed the Rust support assets through the SwiftUI bundle pipeline: Silero VAD, the MiniLM semantic embedder, and Whisper (`CODESCRIBE_EMBED_WHISPER=1`). Fast developer Rust builds stay lean and resolve Whisper at runtime from the locations below; that same resolution order is the fallback whenever a build is not embedded.
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
@@ -372,16 +352,17 @@ Model files required:
 ```text
 Codescribe/
 ├── core/                      # Portable pipeline, STT, config, quality
-├── app/                       # macOS app shell
+├── app/                       # Rust engine library (macOS)
+│   ├── agent/                 # Assistive agent + tools
 │   ├── controller/            # Recording/transcription orchestration
-│   ├── os/                    # Hotkeys, permissions, clipboard
-│   └── ui/
-│       ├── settings/          # Persistent settings window
-│       ├── onboarding/        # First-run flow
-│       ├── overlay/           # Dictation overlay
-│       ├── voice_chat/        # Assistive overlay
-│       └── tray/              # Menu bar UI
-├── bin/                       # CLI entry points
+│   ├── os/                    # Hotkeys, permissions, clipboard, thermal
+│   └── presentation/          # Overlay delta/typing emitter
+├── bridge/                    # UniFFI bridge (Rust <-> Swift)
+├── macos/Codescribe/          # SwiftUI front-end
+│   ├── Screens/               # Tray, Settings, Overlay, AgentChat
+│   ├── DesignSystem/          # Tokens, typography, components
+│   └── Bridge/                # Generated UniFFI Swift bindings
+├── bin/                       # CLI entry points (qube-report, qube-daemon)
 ├── tests/                     # Integration + E2E tests
 └── docs/                      # Product + technical docs
 ```
@@ -393,8 +374,9 @@ Codescribe/
 git clone https://github.com/vetcoders/codescribe.git
 cd codescribe
 
-# Development build with explicit runtime Whisper fallback
-CODESCRIBE_MODEL_PATH=./models/whisper-large-v3-turbo-mlx-q8 cargo run
+# Development app build with explicit runtime Whisper fallback
+CODESCRIBE_MODEL_PATH=./models/whisper-large-v3-turbo-mlx-q8 make app PROFILE=debug
+open macos/build/Build/Products/Debug/Codescribe.app
 
 # Quality checks
 make lint           # clippy + fmt check
@@ -409,13 +391,14 @@ make format         # cargo fmt
 ### Makefile Targets
 
 ```
-make build            # Debug build
-make release          # Release build with embedded support assets; Whisper from cache/download
-make install          # Install CLI
-make install-no-embed # Install without optional embedding
+make app              # Debug SwiftUI app build
+make app PROFILE=release # Release SwiftUI app build
+make install-app      # Build + install /Applications/Codescribe.app
+make release-qube     # Build qube CLI tools
+make install          # Install qube CLI tools + repo-local hooks
 make release-dmgs     # Build both signed + notarized release DMGs
 make config           # Edit ~/.codescribe/.env
-make start            # Start as daemon
+make start            # Launch Codescribe.app
 make stop             # Stop running instance
 make logs             # View logs
 make lint             # Clippy + format check
@@ -445,7 +428,7 @@ Grant permissions in System Settings > Privacy & Security when prompted.
 ## Current Focus
 
 - Keep the VAD auto-stop path honest and fully integrated before presenting it as the default hands-off mode.
-- Preserve the explicit split between onboarding, settings, dictation overlay, and assistive overlay.
+- Preserve the explicit split between settings, dictation overlay, and assistive overlay.
 - Ship the macOS distribution path cleanly: bundle, sign, and notarize the DMG story.
 
 See [`docs/PUBLIC_RELEASE_CHECKLIST.md`](docs/PUBLIC_RELEASE_CHECKLIST.md) for the public launch gate.

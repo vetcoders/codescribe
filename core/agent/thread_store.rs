@@ -23,6 +23,12 @@ pub struct Thread {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub title: String,
+    /// True when the user renamed the thread by hand. Auto-titling (deriving a
+    /// title from the first message) must never overwrite a custom title.
+    /// `#[serde(default)]` keeps threads saved before this field deserializable
+    /// (they default to auto-titled).
+    #[serde(default)]
+    pub title_is_custom: bool,
     pub mode: String,
     pub tags: Vec<String>,
     pub notes: Vec<ThreadNote>,
@@ -136,8 +142,7 @@ impl ThreadStore {
     }
 
     pub fn save_thread(&self, thread: &Thread) -> Result<()> {
-        validate_thread_id(&thread.id)?;
-        let path = self.thread_path(&thread.id);
+        let path = self.thread_path(&thread.id)?;
         let json = serde_json::to_vec_pretty(thread).context("Failed to serialize thread JSON")?;
         atomic_write(&path, &json)?;
 
@@ -147,9 +152,9 @@ impl ThreadStore {
     }
 
     pub fn load_thread(&self, id: &str) -> Result<Thread> {
-        validate_thread_id(id)?;
-        let path = self.thread_path(id);
-        let raw = fs::read_to_string(&path) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+        let path = self.thread_path(id)?;
+        let path = canonical_existing_child(&self.threads_dir, &path)?;
+        let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read thread file: {}", path.display()))?;
         let thread = serde_json::from_str::<Thread>(&raw)
             .with_context(|| format!("Failed to parse thread file: {}", path.display()))?;
@@ -157,8 +162,7 @@ impl ThreadStore {
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<()> {
-        validate_thread_id(id)?;
-        let path = self.thread_path(id);
+        let path = self.thread_path(id)?;
         if path.exists() {
             fs::remove_file(&path)
                 .with_context(|| format!("Failed to remove thread file: {}", path.display()))?;
@@ -176,9 +180,27 @@ impl ThreadStore {
         index.set_favorite(id, is_favorite)
     }
 
+    /// Rename a thread and mark the title as user-custom so later auto-titling
+    /// won't clobber it. Returns `false` when no such thread exists on disk.
+    /// `updated_at` is left untouched so a rename does not reorder the rail.
+    pub fn set_thread_title(&self, id: &str, title: &str) -> Result<bool> {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            bail!("Thread title cannot be empty");
+        }
+        let path = self.thread_path(id)?;
+        if !path.exists() {
+            return Ok(false);
+        }
+        let mut thread = self.load_thread(id)?;
+        thread.title = trimmed.to_string();
+        thread.title_is_custom = true;
+        self.save_thread(&thread)?;
+        Ok(true)
+    }
+
     pub fn thread_file_path(&self, id: &str) -> Result<PathBuf> {
-        validate_thread_id(id)?;
-        Ok(self.thread_path(id))
+        self.thread_path(id)
     }
 
     pub fn save_blob(&self, data: &[u8], name: &str) -> Result<PathBuf> {
@@ -200,8 +222,16 @@ impl ThreadStore {
         &self.blobs_dir
     }
 
-    fn thread_path(&self, id: &str) -> PathBuf {
-        self.threads_dir.join(format!("{id}.{THREAD_FILE_EXT}"))
+    /// Build the on-disk path for a thread id.
+    ///
+    /// Validation lives here — at path *construction* — so every caller
+    /// (current or future) that turns an id into a filesystem path is forced
+    /// through `validate_thread_id`. This keeps the path-traversal guard
+    /// adjacent to the join that produces the path, instead of relying on each
+    /// API entry point to remember to validate first.
+    fn thread_path(&self, id: &str) -> Result<PathBuf> {
+        validate_thread_id(id)?;
+        Ok(self.threads_dir.join(format!("{id}.{THREAD_FILE_EXT}")))
     }
 
     fn unique_blob_path(&self, file_name: &str) -> PathBuf {
@@ -285,6 +315,23 @@ fn validate_thread_id(id: &str) -> Result<()> {
         bail!("Thread id contains invalid path characters: {id}");
     }
     Ok(())
+}
+
+fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
+    let base = base
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize base dir: {}", base.display()))?;
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize file path: {}", path.display()))?;
+    if !path.starts_with(&base) {
+        bail!(
+            "Thread path escaped threads dir: {} outside {}",
+            path.display(),
+            base.display()
+        );
+    }
+    Ok(path)
 }
 
 fn role_to_string(role: Role) -> &'static str {
@@ -473,6 +520,7 @@ mod tests {
             created_at: updated_at - Duration::minutes(10),
             updated_at,
             title: "Parvo patient follow-up".to_string(),
+            title_is_custom: false,
             mode: "assistive".to_string(),
             tags: vec!["urgent".to_string(), "canine".to_string()],
             notes: vec![ThreadNote {
@@ -531,7 +579,7 @@ mod tests {
         store.save_thread(&thread)?;
         store.delete_thread(&thread.id)?;
 
-        let path = store.thread_path(&thread.id);
+        let path = store.thread_path(&thread.id)?;
         assert!(!path.exists());
 
         let index = ThreadIndex::load_or_create(store.threads_dir())?;
@@ -625,6 +673,44 @@ mod tests {
             .expect("summary should exist");
         assert!(summary.is_favorite);
 
+        Ok(())
+    }
+
+    #[test]
+    fn set_thread_title_marks_custom_and_persists() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        let id = thread.id.clone();
+        store.save_thread(&thread)?;
+
+        let renamed = store.set_thread_title(&id, "  Custom name  ")?;
+        assert!(renamed);
+
+        let loaded = store.load_thread(&id)?;
+        assert_eq!(loaded.title, "Custom name");
+        assert!(
+            loaded.title_is_custom,
+            "rename marks the title as user-custom"
+        );
+
+        let index = ThreadIndex::load_or_create(store.threads_dir())?;
+        let summary = index
+            .data()
+            .threads
+            .iter()
+            .find(|value| value.id == id)
+            .expect("summary should exist");
+        assert_eq!(summary.title, "Custom name", "index reflects renamed title");
+
+        assert!(
+            store.set_thread_title(&id, "   ").is_err(),
+            "empty title is rejected"
+        );
+        assert!(
+            !store.set_thread_title("t_2026-01-01_missing", "x")?,
+            "renaming an absent thread returns false"
+        );
         Ok(())
     }
 

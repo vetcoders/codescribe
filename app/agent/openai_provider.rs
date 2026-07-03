@@ -757,6 +757,40 @@ mod tests {
         std::fs::remove_file(asset_path).ok();
     }
 
+    #[test]
+    fn user_message_inline_image_serializes_as_input_image() {
+        // Composer 📎 path parity with Anthropic: `AgentSession::send` builds a
+        // [Text, Image{bytes}] user turn via `build_image_block`. The request
+        // must carry the image as a native input_image data URI alongside the
+        // caption — a regression here silently drops user attachments.
+        let messages = vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::Text("what is in this image?".to_string()),
+                ContentBlock::Image {
+                    data: b"png bytes".to_vec(),
+                    media_type: "image/png".to_string(),
+                },
+            ],
+        )];
+
+        let items =
+            build_request_input_items(&messages, None).expect("request input items should build");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["role"], "user");
+        let content = items[0]["content"].as_array().expect("content array");
+        assert_eq!(content.len(), 2, "caption + image both survive");
+        assert_eq!(content[0]["type"], "input_text");
+        assert_eq!(content[1]["type"], "input_image");
+        assert!(
+            content[1]["image_url"]
+                .as_str()
+                .expect("image_url string")
+                .starts_with("data:image/png;base64,")
+        );
+    }
+
     #[tokio::test]
     async fn stream_surfaces_sse_error_event_as_specific_agent_error() {
         let mut server = mockito::Server::new_async().await;

@@ -10,7 +10,7 @@ LLM_FORMATTING_API_KEY=
 # === Core mode ===
 USE_LOCAL_STT=1
 LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
-WHISPER_LANGUAGE=pl
+WHISPER_LANGUAGE=auto
 
 # === Hotkeys ===
 HOLD_EXCLUSIVE=1

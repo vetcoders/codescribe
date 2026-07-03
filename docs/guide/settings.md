@@ -124,7 +124,7 @@ Use this tab when the app lies about permissions, focus, shortcuts, or runtime a
 If you need direct overrides outside the GUI:
 
 ```bash
-codescribe --config
+make config
 ```
 
 That opens or creates `~/.codescribe/.env`.

@@ -258,8 +258,14 @@ fn default_infer(
 }
 
 fn default_commit_prefilter(samples: &[f32], sample_rate: u32) -> Vec<f32> {
-    let (speech, _) = crate::vad::extract_speech(samples, sample_rate);
-    speech
+    // Commit/final lane: trim only LEADING/TRAILING silence and keep every
+    // interior window. Using `extract_speech` here (which concatenates only the
+    // speech windows) would excise interior windows that dip below threshold —
+    // e.g. the micro-pause between two spoken digits — dropping mid-utterance
+    // speech from the AUTHORITATIVE transcript. `extract_speech_trim_edges`
+    // returns the contiguous first..=last speech slab instead, so words are
+    // never lost mid-utterance; it still returns empty on genuine silence.
+    crate::vad::extract_speech_trim_edges(samples, sample_rate)
 }
 
 struct SttRequest {

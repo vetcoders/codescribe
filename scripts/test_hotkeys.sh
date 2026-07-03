@@ -44,5 +44,8 @@ echo ""
 # Enable debug logging
 export LOG_LEVEL=DEBUG
 
-# Run the application (local Rust app)
-cargo run --bin codescribe
+# Build, then launch the app's executable directly (not via `open`) so LOG_LEVEL
+# is inherited and logs stream to this terminal. The Rust `codescribe` binary was
+# retired; the app is now produced by scripts/build-app.sh via `make app`.
+make app
+"$REPO_ROOT/macos/build/Build/Products/Debug/Codescribe.app/Contents/MacOS/Codescribe"

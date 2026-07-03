@@ -133,6 +133,39 @@ impl SessionTranscriptState {
         rendered
     }
 
+    /// Apply an ADR bounded patch (`ReplaceRange` / `InsertAnnotation`) to the
+    /// committed utterance it targets, so the authoritative transcript
+    /// (`transcript_buffer` → paste/history) reflects the same correction the
+    /// overlay receives. Offsets are char offsets within `utterance_id` (see
+    /// `EngineEvent::apply_to_committed_text`). Returns whether the buffer
+    /// changed — `false` when the utterance is not (yet) committed or the offsets
+    /// fall outside it (the patch is dropped rather than corrupting the buffer).
+    fn apply_layered_patch(&mut self, event: &EngineEvent) -> bool {
+        let utterance_id = match event {
+            EngineEvent::ReplaceRange { utterance_id, .. }
+            | EngineEvent::InsertAnnotation { utterance_id, .. } => *utterance_id,
+            _ => return false,
+        };
+        let Some(record) = self
+            .committed
+            .iter_mut()
+            .find(|record| record.utterance_id == utterance_id)
+        else {
+            return false;
+        };
+        match event.apply_to_committed_text(&mut record.text) {
+            Ok(applied) => applied,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    utterance_id,
+                    "layered transcript patch offsets out of range; dropped"
+                );
+                false
+            }
+        }
+    }
+
     #[cfg(test)]
     fn committed(&self) -> &[TranscriptUtteranceRecord] {
         &self.committed
@@ -466,6 +499,27 @@ impl EventSink for PresentationEmitter {
             EngineEvent::Warning { code, message } => {
                 tracing::warn!("Engine warning [{}]: {}", code, message);
             }
+            EngineEvent::ReplaceRange { .. } | EngineEvent::InsertAnnotation { .. } => {
+                // Apply the same bounded correction to the authoritative buffer
+                // (transcript_buffer → paste/history) that the overlay already
+                // received, so phase-1 layered patches don't diverge between the
+                // two sinks. Only re-render when the buffer actually changed.
+                let rendered = {
+                    let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
+                    if state.apply_layered_patch(event) {
+                        Some(match self.delta_render_mode {
+                            DeltaRenderMode::SessionRendered => state.rendered_text(),
+                            DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                };
+                if let Some(rendered) = rendered {
+                    self.send_cmd(EmitterCmd::SetTargetText(rendered));
+                }
+            }
+            EngineEvent::SessionFinalised { .. } => {}
         }
     }
 }
@@ -473,7 +527,9 @@ impl EventSink for PresentationEmitter {
 #[cfg(test)]
 mod tests {
     use super::{DeltaRenderMode, PresentationEmitter, SessionTranscriptState};
-    use codescribe_core::pipeline::contracts::{EngineEvent, EventSink, TranscriptSegment};
+    use codescribe_core::pipeline::contracts::{
+        AnnotationKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
+    };
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
 
@@ -493,6 +549,54 @@ mod tests {
         state.apply_preview("drugi partial");
 
         assert_eq!(state.rendered_text(), "Pierwszy fragment drugi partial");
+    }
+
+    #[test]
+    fn replace_range_patches_committed_utterance_in_authoritative_buffer() {
+        // A phase-1 ReplaceRange fixing "wrold"→"world" must land in the
+        // committed (paste/history) buffer, not just the overlay.
+        let mut state = SessionTranscriptState::default();
+        state.finalize(1, "hello wrold", "hello wrold", 0.0, 1.0, Vec::new());
+        let event = EngineEvent::ReplaceRange {
+            utterance_id: 1,
+            start: 6,
+            end: 11,
+            text: "world".to_string(),
+            source: LayerSource::TailPatch,
+        };
+        assert!(state.apply_layered_patch(&event));
+        assert_eq!(state.rendered_text(), "hello world");
+    }
+
+    #[test]
+    fn insert_annotation_lands_in_committed_utterance() {
+        let mut state = SessionTranscriptState::default();
+        state.finalize(2, "yes", "yes", 0.0, 1.0, Vec::new());
+        let event = EngineEvent::InsertAnnotation {
+            utterance_id: 2,
+            position: 3,
+            text: " [pauza]".to_string(),
+            kind: AnnotationKind::HesitationPause,
+        };
+        assert!(state.apply_layered_patch(&event));
+        assert_eq!(state.rendered_text(), "yes [pauza]");
+    }
+
+    #[test]
+    fn patch_for_uncommitted_utterance_is_ignored() {
+        // Offsets reference an utterance the authoritative buffer has not
+        // committed yet — drop the patch instead of corrupting another one.
+        let mut state = SessionTranscriptState::default();
+        state.finalize(1, "hello", "hello", 0.0, 1.0, Vec::new());
+        let event = EngineEvent::ReplaceRange {
+            utterance_id: 99,
+            start: 0,
+            end: 1,
+            text: "X".to_string(),
+            source: LayerSource::Lexicon,
+        };
+        assert!(!state.apply_layered_patch(&event));
+        assert_eq!(state.rendered_text(), "hello");
     }
 
     #[test]

@@ -61,14 +61,6 @@ pub fn install_global_hotkey_manager(tx: Sender<HotkeyEvent>) -> Result<(), Stri
     replace_global_hotkey_manager(&mut guard)
 }
 
-/// Recreate the process-global hotkey runtime after permissions or settings change.
-pub fn refresh_global_hotkey_manager() -> Result<(), String> {
-    let mut guard = global_hotkey_service()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    replace_global_hotkey_manager(&mut guard)
-}
-
 pub fn shutdown_global_hotkey_manager() {
     let mut guard = global_hotkey_service()
         .lock()

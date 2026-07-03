@@ -1,0 +1,47 @@
+name: Codescribe
+options:
+  bundleIdPrefix: com.vetcoders
+  deploymentTarget:
+    macOS: "14.0"
+targets:
+  Codescribe:
+    type: application
+    platform: macOS
+    sources: [Codescribe]
+    info:
+      path: Codescribe/Info.plist
+      properties:
+        CFBundleDisplayName: Codescribe
+        CFBundleName: Codescribe
+        LSUIElement: true
+        NSMicrophoneUsageDescription: "Codescribe transcribes your speech locally with on-device Whisper."
+        NSAppleEventsUsageDescription: "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."
+        NSScreenCaptureUsageDescription: "Codescribe captures the screen when you ask the assistant to look at what is currently on screen."
+    settings:
+      base:
+        # Dock/app icon — AppIcon.appiconset in Codescribe/Assets.xcassets.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Stable dev identity → own TCC/keychain slot across rebuilds.
+        PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "CodeScribe Dev"
+        ENABLE_HARDENED_RUNTIME: NO
+        SWIFT_VERSION: 5.0
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Bridge/codescribe_ffiFFI.h
+        OTHER_LDFLAGS: "-lcodescribe_ffi"
+        # Runpath so the app finds the @rpath-id'd dylib both when run from Xcode
+        # (against target/debug) and when distributed (embedded in Frameworks by
+        # scripts/build-app.sh).
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+          - "$(SRCROOT)/../target/debug"
+          - "$(SRCROOT)/../target/release"
+      configs:
+        # Links libcodescribe_ffi.dylib produced by `cargo build -p codescribe-ffi`.
+        # Per-config so a Release link never resolves against a stale debug dylib
+        # (and vice versa) — the base value used to hardcode target/debug, which
+        # made every Release build fail with `ld: library 'codescribe_ffi' not found`.
+        Debug:
+          LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
+        Release:
+          LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/release"

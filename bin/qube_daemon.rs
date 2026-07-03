@@ -265,8 +265,7 @@ async fn run_daemon(args: Args) -> Result<()> {
         // Run with today's date filter, comparing local vs cloud
         let check_args = build_daemon_check_args(&args, date_filter);
 
-        match run_single_with_transcription(&check_args, LocalTranscriptionMode::CodescribeIpc)
-            .await
+        match run_single_with_transcription(&check_args, LocalTranscriptionMode::LocalWhisper).await
         {
             Ok(()) => {
                 // Load the latest report to count mismatches

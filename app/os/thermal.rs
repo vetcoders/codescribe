@@ -90,7 +90,9 @@ unsafe fn apply_current_state(source: &str) {
                     source,
                     "macOS thermal pressure critical; STT commit/refine lanes paused"
                 );
-                let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thermal);
+                crate::os::tray_status::update_tray_status(
+                    crate::os::tray_status::TrayStatus::Thermal,
+                );
             }
         }
     }
@@ -117,4 +119,27 @@ unsafe fn ns_string(value: &str) -> *mut Object {
     let c_str = CString::new(value).expect("NSString input cannot contain null byte");
     let cls = Class::get("NSString").expect("NSString class missing");
     msg_send![cls, stringWithUTF8String: c_str.as_ptr()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_thermal_probe_publishes_a_level_and_is_idempotent() {
+        // On macOS this genuinely registers the NSProcessInfo thermal observer
+        // and reads the live thermal state into the scheduler-visible atomic
+        // (core/stt/scheduler.rs consumes current_process_thermal_level). A
+        // second call must be a guarded no-op and must not panic. This proves
+        // the probe installs cleanly now that CodescribeHotkeys::start wires it
+        // at runtime bootstrap (previously the fn had zero callers).
+        install_thermal_probe();
+        let first = current_thermal_level();
+        install_thermal_probe();
+        let second = current_thermal_level();
+        assert_eq!(
+            first, second,
+            "thermal level must be stable across idempotent probe installs"
+        );
+    }
 }

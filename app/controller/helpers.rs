@@ -7,10 +7,10 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc};
+use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::{debug, info, warn};
 
-use crate::config::{Config, default_assistive_model};
+use crate::config::default_assistive_model;
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, Role, StreamOptions,
@@ -22,8 +22,6 @@ use serde_json::json;
 /// true = assistive (chat UI), false = non-assistive (simple transcription overlay)
 /// This is set before recording starts and checked by the delta callback.
 static IS_ASSISTIVE_SESSION: AtomicBool = AtomicBool::new(false);
-const CHAT_FINAL_FALLBACK_CHARS_PER_TICK: usize = 24;
-const CHAT_FINAL_FALLBACK_TICK_MS: u64 = 18;
 
 /// Global flag for conversation mode (full-duplex Moshi).
 /// When true, audio is routed to ConversationEngine instead of Whisper.
@@ -49,27 +47,16 @@ pub fn is_conversation_session() -> bool {
     IS_CONVERSATION_SESSION.load(Ordering::SeqCst)
 }
 
-fn transcription_overlay_enabled() -> bool {
-    std::env::var("TRANSCRIPTION_OVERLAY_ENABLED")
-        .ok()
-        .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(true)
-}
-
 /// Route transcription delta to the active overlay.
 ///
 /// Contract:
 /// - Assistive sessions stream into Agent overlay chat bubbles.
-/// - Non-assistive sessions stream into Dictation/Transcription overlay preview.
+/// - Non-assistive sessions publish engine events over IPC/FFI for the Swift overlay.
 /// - `delta` must already follow `TranscriptDelta` backspace semantics.
 ///   This function must never receive full preview snapshots.
-pub fn route_transcription_delta(delta: &str) {
-    if is_assistive_session() {
-        crate::ui::voice_chat::append_voice_chat_user_delta(delta);
-    } else if transcription_overlay_enabled() {
-        // Non-assistive: live dictation preview in ephemeral overlay
-        crate::ui::overlay::append_transcription_delta(delta);
-    }
+pub fn route_transcription_delta(_delta: &str) {
+    // Legacy AppKit overlay delivery removed. Assistive deltas reach SwiftUI via
+    // the engine event broadcast (see IpcBroadcastSink / subscribe_events).
 }
 
 /// DeltaSink that routes deltas to the active UI overlay.
@@ -89,9 +76,6 @@ static AGENT_THREAD_GENERATION: AtomicU64 = AtomicU64::new(1);
 static AGENT_SEND_IN_FLIGHT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static SHARED_AGENT_RUNTIME_STATE: OnceLock<StdMutex<Option<Arc<TokioMutex<AgentRuntimeState>>>>> =
     OnceLock::new();
-const RUNTIME_DEGRADED_REASON: &str = "Legacy formatter fallback is active.";
-const RUNTIME_RECOVERED_MESSAGE: &str =
-    "Agent runtime recovered. Native agent pipeline is active again.";
 const CODESCRIBE_ASSISTIVE_LEGACY_BACKUP_ENV: &str =
     "CODESCRIBE_ASSISTIVE_LEGACY_TRANSCRIPT_BACKUP";
 
@@ -106,12 +90,6 @@ struct AgentRuntimeState {
     runtime: Option<AgentRuntime>,
     runtime_generation: u64,
     runtime_degraded: bool,
-}
-
-#[derive(Default)]
-struct AgentUiOverlayState {
-    streamed_any_delta: bool,
-    saw_reasoning_delta: bool,
 }
 
 struct AgentSendInFlightGuard;
@@ -251,13 +229,6 @@ fn shared_agent_runtime_state_slot() -> &'static StdMutex<Option<Arc<TokioMutex<
     SHARED_AGENT_RUNTIME_STATE.get_or_init(|| StdMutex::new(None))
 }
 
-fn set_shared_agent_runtime_state(runtime_state: Arc<TokioMutex<AgentRuntimeState>>) {
-    let mut guard = shared_agent_runtime_state_slot()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    *guard = Some(runtime_state);
-}
-
 fn shared_agent_runtime_state() -> Arc<TokioMutex<AgentRuntimeState>> {
     let mut guard = shared_agent_runtime_state_slot()
         .lock()
@@ -285,26 +256,9 @@ pub(crate) async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
     let runtime_state = shared_agent_runtime_state();
     let mut guard = runtime_state.lock().await;
 
-    match guard.rotate_for_new_thread_with(
-        generation,
-        initialize_agent_runtime,
-        persist_runtime_thread,
-    ) {
-        Ok(persisted_previous) => {
-            crate::ui::voice_chat::set_voice_chat_runtime_degraded(false, None);
-            if persisted_previous {
-                crate::ui::voice_chat::refresh_drawer();
-            }
-            Ok(generation)
-        }
-        Err(error) => {
-            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
-                true,
-                Some(RUNTIME_DEGRADED_REASON),
-            );
-            Err(error)
-        }
-    }
+    guard
+        .rotate_for_new_thread_with(generation, initialize_agent_runtime, persist_runtime_thread)
+        .map(|_| generation)
 }
 
 fn initialize_agent_runtime() -> Result<AgentRuntime> {
@@ -323,59 +277,6 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
     })
 }
 
-fn restore_thread_into_agent_runtime(mut runtime: AgentRuntime, thread: &Thread) -> AgentRuntime {
-    runtime.thread_store_id = thread.id.clone();
-    runtime.session.restore_messages(
-        thread
-            .messages
-            .iter()
-            .map(ThreadMessage::to_message)
-            .collect(),
-    );
-    runtime
-}
-
-fn initialize_agent_runtime_from_thread(thread: &Thread) -> Result<AgentRuntime> {
-    let runtime = initialize_agent_runtime()?;
-    let runtime = restore_thread_into_agent_runtime(runtime, thread);
-    Ok(runtime)
-}
-
-pub(crate) async fn restore_agent_runtime_from_thread(thread: Thread) -> Result<()> {
-    let generation = request_new_agent_thread_boundary();
-    let runtime_state = shared_agent_runtime_state();
-    let mut guard = runtime_state.lock().await;
-
-    if let Some(previous_runtime) = guard
-        .runtime
-        .as_ref()
-        .filter(|runtime| !runtime.session.messages().is_empty())
-        && let Err(error) = persist_runtime_thread(previous_runtime)
-    {
-        warn!("Failed to persist previous Agent runtime before restore: {error}");
-    }
-
-    match initialize_agent_runtime_from_thread(&thread) {
-        Ok(runtime) => {
-            guard.runtime_generation = generation;
-            guard.runtime = Some(runtime);
-            guard.runtime_degraded = false;
-            crate::ui::voice_chat::set_voice_chat_runtime_degraded(false, None);
-            Ok(())
-        }
-        Err(error) => {
-            guard.runtime_generation = generation;
-            guard.runtime = None;
-            guard.runtime_degraded = true;
-            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
-                true,
-                Some(RUNTIME_DEGRADED_REASON),
-            );
-            Err(error).context("Failed to initialize Agent runtime for restored thread")
-        }
-    }
-}
-
 fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
@@ -391,7 +292,7 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
 
     StreamOptions {
         model,
-        system_prompt: Some(crate::config::get_assistive_prompt()),
+        system_prompt: Some(compose_agent_system_prompt()),
         max_tokens,
         temperature: None,
         // First-attempt default: preserve conversational chain. Session retry
@@ -400,33 +301,13 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
     }
 }
 
-fn chunk_text_for_local_chat_stream(text: &str, max_chars: usize) -> Vec<String> {
-    let max_chars = max_chars.max(1);
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-
-    for ch in text.chars() {
-        current.push(ch);
-        if current.chars().count() >= max_chars {
-            chunks.push(std::mem::take(&mut current));
-        }
-    }
-
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-
-    chunks
-}
-
-async fn stream_final_text_to_chat_locally(text: &str) {
-    for chunk in chunk_text_for_local_chat_stream(text, CHAT_FINAL_FALLBACK_CHARS_PER_TICK) {
-        crate::ui::voice_chat::append_voice_chat_assistant_delta(&chunk);
-        tokio::time::sleep(std::time::Duration::from_millis(
-            CHAT_FINAL_FALLBACK_TICK_MS,
-        ))
-        .await;
-    }
+/// Compose the agent system prompt: the base assistive prompt plus a workspace
+/// section that pins the configured project roots and tells the model to resolve
+/// project names via `list_projects` instead of guessing filesystem paths.
+fn compose_agent_system_prompt() -> String {
+    let base = crate::config::get_assistive_prompt();
+    let workspace = crate::agent::tools::workspace::workspace_prompt_section();
+    format!("{base}\n\n{workspace}")
 }
 
 /// Title-case a `snake_case` / `kebab-case` identifier into readable words.
@@ -510,81 +391,34 @@ pub(crate) fn friendly_tool_name(raw: &str) -> String {
     prettify_identifier(raw)
 }
 
-/// Status-pill copy while a tool is running. Conversation timeline stays for
-/// conversation; transient activity lives in the status pill.
-pub(crate) fn tool_running_status(friendly: &str) -> String {
-    let lower = friendly.to_lowercase();
-    if lower.contains("web search") {
-        "Searching web…".to_string()
-    } else if lower.contains("search") {
-        "Searching…".to_string()
-    } else {
-        format!("Running {friendly}…")
-    }
-}
-
-async fn apply_agent_ui_event(event: AgentUiEvent, overlay_state: &mut AgentUiOverlayState) {
+/// Drain a single agent UI event.
+///
+/// Legacy AppKit overlay delivery has been removed. This is still invoked from
+/// the `run_agent_send_path` drain loop because consuming `ui_rx` events is what
+/// advances `AgentSession::send` to completion (the channel is bounded). Only the
+/// per-event overlay mutations are gone; debug logging of tool activity stays.
+async fn apply_agent_ui_event(event: AgentUiEvent) {
     match event {
-        AgentUiEvent::TextDelta(delta) => {
-            if delta.is_empty() {
-                return;
-            }
-            if !overlay_state.streamed_any_delta && !delta.trim().is_empty() {
-                crate::ui::voice_chat::update_voice_chat_status("Answering... (80%)");
-            }
-            overlay_state.streamed_any_delta = true;
-            crate::ui::voice_chat::append_voice_chat_assistant_delta(&delta);
-        }
-        AgentUiEvent::TextDone(text) => {
-            if !overlay_state.streamed_any_delta && !text.trim().is_empty() {
-                overlay_state.streamed_any_delta = true;
-                crate::ui::voice_chat::update_voice_chat_status("Answering... (final stream)");
-                stream_final_text_to_chat_locally(&text).await;
-            }
-        }
-        AgentUiEvent::ReasoningDelta(delta) => {
-            if delta.trim().is_empty() {
-                return;
-            }
-            if !overlay_state.saw_reasoning_delta {
-                crate::ui::voice_chat::update_voice_chat_status("Reasoning... (60%)");
-                overlay_state.saw_reasoning_delta = true;
-            }
-            // Surface the model's live reasoning instead of dropping it on the floor
-            // (this is what left the overlay silent). Reuses the proven append path.
-            crate::ui::voice_chat::append_voice_chat_reasoning_delta(&delta);
-        }
-        AgentUiEvent::ToolExecuting { name, id } => {
-            // Grouped Tool Activity: no per-start chat card. The status pill
-            // communicates live activity; the timeline stays for conversation.
-            // The tool is folded into this turn's single evidence block. The raw
-            // wire name is debug-only.
-            let friendly = friendly_tool_name(&name);
-            debug!("Tool executing: {name} -> {friendly}");
-            crate::ui::voice_chat::update_voice_chat_status(&tool_running_status(&friendly));
-            crate::ui::voice_chat::record_tool_executing(&name, &friendly, &id);
+        AgentUiEvent::TextDelta(_)
+        | AgentUiEvent::TextDone(_)
+        | AgentUiEvent::ReasoningDelta(_)
+        | AgentUiEvent::Done => {}
+        AgentUiEvent::ToolExecuting { name, .. } => {
+            debug!("Tool executing: {name} -> {}", friendly_tool_name(&name));
         }
         AgentUiEvent::ToolResult {
             name,
-            id,
             summary,
             is_error,
+            ..
         } => {
-            // Fold the completed/failed call into this turn's grouped evidence
-            // block instead of pushing a standalone System card between answer
-            // chunks. Raw name + full summary stay in the debug log (raw tool
-            // output is debug, not chat).
-            let friendly = friendly_tool_name(&name);
             debug!(
-                "Tool result: {name} -> {friendly} | is_error={is_error} | raw summary: {summary}"
+                "Tool result: {name} -> {} | is_error={is_error} | raw summary: {summary}",
+                friendly_tool_name(&name)
             );
-            crate::ui::voice_chat::update_voice_chat_status("Thinking…");
-            crate::ui::voice_chat::record_tool_result(&name, &friendly, &id, &summary, is_error);
         }
-        AgentUiEvent::Done => {}
         AgentUiEvent::Error(message) => {
-            crate::ui::voice_chat::update_voice_chat_status("Agent runtime failed");
-            crate::ui::voice_chat::add_voice_chat_error_message(&message);
+            warn!("Agent runtime UI error event: {message}");
         }
     }
 }
@@ -667,6 +501,7 @@ fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
             created_at: now,
             updated_at: now,
             title: "Codescribe Agent Chat".to_string(),
+            title_is_custom: false,
             mode: "assistive".to_string(),
             tags: vec!["agent".to_string(), "overlay".to_string()],
             notes: Vec::new(),
@@ -678,7 +513,9 @@ fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
         });
 
     thread.updated_at = now;
-    thread.title = derive_thread_title(runtime.session.messages());
+    if !thread.title_is_custom {
+        thread.title = derive_thread_title(runtime.session.messages());
+    }
     thread.summary = derive_thread_summary(runtime.session.messages());
     thread.messages = runtime
         .session
@@ -722,6 +559,7 @@ fn persist_legacy_assistive_thread(user_text: &str, assistant_text: &str) -> Res
         created_at: now,
         updated_at: now,
         title,
+        title_is_custom: false,
         mode: "assistive".to_string(),
         tags: vec![
             "agent".to_string(),
@@ -866,18 +704,10 @@ async fn run_agent_send_path(
         Ok(state) => state,
         Err(error) => {
             runtime_state.mark_runtime_degraded();
-            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
-                true,
-                Some(RUNTIME_DEGRADED_REASON),
-            );
             return Err(error).context("Agent runtime unavailable");
         }
     };
-    if recovered_from_degraded {
-        crate::ui::voice_chat::set_voice_chat_runtime_degraded(false, None);
-        crate::ui::voice_chat::add_voice_chat_system_message(RUNTIME_RECOVERED_MESSAGE);
-    }
-    let mut overlay_state = AgentUiOverlayState::default();
+    let _ = recovered_from_degraded;
 
     let send_result = {
         let (session, ui_rx) = (&mut runtime.session, &mut runtime.ui_rx);
@@ -890,11 +720,11 @@ async fn run_agent_send_path(
             );
         }
         if !dropped_images.is_empty() {
-            crate::ui::voice_chat::add_voice_chat_system_message(&format!(
-                "⚠️ Could not attach {} image(s) as vision input: {}",
+            warn!(
+                "Could not attach {} image(s) as vision input: {}",
                 dropped_images.len(),
                 dropped_images.join(", ")
-            ));
+            );
         }
         let send_future = session.send(user_text, image_attachments, &stream_options);
         tokio::pin!(send_future);
@@ -904,7 +734,7 @@ async fn run_agent_send_path(
                 result = &mut send_future => break result,
                 maybe_event = ui_rx.recv() => {
                     match maybe_event {
-                        Some(event) => apply_agent_ui_event(event, &mut overlay_state).await,
+                        Some(event) => apply_agent_ui_event(event).await,
                         None => break Err(anyhow::anyhow!("Agent UI event channel closed")),
                     }
                 }
@@ -912,7 +742,7 @@ async fn run_agent_send_path(
         };
 
         while let Ok(event) = ui_rx.try_recv() {
-            apply_agent_ui_event(event, &mut overlay_state).await;
+            apply_agent_ui_event(event).await;
         }
 
         result
@@ -920,25 +750,13 @@ async fn run_agent_send_path(
 
     match send_result {
         Ok(()) => {
-            crate::ui::voice_chat::update_voice_chat_status("AI Response:");
-            if overlay_state.streamed_any_delta {
-                crate::ui::voice_chat::finalize_voice_chat_assistant_message();
-            }
             if let Err(error) = persist_runtime_thread(runtime) {
                 warn!("Failed to persist agent thread: {}", error);
-            } else {
-                crate::ui::voice_chat::refresh_drawer();
             }
-            crate::ui::voice_chat::set_voice_chat_sending(false);
             Ok(())
         }
         Err(error) => {
-            if overlay_state.streamed_any_delta {
-                crate::ui::voice_chat::finalize_voice_chat_assistant_message();
-            }
             if !agent_send_error_allows_legacy_fallback(&error) {
-                crate::ui::voice_chat::set_voice_chat_sending(false);
-                crate::ui::voice_chat::update_voice_chat_status("Agent error");
                 return Ok(());
             }
             // P1.7: distinguish a transient provider blip (conversation still
@@ -949,10 +767,6 @@ async fn run_agent_send_path(
             } else {
                 runtime_state.mark_runtime_degraded();
             }
-            crate::ui::voice_chat::set_voice_chat_runtime_degraded(
-                true,
-                Some(RUNTIME_DEGRADED_REASON),
-            );
             Err(error).context("AgentSession send failed")
         }
     }
@@ -962,54 +776,20 @@ async fn run_legacy_send_path(
     text: &str,
     whisper_language: crate::config::Language,
 ) -> Option<String> {
-    let use_streaming = true;
-    let streamed_any_delta = Arc::new(AtomicBool::new(false));
-
-    let delta_callback = if use_streaming {
-        let streamed_any_delta = Arc::clone(&streamed_any_delta);
-        Some(Arc::new(move |delta: &str| {
-            streamed_any_delta.store(true, Ordering::SeqCst);
-            crate::ui::voice_chat::append_voice_chat_assistant_delta(delta);
-        }) as Arc<dyn Fn(&str) + Send + Sync>)
-    } else {
-        None
-    };
-
     let result = crate::ai_formatting::format_text_with_status_channels(
         text,
         whisper_language.whisper_hint(),
         true,
-        delta_callback,
+        None,
         None,
     )
     .await;
 
     match result.status {
         crate::ai_formatting::AiFormatStatus::Applied
-        | crate::ai_formatting::AiFormatStatus::AiNoop => {
-            crate::ui::voice_chat::update_voice_chat_status("AI Response:");
-            if use_streaming && streamed_any_delta.load(Ordering::SeqCst) {
-                crate::ui::voice_chat::finalize_voice_chat_assistant_message();
-            } else {
-                crate::ui::voice_chat::set_voice_chat_text(&result.text);
-            }
-            if let Some(reasoning_text) = result.reasoning_text {
-                crate::ui::voice_chat::add_voice_chat_system_message(&format!(
-                    "Reasoning summary:\n{}",
-                    reasoning_text
-                ));
-            }
-            Some(result.text)
-        }
-        crate::ai_formatting::AiFormatStatus::Failed => {
-            crate::ui::voice_chat::update_voice_chat_status("AI Failed");
-            crate::ui::voice_chat::add_voice_chat_error_message("AI Failed");
-            Some("AI Failed".to_string())
-        }
-        crate::ai_formatting::AiFormatStatus::Skipped => {
-            crate::ui::voice_chat::set_voice_chat_sending(false);
-            None
-        }
+        | crate::ai_formatting::AiFormatStatus::AiNoop => Some(result.text),
+        crate::ai_formatting::AiFormatStatus::Failed => Some("AI Failed".to_string()),
+        crate::ai_formatting::AiFormatStatus::Skipped => None,
     }
 }
 
@@ -1034,20 +814,11 @@ async fn run_agent_send_with_fallback(
             error
         );
         debug!("Legacy fallback input length: {}", text.len());
-        crate::ui::voice_chat::set_voice_chat_sending(true);
-        crate::ui::voice_chat::set_voice_chat_runtime_degraded(true, Some(RUNTIME_DEGRADED_REASON));
-        crate::ui::voice_chat::update_voice_chat_status("Agent fallback active");
-        crate::ui::voice_chat::add_voice_chat_system_message(
-            "Agent runtime unavailable. Using legacy formatter for this response.",
-        );
         let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
-        crate::ui::voice_chat::set_voice_chat_sending(false);
-        if let Some(assistant_text) = fallback_assistant_text {
-            if let Err(error) = persist_legacy_assistive_thread(&text, &assistant_text) {
-                warn!("Failed to persist legacy assistive fallback thread: {error}");
-            } else {
-                crate::ui::voice_chat::refresh_drawer();
-            }
+        if let Some(assistant_text) = fallback_assistant_text
+            && let Err(error) = persist_legacy_assistive_thread(&text, &assistant_text)
+        {
+            warn!("Failed to persist legacy assistive fallback thread: {error}");
         }
     }
 }
@@ -1065,63 +836,6 @@ pub(crate) async fn send_assistive_with_agent_runtime(
         ai_assistive_max_tokens,
     )
     .await;
-}
-
-/// Setup the voice chat send callback with config
-pub fn setup_voice_chat_send_callback(config: Arc<RwLock<Config>>) {
-    let initial_generation = current_agent_thread_generation();
-    let initial_runtime_state = match initialize_agent_runtime() {
-        Ok(runtime) => AgentRuntimeState {
-            runtime: Some(runtime),
-            runtime_generation: initial_generation,
-            runtime_degraded: false,
-        },
-        Err(error) => {
-            warn!(
-                "Agent runtime init failed during callback setup; legacy fallback will be used until retry succeeds: {}",
-                error
-            );
-            AgentRuntimeState {
-                runtime_generation: initial_generation,
-                runtime_degraded: true,
-                ..AgentRuntimeState::default()
-            }
-        }
-    };
-    if initial_runtime_state.runtime_degraded {
-        crate::ui::voice_chat::set_voice_chat_runtime_degraded(true, Some(RUNTIME_DEGRADED_REASON));
-        crate::ui::voice_chat::add_voice_chat_system_message(
-            "Agent runtime unavailable. Legacy formatter fallback is active until recovery.",
-        );
-    } else {
-        crate::ui::voice_chat::set_voice_chat_runtime_degraded(false, None);
-    }
-    let runtime_state = Arc::new(TokioMutex::new(initial_runtime_state));
-    set_shared_agent_runtime_state(Arc::clone(&runtime_state));
-
-    let callback_config = Arc::clone(&config);
-    let callback_runtime_state = Arc::clone(&runtime_state);
-    crate::ui::voice_chat::set_voice_chat_send_callback(Some(Arc::new(move |text: String| {
-        let config = Arc::clone(&callback_config);
-        let runtime_state = Arc::clone(&callback_runtime_state);
-        tokio::spawn(async move {
-            crate::ui::voice_chat::set_voice_chat_agent_thinking(true);
-            crate::ui::voice_chat::update_voice_chat_status("Thinking…");
-            crate::ui::voice_chat::set_voice_chat_sending(true);
-
-            let (whisper_language, ai_assistive_max_tokens) = {
-                let cfg = config.read().await;
-                (cfg.whisper_language, cfg.ai_assistive_max_tokens)
-            };
-            run_agent_send_with_fallback(
-                &runtime_state,
-                text,
-                whisper_language,
-                ai_assistive_max_tokens,
-            )
-            .await;
-        });
-    })));
 }
 
 /// Legacy transcript backup for assistive mode is opt-in.
@@ -1276,14 +990,6 @@ mod tests {
     use codescribe_core::agent::{AgentEvent, AgentProvider, ToolDefinition};
     use std::sync::atomic::AtomicUsize;
 
-    #[test]
-    fn local_chat_stream_chunks_preserve_unicode_and_order() {
-        let chunks = chunk_text_for_local_chat_stream("Zażółć gęślą jaźń", 4);
-
-        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 4));
-        assert_eq!(chunks.concat(), "Zażółć gęślą jaźń");
-    }
-
     // ── Collapsible Tool Evidence: friendly tool-name mapping ───────────────
 
     #[test]
@@ -1369,16 +1075,6 @@ mod tests {
         assert_eq!(
             friendly_tool_name("mcp__aicx-mcp__aicx_intents"),
             "AICX intents"
-        );
-    }
-
-    #[test]
-    fn tool_running_status_is_human_readable() {
-        assert_eq!(tool_running_status("Web search"), "Searching web…");
-        assert_eq!(tool_running_status("Local search"), "Searching…");
-        assert_eq!(
-            tool_running_status("Create Issue · Github"),
-            "Running Create Issue · Github…"
         );
     }
 
@@ -1864,54 +1560,6 @@ mod tests {
 
         assert!(!persisted);
         assert_eq!(persist_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn test_restore_thread_into_runtime_keeps_thread_id_and_history() {
-        let now = Utc::now();
-        let thread = Thread {
-            id: "thread_restored".to_string(),
-            created_at: now,
-            updated_at: now,
-            title: "Restored conversation".to_string(),
-            mode: "assistive".to_string(),
-            tags: Vec::new(),
-            notes: Vec::new(),
-            messages: vec![
-                ThreadMessage {
-                    role: "user".to_string(),
-                    content: vec![serde_json::json!({"type":"text","text":"hello"})],
-                    timestamp: now,
-                    metadata: None,
-                },
-                ThreadMessage {
-                    role: "assistant".to_string(),
-                    content: vec![serde_json::json!({"type":"text","text":"world"})],
-                    timestamp: now,
-                    metadata: None,
-                },
-            ],
-            summary: None,
-            total_tokens: None,
-            provider: "test".to_string(),
-            model: "test-model".to_string(),
-        };
-
-        let runtime =
-            restore_thread_into_agent_runtime(runtime_with_thread_id("thread_old"), &thread);
-
-        assert_eq!(runtime.thread_store_id, "thread_restored");
-        assert_eq!(runtime.session.messages().len(), 2);
-        assert_eq!(runtime.session.messages()[0].role, Role::User);
-        assert_eq!(runtime.session.messages()[1].role, Role::Assistant);
-        assert!(matches!(
-            &runtime.session.messages()[0].content[0],
-            ContentBlock::Text(text) if text == "hello"
-        ));
-        assert!(matches!(
-            &runtime.session.messages()[1].content[0],
-            ContentBlock::Text(text) if text == "world"
-        ));
     }
 
     #[test]

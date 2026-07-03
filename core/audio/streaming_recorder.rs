@@ -8,6 +8,10 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+// Keep enough raw audio queued to survive a cold Whisper load without dropping
+// the user's first words. The STT session drains this backlog once the model is ready.
+const AUDIO_BACKLOG_CHUNKS: usize = 2048;
+
 pub struct StreamingRecorder {
     pub recorder: Recorder,
     transcript_buffer: Arc<Mutex<String>>,
@@ -95,8 +99,9 @@ impl StreamingRecorder {
         *self.transcript_buffer.lock().await = String::new();
         self.dropped_chunks.store(0, Ordering::Relaxed);
 
-        // Create channel for audio chunks
-        let (tx, rx) = mpsc::channel::<Vec<f32>>(500);
+        // Create channel for audio chunks. This is intentionally larger than a
+        // normal live queue: cold STT initialization happens behind this buffer.
+        let (tx, rx) = mpsc::channel::<Vec<f32>>(AUDIO_BACKLOG_CHUNKS);
 
         // Setup callback to send audio data
         let dropped = Arc::clone(&self.dropped_chunks);

@@ -4,27 +4,30 @@ This document describes the installation methods, configuration paths, and how t
 
 ## Installation Methods
 
-### Method 1: CLI Install (Recommended for Development)
+### Method 1: App Bundle From Source (Recommended for Development)
 
 ```bash
-# Install CLI (embedded Silero + embedder; Whisper from cache/download)
+# Build the SwiftUI app bundle
+make app PROFILE=release
+
+# Build and copy to /Applications/Codescribe.app
+make install-app
+```
+
+**Result**: App bundle installed at `/Applications/Codescribe.app`, with model/cache checks handled by `scripts/build-app.sh`.
+
+**How it runs**: Launch from Finder, Spotlight, or `make start`.
+
+### Method 2: Qube CLI Tools (Batch Quality Work)
+
+```bash
+make release-qube
 make install
 ```
 
-**Result**: Binary `codescribe` installed to `~/.cargo/bin/`, with install-time model/cache checks.
+**Result**: `qube-report` and `qube-daemon` installed from `bin/qube_report.rs` and `bin/qube_daemon.rs`.
 
-**How it runs**: Direct execution from terminal or as background daemon.
-
-### Method 2: App Bundle (For Distribution)
-
-```bash
-make bundle           # Creates bundle/Codescribe.app
-make install-app      # Copies to /Applications/Codescribe.app (auto-caches models)
-```
-
-**Result**: Standard macOS .app bundle in `/Applications/`.
-
-**How it runs**: Double-click or launch from Spotlight.
+**How it runs**: Terminal-only quality/reporting utilities, not the user-facing app.
 
 `make install-app` now prefers a stable local signing identity automatically:
 
@@ -96,7 +99,7 @@ flowchart TD
 
 ```env
 # Speech-to-Text
-WHISPER_LANGUAGE=pl              # pl | en | de | fr
+WHISPER_LANGUAGE=auto            # auto | pl | en
 USE_LOCAL_STT=1                  # 1 = keep local transcript as committed result
 
 # Hotkeys timing / behavior
@@ -123,7 +126,7 @@ Codescribe.app/
 └── Contents/
     ├── Info.plist           # Bundle metadata (icon, identifier, version)
     ├── MacOS/
-    │   └── codescribe       # Main executable
+    │   └── Codescribe       # App executable
     └── Resources/
         └── AppIcon.icns     # Application icon
 ```
@@ -132,9 +135,9 @@ Codescribe.app/
 
 | Key                          | Value                 | Purpose                      |
 | ---------------------------- | --------------------- | ---------------------------- |
-| CFBundleIdentifier           | com.codescribe.app    | Unique app identifier        |
+| CFBundleIdentifier           | com.vetcoders.codescribe | Unique app identifier     |
 | CFBundleIconFile             | AppIcon               | Points to AppIcon.icns       |
-| CFBundleExecutable           | codescribe            | Main binary name             |
+| CFBundleExecutable           | Codescribe            | Main binary name             |
 | LSMinimumSystemVersion       | 14.0                  | Requires macOS Sonoma+       |
 | NSMicrophoneUsageDescription | ...                   | Microphone permission prompt |
 
@@ -196,13 +199,13 @@ Grant in **System Settings > Privacy & Security**:
 ### Empty Tray Icon
 
 - Check that `assets/icon.png` exists and is valid PNG
-- Rebuild with `cargo build --release`
+- Rebuild with `make app PROFILE=release`
 
 ### Config Not Loading
 
 - Check `~/.codescribe/.env` exists
 - Verify syntax: `cat ~/.codescribe/.env`
-- Check logs: `codescribe -v` for verbose output
+- Check logs: `make logs`
 
 ### Hotkeys Not Working
 

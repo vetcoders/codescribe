@@ -7,6 +7,7 @@ pub mod search_threads;
 pub mod selection;
 pub mod transcribe_audio;
 pub mod typing;
+pub mod workspace;
 
 use codescribe_core::agent::ToolRegistry;
 
@@ -24,6 +25,7 @@ fn register_native_tools(registry: &mut ToolRegistry) {
     github::register(registry);
     search_threads::register(registry);
     transcribe_audio::register(registry);
+    workspace::register(registry);
 }
 
 #[cfg(test)]
@@ -48,6 +50,7 @@ mod tests {
                 "fetch_github_file".to_string(),
                 "get_frontmost_app".to_string(),
                 "get_selected_text".to_string(),
+                "list_projects".to_string(),
                 "read_clipboard".to_string(),
                 "read_file".to_string(),
                 "search_threads".to_string(),

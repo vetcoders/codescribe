@@ -515,9 +515,15 @@ impl SpeechSession {
                 self.last_boundary_prob = speech_prob;
             }
 
-            // Speech-time integrity: count only Silero-positive VAD frames while
-            // a Supervisor segment is active.
-            if self.segment_start.is_some() && speech_prob >= self.threshold {
+            // Speech-time integrity: count Silero-positive VAD frames while a
+            // Supervisor segment is active. Use `neg_threshold` (the same
+            // segment-open hysteresis used by `gate_with_prob`), NOT the higher
+            // onset `threshold`: speech hovering in the 0.35–0.50 band keeps the
+            // segment open, so counting it at >= threshold under-reports real
+            // speech and makes the downstream silence-drop ratio gate
+            // (`should_drop_silence_chunk`) wrongly classify present speech as
+            // silence.
+            if self.segment_start.is_some() && speech_prob >= self.neg_threshold {
                 self.pending_event_speech_vad_samples = self
                     .pending_event_speech_vad_samples
                     .saturating_add(vad::CHUNK_SIZE as u64);
@@ -960,10 +966,18 @@ impl SpeechSession {
     }
 
     /// Override VAD threshold (test-only). Set impossibly high to prevent
-    /// VadIterState from firing `Start`.
+    /// VadIterState from firing `Start`, or below zero to force a deterministic
+    /// open segment when the Silero model is unavailable.
+    ///
+    /// Forces `neg_threshold` to the same value: the speech-sample accounting
+    /// (see `feed`) now counts frames at `neg_threshold`, not `threshold`, so a
+    /// test that drives the onset threshold below the silence floor must move
+    /// the hysteresis bound with it — otherwise forced-open segments would
+    /// report zero accounted speech.
     #[cfg(test)]
     pub fn set_vad_threshold_for_test(&mut self, threshold: f32) {
         self.threshold = threshold;
+        self.neg_threshold = threshold;
         if let Some(iter_state) = self.iter_state.as_mut() {
             iter_state.params.threshold = threshold;
         }

@@ -5,6 +5,7 @@ use std::thread;
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::llm::provider::{LlmMode, resolve_provider};
 use codescribe_core::mcp::{McpClient, McpConfigFile, McpServerConfig, McpTool};
 use tracing::{info, warn};
 
@@ -173,26 +174,69 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
     }
 }
 
-/// One Agentic prerequisite the readiness probe classifies, paired with the MCP
-/// server name that satisfies it.
+/// Operator-tooling MCP servers surfaced as INFORMATIONAL rows in the readiness
+/// panel, each paired with the server name that satisfies it.
 ///
-/// Repo truth (loctree literal scan, 2026-06-26): these three server names are
-/// the only first-party agentic surfaces referenced anywhere in Codescribe
-/// (`app/controller/helpers.rs`, `app/ui/voice_chat/tool_activity.rs`). PRView
-/// is deliberately absent here — it has no known MCP server name or local
-/// command in repo truth and is handled separately by `classify_prview`.
+/// These are Vetcoders operator surfaces (Vibecrafted / AICX / Loctree); an
+/// end-user install will not have them. Per the C4 readiness-semantics decision
+/// they are context only and NEVER gate `ready` — the core capability gate
+/// (provider + key + native tools) is the sole arbiter of readiness. PRView is
+/// handled separately by [`classify_prview`], also as optional context.
 const AGENTIC_PREREQS: &[(&str, &str)] = &[
     ("Vibecrafted runtime:", "vibecrafted-mcp"),
     ("AICX MCP:", "aicx-mcp"),
     ("Loctree MCP:", "loctree-mcp"),
 ];
 
-/// Mode-aware readiness verdict for the Agentic operating lane.
+/// Core capability gate — the REAL ability of the agent to act. This is the only
+/// input that decides `ready`: a configured assistive-lane provider whose API
+/// key is present, plus the compiled-in native tool set. Operator tooling (MCP
+/// servers) is informational and never enters this verdict.
+#[derive(Debug, Clone)]
+pub struct CoreReadiness {
+    /// Display name of the resolved assistive-lane provider.
+    pub provider_label: String,
+    /// Keychain/env account holding that provider's assistive key.
+    pub key_env_key: String,
+    /// Whether that key is present (non-empty) in the process env.
+    pub key_set: bool,
+    /// Number of native (compiled-in) tools available to the agent.
+    pub native_tool_count: usize,
+}
+
+/// Probe the core capability gate from live process state: the configured
+/// assistive provider ([`resolve_provider`]), whether its key is set, and the
+/// count of native tools. Cheap — an env read plus building an in-memory registry
+/// (no server spawning, no network). Callers that need Keychain-backed keys in
+/// env must load `Config` first (the bridge does this before probing).
+pub fn probe_core_readiness() -> CoreReadiness {
+    let provider = resolve_provider(LlmMode::Assistive);
+    let key_env_key = provider.api_key_env_key().to_string();
+    let key_set = std::env::var(&key_env_key)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+
+    let mut registry = ToolRegistry::new();
+    super::register_native_tools(&mut registry);
+    let native_tool_count = registry.definitions().len();
+
+    CoreReadiness {
+        provider_label: provider.display_name().to_string(),
+        key_env_key,
+        key_set,
+        native_tool_count,
+    }
+}
+
+/// Readiness verdict for the Agentic operating lane.
 ///
-/// Distinct from [`McpStatusReport`] (the Basic-mode config probe) so the two
-/// lanes can never bleed into each other: Basic stays neutral/optional, Agentic
-/// gets a hard ready/not-ready verdict. Reuses [`McpStatusRow`]/[`McpRowTone`]
-/// so there is no parallel tone system.
+/// `ready` is decided SOLELY by the core capability gate ([`CoreReadiness`]:
+/// assistive provider configured + its API key set + native tools compiled in).
+/// The per-server MCP rows (Vibecrafted / AICX / Loctree / PRView) are
+/// INFORMATIONAL context only — they can never flip `ready` — because they are
+/// operator tooling an end-user install will not have. This is the C4
+/// readiness-semantics decision (redesign from the earlier "all four required"
+/// gate, which left a working agent stuck at NOT READY).
 pub struct AgenticReadinessReport {
     pub config_path_display: String,
     ready: bool,
@@ -204,246 +248,239 @@ impl AgenticReadinessReport {
         &self.rows
     }
 
-    /// `true` only when every gating prerequisite is non-blocking. The agentic
-    /// substrate is Vibecrafted + AICX + Loctree + PRView; all four are required.
-    /// A missing/disabled/failed PRView integration flips this to `false` just
-    /// like any other prerequisite — PRView is minimum substrate, not decoration.
+    /// `true` only when the core capability gate passes: a configured assistive
+    /// provider with its API key set and at least one native tool available.
+    /// Operator-tooling MCP rows are informational and never affect this verdict.
     pub fn is_ready(&self) -> bool {
         self.ready
     }
 }
 
-/// Classify one gating prerequisite against config + cached runtime discovery.
-///
-/// Returns the display row and whether the prerequisite is *blocking* (i.e. it
-/// flips overall readiness to not-ready). The value strings carry a stable
-/// keyword (`not configured` / `disabled` / `failed` / `ready` / `configured`)
-/// plus an actionable hint, mirroring the honesty of [`probe_mcp_status_at`].
-fn classify_prereq(
+/// Classify one operator-tooling MCP server as an INFORMATIONAL row. Never
+/// blocking: a missing/failed/disabled operator server does not affect agent
+/// readiness (the core gate owns that). Absent → neutral "not configured
+/// (optional)"; live → good; configured-but-unstarted or failed → warn.
+fn classify_operator_tool(
     label: &str,
     server_name: &str,
     config: &McpConfigFile,
     runtime: &BTreeMap<String, ServerRuntime>,
-) -> (McpStatusRow, bool) {
+) -> McpStatusRow {
     let configured = config.servers.get(server_name);
-    let (value, tone, blocking) = match (configured, runtime.get(server_name)) {
-        // Not present in mcp.json at all — the substrate for this prereq is absent.
-        (None, _) => (
-            format!("not configured — add \"{server_name}\" to ~/.codescribe/mcp.json"),
-            McpRowTone::Bad,
-            true,
-        ),
+    let (value, tone) = match (configured, runtime.get(server_name)) {
+        // Not present in mcp.json — optional operator tooling is simply absent.
+        (None, _) => ("not configured (optional)".to_string(), McpRowTone::Neutral),
         // Real discovery succeeded — tools are live.
-        (Some(_), Some(ServerRuntime::Tools(count))) => (
-            format!("ready — {count} tool(s) live"),
-            McpRowTone::Good,
-            false,
-        ),
-        // Configured but discovery failed: surface the concrete reason.
-        (Some(_), Some(ServerRuntime::Failed(reason))) => {
-            (format!("failed: {reason}"), McpRowTone::Bad, true)
+        (Some(_), Some(ServerRuntime::Tools(count))) => {
+            (format!("ready — {count} tool(s) live"), McpRowTone::Good)
         }
-        // Present in config but disabled (either via cache or the `enabled` flag):
-        // a disabled prerequisite blocks the agentic lane.
+        // Configured but discovery failed: surface the concrete reason (warn, not
+        // blocking — the agent still works without this operator surface).
+        (Some(_), Some(ServerRuntime::Failed(reason))) => {
+            (format!("failed: {reason}"), McpRowTone::Warn)
+        }
         (Some(cfg), runtime_state) => {
             let enabled = cfg.enabled.unwrap_or(true);
             if matches!(runtime_state, Some(ServerRuntime::Disabled)) || !enabled {
-                (
-                    format!("disabled — set \"enabled\": true for \"{server_name}\""),
-                    McpRowTone::Bad,
-                    true,
-                )
+                ("disabled".to_string(), McpRowTone::Neutral)
             } else {
-                // Config is correct; the agent runtime simply has not run discovery
-                // yet. Not blocking — the substrate is present.
                 (
                     "configured — agent not started yet".to_string(),
                     McpRowTone::Warn,
-                    false,
                 )
             }
         }
     };
-    (
-        McpStatusRow {
-            label: label.to_string(),
-            value,
-            tone,
-        },
-        blocking,
-    )
+    McpStatusRow {
+        label: label.to_string(),
+        value,
+        tone,
+    }
 }
 
-/// Classify PRView readiness as a **required** agentic prerequisite.
-///
-/// Repo truth (loctree literal scan, 2026-06-26): there is NO `prview` MCP
-/// server name and no local prview command anywhere in Codescribe. We refuse to
-/// invent a binary name. If a user has manually wired a server whose name
-/// contains "prview" we honour that real config; otherwise we report the exact
-/// evidence — missing integration — and never fake green readiness.
-///
-/// Returns the display row and whether the prerequisite is *blocking*, matching
-/// [`classify_prereq`]'s contract: a missing/disabled/failed PRView integration
-/// blocks Agentic readiness because PRView is minimum substrate, not decoration.
+/// Classify PRView as an INFORMATIONAL row. Per the C4 decision PRView is
+/// OPTIONAL, not required substrate: its absence is a neutral "not configured
+/// (optional)" and never blocks readiness. The canonical wiring is a `prview`
+/// MCP server (`{"command":"prview","args":["mcp"]}`); we also honour any server
+/// whose name contains "prview" so a manually wired entry is recognised.
 fn classify_prview(
     config: &McpConfigFile,
     runtime: &BTreeMap<String, ServerRuntime>,
-) -> (McpStatusRow, bool) {
+) -> McpStatusRow {
     let detected = config
         .servers
         .iter()
         .find(|(name, _)| name.to_ascii_lowercase().contains("prview"));
-    let (value, tone, blocking) = match detected {
+    let (value, tone) = match detected {
         Some((name, cfg)) => match runtime.get(name) {
-            // Real discovery succeeded — PRView tools are live.
             Some(ServerRuntime::Tools(count)) => (
                 format!("ready — {count} tool(s) live (via \"{name}\")"),
                 McpRowTone::Good,
-                false,
             ),
-            // Configured but discovery failed: surface the concrete reason.
-            Some(ServerRuntime::Failed(reason)) => {
-                (format!("failed: {reason}"), McpRowTone::Bad, true)
-            }
-            // Disabled (via cache or the `enabled` flag) blocks the agentic lane.
-            Some(ServerRuntime::Disabled) => (
-                format!("disabled — set \"enabled\": true for \"{name}\""),
-                McpRowTone::Bad,
-                true,
-            ),
+            Some(ServerRuntime::Failed(reason)) => (format!("failed: {reason}"), McpRowTone::Warn),
+            Some(ServerRuntime::Disabled) => ("disabled".to_string(), McpRowTone::Neutral),
             None => {
                 if cfg.enabled.unwrap_or(true) {
-                    // Config is correct; the agent runtime has not run discovery
-                    // yet. Not blocking — the substrate is present.
                     (
                         format!("configured — agent not started yet (via \"{name}\")"),
                         McpRowTone::Warn,
-                        false,
                     )
                 } else {
-                    (
-                        format!("disabled — set \"enabled\": true for \"{name}\""),
-                        McpRowTone::Bad,
-                        true,
-                    )
+                    ("disabled".to_string(), McpRowTone::Neutral)
                 }
             }
         },
-        // `missing_prview_integration`: no MCP server, no local command. Honest
-        // evidence preserved (loctree literal `prview` = 0 production occurrences),
-        // but PRView is required substrate, so its absence blocks readiness.
-        None => (
-            "missing (required) — no PRView MCP server or local command found".to_string(),
-            McpRowTone::Bad,
-            true,
-        ),
+        None => ("not configured (optional)".to_string(), McpRowTone::Neutral),
     };
-    (
-        McpStatusRow {
-            label: "PRView integration:".to_string(),
-            value,
-            tone,
-        },
-        blocking,
-    )
+    McpStatusRow {
+        label: "PRView integration:".to_string(),
+        value,
+        tone,
+    }
 }
 
-/// Agentic-lane readiness probe: classifies the agentic substrate prerequisites
-/// (Vibecrafted runtime, AICX MCP, Loctree MCP, PRView integration).
-///
-/// Only meaningful when the user chose the Agentic operating lane. Basic mode
-/// must keep calling [`probe_mcp_status`] so a missing `mcp.json` stays a
-/// neutral/optional state rather than a hard not-ready verdict.
+/// Agentic-lane readiness probe: `ready` is the core capability gate (provider +
+/// key + native tools); the MCP rows are informational context. See
+/// [`AgenticReadinessReport`] for the semantics decision.
 pub fn probe_agentic_readiness() -> AgenticReadinessReport {
+    let core = probe_core_readiness();
     let path = match codescribe_core::mcp::default_mcp_config_path() {
         Ok(path) => path,
         Err(error) => {
-            return AgenticReadinessReport {
-                config_path_display: "unavailable".to_string(),
-                ready: false,
-                rows: vec![McpStatusRow {
-                    label: "Agentic readiness:".to_string(),
-                    value: format!("not ready — config path unavailable: {error}"),
-                    tone: McpRowTone::Bad,
-                }],
-            };
+            // MCP is optional, so a missing config path is informational — the
+            // core gate still decides readiness.
+            return assemble_readiness(
+                "unavailable".to_string(),
+                core,
+                McpConfigFile {
+                    servers: Default::default(),
+                },
+                Some(format!("config path unavailable: {error}")),
+            );
         }
     };
-    probe_agentic_readiness_at(&path)
+    probe_agentic_readiness_at(&path, core)
 }
 
-fn probe_agentic_readiness_at(path: &Path) -> AgenticReadinessReport {
+fn probe_agentic_readiness_at(path: &Path, core: CoreReadiness) -> AgenticReadinessReport {
     let config_path_display = path.display().to_string();
 
-    // Missing config in the Agentic lane is NOT neutral (that is Basic's
-    // contract): the substrate is simply absent, so classify against an empty
-    // config and every prereq reports "not configured" → not ready.
-    let config = if !path.exists() {
-        McpConfigFile {
-            servers: Default::default(),
-        }
+    let (config, config_note) = if !path.exists() {
+        (
+            McpConfigFile {
+                servers: Default::default(),
+            },
+            None,
+        )
     } else {
         match McpConfigFile::load(path) {
-            Ok(config) => config,
-            Err(error) => {
-                return AgenticReadinessReport {
-                    config_path_display,
-                    ready: false,
-                    rows: vec![
-                        McpStatusRow {
-                            label: "Agentic readiness:".to_string(),
-                            value: "not ready — config error".to_string(),
-                            tone: McpRowTone::Bad,
-                        },
-                        McpStatusRow {
-                            label: "Config error:".to_string(),
-                            value: anyhow_root_cause(&error),
-                            tone: McpRowTone::Bad,
-                        },
-                    ],
-                };
-            }
+            Ok(config) => (config, None),
+            // A broken mcp.json no longer blocks readiness (MCP is optional); it is
+            // surfaced as an informational warn row instead of a hard not-ready.
+            Err(error) => (
+                McpConfigFile {
+                    servers: Default::default(),
+                },
+                Some(format!(
+                    "mcp.json parse error (optional): {}",
+                    anyhow_root_cause(&error)
+                )),
+            ),
         }
     };
 
+    assemble_readiness(config_path_display, core, config, config_note)
+}
+
+/// Assemble the readiness report: the core-gate verdict + provider + native-tools
+/// rows (which decide `ready`), followed by the informational operator-tooling
+/// rows (which never do).
+fn assemble_readiness(
+    config_path_display: String,
+    core: CoreReadiness,
+    config: McpConfigFile,
+    config_note: Option<String>,
+) -> AgenticReadinessReport {
     let runtime = runtime_cache()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .clone();
 
-    let mut prereq_rows = Vec::with_capacity(AGENTIC_PREREQS.len() + 1);
-    let mut blocking = 0usize;
-    for (label, server_name) in AGENTIC_PREREQS {
-        let (row, is_blocking) = classify_prereq(label, server_name, &config, &runtime);
-        if is_blocking {
-            blocking += 1;
-        }
-        prereq_rows.push(row);
-    }
-    let (prview_row, prview_blocking) = classify_prview(&config, &runtime);
-    if prview_blocking {
-        blocking += 1;
-    }
-    prereq_rows.push(prview_row);
+    let tools_present = core.native_tool_count > 0;
+    let ready = core.key_set && tools_present;
 
-    let ready = blocking == 0;
+    // ---- Core capability gate rows (these decide `ready`). ----
     let verdict = if ready {
         McpStatusRow {
             label: "Agentic readiness:".to_string(),
-            value: "ready — full agentic substrate present".to_string(),
+            value: format!(
+                "ready — {} configured, key set, {} native tool(s)",
+                core.provider_label, core.native_tool_count
+            ),
             tone: McpRowTone::Good,
         }
     } else {
+        let reason = if !core.key_set {
+            format!("assistive API key missing (set {})", core.key_env_key)
+        } else {
+            "no native tools available".to_string()
+        };
         McpStatusRow {
             label: "Agentic readiness:".to_string(),
-            value: format!("not ready — {blocking} prerequisite(s) missing"),
+            value: format!("not ready — {reason}"),
             tone: McpRowTone::Bad,
         }
     };
 
-    let mut rows = Vec::with_capacity(prereq_rows.len() + 1);
+    let provider_row = McpStatusRow {
+        label: "Provider:".to_string(),
+        value: if core.key_set {
+            format!("{} — key set", core.provider_label)
+        } else {
+            format!(
+                "{} — key missing (set {})",
+                core.provider_label, core.key_env_key
+            )
+        },
+        tone: if core.key_set {
+            McpRowTone::Good
+        } else {
+            McpRowTone::Bad
+        },
+    };
+
+    let tools_row = McpStatusRow {
+        label: "Native tools:".to_string(),
+        value: format!("{} tool(s) available", core.native_tool_count),
+        tone: if tools_present {
+            McpRowTone::Good
+        } else {
+            McpRowTone::Bad
+        },
+    };
+
+    let mut rows = Vec::with_capacity(AGENTIC_PREREQS.len() + 5);
     rows.push(verdict);
-    rows.extend(prereq_rows);
+    rows.push(provider_row);
+    rows.push(tools_row);
+
+    // ---- Informational operator-tooling rows (never gate `ready`). ----
+    if let Some(note) = config_note {
+        rows.push(McpStatusRow {
+            label: "MCP config:".to_string(),
+            value: note,
+            tone: McpRowTone::Warn,
+        });
+    }
+    for (label, server_name) in AGENTIC_PREREQS {
+        rows.push(classify_operator_tool(
+            label,
+            server_name,
+            &config,
+            &runtime,
+        ));
+    }
+    rows.push(classify_prview(&config, &runtime));
 
     AgenticReadinessReport {
         config_path_display,
@@ -788,13 +825,16 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     }
 
-    // --- Agentic readiness probe (W1-C2) -------------------------------------
+    // --- Agentic readiness probe (C4 semantics) ------------------------------
     //
-    // These exercise `probe_agentic_readiness_at` with real prereq server names
-    // (`vibecrafted-mcp` / `aicx-mcp` / `loctree-mcp`). The global runtime cache
-    // is never populated for those names by any other test, so the readiness
-    // probe sees them as "configured, agent not started" — the deterministic,
-    // ordering-safe baseline.
+    // `ready` is decided by the CORE capability gate (provider + key + native
+    // tools), supplied here as an explicit `CoreReadiness` so the tests stay
+    // deterministic and free of process-env / Keychain coupling. The MCP rows are
+    // informational and must never flip the verdict. The global runtime cache is
+    // never populated for these server names by any other test, so operator rows
+    // read as "configured, agent not started" or "not configured (optional)".
+
+    use super::CoreReadiness;
 
     fn find_row<'a>(
         report: &'a super::AgenticReadinessReport,
@@ -807,184 +847,191 @@ mod tests {
             .unwrap_or_else(|| panic!("row '{label}' present"))
     }
 
-    #[test]
-    fn basic_probe_stays_neutral_while_agentic_is_not_ready_for_missing_config() {
-        // Same nonexistent path, two lanes: Basic must remain optional/neutral,
-        // Agentic must report a hard not-ready verdict.
-        let temp = tempfile::tempdir().expect("temp dir");
-        let path = temp.path().join("mcp.json"); // never created
-
-        let basic = probe_mcp_status_at(&path);
-        assert_eq!(basic.summary_rows().len(), 1);
-        assert_eq!(basic.summary_rows()[0].tone, McpRowTone::Neutral);
-
-        let agentic = probe_agentic_readiness_at(&path);
-        assert!(
-            !agentic.is_ready(),
-            "agentic must not be ready without config"
-        );
-        let verdict = find_row(&agentic, "Agentic readiness:");
-        assert_eq!(verdict.tone, McpRowTone::Bad);
-        assert!(
-            verdict.value.contains("not ready"),
-            "got: {}",
-            verdict.value
-        );
-    }
-
-    #[test]
-    fn agentic_missing_config_classifies_every_prereq_as_not_configured() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let path = temp.path().join("mcp.json"); // never created
-
-        let report = probe_agentic_readiness_at(&path);
-        assert!(!report.is_ready());
-        for label in ["Vibecrafted runtime:", "AICX MCP:", "Loctree MCP:"] {
-            let row = find_row(&report, label);
-            assert_eq!(row.tone, McpRowTone::Bad, "{label} should block");
-            assert!(
-                row.value.contains("not configured"),
-                "{label} got: {}",
-                row.value
-            );
+    /// Core gate that PASSES: provider configured, key set, native tools present.
+    fn core_ready() -> CoreReadiness {
+        CoreReadiness {
+            provider_label: "OpenAI (Responses)".to_string(),
+            key_env_key: "LLM_ASSISTIVE_API_KEY".to_string(),
+            key_set: true,
+            native_tool_count: 10,
         }
     }
 
     #[test]
-    fn agentic_recognizes_configured_full_substrate() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let path = temp.path().join("mcp.json");
-        // Full required substrate: Vibecrafted + AICX + Loctree + a PRView-like
-        // server. A user who wires a "prview" server satisfies the prerequisite.
-        let config = json!({
-            "mcpServers": {
-                "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
-                "aicx-mcp": { "command": "aicx-mcp", "enabled": true },
-                "loctree-mcp": { "command": "loctree-mcp", "enabled": true },
-                "codescribe-prview": { "command": "codescribe-prview", "enabled": true }
-            }
-        });
-        fs::write(&path, config.to_string()).expect("write config");
+    fn probe_core_readiness_counts_native_tools() {
+        // The real native tool set is compiled in; the count must be non-zero so
+        // the core gate never fails purely on "no tools" in a healthy build.
+        let core = super::probe_core_readiness();
+        assert!(
+            core.native_tool_count > 0,
+            "native tools should be registered"
+        );
+        assert!(!core.provider_label.is_empty());
+        assert!(!core.key_env_key.is_empty());
+    }
 
-        let report = probe_agentic_readiness_at(&path);
-        // All four prereqs are configured + enabled (no runtime discovery yet),
-        // so none block: the full agentic substrate is recognized as present.
+    #[test]
+    fn readiness_is_driven_by_core_gate_not_operator_tooling() {
+        // Empty MCP config (no operator tooling at all) but a passing core gate:
+        // the agent is READY. Operator tooling is optional context.
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json"); // never created
+
+        let report = probe_agentic_readiness_at(&path, core_ready());
         assert!(
             report.is_ready(),
-            "configured full substrate should be ready: {:?}",
+            "core gate passing must be READY even with zero operator tooling: {:?}",
             report
                 .summary_rows()
                 .iter()
                 .map(|r| format!("{}={}", r.label, r.value))
                 .collect::<Vec<_>>()
         );
-        for label in ["AICX MCP:", "Loctree MCP:"] {
-            let row = find_row(&report, label);
-            assert_eq!(row.tone, McpRowTone::Warn);
-            assert!(
-                row.value.contains("configured"),
-                "{label} got: {}",
-                row.value
-            );
-        }
-        // A configured/enabled PRView-like server satisfies the PRView prereq.
-        let prview = find_row(&report, "PRView integration:");
-        assert_eq!(prview.tone, McpRowTone::Warn);
+        let verdict = find_row(&report, "Agentic readiness:");
+        assert_eq!(verdict.tone, McpRowTone::Good);
+        assert!(verdict.value.contains("ready"), "got: {}", verdict.value);
+        let provider = find_row(&report, "Provider:");
+        assert_eq!(provider.tone, McpRowTone::Good);
         assert!(
-            prview.value.contains("configured") && prview.value.contains("codescribe-prview"),
-            "PRView-like server should satisfy the prerequisite, got: {}",
-            prview.value
+            provider.value.contains("key set"),
+            "got: {}",
+            provider.value
         );
     }
 
     #[test]
-    fn agentic_disabled_prview_server_blocks_readiness() {
+    fn operator_tooling_absent_is_neutral_optional_and_non_blocking() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json"); // never created
+
+        let report = probe_agentic_readiness_at(&path, core_ready());
+        assert!(report.is_ready());
+        for label in [
+            "Vibecrafted runtime:",
+            "AICX MCP:",
+            "Loctree MCP:",
+            "PRView integration:",
+        ] {
+            let row = find_row(&report, label);
+            assert_eq!(
+                row.tone,
+                McpRowTone::Neutral,
+                "{label} must be neutral/optional"
+            );
+            assert!(row.value.contains("optional"), "{label} got: {}", row.value);
+        }
+    }
+
+    #[test]
+    fn missing_assistive_key_blocks_readiness_even_with_full_substrate() {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json");
-        // Core substrate present, but the wired PRView-like server is disabled —
-        // a disabled required prerequisite must block readiness.
+        // Full operator substrate present — but the core gate has no key.
         let config = json!({
             "mcpServers": {
                 "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
                 "aicx-mcp": { "command": "aicx-mcp", "enabled": true },
                 "loctree-mcp": { "command": "loctree-mcp", "enabled": true },
-                "codescribe-prview": { "command": "codescribe-prview", "enabled": false }
+                "prview": { "command": "prview", "args": ["mcp"], "enabled": true }
             }
         });
         fs::write(&path, config.to_string()).expect("write config");
 
-        let report = probe_agentic_readiness_at(&path);
+        let core = CoreReadiness {
+            key_set: false,
+            ..core_ready()
+        };
+        let report = probe_agentic_readiness_at(&path, core);
         assert!(
             !report.is_ready(),
-            "a disabled PRView server must block readiness"
+            "no API key must block readiness regardless of MCP substrate"
         );
+        let verdict = find_row(&report, "Agentic readiness:");
+        assert_eq!(verdict.tone, McpRowTone::Bad);
+        assert!(
+            verdict.value.contains("key missing") || verdict.value.contains("key"),
+            "got: {}",
+            verdict.value
+        );
+        let provider = find_row(&report, "Provider:");
+        assert_eq!(provider.tone, McpRowTone::Bad);
+        assert!(
+            provider.value.contains("LLM_ASSISTIVE_API_KEY"),
+            "provider row should name the missing key account, got: {}",
+            provider.value
+        );
+    }
+
+    #[test]
+    fn no_native_tools_blocks_readiness() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json");
+        let core = CoreReadiness {
+            native_tool_count: 0,
+            ..core_ready()
+        };
+        let report = probe_agentic_readiness_at(&path, core);
+        assert!(!report.is_ready(), "zero native tools must block readiness");
+        let tools = find_row(&report, "Native tools:");
+        assert_eq!(tools.tone, McpRowTone::Bad);
+        let verdict = find_row(&report, "Agentic readiness:");
+        assert!(
+            verdict.value.contains("no native tools"),
+            "got: {}",
+            verdict.value
+        );
+    }
+
+    #[test]
+    fn configured_prview_server_is_informational_good_or_warn() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json");
+        // Canonical PRView wiring: {"command":"prview","args":["mcp"]}.
+        let config = json!({
+            "mcpServers": {
+                "prview": { "command": "prview", "args": ["mcp"], "enabled": true }
+            }
+        });
+        fs::write(&path, config.to_string()).expect("write config");
+
+        let report = probe_agentic_readiness_at(&path, core_ready());
+        assert!(report.is_ready(), "PRView presence never gates readiness");
         let prview = find_row(&report, "PRView integration:");
-        assert_eq!(prview.tone, McpRowTone::Bad);
-        assert!(prview.value.contains("disabled"), "got: {}", prview.value);
-    }
-
-    #[test]
-    fn agentic_disabled_prereq_blocks_readiness() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let path = temp.path().join("mcp.json");
-        let config = json!({
-            "mcpServers": {
-                "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
-                "aicx-mcp": { "command": "aicx-mcp", "enabled": false },
-                "loctree-mcp": { "command": "loctree-mcp", "enabled": true }
-            }
-        });
-        fs::write(&path, config.to_string()).expect("write config");
-
-        let report = probe_agentic_readiness_at(&path);
-        assert!(!report.is_ready(), "a disabled prereq must block readiness");
-        let row = find_row(&report, "AICX MCP:");
-        assert_eq!(row.tone, McpRowTone::Bad);
-        assert!(row.value.contains("disabled"), "got: {}", row.value);
-    }
-
-    #[test]
-    fn agentic_prview_missing_blocks_readiness() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let path = temp.path().join("mcp.json");
-        // Core substrate present, but no PRView surface anywhere — this is the
-        // repo-truth baseline (loctree literal `prview` = 0 production hits).
-        let config = json!({
-            "mcpServers": {
-                "vibecrafted-mcp": { "command": "vibecrafted-mcp", "enabled": true },
-                "aicx-mcp": { "command": "aicx-mcp", "enabled": true },
-                "loctree-mcp": { "command": "loctree-mcp", "enabled": true }
-            }
-        });
-        fs::write(&path, config.to_string()).expect("write config");
-
-        let report = probe_agentic_readiness_at(&path);
-        let row = find_row(&report, "PRView integration:");
-        // Honest evidence preserved AND now flagged as a hard, blocking gap.
-        assert_eq!(row.tone, McpRowTone::Bad);
+        // Configured but no runtime discovery yet → warn, and it names the server.
+        assert_eq!(prview.tone, McpRowTone::Warn);
         assert!(
-            row.value.contains("missing") && row.value.contains("PRView"),
-            "PRView must be explicitly classified as missing, got: {}",
-            row.value
-        );
-        // PRView is required substrate: its absence blocks Agentic readiness even
-        // when Vibecrafted / AICX / Loctree are all present.
-        assert!(
-            !report.is_ready(),
-            "missing PRView must block agentic readiness"
+            prview.value.contains("configured") && prview.value.contains("prview"),
+            "got: {}",
+            prview.value
         );
     }
 
     #[test]
-    fn agentic_parse_error_is_not_ready_with_concrete_reason() {
+    fn broken_mcp_json_is_informational_not_blocking() {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("mcp.json");
         fs::write(&path, "{ not valid json").expect("write garbage");
 
-        let report = probe_agentic_readiness_at(&path);
-        assert!(!report.is_ready());
-        let row = find_row(&report, "Config error:");
-        assert_eq!(row.tone, McpRowTone::Bad);
-        assert!(!row.value.is_empty());
+        // A broken config no longer blocks readiness — MCP is optional now.
+        let report = probe_agentic_readiness_at(&path, core_ready());
+        assert!(
+            report.is_ready(),
+            "a broken mcp.json must not sink a working agent"
+        );
+        let note = find_row(&report, "MCP config:");
+        assert_eq!(note.tone, McpRowTone::Warn);
+        assert!(note.value.contains("parse error"), "got: {}", note.value);
+    }
+
+    #[test]
+    fn basic_probe_stays_neutral_for_missing_config() {
+        // The Basic-lane probe is unchanged: a missing mcp.json is a single
+        // neutral/optional row, never an error.
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json"); // never created
+
+        let basic = probe_mcp_status_at(&path);
+        assert_eq!(basic.summary_rows().len(), 1);
+        assert_eq!(basic.summary_rows()[0].tone, McpRowTone::Neutral);
     }
 }
