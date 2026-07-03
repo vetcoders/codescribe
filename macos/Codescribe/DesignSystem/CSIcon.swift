@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import PhosphorSwift
 
@@ -202,35 +203,62 @@ struct CSIconView: View {
         case .sf(let name):
             tinted(Image(systemName: name).font(.system(size: size, weight: weight.font)))
         case .phosphor(let ph):
-            sized(ph.weight(weight.phosphor))
+            rasterized(ph.weight(weight.phosphor), key: "\(ph.rawValue).\(weight.phosphor.rawValue)")
         case .phosphorFill(let ph):
-            sized(ph.fill)
+            rasterized(ph.fill, key: "\(ph.rawValue).fill")
         }
     }
 
-    /// A Phosphor glyph is a resizable template image, so it must be pinned to
-    /// an explicit box in BOTH axes (an SF Symbol gets its size from the font
-    /// instead). `.fixedSize()` locks that box to `size × size` so no container
-    /// can renegotiate it — without it a resizable image inside a `Menu`/button
-    /// label under `.fixedSize()` escapes the frame and draws at its native
-    /// (huge) asset size. `.clipped()` guarantees it never paints outside the box.
-    @ViewBuilder private func sized(_ image: Image) -> some View {
-        tinted(
-            image
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: size, height: size)
-                .fixedSize()
-                .clipped()
-        )
+    /// A Phosphor glyph is a *resizable* template image. When SwiftUI bridges a
+    /// `Menu` / `Picker` label to AppKit (NSPopUpButton / NSMenu) the label is
+    /// re-measured by the AppKit cell, which ignores SwiftUI `frame`/`fixedSize`
+    /// and paints the image at its native asset size (huge). Baking the glyph to
+    /// a fixed-point-size `NSImage` gives it a concrete intrinsic size the bridge
+    /// honours, so it stays `size × size` in every context. Result cached.
+    @ViewBuilder private func rasterized(_ base: Image, key: String) -> some View {
+        let nsImage = PhosphorRaster.templateImage(base, key: key, size: size)
+        tinted(Image(nsImage: nsImage).renderingMode(.template))
     }
 
     /// Apply an explicit tint, or leave the view to inherit the ambient one.
+    /// A template image (SF Symbol or the baked Phosphor `NSImage`) tints through
+    /// `foregroundStyle` and inherits the ambient one when `color` is `nil`.
     @ViewBuilder private func tinted(_ view: some View) -> some View {
         if let color {
             view.foregroundStyle(color)
         } else {
             view
         }
+    }
+}
+
+/// Bakes Phosphor template glyphs into fixed-point-size template `NSImage`s.
+///
+/// A resizable SwiftUI Image renders at the asset's native size once SwiftUI
+/// hands the label to an AppKit control (`Menu` / `Picker` → NSPopUpButton /
+/// NSMenu). An `Image(nsImage:)` backed by a concrete-size `NSImage` has a real
+/// intrinsic size the AppKit cell honours, killing the resizable ambiguity at
+/// the source. Each glyph is rendered once at Retina density and cached.
+@MainActor
+private enum PhosphorRaster {
+    private static var cache: [String: NSImage] = [:]
+
+    static func templateImage(_ base: Image, key: String, size: CGFloat) -> NSImage {
+        let cacheKey = "\(key)|\(size)"
+        if let hit = cache[cacheKey] { return hit }
+
+        let renderer = ImageRenderer(
+            content: base
+                .resizable()
+                .frame(width: size, height: size)
+                .foregroundStyle(Color.black) // opaque fill → clean alpha mask for the template
+        )
+        renderer.scale = 2 // Retina backing; crisp at 1x/2x, negligible cost
+
+        let image = renderer.nsImage ?? NSImage(size: NSSize(width: size, height: size))
+        image.size = NSSize(width: size, height: size) // pin the logical (point) size
+        image.isTemplate = true // tintable via foregroundStyle / menu text colour
+        cache[cacheKey] = image
+        return image
     }
 }
