@@ -5,6 +5,7 @@
 //! Filled by W3 cut #3 (sibling to `agent.rs`). Uses shared
 //! `crate::{CsError, CsLanguage}`.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::{Duration, Instant};
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 use codescribe_core::audio::load_audio_file;
 use codescribe_core::audio::streaming_recorder::StreamingRecorder;
 use codescribe_core::pipeline::contracts::{
-    AnnotationKind, EngineEvent, EventSink, LayerSource, LayerSummary,
+    AnnotationKind, EngineEvent, EventSink, FileTranscriptionOptions, LayerSource, LayerSummary,
 };
 use codescribe_core::stt::whisper;
 use tokio::sync::Mutex;
@@ -174,15 +175,90 @@ impl ComposerTranscript {
     }
 }
 
-/// Wait budget for `stop_recording` to drain in-flight transcription before
-/// composing the return. Proportional to recording length (residual STT work
-/// scales with audio) but clamped so the composer UI never hangs indefinitely
-/// if the scheduler stalls (e.g. thermal throttling): the floor covers a cold
-/// commit + tail patch on a short note, the cap bounds the worst case.
+/// Wait budget for `stop_recording` to compose its return: it covers BOTH the
+/// streaming drain AND the delivery-grade final pass over the saved WAV.
+/// Proportional to recording length (STT work scales with audio) but clamped so
+/// the composer UI never hangs indefinitely if the scheduler stalls (e.g.
+/// thermal throttling): the floor covers a cold commit + short final pass, the
+/// cap bounds the worst case. On exhaustion the streaming splice is returned as
+/// a fallback, so overrun degrades quality, never correctness.
 fn compose_stop_timeout(elapsed: Duration) -> Duration {
     const FLOOR: Duration = Duration::from_secs(8);
     const CAP: Duration = Duration::from_secs(30);
     elapsed.mul_f32(0.6).clamp(FLOOR, CAP)
+}
+
+/// Which transcript `stop_recording` returned, for the stop breadcrumb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposerTranscriptSource {
+    /// Delivery-grade whole-WAV final pass (matches the hotkey/overlay quality).
+    FinalPass,
+    /// Spliced streaming `UtteranceFinal` chunks (final pass unavailable/empty).
+    StreamingFallback,
+}
+
+impl ComposerTranscriptSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::FinalPass => "final_pass",
+            Self::StreamingFallback => "streaming_fallback",
+        }
+    }
+}
+
+/// Pick the composer return: the whole-WAV final pass wins whenever it produced
+/// non-empty text (it decodes the recording as one continuous utterance, so it
+/// avoids the mid-word cut artifacts of the streaming splice); otherwise the
+/// streaming accumulation is the fallback authority. Both inputs are trimmed.
+fn select_composer_transcript(
+    final_pass: Option<&str>,
+    streaming: &str,
+) -> (String, ComposerTranscriptSource) {
+    if let Some(text) = final_pass {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return (trimmed.to_string(), ComposerTranscriptSource::FinalPass);
+        }
+    }
+    (
+        streaming.trim().to_string(),
+        ComposerTranscriptSource::StreamingFallback,
+    )
+}
+
+/// Run the delivery-grade final pass over the saved WAV, mirroring the
+/// controller's toggle-stop adjudicator (`transcribe_file_verdict` with default
+/// options). Blocking Whisper work runs off the async runtime and is bounded by
+/// the shared `deadline`; any failure/timeout/absent-WAV yields `None` so the
+/// caller falls back to the streaming splice.
+async fn run_final_pass(
+    audio_path: Option<PathBuf>,
+    language: Option<String>,
+    deadline: tokio::time::Instant,
+) -> Option<String> {
+    let path = audio_path?;
+    let job = tokio::task::spawn_blocking(move || {
+        whisper::transcribe_file_verdict(
+            &path,
+            language.as_deref(),
+            FileTranscriptionOptions::default(),
+        )
+    });
+    match tokio::time::timeout_at(deadline, job).await {
+        Ok(Ok(Ok(verdict))) => Some(verdict.text),
+        Ok(Ok(Err(e))) => {
+            warn!(target: "composer-dictation", error = %e, "final pass transcription failed");
+            None
+        }
+        Ok(Err(e)) => {
+            warn!(target: "composer-dictation", error = %e, "final pass task join failed");
+            None
+        }
+        Err(_elapsed) => {
+            warn!(target: "composer-dictation", "final pass timed out; using streaming fallback");
+            None
+        }
+    }
 }
 
 /// Internal `EventSink` adapter (NOT exposed across FFI). Lives between the
@@ -278,12 +354,15 @@ fn resolve_language_hint(language: Option<CsLanguage>) -> Option<String> {
 }
 
 /// One live composer voice-note session: the streaming recorder plus the
-/// finalized-text accumulator its event sink feeds, and the wall-clock start
-/// used to size the stop-drain timeout.
+/// finalized-text accumulator its event sink feeds, the wall-clock start used to
+/// size the stop timeout, and the resolved Whisper language hint reused for the
+/// stop-time final pass (kept so it honours the persisted setting exactly like
+/// the start-time streaming session).
 struct ActiveSession {
     recorder: StreamingRecorder,
     transcript: Arc<ComposerTranscript>,
     started_at: Instant,
+    language_hint: Option<String>,
 }
 
 /// Thin handle to the codescribe dictation engine (streaming recorder +
@@ -372,7 +451,7 @@ impl CodescribeDictation {
 
         let language_code = resolve_language_hint(language);
         recorder
-            .start_event_session(language_code)
+            .start_event_session(language_code.clone())
             .await
             .map_err(|e| CsError::Recording { msg: e.to_string() })?;
 
@@ -380,6 +459,7 @@ impl CodescribeDictation {
             recorder,
             transcript,
             started_at: Instant::now(),
+            language_hint: language_code,
         });
         listener.on_recording_started();
         Ok(())
@@ -387,18 +467,25 @@ impl CodescribeDictation {
 
     /// Stop the active dictation session and return the composed transcript.
     ///
-    /// `StreamingRecorder::stop` (audio/streaming_recorder.rs) is the completion
-    /// signal: it stops the audio stream, then joins the transcription session
-    /// task, which only finishes AFTER every `UtteranceFinal` has been emitted
-    /// synchronously into `CsEventSink` (our accumulator). So by the time stop
-    /// returns cleanly, the accumulator holds the full transcript.
+    /// Two-phase, within one shared budget (`compose_stop_timeout`):
     ///
-    /// That join is otherwise unbounded, so we cap it: a stalled scheduler must
-    /// not freeze the composer UI. On timeout we return whatever utterances
-    /// finalised so far and log a WARN breadcrumb. The streaming recorder's own
-    /// transcript buffer is intentionally ignored here — it stays empty on the
-    /// composer path (nothing fills it), so the accumulated `UtteranceFinal`
-    /// stream is the authoritative source.
+    /// 1. `StreamingRecorder::stop` is the completion signal — it stops the
+    ///    audio stream, joins the transcription task (which only finishes AFTER
+    ///    every `UtteranceFinal` has been emitted synchronously into our
+    ///    accumulator), and saves the WAV. So the streaming splice is complete
+    ///    once stop returns cleanly.
+    /// 2. A delivery-grade final pass re-transcribes the whole saved WAV, the
+    ///    same `transcribe_file_verdict` adjudicator the hotkey/overlay
+    ///    toggle-stop uses. Decoding the recording as one continuous utterance
+    ///    avoids the mid-word cut artifacts of the spliced streaming chunks, so
+    ///    its text is the quality the overlay delivers.
+    ///
+    /// The final pass wins whenever it yields non-empty text; the streaming
+    /// splice is the fallback for a failed/timed-out/empty final pass (or a
+    /// drain timeout, where no WAV is composed). Either way the UI never hangs:
+    /// the shared budget bounds both phases and overrun degrades quality, not
+    /// correctness. The streaming recorder's own transcript buffer is ignored —
+    /// it stays empty on this path.
     pub async fn stop_recording(&self) -> Result<String, CsError> {
         let mut session = {
             let mut guard = self.recorder.lock().await;
@@ -408,39 +495,63 @@ impl CodescribeDictation {
         };
 
         let budget = compose_stop_timeout(session.started_at.elapsed());
+        let deadline = tokio::time::Instant::now() + budget;
         let transcript = Arc::clone(&session.transcript);
+        let language_hint = session.language_hint.clone();
 
-        let timed_out = match tokio::time::timeout(budget, session.recorder.stop()).await {
-            Ok(Ok(_)) => false,
+        // Phase 1: drain the streaming session and recover the saved WAV path.
+        let audio_path = match tokio::time::timeout_at(deadline, session.recorder.stop()).await {
+            Ok(Ok((_streaming_buf, audio_path))) => audio_path,
             Ok(Err(e)) => return Err(CsError::Recording { msg: e.to_string() }),
-            Err(_elapsed) => true,
+            Err(_elapsed) => {
+                // Drain overran the budget — no WAV to adjudicate; return the
+                // streaming finals accumulated so far.
+                let (streaming_text, utterances) = transcript.snapshot();
+                let text = streaming_text.trim().to_string();
+                warn!(
+                    target: "composer-dictation",
+                    source = ComposerTranscriptSource::StreamingFallback.label(),
+                    utterances,
+                    streaming_chars = text.chars().count(),
+                    budget_ms = budget.as_millis() as u64,
+                    "composer voice-note stop drain timed out; returning streaming fallback"
+                );
+                self.notify_recording_stopped();
+                return Ok(text);
+            }
         };
 
-        let (text, utterances) = transcript.snapshot();
-        let chars = text.chars().count();
-        if timed_out {
-            warn!(
-                target: "composer-dictation",
-                utterances,
-                chars,
-                budget_ms = budget.as_millis() as u64,
-                "composer voice-note stop timed out; returning partial transcript"
-            );
-        } else {
-            info!(
-                target: "composer-dictation",
-                utterances,
-                chars,
-                "composer voice-note stop composed transcript"
-            );
-        }
+        // Phase 2: delivery-grade final pass over the whole WAV; the streaming
+        // splice remains the fallback authority.
+        let (streaming_text, _utterances) = transcript.snapshot();
+        let final_pass_text = run_final_pass(audio_path, language_hint, deadline).await;
 
+        let final_pass_chars = final_pass_text
+            .as_deref()
+            .map(|t| t.trim().chars().count())
+            .unwrap_or(0);
+        let (text, source) =
+            select_composer_transcript(final_pass_text.as_deref(), &streaming_text);
+
+        info!(
+            target: "composer-dictation",
+            source = source.label(),
+            final_pass_chars,
+            streaming_chars = streaming_text.trim().chars().count(),
+            "composer voice-note stop composed transcript"
+        );
+
+        self.notify_recording_stopped();
+        Ok(text)
+    }
+
+    /// Fire the foreign `on_recording_stopped` callback if a listener is set.
+    fn notify_recording_stopped(&self) {
         if let Ok(guard) = self.listener.read()
             && let Some(listener) = guard.as_ref()
         {
             listener.on_recording_stopped();
         }
-        Ok(text)
     }
 
     /// True while a dictation session is active.
@@ -538,9 +649,6 @@ mod tests {
         fn on_error(&self, _message: String) {}
     }
 
-    /// The bridge must forward `utterance_id` on `UtteranceFinal` so committed
-    /// sinks can stamp segment identity that later `ReplaceRange` patches target.
-    /// Regression guard for the W3 keystone (identity flow into committed text).
     /// Build a minimal `UtteranceFinal` event with the given identity/text.
     fn utterance_final(utterance_id: u64, text: &str) -> EngineEvent {
         EngineEvent::UtteranceFinal {
@@ -558,6 +666,9 @@ mod tests {
         }
     }
 
+    /// The bridge must forward `utterance_id` on `UtteranceFinal` so committed
+    /// sinks can stamp segment identity that later `ReplaceRange` patches target.
+    /// Regression guard for the W3 keystone (identity flow into committed text).
     #[test]
     fn utterance_final_forwards_utterance_id() {
         let listener = Arc::new(CapturingListener::default());
@@ -620,6 +731,28 @@ mod tests {
             compose_stop_timeout(Duration::from_secs(300)),
             Duration::from_secs(30)
         );
+    }
+
+    /// A non-empty final pass is the delivery-grade winner over the streaming
+    /// splice; both sides are trimmed on the way out.
+    #[test]
+    fn select_composer_transcript_prefers_final_pass() {
+        let (text, source) = select_composer_transcript(Some("  raz dwa trzy  "), "raz dwa tszy");
+        assert_eq!(text, "raz dwa trzy");
+        assert_eq!(source, ComposerTranscriptSource::FinalPass);
+    }
+
+    /// An absent or empty/whitespace final pass falls back to the streaming
+    /// splice so a failed adjudication never blanks a real transcript.
+    #[test]
+    fn select_composer_transcript_falls_back_to_streaming() {
+        let (none_text, none_source) = select_composer_transcript(None, "  raz dwa  ");
+        assert_eq!(none_text, "raz dwa");
+        assert_eq!(none_source, ComposerTranscriptSource::StreamingFallback);
+
+        let (empty_text, empty_source) = select_composer_transcript(Some("   \n "), "raz dwa");
+        assert_eq!(empty_text, "raz dwa");
+        assert_eq!(empty_source, ComposerTranscriptSource::StreamingFallback);
     }
 
     /// An explicit caller language must map to its two-letter Whisper hint, and
