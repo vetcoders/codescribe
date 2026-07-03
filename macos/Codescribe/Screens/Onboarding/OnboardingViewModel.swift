@@ -183,15 +183,25 @@ final class OnboardingViewModel: ObservableObject {
         loadProvidersIfNeeded()
         switch step {
         case .permission:
-            permissions = probe.snapshot()
+            reprobePermissions()
         case .apiKey, .done:
             keyStatus = engine.keyStatus()
-            permissions = probe.snapshot()
+            reprobePermissions()
         case .agenticReadiness:
             refreshReadiness()
         default:
             break
         }
+    }
+
+    /// Re-probe live permission state AND re-arm the global hotkey tap if a
+    /// first-run grant just landed. The CGEventTap reads Accessibility / Input
+    /// Monitoring only when it is created, so a grant made mid-wizard leaves
+    /// hotkeys dead until this re-arm (or an app restart). The bridge call is
+    /// idempotent — a no-op once the tap is already live.
+    private func reprobePermissions() {
+        permissions = probe.snapshot()
+        hotkeys.rearmAfterPermissionGrant()
     }
 
     /// Re-probe the agentic-lane readiness verdict + MCP server status. Called on
@@ -303,7 +313,7 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     func refreshPermissions() {
-        permissions = probe.snapshot()
+        reprobePermissions()
     }
 
     // MARK: - Mode step actions

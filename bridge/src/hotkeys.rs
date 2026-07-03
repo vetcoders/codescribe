@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
+use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
 use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode};
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
@@ -290,9 +291,13 @@ impl CodescribeHotkeys {
         let _ = shared_runtime_handle().set(handle.clone());
         let controller_store = shared_controller();
 
-        hotkeys::install_global_hotkey_manager(tx.clone())
-            .map_err(|msg| CsError::Recording { msg })?;
-
+        // Spawn the event-dispatch thread BEFORE bringing up the tap. It drains
+        // `rx` for the lifetime of the retained sender, so it stays ready whether
+        // the CGEventTap comes up now (permissions already granted) or later via
+        // `rearm_after_permission_grant` after a first-run TCC grant. If it were
+        // spawned only after a successful `install_global_hotkey_manager`, a
+        // permission-less cold start would leave no consumer, and a later re-arm
+        // would build a live tap whose events pile up in the channel undispatched.
         std::thread::spawn(move || {
             for event in rx {
                 let spawn_handle = handle.clone();
@@ -309,6 +314,13 @@ impl CodescribeHotkeys {
                 });
             }
         });
+
+        // Bring up the tap. On a permission-less first launch this returns an
+        // error, but the sender is retained inside the hotkey service so a later
+        // `rearm_after_permission_grant` can create the tap and feed the
+        // already-running dispatch thread — no app restart required.
+        hotkeys::install_global_hotkey_manager(tx.clone())
+            .map_err(|msg| CsError::Recording { msg })?;
 
         Ok(())
     }
@@ -663,8 +675,53 @@ fn reload_hotkey_runtime_after_write() {
     hotkeys::apply_hotkey_config(&Config::load_without_keychain());
 }
 
+/// Decide whether a permission-grant re-arm should rebuild the CGEventTap.
+///
+/// Rebuild only when the tap is NOT already live (dedup: it is process-global and
+/// survives TCC re-checks, so re-arming a running tap would needlessly tear it
+/// down) AND both permissions that gate `CGEventTapCreate` are granted (otherwise
+/// the rebuild would fail again and churn). Pure so it is unit-testable without a
+/// live tap or real TCC grants.
+fn should_rearm_hotkey_tap(
+    already_active: bool,
+    accessibility: PermissionStatus,
+    input_monitoring: PermissionStatus,
+) -> bool {
+    !already_active
+        && accessibility == PermissionStatus::Granted
+        && input_monitoring == PermissionStatus::Granted
+}
+
 #[uniffi::export]
 impl CodescribeHotkeys {
+    /// Re-arm the global CGEventTap after a first-run permission grant, without
+    /// an app restart. The tap reads Accessibility / Input Monitoring only when
+    /// it is created, so a grant made in System Settings after launch otherwise
+    /// leaves every hotkey dead until the app is relaunched (the "TCC fresh-grant
+    /// dance").
+    ///
+    /// Idempotent and safe to call on every permission Refresh: a no-op when the
+    /// tap is already live (dedup — CGEventTap survives TCC re-checks) or when the
+    /// two gating permissions are not both granted yet. Returns whether hotkeys
+    /// are live after the call.
+    pub fn rearm_after_permission_grant(&self) -> bool {
+        let already_active = hotkeys::is_global_hotkey_manager_active();
+        if !should_rearm_hotkey_tap(
+            already_active,
+            check_accessibility(),
+            check_input_monitoring(),
+        ) {
+            return already_active;
+        }
+        match hotkeys::refresh_global_hotkey_manager() {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("Hotkey re-arm after permission grant failed: {error}");
+                false
+            }
+        }
+    }
+
     /// Current per-mode bindings (Dictation / Formatting / Assistive), normalized
     /// against defaults so every mode is always present. Reads on-disk truth.
     pub fn get_mode_bindings(&self) -> Vec<CsModeBinding> {
@@ -768,6 +825,29 @@ mod mode_binding_tests {
             let cs: CsWorkMode = mode.into();
             assert_eq!(WorkMode::from(cs), mode);
         }
+    }
+
+    #[test]
+    fn rearm_gate_rebuilds_only_when_inactive_and_fully_granted() {
+        use PermissionStatus::{Denied, Granted, NotDetermined};
+
+        // The one case that arms: tap not yet live, both gating perms granted.
+        assert!(should_rearm_hotkey_tap(false, Granted, Granted));
+
+        // Dedup: an already-live tap is never torn down, even fully granted.
+        assert!(!should_rearm_hotkey_tap(true, Granted, Granted));
+
+        // Missing either gating permission must not trigger a doomed rebuild.
+        assert!(!should_rearm_hotkey_tap(false, Denied, Granted));
+        assert!(!should_rearm_hotkey_tap(false, Granted, Denied));
+        assert!(!should_rearm_hotkey_tap(
+            false,
+            NotDetermined,
+            NotDetermined
+        ));
+
+        // Already active + missing perms is still a no-op (both guards agree).
+        assert!(!should_rearm_hotkey_tap(true, Denied, Denied));
     }
 
     #[test]

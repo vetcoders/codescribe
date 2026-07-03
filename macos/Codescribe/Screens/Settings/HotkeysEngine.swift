@@ -24,6 +24,9 @@ protocol HotkeysEngine {
     func resetToDefaults() throws
     /// Validate a candidate set WITHOUT persisting; returns detected conflicts.
     func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict]
+    /// Re-arm the global CGEventTap after a first-run permission grant so hotkeys
+    /// go live without an app restart. Idempotent — safe on every Refresh.
+    func rearmAfterPermissionGrant()
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -44,6 +47,13 @@ final class RealHotkeysEngine: HotkeysEngine {
     func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] {
         hotkeys.validateBindings(candidate: candidate)
     }
+
+    func rearmAfterPermissionGrant() {
+        // Bridge call is idempotent and returns whether hotkeys are live; the UI
+        // reflects live status through the native permission probe, so the result
+        // is intentionally discarded here.
+        _ = hotkeys.rearmAfterPermissionGrant()
+    }
 }
 
 // MARK: - Mock engine (previews)
@@ -57,6 +67,7 @@ struct MockHotkeysEngine: HotkeysEngine {
     func availableBindings() -> [CsBindingOption] { CsBindingOption.sampleOptions }
     func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws {}
     func resetToDefaults() throws {}
+    func rearmAfterPermissionGrant() {}
     func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] {
         // Surface a representative blocking conflict when dictation double-taps Ctrl
         // while a toggle mode is also active — matches the core reachability rule.
