@@ -354,6 +354,21 @@ final class OverlayState: ObservableObject {
         finalizeTranscript()
     }
 
+    /// Native hold-release / toggle stop: the controller entered `Busy` (final
+    /// transcription pass) but no Swift-side `runStop` ran, so nothing had flipped
+    /// us out of the live-capture UI. Enter the same "transcribing" phase the
+    /// Finish button uses (waveform stops pulsing like capture, status reads
+    /// "transcribing"). The terminal `on_recording_stopped` (→ `finalizeTranscript`)
+    /// clears it, as do error / close / reset. Cancels the warmup watchdog because
+    /// reaching finalisation proves the session progressed. Idempotent: a repeated
+    /// `Busy` broadcast (or one arriving after finalize) is a no-op.
+    func handleRecordingFinalising() {
+        guard recording, !finalized, !transcribing else { return }
+        cancelWarmupWatchdog()
+        warmingUp = false
+        transcribing = true
+    }
+
     // MARK: Warmup watchdog (orphaned "starting" overlay recovery)
 
     /// Arm (or re-arm) the warmup watchdog. Called every time an optimistic
@@ -742,6 +757,9 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     }
     func onRecordingStopped() {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.finishControllerRecording() } }
+    }
+    func onRecordingFinalising() {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.handleRecordingFinalising() } }
     }
     func onPreview(text: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyPreview(text) } }

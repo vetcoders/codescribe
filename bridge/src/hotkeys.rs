@@ -125,6 +125,16 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 PREPARING_PENDING.store(false, Ordering::Release);
                 listener.on_recording_started();
             }
+            "busy" => {
+                // Capture ended; the controller is running the final transcription
+                // pass. Surface it as a distinct "finalising" beat BEFORE the
+                // terminal `idle`→stopped, so the native hold-release / toggle stop
+                // can show a "transcribing" phase instead of the still-pulsing
+                // live-capture UI. Does not touch PREPARING_PENDING — a real Rec
+                // state (rec_hold/rec_toggle) always precedes Busy and already
+                // cleared it.
+                listener.on_recording_finalising();
+            }
             "idle" => {
                 PREPARING_PENDING.store(false, Ordering::Release);
                 listener.on_recording_stopped();
@@ -999,6 +1009,7 @@ mod preparing_compensation_tests {
         preparing: AtomicUsize,
         started: AtomicUsize,
         stopped: AtomicUsize,
+        finalising: AtomicUsize,
     }
 
     impl RecordingLifecycleListener {
@@ -1011,6 +1022,9 @@ mod preparing_compensation_tests {
         fn stopped(&self) -> usize {
             self.stopped.load(Ordering::SeqCst)
         }
+        fn finalising(&self) -> usize {
+            self.finalising.load(Ordering::SeqCst)
+        }
     }
 
     impl CsTranscriptionListener for RecordingLifecycleListener {
@@ -1022,6 +1036,9 @@ mod preparing_compensation_tests {
         }
         fn on_recording_stopped(&self) {
             self.stopped.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_recording_finalising(&self) {
+            self.finalising.fetch_add(1, Ordering::SeqCst);
         }
         fn on_preview(&self, _text: String) {}
         fn on_correction(&self, _text: String, _previous_text: String) {}
@@ -1170,6 +1187,67 @@ mod preparing_compensation_tests {
             listener.stopped(),
             0,
             "a forwarder-resolved preparing must not be double-stopped"
+        );
+        teardown();
+    }
+
+    /// The `Busy` StateChange (final transcription pass, after capture ends) routes
+    /// to `on_recording_finalising` — the native-path signal that lets the overlay
+    /// enter its "transcribing" phase — and NOT to started/stopped. The terminal
+    /// `idle` still maps to `on_recording_stopped`, so the sequence a real
+    /// hold-release / toggle stop produces (rec_hold → busy → idle) yields exactly
+    /// one finalising then one stopped.
+    #[tokio::test]
+    async fn busy_state_routes_to_finalising_then_idle_to_stopped() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, _controller) = install();
+        let dyn_listener = || Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>;
+
+        forward_event_to_listener(
+            IpcEventPayload::StateChange {
+                from: "rec_hold".to_string(),
+                to: "busy".to_string(),
+            },
+            dyn_listener(),
+        );
+        assert_eq!(listener.finalising(), 1, "busy → finalising");
+        assert_eq!(listener.stopped(), 0, "busy must not fire stopped");
+        assert_eq!(listener.started(), 0, "busy must not fire started");
+
+        forward_event_to_listener(
+            IpcEventPayload::StateChange {
+                from: "busy".to_string(),
+                to: "idle".to_string(),
+            },
+            dyn_listener(),
+        );
+        assert_eq!(listener.stopped(), 1, "idle → stopped");
+        assert_eq!(listener.finalising(), 1, "idle must not re-fire finalising");
+        teardown();
+    }
+
+    /// A repeated `Busy` broadcast forwards a second `on_recording_finalising`; the
+    /// idempotency that matters (a no-op re-entry) lives in the Swift handler, so
+    /// the forwarder stays a thin, stateless router here.
+    #[tokio::test]
+    async fn repeated_busy_forwards_each_finalising() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, _controller) = install();
+        let dyn_listener = || Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>;
+
+        for _ in 0..2 {
+            forward_event_to_listener(
+                IpcEventPayload::StateChange {
+                    from: "rec_hold".to_string(),
+                    to: "busy".to_string(),
+                },
+                dyn_listener(),
+            );
+        }
+        assert_eq!(listener.finalising(), 2, "each busy forwards a finalising");
+        assert!(
+            !PREPARING_PENDING.load(Ordering::SeqCst),
+            "busy must not arm the preparing flag"
         );
         teardown();
     }
