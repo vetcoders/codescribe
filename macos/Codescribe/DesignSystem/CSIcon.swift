@@ -25,13 +25,15 @@ import PhosphorSwift
 /// (`Ph.IconWeight`). Regular is the UI default; fill marks an active/brand
 /// state; thin/light read as meta.
 enum CSIconWeight {
-    case thin, light, regular, bold, fill
+    case thin, light, regular, medium, semibold, bold, fill
 
     var phosphor: Ph.IconWeight {
         switch self {
         case .thin: return .thin
         case .light: return .light
         case .regular: return .regular
+        case .medium: return .regular // Phosphor has no medium; regular is the nearest step
+        case .semibold: return .bold // Phosphor has no semibold; bold is the nearest step
         case .bold: return .bold
         case .fill: return .fill
         }
@@ -42,6 +44,8 @@ enum CSIconWeight {
         case .thin: return .thin
         case .light: return .light
         case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
         case .bold: return .bold
         case .fill: return .semibold
         }
@@ -77,6 +81,9 @@ enum CSIcon {
     case refresh
     case attach
     case shortcuts
+    case photo
+    case delete
+    case remove
 
     // Window modes
     case dock
@@ -86,12 +93,25 @@ enum CSIcon {
     case success
     case failure
     case warning
+    case error
+    case tip
+    case caution
     case diagnostics
+    case accountVerified
 
-    // Affordances
+    // Affordances / selection
     case chevronRight
+    case chevronDown
+    case chevronUpDown
     case close
     case check
+    case more
+    case star
+    case starFill
+    case checkboxOn
+    case checkboxOff
+    case checkCircleFill
+    case circleEmpty
 
     /// Which library draws this semantic icon. Owned by the design system,
     /// invisible to call sites.
@@ -127,6 +147,9 @@ enum CSIcon {
         case .refresh: return .sf("arrow.clockwise")
         case .attach: return .sf("paperclip")
         case .shortcuts: return .sf("keyboard")
+        case .photo: return .sf("photo")
+        case .delete: return .sf("trash")
+        case .remove: return .sf("minus.circle")
 
         // Window modes
         case .dock: return .sf("macwindow")
@@ -136,12 +159,25 @@ enum CSIcon {
         case .success: return .sf("checkmark")
         case .failure: return .sf("xmark")
         case .warning: return .sf("exclamationmark.triangle")
+        case .error: return .sf("exclamationmark.circle")
+        case .tip: return .sf("lightbulb")
+        case .caution: return .sf("exclamationmark.octagon")
         case .diagnostics: return .phosphor(.stethoscope)
+        case .accountVerified: return .sf("person.crop.circle.badge.checkmark")
 
-        // Affordances
+        // Affordances / selection
         case .chevronRight: return .sf("chevron.right")
+        case .chevronDown: return .sf("chevron.down")
+        case .chevronUpDown: return .sf("chevron.up.chevron.down")
         case .close: return .sf("xmark")
         case .check: return .sf("checkmark")
+        case .more: return .sf("ellipsis")
+        case .star: return .sf("star")
+        case .starFill: return .sf("star.fill")
+        case .checkboxOn: return .sf("checkmark.square.fill")
+        case .checkboxOff: return .sf("square")
+        case .checkCircleFill: return .sf("checkmark.circle.fill")
+        case .circleEmpty: return .sf("circle")
         }
     }
 }
@@ -153,18 +189,26 @@ struct CSIconView: View {
     let icon: CSIcon
     var size: CGFloat = 13
     var weight: CSIconWeight = .regular
-    var color: Color = CSColor.textBody
+    /// `nil` lets an SF glyph inherit the ambient `foregroundStyle` (matches
+    /// call sites that tint a whole row). Phosphor cannot inherit (it tints via
+    /// a source-atop blend), so it falls back to `CSColor.textBody`.
+    var color: Color? = nil
 
     var body: some View {
         switch icon.backend {
         case .sf(let name):
-            Image(systemName: name)
-                .font(.system(size: size, weight: weight.font))
-                .foregroundStyle(color)
+            if let color {
+                Image(systemName: name)
+                    .font(.system(size: size, weight: weight.font))
+                    .foregroundStyle(color)
+            } else {
+                Image(systemName: name)
+                    .font(.system(size: size, weight: weight.font))
+            }
         case .phosphor(let ph):
             ph.weight(weight.phosphor)
                 .frame(width: size, height: size)
-                .color(color)
+                .color(color ?? CSColor.textBody)
         }
     }
 }
