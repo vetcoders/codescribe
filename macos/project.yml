@@ -3,11 +3,20 @@ options:
   bundleIdPrefix: com.vetcoders
   deploymentTarget:
     macOS: "14.0"
+packages:
+  # Phosphor Icons — MIT, first-party Swift package. The brand stroke layer
+  # behind the `CSIcon` wrapper (DesignSystem/CSIcon.swift). macOS 10.15+.
+  PhosphorSwift:
+    url: https://github.com/phosphor-icons/swift
+    from: 2.1.0
 targets:
   Codescribe:
     type: application
     platform: macOS
     sources: [Codescribe]
+    dependencies:
+      - package: PhosphorSwift
+        product: PhosphorSwift
     info:
       path: Codescribe/Info.plist
       properties:
