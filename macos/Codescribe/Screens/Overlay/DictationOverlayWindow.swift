@@ -57,10 +57,12 @@ enum DictationOverlayWindow {
     /// action row overlap. Enforced for user edge-drag (`minSize`/`contentMinSize`)
     /// AND for every programmatic `setFrame` via `clamp(_:to:)` (AppKit does not
     /// apply `minSize` to programmatic frames).
-    static let minSize = NSSize(width: 460, height: 300)
+    static let minSize = NSSize(width: 390, height: 250)
     /// First-launch content size (no persisted value yet).
-    static let defaultSize = NSSize(width: 560, height: 380)
-    private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v2"
+    static let defaultSize = NSSize(width: 470, height: 330)
+    /// Bumped v2 → v3 with the slim-down: the old persisted (larger) content sizes
+    /// must not resurrect the pre-slim frame, so the new default takes effect once.
+    private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v3"
 
     /// Build the floating overlay panel around an injected `OverlayState`.
     /// The state's `engine`, `onClose`, and `onSendToAgent` are wired by the

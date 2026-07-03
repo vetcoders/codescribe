@@ -17,9 +17,13 @@ struct DictationOverlayView: View {
 
     // Mock-derived geometry constants (not design tokens — local to this surface).
     // The window is user-resizable; content flows to fill whatever frame it gets,
-    // never narrower than `windowMinWidth`.
-    private let windowMinWidth: CGFloat = 460
-    private let bodyMinHeight: CGFloat = 118
+    // never narrower than `windowMinWidth`. `windowMinWidth` MUST stay ≥ the action
+    // row's intrinsic width and `DictationOverlayWindow.minSize.height` MUST stay ≥
+    // the chrome + `bodyMinHeight` sum — otherwise the content column overflows the
+    // window frame and GlassPanel paints its rounded background past the window rect,
+    // squaring the visible corners (see DictationOverlayWindow's corner note).
+    private let windowMinWidth: CGFloat = 390
+    private let bodyMinHeight: CGFloat = 48
     private let buttonRadius: CGFloat = 10
 
     /// Scroll bookkeeping for the live transcript (follow-tail with pause-on-scroll).
@@ -89,7 +93,7 @@ struct DictationOverlayView: View {
             .foregroundStyle(CSColor.textFaint)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.vertical, 12)
     }
 
     // MARK: Mode + meta row
@@ -114,8 +118,8 @@ struct DictationOverlayView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 14)
-        .padding(.bottom, 8)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
     }
 
     // MARK: Body
@@ -132,8 +136,8 @@ struct DictationOverlayView: View {
         }
         .frame(maxWidth: .infinity, minHeight: bodyMinHeight, maxHeight: .infinity, alignment: .topLeading)
         .padding(.horizontal, 20)
-        .padding(.top, 8)
-        .padding(.bottom, 20)
+        .padding(.top, 6)
+        .padding(.bottom, 14)
         .animation(CSMotion.floatIn, value: state.mode)
     }
 
@@ -158,8 +162,8 @@ struct DictationOverlayView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .bottom, spacing: 2) {
                             Text(state.listeningDisplay)
-                                .font(CSFont.ui(18, .medium))
-                                .lineSpacing(10)
+                                .font(CSFont.ui(15, .medium))
+                                .lineSpacing(5)
                                 .foregroundStyle(CSColor.textBody)
                                 .fixedSize(horizontal: false, vertical: true)
                             BlinkingCaret()
@@ -196,9 +200,9 @@ struct DictationOverlayView: View {
 
     private var formattedBody: some View {
         TextEditor(text: $state.formattedText)
-            .font(CSFont.ui(18, .regular))
+            .font(CSFont.ui(15, .regular))
             .foregroundStyle(CSColor.textHigh)
-            .lineSpacing(11)
+            .lineSpacing(5)
             .scrollContentBackground(.hidden)
             .background(Color.clear)
             .frame(minHeight: bodyMinHeight)
@@ -207,13 +211,13 @@ struct DictationOverlayView: View {
     // MARK: Action row
 
     private var actionRow: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             if state.mode == .listening {
                 Button(action: { state.stop() }) {
                     Text("Finish")
                         .font(CSFont.bodyStrong)
                         .foregroundStyle(CSColor.ink)
-                        .padding(.horizontal, 22)
+                        .padding(.horizontal, 18)
                         .padding(.vertical, 10)
                         .background(CSColor.terracotta)
                         .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
@@ -224,7 +228,7 @@ struct DictationOverlayView: View {
                     Text("Copy")
                         .font(CSFont.bodyStrong)
                         .foregroundStyle(CSColor.ink)
-                        .padding(.horizontal, 18)
+                        .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(CSColor.terracotta)
                         .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
@@ -235,7 +239,7 @@ struct DictationOverlayView: View {
                     Text(state.isFormatting ? "Formatting..." : "Format")
                         .font(CSFont.bodyStrong)
                         .foregroundStyle(CSColor.textBody)
-                        .padding(.horizontal, 18)
+                        .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(CSColor.surfaceRaised(0.04))
                         .overlay(
@@ -249,10 +253,10 @@ struct DictationOverlayView: View {
                 .opacity(state.canFormat ? 1 : 0.45)
 
                 Button(action: { state.sendToAgent() }) {
-                    Text("Send to Agent")
+                    Text("Send")
                         .font(CSFont.bodyStrong)
                         .foregroundStyle(CSColor.textBody)
-                        .padding(.horizontal, 18)
+                        .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(CSColor.surfaceRaised(0.04))
                         .overlay(
@@ -262,6 +266,7 @@ struct DictationOverlayView: View {
                         .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .help("Send transcript to the agent")
             }
 
             Spacer(minLength: 0)
@@ -270,7 +275,7 @@ struct DictationOverlayView: View {
                 Text("Close")
                     .font(CSFont.bodyStrong)
                     .foregroundStyle(CSColor.textMuted)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Color.clear)
                     .overlay(
@@ -282,7 +287,7 @@ struct DictationOverlayView: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.vertical, 10)
     }
 
     // MARK: Footer
@@ -299,7 +304,7 @@ struct DictationOverlayView: View {
         }
         .font(CSFont.mono(10, .medium))
         .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
     }
 }
 
@@ -318,7 +323,7 @@ private struct BlinkingCaret: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 1, style: .continuous)
             .fill(CSColor.terracotta)
-            .frame(width: 8, height: 18)
+            .frame(width: 7, height: 15)
             .padding(.bottom, 3)
             .opacity(on ? 1 : 0.7)
             .onAppear {
