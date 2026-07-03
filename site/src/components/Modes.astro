@@ -1,0 +1,197 @@
+---
+// Interactive island B — modes spotlight (WEBSITE_SPEC §6, Island B).
+// Server-renders the first mode (DICTATION); the script cycles the four modes
+// only when motion is allowed.
+---
+
+<section class="section modes" id="modes" data-screen-label="Modes" aria-labelledby="modes-title">
+  <div class="container">
+    <div class="head">
+      <p class="eyebrow">ONE INTERFACE</p>
+      <h2 id="modes-title">Every way you want to speak.</h2>
+    </div>
+
+    <!-- spotlight -->
+    <div class="spotlight" data-spotlight>
+      <div class="pill" data-pill style="border-color:#d9775755;background:rgba(255,255,255,.03)">
+        <span class="pill__dot" data-dot style="background:#d97757;box-shadow:0 0 12px 1px #d9775788"></span>
+        <span class="pill__name" data-name style="color:#e9b79f">DICTATION</span>
+      </div>
+      <p class="quote" data-quote>“just get this thought down before I lose it”</p>
+      <p class="outcome" data-outcome>pasted into your editor · live preview</p>
+    </div>
+
+    <!-- mode rail -->
+    <div class="rail">
+      <div class="card">
+        <span class="card__dot" style="background:#d97757"></span>
+        <h3>Dictation</h3>
+        <p>Hold Fn, speak. Live preview, then it pastes into the app you're in.</p>
+      </div>
+      <div class="card">
+        <span class="card__dot" style="background:#5f6b3e"></span>
+        <h3>Formatting</h3>
+        <p>An AI pass cleans punctuation and structure — your meaning untouched.</p>
+      </div>
+      <div class="card">
+        <span class="card__dot" style="background:#d6b24e"></span>
+        <h3>Agent Chat</h3>
+        <p>A persistent conversation — ask, refine, attach context, come back later.</p>
+      </div>
+      <div class="card">
+        <span class="card__dot" style="background:#c98a6e"></span>
+        <h3>Selection-aware</h3>
+        <p>Highlight anything, say what to do, get the result back in place.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .modes { padding: 130px 24px; }
+  .container { max-width: 1000px; }
+  .head {
+    text-align: center;
+    margin-bottom: 14px;
+  }
+  h2 {
+    font: 700 clamp(34px, 5vw, 52px) / 1 var(--font-display);
+    letter-spacing: -0.03em;
+    margin: 16px 0 0;
+    color: var(--ink);
+  }
+  .spotlight {
+    max-width: 620px;
+    margin: 44px auto 0;
+    text-align: center;
+    min-height: 120px;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 15px;
+    border-radius: 30px;
+    border: 1px solid;
+    transition: all 0.5s ease;
+  }
+  .pill__dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    transition: all 0.5s ease;
+  }
+  .pill__name {
+    font: 600 12px var(--font-mono);
+    letter-spacing: 0.06em;
+    transition: color 0.5s ease;
+  }
+  .quote {
+    font: 500 26px / 1.4 var(--font-display);
+    color: var(--ink-3);
+    margin: 20px 0 0;
+    transition: opacity 0.4s ease;
+  }
+  .outcome {
+    font: 500 12px var(--font-mono);
+    /* --muted-3 (~4.0:1) fails AA; --muted (~7.2:1) passes. */
+    color: var(--muted);
+    margin: 12px 0 0;
+  }
+  .rail {
+    display: flex;
+    gap: 12px;
+    margin-top: 50px;
+    flex-wrap: wrap;
+  }
+  .card {
+    flex: 1;
+    min-width: 200px;
+    background: var(--bg-card);
+    border: 1px solid var(--stroke);
+    border-radius: 14px;
+    padding: 22px;
+  }
+  .card__dot {
+    display: block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    margin-bottom: 14px;
+  }
+  .card h3 {
+    font: 600 16px var(--font-display);
+    color: var(--ink);
+    margin: 0;
+  }
+  .card p {
+    font: 400 13px / 1.5 var(--font-display);
+    color: var(--muted-2);
+    margin: 7px 0 0;
+  }
+  @media (max-width: 900px) {
+    .card { min-width: calc(50% - 6px); }
+  }
+  @media (max-width: 480px) {
+    .modes { padding: 84px 20px; }
+    .card { min-width: 100%; }
+  }
+</style>
+
+<script>
+  interface Mode {
+    name: string;
+    color: string; // dot / border accent (raw mode color)
+    ink: string; // label text — a readable variant that passes AA on the dark bg
+    ex: string;
+    out: string;
+  }
+  const MODES: Mode[] = [
+    { name: 'DICTATION', color: '#d97757', ink: '#e9b79f', ex: 'just get this thought down before I lose it', out: 'pasted into your editor · live preview' },
+    { name: 'FORMATTING', color: '#5f6b3e', ink: '#9db178', ex: 'clean this up but keep exactly what I meant', out: 'punctuation + structure fixed · meaning intact' },
+    { name: 'AGENT CHAT', color: '#d6b24e', ink: '#d6b24e', ex: 'what is causing this race condition?', out: 'a thread that stays with your work' },
+    { name: 'SELECTION', color: '#c98a6e', ink: '#c98a6e', ex: 'make this paragraph more formal', out: 'rewritten in place · 0.8s · local' },
+  ];
+
+  const pill = document.querySelector<HTMLElement>('[data-pill]');
+  const dot = document.querySelector<HTMLElement>('[data-dot]');
+  const name = document.querySelector<HTMLElement>('[data-name]');
+  const quote = document.querySelector<HTMLElement>('[data-quote]');
+  const outcome = document.querySelector<HTMLElement>('[data-outcome]');
+
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function apply(idx: number) {
+    const m = MODES[idx];
+    pill!.style.borderColor = m.color + '55';
+    dot!.style.background = m.color;
+    dot!.style.boxShadow = `0 0 12px 1px ${m.color}88`;
+    name!.style.color = m.ink;
+    name!.textContent = m.name;
+    quote!.textContent = `“${m.ex}”`;
+    outcome!.textContent = m.out;
+  }
+
+  if (pill && dot && name && quote && outcome && !reduce) {
+    let idx = 0;
+    const wait = (ms: number) => new Promise((res) => setTimeout(res, ms));
+    let alive = true;
+
+    (async () => {
+      while (alive) {
+        await wait(2600);
+        if (!alive) return;
+        quote!.style.opacity = '0';
+        await wait(380);
+        if (!alive) return;
+        idx = (idx + 1) % MODES.length;
+        apply(idx);
+        quote!.style.opacity = '1';
+      }
+    })();
+
+    window.addEventListener('beforeunload', () => {
+      alive = false;
+    });
+  }
+</script>

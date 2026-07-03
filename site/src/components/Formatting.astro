@@ -1,0 +1,114 @@
+---
+// Formatting section (WEBSITE_SPEC §4.4). The Polish example text is VERBATIM —
+// it demonstrates language preservation. Requires the latin-ext font subset.
+---
+
+<section class="section formatting" data-screen-label="Formatting" aria-labelledby="formatting-title">
+  <div class="container">
+    <div class="head">
+      <p class="eyebrow">IT'S NOT JUST TRANSCRIPTION</p>
+      <h2 id="formatting-title">Messy out loud. Clean on the page.</h2>
+    </div>
+    <div class="panels">
+      <div class="panel panel--raw">
+        <p class="panel__label">RAW SPEECH</p>
+        <p class="panel__text" lang="pl">dobra zróbmy tak najpierw sprawdź ten plik potem zobacz testy i nie rozwal scope</p>
+      </div>
+      <div class="arrowcell" aria-hidden="true">
+        <span class="arrow">→</span>
+      </div>
+      <div class="panel panel--clean">
+        <p class="panel__label panel__label--olive">FORMATTED</p>
+        <p class="panel__text panel__text--clean" lang="pl">Dobra, zróbmy tak: najpierw sprawdź ten plik, potem zobacz testy — i nie rozwal scope.</p>
+      </div>
+    </div>
+    <p class="caption">Punctuation, capitalization, paragraphs, artifacts removed. Meaning kept exactly.</p>
+  </div>
+</section>
+
+<style>
+  .formatting {
+    padding: 120px 24px;
+    background: radial-gradient(70% 100% at 50% 0%, rgba(95, 107, 62, 0.06), transparent 60%);
+  }
+  .container { max-width: 1000px; }
+  .head {
+    text-align: center;
+    margin-bottom: 54px;
+  }
+  h2 {
+    font: 700 clamp(32px, 5vw, 50px) / 1 var(--font-display);
+    letter-spacing: -0.03em;
+    margin: 16px 0 0;
+    color: var(--ink);
+  }
+  .panels {
+    display: flex;
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+  .panel {
+    flex: 1;
+    min-width: 300px;
+    padding: 30px 28px;
+  }
+  .panel--raw {
+    background: var(--bg-card);
+    border: 1px solid var(--stroke);
+    border-radius: 16px 0 0 16px;
+  }
+  .panel--clean {
+    background: linear-gradient(180deg, rgba(95, 107, 62, 0.08), rgba(255, 255, 255, 0.02));
+    border: 1px solid #262a22;
+    border-radius: 0 16px 16px 0;
+  }
+  .panel__label {
+    font: 500 11px var(--font-mono);
+    color: var(--muted-3);
+    letter-spacing: 0.08em;
+    margin: 0 0 16px;
+  }
+  .panel__label--olive { color: var(--olive-ink); }
+  .panel__text {
+    font: 400 17px / 1.7 var(--font-display);
+    color: #8b8e88;
+    margin: 0;
+  }
+  .panel__text--clean { color: var(--ink-3); }
+  .arrowcell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 70px;
+    background: var(--bg-card);
+    border-top: 1px solid var(--stroke);
+    border-bottom: 1px solid var(--stroke);
+  }
+  .arrow {
+    font: 700 20px var(--font-display);
+    color: var(--olive);
+    animation: glowpulse 2.8s ease-in-out infinite;
+    border-radius: 50%;
+    padding: 6px 9px;
+  }
+  .caption {
+    text-align: center;
+    font: 400 14px var(--font-display);
+    color: var(--muted-3);
+    margin-top: 28px;
+  }
+  @media (max-width: 900px) {
+    .panel--raw { border-radius: 16px 16px 0 0; }
+    .panel--clean { border-radius: 0 0 16px 16px; }
+    .arrowcell {
+      width: 100%;
+      height: 54px;
+      border-left: 1px solid var(--stroke);
+      border-right: 1px solid var(--stroke);
+    }
+    .arrow { transform: rotate(90deg); }
+  }
+  @media (max-width: 480px) {
+    .formatting { padding: 84px 20px; }
+  }
+</style>

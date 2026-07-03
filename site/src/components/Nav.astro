@@ -1,0 +1,80 @@
+---
+import { asset } from '../lib/asset';
+---
+
+<header class="nav">
+  <nav aria-label="Primary">
+    <div class="brand">
+      <img src={asset('icon.png')} width="25" height="25" alt="" />
+      <span class="wordmark">codescribe</span>
+    </div>
+    <div class="links">
+      <a href="#modes">modes</a>
+      <a href="#agent-stack">agents</a>
+      <a href="https://github.com/vetcoders/codescribe" target="_blank" rel="noopener noreferrer">github ↗</a>
+      <a class="install" href="#install">Install</a>
+    </div>
+  </nav>
+</header>
+
+<style>
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(9, 10, 13, 0.72);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--hairline);
+  }
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 30px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .wordmark {
+    font: 700 17px var(--font-display);
+    color: var(--ink);
+    letter-spacing: -0.02em;
+  }
+  .links {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    font: 500 13px var(--font-mono);
+    color: #8a8d87;
+    white-space: nowrap;
+  }
+  .links a {
+    text-decoration: none;
+    color: inherit;
+  }
+  .links a:not(.install):hover {
+    color: var(--ink-2);
+  }
+  .install {
+    padding: 9px 16px;
+    background: var(--terracotta);
+    border-radius: 9px;
+    font: 600 13px var(--font-display) !important;
+    color: #0a0a0a !important;
+  }
+  @media (max-width: 480px) {
+    nav {
+      padding: 14px 18px;
+    }
+    .links {
+      gap: 16px;
+    }
+    /* Collapse the text links on small screens; keep brand + Install visible. */
+    .links a:not(.install) {
+      display: none;
+    }
+  }
+</style>

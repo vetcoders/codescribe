@@ -1,0 +1,56 @@
+---
+// Install section (WEBSITE_SPEC §4.12). Repo URL brand-corrected to
+// github.com/vetcoders/codescribe (the reference render still had the old
+// camelCase path).
+---
+
+<section class="section install" id="install" data-screen-label="Install" aria-labelledby="install-title">
+  <div class="container">
+    <p class="eyebrow eyebrow--plain">macOS · APPLE SILICON · v0.12.2</p>
+    <h2 id="install-title">Local-first. Cloud opt-in.</h2>
+    <div class="terminal">
+      <code><span class="prompt">$</span> git clone https://github.com/vetcoders/codescribe.git<br /><span class="prompt">$</span> make install<br /><span class="prompt">$</span> codescribe <span class="flag">--version</span></code>
+    </div>
+    <div class="meta-row">
+      <span>· local whisper preview</span>
+      <span>· configurable final pass</span>
+      <span>· tray + overlay</span>
+      <span>· FSL-1.1-ALv2</span>
+    </div>
+  </div>
+</section>
+
+<style>
+  .install { padding: 110px 24px; }
+  /* Literal casing for this eyebrow (spec §4.12): keep "macOS" and "v0.12.2"
+     as written instead of the global .eyebrow uppercase transform. */
+  .eyebrow--plain { text-transform: none; }
+  .container {
+    max-width: 680px;
+    text-align: center;
+  }
+  h2 {
+    font: 700 clamp(30px, 4.4vw, 44px) / 1 var(--font-display);
+    letter-spacing: -0.03em;
+    margin: 14px 0 26px;
+    color: var(--ink);
+  }
+  .terminal {
+    background: var(--bg-soft);
+    border: 1px solid var(--stroke);
+    border-radius: 13px;
+    padding: 18px 20px;
+    text-align: left;
+    overflow-x: auto;
+  }
+  .terminal code {
+    font: 500 13px / 1.9 var(--font-mono);
+    color: #cfd2cb;
+    white-space: nowrap;
+  }
+  .prompt { color: var(--olive); }
+  .flag { color: var(--muted-3); }
+  @media (max-width: 480px) {
+    .install { padding: 84px 20px; }
+  }
+</style>

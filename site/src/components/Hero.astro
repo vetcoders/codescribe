@@ -1,0 +1,396 @@
+---
+// Interactive island A — hero live console (WEBSITE_SPEC §6, Island A).
+// Server-renders the RESOLVED frame (CLEAN words visible + result strip) so the
+// no-JS / reduced-motion experience is meaningful; the script re-drives the loop
+// only when motion is allowed.
+const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minimal patch.'.split(' ');
+---
+
+<section class="hero" data-screen-label="Hero" aria-labelledby="hero-title">
+  <div class="glow" aria-hidden="true"></div>
+
+  <div class="inner">
+    <p class="eyebrow eyebrow--hero">macOS · VOICE CONTROL LAYER</p>
+    <h1 id="hero-title">
+      Speak <span class="accent">in.</span> Code <span class="accent">out.</span>
+    </h1>
+    <p class="sub">
+      Dictate, format, ask, remember, and dispatch work — from one always-available
+      macOS overlay. Not voice typing. A voice interface to your tools and your agents.
+    </p>
+
+    <!-- live console -->
+    <div class="console" data-console>
+      <div class="console__head">
+        <span class="rippledot" aria-hidden="true">
+          <span class="rippledot__ring"></span>
+          <span class="rippledot__ring rippledot__ring--delay"></span>
+          <span class="rippledot__core"></span>
+        </span>
+        <span class="console__status" data-status>structured intent</span>
+        <span class="console__engine">● local whisper</span>
+      </div>
+      <div class="console__body" data-body data-mode="clean">
+        {/* Trailing whitespace text node per word keeps textContent readable for
+            screen readers (reduced-motion path); flex collapses it visually, so
+            column-gap still governs the on-screen separation. */}
+        {CLEAN.map((w) => <Fragment><span class="word word--in">{w}</span>{' '}</Fragment>)}
+      </div>
+      <div class="console__result" data-result data-reveal>
+        <span class="console__resultdot" aria-hidden="true"></span>
+        <span class="console__resulttext">handed to your agent · run started</span>
+        <span class="console__resultmeta">2.4s · local</span>
+      </div>
+    </div>
+
+    <div class="cta">
+      <a class="btn btn--primary" href="#install">Install from source</a>
+      <a class="btn btn--ghost" href="#modes">See the modes</a>
+    </div>
+  </div>
+
+  <div class="scroll-hint" aria-hidden="true">SCROLL ↓</div>
+</section>
+
+<style>
+  .hero {
+    position: relative;
+    min-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 70px 24px 60px;
+    overflow: hidden;
+  }
+  .glow {
+    position: absolute;
+    top: -12%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 1000px;
+    max-width: 100%;
+    height: 640px;
+    background: radial-gradient(50% 50% at 50% 50%, rgba(217, 119, 87, 0.17), transparent 70%);
+    animation: breathe 7s ease-in-out infinite;
+    pointer-events: none;
+  }
+  .inner {
+    position: relative;
+    text-align: center;
+    max-width: 820px;
+  }
+  .eyebrow--hero {
+    letter-spacing: 0.24em;
+    text-transform: none;
+  }
+  h1 {
+    font: 700 clamp(40px, 7.6vw, 80px) / 1 var(--font-display);
+    letter-spacing: -0.04em;
+    margin: 22px 0 0;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .accent { color: var(--terracotta); }
+  .sub {
+    font: 400 18px / 1.55 var(--font-display);
+    color: var(--muted);
+    margin: 24px auto 0;
+    max-width: 520px;
+  }
+
+  /* live console */
+  .console {
+    margin: 46px auto 0;
+    max-width: 660px;
+    background: var(--bg-chip);
+    border: 1px solid var(--stroke);
+    border-radius: 16px;
+    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.5);
+    text-align: left;
+    overflow: hidden;
+  }
+  .console__head {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 13px 18px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .rippledot {
+    position: relative;
+    display: inline-flex;
+    width: 12px;
+    height: 12px;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+  .rippledot__ring {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1px solid var(--terracotta);
+    animation: ripple 2.6s ease-out infinite;
+  }
+  .rippledot__ring--delay { animation-delay: 1.3s; }
+  .rippledot__core {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--terracotta);
+    animation: softpulse 2.6s ease-in-out infinite;
+  }
+  .console__status {
+    font: 500 11px / 1.35 var(--font-mono);
+    color: var(--muted-3);
+    letter-spacing: 0.08em;
+    /* quick opacity dip on phase-label swaps (listening… / shaping intent… /
+       structured intent) so the text change reads as a crossfade, not a jump. */
+    transition: opacity 0.16s ease;
+  }
+  .console__engine {
+    margin-left: auto;
+    font: 500 10px / 1.35 var(--font-mono);
+    color: var(--olive);
+  }
+  .console__body {
+    padding: 24px 22px;
+    /* min-height reserves the tallest state (2-line "clean" transcript) so the
+       raw↔clean swap never changes the card height (CLS). Per-breakpoint values
+       track how far the text wraps as the console narrows. */
+    min-height: 110px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    /* Inter-word gap lives on the flex container (not per-.word margin) so it
+       governs both the SSR words and the JS-recreated ones uniformly. */
+    column-gap: 0.32em;
+    font: 500 19px / 1.55 var(--font-display);
+    /* One text color for BOTH phases: the raw↔clean difference is carried by
+       the status label, result strip, and the content itself — never by a
+       shade/weight/size shift, which reads as a font change. */
+    color: var(--ink-2);
+  }
+  /* :global() so the reveal reaches BOTH the SSR word spans and the ones the
+     island recreates via document.createElement — the latter never carry
+     Astro's scoped data-astro-cid attribute, so a plain scoped .word rule
+     silently misses them (per-word reveal was dead for JS-driven cycles).
+     Nested under the server-rendered .console__body (which does carry the cid)
+     to keep the selector contained to this component. */
+  .console__body :global(.word) {
+    display: inline-block;
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(3px);
+    transition: opacity 0.55s ease, transform 0.55s ease, filter 0.55s ease;
+  }
+  .console__body :global(.word--in) {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+  .console__result {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 22px;
+    border-top: 1px solid var(--line-soft);
+    background: rgba(95, 107, 62, 0.06);
+    /* Always occupies its box; the loop toggles the --muted class instead of
+       the [hidden]/display:none it used to, so the console never resizes (CLS).
+       The floatIn feel is preserved via the opacity/transform transition. */
+    transition: opacity 0.4s ease, transform 0.4s ease, visibility 0.4s ease;
+  }
+  .console__result--muted {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(8px);
+  }
+  .console__resultdot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--olive-ink);
+    box-shadow: 0 0 10px 1px rgba(157, 177, 120, 0.5);
+    flex: none;
+  }
+  .console__resulttext {
+    font: 500 12px / 1.35 var(--font-mono);
+    color: var(--olive-ink);
+  }
+  .console__resultmeta {
+    margin-left: auto;
+    font: 500 11px / 1.35 var(--font-mono);
+    color: var(--muted-4);
+  }
+
+  .cta {
+    display: flex;
+    gap: 13px;
+    justify-content: center;
+    margin-top: 38px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    text-decoration: none;
+    padding: 14px 26px;
+    border-radius: 11px;
+    /* explicit line-height: font-size-based box is swap-independent, so the CTA
+       height doesn't change when the web font replaces the fallback (CLS). */
+    font: 600 14px / 1.4 var(--font-display);
+  }
+  .btn--primary {
+    background: var(--terracotta);
+    color: #0a0a0a;
+    box-shadow: 0 8px 24px rgba(217, 119, 87, 0.3);
+  }
+  .btn--ghost {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--stroke-3);
+    color: var(--ink-2);
+  }
+  .scroll-hint {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    font: 500 10px var(--font-mono);
+    color: var(--scroll-hint);
+    letter-spacing: 0.2em;
+    animation: drift 3s ease-in-out infinite;
+  }
+
+  /* As the console narrows the clean transcript wraps to more lines; bump the
+     reserved height per band so neither raw nor clean ever changes it. */
+  @media (max-width: 600px) {
+    .console__body { min-height: 138px; }
+  }
+  @media (max-width: 374px) {
+    .console__body { min-height: 168px; }
+  }
+
+  @media (max-width: 480px) {
+    h1 { white-space: normal; }
+    .hero { padding: 56px 20px 48px; }
+  }
+</style>
+
+<script>
+  const RAW = 'uh, so scan this repo and fix the double-sent events'.split(' ');
+  const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minimal patch.'.split(' ');
+
+  const body = document.querySelector<HTMLElement>('[data-body]');
+  const statusEl = document.querySelector<HTMLElement>('[data-status]');
+  const result = document.querySelector<HTMLElement>('[data-result]');
+
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Reduced motion / no target: leave the server-rendered resolved frame as-is.
+  if (body && statusEl && result && !reduce) {
+    let alive = true;
+    const wait = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+    // Toggle the result strip without removing it from layout (was the
+    // `hidden` attribute → display:none, which resized the console and shifted
+    // the hero). aria-hidden keeps it out of the a11y tree while muted.
+    const muteResult = (muted: boolean) => {
+      result!.classList.toggle('console__result--muted', muted);
+      result!.setAttribute('aria-hidden', String(muted));
+    };
+
+    // Crossfade the console body (opacity-only, so no geometry change / CLS):
+    // fade the current words out, swap content while invisible, then let the
+    // per-word reveal bring the new phase in. The color jump between raw
+    // (muted) and clean (ink) happens while the body is at opacity 0, so it no
+    // longer reads as an abrupt font/weight change.
+    const BODY_FADE = 240;
+    function fadeOutBody() {
+      body!.style.transition = `opacity ${BODY_FADE}ms ease`;
+      body!.style.opacity = '0';
+      return wait(BODY_FADE);
+    }
+    function resetBody() {
+      // Snap the container back to opaque with no transition; the new words are
+      // individually at opacity 0, so nothing visibly pops — reveal() fades
+      // them in one by one. Reflow commits the snap before the next fade.
+      body!.style.transition = 'none';
+      body!.style.opacity = '1';
+      void body!.offsetHeight;
+    }
+
+    function setMode(mode: 'raw' | 'clean') {
+      body!.dataset.mode = mode;
+      const words = mode === 'raw' ? RAW : CLEAN;
+      body!.innerHTML = '';
+      for (const w of words) {
+        const span = document.createElement('span');
+        span.className = 'word';
+        span.textContent = w;
+        body!.appendChild(span);
+        // Whitespace between words: keeps the transcript readable (and
+        // copy-/screen-reader-correct) instead of "uh,soscanthisrepo".
+        body!.appendChild(document.createTextNode(' '));
+      }
+    }
+
+    const statusText = (mode: 'raw' | 'clean', showResult: boolean) =>
+      mode === 'clean' ? (showResult ? 'structured intent' : 'shaping intent…') : 'listening…';
+
+    // Quick opacity dip (CSS transition on .console__status) around the text
+    // swap. Awaits only the fade-out so callers can overlap the fade-in with
+    // other work; skips entirely when the label is unchanged.
+    async function setStatus(mode: 'raw' | 'clean', showResult: boolean) {
+      const text = statusText(mode, showResult);
+      if (statusEl!.textContent === text) return;
+      statusEl!.style.opacity = '0';
+      await wait(150);
+      if (!alive) return;
+      statusEl!.textContent = text;
+      statusEl!.style.opacity = '1';
+    }
+
+    async function reveal(mode: 'raw' | 'clean', per: number) {
+      if (!alive) return;
+      // Fade the outgoing words (and any visible result strip) out together,
+      // then swap while invisible.
+      muteResult(true);
+      await fadeOutBody();
+      if (!alive) return;
+      setMode(mode);
+      resetBody();
+      void setStatus(mode, false); // status dip runs concurrently with the reveal
+      await wait(50);
+      const spans = body!.querySelectorAll<HTMLElement>('.word');
+      for (let i = 0; i < spans.length; i++) {
+        if (!alive) return;
+        spans[i].classList.add('word--in');
+        await wait(per);
+      }
+    }
+
+    async function loop() {
+      // Start from a clean slate rather than the pre-rendered resolved frame.
+      muteResult(true);
+      while (alive) {
+        // Waits trimmed ~150-200ms each to absorb the added fade durations and
+        // keep the overall cycle cadence close to the pre-crossfade feel.
+        await wait(500);
+        await reveal('raw', 150);
+        await wait(850);
+        if (!alive) return;
+        await reveal('clean', 115);
+        if (!alive) return;
+        await setStatus('clean', true);
+        muteResult(false);
+        await wait(2500);
+      }
+    }
+
+    loop();
+    window.addEventListener('beforeunload', () => {
+      alive = false;
+    });
+  }
+</script>
