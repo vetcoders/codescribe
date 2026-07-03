@@ -103,7 +103,15 @@ struct TrayMenuView: View {
             TrayRow(icon: "⧉", title: "Copy last transcript") {
                 viewModel.copyLastTranscript()
             }
+
+            // Permission-free "✓ Copied" confirmation after a history / last-transcript
+            // copy — reuses the Notes result banner row.
+            if let copyStatus = viewModel.copyStatus {
+                TrayNoteStatusRow(status: copyStatus)
+                    .padding(.top, 2)
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: viewModel.copyStatus)
     }
 
     // MARK: - History (nested disclosure → copy a recent transcript)

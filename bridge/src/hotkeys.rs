@@ -17,6 +17,9 @@ use crossbeam_channel::unbounded;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::agent_delivery::{
+    CsAgentDeliveryListener, set_delivery_listener, spawn_delivery_forwarder,
+};
 use crate::recording::{CsAnnotationKind, CsLayerSummary, CsTranscriptionListener};
 use crate::{CsError, CsLanguage};
 
@@ -289,6 +292,11 @@ impl CodescribeHotkeys {
         // Publish the runtime handle so sync config-write surfaces can push fresh
         // settings into the live controller (refresh_live_controller_config).
         let _ = shared_runtime_handle().set(handle.clone());
+        // Bridge the app-side voice-assistive delivery broadcast onto the Swift
+        // AgentChat listener. Idempotent — a repeated start() does not stack a
+        // second forwarder. The listener itself is registered separately via
+        // `set_agent_delivery_listener` and may arrive before or after this.
+        spawn_delivery_forwarder(handle.clone());
         let controller_store = shared_controller();
 
         // Spawn the event-dispatch thread BEFORE bringing up the tap. It drains
@@ -330,6 +338,14 @@ impl CodescribeHotkeys {
         let listener_store = shared_listener();
         let mut guard = listener_store.write().unwrap_or_else(|e| e.into_inner());
         *guard = Some(listener);
+    }
+
+    /// Register the Swift AgentChat listener that renders voice-assistive replies
+    /// live. Process-global, so it takes effect for the delivery forwarder spawned
+    /// in `start()` regardless of call order. Swift must keep a strong reference
+    /// to the listener (UniFFI otherwise releases the foreign callback).
+    pub fn set_agent_delivery_listener(&self, listener: Arc<dyn CsAgentDeliveryListener>) {
+        set_delivery_listener(listener);
     }
 
     /// Prompt-free warmup for the shared recording controller.

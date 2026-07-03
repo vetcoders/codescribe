@@ -157,6 +157,14 @@ final class AgentChatStore: ObservableObject {
     private var revealTask: Task<Void, Never>?
     private var didStartDemo = false
 
+    /// Active voice-assistive turn being streamed from the core runtime (hotkey /
+    /// hands-off), NOT the composer. `nil` when no voice reply is in flight. The
+    /// core owns the provider call + disk persistence for this turn; the store
+    /// only renders the incoming delivery events — it must never call `send()` for
+    /// a voice turn, which would fire a second, composer-side provider call.
+    private var voiceTurnThreadID: UUID?
+    private var voiceAssistantID: UUID?
+
     /// In-flight `send()` streaming tasks keyed by thread. Tracked so deleting a
     /// thread can cancel its running reply — otherwise the task's post-stream
     /// `refreshThreads` (plus the agent's best-effort re-persist) would resurrect
@@ -415,6 +423,95 @@ final class AgentChatStore: ObservableObject {
             }
         }
         inFlightSends[threadID] = sendTask
+    }
+
+    // MARK: Voice-assistive delivery (core runtime → live render, no re-send)
+    //
+    // These ingest the reply the CORE runtime is already streaming for a hotkey /
+    // voice turn (via the bridge `CsAgentDeliveryListener`). They ONLY render:
+    // insert bubbles and mutate them from deltas. They deliberately do not call
+    // `send()` / the engine — the core already made the provider call and persists
+    // the thread to disk. Doing otherwise would double-dispatch the turn.
+
+    /// Open a voice turn: bind (or create) a thread for the core `backendId`,
+    /// insert the You-bubble + an assistant placeholder, and select it so the live
+    /// reply is visible. Subsequent `ingestVoice*` calls target this turn.
+    func ingestVoiceTurn(threadId backendId: String, userText: String) {
+        let threadID: UUID
+        if let existing = threads.first(where: { $0.backendId == backendId }) {
+            threadID = existing.id
+            loadMessagesIfNeeded(threadID)  // surface prior history before appending
+        } else {
+            let title = userText.isEmpty ? "Voice chat" : String(userText.prefix(48))
+            var thread = ChatThread(title: title, meta: "now")
+            thread.backendId = backendId
+            thread.messagesLoaded = true  // freshly bound to a core id → in sync
+            threads.insert(thread, at: 0)
+            threadID = thread.id
+        }
+        selectedThreadID = threadID
+
+        if !userText.isEmpty {
+            append(ChatMessage(role: .you, timestamp: now(), text: userText), to: threadID)
+        }
+        let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
+        voiceTurnThreadID = threadID
+        voiceAssistantID = assistant.id
+        append(assistant, to: threadID)
+    }
+
+    /// Append a streamed token to the active voice assistant bubble.
+    func ingestVoiceDelta(_ delta: String) {
+        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        update(id, in: threadID) {
+            $0.isThinking = false
+            $0.isStreaming = true
+            $0.text += delta
+        }
+    }
+
+    /// Final assembled text for the turn. Only used as a fallback when the reply
+    /// arrived without token deltas (otherwise the bubble already holds the text).
+    func ingestVoiceTextDone(_ text: String) {
+        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        update(id, in: threadID) { if $0.text.isEmpty { $0.text = text } }
+    }
+
+    /// Surface a completed tool call for the active voice turn (same rendering as
+    /// the composer path's tool-activity row).
+    func ingestVoiceTool(name: String, isError: Bool, reason: String) {
+        guard let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        recordToolActivity(name: name, isError: isError, reason: reason, before: assistantID, in: threadID)
+    }
+
+    /// Finalize the active voice turn and pull disk truth (the core persisted the
+    /// thread). No re-persist here — the store only mirrors what the core wrote.
+    func ingestVoiceDone() {
+        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        update(id, in: threadID) {
+            $0.isThinking = false
+            $0.isStreaming = false
+            $0.timestamp = self.now()
+        }
+        let backendId = threads.first(where: { $0.id == threadID })?.backendId
+        voiceTurnThreadID = nil
+        voiceAssistantID = nil
+        if let backendId { refreshThreads(selectingBackendId: backendId) }
+    }
+
+    /// Surface a runtime error on the active voice turn and close it. The core
+    /// error path may not emit a separate `Done`, so clear the turn state here; a
+    /// late `Done` then no-ops against the cleared state.
+    func ingestVoiceError(_ message: String) {
+        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        update(id, in: threadID) {
+            $0.isThinking = false
+            $0.isStreaming = false
+            $0.text += ($0.text.isEmpty ? "" : "\n") + "[error] " + message
+            $0.timestamp = self.now()
+        }
+        voiceTurnThreadID = nil
+        voiceAssistantID = nil
     }
 
     // MARK: Demo stream (reproduces the mock's mid-stream last turn)

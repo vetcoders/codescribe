@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::{debug, info, warn};
 
+use crate::agent_delivery::AgentDeliveryEvent;
 use crate::config::default_assistive_model;
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
@@ -391,13 +392,45 @@ pub(crate) fn friendly_tool_name(raw: &str) -> String {
     prettify_identifier(raw)
 }
 
+/// Translate a core `AgentUiEvent` into the voice-assistive delivery event the
+/// bridge forwards to the SwiftUI AgentChat. 1:1 field mapping — the two enums
+/// deliberately share the same shape so the Swift listener is symmetric to the
+/// composer's `CsAgentListener`.
+fn agent_ui_event_to_delivery(event: &AgentUiEvent) -> AgentDeliveryEvent {
+    match event {
+        AgentUiEvent::TextDelta(delta) => AgentDeliveryEvent::TextDelta(delta.clone()),
+        AgentUiEvent::TextDone(text) => AgentDeliveryEvent::TextDone(text.clone()),
+        AgentUiEvent::ReasoningDelta(delta) => AgentDeliveryEvent::ReasoningDelta(delta.clone()),
+        AgentUiEvent::ToolExecuting { name, id } => AgentDeliveryEvent::ToolExecuting {
+            name: name.clone(),
+            id: id.clone(),
+        },
+        AgentUiEvent::ToolResult {
+            name,
+            id,
+            summary,
+            is_error,
+        } => AgentDeliveryEvent::ToolResult {
+            name: name.clone(),
+            id: id.clone(),
+            summary: summary.clone(),
+            is_error: *is_error,
+        },
+        AgentUiEvent::Done => AgentDeliveryEvent::Done,
+        AgentUiEvent::Error(message) => AgentDeliveryEvent::Error(message.clone()),
+    }
+}
+
 /// Drain a single agent UI event.
 ///
-/// Legacy AppKit overlay delivery has been removed. This is still invoked from
-/// the `run_agent_send_path` drain loop because consuming `ui_rx` events is what
-/// advances `AgentSession::send` to completion (the channel is bounded). Only the
-/// per-event overlay mutations are gone; debug logging of tool activity stays.
+/// Voice-assistive delivery: each event is published to the process-global
+/// delivery broadcast (`crate::agent_delivery`) so the bridge can forward it onto
+/// the SwiftUI AgentChat listener — this replaces the removed legacy AppKit
+/// overlay sink. Consuming `ui_rx` here is also what advances `AgentSession::send`
+/// to completion (the channel is bounded). Debug logging of tool activity stays;
+/// disk persistence still happens in `run_agent_send_path` after the drain.
 async fn apply_agent_ui_event(event: AgentUiEvent) {
+    crate::agent_delivery::publish_agent_delivery_event(agent_ui_event_to_delivery(&event));
     match event {
         AgentUiEvent::TextDelta(_)
         | AgentUiEvent::TextDone(_)
@@ -710,9 +743,21 @@ async fn run_agent_send_path(
     let _ = recovered_from_degraded;
 
     let send_result = {
+        // Correlation id for the SwiftUI store (disjoint from its per-thread
+        // UUID). Captured before the mutable session/ui_rx split so the borrow of
+        // `runtime.thread_store_id` does not overlap the mutable field borrows.
+        let thread_store_id = runtime.thread_store_id.clone();
         let (session, ui_rx) = (&mut runtime.session, &mut runtime.ui_rx);
         let (user_text, image_attachments, dropped_images) =
             build_image_attachments_from_text(&text);
+        // Open the turn on the SwiftUI chat before streaming: the listener inserts
+        // a You-bubble (user_text) + assistant placeholder, then fills it from the
+        // deltas below. `user_text` is the attachment-marker-stripped transcript,
+        // so the bubble shows the spoken text, not the internal attachment block.
+        crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::TurnStarted {
+            thread_id: thread_store_id,
+            user_text: user_text.clone(),
+        });
         if !image_attachments.is_empty() {
             info!(
                 "Agent send: forwarding {} image(s) as vision input",
@@ -1637,5 +1682,80 @@ mod tests {
         assert_eq!(dropped.len(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Voice-assistive delivery: UI-event → delivery-event mapping + publish ──
+
+    #[test]
+    fn agent_ui_event_maps_to_delivery_event_one_to_one() {
+        assert_eq!(
+            agent_ui_event_to_delivery(&AgentUiEvent::TextDelta("hi".into())),
+            AgentDeliveryEvent::TextDelta("hi".into())
+        );
+        assert_eq!(
+            agent_ui_event_to_delivery(&AgentUiEvent::TextDone("done".into())),
+            AgentDeliveryEvent::TextDone("done".into())
+        );
+        assert_eq!(
+            agent_ui_event_to_delivery(&AgentUiEvent::ReasoningDelta("r".into())),
+            AgentDeliveryEvent::ReasoningDelta("r".into())
+        );
+        assert_eq!(
+            agent_ui_event_to_delivery(&AgentUiEvent::ToolExecuting {
+                name: "grep".into(),
+                id: "1".into(),
+            }),
+            AgentDeliveryEvent::ToolExecuting {
+                name: "grep".into(),
+                id: "1".into(),
+            }
+        );
+        assert_eq!(
+            agent_ui_event_to_delivery(&AgentUiEvent::ToolResult {
+                name: "grep".into(),
+                id: "1".into(),
+                summary: "2 hits".into(),
+                is_error: false,
+            }),
+            AgentDeliveryEvent::ToolResult {
+                name: "grep".into(),
+                id: "1".into(),
+                summary: "2 hits".into(),
+                is_error: false,
+            }
+        );
+        assert_eq!(
+            agent_ui_event_to_delivery(&AgentUiEvent::Done),
+            AgentDeliveryEvent::Done
+        );
+        assert_eq!(
+            agent_ui_event_to_delivery(&AgentUiEvent::Error("boom".into())),
+            AgentDeliveryEvent::Error("boom".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_agent_ui_event_publishes_to_delivery_broadcast() {
+        use crate::agent_delivery::{AgentDeliveryEvent, subscribe_agent_delivery};
+        use tokio::sync::broadcast::error::RecvError;
+
+        // Unique payload so a concurrent test on the shared global broadcast can
+        // never satisfy this matcher.
+        let marker = "apply_agent_ui_event_publishes_to_delivery_broadcast";
+        let mut rx = subscribe_agent_delivery();
+        apply_agent_ui_event(AgentUiEvent::TextDone(marker.into())).await;
+
+        let mut found = None;
+        for _ in 0..1024 {
+            match rx.recv().await {
+                Ok(AgentDeliveryEvent::TextDone(text)) if text == marker => {
+                    found = Some(text);
+                    break;
+                }
+                Ok(_) | Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => panic!("delivery channel closed unexpectedly"),
+            }
+        }
+        assert_eq!(found.as_deref(), Some(marker));
     }
 }

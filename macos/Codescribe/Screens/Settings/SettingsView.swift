@@ -15,7 +15,9 @@ struct SettingsView: View {
     var body: some View {
         NavigationSplitView {
             SettingsRail(model: model)
-                .navigationSplitViewColumnWidth(212)
+                // Firm min/ideal/max so `.balanced` can't compress the rail below the
+                // brand wordmark's width and wrap "codescribe" onto a second line.
+                .navigationSplitViewColumnWidth(min: 212, ideal: 212, max: 212)
                 .toolbar(removing: .sidebarToggle)
         } detail: {
             detail
@@ -93,7 +95,10 @@ private struct SettingsRail: View {
 
     private var brand: some View {
         HStack(spacing: 9) {
+            // Keep the wordmark on a single line regardless of column width.
             Wordmark(size: 15)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
             Spacer(minLength: 0)
             Text("v\(model.appVersion)")
                 .font(CSFont.mono(10, .medium))

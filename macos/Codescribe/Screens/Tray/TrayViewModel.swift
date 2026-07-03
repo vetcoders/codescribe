@@ -32,6 +32,13 @@ final class TrayViewModel: ObservableObject {
     @Published private(set) var noteStatus: TrayActionStatus?
     private var noteStatusClearTask: Task<Void, Never>?
 
+    // Transient "Copied" confirmation for the copy actions (history item / last
+    // transcript). Same permission-free banner pattern as `noteStatus`, kept
+    // separate so copy feedback shows next to the copy actions rather than in the
+    // Notes group. Auto-clears.
+    @Published private(set) var copyStatus: TrayActionStatus?
+    private var copyStatusClearTask: Task<Void, Never>?
+
     // The 5 most recent transcripts, loaded when the History group is expanded
     // (cached so re-renders don't re-hit disk).
     @Published private(set) var historyItems: [TrayTranscript] = []
@@ -164,6 +171,7 @@ final class TrayViewModel: ObservableObject {
         guard let text = engine?.transcriptText(forPath: path) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        showCopyStatus("Copied")
     }
 
     /// Reveal the folder holding the most recent transcript in Finder.
@@ -178,6 +186,19 @@ final class TrayViewModel: ObservableObject {
         guard let text = engine?.latestTranscriptText() else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        showCopyStatus("Copied")
+    }
+
+    /// Flash a transient "Copied" banner beside the copy actions, then auto-clear
+    /// it (cancelling any in-flight clear so rapid copies keep the newest banner).
+    private func showCopyStatus(_ message: String) {
+        copyStatus = TrayActionStatus(kind: .success, message: message)
+        copyStatusClearTask?.cancel()
+        copyStatusClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.copyStatus = nil
+        }
     }
 
     // MARK: - Notes action feedback

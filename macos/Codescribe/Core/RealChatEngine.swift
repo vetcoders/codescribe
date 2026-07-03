@@ -82,3 +82,63 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.onDelta("\n[error] " + message) } }
     }
 }
+
+/// Bridges Rust-side `CsAgentDeliveryListener` callbacks (fired from a tokio
+/// thread) onto the main actor, driving `AgentChatStore` so a voice / hotkey agent
+/// reply streams LIVE into the chat window instead of only landing on disk.
+///
+/// Mirrors `StreamListener` / `DictationListener`. Two hard rules from the design:
+/// 1. It only renders incoming events — it never calls `store.send()`, which
+///    would fire a second (composer-side) provider call for a turn the core is
+///    already streaming.
+/// 2. `AppDelegate` must keep a strong reference to it (UniFFI releases the
+///    foreign callback otherwise); all store mutation hops onto the main actor.
+///
+/// `onTurnStarted` also reveals the chat window via `revealChat` so the user
+/// actually sees the reply they just spoke for. A more selective reveal policy
+/// (don't steal focus while typing elsewhere) is deferred follow-up work.
+final class VoiceDeliveryListener: CsAgentDeliveryListener, @unchecked Sendable {
+    private let store: AgentChatStore
+    private let revealChat: @MainActor () -> Void
+
+    init(store: AgentChatStore, revealChat: @escaping @MainActor () -> Void) {
+        self.store = store
+        self.revealChat = revealChat
+    }
+
+    func onTurnStarted(threadId: String, userText: String) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.revealChat()
+                self.store.ingestVoiceTurn(threadId: threadId, userText: userText)
+            }
+        }
+    }
+    func onTextDelta(delta: String) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceDelta(delta) } }
+    }
+    func onTextDone(text: String) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceTextDone(text) } }
+    }
+    func onReasoningDelta(delta: String) {
+        // Reasoning is not surfaced in the chat bubble (parity with the composer
+        // StreamListener, which also drops it). Deferred to the L variant.
+    }
+    func onToolExecuting(name: String, id: String) {
+        // Surfaced via onToolResult (completed) to avoid duplicate activity rows,
+        // matching StreamListener.
+    }
+    func onToolResult(name: String, id: String, summary: String, isError: Bool) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.store.ingestVoiceTool(name: name, isError: isError, reason: summary)
+            }
+        }
+    }
+    func onDone() {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceDone() } }
+    }
+    func onError(message: String) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceError(message) } }
+    }
+}
