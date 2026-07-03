@@ -509,6 +509,18 @@ final class AgentChatStore: ObservableObject {
     /// insert the You-bubble + an assistant placeholder, and select it so the live
     /// reply is visible. Subsequent `ingestVoice*` calls target this turn.
     func ingestVoiceTurn(threadId backendId: String, userText: String) {
+        // Defensive: a new voice turn can open before the previous one closed
+        // (rapid double-press / a fresh session). Finalize the stale assistant
+        // bubble in the UI before we overwrite the turn references below —
+        // otherwise it sticks in isThinking/isStreaming forever.
+        if let staleThreadID = voiceTurnThreadID, let staleID = voiceAssistantID {
+            update(staleID, in: staleThreadID) {
+                $0.isThinking = false
+                $0.isStreaming = false
+                $0.timestamp = self.now()
+            }
+        }
+
         let threadID: UUID
         if let existing = threads.first(where: { $0.backendId == backendId }) {
             threadID = existing.id
