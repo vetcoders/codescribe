@@ -19,6 +19,7 @@
 uniffi::setup_scaffolding!();
 
 mod agent;
+mod agent_delivery;
 mod agent_status;
 mod config;
 mod hotkeys;
@@ -28,6 +29,7 @@ mod recording;
 mod threads;
 
 pub use agent::{CodescribeAgent, CsAgentListener};
+pub use agent_delivery::CsAgentDeliveryListener;
 pub use hotkeys::CodescribeHotkeys;
 
 /// Error surfaced across the FFI boundary. One enum for every slice:
