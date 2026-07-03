@@ -22,8 +22,10 @@ use tracing::{info, warn};
 use super::engine::{EmbedderConfig, EmbedderEngine};
 
 /// Default idle period after which the embedder is unloaded to free GPU memory.
-/// Overridable via `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS` (0 disables).
-const DEFAULT_IDLE_UNLOAD_SECS: u64 = 300;
+/// Disabled by default (0): like the Whisper engine, idle-unload recreates the
+/// Metal device on reload and leaks IOAccelerator ports/threads per cycle.
+/// Re-enable per machine via `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS=<secs>`.
+const DEFAULT_IDLE_UNLOAD_SECS: u64 = 0;
 
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
@@ -201,10 +203,9 @@ mod tests {
         unsafe { std::env::set_var("CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS", "90") };
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(90)));
         unsafe { std::env::remove_var("CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS") };
-        assert_eq!(
-            idle_unload_after(),
-            Some(Duration::from_secs(DEFAULT_IDLE_UNLOAD_SECS))
-        );
+        // DEFAULT_IDLE_UNLOAD_SECS is now 0 (idle-unload disabled by default),
+        // so with no override the reaper is off.
+        assert!(idle_unload_after().is_none());
     }
 
     // Note: Full embedding tests require model download and are in integration tests

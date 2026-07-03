@@ -2,12 +2,15 @@ pub mod adapter;
 pub mod apple_stt;
 pub mod onnx_adapter;
 pub mod scheduler;
+pub mod tail_patcher;
 pub mod whisper;
 
 use crate::pipeline::contracts::RawTranscript;
 use crate::pipeline::contracts::TranscriptionAdapter;
 use std::sync::OnceLock;
 use tracing::warn;
+
+const ENV_STT_ENGINE: &str = "CODESCRIBE_STT_ENGINE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SttEngine {
@@ -17,23 +20,41 @@ enum SttEngine {
 }
 
 fn selected_engine() -> SttEngine {
-    match std::env::var("CODESCRIBE_STT_ENGINE")
-        .unwrap_or_else(|_| "candle".to_string())
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "onnx" => SttEngine::Onnx,
-        "apple" => SttEngine::Apple,
-        _ => SttEngine::Candle,
+    match std::env::var(ENV_STT_ENGINE) {
+        Ok(value) => requested_engine(&value).unwrap_or_else(default_engine),
+        Err(_) => default_engine(),
     }
 }
 
-/// Get the active STT adapter based on `CODESCRIBE_STT_ENGINE` env var.
+fn requested_engine(value: &str) -> Option<SttEngine> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "onnx" => SttEngine::Onnx,
+        "apple" => SttEngine::Apple,
+        "candle" | "whisper" => SttEngine::Candle,
+        "" | "auto" => return None,
+        _ => SttEngine::Candle,
+    }
+    .into()
+}
+
+fn default_engine() -> SttEngine {
+    // AUTO only selects Apple when the SpeechAnalyzer bridge is actually
+    // launchable; otherwise the probe is wasted and the router silently falls
+    // back to Candle anyway (a misleading "Apple" selector). Explicit
+    // `CODESCRIBE_STT_ENGINE=apple` bypasses this and still probes + fails loudly.
+    if apple_stt::is_runtime_available() && apple_stt::is_bridge_resolvable() {
+        SttEngine::Apple
+    } else {
+        SttEngine::Candle
+    }
+}
+
+/// Get the active STT adapter based on `CODESCRIBE_STT_ENGINE` env var or auto policy.
 ///
 /// - `"onnx"` → initializes ONNX engine + returns `OnnxWhisperAdapter`
 /// - `"apple"` → initializes SpeechAnalyzer bridge + returns Apple adapter
-/// - anything else → `WhisperSingletonAdapter` (candle, default)
+/// - unset/`"auto"` → Apple on supported macOS, otherwise Candle
+/// - anything else → `WhisperSingletonAdapter` (candle)
 ///
 /// Apple path gracefully falls back to Candle if unavailable.
 pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
@@ -61,7 +82,7 @@ pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
 // ── Engine-level router ──────────────────────────────────────────────────────
 //
 // These functions dispatch to candle, ONNX, or Apple SpeechAnalyzer based on
-// `CODESCRIBE_STT_ENGINE`. They match the call semantics of
+// `CODESCRIBE_STT_ENGINE` plus the default auto policy. They match the call semantics of
 // `LocalWhisperEngine::transcribe_with_language` (chunk) and
 // `transcribe_long_with_language` (utterance/correction).
 //
@@ -121,6 +142,18 @@ fn candle_transcribe_long_with_segments(
     whisper::singleton::transcribe_with_segments(audio, sample_rate, language)
 }
 
+pub(crate) fn whisper_tail_patch_transcribe(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+) -> anyhow::Result<RawTranscript> {
+    let (speech, _) = crate::vad::extract_speech(audio, sample_rate);
+    if speech.is_empty() {
+        return Ok(RawTranscript::default());
+    }
+    candle_transcribe_long_with_segments(&speech, sample_rate, language)
+}
+
 #[allow(dead_code)]
 fn candle_try_transcribe_long_with_segments(
     audio: &[f32],
@@ -132,7 +165,7 @@ fn candle_try_transcribe_long_with_segments(
 }
 
 /// Initialize whichever STT engine is active by env.
-pub(crate) fn init_active_engine() -> anyhow::Result<()> {
+pub fn init_active_engine() -> anyhow::Result<()> {
     match selected_engine() {
         SttEngine::Onnx => onnx_adapter::init(),
         SttEngine::Apple => {
@@ -140,6 +173,55 @@ pub(crate) fn init_active_engine() -> anyhow::Result<()> {
         }
         SttEngine::Candle => whisper::init(),
     }
+}
+
+/// Sample rate of the synthetic warmup buffer.
+const WARMUP_SAMPLE_RATE: u32 = 16_000;
+
+/// Prewarm the ACTIVE STT engine end-to-end so the first real dictation pays
+/// neither model-load nor (for the Candle/Metal path) first-inference Metal
+/// kernel-compilation latency, and (for the Apple path) neither the bridge
+/// spawn nor the SpeechAnalyzer asset/probe readiness.
+///
+/// This is deliberately routed through the exact same `transcribe_long_with_segments`
+/// path the live pipeline uses, so whichever engine actually serves transcripts
+/// at runtime gets warmed: on macOS 26+ the router selects Apple SpeechAnalyzer
+/// and transparently falls back to Candle when the bridge is unavailable
+/// ([`run_apple_or_whisper`]). Warming the hardcoded Candle singleton alone (the
+/// previous behaviour) missed the active engine whenever Apple routing won, and
+/// even on the Candle path it only loaded weights without compiling kernels —
+/// both leaving the first dictation cold.
+///
+/// Best-effort: the warmup transcription's result is intentionally discarded and
+/// its errors are logged, never propagated, so a cold-path hiccup can never block
+/// recording readiness. `init_active_engine` failures (e.g. no model on disk) are
+/// surfaced so callers can log them.
+pub fn prewarm_active_engine() -> anyhow::Result<()> {
+    init_active_engine()?;
+
+    // Push a short synthetic utterance through the real routing so the serving
+    // engine compiles its kernels / spins up its bridge before the user dictates.
+    let warmup = synthetic_warmup_audio();
+    match transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en")) {
+        Ok(_) => tracing::info!("STT active-engine warmup inference complete"),
+        Err(error) => {
+            tracing::warn!("STT active-engine warmup inference failed (non-fatal): {error:#}")
+        }
+    }
+    Ok(())
+}
+
+/// One second of very low-amplitude tone at 16 kHz. Non-silent (so the full
+/// encoder+decoder path executes during warmup) yet quiet enough that it yields
+/// no spurious transcript text.
+fn synthetic_warmup_audio() -> Vec<f32> {
+    let n = WARMUP_SAMPLE_RATE as usize;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / WARMUP_SAMPLE_RATE as f32;
+            0.0005 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+        })
+        .collect()
 }
 
 /// Transcribe a single chunk (blocking lock on whichever engine is active).
@@ -197,5 +279,70 @@ pub(crate) fn try_transcribe_long_with_segments(
             || candle_try_transcribe_long_with_segments(audio, sample_rate, language),
         ),
         SttEngine::Candle => candle_try_transcribe_long_with_segments(audio, sample_rate, language),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    struct EnvGuard {
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn unset() -> Self {
+            let previous = std::env::var(ENV_STT_ENGINE).ok();
+            unsafe { std::env::remove_var(ENV_STT_ENGINE) };
+            Self { previous }
+        }
+
+        fn set(value: &str) -> Self {
+            let previous = std::env::var(ENV_STT_ENGINE).ok();
+            unsafe { std::env::set_var(ENV_STT_ENGINE, value) };
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.previous.as_deref() {
+                Some(value) => unsafe { std::env::set_var(ENV_STT_ENGINE, value) },
+                None => unsafe { std::env::remove_var(ENV_STT_ENGINE) },
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn selected_engine_defaults_to_platform_auto_policy() {
+        let _guard = EnvGuard::unset();
+        let expected = if apple_stt::is_runtime_available() && apple_stt::is_bridge_resolvable() {
+            SttEngine::Apple
+        } else {
+            SttEngine::Candle
+        };
+        assert_eq!(selected_engine(), expected);
+    }
+
+    #[test]
+    #[serial]
+    fn selected_engine_respects_explicit_overrides() {
+        let _guard = EnvGuard::set("candle");
+        assert_eq!(selected_engine(), SttEngine::Candle);
+
+        unsafe { std::env::set_var(ENV_STT_ENGINE, "onnx") };
+        assert_eq!(selected_engine(), SttEngine::Onnx);
+
+        unsafe { std::env::set_var(ENV_STT_ENGINE, "apple") };
+        assert_eq!(selected_engine(), SttEngine::Apple);
+    }
+
+    #[test]
+    #[serial]
+    fn selected_engine_auto_alias_uses_platform_default() {
+        let _guard = EnvGuard::set("auto");
+        assert_eq!(selected_engine(), default_engine());
     }
 }

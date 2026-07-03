@@ -98,8 +98,11 @@ pub(crate) fn should_drop_short_utterance(
 
 /// Categorical speech-ratio gate: use Silero VAD as a binary classifier.
 ///
-/// Computes the fraction of the chunk that Silero classified as speech
-/// (prob >= threshold). If the ratio falls below `MIN_SPEECH_RATIO_FOR_INFERENCE`,
+/// Computes the fraction of the chunk that Silero classified as speech. The
+/// `speech_vad_samples` count is accumulated upstream (chunker) using the
+/// segment-open `neg_threshold` (~0.35), not the higher onset threshold, so
+/// speech in the 0.35–0.50 band is counted as speech here rather than silence.
+/// If the ratio falls below `MIN_SPEECH_RATIO_FOR_INFERENCE`,
 /// the chunk is predominantly silence and should not be sent to Whisper
 /// (which would hallucinate on it).
 ///

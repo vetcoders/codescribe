@@ -366,6 +366,35 @@ fn bridge_binary() -> String {
     }
 }
 
+/// Cheap, process-cached check that the Apple STT bridge binary can actually be
+/// launched: an explicit `CODESCRIBE_APPLE_STT_BRIDGE` path must exist, or the
+/// default bare command name must resolve on `PATH`. AUTO engine selection gates
+/// on this so it never advertises Apple on a host where the bridge is absent
+/// (which wastes a probe and then silently falls back to Candle). Explicit
+/// `CODESCRIBE_STT_ENGINE=apple` bypasses this and still probes + fails loudly.
+pub(crate) fn is_bridge_resolvable() -> bool {
+    static RESOLVABLE: OnceLock<bool> = OnceLock::new();
+    *RESOLVABLE.get_or_init(bridge_binary_resolvable)
+}
+
+fn bridge_binary_resolvable() -> bool {
+    let bin = bridge_binary();
+    let candidate = Path::new(&bin);
+    // An explicit override naming a path resolves iff that path exists.
+    if candidate.is_absolute() || bin.contains(std::path::MAIN_SEPARATOR) {
+        return candidate.is_file();
+    }
+    // Otherwise it is a bare command name: search PATH.
+    which_in_path(&bin).is_some()
+}
+
+fn which_in_path(bin: &str) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(bin))
+        .find(|candidate| candidate.is_file())
+}
+
 fn ensure_supported_platform() -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!(
@@ -516,6 +545,39 @@ impl Drop for TempWavFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn bridge_resolvable_honors_explicit_override_path() {
+        let previous = std::env::var(ENV_STT_BRIDGE).ok();
+
+        let present = std::env::temp_dir().join(format!("cs-stt-bridge-{}", Uuid::new_v4()));
+        std::fs::write(&present, b"#!/bin/sh\n").expect("write probe bin");
+        // SAFETY: serialized by #[serial]; env restored before the test returns.
+        unsafe { std::env::set_var(ENV_STT_BRIDGE, &present) };
+        assert!(
+            bridge_binary_resolvable(),
+            "an existing override path must resolve"
+        );
+
+        let missing =
+            std::env::temp_dir().join(format!("cs-stt-bridge-missing-{}", Uuid::new_v4()));
+        unsafe { std::env::set_var(ENV_STT_BRIDGE, &missing) };
+        assert!(
+            !bridge_binary_resolvable(),
+            "a missing override path must be unresolvable"
+        );
+
+        // SAFETY: serialized by #[serial].
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(ENV_STT_BRIDGE, value),
+                None => std::env::remove_var(ENV_STT_BRIDGE),
+            }
+        }
+        let _ = std::fs::remove_file(&present);
+    }
 
     #[test]
     fn adapter_is_send_sync() {

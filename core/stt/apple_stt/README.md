@@ -27,7 +27,8 @@ export CODESCRIBE_APPLE_STT_BRIDGE=/absolute/path/to/codescribe-stt-bridge
 
 ## Runtime Env
 
-- `CODESCRIBE_STT_ENGINE=apple`
+- `CODESCRIBE_STT_ENGINE=auto` uses Apple SpeechAnalyzer on supported macOS and falls back to Candle Whisper when unavailable.
+- `CODESCRIBE_STT_ENGINE=apple` forces the Apple path while preserving runtime fallback to Candle.
 - `CODESCRIBE_APPLE_STT_LOCALE=pl-PL` (optional; defaults to `pl-PL`)
 - `CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD=1` (allow asset install via `AssetInventory`)
 

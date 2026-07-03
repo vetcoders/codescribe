@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use tracing::{info, warn};
 
-use crate::config::Config;
 use crate::config::models::resolve_runtime_whisper_model_path;
+use crate::config::{Config, UserSettings};
 use crate::pipeline::contracts::{FileTranscriptionOptions, RawTranscript, TranscriptionVerdict};
 
 use super::engine::LocalWhisperEngine;
@@ -33,8 +33,12 @@ use super::params::DecodingParams;
 pub use crate::config::models::DEFAULT_MODEL;
 
 /// Default idle period after which the Whisper engine is unloaded to free GPU
-/// memory. Overridable via `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (0 disables).
-const DEFAULT_IDLE_UNLOAD_SECS: u64 = 300;
+/// memory. Disabled by default (0): each idle-unload→reload recreates the Metal
+/// device (`Device::new_metal`), leaking IOAccelerator Mach ports + dispatch
+/// threads per cycle and forcing a ~20-30s cold reload after the idle gap.
+/// Keeping the engine resident (~3GB GPU floor) matches the old always-warm
+/// daemon. Re-enable per machine via `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=<secs>`.
+const DEFAULT_IDLE_UNLOAD_SECS: u64 = 0;
 
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
@@ -75,13 +79,32 @@ fn idle_unload_after() -> Option<Duration> {
 
 /// Resolve the model path for runtime Whisper fallback loading.
 fn resolve_model_path_fallback() -> Result<PathBuf> {
-    let config = Config::load();
-    let resolved = resolve_runtime_whisper_model_path(Some(config.local_model.as_str()))?;
+    let local_model = configured_local_model();
+    let resolved = resolve_runtime_whisper_model_path(Some(local_model.as_str()))?;
     info!(
         "Using runtime Whisper fallback model: {}",
         resolved.display()
     );
     Ok(resolved)
+}
+
+fn configured_local_model() -> String {
+    std::env::var("LOCAL_MODEL")
+        .ok()
+        .and_then(non_empty)
+        .or_else(|| UserSettings::load().local_model.and_then(non_empty))
+        .or_else(|| {
+            Config::parse_env_file(&Config::env_path())
+                .ok()
+                .and_then(|vars| vars.get("LOCAL_MODEL").cloned())
+                .and_then(non_empty)
+        })
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Get the resolved model path used by runtime Whisper fallback loading.
@@ -277,6 +300,30 @@ pub fn transcribe_chunk(
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::ffi::OsString;
+
+    struct EnvRestore {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var_os(key),
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
 
     #[test]
     fn idle_unload_disabled_when_zero() {
@@ -286,10 +333,35 @@ mod tests {
         unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "120") };
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(120)));
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
-        assert_eq!(
-            idle_unload_after(),
-            Some(Duration::from_secs(DEFAULT_IDLE_UNLOAD_SECS))
-        );
+        // DEFAULT_IDLE_UNLOAD_SECS is now 0 (idle-unload disabled by default),
+        // so with no override the reaper is off.
+        assert!(idle_unload_after().is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn configured_local_model_prefers_env_then_settings_then_env_file() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _local_model = EnvRestore::capture("LOCAL_MODEL");
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::remove_var("LOCAL_MODEL");
+        }
+
+        let env_path = Config::env_path();
+        std::fs::create_dir_all(env_path.parent().expect("env parent")).expect("env dir");
+        std::fs::write(&env_path, "LOCAL_MODEL=env-file-model\n").expect("env file");
+
+        assert_eq!(configured_local_model(), "env-file-model");
+
+        let mut settings = UserSettings::load();
+        settings.set_string("LOCAL_MODEL", "settings-model");
+        assert_eq!(configured_local_model(), "settings-model");
+
+        unsafe { std::env::set_var("LOCAL_MODEL", "runtime-model") };
+        assert_eq!(configured_local_model(), "runtime-model");
     }
 
     #[test]

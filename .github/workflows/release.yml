@@ -18,11 +18,20 @@ jobs:
     name: Build, notarize, and publish DMG
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.tag_name || github.ref }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install XcodeGen
+        # scripts/build-app.sh preflights `require xcodegen` — the app's
+        # .xcodeproj is generated, not committed, so the release runner needs it
+        # or the DMG build dies before xcodebuild. (cargo, uniffi-bindgen and
+        # xcodebuild are already provided: rust-toolchain installs cargo,
+        # uniffi-bindgen is built from `cargo build -p codescribe-ffi`, and
+        # xcodebuild ships with the macOS runner image.)
+        run: brew install xcodegen
 
       - name: Validate signing secrets
         env:
@@ -75,7 +84,7 @@ jobs:
         run: make release-dmgs
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ inputs.tag_name || github.ref_name }}
           files: Codescribe_*.dmg

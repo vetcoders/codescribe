@@ -364,8 +364,8 @@ fn test_settings_full_round_trip() {
 fn test_engine_tab_stt_engine_env_default() {
     let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
     unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") };
-    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
-    assert_eq!(engine, "candle", "default STT engine should be candle");
+    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "auto".to_string());
+    assert_eq!(engine, "auto", "default STT engine policy should be auto");
     match previous {
         Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
         None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },

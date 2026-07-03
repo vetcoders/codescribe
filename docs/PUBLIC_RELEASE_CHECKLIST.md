@@ -40,7 +40,7 @@ Current source version: `0.12.2`
    - Gatekeeper accepts it without a workaround.
    - onboarding opens cleanly,
    - microphone/accessibility/input-monitoring prompts are understandable,
-   - `codescribe --version` reports `0.12.2`.
+   - the app's About window (menu-bar tray) reports `0.12.2`.
 6. Only then switch the landing CTA from source install to release DMG.
 
 ## Current Known External Gaps

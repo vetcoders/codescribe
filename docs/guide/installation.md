@@ -17,7 +17,7 @@
 
 1. Go to [Releases](https://github.com/vetcoders/codescribe/releases)
 2. Download `Codescribe-x.x.x.dmg`
-3. Open DMG, drag codescribe to Applications
+3. Open DMG, drag Codescribe to Applications
 4. Eject DMG
 
 > If Releases is empty, use the source path below. The repository now ships a release workflow, but not every branch has a published tag yet.
@@ -27,21 +27,20 @@
 ```bash
 git clone https://github.com/vetcoders/codescribe.git
 cd codescribe
-make install          # Install CLI to ~/.cargo/bin and ensure runtime model/cache availability
-make bundle           # Optional: create bundle/Codescribe.app
-make install-app      # Optional: copy app to /Applications
+make app PROFILE=release   # Build Codescribe.app
+make install-app      # Build + copy app to /Applications
 ```
 
 ---
 
 ## First Launch
 
-1. **Open codescribe** from Applications or Spotlight
+1. **Open Codescribe** from Applications or Spotlight
 2. **Grant Microphone access** when prompted
 3. **Grant Accessibility access** in System Settings → Privacy & Security → Accessibility
 4. **Wait for initialization** (first launch may take a few seconds to resolve and load the local Whisper model)
 
-You'll see the codescribe icon appear in your menu bar. It starts black (idle).
+You'll see the Codescribe icon appear in your menu bar. It starts black (idle).
 
 ---
 
@@ -55,7 +54,7 @@ Codescribe needs these permissions to function:
 | **Accessibility**    | Global hotkeys, paste text | System Settings → Privacy & Security → Accessibility    |
 | **Input Monitoring** | Detect modifier keys       | System Settings → Privacy & Security → Input Monitoring |
 
-> **Tip**: If hotkeys don't work, check that codescribe is enabled in all three permission categories.
+> **Tip**: If hotkeys don't work, check that Codescribe is enabled in all three permission categories.
 
 ---
 
@@ -64,21 +63,20 @@ Codescribe needs these permissions to function:
 Open Terminal and run:
 
 ```bash
-codescribe --version
+make version
 ```
 
 Expected output:
 
 ```
-Codescribe 0.7.x
+v0.12.x
 ```
 
 Test transcription:
 
-```bash
-# Record 5 seconds of audio and transcribe
-codescribe transcribe --record 5
-```
+1. Launch Codescribe.
+2. Start a short Dictation capture with your configured shortcut.
+3. Check `make logs` if the menu-bar state reports an error.
 
 ---
 
@@ -99,7 +97,7 @@ Codescribe stores configuration in:
 Create default config:
 
 ```bash
-codescribe --config
+make config
 ```
 
 ---

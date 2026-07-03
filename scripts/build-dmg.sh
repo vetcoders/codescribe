@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="${CODESCRIBE_APP_NAME:-Codescribe}"
 DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_NAME}"
-BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.codescribe.app}"
+BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.codescribe}"
 MIN_MACOS="${CODESCRIBE_MIN_MACOS:-}"
 LSUIELEMENT="${CODESCRIBE_LSUIELEMENT:-true}"
 ENTITLEMENTS="${CODESCRIBE_ENTITLEMENTS:-$ROOT_DIR/scripts/entitlements.plist}"
@@ -14,7 +14,9 @@ IDENTITY="${CODESCRIBE_CODESIGN_IDENTITY:-}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
 
 VERSION=$(awk -F '"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT_DIR/Cargo.toml" 2>/dev/null || echo "0.0.0")
-APP_PATH="$ROOT_DIR/bundle/${APP_NAME}.app"
+# The real SwiftUI app is produced by the xcodebuild pipeline (build-app.sh),
+# same product install-app ships — NOT the retired hand-built bundle/ path.
+APP_PATH="$ROOT_DIR/macos/build/Build/Products/Release/${APP_NAME}.app"
 
 SIGN=0
 NOTARIZE=0
@@ -94,13 +96,11 @@ echo "DMG: $DMG_PATH"
 
 (
   cd "$ROOT_DIR"
-  "${BUILD_ENV[@]}" \
-    CODESCRIBE_APP_NAME="$APP_NAME" \
-    CODESCRIBE_DISPLAY_NAME="$DISPLAY_NAME" \
-    CODESCRIBE_BUNDLE_ID="$BUNDLE_ID" \
-    CODESCRIBE_MIN_MACOS="$MIN_MACOS" \
-    CODESCRIBE_LSUIELEMENT="$LSUIELEMENT" \
-    make bundle
+  # Build the SwiftUI app via xcodebuild (build-app.sh). BUILD_ENV carries the
+  # model-embed flags into the release cargo build. App identity (name /
+  # bundle-id / LSUIElement) now lives in macos/project.yml, so the old
+  # CODESCRIBE_APP_NAME/… env forwarding is gone — this build reads project.yml.
+  "${BUILD_ENV[@]}" make app PROFILE=release
 )
 
 if [[ ! -d "$APP_PATH" ]]; then
@@ -139,5 +139,5 @@ echo "DMG ready: $DMG_PATH"
 
 if [[ "$NOTARIZE" -eq 1 ]]; then
   echo "Notarizing DMG with profile: $NOTARY_PROFILE"
-  NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" "$DMG_PATH"
+  NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" "$DMG_PATH" "$APP_PATH"
 fi

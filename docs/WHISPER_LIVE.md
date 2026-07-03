@@ -150,7 +150,7 @@ make install          # ensures runtime model/cache availability and installs th
 ### Bundle / DMG
 
 ```bash
-make bundle
+make app PROFILE=release
 make dmg-signed
 ```
 

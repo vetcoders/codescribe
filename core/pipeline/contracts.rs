@@ -550,7 +550,8 @@ pub trait DeltaSink: Send + Sync {
 /// and why, not how to display it. UI decides presentation.
 ///
 /// Data flow: AudioChunk → VAD → Whisper → PostProcess → EngineEvent
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
     /// VAD detected speech start.
     VadStart { speech_prob: f32, ts_ms: u64 },
@@ -625,6 +626,32 @@ pub enum EngineEvent {
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
     },
 
+    /// Replace a bounded char range inside an already-committed utterance.
+    ///
+    /// This is the ADR "never rewrite from zero" patch primitive for Layers 1,
+    /// 2, and 4. `start` and `end` are char offsets within `utterance_id`.
+    ReplaceRange {
+        utterance_id: u64,
+        start: usize,
+        end: usize,
+        text: String,
+        source: LayerSource,
+    },
+
+    /// Insert a visible annotation at a char position inside an utterance.
+    InsertAnnotation {
+        utterance_id: u64,
+        position: usize,
+        text: String,
+        kind: AnnotationKind,
+    },
+
+    /// Mark the session text buffer immutable after the final layered pass.
+    SessionFinalised {
+        session_id: String,
+        layer_summary: LayerSummary,
+    },
+
     /// Content dropped by engine intelligence.
     Drop {
         kind: DropKind,
@@ -660,8 +687,97 @@ pub enum EngineEvent {
     Warning { code: String, message: String },
 }
 
+/// Layer that produced a bounded replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayerSource {
+    TailPatch,
+    Lexicon,
+    InlineLlm,
+    FinalBam,
+}
+
+/// Kind of annotation inserted into the visible transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnnotationKind {
+    HesitationPause,
+    Paralingual { label: String },
+}
+
+/// Session-end summary for layered transcript mutation telemetry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerSummary {
+    pub tail_patch_replacements: u64,
+    pub lexicon_replacements: u64,
+    pub inline_llm_replacements: u64,
+    pub final_bam_replacements: u64,
+    pub annotations_inserted: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TranscriptEventApplyError {
+    InvalidRange {
+        start: usize,
+        end: usize,
+        len: usize,
+    },
+}
+
+impl EngineEvent {
+    /// Apply ADR-visible bounded mutations to a committed utterance buffer.
+    ///
+    /// Append/backspace remain represented by `TranscriptDelta`; this helper is
+    /// only for range replacement and annotation insertion contracts.
+    pub fn apply_to_committed_text(
+        &self,
+        target: &mut String,
+    ) -> Result<bool, TranscriptEventApplyError> {
+        match self {
+            Self::ReplaceRange {
+                start, end, text, ..
+            } => {
+                let (start_byte, end_byte) = char_range_to_byte_range(target, *start, *end)?;
+                target.replace_range(start_byte..end_byte, text);
+                Ok(true)
+            }
+            Self::InsertAnnotation { position, text, .. } => {
+                let (position_byte, _) = char_range_to_byte_range(target, *position, *position)?;
+                target.insert_str(position_byte, text);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+}
+
+fn char_range_to_byte_range(
+    text: &str,
+    start: usize,
+    end: usize,
+) -> Result<(usize, usize), TranscriptEventApplyError> {
+    let len = text.chars().count();
+    if start > end || end > len {
+        return Err(TranscriptEventApplyError::InvalidRange { start, end, len });
+    }
+
+    let start_byte = char_offset_to_byte_index(text, start);
+    let end_byte = char_offset_to_byte_index(text, end);
+    Ok((start_byte, end_byte))
+}
+
+fn char_offset_to_byte_index(text: &str, offset: usize) -> usize {
+    if offset == text.chars().count() {
+        return text.len();
+    }
+    text.char_indices()
+        .nth(offset)
+        .map(|(byte_index, _)| byte_index)
+        .unwrap_or(text.len())
+}
+
 /// Why the engine dropped content.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DropKind {
     /// Whisper hallucination pattern detected (e.g. "thank you", "subscribe").
@@ -996,6 +1112,107 @@ mod tests {
         } else {
             panic!("Expected UtteranceFinal variant");
         }
+    }
+
+    #[test]
+    fn engine_event_replace_range_roundtrip_clone_and_apply() {
+        let event = EngineEvent::ReplaceRange {
+            utterance_id: 7,
+            start: 6,
+            end: 10,
+            text: "world".to_string(),
+            source: LayerSource::Lexicon,
+        };
+
+        let cloned = event.clone();
+        assert_eq!(cloned, event);
+
+        let json = serde_json::to_value(&event).expect("serialize replace_range");
+        assert_eq!(
+            json.get("type").and_then(serde_json::Value::as_str),
+            Some("replace_range")
+        );
+        assert_eq!(
+            json.get("source").and_then(serde_json::Value::as_str),
+            Some("lexicon")
+        );
+
+        let roundtrip: EngineEvent =
+            serde_json::from_value(json).expect("deserialize replace_range");
+        assert_eq!(roundtrip, event);
+
+        let mut committed = "hello wrld".to_string();
+        let applied = roundtrip
+            .apply_to_committed_text(&mut committed)
+            .expect("apply bounded replacement");
+        assert!(applied);
+        assert_eq!(committed, "hello world");
+    }
+
+    #[test]
+    fn engine_event_insert_annotation_roundtrip_clone_and_apply() {
+        let event = EngineEvent::InsertAnnotation {
+            utterance_id: 9,
+            position: 8,
+            text: "[śmiech] ".to_string(),
+            kind: AnnotationKind::Paralingual {
+                label: "laugh".to_string(),
+            },
+        };
+
+        let cloned = event.clone();
+        assert_eq!(cloned, event);
+
+        let json = serde_json::to_value(&event).expect("serialize insert_annotation");
+        assert_eq!(
+            json.get("type").and_then(serde_json::Value::as_str),
+            Some("insert_annotation")
+        );
+
+        let roundtrip: EngineEvent =
+            serde_json::from_value(json).expect("deserialize insert_annotation");
+        assert_eq!(roundtrip, event);
+
+        let mut committed = "Pacjent spokojny".to_string();
+        let applied = roundtrip
+            .apply_to_committed_text(&mut committed)
+            .expect("apply annotation insert");
+        assert!(applied);
+        assert_eq!(committed, "Pacjent [śmiech] spokojny");
+    }
+
+    #[test]
+    fn engine_event_session_finalised_roundtrip_and_noop_apply() {
+        let event = EngineEvent::SessionFinalised {
+            session_id: "session-abc".to_string(),
+            layer_summary: LayerSummary {
+                tail_patch_replacements: 1,
+                lexicon_replacements: 2,
+                inline_llm_replacements: 3,
+                final_bam_replacements: 4,
+                annotations_inserted: 5,
+            },
+        };
+
+        let cloned = event.clone();
+        assert_eq!(cloned, event);
+
+        let json = serde_json::to_value(&event).expect("serialize session_finalised");
+        assert_eq!(
+            json.get("type").and_then(serde_json::Value::as_str),
+            Some("session_finalised")
+        );
+
+        let roundtrip: EngineEvent =
+            serde_json::from_value(json).expect("deserialize session_finalised");
+        assert_eq!(roundtrip, event);
+
+        let mut committed = "immutable".to_string();
+        let applied = roundtrip
+            .apply_to_committed_text(&mut committed)
+            .expect("session finalised apply is a noop");
+        assert!(!applied);
+        assert_eq!(committed, "immutable");
     }
 
     // ── RawTranscript confidence metadata ──

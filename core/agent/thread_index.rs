@@ -1,8 +1,9 @@
 use std::borrow::Cow;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
@@ -136,7 +137,12 @@ impl ThreadIndex {
         // so there is no path-traversal source to taint.
         let path = threads_dir.join(INDEX_FILE_NAME);
         if path.exists() {
-            let raw = fs::read_to_string(&path)
+            let path = canonical_existing_child(threads_dir, &path)?;
+            let mut raw = String::new();
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is canonicalized and checked to stay under threads_dir immediately above.
+            fs::File::open(&path)
+                .with_context(|| format!("Failed to open thread index: {}", path.display()))?
+                .read_to_string(&mut raw)
                 .with_context(|| format!("Failed to read thread index: {}", path.display()))?;
             let data = serde_json::from_str::<ThreadIndexData>(&raw)
                 .with_context(|| format!("Failed to parse thread index: {}", path.display()))?;
@@ -431,6 +437,23 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
+    let base = base
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize base dir: {}", base.display()))?;
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize file path: {}", path.display()))?;
+    if !path.starts_with(&base) {
+        bail!(
+            "Thread index path escaped threads dir: {} outside {}",
+            path.display(),
+            base.display()
+        );
+    }
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -454,6 +477,7 @@ mod tests {
             created_at: updated_at - Duration::minutes(5),
             updated_at,
             title: title.to_string(),
+            title_is_custom: false,
             mode: mode.to_string(),
             tags: vec!["vet".to_string(), "urgent".to_string()],
             notes: Vec::new(),

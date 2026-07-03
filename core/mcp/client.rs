@@ -8,16 +8,22 @@ use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::time::timeout;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::agent::ToolResultContent;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
+/// Upper bound on how long a failure-path stderr drain may block. A crashed
+/// server exits and yields EOF well within this; a still-alive server that
+/// holds stderr open is capped here so the diagnostic never hangs the caller.
+const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_millis(200);
+/// Max characters of collapsed stderr carried into a WARN line.
+const STDERR_LOG_MAX_CHARS: usize = 200;
 const FALLBACK_PATHS: &[&str] = &[
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -104,13 +110,26 @@ impl McpClient {
     }
 
     pub async fn list_tools(&self) -> Result<Vec<McpTool>> {
-        let mut connection = StdioConnection::spawn(&self.config, self.timeout).await?;
+        let mut connection = match StdioConnection::spawn(&self.config, self.timeout).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                warn!(
+                    "MCP server '{}' failed to spawn: {error}",
+                    self.config.command
+                );
+                return Err(error);
+            }
+        };
         let result = async {
             connection.initialize().await?;
             let response = connection.request("tools/list", json!({})).await?;
             parse_tools_list(response)
         }
         .await;
+        if let Err(error) = &result {
+            let stderr = connection.drain_stderr().await;
+            warn_handshake_failure(&self.config.command, "tools/list", error, &stderr);
+        }
         let shutdown = connection.shutdown().await;
         if let Err(error) = shutdown {
             debug!("MCP shutdown after tools/list failed: {error}");
@@ -119,7 +138,16 @@ impl McpClient {
     }
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Vec<ToolResultContent>> {
-        let mut connection = StdioConnection::spawn(&self.config, self.timeout).await?;
+        let mut connection = match StdioConnection::spawn(&self.config, self.timeout).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                warn!(
+                    "MCP server '{}' failed to spawn for tool '{name}': {error}",
+                    self.config.command
+                );
+                return Err(error);
+            }
+        };
         let result = async {
             connection.initialize().await?;
             let response = connection
@@ -134,6 +162,10 @@ impl McpClient {
             parse_tool_call_result(response)
         }
         .await;
+        if let Err(error) = &result {
+            let stderr = connection.drain_stderr().await;
+            warn_handshake_failure(&self.config.command, "tools/call", error, &stderr);
+        }
         let shutdown = connection.shutdown().await;
         if let Err(error) = shutdown {
             debug!("MCP shutdown after tools/call failed: {error}");
@@ -142,10 +174,24 @@ impl McpClient {
     }
 }
 
+/// Emit a WARN for a spawn-survived-but-handshake/call-failed MCP exchange,
+/// enriched with the process stderr (already collapsed and truncated) when the
+/// server wrote anything before failing.
+fn warn_handshake_failure(command: &str, phase: &str, error: &anyhow::Error, stderr: &str) {
+    if stderr.is_empty() {
+        warn!("MCP server '{command}' {phase} failed: {error}");
+    } else {
+        warn!("MCP server '{command}' {phase} failed: {error} — stderr: {stderr}");
+    }
+}
+
 struct StdioConnection {
     child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
+    /// Piped stderr, read only on the failure path (see `drain_stderr`). Taken
+    /// out once drained so shutdown does not touch it again.
+    stderr: Option<ChildStderr>,
     next_id: u64,
     response_timeout: Duration,
 }
@@ -161,7 +207,11 @@ impl StdioConnection {
             .env("PATH", &effective_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            // Pipe (not null) so a spawn-survived-but-handshake-failed server's
+            // stderr can be surfaced in a WARN. One-shot per call, drained on the
+            // failure path and closed at shutdown, so it cannot back-pressure a
+            // healthy call.
+            .stderr(Stdio::piped());
 
         let mut child = command.spawn().map_err(|err| {
             // Give the most common failure a concrete, actionable reason instead
@@ -186,14 +236,31 @@ impl StdioConnection {
             .stdout
             .take()
             .context("MCP server stdout was not piped")?;
+        let stderr = child.stderr.take();
 
         Ok(Self {
             child,
             stdin,
             stdout: BufReader::new(stdout).lines(),
+            stderr,
             next_id: 1,
             response_timeout,
         })
+    }
+
+    /// Best-effort read of whatever the server wrote to stderr, collapsed to a
+    /// single line and truncated for logging. Bounded by `STDERR_DRAIN_TIMEOUT`
+    /// so a still-running child that holds stderr open cannot block the caller.
+    async fn drain_stderr(&mut self) -> String {
+        let Some(stderr) = self.stderr.take() else {
+            return String::new();
+        };
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = Vec::new();
+        // On timeout the read future is dropped; bytes already read stay in
+        // `buffer`, which is enough for a diagnostic snippet.
+        let _ = timeout(STDERR_DRAIN_TIMEOUT, reader.read_to_end(&mut buffer)).await;
+        truncate_stderr(&String::from_utf8_lossy(&buffer))
     }
 
     async fn initialize(&mut self) -> Result<()> {
@@ -427,6 +494,20 @@ fn parse_tool_call_result(value: Value) -> Result<Vec<ToolResultContent>> {
 
 fn default_input_schema() -> Value {
     json!({ "type": "object" })
+}
+
+/// Collapse multi-line/whitespace-heavy stderr into one truncated log-friendly
+/// line.
+fn truncate_stderr(raw: &str) -> String {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= STDERR_LOG_MAX_CHARS {
+        return collapsed;
+    }
+    collapsed
+        .chars()
+        .take(STDERR_LOG_MAX_CHARS.saturating_sub(3))
+        .collect::<String>()
+        + "..."
 }
 
 #[cfg(test)]

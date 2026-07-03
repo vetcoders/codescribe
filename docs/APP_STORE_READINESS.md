@@ -98,11 +98,9 @@ the store) and off (for the agent). Do not attempt one binary for both.
 
 **P1 — required but not the gate**
 
-4. **Bundle-id split** — `com.codescribe.app` (Makefile/Info.plist) vs
-   `com.vetcoders.codescribe` (`core/config/keychain.rs:15`, `release.yml:73`).
-   A store app record needs one canonical id; this split also fragments TCC and
-   keychain identity today. **Fix is out-of-scope here** (touches the dirty
-   `Makefile` on this branch) — see follow-up prompt.
+4. **Bundle-id split** — RESOLVED. The app, Makefile/Info.plist, TCC, and
+   keychain identity now all use the canonical `com.vetcoders.codescribe`
+   (matching `core/config/keychain.rs:15` and `release.yml:73`).
 5. **Accessibility / Apple Events purpose strings** — review-risky for a store
    build; fine for Developer ID.
 6. **Release pipeline not green** — PR35 unresolved; signing secrets unset; live

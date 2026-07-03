@@ -53,18 +53,6 @@ async fn test_last_segment_audio_offset_atomic_advance_and_reset() {
 }
 
 #[test]
-fn test_renamed_request_recording_stop_is_callable() {
-    // Compile-time guard that the rename `request_recording_commit` →
-    // `request_recording_stop` shipped intact. If anyone re-renames or
-    // removes the function this test stops compiling. Body doesn't have to
-    // execute (OVERLAY_CONTROLLER won't be registered in tests, so the call
-    // gates out early with a warn!) — we just need the symbol to resolve.
-    let _: fn() = request_recording_stop;
-    let _: fn() = request_segment_commit;
-    let _: fn() = request_segment_commit_and_augment;
-}
-
-#[test]
 fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
     assert_eq!(effective_hold_start_delay_ms(200, false), 200);
     assert_eq!(effective_hold_start_delay_ms(200, true), 400);
@@ -77,48 +65,6 @@ fn test_toggle_stop_watchdog_allows_default_ai_attempt_budget() {
         toggle_stop_adjudicate_timeout() >= Duration::from_secs(90),
         "toggle stop watchdog must not fire before the default AI attempt/inter-chunk budget"
     );
-}
-
-#[test]
-fn test_overlay_format_result_marks_failed_formatting_raw() {
-    let out = overlay_format_result_text(
-        "raw transcript",
-        crate::ai_formatting::AiFormatResult {
-            text: "raw transcript".to_string(),
-            reasoning_text: None,
-            status: crate::ai_formatting::AiFormatStatus::Failed,
-        },
-    );
-
-    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
-}
-
-#[test]
-fn test_overlay_format_result_marks_empty_formatting_output() {
-    let out = overlay_format_result_text(
-        "raw transcript",
-        crate::ai_formatting::AiFormatResult {
-            text: "   ".to_string(),
-            reasoning_text: None,
-            status: crate::ai_formatting::AiFormatStatus::Applied,
-        },
-    );
-
-    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
-}
-
-#[test]
-fn test_overlay_format_result_keeps_applied_formatting() {
-    let out = overlay_format_result_text(
-        "raw transcript",
-        crate::ai_formatting::AiFormatResult {
-            text: "Formatted transcript.".to_string(),
-            reasoning_text: None,
-            status: crate::ai_formatting::AiFormatStatus::Applied,
-        },
-    );
-
-    assert_eq!(out, "Formatted transcript.");
 }
 
 #[tokio::test]
@@ -364,42 +310,6 @@ async fn test_hold_down_sets_force_raw_mode() {
     assert!(
         !*controller.assistive_mode.read().await,
         "Hold Down without Shift should keep assistive_mode=false"
-    );
-}
-
-#[test]
-fn test_action_contract_mode_prefers_raw_when_forced() {
-    let mode = resolve_transcription_action_contract_mode(true, false, true, true);
-    assert_eq!(
-        mode,
-        crate::ui::overlay::TranscriptionActionContractMode::Raw
-    );
-}
-
-#[test]
-fn test_action_contract_mode_uses_ai_format_when_force_ai_enabled() {
-    let mode = resolve_transcription_action_contract_mode(false, true, false, false);
-    assert_eq!(
-        mode,
-        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
-    );
-}
-
-#[test]
-fn test_action_contract_mode_uses_ai_format_for_toggle_ai_path() {
-    let mode = resolve_transcription_action_contract_mode(false, false, true, true);
-    assert_eq!(
-        mode,
-        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
-    );
-}
-
-#[test]
-fn test_action_contract_mode_uses_raw_for_toggle_without_ai() {
-    let mode = resolve_transcription_action_contract_mode(false, false, true, false);
-    assert_eq!(
-        mode,
-        crate::ui::overlay::TranscriptionActionContractMode::Raw
     );
 }
 
@@ -872,6 +782,33 @@ fn test_adjudicate_recording_truth_cold_whisper_empty_live_recovers_via_final_pa
 }
 
 #[test]
+fn test_recording_start_paths_do_not_gate_on_whisper_health() {
+    let source = include_str!("mod.rs");
+    let hold_start = source
+        .split("let task = tokio::spawn(async move {")
+        .nth(1)
+        .and_then(|tail| tail.split("Self::configure_hold_event_sink(").next())
+        .expect("hold start pre-recorder block should be present");
+    let toggle_start = source
+        .split("async fn start_toggle_recording")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("let _guard = self.serial_lock.lock().await;")
+                .next()
+        })
+        .expect("toggle start pre-lock block should be present");
+
+    assert!(
+        !hold_start.contains("check_health"),
+        "hold recording start must not wait for Whisper health; saved audio/final pass recovers cold STT"
+    );
+    assert!(
+        !toggle_start.contains("check_health"),
+        "toggle recording start must not wait for Whisper health; saved audio/final pass recovers cold STT"
+    );
+}
+
+#[test]
 fn test_adjudicate_recording_truth_uses_typed_cloud_primary_verdict() {
     let verdict = adjudicate_recording_truth(
         false,
@@ -922,36 +859,6 @@ fn test_adjudicate_recording_truth_marks_low_logprob_as_unsafe() {
         Some("possible_hallucination_logprob")
     );
     assert_eq!(verdict.display_status, "Possible hallucination");
-}
-
-#[test]
-fn test_recorder_runtime_recovery_requires_granted_microphone_and_missing_recorder() {
-    assert!(should_attempt_recorder_runtime_recovery(
-        PermissionStatus::Granted,
-        true
-    ));
-    assert!(!should_attempt_recorder_runtime_recovery(
-        PermissionStatus::Denied,
-        true
-    ));
-    assert!(!should_attempt_recorder_runtime_recovery(
-        PermissionStatus::Granted,
-        false
-    ));
-}
-
-#[test]
-fn test_recorder_recovery_message_uses_settings_language() {
-    let message = RecordingController::format_recorder_recovery_message(
-        &["Accessibility", "Microphone"],
-        "DictationHotkey",
-        "FormattingHotkey",
-        "AssistiveHotkey",
-    );
-
-    assert!(message.contains("Open Settings"));
-    assert!(!message.contains("Setup"));
-    assert!(message.contains("Accessibility, Microphone"));
 }
 
 // ── Pure-function unit tests for truth helpers (push_typed_flag,
@@ -1535,7 +1442,7 @@ async fn test_finish_recording_resets_unconditionally_assistive() {
 async fn test_no_decision_mode_state_exists() {
     // Compile-time + runtime proof: State enum has exactly these variants.
     // There is NO "DecisionMode" variant — the paste regression was caused
-    // by `enter_decision_mode()` which has been replaced by `schedule_auto_hide()`.
+    // by the old legacy transcription overlay decision mode, which has been removed.
     let states = [State::Idle, State::RecHold, State::RecToggle];
     for state in &states {
         let controller = RecordingController::new();
@@ -1688,14 +1595,12 @@ fn test_delta_first_guards_allow_full_rewrite_offline() {
 
 #[test]
 fn test_process_recording_outcome_no_speech_is_soft() {
-    let outcome =
-        ProcessRecordingOutcome::no_speech("vad_no_speech_detected", "No reliable speech detected");
+    let outcome = ProcessRecordingOutcome::no_speech("vad_no_speech_detected");
     assert_eq!(
         outcome.no_speech_reason.as_deref(),
         Some("vad_no_speech_detected")
     );
     assert!(outcome.commit_trigger.is_none());
-    assert_eq!(outcome.final_status, "No reliable speech detected");
 }
 
 #[tokio::test]

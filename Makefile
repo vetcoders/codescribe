@@ -1,7 +1,10 @@
-# Codescribe - Pure Rust Build System
-# Speech-to-text tray app for macOS
+# Codescribe - Build System
+# Speech-to-text for macOS: SwiftUI front-end (macos/) over a Rust engine
+# (core/ + app/ lib) bridged with UniFFI (bridge/ = codescribe-ffi).
+# The user-facing app is built by `make app` (xcodebuild); the Rust side no
+# longer ships a standalone `codescribe` tray binary.
 
-.PHONY: all build release release-codescribe release-codescribe-embedded release-qube install install-no-embed config bundle install-app \
+.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
@@ -24,7 +27,9 @@ CODESCRIBE_AUTO_CODESIGN_IDENTITY := $(if $(strip $(CODESCRIBE_APPLE_DEVELOPMENT
 CODESCRIBE_CODESIGN_IDENTITY ?= $(if $(CODESCRIBE_AUTO_CODESIGN_IDENTITY),$(CODESCRIBE_AUTO_CODESIGN_IDENTITY),-)
 CODESCRIBE_APP_NAME ?= Codescribe
 CODESCRIBE_DISPLAY_NAME ?= Codescribe
-CODESCRIBE_BUNDLE_ID ?= com.codescribe.app
+# SwiftUI app build profile for `make app` / `make app-bindings` (debug|release)
+PROFILE ?= debug
+CODESCRIBE_BUNDLE_ID ?= com.vetcoders.codescribe
 CODESCRIBE_MIN_MACOS ?=
 CODESCRIBE_LSUIELEMENT ?= true
 CODESCRIBE_ENTITLEMENTS ?= scripts/entitlements.plist
@@ -61,12 +66,25 @@ build:
 	@cargo build
 
 release-codescribe: ensure-models
-	@echo "Building codescribe (release, embedded models: Silero + MiniLM + Whisper)..."
-	@CODESCRIBE_EMBED_WHISPER=1 cargo build --release --bin codescribe
+	@echo "Building codescribe-ffi (release dylib, embedded models: Silero + MiniLM + Whisper)..."
+	@echo "  The app front-end is no longer a Rust bin; this builds the UniFFI bridge dylib."
+	@echo "  Produce the runnable SwiftUI app with: make app PROFILE=release"
+	@CODESCRIBE_EMBED_WHISPER=1 cargo build --release -p codescribe-ffi
 
 # Compatibility alias — embedding Whisper is now the default for release-codescribe.
 # Kept so existing scripts / muscle memory keep working; NOT a separate public lane.
 release-codescribe-embedded: release-codescribe
+
+# ── SwiftUI app (macos/) via the codescribe-ffi UniFFI bridge ────────────────
+# Full verified pipeline: cargo (ffi dylib) → uniffi-bindgen → xcodegen → xcodebuild.
+# `app-bindings` stops after xcodegen (no Xcode needed) for fast Rust-side iteration.
+app:
+	@echo "Building CodeScribe.app (SwiftUI, PROFILE=$(PROFILE))..."
+	@./scripts/build-app.sh $(PROFILE)
+
+app-bindings:
+	@echo "Regenerating UniFFI Swift bindings + Xcode project (PROFILE=$(PROFILE), no xcodebuild)..."
+	@SKIP_XCODEBUILD=1 ./scripts/build-app.sh $(PROFILE)
 
 release-qube:
 	@echo "Building qube-* (release, runtime model resolve from HF cache)..."
@@ -75,22 +93,22 @@ release-qube:
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing Codescribe (embedded models: Silero + MiniLM + Whisper)..."
+	@echo "Installing qube tools (embedded models: Silero + MiniLM + Whisper)..."
 	@./scripts/ensure-models.sh
 	@CODESCRIBE_EMBED_WHISPER=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
 	@$(MAKE) hooks
-	@echo "Installed: codescribe $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
+	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 
 install-no-embed:
-	@echo "Installing Codescribe (DEV/RECOVERY: runtime Whisper fallback + no optional embedded support assets)..."
+	@echo "Installing qube tools (DEV/RECOVERY: runtime Whisper fallback + no optional embedded support assets)..."
 	@./scripts/ensure-models.sh
 	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
 	@$(MAKE) hooks
-	@echo "Installed: codescribe $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
+	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 	@echo "Note: Set CODESCRIBE_MODEL_PATH at runtime"
 
 config:
@@ -101,46 +119,18 @@ config:
 	fi
 	@$(EDITOR) ~/.codescribe/.env
 
-bundle: ensure-models release
-	@echo "Creating macOS app bundle..."
-	@rm -rf bundle/$(CODESCRIBE_APP_NAME).app
-	@mkdir -p bundle/$(CODESCRIBE_APP_NAME).app/Contents/{MacOS,Resources}
-	@cp target/release/codescribe bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/
-	@cp target-noembed/release/qube-daemon bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/ 2>/dev/null || true
-	@cp target-noembed/release/qube-report bundle/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/ 2>/dev/null || true
-	@cp assets/AppIcon.icns bundle/$(CODESCRIBE_APP_NAME).app/Contents/Resources/ 2>/dev/null || true
-	@VERSION=$$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*"\(.*\)"/\1/'); \
-	printf '%s\n' \
-		'<?xml version="1.0" encoding="UTF-8"?>' \
-		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-		'<plist version="1.0">' \
-		'<dict>' \
-		"  <key>CFBundleName</key><string>$(CODESCRIBE_APP_NAME)</string>" \
-		"  <key>CFBundleDisplayName</key><string>$(CODESCRIBE_DISPLAY_NAME)</string>" \
-		"  <key>CFBundleIdentifier</key><string>$(CODESCRIBE_BUNDLE_ID)</string>" \
-		"  <key>CFBundleVersion</key><string>$$VERSION</string>" \
-		"  <key>CFBundleShortVersionString</key><string>$$VERSION</string>" \
-		'  <key>CFBundlePackageType</key><string>APPL</string>' \
-		'  <key>CFBundleExecutable</key><string>codescribe</string>' \
-		'  <key>CFBundleIconFile</key><string>AppIcon</string>' \
-		"  <key>LSUIElement</key><$(CODESCRIBE_LSUIELEMENT)/>" \
-		'  <key>NSMicrophoneUsageDescription</key><string>Needed to transcribe speech.</string>' \
-		'  <key>NSAccessibilityUsageDescription</key><string>Needed to monitor hotkeys and paste results.</string>' \
-		'  <key>NSInputMonitoringUsageDescription</key><string>Needed to detect global hotkeys.</string>' \
-		'  <key>NSScreenCaptureUsageDescription</key><string>Capture screen context for AI-assisted features.</string>' \
-		'  <key>NSAppleEventsUsageDescription</key><string>Needed to activate the previously focused app and restore selection context.</string>' \
-		'</dict>' \
-		'</plist>' \
-		> bundle/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist; \
-	if [ -n "$(CODESCRIBE_MIN_MACOS)" ]; then \
-		/usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string $(CODESCRIBE_MIN_MACOS)" bundle/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist >/dev/null 2>&1 || true; \
-	fi
-	@echo "Bundle ready: bundle/$(CODESCRIBE_APP_NAME).app"
 
-install-app: bundle
-	@echo "Installing to /Applications..."
-	@mkdir -p /Applications
-	@rsync -a --delete bundle/$(CODESCRIBE_APP_NAME).app/ /Applications/$(CODESCRIBE_APP_NAME).app/
+install-app:
+	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, release) via scripts/build-app.sh ..."
+	@$(MAKE) --no-print-directory app PROFILE=release
+	@APP_SRC="macos/build/Build/Products/Release/Codescribe.app"; \
+	if [ ! -d "$$APP_SRC" ]; then \
+		echo "Build product missing: $$APP_SRC — 'make app PROFILE=release' did not produce the app."; \
+		exit 1; \
+	fi; \
+	echo "Installing to /Applications ..."; \
+	mkdir -p /Applications; \
+	rsync -a --delete "$$APP_SRC/" "/Applications/$(CODESCRIBE_APP_NAME).app/"
 	@if [ "$(CODESCRIBE_CODESIGN_IDENTITY)" = "-" ]; then \
 		echo "Codesigning ad-hoc (no stable signing identity found in keychain)."; \
 		echo "NOTE: macOS Accessibility/Input Monitoring may need re-grant after reinstall."; \
@@ -159,11 +149,13 @@ install-app: bundle
 # ============================================================================
 
 start:
-	@nohup codescribe > /tmp/codescribe.log 2>&1 & disown
-	@echo "Codescribe started (logs: /tmp/codescribe.log)"
+	@open -a "$(CODESCRIBE_APP_NAME)" 2>/dev/null \
+		|| open "/Applications/$(CODESCRIBE_APP_NAME).app" 2>/dev/null \
+		|| { echo "$(CODESCRIBE_APP_NAME).app not found — build it with 'make app' or install with 'make install-app'."; exit 1; }
+	@echo "$(CODESCRIBE_APP_NAME) launched"
 
 stop:
-	@pkill -x codescribe 2>/dev/null || true
+	@pkill -x "$(CODESCRIBE_APP_NAME)" 2>/dev/null || true
 	@rm -f ~/.codescribe/codescribe.pid 2>/dev/null || true
 	@echo "Stopped"
 
@@ -399,7 +391,6 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI with embedded models (Silero + MiniLM + Whisper)'
 	@printf '%s\n' '  make install-no-embed Install without optional embedded assets (needs CODESCRIBE_MODEL_PATH)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bundle' 'Create Codescribe.app bundle'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Install to /Applications'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RELEASE & DISTRIBUTION'
@@ -453,7 +444,10 @@ dmg:
 dmg-signed:
 	@./scripts/build-dmg.sh --sign
 
-release-standard:
+# ensure-models runs first so the embedded-Whisper release build finds the model
+# in the HF cache. build.rs only warns on a missing model, so without this the
+# signed/notarized DMG could ship without embedded Whisper.
+release-standard: ensure-models
 	@./scripts/build-dmg.sh --sign --notarize
 
 # Compatibility alias — the standard DMG now embeds Whisper by default, so it IS

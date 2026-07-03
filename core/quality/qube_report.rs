@@ -66,14 +66,12 @@ impl MetricsReference {
 #[serde(rename_all = "snake_case")]
 pub enum LocalTranscriptionMode {
     LocalWhisper,
-    CodescribeIpc,
 }
 
 impl LocalTranscriptionMode {
     fn as_str(self) -> &'static str {
         match self {
             Self::LocalWhisper => "local_whisper",
-            Self::CodescribeIpc => "codescribe_ipc",
         }
     }
 }
@@ -473,7 +471,7 @@ async fn process_pair(
     let (_speech_only, vad_stats) = crate::vad::extract_speech(&samples, sample_rate);
 
     let raw_transcript =
-        transcribe_raw_for_report(&audio_canon, &samples, sample_rate, config, &mut errors).await;
+        transcribe_raw_for_report(&samples, sample_rate, config, &mut errors).await;
     let raw_semantics = classify_raw_semantics(
         raw_transcript.as_ref(),
         vad_stats.no_speech_reason.as_deref(),
@@ -1404,7 +1402,6 @@ fn render_ingest_jsonl(report: &QualityReport, artifacts_dir: &Path) -> Result<S
 }
 
 async fn transcribe_raw_for_report(
-    audio_path: &Path,
     samples: &[f32],
     sample_rate: u32,
     config: &QualityReportConfig,
@@ -1421,35 +1418,6 @@ async fn transcribe_raw_for_report(
                 Ok(transcript) => Some(transcript),
                 Err(e) => {
                     errors.push(format!("Raw transcription failed: {}", e));
-                    None
-                }
-            }
-        }
-        LocalTranscriptionMode::CodescribeIpc => {
-            match crate::ipc::transcribe_file(audio_path).await {
-                Ok(text) => {
-                    let text = text.trim().to_string();
-                    if text.is_empty() {
-                        errors.push(
-                            "Raw transcription skipped: Codescribe IPC returned empty transcript"
-                                .into(),
-                        );
-                        None
-                    } else {
-                        Some(RawTranscript {
-                            text,
-                            segments: Vec::new(),
-                            avg_logprob: None,
-                            compression_ratio: None,
-                            quality_gate_dropped: false,
-                        })
-                    }
-                }
-                Err(e) => {
-                    errors.push(format!(
-                        "Raw transcription skipped: Codescribe IPC unavailable/degraded: {}",
-                        e
-                    ));
                     None
                 }
             }
@@ -1866,41 +1834,6 @@ mod tests {
 
         config.stt_api_key = Some("   ".into());
         assert_eq!(cloud_reference_credentials(&config), None);
-    }
-
-    #[tokio::test]
-    async fn codescribe_ipc_transcription_failure_is_degraded_not_local_fallback() {
-        let temp = tempfile::tempdir().expect("create temp dir for ipc fallback test");
-        let config = QualityReportConfig {
-            input_dir: temp.path().join("input"),
-            output_dir: temp.path().join("output"),
-            date_filter: None,
-            limit: 0,
-            language: Some("pl".to_string()),
-            skip_cloud: true,
-            cloud_concurrency: 1,
-            skip_formatting: true,
-            debug_mode: false,
-            copy_audio: false,
-            metrics_reference: MetricsReference::Corpus,
-            local_transcription: LocalTranscriptionMode::CodescribeIpc,
-        };
-        let mut errors = Vec::new();
-        let missing_audio = temp.path().join("missing.wav");
-
-        let transcript =
-            transcribe_raw_for_report(&missing_audio, &[], 16_000, &config, &mut errors).await;
-
-        assert!(
-            transcript.is_none(),
-            "IPC failure must not fall back to in-daemon local Whisper"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.starts_with("Raw transcription skipped: Codescribe IPC")),
-            "expected degraded IPC error, got: {errors:?}"
-        );
     }
 
     #[test]

@@ -255,8 +255,11 @@ mod tests {
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "Vetcoders".into(),
-                repo: "Codescribe".into(),
+                // A ref parser preserves the case present in the URL path;
+                // GitHub `contents`/raw paths are case-sensitive, so brand
+                // Title-casing here would break fetches of real repositories.
+                owner: "vetcoders".into(),
+                repo: "codescribe".into(),
                 git_ref: "main".into(),
                 path: "src/lib.rs".into(),
             })

@@ -120,7 +120,10 @@ fn runtime_contract_blocks_legacy_worker_symbols() {
     let mut guarded_sources: Vec<(String, String)> = [
         "core/audio/streaming_recorder.rs",
         "app/controller/mod.rs",
-        "bin/codescribe.rs",
+        // Runtime entrypoint that installs the hotkey listener and hosts the
+        // RecordingController for the SwiftUI app — successor to the removed
+        // `bin/codescribe.rs` tray binary.
+        "bridge/src/hotkeys.rs",
     ]
     .into_iter()
     .map(|relative_path| {

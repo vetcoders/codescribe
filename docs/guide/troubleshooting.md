@@ -289,7 +289,7 @@ cp -r ~/.codescribe ~/.codescribe.backup
 
 # Reset config
 rm ~/.codescribe/.env
-codescribe --config
+make config
 
 # Clear caches
 rm -rf ~/.codescribe/logs/*
@@ -312,7 +312,7 @@ Include in your report:
 
 - macOS version (System Settings → General → About)
 - Chip (M1/M2/M3/Intel)
-- Codescribe version (`codescribe --version`)
+- Codescribe version (`make version`)
 - Relevant log output
 - Steps to reproduce
 

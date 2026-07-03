@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "core"]
+members = [".", "core", "bridge"]
 
 [workspace.package]
 version = "0.12.2"
@@ -20,7 +20,7 @@ tracing = "0.1"
 name = "codescribe"
 version = "0.12.2"
 edition = "2024"
-description = "Speech-to-text tray app for macOS - Pure Rust"
+description = "Speech-to-text for macOS — SwiftUI front-end over a Rust engine (UniFFI bridge)"
 authors = ["Vetcoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"
 repository = "https://github.com/vetcoders/codescribe"
@@ -28,10 +28,6 @@ homepage = "https://vetcoders.github.io/codescribe/"
 documentation = "https://vetcoders.github.io/codescribe/quickstart/"
 keywords = ["speech-to-text", "whisper", "macos", "dictation", "audio"]
 categories = ["command-line-utilities", "multimedia::audio"]
-
-[[bin]]
-name = "codescribe"
-path = "bin/codescribe.rs"
 
 [[bin]]
 name = "qube-report"
@@ -43,10 +39,6 @@ path = "bin/qube_daemon.rs"
 
 [lib]
 path = "app/lib.rs"
-
-[features]
-default = ["liquid_glass"]
-liquid_glass = []
 
 [dependencies]
 # Core library

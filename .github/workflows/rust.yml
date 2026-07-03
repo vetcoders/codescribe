@@ -26,9 +26,9 @@ jobs:
     name: Format Check
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt
 
@@ -42,6 +42,6 @@ jobs:
   # quality:
   #   runs-on: [self-hosted, macos, arm64]
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
   #     - run: cargo clippy -- -D warnings
   #     - run: cargo test --lib

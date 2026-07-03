@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -364,6 +364,7 @@ impl AgentSession {
                 )
                 .await;
 
+                let dispatch_started = Instant::now();
                 let tool_outputs = match self.tools.dispatch(&tool_name, arguments).await {
                     Ok(outputs) => outputs,
                     Err(error) => {
@@ -379,6 +380,24 @@ impl AgentSession {
                 let is_error = tool_outputs
                     .iter()
                     .any(|output| matches!(output, ToolResultContent::Error(_)));
+
+                // Per-call observability: one INFO line per agent tool call (native
+                // or MCP) so failures are diagnosable from codescribe.log after the
+                // fact. Never logs arguments or full payloads — only the tool name,
+                // duration, outcome, and (on error) the error's first line. For MCP
+                // tools the server segment of the public name is surfaced.
+                let dispatch_ms = dispatch_started.elapsed().as_millis();
+                let server_label = mcp_server_name(&tool_name)
+                    .map(|server| format!(" (mcp server `{server}`)"))
+                    .unwrap_or_default();
+                if is_error {
+                    info!(
+                        "agent tool `{tool_name}`{server_label} failed in {dispatch_ms}ms: {}",
+                        first_error_line(&tool_outputs)
+                    );
+                } else {
+                    info!("agent tool `{tool_name}`{server_label} ok in {dispatch_ms}ms");
+                }
 
                 let mut content_blocks = Vec::new();
                 for output in tool_outputs {
@@ -460,6 +479,31 @@ fn is_transient_stream_start_error(error: &anyhow::Error) -> bool {
     ]
     .iter()
     .any(|pattern| message.contains(pattern))
+}
+
+/// Extract the MCP server segment from a public tool name shaped
+/// `mcp__<server>__<tool>`. Native tools return `None`.
+fn mcp_server_name(tool_name: &str) -> Option<&str> {
+    tool_name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split_once("__"))
+        .map(|(server, _)| server)
+}
+
+/// First line of the first error result, trimmed and truncated for a single log
+/// line. Never includes tool arguments — only the message the tool produced.
+fn first_error_line(outputs: &[ToolResultContent]) -> String {
+    outputs
+        .iter()
+        .find_map(|output| match output {
+            ToolResultContent::Error(message) => Some(message),
+            _ => None,
+        })
+        .map(|message| {
+            let line = message.lines().next().unwrap_or("").trim();
+            truncate_summary(line, 200)
+        })
+        .unwrap_or_default()
 }
 
 fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {

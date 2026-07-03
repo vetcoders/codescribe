@@ -9,8 +9,12 @@
 #       --apple-id "your@email.com" --team-id "TEAMID" --password "app-specific-pwd"
 #
 # Usage:
-#   ./scripts/notarize.sh Codescribe-<VERSION>.dmg
+#   ./scripts/notarize.sh Codescribe-<VERSION>.dmg [app-path]
 #   NOTARY_PROFILE=MyProfile ./scripts/notarize.sh Codescribe.dmg
+#
+# The optional second argument points at the signed .app to verify/staple. It
+# defaults to the Xcode-built product (macos/build/Build/Products/Release), the
+# same bundle build-dmg.sh packages — the old bundle/ hand-built path is retired.
 #
 # Created by Vetcoders (c)2026
 
@@ -23,7 +27,7 @@ cd "$PROJECT_DIR"
 # Configuration
 NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
 APP_NAME="${CODESCRIBE_APP_NAME:-Codescribe}"
-BUNDLE_DIR="bundle/${APP_NAME}.app"
+DEFAULT_BUNDLE_DIR="$PROJECT_DIR/macos/build/Build/Products/Release/${APP_NAME}.app"
 
 # Parse arguments
 if [ $# -lt 1 ]; then
@@ -41,9 +45,16 @@ if [ $# -lt 1 ]; then
 fi
 
 DMG_FILE="$1"
+BUNDLE_DIR="${2:-$DEFAULT_BUNDLE_DIR}"
 
 if [ ! -f "$DMG_FILE" ]; then
     echo "✗ DMG not found: $DMG_FILE"
+    exit 1
+fi
+
+if [ ! -d "$BUNDLE_DIR" ]; then
+    echo "✗ App bundle not found: $BUNDLE_DIR"
+    echo "  Build it first: make release-standard (build-dmg.sh --sign)"
     exit 1
 fi
 
@@ -58,7 +69,7 @@ echo "────────────────────────�
 echo ""
 echo "▶ Verifying code signature..."
 if ! codesign --verify --deep --strict "${BUNDLE_DIR}" 2>/dev/null; then
-    echo "✗ App not properly signed. Run build-release.sh --sign first"
+    echo "✗ App not properly signed. Run 'make release-standard' (build-dmg.sh --sign) first"
     exit 1
 fi
 echo "  ✓ Signature valid"

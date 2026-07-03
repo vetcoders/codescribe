@@ -173,6 +173,7 @@ mod tests {
             created_at: updated_at - Duration::minutes(5),
             updated_at,
             title: title.to_string(),
+            title_is_custom: false,
             mode: "assistive".to_string(),
             tags: vec!["clinic".to_string()],
             notes: Vec::new(),

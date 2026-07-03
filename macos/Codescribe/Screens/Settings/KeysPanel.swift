@@ -1,0 +1,380 @@
+import SwiftUI
+
+// Keys panel: write-only API-key management. Secrets are entered through a
+// SecureField and pushed to the core's Keychain via `setApiKey`; the trash button
+// clears via `clearApiKey`. Presence is rendered from `CsKeyStatus` booleans —
+// a secret is NEVER read back across the FFI.
+
+struct KeysPanel: View {
+    @ObservedObject var model: SettingsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            EyebrowLabel(text: "Settings · Keys")
+            Text("API keys.")
+                .font(CSFont.ui(26, .bold))
+                .tracking(-0.5)
+                .foregroundStyle(CSColor.textHigh)
+                .padding(.top, 6)
+
+            Text("Stored in the macOS Keychain. Keys are write-only here — codescribe never displays a stored secret.")
+                .font(CSFont.ui(12.5))
+                .lineSpacing(2)
+                .foregroundStyle(CSColor.textMutedAlt)
+                .padding(.top, 8)
+
+            SettingsSectionLabel("Agent provider")
+                .padding(.top, 22)
+            AgentProviderSelector(model: model)
+                .padding(.top, 11)
+
+            SettingsSectionLabel("Providers")
+                .padding(.top, 22)
+            VStack(spacing: 8) {
+                ForEach(model.keyAccounts, id: \.self) { account in
+                    KeyRow(
+                        account: account,
+                        label: SettingsViewModel.keyLabel(for: account),
+                        isSet: model.keyStatus.isSet(account: account),
+                        accountProvider: model.providerForKeyAccount(account),
+                        onSave: { model.saveKey(account: account, secret: $0) },
+                        onClear: { model.clearKey(account: account) },
+                        onStartAccountLogin: { model.startAccountLogin(providerId: $0) }
+                    )
+                }
+            }
+            .padding(.top, 11)
+
+            HStack(spacing: 8) {
+                Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
+                Text("secrets live only in the Keychain — presence shown, value hidden")
+                    .font(CSFont.mono(11, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+            }
+            .padding(.top, 16)
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 24)
+    }
+}
+
+// MARK: - Agent provider / model selector
+
+// Picks the assistive/agent-lane provider + model. The chosen provider maps to
+// one of the API-key rows below; the dot reflects whether that key is present.
+private struct AgentProviderSelector: View {
+    @ObservedObject var model: SettingsViewModel
+
+    private var selected: CsProviderOption? { model.selectedProvider }
+    private var discoveredModels: [CsModelOption] { model.discoveredModels }
+
+    private var discoveryDotColor: Color {
+        switch model.modelDiscoveryStatus {
+        case "fresh": return CSColor.olive
+        case "cached": return CSColor.amber
+        case "no_key": return CSColor.textFaint
+        default: return CSColor.terracotta
+        }
+    }
+
+    private var currentModelLabel: String {
+        let id = model.assistiveModel
+        if id.isEmpty {
+            return discoveredModels.isEmpty ? "No discovered models" : "Choose a model"
+        }
+        return discoveredModels.first { $0.id == id }?.displayName ?? id
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SelectorRow(label: "Provider") {
+                Menu {
+                    ForEach(model.availableProviders, id: \.id) { provider in
+                        Button {
+                            model.setAssistiveProvider(provider.id)
+                        } label: {
+                            if provider.id == model.assistiveProviderId {
+                                Label(provider.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(provider.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    MenuLabel(text: selected?.displayName ?? model.assistiveProviderId)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+            }
+
+            SelectorRow(label: "Model") {
+                Menu {
+                    ForEach(discoveredModels, id: \.id) { option in
+                        Button {
+                            model.setAssistiveModel(option.id)
+                        } label: {
+                            if option.id == model.assistiveModel {
+                                Label(option.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(option.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    MenuLabel(text: currentModelLabel, mono: true)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .disabled(discoveredModels.isEmpty)
+            }
+
+            if let selected {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill((selected.apiKeySet ? CSColor.olive : CSColor.terracotta).opacity(0.85))
+                        .frame(width: 7, height: 7)
+                    Text("uses \(SettingsViewModel.keyLabel(for: selected.apiKeyAccount)) — \(selected.apiKeySet ? "set" : "not set") below")
+                        .font(CSFont.mono(11, .medium))
+                        .foregroundStyle(CSColor.textFaint)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(discoveryDotColor.opacity(0.85))
+                    .frame(width: 7, height: 7)
+                Text(model.modelDiscoveryDescription)
+                    .font(CSFont.mono(11, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 13)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        )
+    }
+}
+
+private struct SelectorRow<Content: View>: View {
+    let label: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .font(CSFont.mono(12, .medium))
+                .foregroundStyle(CSColor.textMutedAlt)
+                .frame(width: 80, alignment: .leading)
+            content()
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct MenuLabel: View {
+    let text: String
+    var mono: Bool = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(text)
+                .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
+                .foregroundStyle(CSColor.textHigh)
+                .lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(CSColor.textFaint)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Key row
+
+private struct KeyRow: View {
+    let account: String
+    let label: String
+    let isSet: Bool
+    let accountProvider: CsProviderOption?
+    let onSave: (String) -> Void
+    let onClear: () -> Void
+    let onStartAccountLogin: (String) -> Void
+
+    @State private var draft: String = ""
+
+    private var accent: Color { isSet ? CSColor.olive : CSColor.terracotta }
+    private var accentLight: Color { isSet ? CSColor.oliveLight : CSColor.terracottaLight }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+                Text(label)
+                    .font(CSFont.ui(13.5, .semibold))
+                    .foregroundStyle(CSColor.textBody)
+                Text(account)
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+                Spacer(minLength: 0)
+                Text(isSet ? "set" : "not set")
+                    .font(CSFont.mono(10, .semibold))
+                    .foregroundStyle(accentLight)
+            }
+
+            HStack(spacing: 8) {
+                SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
+                    .textFieldStyle(.plain)
+                    .font(CSFont.mono(12, .regular))
+                    .foregroundStyle(CSColor.textBody)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .fill(CSColor.surfaceRaised(0.03))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                    )
+                    .onSubmit(save)
+
+                Button(action: save) {
+                    Text("Save")
+                        .font(CSFont.ui(12, .semibold))
+                        .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                .fill(CSColor.terracotta.opacity(draft.isEmpty ? 0.06 : 0.14))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                .strokeBorder(CSColor.terracotta.opacity(draft.isEmpty ? 0.1 : 0.28), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.isEmpty)
+
+                Button(action: onClear) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isSet ? CSColor.terracottaLight : CSColor.textFaint)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                .fill(CSColor.surfaceRaised(0.03))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(!isSet)
+                .help("Remove this key from the Keychain")
+            }
+
+            if let accountProvider {
+                AccountLoginRow(
+                    provider: accountProvider,
+                    onStart: { onStartAccountLogin(accountProvider.id) }
+                )
+            }
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 13)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(accent.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(accent.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private func save() {
+        guard !draft.isEmpty else { return }
+        onSave(draft)
+        draft = ""
+    }
+}
+
+private struct AccountLoginRow: View {
+    let provider: CsProviderOption
+    let onStart: () -> Void
+
+    private var signedIn: Bool { provider.accountSignedIn }
+    private var accent: Color { signedIn ? CSColor.olive : CSColor.textFaint }
+    private var statusText: String {
+        signedIn ? "signed in" : "not signed in"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(accent.opacity(0.85))
+                .frame(width: 7, height: 7)
+            Text("ChatGPT account")
+                .font(CSFont.ui(12.5, .semibold))
+                .foregroundStyle(CSColor.textBody)
+            Text(statusText)
+                .font(CSFont.mono(10, .semibold))
+                .foregroundStyle(accent)
+            if !provider.accountStatusMessage.isEmpty, provider.accountStatusMessage != statusText {
+                Text(provider.accountStatusMessage)
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Button(action: onStart) {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Sign in with ChatGPT")
+                        .font(CSFont.ui(12, .semibold))
+                }
+                .foregroundStyle(provider.accountLoginEnabled ? CSColor.oliveLight : CSColor.textFaint)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .fill(CSColor.surfaceRaised(0.03))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!provider.accountLoginEnabled)
+            .help(provider.accountStatusMessage)
+        }
+    }
+}
+
+#Preview("Keys panel") {
+    ScrollView { KeysPanel(model: .preview(.keys)) }
+        .frame(width: 720, height: 620)
+        .background(SettingsView.windowGradient)
+        .preferredColorScheme(.dark)
+}
