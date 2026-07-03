@@ -208,10 +208,21 @@ struct CSIconView: View {
         }
     }
 
-    /// A Phosphor glyph is sized to a square box (an SF Symbol gets its size
-    /// from the font instead).
+    /// A Phosphor glyph is a resizable template image, so it must be pinned to
+    /// an explicit box in BOTH axes (an SF Symbol gets its size from the font
+    /// instead). `.fixedSize()` locks that box to `size × size` so no container
+    /// can renegotiate it — without it a resizable image inside a `Menu`/button
+    /// label under `.fixedSize()` escapes the frame and draws at its native
+    /// (huge) asset size. `.clipped()` guarantees it never paints outside the box.
     @ViewBuilder private func sized(_ image: Image) -> some View {
-        tinted(image.resizable().scaledToFit().frame(width: size, height: size))
+        tinted(
+            image
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size, height: size)
+                .fixedSize()
+                .clipped()
+        )
     }
 
     /// Apply an explicit tint, or leave the view to inherit the ambient one.
