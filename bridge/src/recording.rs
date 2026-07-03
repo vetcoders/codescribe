@@ -5,7 +5,9 @@
 //! Filled by W3 cut #3 (sibling to `agent.rs`). Uses shared
 //! `crate::{CsError, CsLanguage}`.
 
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::time::{Duration, Instant};
 
 use codescribe_core::audio::load_audio_file;
 use codescribe_core::audio::streaming_recorder::StreamingRecorder;
@@ -14,6 +16,7 @@ use codescribe_core::pipeline::contracts::{
 };
 use codescribe_core::stt::whisper;
 use tokio::sync::Mutex;
+use tracing::{info, warn};
 
 use crate::{CsError, CsLanguage};
 
@@ -136,11 +139,60 @@ pub trait CsTranscriptionListener: Send + Sync {
     fn on_error(&self, message: String);
 }
 
+/// Accumulates finalized utterance text for the composer voice-note return,
+/// mirroring core's crate-private `SessionTranscriptCollector` discipline
+/// (skip empty, single-space join, trimmed). The same `CsEventSink` that
+/// forwards engine events to Swift feeds each `UtteranceFinal` here, so
+/// `stop_recording` can compose the return AFTER the streaming session's
+/// completion signal fires — reusing existing finalization, not a new channel.
+#[derive(Default)]
+struct ComposerTranscript {
+    text: StdMutex<String>,
+    utterances: AtomicU64,
+}
+
+impl ComposerTranscript {
+    /// Append one finalized utterance (Layer 0 committed text). Empty/whitespace
+    /// finals are ignored so trailing silence never widens the transcript.
+    fn append_final(&self, text: &str) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let mut buf = self.text.lock().unwrap_or_else(|e| e.into_inner());
+        if !buf.is_empty() {
+            buf.push(' ');
+        }
+        buf.push_str(trimmed);
+        self.utterances.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Current composed transcript and the number of utterances that fed it.
+    fn snapshot(&self) -> (String, u64) {
+        let text = self.text.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (text, self.utterances.load(Ordering::Relaxed))
+    }
+}
+
+/// Wait budget for `stop_recording` to drain in-flight transcription before
+/// composing the return. Proportional to recording length (residual STT work
+/// scales with audio) but clamped so the composer UI never hangs indefinitely
+/// if the scheduler stalls (e.g. thermal throttling): the floor covers a cold
+/// commit + tail patch on a short note, the cap bounds the worst case.
+fn compose_stop_timeout(elapsed: Duration) -> Duration {
+    const FLOOR: Duration = Duration::from_secs(8);
+    const CAP: Duration = Duration::from_secs(30);
+    elapsed.mul_f32(0.6).clamp(FLOOR, CAP)
+}
+
 /// Internal `EventSink` adapter (NOT exposed across FFI). Lives between the
 /// core streaming pipeline and the foreign `CsTranscriptionListener`,
 /// translating every `EngineEvent` variant into the appropriate listener call.
 struct CsEventSink {
     listener: Arc<dyn CsTranscriptionListener>,
+    /// Composer-side accumulator: `stop_recording` reads its snapshot for the
+    /// return value (the Swift `on_final` callback is a no-op on this path).
+    transcript: Arc<ComposerTranscript>,
 }
 
 impl EventSink for CsEventSink {
@@ -159,7 +211,12 @@ impl EventSink for CsEventSink {
                 .on_correction(text.clone(), previous_text.clone()),
             EngineEvent::UtteranceFinal {
                 utterance_id, text, ..
-            } => self.listener.on_final(*utterance_id, text.clone()),
+            } => {
+                // Compose the composer return here: the streaming recorder's own
+                // transcript buffer is never filled on this path.
+                self.transcript.append_final(text);
+                self.listener.on_final(*utterance_id, text.clone());
+            }
             EngineEvent::ReplaceRange {
                 utterance_id,
                 start,
@@ -220,12 +277,21 @@ fn resolve_language_hint(language: Option<CsLanguage>) -> Option<String> {
     .map(str::to_string)
 }
 
+/// One live composer voice-note session: the streaming recorder plus the
+/// finalized-text accumulator its event sink feeds, and the wall-clock start
+/// used to size the stop-drain timeout.
+struct ActiveSession {
+    recorder: StreamingRecorder,
+    transcript: Arc<ComposerTranscript>,
+    started_at: Instant,
+}
+
 /// Thin handle to the codescribe dictation engine (streaming recorder +
-/// Whisper). Holds the active recorder behind an async mutex and the current
+/// Whisper). Holds the active session behind an async mutex and the current
 /// foreign listener behind an `RwLock`.
 #[derive(uniffi::Object)]
 pub struct CodescribeDictation {
-    recorder: Mutex<Option<StreamingRecorder>>,
+    recorder: Mutex<Option<ActiveSession>>,
     listener: RwLock<Option<Arc<dyn CsTranscriptionListener>>>,
 }
 
@@ -286,8 +352,10 @@ impl CodescribeDictation {
                 msg: "set_listener(...) must be called before start_recording".to_string(),
             })?;
 
+        let transcript = Arc::new(ComposerTranscript::default());
         let sink: Arc<dyn EventSink> = Arc::new(CsEventSink {
             listener: Arc::clone(&listener),
+            transcript: Arc::clone(&transcript),
         });
         let mut recorder =
             StreamingRecorder::new().map_err(|e| CsError::Recording { msg: e.to_string() })?;
@@ -308,31 +376,71 @@ impl CodescribeDictation {
             .await
             .map_err(|e| CsError::Recording { msg: e.to_string() })?;
 
-        *self.recorder.lock().await = Some(recorder);
+        *self.recorder.lock().await = Some(ActiveSession {
+            recorder,
+            transcript,
+            started_at: Instant::now(),
+        });
         listener.on_recording_started();
         Ok(())
     }
 
-    /// Stop the active dictation session and return the accumulated transcript.
-    /// Wraps `StreamingRecorder::stop` (audio/streaming_recorder.rs:145),
-    /// discarding the saved WAV path.
+    /// Stop the active dictation session and return the composed transcript.
+    ///
+    /// `StreamingRecorder::stop` (audio/streaming_recorder.rs) is the completion
+    /// signal: it stops the audio stream, then joins the transcription session
+    /// task, which only finishes AFTER every `UtteranceFinal` has been emitted
+    /// synchronously into `CsEventSink` (our accumulator). So by the time stop
+    /// returns cleanly, the accumulator holds the full transcript.
+    ///
+    /// That join is otherwise unbounded, so we cap it: a stalled scheduler must
+    /// not freeze the composer UI. On timeout we return whatever utterances
+    /// finalised so far and log a WARN breadcrumb. The streaming recorder's own
+    /// transcript buffer is intentionally ignored here — it stays empty on the
+    /// composer path (nothing fills it), so the accumulated `UtteranceFinal`
+    /// stream is the authoritative source.
     pub async fn stop_recording(&self) -> Result<String, CsError> {
-        let mut recorder = {
+        let mut session = {
             let mut guard = self.recorder.lock().await;
             guard.take().ok_or_else(|| CsError::Recording {
                 msg: "no active recording to stop".to_string(),
             })?
         };
-        let (transcript, _audio_path) = recorder
-            .stop()
-            .await
-            .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+
+        let budget = compose_stop_timeout(session.started_at.elapsed());
+        let transcript = Arc::clone(&session.transcript);
+
+        let timed_out = match tokio::time::timeout(budget, session.recorder.stop()).await {
+            Ok(Ok(_)) => false,
+            Ok(Err(e)) => return Err(CsError::Recording { msg: e.to_string() }),
+            Err(_elapsed) => true,
+        };
+
+        let (text, utterances) = transcript.snapshot();
+        let chars = text.chars().count();
+        if timed_out {
+            warn!(
+                target: "composer-dictation",
+                utterances,
+                chars,
+                budget_ms = budget.as_millis() as u64,
+                "composer voice-note stop timed out; returning partial transcript"
+            );
+        } else {
+            info!(
+                target: "composer-dictation",
+                utterances,
+                chars,
+                "composer voice-note stop composed transcript"
+            );
+        }
+
         if let Ok(guard) = self.listener.read()
             && let Some(listener) = guard.as_ref()
         {
             listener.on_recording_stopped();
         }
-        Ok(transcript)
+        Ok(text)
     }
 
     /// True while a dictation session is active.
@@ -342,7 +450,7 @@ impl CodescribeDictation {
             .lock()
             .await
             .as_ref()
-            .map(|recorder| recorder.is_recording())
+            .map(|session| session.recorder.is_recording())
             .unwrap_or(false)
     }
 
@@ -433,17 +541,12 @@ mod tests {
     /// The bridge must forward `utterance_id` on `UtteranceFinal` so committed
     /// sinks can stamp segment identity that later `ReplaceRange` patches target.
     /// Regression guard for the W3 keystone (identity flow into committed text).
-    #[test]
-    fn utterance_final_forwards_utterance_id() {
-        let listener = Arc::new(CapturingListener::default());
-        let sink = CsEventSink {
-            listener: listener.clone(),
-        };
-
-        sink.on_event(&EngineEvent::UtteranceFinal {
-            utterance_id: 7,
-            text: "ala ma kota".to_string(),
-            raw_text: "ala ma kota".to_string(),
+    /// Build a minimal `UtteranceFinal` event with the given identity/text.
+    fn utterance_final(utterance_id: u64, text: &str) -> EngineEvent {
+        EngineEvent::UtteranceFinal {
+            utterance_id,
+            text: text.to_string(),
+            raw_text: text.to_string(),
             start_ts: 0.0,
             end_ts: 1.0,
             segments: Vec::new(),
@@ -452,13 +555,70 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-        });
+        }
+    }
+
+    #[test]
+    fn utterance_final_forwards_utterance_id() {
+        let listener = Arc::new(CapturingListener::default());
+        let sink = CsEventSink {
+            listener: listener.clone(),
+            transcript: Arc::new(ComposerTranscript::default()),
+        };
+
+        sink.on_event(&utterance_final(7, "ala ma kota"));
 
         let calls = listener.final_calls.lock().unwrap();
         assert_eq!(
             calls.as_slice(),
             &[(7, "ala ma kota".to_string())],
             "on_final must receive the utterance_id from UtteranceFinal"
+        );
+    }
+
+    /// The composer return is composed from the finalized utterance stream: the
+    /// sink must accumulate each `UtteranceFinal` (space-joined, empties skipped)
+    /// so `stop_recording` never returns an empty transcript after real speech.
+    /// Regression guard for the "audio + STT work but final is empty" bug.
+    #[test]
+    fn cs_event_sink_accumulates_final_transcript() {
+        let listener = Arc::new(CapturingListener::default());
+        let transcript = Arc::new(ComposerTranscript::default());
+        let sink = CsEventSink {
+            listener: listener.clone(),
+            transcript: Arc::clone(&transcript),
+        };
+
+        sink.on_event(&utterance_final(1, "  no to  "));
+        sink.on_event(&utterance_final(2, "")); // empty final must not widen text
+        sink.on_event(&utterance_final(3, "dobra teraz"));
+
+        let (text, utterances) = transcript.snapshot();
+        assert_eq!(text, "no to dobra teraz");
+        assert_eq!(
+            utterances, 2,
+            "empty final must not count toward utterances"
+        );
+    }
+
+    /// The stop-drain budget scales with recording length but is clamped so the
+    /// composer UI can never hang indefinitely on a stalled scheduler.
+    #[test]
+    fn compose_stop_timeout_scales_and_clamps() {
+        // Short note: floored so a cold commit + tail patch still fits.
+        assert_eq!(
+            compose_stop_timeout(Duration::from_secs(3)),
+            Duration::from_secs(8)
+        );
+        // Mid-length: proportional (20s * 0.6 = 12s) inside the band.
+        assert_eq!(
+            compose_stop_timeout(Duration::from_secs(20)),
+            Duration::from_secs(12)
+        );
+        // Long note: capped so the UI never waits unboundedly.
+        assert_eq!(
+            compose_stop_timeout(Duration::from_secs(300)),
+            Duration::from_secs(30)
         );
     }
 
