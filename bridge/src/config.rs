@@ -619,8 +619,15 @@ impl CodescribeConfig {
 /// applied unconditionally because every settings mutation funnels through
 /// `update_config` / `update_config_many`, and re-applying unchanged values is a
 /// no-op.
+///
+/// Loads WITHOUT the Keychain: hotkey bindings and cadence live in
+/// settings.json / .env / defaults, never in secrets, so this reload has no
+/// reason to `populate_env_from_keychain()`. Using the plain `Config::load()`
+/// here fired a Keychain read on every settings write (dock toggle, language,
+/// overlay position, …), the same hot-path prompt class as the AX-probe defer.
+/// Mirrors `hotkeys::reload_hotkey_runtime_after_write`.
 fn reload_hotkey_runtime() {
-    codescribe::os::hotkeys::apply_hotkey_config(&Config::load());
+    codescribe::os::hotkeys::apply_hotkey_config(&Config::load_without_keychain());
 }
 
 /// Built-in default workspace root when `AGENT_WORKSPACE_ROOTS` is unset. Kept in
