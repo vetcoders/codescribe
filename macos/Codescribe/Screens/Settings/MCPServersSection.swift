@@ -182,9 +182,7 @@ private struct MCPServerRow: View {
 
     private var removeButton: some View {
         Button(action: onRemove) {
-            Image(systemName: "trash")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(CSColor.terracottaLight)
+            CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.terracottaLight)
                 .frame(width: 28, height: 26)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)

@@ -188,9 +188,7 @@ private struct MenuLabel: View {
                 .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
                 .foregroundStyle(CSColor.textHigh)
                 .lineLimit(1)
-            Image(systemName: "chevron.up.chevron.down")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(CSColor.textFaint)
+            CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 7)
@@ -274,10 +272,13 @@ private struct KeyRow: View {
                 .disabled(draft.isEmpty)
 
                 Button(action: onClear) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(isSet ? CSColor.terracottaLight : CSColor.textFaint)
-                        .frame(width: 32, height: 32)
+                    CSIconView(
+                        icon: .delete,
+                        size: 12,
+                        weight: .semibold,
+                        color: isSet ? CSColor.terracottaLight : CSColor.textFaint
+                    )
+                    .frame(width: 32, height: 32)
                         .background(
                             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
                                 .fill(CSColor.surfaceRaised(0.03))
@@ -348,8 +349,7 @@ private struct AccountLoginRow: View {
             Spacer(minLength: 0)
             Button(action: onStart) {
                 HStack(spacing: 6) {
-                    Image(systemName: "person.crop.circle.badge.checkmark")
-                        .font(.system(size: 12, weight: .semibold))
+                    CSIconView(icon: .accountVerified, size: 12, weight: .semibold)
                     Text("Sign in with ChatGPT")
                         .font(CSFont.ui(12, .semibold))
                 }

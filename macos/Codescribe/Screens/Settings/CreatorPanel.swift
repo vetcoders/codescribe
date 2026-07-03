@@ -66,9 +66,9 @@ struct CreatorPanel: View {
             SettingsSectionLabel("Quick start")
                 .padding(.top, 24)
             HStack(spacing: 10) {
-                QuickStartCard(glyph: "🎙", title: "Test mic", subtitle: "Check levels & engine")
-                QuickStartCard(glyph: "▦", title: "Open overlay", subtitle: "Summon the agent")
-                QuickStartCard(glyph: "⌨", title: "Tune shortcuts", subtitle: "Hotkeys & cadence")
+                QuickStartCard(icon: .mic, title: "Test mic", subtitle: "Check levels & engine")
+                QuickStartCard(icon: .overlay, title: "Open overlay", subtitle: "Summon the agent")
+                QuickStartCard(icon: .shortcuts, title: "Tune shortcuts", subtitle: "Hotkeys & cadence")
             }
             .padding(.top, 11)
 
@@ -178,9 +178,12 @@ private struct PermissionChecklistRow: View {
     private var statusBadge: some View {
         ZStack {
             Circle().fill((granted ? CSColor.olive : CSColor.terracotta).opacity(0.2))
-            Text(granted ? "✓" : "!")
-                .font(CSFont.ui(11, .semibold))
-                .foregroundStyle(granted ? CSColor.oliveLight : CSColor.terracottaLight)
+            CSIconView(
+                icon: granted ? .success : .warning,
+                size: 11,
+                weight: .semibold,
+                color: granted ? CSColor.oliveLight : CSColor.terracottaLight
+            )
         }
         .frame(width: 20, height: 20)
     }
@@ -189,13 +192,13 @@ private struct PermissionChecklistRow: View {
 // MARK: - Quick start card
 
 private struct QuickStartCard: View {
-    let glyph: String
+    let icon: CSIcon
     let title: String
     let subtitle: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(glyph).font(.system(size: 16))
+            CSIconView(icon: icon, size: 16, color: CSColor.textHigh)
             Text(title)
                 .font(CSFont.ui(13, .semibold))
                 .foregroundStyle(CSColor.textHigh)
