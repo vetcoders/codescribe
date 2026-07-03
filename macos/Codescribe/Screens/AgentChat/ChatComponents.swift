@@ -508,12 +508,26 @@ private struct CodeBlockView: View {
     let size: CGFloat
     /// False while the block is the live stream tail — render plain, no highlight.
     let highlightable: Bool
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var highlighted: AttributedString?
     @State private var hovering = false
     @State private var copied = false
 
+    /// Re-run the highlight only when something that affects it changes: the code
+    /// itself, whether the fence has closed, or the surface appearance. A growing
+    /// stream tail keeps `highlightable == false`, so the task clears any stale
+    /// result and never highlights mid-stream.
+    private struct HighlightKey: Equatable {
+        let content: String
+        let highlightable: Bool
+        let dark: Bool
+    }
+
     var body: some View {
-        Text(content.isEmpty ? " " : content)
+        codeText
             .font(CSFont.mono(size - 1))
+            // Base colour for runs the theme leaves unstyled; the highlighter's
+            // per-token foreground colours win over this modifier.
             .foregroundColor(CSColor.textBodyAlt)
             .lineSpacing(4)
             .textSelection(.enabled)
@@ -534,6 +548,27 @@ private struct CodeBlockView: View {
                 }
             }
             .onHover { hovering = $0 }
+            .task(id: HighlightKey(content: content, highlightable: highlightable,
+                                   dark: colorScheme == .dark)) {
+                guard highlightable, !content.isEmpty else {
+                    highlighted = nil
+                    return
+                }
+                highlighted = await CodeHighlighter.attributed(
+                    content, language: language, dark: colorScheme == .dark)
+            }
+    }
+
+    /// The highlighted attributed string once ready, else the plain-mono
+    /// placeholder — same layout and font, so the colours fade in without a
+    /// reflow or flicker.
+    @ViewBuilder
+    private var codeText: some View {
+        if let highlighted {
+            Text(highlighted)
+        } else {
+            Text(content.isEmpty ? " " : content)
+        }
     }
 
     private var copyButton: some View {
