@@ -61,6 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // kill live voice-reply rendering. Held for the app's lifetime.
     private var voiceDeliveryListener: VoiceDeliveryListener?
     private var statusItem: NSStatusItem!
+    // Local key monitor for ⌘+ / ⌘- / ⌘0 text scaling, routed to the key window's
+    // surface (overlay panel vs agent window). Held so it can be removed on quit.
+    private var textScaleMonitor: Any?
     private let popover = NSPopover()
     private var shouldExitForDuplicate = false
     // First-run onboarding wizard host. Presented at launch when the core gate
@@ -112,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         wireTrayActions()
         installStatusItem()
+        installTextScaleMonitor()
         startHotkeys()
         registerVoiceDelivery()
         prewarmRecordingController()
@@ -292,7 +296,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         hotkeys.stop()
+        if let textScaleMonitor { NSEvent.removeMonitor(textScaleMonitor) }
         DistributedNotificationCenter.default().removeObserver(self)
+    }
+
+    // MARK: - Text scaling (⌘+ / ⌘- / ⌘0)
+
+    /// Install one local key monitor that routes text-scale shortcuts to the SURFACE
+    /// under focus: the key window decides which scale you adjust. Handled events are
+    /// swallowed (return nil); anything else passes through untouched.
+    private func installTextScaleMonitor() {
+        textScaleMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            // Require ⌘ with no other command modifiers; Shift is allowed because
+            // "+" is Shift-"=" on most layouts.
+            guard flags.contains(.command),
+                  !flags.contains(.option), !flags.contains(.control),
+                  let controller = self.textScaleController(for: NSApp.keyWindow) else {
+                return event
+            }
+            switch event.charactersIgnoringModifiers {
+            case "+", "=": controller.increase(); return nil
+            case "-", "_": controller.decrease(); return nil
+            case "0": controller.reset(); return nil
+            default: return event
+            }
+        }
+    }
+
+    /// The text-scale controller for a window, or nil when the key window is not a
+    /// scalable surface (Settings, tray popover, panels). The overlay is discriminated
+    /// by its `FloatingOverlayPanel` type; the chat by identity.
+    private func textScaleController(for window: NSWindow?) -> TextScaleController? {
+        guard let window else { return nil }
+        if window is FloatingOverlayPanel { return model.overlay.textScale }
+        if window == agentWindow { return model.chatTextScale }
+        return nil
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -317,7 +357,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showAgent() {
         if agentWindow == nil {
-            let hosting = NSHostingController(rootView: AgentChatView(store: model.chat))
+            // Wrap in TextScaleRoot so ⌘+/-/0 on the chat window scale the message
+            // bodies + composer via `\.csTextScale`, independently of the overlay.
+            let root = TextScaleRoot(controller: model.chatTextScale) {
+                AgentChatView(store: model.chat)
+            }
+            let hosting = NSHostingController(rootView: root)
             let window = NSWindow(contentViewController: hosting)
             window.title = "codescribe — Agent"
             window.setContentSize(NSSize(width: 1120, height: 720))

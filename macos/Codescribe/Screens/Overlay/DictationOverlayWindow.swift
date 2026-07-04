@@ -68,8 +68,10 @@ enum DictationOverlayWindow {
     /// The state's `engine`, `onClose`, and `onSendToAgent` are wired by the
     /// orchestrator before the panel is shown.
     @MainActor
-    static func make(state: OverlayState) -> NSPanel {
-        let root = DictationOverlayView(state: state)
+    static func make(state: OverlayState, textScale: TextScaleController) -> NSPanel {
+        // Wrap in TextScaleRoot so ⌘+/-/0 on this panel scale the overlay text
+        // (transcript + status) via `\.csTextScale`, independently of the chat.
+        let root = TextScaleRoot(controller: textScale) { DictationOverlayView(state: state) }
         let hosting = NSHostingView(rootView: root)
         // CRITICAL: the WINDOW owns its size; the SwiftUI content only fills whatever
         // frame the window has. An NSHostingView otherwise installs Auto Layout

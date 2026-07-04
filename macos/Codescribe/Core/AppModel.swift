@@ -11,6 +11,9 @@ final class AppModel: ObservableObject {
     let chat: AgentChatStore
     let overlay: OverlayController
     let tray: TrayViewModel
+    /// Independent text scale for the agent chat surface (⌘+/-/0 while the chat
+    /// window is key). The overlay's scale lives on `OverlayController`.
+    let chatTextScale = TextScaleController(key: "AgentChat.textScale.v1")
 
     init() {
         let chat = AgentChatStore(engine: RealChatEngine(), threadsProvider: RealThreadsEngine())
@@ -29,6 +32,10 @@ final class AppModel: ObservableObject {
 @MainActor
 final class OverlayController: ObservableObject {
     let state = OverlayState()
+    /// Independent text scale for the dictation overlay (⌘+/-/0 while the panel is
+    /// key). Separate from the chat scale so a distance-readable transcript and an
+    /// up-close chat can be tuned independently.
+    let textScale = TextScaleController(key: "DictationOverlayPanel.textScale.v1")
     private var panel: NSPanel?
     // Read fresh at show-time so the tray's "Transcription Overlay" toggle takes
     // effect on the very next dictation (stateless bridge handle — cheap).
@@ -86,7 +93,7 @@ final class OverlayController: ObservableObject {
     }
 
     func show() {
-        let panel = panel ?? DictationOverlayWindow.make(state: state)
+        let panel = panel ?? DictationOverlayWindow.make(state: state, textScale: textScale)
         self.panel = panel
         let screen = NSScreen.main
         // Clamp the current size to the active screen (it may have shrunk since the
