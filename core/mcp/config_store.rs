@@ -143,36 +143,64 @@ fn remove_server_at(path: &Path, name: &str) -> Result<()> {
     write_atomic(path, &root)
 }
 
-/// Spawn the named server, handshake, and return its live tool count. Blocking:
-/// runs the async discovery on a dedicated thread + one-shot current-thread
-/// runtime so it is safe to call from a synchronous FFI context (and from within
-/// an already-running runtime). `timeout` bounds the whole handshake.
-pub fn test_server_blocking(name: &str, timeout: Duration) -> Result<usize> {
-    test_server_blocking_at(&default_mcp_config_path()?, name, timeout)
+/// Health-probe result for one server: the identity it advertised in the
+/// `initialize` handshake (name / version / protocol, each optional) plus its
+/// live tool count. Surfaced next to the server in the Settings management list.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct McpProbeSummary {
+    pub server_name: Option<String>,
+    pub server_version: Option<String>,
+    pub protocol_version: Option<String>,
+    pub tool_count: usize,
 }
 
-fn test_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result<usize> {
+/// Spawn the named server, handshake, and return its identity + live tool count.
+/// Blocking: runs the async discovery on a dedicated thread + one-shot
+/// current-thread runtime so it is safe to call from a synchronous FFI context
+/// (and from within an already-running runtime). `timeout` bounds the whole
+/// handshake.
+pub fn probe_server_blocking(name: &str, timeout: Duration) -> Result<McpProbeSummary> {
+    probe_server_blocking_at(&default_mcp_config_path()?, name, timeout)
+}
+
+fn probe_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result<McpProbeSummary> {
     let config = McpConfigFile::load(path)?;
     let server = config
         .servers
         .get(name)
         .with_context(|| format!("MCP server \"{name}\" not found"))?
         .clone();
-    run_list_tools_blocking(server, timeout)
+    run_probe_blocking(server, timeout)
+}
+
+/// Tool-count-only convenience over [`probe_server_blocking`], preserved for the
+/// simpler "how many tools" callers.
+pub fn test_server_blocking(name: &str, timeout: Duration) -> Result<usize> {
+    Ok(probe_server_blocking(name, timeout)?.tool_count)
+}
+
+#[cfg(test)]
+fn test_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result<usize> {
+    Ok(probe_server_blocking_at(path, name, timeout)?.tool_count)
 }
 
 // --- internals ------------------------------------------------------------
 
-fn run_list_tools_blocking(server: McpServerConfig, timeout: Duration) -> Result<usize> {
-    std::thread::spawn(move || -> Result<usize> {
+fn run_probe_blocking(server: McpServerConfig, timeout: Duration) -> Result<McpProbeSummary> {
+    std::thread::spawn(move || -> Result<McpProbeSummary> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("Failed to create MCP test runtime")?;
         runtime.block_on(async move {
             let client = McpClient::new(server).with_timeout(timeout);
-            let tools = client.list_tools().await?;
-            Ok(tools.len())
+            let probe = client.probe().await?;
+            Ok(McpProbeSummary {
+                server_name: probe.handshake.server_name(),
+                server_version: probe.handshake.server_version(),
+                protocol_version: probe.handshake.protocol_version.clone(),
+                tool_count: probe.tools.len(),
+            })
         })
     })
     .join()
@@ -489,6 +517,26 @@ mod tests {
 
         let count = test_server_blocking_at(&path, "mock", Duration::from_secs(5)).expect("test");
         assert_eq!(count, 1, "mock server exposes one tool");
+    }
+
+    #[test]
+    fn probe_server_blocking_reports_handshake_identity() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json");
+        let script = repo_root()
+            .join("tests")
+            .join("fixtures")
+            .join("mock_mcp.py");
+        let mut server = spec("mock", "python3", &[&script.display().to_string()]);
+        server.enabled = true;
+        add_server_at(&path, &server).expect("add");
+
+        let summary =
+            probe_server_blocking_at(&path, "mock", Duration::from_secs(5)).expect("probe");
+        assert_eq!(summary.tool_count, 1);
+        assert_eq!(summary.server_name.as_deref(), Some("mock-mcp"));
+        assert_eq!(summary.server_version.as_deref(), Some("0.1.0"));
+        assert_eq!(summary.protocol_version.as_deref(), Some("2025-06-18"));
     }
 
     #[test]
