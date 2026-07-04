@@ -17,6 +17,10 @@ private let attachLog = Logger(
 struct Composer: View {
     @ObservedObject var store: AgentChatStore
     @FocusState private var fieldFocused: Bool
+    /// Chat text scale (⌘+/-/0) — applied to the message field + placeholder so the
+    /// composer input tracks the message bodies. Chrome (chips, affordance hints,
+    /// icons) keeps its intrinsic size.
+    @Environment(\.csTextScale) private var textScale
 
     // Drag-over is tracked by two OR'd targets so it stays stable as the pointer
     // crosses from the composer padding onto the text field. The outer target
@@ -48,11 +52,11 @@ struct Composer: View {
 
                 TextField("", text: $store.draft, prompt:
                     Text("Type a message…")
-                        .font(CSFont.ui(13.5))
+                        .font(CSFont.ui(13.5 * textScale))
                         .foregroundColor(CSColor.textFaint)
                 )
                 .textFieldStyle(.plain)
-                .font(CSFont.ui(13.5))
+                .font(CSFont.ui(13.5 * textScale))
                 .foregroundStyle(CSColor.textBody)
                 .focused($fieldFocused)
                 .onSubmit { store.send() }

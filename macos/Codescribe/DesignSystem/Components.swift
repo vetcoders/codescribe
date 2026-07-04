@@ -66,7 +66,7 @@ struct StatusPill: View {
             }
             .frame(width: 9, height: 9)
             Text(text)
-                .font(CSFont.metaMono)
+                .csMono(11, .medium)
                 .foregroundStyle(color)
         }
         .padding(.horizontal, 9)
@@ -115,7 +115,7 @@ struct StaticStatusPill: View {
             Circle().fill(color).frame(width: 6, height: 6).opacity(0.7)
                 .frame(width: 9, height: 9)
             Text(text)
-                .font(CSFont.metaMono)
+                .csMono(11, .medium)
                 .foregroundStyle(color)
         }
         .padding(.horizontal, 9)

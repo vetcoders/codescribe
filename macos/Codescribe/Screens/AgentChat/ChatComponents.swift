@@ -74,6 +74,13 @@ struct MarkdownText: View {
     var bodyColor: Color = CSColor.textBodyAlt
     var showsCaret: Bool = false
 
+    /// Per-surface text scale (chat window ⌘+/-/0). A single multiplier over the
+    /// block's base `size` drives EVERY element (headings, lists, code, tables,
+    /// inline runs), which are all derived from `s` — so the whole markdown body
+    /// scales together instead of per-style hand-tuning.
+    @Environment(\.csTextScale) private var textScale
+    private var s: CGFloat { size * textScale }
+
     var body: some View {
         let blocks = MDBlock.parse(raw)
         VStack(alignment: .leading, spacing: 7) {
@@ -91,8 +98,8 @@ struct MarkdownText: View {
     private func blockView(_ block: MDBlock, isLast: Bool) -> some View {
         switch block {
         case let .paragraph(text):
-            inlineText(text, baseFont: CSFont.ui(size), baseColor: bodyColor,
-                       fontSize: size, isLast: isLast)
+            inlineText(text, baseFont: CSFont.ui(s), baseColor: bodyColor,
+                       fontSize: s, isLast: isLast)
         case let .heading(level, text):
             let hSize = headingSize(level)
             inlineText(text, baseFont: CSFont.ui(hSize, .bold), baseColor: CSColor.textHigh,
@@ -142,10 +149,10 @@ struct MarkdownText: View {
 
     private func headingSize(_ level: Int) -> CGFloat {
         switch level {
-        case 1: return size + 7
-        case 2: return size + 4
-        case 3: return size + 2
-        default: return size + 1
+        case 1: return s + 7
+        case 2: return s + 4
+        case 3: return s + 2
+        default: return s + 1
         }
     }
 
@@ -172,11 +179,11 @@ struct MarkdownText: View {
                          deep: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Text(marker)
-                .font(CSFont.mono(deep ? size - 4 : size - 2))
+                .font(CSFont.mono(deep ? s - 4 : s - 2))
                 .foregroundStyle(deep ? CSColor.textFaint : CSColor.textMutedAlt)
                 .frame(minWidth: 14, alignment: .trailing)
-            inlineText(text, baseFont: CSFont.ui(size), baseColor: bodyColor,
-                       fontSize: size, isLast: isLast)
+            inlineText(text, baseFont: CSFont.ui(s), baseColor: bodyColor,
+                       fontSize: s, isLast: isLast)
         }
         .padding(.leading, CGFloat(min(indent, 4)) * 16)
     }
@@ -189,14 +196,14 @@ struct MarkdownText: View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             CSIconView(
                 icon: done ? .checkboxOn : .checkboxOff,
-                size: size - 1,
+                size: s - 1,
                 weight: done ? .semibold : .regular,
                 color: done ? CSColor.oliveLight : CSColor.textFaint
             )
             .frame(minWidth: 14, alignment: .trailing)
-            inlineText(text, baseFont: CSFont.ui(size),
+            inlineText(text, baseFont: CSFont.ui(s),
                        baseColor: done ? CSColor.textMutedAlt : bodyColor,
-                       fontSize: size, isLast: isLast)
+                       fontSize: s, isLast: isLast)
         }
         .padding(.leading, CGFloat(min(indent, 4)) * 16)
     }
@@ -228,9 +235,9 @@ struct MarkdownText: View {
         let blocks = MDBlock.parse(body)
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                CSIconView(icon: kind.csIcon, size: size - 2, weight: .semibold)
+                CSIconView(icon: kind.csIcon, size: s - 2, weight: .semibold)
                 Text(kind.label)
-                    .font(CSFont.mono(size - 4, .semibold))
+                    .font(CSFont.mono(s - 4, .semibold))
                     .tracking(0.8)
             }
             .foregroundStyle(kind.tint)
@@ -302,7 +309,7 @@ struct MarkdownText: View {
 
     @ViewBuilder
     private func tableCell(_ text: String, isHeader: Bool, isLastRow: Bool) -> some View {
-        let cellSize = isHeader ? size - 2 : size - 1
+        let cellSize = isHeader ? s - 2 : s - 1
         let font = isHeader ? CSFont.mono(cellSize, .semibold) : CSFont.ui(cellSize)
         let color = isHeader ? CSColor.textHigh : bodyColor
         let attr = Self.inlineAttributed(text, fontSize: cellSize,
@@ -331,7 +338,7 @@ struct MarkdownText: View {
         // highlighting entirely and render plain mono; once the fence closes (the
         // turn ends or a later block appears) the block becomes highlightable.
         let highlightable = !(isLast && showsCaret)
-        let block = CodeBlockView(content: content, language: language, size: size,
+        let block = CodeBlockView(content: content, language: language, size: s,
                                   highlightable: highlightable)
         if isLast, showsCaret {
             HStack(alignment: .bottom, spacing: 2) {

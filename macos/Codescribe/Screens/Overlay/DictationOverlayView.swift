@@ -100,7 +100,7 @@ struct DictationOverlayView: View {
     private var modeMetaRow: some View {
         HStack(spacing: 10) {
             Text(state.tagText)
-                .font(CSFont.tagMono)
+                .csMono(10, .semibold)
                 .tracking(0.8)
                 .foregroundStyle(state.tagColor)
                 .padding(.horizontal, 9)
@@ -112,7 +112,7 @@ struct DictationOverlayView: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             Text(state.metaText)
-                .font(CSFont.metaMono)
+                .csMono(11, .medium)
                 .foregroundStyle(CSColor.textFaint)
             Spacer(minLength: 0)
         }
@@ -168,7 +168,7 @@ struct DictationOverlayView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .bottom, spacing: 2) {
                             Text(state.listeningDisplay)
-                                .font(CSFont.ui(15, .medium))
+                                .csFont(15, .medium)
                                 .lineSpacing(5)
                                 .foregroundStyle(CSColor.textBody)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -206,7 +206,7 @@ struct DictationOverlayView: View {
 
     private var formattedBody: some View {
         TextEditor(text: $state.formattedText)
-            .font(CSFont.ui(15, .regular))
+            .csFont(15)
             .foregroundStyle(CSColor.textHigh)
             .lineSpacing(5)
             .scrollContentBackground(.hidden)
@@ -224,11 +224,11 @@ struct DictationOverlayView: View {
                 .foregroundStyle(CSColor.textFaint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(state.noSpeechNotice)
-                    .font(CSFont.ui(15, .medium))
+                    .csFont(15, .medium)
                     .foregroundStyle(CSColor.textBody)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Nothing was captured this session.")
-                    .font(CSFont.metaMono)
+                    .csMono(11, .medium)
                     .foregroundStyle(CSColor.textFaint)
             }
             Spacer(minLength: 0)
@@ -332,7 +332,7 @@ struct DictationOverlayView: View {
             Text(state.footerRight)
                 .foregroundStyle(CSColor.textFaintAlt)
         }
-        .font(CSFont.mono(10, .medium))
+        .csMono(10, .medium)
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
     }
@@ -428,6 +428,23 @@ private struct ToastPill: View {
 
 #Preview("Formatted") {
     DictationOverlayView(state: .previewFormatted())
+        .padding(44)
+        .background(
+            LinearGradient(
+                colors: [Color(hex: 0x15110E), CSColor.glassUnder],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        )
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Listening · scaled 1.4x") {
+    // Exercises `\.csTextScale`: transcript + status render 40% larger while the
+    // window chrome and paddings keep their intrinsic geometry (transcript scrolls
+    // rather than forcing the panel taller).
+    DictationOverlayView(state: .previewListening())
+        .environment(\.csTextScale, 1.4)
+        .frame(width: 470, height: 330)
         .padding(44)
         .background(
             LinearGradient(
