@@ -235,8 +235,9 @@ private struct WrapLayout: Layout {
 
 /// One tool-activity line. A successful line is static (`verb detail`). A failed
 /// line that carries a reason becomes a compact disclosure: the row is tappable
-/// and reveals the failure cause (mono, terracotta, up to 3 wrapped lines),
-/// collapsed by default so the list stays scannable.
+/// and reveals the full failure cause (mono, terracotta, wrapping to any length),
+/// collapsed by default so the list stays scannable. Both the verb/detail row and
+/// the revealed reason are text-selectable.
 private struct ToolLineRow: View {
     let line: ToolLine
     @State private var showReason = false
@@ -257,6 +258,7 @@ private struct ToolLineRow: View {
                         + Text(" \(line.detail)").foregroundColor(ChatPalette.toolBody))
                         .font(CSFont.mono(11.5, .medium))
                         .lineSpacing(4)
+                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if failed {
                         CSIconView(
@@ -276,7 +278,7 @@ private struct ToolLineRow: View {
                 Text(reason)
                     .font(CSFont.mono(10.5, .medium))
                     .foregroundStyle(CSColor.terracottaLight)
-                    .lineLimit(3)
+                    .textSelection(.enabled)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -290,11 +292,27 @@ private struct ToolTurn: View {
     let message: ChatMessage
     @State private var expanded = true
 
+    /// Whole-card plain-text export: one line per tool, `verb detail` for a
+    /// successful line and `verb detail — reason` (full, untruncated) for a
+    /// failed one. Mirrors what the rows render, minus the styling.
+    private var copyText: String {
+        message.toolLines.map { line in
+            if let reason = line.reason, !reason.isEmpty {
+                return "\(line.verb) \(line.detail) — \(reason)"
+            }
+            return "\(line.verb) \(line.detail)"
+        }.joined(separator: "\n")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("Tool activity · \(message.timestamp)")
-                .font(CSFont.mono(10, .medium))
-                .foregroundStyle(CSColor.textFaintAlt)
+            HStack(spacing: 8) {
+                Text("Tool activity · \(message.timestamp)")
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                CopyMessageButton(text: copyText)
+                Spacer(minLength: 0)
+            }
 
             DisclosureGroup(isExpanded: $expanded) {
                 VStack(alignment: .leading, spacing: 3) {
