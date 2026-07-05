@@ -97,6 +97,45 @@ impl HoldBadgeConfig {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{BadgeMode, HoldBadgeConfig};
+
+    #[test]
+    fn hold_badge_modes_encode_processing_and_assistive_affordances() {
+        assert_eq!(BadgeMode::Processing.color(), (1.0, 0.5, 0.0, 0.85));
+        assert!(BadgeMode::Processing.should_pulse());
+        assert!(!BadgeMode::Processing.has_glow());
+        assert_eq!(BadgeMode::Processing.diameter_multiplier(), 1.0);
+
+        assert_eq!(BadgeMode::Assistive.color(), (0.6, 0.2, 0.9, 0.85));
+        assert!(!BadgeMode::Assistive.should_pulse());
+        assert!(BadgeMode::Assistive.has_glow());
+        assert_eq!(BadgeMode::Assistive.diameter_multiplier(), 1.2);
+    }
+
+    #[test]
+    fn hold_badge_config_from_mode_preserves_layout_and_applies_mode_visuals() {
+        let base = HoldBadgeConfig::default();
+        let processing = HoldBadgeConfig::from_mode(BadgeMode::Processing);
+        assert_eq!(processing.mode, BadgeMode::Processing);
+        assert_eq!(processing.color, BadgeMode::Processing.color());
+        assert_eq!(processing.diameter, base.diameter);
+        assert_eq!(processing.offset, base.offset);
+        assert_eq!(processing.update_interval_ms, base.update_interval_ms);
+
+        let assistive = HoldBadgeConfig::from_mode(BadgeMode::Assistive);
+        assert_eq!(assistive.mode, BadgeMode::Assistive);
+        assert_eq!(assistive.color, BadgeMode::Assistive.color());
+        assert_eq!(
+            assistive.diameter,
+            base.diameter * BadgeMode::Assistive.diameter_multiplier()
+        );
+        assert_eq!(assistive.offset, base.offset);
+        assert_eq!(assistive.update_interval_ms, base.update_interval_ms);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
 // macOS implementation
 // ─────────────────────────────────────────────────────────────
@@ -162,7 +201,7 @@ mod imp {
     // Window level constants
     const NS_STATUS_WINDOW_LEVEL: i64 = 25;
 
-    // ── inlined window helpers (were `ui::shared::helpers::shell`) ──
+    // ── inlined AppKit helpers (were `ui::shared::helpers::shell`) ──
 
     /// Add subview to a view.
     /// # Safety
@@ -173,27 +212,27 @@ mod imp {
         }
     }
 
-    /// Show window (order front, even when app is inactive).
+    /// Show panel (order front, even when app is inactive).
     /// # Safety
-    /// `window` must be a valid `NSWindow` instance.
-    unsafe fn window_show(window: Id) {
+    /// `panel` must be a valid `NSPanel` / `NSWindow` instance.
+    unsafe fn panel_show(panel: Id) {
         unsafe {
-            let _: () = msg_send![window, orderFrontRegardless];
+            let _: () = msg_send![panel, orderFrontRegardless];
         }
     }
 
-    /// Close window.
+    /// Close panel.
     /// # Safety
-    /// `window` must be a valid `NSWindow` instance.
-    unsafe fn window_close(window: Id) {
+    /// `panel` must be a valid `NSPanel` / `NSWindow` instance.
+    unsafe fn panel_close(panel: Id) {
         unsafe {
-            let _: () = msg_send![window, close];
+            let _: () = msg_send![panel, close];
         }
     }
 
     /// Hold badge state
     struct HoldBadgeState {
-        window: Option<usize>, // Store as usize to make it Send
+        window: Option<usize>, // Stores the NSPanel pointer as usize to make it Send.
         timer_running: bool,
         config: HoldBadgeConfig,
         last_position: (f64, f64),
@@ -211,7 +250,7 @@ mod imp {
     /// Monotonic show generation. A show captures it at REQUEST time; `hide_hold_badge`
     /// bumps it. When a queued (`exec_async`) show finally runs on the main thread it
     /// aborts if the generation moved — otherwise a hide that raced ahead of the
-    /// enqueued show would be undone, leaving a badge window + updater thread stuck
+    /// enqueued show would be undone, leaving a badge panel + updater thread stuck
     /// with nothing to tear them down.
     static BADGE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -467,12 +506,12 @@ mod imp {
         }
     }
 
-    /// Create the hold badge window
+    /// Create the hold badge panel
     /// # Safety
-    /// Must run on the main thread; returns a `+1` retained `NSWindow`.
-    unsafe fn create_badge_window(config: &HoldBadgeConfig) -> Id {
+    /// Must run on the main thread; returns a `+1` retained non-activating `NSPanel`.
+    unsafe fn create_badge_panel(config: &HoldBadgeConfig) -> Id {
         unsafe {
-            let ns_window = Class::get("NSWindow").unwrap();
+            let ns_panel = Class::get("NSPanel").unwrap();
 
             // Get initial position
             let (x, y) = get_badge_position();
@@ -483,8 +522,8 @@ mod imp {
                 x, y, adjusted_x, adjusted_y, config.diameter
             );
 
-            // Create window frame using CGRect (screen coordinates)
-            let window_frame = CGRect {
+            // Create panel frame using CGRect (screen coordinates)
+            let panel_frame = CGRect {
                 origin: CGPoint {
                     x: adjusted_x,
                     y: adjusted_y,
@@ -495,32 +534,38 @@ mod imp {
                 },
             };
 
-            // Create window
-            let window: Id = msg_send![ns_window, alloc];
-            let style_mask = NSWindowStyleMask::Borderless;
+            // Create a non-activating panel so the badge never steals app/key focus.
+            let panel: Id = msg_send![ns_panel, alloc];
+            let style_mask = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
             let backing = NSBackingStoreType::Buffered;
-            let window: Id = msg_send![
-                window,
-                initWithContentRect: window_frame
+            let panel: Id = msg_send![
+                panel,
+                initWithContentRect: panel_frame
                 styleMask: style_mask
                 backing: backing
                 defer: false
             ];
 
-            // Configure window for floating transparent overlay
+            // Configure panel for floating transparent overlay.
             let clear_color = NSColor::clearColor();
             let clear_color_ptr = &*clear_color as *const _ as Id;
-            let _: () = msg_send![window, setOpaque: false];
-            let _: () = msg_send![window, setBackgroundColor: clear_color_ptr];
-            let _: () = msg_send![window, setIgnoresMouseEvents: true];
-            let _: () = msg_send![window, setLevel: NS_STATUS_WINDOW_LEVEL];
-            // Ensure any helper windows show up over fullscreen Spaces.
+            let _: () = msg_send![panel, setOpaque: false];
+            let _: () = msg_send![panel, setBackgroundColor: clear_color_ptr];
+            let _: () = msg_send![panel, setIgnoresMouseEvents: true];
+            let _: () = msg_send![panel, setHidesOnDeactivate: false];
+            let _: () = msg_send![panel, setBecomesKeyOnlyIfNeeded: true];
+            let _: () = msg_send![panel, setFloatingPanel: true];
+            // Status-window level (25) is above floating level (3), preserving the
+            // previous always-on-top behavior while keeping this surface a panel.
+            let _: () = msg_send![panel, setLevel: NS_STATUS_WINDOW_LEVEL];
+            // Ensure the helper panel shows over fullscreen Spaces and stays out of cycling.
             let collection_behavior = NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary;
-            let _: () = msg_send![window, setCollectionBehavior: collection_behavior];
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::IgnoresCycle;
+            let _: () = msg_send![panel, setCollectionBehavior: collection_behavior];
 
             // Enable layer-backed views for better transparency/compositing
-            let content_view: Id = msg_send![window, contentView];
+            let content_view: Id = msg_send![panel, contentView];
             let _: () = msg_send![content_view, setWantsLayer: true];
 
             // Create badge view (circular colored indicator)
@@ -530,7 +575,7 @@ mod imp {
             // Force the view to display
             let _: () = msg_send![badge_view, setNeedsDisplay: true];
 
-            window
+            panel
         }
     }
 
@@ -551,32 +596,32 @@ mod imp {
     /// aborted so it cannot resurrect a badge the user already dismissed.
     fn show_hold_badge_impl(config: HoldBadgeConfig, generation: u64) {
         // A hide issued after this show was enqueued already tore the badge down;
-        // honor it and do not create a new window/updater.
+        // honor it and do not create a new panel/updater.
         if generation != BADGE_GENERATION.load(Ordering::SeqCst) {
             debug!("Skipping stale hold-badge show (superseded by hide)");
             return;
         }
         debug!("Showing hold badge (diameter={})", config.diameter);
         unsafe {
-            // IMPORTANT: do not hold BADGE_STATE while calling `window_close`.
-            // Closing a window can trigger AppKit callbacks/notifications which may
+            // IMPORTANT: do not hold BADGE_STATE while calling `panel_close`.
+            // Closing a panel can trigger AppKit callbacks/notifications which may
             // re-enter our code and attempt to lock BADGE_STATE again → deadlock.
-            let old_window_ptr = {
+            let old_panel_ptr = {
                 let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 state.window.take()
             };
-            if let Some(window_ptr) = old_window_ptr {
-                window_close(window_ptr as Id);
+            if let Some(panel_ptr) = old_panel_ptr {
+                panel_close(panel_ptr as Id);
             }
 
-            // Create new badge window (MUST be on main thread)
-            let window = create_badge_window(&config);
+            // Create new badge panel (MUST be on main thread)
+            let panel = create_badge_panel(&config);
 
-            // Make window visible - use orderFrontRegardless which works even when app is not active
-            window_show(window);
+            // Make panel visible without activating the app.
+            panel_show(panel);
 
             // Force content view to redraw
-            let content_view: Id = msg_send![window, contentView];
+            let content_view: Id = msg_send![panel, contentView];
             let _: () = msg_send![content_view, setNeedsDisplay: true];
 
             // Update shared state and determine whether we need to start the updater thread.
@@ -586,16 +631,16 @@ mod imp {
                 let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 // Re-check under the lock: a hide that landed between the top-of-fn
                 // check and here bumped the generation. Honor it — drop the lock,
-                // close the window we just created (never hold BADGE_STATE across
-                // window_close, see above), and leave the state torn down.
+                // close the panel we just created (never hold BADGE_STATE across
+                // panel_close, see above), and leave the state torn down.
                 if generation != BADGE_GENERATION.load(Ordering::SeqCst) {
                     drop(state);
-                    window_close(window);
-                    debug!("Aborting hold-badge show; hide raced in during window creation");
+                    panel_close(panel);
+                    debug!("Aborting hold-badge show; hide raced in during panel creation");
                     return;
                 }
                 let was_running = state.timer_running;
-                state.window = Some(window as usize);
+                state.window = Some(panel as usize);
                 state.config = config.clone();
                 state.timer_running = true;
                 start_updater = !was_running;
@@ -710,7 +755,7 @@ mod imp {
     }
 
     /// Show the hold badge with custom configuration.
-    /// This dispatches to the main thread for thread safety with NSWindow.
+    /// This dispatches to the main thread for thread safety with AppKit.
     pub fn show_hold_badge_with_config(config: HoldBadgeConfig) {
         // Capture the show generation at REQUEST time. A hide that lands before the
         // (possibly queued) impl runs bumps the generation, so the impl recognises
@@ -724,7 +769,7 @@ mod imp {
         if is_main_thread {
             show_hold_badge_impl(config, generation);
         } else {
-            // Dispatch to main thread - NSWindow MUST be created on main thread.
+            // Dispatch to main thread - AppKit panel creation MUST be on main thread.
             // Using exec_async to avoid deadlock when called from tokio runtime.
             Queue::main().exec_async(move || {
                 show_hold_badge_impl(config, generation);
@@ -733,27 +778,27 @@ mod imp {
     }
 
     /// Hide the hold badge and stop position tracking.
-    /// This dispatches to the main thread for thread safety with NSWindow.
+    /// This dispatches to the main thread for thread safety with AppKit.
     pub fn hide_hold_badge() {
         debug!("Hiding hold badge");
 
         // Bump the show generation so any show enqueued before this hide (or racing
-        // its window creation) is recognised as stale and does not resurrect the
+        // its panel creation) is recognised as stale and does not resurrect the
         // badge after we tear it down.
         BADGE_GENERATION.fetch_add(1, Ordering::SeqCst);
 
         // Stop the timer first (can be done on any thread)
-        let window_ptr = {
+        let panel_ptr = {
             let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.timer_running = false;
             state.window.take()
         };
 
-        // Dispatch window close to main thread. Do NOT hold BADGE_STATE while closing.
+        // Dispatch panel close to main thread. Do NOT hold BADGE_STATE while closing.
         Queue::main().exec_async(move || {
-            if let Some(window_ptr) = window_ptr {
+            if let Some(panel_ptr) = panel_ptr {
                 unsafe {
-                    window_close(window_ptr as Id);
+                    panel_close(panel_ptr as Id);
                 }
             }
         });
