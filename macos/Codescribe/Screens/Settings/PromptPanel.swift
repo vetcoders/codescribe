@@ -90,6 +90,10 @@ private struct PromptEditor: View {
     @Binding var text: String
     let onSave: () -> Void
 
+    /// VIEW (rendered markdown) by default; EDIT (raw editor) on demand. Saving
+    /// returns to VIEW so the persisted prompt is shown rendered.
+    @State private var editing = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -102,40 +106,75 @@ private struct PromptEditor: View {
                         .foregroundStyle(CSColor.textMutedAlt)
                 }
                 Spacer(minLength: 0)
-                Button(action: onSave) {
-                    Text("Save")
-                        .font(CSFont.ui(12, .semibold))
-                        .foregroundStyle(CSColor.terracottaLight)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(
-                            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                                .fill(CSColor.terracotta.opacity(0.14))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                                .strokeBorder(CSColor.terracotta.opacity(0.28), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
+                toggleButton
             }
 
+            content
+                .padding(.top, 11)
+        }
+    }
+
+    /// Edit ⇄ Save toggle. In EDIT it persists and flips back to VIEW; in VIEW it
+    /// enters EDIT.
+    private var toggleButton: some View {
+        Button(action: {
+            if editing {
+                onSave()
+                editing = false
+            } else {
+                editing = true
+            }
+        }) {
+            Text(editing ? "Save" : "Edit")
+                .font(CSFont.ui(12, .semibold))
+                .foregroundStyle(CSColor.terracottaLight)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .fill(CSColor.terracotta.opacity(0.14))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .strokeBorder(CSColor.terracotta.opacity(0.28), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(editing ? "Save the prompt" : "Edit the raw markdown")
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if editing {
             TextEditor(text: $text)
                 .font(CSFont.mono(12.5, .regular))
                 .foregroundStyle(CSColor.textBody)
                 .scrollContentBackground(.hidden)
                 .padding(10)
                 .frame(minHeight: 132)
-                .background(
-                    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-                        .fill(CSColor.surfaceRaised(0.025))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-                        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-                )
-                .padding(.top, 11)
+                .background(card)
+                .overlay(cardBorder)
+        } else {
+            // Reuse the chat markdown renderer (MarkdownText, ChatComponents.swift):
+            // it is dependency-free (DesignSystem tokens only) and carries headings,
+            // bold/italic, lists, inline code, and fenced code blocks.
+            MarkdownText(raw: text.isEmpty ? "_No prompt set._" : text, size: 13)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .frame(minHeight: 132, alignment: .topLeading)
+                .background(card)
+                .overlay(cardBorder)
         }
+    }
+
+    private var card: some View {
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+            .fill(CSColor.surfaceRaised(0.025))
+    }
+
+    private var cardBorder: some View {
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
     }
 }
 

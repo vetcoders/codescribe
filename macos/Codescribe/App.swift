@@ -56,6 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let config = CodescribeConfig()
     private let threads = CodescribeThreads()
     private var agentWindow: NSWindow?
+    // Strong ref to the voice-assistive delivery listener: UniFFI releases the
+    // foreign callback the moment Swift drops its reference, which would silently
+    // kill live voice-reply rendering. Held for the app's lifetime.
+    private var voiceDeliveryListener: VoiceDeliveryListener?
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var shouldExitForDuplicate = false
@@ -109,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wireTrayActions()
         installStatusItem()
         startHotkeys()
+        registerVoiceDelivery()
         prewarmRecordingController()
         // Show the first-run wizard on top of the freshly-installed tray when the
         // core reports onboarding is still due (no setup_done marker, or a stale
@@ -343,6 +348,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showAgentFromExternalLaunch() {
         showAgent()
+    }
+
+    /// Wire the voice-assistive agent reply stream into the chat window. The
+    /// hotkey / hands-off send path streams the reply from the core runtime; this
+    /// listener renders those events live (opening the chat window on turn start).
+    /// Registration is process-global on the bridge side, so it stands independent
+    /// of the `hotkeys.start()` Task above.
+    private func registerVoiceDelivery() {
+        let listener = VoiceDeliveryListener(store: model.chat) { [weak self] in
+            self?.showAgent()
+        }
+        voiceDeliveryListener = listener
+        hotkeys.setAgentDeliveryListener(listener: listener)
     }
 
     private func startHotkeys() {

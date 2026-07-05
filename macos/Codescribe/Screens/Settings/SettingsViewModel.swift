@@ -94,6 +94,10 @@ final class SettingsViewModel: ObservableObject {
     /// Re-read live state (permissions can change while the window is open).
     func refresh() {
         permissions = permissionProbe.snapshot()
+        // A permission granted while Settings is open (e.g. via the checklist's
+        // "Open System Settings") should bring hotkeys live without an app
+        // restart. Idempotent bridge call — a no-op once the tap is already armed.
+        hotkeys?.rearmAfterPermissionGrant()
         if let engine {
             settings = engine.loadSettings()
             keyStatus = engine.keyStatus()

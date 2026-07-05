@@ -23,5 +23,6 @@ pub use detector::{
 };
 pub use manager::{
     HotkeyManager, are_hotkeys_enabled, disable_hotkeys, enable_hotkeys,
-    install_global_hotkey_manager, is_global_hotkey_manager_active, shutdown_global_hotkey_manager,
+    install_global_hotkey_manager, is_global_hotkey_manager_active, refresh_global_hotkey_manager,
+    shutdown_global_hotkey_manager,
 };
