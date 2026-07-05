@@ -71,18 +71,24 @@ struct ShortcutsPanel: View {
     }
 
     private func bindingRow(_ row: CsModeBinding) -> some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(row.modeLabel)
-                    .font(CSFont.ui(13.5, .semibold))
-                    .foregroundStyle(CSColor.textHigh)
-                Text(row.modeDescription)
-                    .font(CSFont.ui(11.5, .medium))
-                    .foregroundStyle(CSColor.textMuted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.modeLabel)
+                        .font(CSFont.ui(13.5, .semibold))
+                        .foregroundStyle(CSColor.textHigh)
+                    Text(row.modeDescription)
+                        .font(CSFont.ui(11.5, .medium))
+                        .foregroundStyle(CSColor.textMuted)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            bindingPicker(row)
+                bindingPicker(row)
+            }
+
+            if row.mode == .assistive {
+                assistiveModeSplit(row)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -123,6 +129,60 @@ struct ShortcutsPanel: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    private func assistiveModeSplit(_ row: CsModeBinding) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            assistiveModeVariant(
+                title: "Voice chat",
+                gesture: "Hold Fn+Shift",
+                description: "Talk to the agent."
+            )
+            assistiveModeVariant(
+                title: "Act on selection",
+                gesture: selectionAssistiveGesture(row),
+                description: "Select text, then speak an instruction."
+            )
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(CSColor.assistive.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(CSColor.assistive.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private func assistiveModeVariant(title: String, gesture: String, description: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Circle()
+                .fill(CSColor.assistive)
+                .frame(width: 6, height: 6)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(CSFont.ui(11.5, .semibold))
+                    .foregroundStyle(CSColor.assistiveLight)
+                Text(description)
+                    .font(CSFont.ui(11, .medium))
+                    .foregroundStyle(CSColor.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Text(gesture)
+                .font(CSFont.mono(10.5, .semibold))
+                .foregroundStyle(CSColor.textBodyAlt)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func selectionAssistiveGesture(_ row: CsModeBinding) -> String {
+        row.binding == .disabled ? "Hold Fn+Command" : "\(row.bindingLabel) or Hold Fn+Command"
     }
 
     private var badgeLegend: some View {
