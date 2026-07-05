@@ -206,8 +206,14 @@ struct DictationOverlayView: View {
     /// Pin the live transcript to its bottom anchor. A short ease keeps rapid
     /// word-by-word appends from snapping harshly while still tracking the tail.
     private func scrollToTail(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.14)) {
-            proxy.scrollTo(transcriptBottomAnchor, anchor: .bottom)
+        // Defer one runloop tick: `onChange` fires before SwiftUI lays out the
+        // freshly appended text, so scrolling synchronously targets the previous
+        // content height and clips the newest word. By the next tick the bottom
+        // anchor sits below the new tail.
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.14)) {
+                proxy.scrollTo(transcriptBottomAnchor, anchor: .bottom)
+            }
         }
     }
 
