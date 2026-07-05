@@ -82,11 +82,11 @@ impl CodescribeTrayStatus {
     }
 }
 
-type SharedListener = Arc<RwLock<Option<Arc<dyn CsTrayStatusListener>>>>;
+type SharedListener = RwLock<Option<Arc<dyn CsTrayStatusListener>>>;
 
-fn shared_listener() -> SharedListener {
+fn shared_listener() -> &'static SharedListener {
     static LISTENER: OnceLock<SharedListener> = OnceLock::new();
-    Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
+    LISTENER.get_or_init(|| RwLock::new(None))
 }
 
 fn last_forwarded_status() -> &'static Mutex<Option<TrayStatus>> {
